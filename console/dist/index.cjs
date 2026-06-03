@@ -347,7 +347,9 @@ function escapeHtml(value) {
 function safeConsoleHref(value) {
   const trimmed = String(value || "").trim();
   if (!trimmed) return null;
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return null;
   const lower = trimmed.toLowerCase();
+  if (lower.startsWith("//")) return null;
   if (lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("mailto:") || lower.startsWith("/") || lower.startsWith("./") || lower.startsWith("../") || lower.startsWith("#")) {
     return trimmed;
   }
@@ -5218,6 +5220,9 @@ async function fetchWithConsoleTimeout(input, init, label, timeoutMs = DEFAULT_C
 }
 async function responseErrorPreview(response) {
   const text = await response.text();
+  return responseTextErrorPreview(text);
+}
+function responseTextErrorPreview(text) {
   const trimmed = text.trim();
   if (!trimmed) {
     return "";
@@ -5452,7 +5457,8 @@ async function streamFramesFromResponse(response, options = {}) {
       error.replayError = replayError;
       throw error;
     }
-    throw new Error(`interaction stream request failed ${response.status}: ${text}`);
+    const preview = responseTextErrorPreview(text);
+    throw new Error(`interaction stream request failed ${response.status}${preview ? `: ${preview}` : ""}`);
   }
   const replayUnavailableError = (frame) => {
     if (frame.event !== "replay_unavailable") {
@@ -5847,14 +5853,20 @@ function isJsonRpcMethodNotFoundError(error) {
 }
 function createConsoleCommandSurface(transport, facts) {
   let cachedCapabilities = null;
+  let capabilitiesRequest = null;
   const capabilities = async (force = false) => {
     if (force || !cachedCapabilities) {
-      cachedCapabilities = await transport.capabilities();
+      if (!capabilitiesRequest) {
+        capabilitiesRequest = transport.capabilities().finally(() => {
+          capabilitiesRequest = null;
+        });
+      }
+      cachedCapabilities = await capabilitiesRequest;
     }
     return cachedCapabilities;
   };
   const requireFreshCapability = async (method) => {
-    let currentCapabilities = await capabilities();
+    let currentCapabilities = await capabilities(true);
     if (!hasCapability(currentCapabilities, method)) {
       currentCapabilities = await capabilities(true);
     }
@@ -5926,7 +5938,7 @@ function createTimelineController(transport, facts) {
       const delivered = createBoundedTimelineDedupSet(input.limit);
       const deliver = (frame) => {
         const key = timelineDedupKey(frame);
-        if (!delivered.add(key)) return;
+        if (key && !delivered.add(key)) return;
         onFrame(facts.mobkit(frame, {
           routeOrMethod: CONSOLE_REST_PATHS.timelineStream,
           cursor: frame.cursor
@@ -5981,7 +5993,7 @@ function timelineDedupKey(frame) {
   if (typeof timestamp === "number") {
     return `timestamp:${frame.event || ""}:${frame.identity || ""}:${timestamp}:${stableDedupText(frame.data)}`;
   }
-  return `payload:${frame.event || ""}:${frame.identity || ""}:${stableDedupText(frame.data)}`;
+  return null;
 }
 function stableDedupText(value) {
   try {
@@ -8645,6 +8657,7 @@ var SIDEBAR_ROW_HEIGHT = {
 };
 var SIDEBAR_OVERSCAN_PX = 360;
 var PINNED_SECTION_NAME = "Pinned";
+var PINNED_SECTION_KEY = "section:__mobkit_pinned";
 function localSidebarStorage() {
   if (typeof window === "undefined") return null;
   try {
@@ -8998,6 +9011,16 @@ function collapsedSubgroupsForStorage(storageKey, storage = localSidebarStorage(
 function sidebarSubgroupStorageId(bucket, subgroup) {
   return JSON.stringify([bucket, subgroup]);
 }
+function sidebarSubgroupStorageLabel(storageKey) {
+  try {
+    const parsed = JSON.parse(storageKey);
+    if (Array.isArray(parsed) && typeof parsed[1] === "string" && parsed[1].trim()) {
+      return parsed[1];
+    }
+  } catch {
+  }
+  return storageKey;
+}
 function reorderSidebarOrderWithNavigationModel(baseOrder, draggedId, target, where, inputSource) {
   const allowed = new Set(baseOrder);
   const result = applyConsoleNavigationReorderIntent({
@@ -9126,7 +9149,7 @@ function buildSidebarVirtualRows(args) {
     const collapsedPinned = args.searchActive ? false : args.collapsedSections.has(PINNED_SECTION_NAME);
     rows.push({
       kind: "section",
-      key: `section:${PINNED_SECTION_NAME}`,
+      key: PINNED_SECTION_KEY,
       bucket: PINNED_SECTION_NAME,
       count: pinnedRows.length,
       collapsed: collapsedPinned,
@@ -9260,7 +9283,8 @@ function sidebarNavigationModelFromRows(rows) {
       currentSubgroup = node;
       continue;
     }
-    const parent = currentSubgroup?.type === "group" ? currentSubgroup : currentSection?.type === "group" ? currentSection : null;
+    const belongsToCurrentSubgroup = row.kind === "agent" && Boolean(row.row.subgroup) && currentSubgroup?.type === "group" && currentSubgroup.target?.kind === "subgroup" && currentSubgroup.target.bucket === row.bucket && currentSubgroup.target.label === row.row.subgroup;
+    const parent = belongsToCurrentSubgroup ? currentSubgroup : currentSection?.type === "group" ? currentSection : null;
     if (parent) {
       parent.children.push(node);
     } else {
@@ -9399,6 +9423,18 @@ function sidebarVisibleRange(args) {
   const end = Math.min(args.rowCount, lowerBound(args.offsets, endNeedle) + 1);
   return { start, end };
 }
+function pendingOrderFocusMatchesRow(pending, row) {
+  if (pending.kind === "section") {
+    return row.kind === "section" && row.bucket === pending.id;
+  }
+  return row.kind === "subgroup" && row.storageKey === pending.id && row.bucket === pending.bucket;
+}
+function pendingOrderFocusMatchesElement(pending, element) {
+  if (element.dataset.sidebarOrderKind !== pending.kind) return false;
+  if (element.dataset.sidebarOrderId !== pending.id) return false;
+  if (pending.kind === "subgroup" && element.dataset.sidebarOrderBucket !== pending.bucket) return false;
+  return true;
+}
 function useMeasuredHeight() {
   const ref = import_react17.default.useRef(null);
   const [height, setHeight] = import_react17.default.useState(0);
@@ -9512,6 +9548,7 @@ function Sidebar({
   const [dragOverOrder, setDragOverOrder] = import_react17.default.useState(null);
   const [dragPreview, setDragPreview] = import_react17.default.useState(null);
   const [orderAnnouncement, setOrderAnnouncement] = import_react17.default.useState("");
+  const pendingOrderFocusRef = import_react17.default.useRef(null);
   const draggingOrderRef = import_react17.default.useRef(null);
   const pointerDragRef = import_react17.default.useRef(null);
   const suppressOrderClickRef = import_react17.default.useRef(false);
@@ -9586,6 +9623,9 @@ function Sidebar({
   );
   const completeSectionDrop = import_react17.default.useCallback((target, where, draggedId = draggingOrderRef.current?.id, inputSource = "pointer") => {
     if (!draggedId || draggedId === target) return;
+    if (inputSource === "keyboard") {
+      pendingOrderFocusRef.current = { kind: "section", id: draggedId };
+    }
     setSectionOrder((current) => {
       const baseOrder = applyConsoleSidebarOrder(sectionNames, current);
       const next = reorderSidebarOrderWithNavigationModel(baseOrder, draggedId, target, where, inputSource);
@@ -9601,6 +9641,9 @@ function Sidebar({
   }, [grouped]);
   const completeSubgroupDrop = import_react17.default.useCallback((target, bucket, where, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket, inputSource = "pointer") => {
     if (!draggedId || draggedBucket !== bucket || draggedId === target) return;
+    if (inputSource === "keyboard") {
+      pendingOrderFocusRef.current = { kind: "subgroup", id: draggedId, bucket };
+    }
     setSubgroupOrder((current) => {
       const bucketOrder = applyConsoleSidebarOrder(subgroupIdsForBucket(bucket), current);
       const nextBucketOrder = reorderSidebarOrderWithNavigationModel(bucketOrder, draggedId, target, where, inputSource);
@@ -9612,7 +9655,7 @@ function Sidebar({
       writeSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey, next);
       return next;
     });
-    setOrderAnnouncement(`Moved subgroup ${draggedId} ${where} ${target}.`);
+    setOrderAnnouncement(`Moved subgroup ${sidebarSubgroupStorageLabel(draggedId)} ${where} ${sidebarSubgroupStorageLabel(target)}.`);
   }, [subgroupIdsForBucket, subgroupOrderStorageKey]);
   const handleSectionOrderKeyDown = import_react17.default.useCallback((event, bucket) => {
     if (!event.altKey || event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
@@ -9732,7 +9775,7 @@ function Sidebar({
   import_react17.default.useEffect(() => {
     setScrollTop(0);
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [q, grouping, sectionOrder, subgroupOrder, listRef]);
+  }, [q, grouping, listRef]);
   const visibleRange = import_react17.default.useMemo(() => sidebarVisibleRange({
     rowCount: virtualRows.length,
     offsets: virtualOffsets.offsets,
@@ -9744,6 +9787,38 @@ function Sidebar({
     () => virtualRows.slice(visibleRange.start, visibleRange.end),
     [virtualRows, visibleRange]
   );
+  import_react17.default.useLayoutEffect(() => {
+    const pending = pendingOrderFocusRef.current;
+    const list = listRef.current;
+    if (!pending || !list) return;
+    const rowIndex = virtualRows.findIndex((row) => pendingOrderFocusMatchesRow(pending, row));
+    if (rowIndex < 0) {
+      pendingOrderFocusRef.current = null;
+      return;
+    }
+    const rowTop = virtualOffsets.offsets[rowIndex] || 0;
+    const rowBottom = rowTop + virtualRowHeight(virtualRows[rowIndex]);
+    const currentTop = list.scrollTop;
+    if (listHeight > 0) {
+      const currentBottom = currentTop + listHeight;
+      const nextTop = rowTop < currentTop ? rowTop : rowBottom > currentBottom ? Math.max(0, rowBottom - listHeight) : currentTop;
+      if (nextTop !== currentTop) {
+        list.scrollTop = nextTop;
+        setScrollTop(nextTop);
+        return;
+      }
+    }
+    const restoreFocus = () => {
+      const target = Array.from(list.querySelectorAll("[data-sidebar-order-kind]")).find((element) => pendingOrderFocusMatchesElement(pending, element));
+      target?.focus();
+      pendingOrderFocusRef.current = null;
+    };
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(restoreFocus);
+    } else {
+      window.setTimeout(restoreFocus, 0);
+    }
+  }, [listHeight, listRef, scrollTop, virtualOffsets, virtualRows]);
   const dragPreviewRows = import_react17.default.useMemo(
     () => sidebarDragPreviewRows(virtualRows, draggingOrder),
     [virtualRows, draggingOrder]

@@ -11,7 +11,6 @@ import {
   pruneStaleSidebarStorage,
   readSidebarStringList,
   readSidebarStringSet,
-  reorderConsoleSidebarOrder as reorderSidebarOrder,
   safeConsoleHref,
   sidebarStorageKey,
   writeSidebarStringList,
@@ -131,6 +130,12 @@ interface SidebarDragPreview {
   width: number;
 }
 
+interface PendingOrderFocus {
+  kind: "section" | "subgroup";
+  id: string;
+  bucket?: string;
+}
+
 const SIDEBAR_ROW_HEIGHT = {
   section: 36,
   empty: 58,
@@ -140,6 +145,7 @@ const SIDEBAR_ROW_HEIGHT = {
 
 const SIDEBAR_OVERSCAN_PX = 360;
 const PINNED_SECTION_NAME = "Pinned";
+const PINNED_SECTION_KEY = "section:__mobkit_pinned";
 
 function localSidebarStorage(): ConsoleSidebarStorageLike | null {
   if (typeof window === "undefined") return null;
@@ -281,7 +287,7 @@ export const __sidebarTest = {
   sidebarVirtualOffsets,
   sidebarVisibleRange,
   applySidebarOrder,
-  reorderSidebarOrder,
+  reorderSidebarOrder: reorderSidebarOrderWithNavigationModel,
   isAgentPinned,
   sidebarPinnedFamilyPinIds,
   pruneStaleSidebarStorage,
@@ -608,6 +614,18 @@ function sidebarSubgroupStorageId(bucket: string, subgroup: string): string {
   return JSON.stringify([bucket, subgroup]);
 }
 
+function sidebarSubgroupStorageLabel(storageKey: string): string {
+  try {
+    const parsed = JSON.parse(storageKey) as unknown;
+    if (Array.isArray(parsed) && typeof parsed[1] === "string" && parsed[1].trim()) {
+      return parsed[1];
+    }
+  } catch {
+    // Fall through to the raw key when reading legacy or externally-written preferences.
+  }
+  return storageKey;
+}
+
 export type SidebarDropPosition = ConsoleSidebarDropPosition;
 
 function reorderSidebarOrderWithNavigationModel(
@@ -764,7 +782,7 @@ function buildSidebarVirtualRows(args: {
     const collapsedPinned = args.searchActive ? false : args.collapsedSections.has(PINNED_SECTION_NAME);
     rows.push({
       kind: "section",
-      key: `section:${PINNED_SECTION_NAME}`,
+      key: PINNED_SECTION_KEY,
       bucket: PINNED_SECTION_NAME,
       count: pinnedRows.length,
       collapsed: collapsedPinned,
@@ -1078,6 +1096,22 @@ function sidebarVisibleRange(args: {
   return { start, end };
 }
 
+function pendingOrderFocusMatchesRow(pending: PendingOrderFocus, row: SidebarVirtualRow): boolean {
+  if (pending.kind === "section") {
+    return row.kind === "section" && row.bucket === pending.id;
+  }
+  return row.kind === "subgroup"
+    && row.storageKey === pending.id
+    && row.bucket === pending.bucket;
+}
+
+function pendingOrderFocusMatchesElement(pending: PendingOrderFocus, element: HTMLElement): boolean {
+  if (element.dataset.sidebarOrderKind !== pending.kind) return false;
+  if (element.dataset.sidebarOrderId !== pending.id) return false;
+  if (pending.kind === "subgroup" && element.dataset.sidebarOrderBucket !== pending.bucket) return false;
+  return true;
+}
+
 function useMeasuredHeight<T extends HTMLElement>(): [React.RefObject<T>, number] {
   const ref = React.useRef<T>(null);
   const [height, setHeight] = React.useState(0);
@@ -1209,6 +1243,7 @@ export function Sidebar({
   const [dragOverOrder, setDragOverOrder] = React.useState<{ kind: "section" | "subgroup"; id: string; where: SidebarDropPosition } | null>(null);
   const [dragPreview, setDragPreview] = React.useState<SidebarDragPreview | null>(null);
   const [orderAnnouncement, setOrderAnnouncement] = React.useState("");
+  const pendingOrderFocusRef = React.useRef<PendingOrderFocus | null>(null);
   const draggingOrderRef = React.useRef<{ kind: "section" | "subgroup"; id: string; bucket?: string } | null>(null);
   const pointerDragRef = React.useRef<{
     kind: "section" | "subgroup";
@@ -1303,6 +1338,9 @@ export function Sidebar({
     inputSource: "keyboard" | "pointer" = "pointer",
   ) => {
     if (!draggedId || draggedId === target) return;
+    if (inputSource === "keyboard") {
+      pendingOrderFocusRef.current = { kind: "section", id: draggedId };
+    }
     setSectionOrder((current) => {
       const baseOrder = applySidebarOrder(sectionNames, current);
       const next = reorderSidebarOrderWithNavigationModel(baseOrder, draggedId, target, where, inputSource);
@@ -1332,6 +1370,9 @@ export function Sidebar({
       draggedBucket !== bucket ||
       draggedId === target
     ) return;
+    if (inputSource === "keyboard") {
+      pendingOrderFocusRef.current = { kind: "subgroup", id: draggedId, bucket };
+    }
     setSubgroupOrder((current) => {
       const bucketOrder = applySidebarOrder(subgroupIdsForBucket(bucket), current);
       const nextBucketOrder = reorderSidebarOrderWithNavigationModel(bucketOrder, draggedId, target, where, inputSource);
@@ -1343,7 +1384,7 @@ export function Sidebar({
       writeSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey, next);
       return next;
     });
-    setOrderAnnouncement(`Moved subgroup ${draggedId} ${where} ${target}.`);
+    setOrderAnnouncement(`Moved subgroup ${sidebarSubgroupStorageLabel(draggedId)} ${where} ${sidebarSubgroupStorageLabel(target)}.`);
   }, [subgroupIdsForBucket, subgroupOrderStorageKey]);
   const handleSectionOrderKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLElement>, bucket: string) => {
     if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
@@ -1468,7 +1509,7 @@ export function Sidebar({
   React.useEffect(() => {
     setScrollTop(0);
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [q, grouping, sectionOrder, subgroupOrder, listRef]);
+  }, [q, grouping, listRef]);
   const visibleRange = React.useMemo(() => sidebarVisibleRange({
     rowCount: virtualRows.length,
     offsets: virtualOffsets.offsets,
@@ -1480,6 +1521,43 @@ export function Sidebar({
     () => virtualRows.slice(visibleRange.start, visibleRange.end),
     [virtualRows, visibleRange],
   );
+  React.useLayoutEffect(() => {
+    const pending = pendingOrderFocusRef.current;
+    const list = listRef.current;
+    if (!pending || !list) return;
+    const rowIndex = virtualRows.findIndex((row) => pendingOrderFocusMatchesRow(pending, row));
+    if (rowIndex < 0) {
+      pendingOrderFocusRef.current = null;
+      return;
+    }
+    const rowTop = virtualOffsets.offsets[rowIndex] || 0;
+    const rowBottom = rowTop + virtualRowHeight(virtualRows[rowIndex]!);
+    const currentTop = list.scrollTop;
+    if (listHeight > 0) {
+      const currentBottom = currentTop + listHeight;
+      const nextTop = rowTop < currentTop
+        ? rowTop
+        : rowBottom > currentBottom
+          ? Math.max(0, rowBottom - listHeight)
+          : currentTop;
+      if (nextTop !== currentTop) {
+        list.scrollTop = nextTop;
+        setScrollTop(nextTop);
+        return;
+      }
+    }
+    const restoreFocus = () => {
+      const target = Array.from(list.querySelectorAll<HTMLElement>("[data-sidebar-order-kind]"))
+        .find((element) => pendingOrderFocusMatchesElement(pending, element));
+      target?.focus();
+      pendingOrderFocusRef.current = null;
+    };
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(restoreFocus);
+    } else {
+      window.setTimeout(restoreFocus, 0);
+    }
+  }, [listHeight, listRef, scrollTop, virtualOffsets, virtualRows]);
   const dragPreviewRows = React.useMemo(
     () => sidebarDragPreviewRows(virtualRows, draggingOrder),
     [virtualRows, draggingOrder],

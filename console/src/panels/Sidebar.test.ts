@@ -897,7 +897,7 @@ test("stock sidebar renderer flattens its ConsoleNavigationModel", () => {
   assert.deepEqual(
     model.nodes.map((node) => [node.type, node.id, node.label]),
     [
-      ["group", "section:Pinned", "Pinned"],
+      ["group", "section:__mobkit_pinned", "Pinned"],
       ["group", "section:initiatives", "initiatives"],
       ["group", "section:workers", "workers"],
     ],
@@ -953,6 +953,35 @@ test("stock sidebar navigation model keeps ungrouped agents at section level", (
   assert.deepEqual(
     cto?.type === "group" ? cto.children.map((node) => node.id) : [],
     ["agent:member:initiative-cto"],
+  );
+});
+
+test("stock sidebar navigation model does not collide with a configured Pinned group", () => {
+  const agents = [
+    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:cto" }),
+    ob3Agent({ id: "literal-pinned", label: "Literal Pinned Group Agent", group: "Pinned", scope: "ops", role: "worker" }),
+  ];
+  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const model = __sidebarTest.buildStockSidebarNavigationModel({
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    grouped,
+    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    collapsedSections: new Set<string>(),
+    collapsedSubgroups: new Set<string>(),
+    pinnedAgentIds: new Set(["initiative:cto"]),
+  });
+
+  assert.deepEqual(
+    model.nodes
+      .filter((node) => node.label === "Pinned")
+      .map((node) => node.id),
+    ["section:__mobkit_pinned", "section:Pinned"],
+  );
+  assert.deepEqual(
+    __sidebarTest.sidebarNavigationRows(model)
+      .filter((row) => row.kind === "agent")
+      .map((row) => row.row.agent.member_id),
+    ["member:initiative-cto", "member:literal-pinned"],
   );
 });
 

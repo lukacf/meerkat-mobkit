@@ -12,6 +12,7 @@ import {
   uploadConsoleBlobMultipart,
 } from "./network";
 import { mapFramesToTimelineEntries } from "./adapters";
+import type { ConsoleFrame } from "../types";
 
 test("fetchJson defaults console requests to a 60 second timeout with an abort reason", async () => {
   const originalFetch = globalThis.fetch;
@@ -147,6 +148,30 @@ test("console HTTP errors expose bounded response previews", async () => {
       },
     );
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("timeline stream HTTP errors expose bounded response previews", async () => {
+  const originalFetch = globalThis.fetch;
+  const body = `prefix-${"x".repeat(700)}-secret-tail`;
+  globalThis.fetch = (async () => new Response(body, { status: 502 })) as typeof fetch;
+  const frames: ConsoleFrame[] = [];
+  const unsubscribe = subscribeTimelineEvents(
+    "http://127.0.0.1:7000",
+    {},
+    (frame) => frames.push(frame),
+  );
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(frames.length > 0, true);
+    const message = String((frames[0]?.data as { message?: unknown } | undefined)?.message || "");
+    assert.match(message, /interaction stream request failed 502/);
+    assert.match(message, /prefix-/);
+    assert.doesNotMatch(message, /secret-tail/);
+  } finally {
+    unsubscribe();
     globalThis.fetch = originalFetch;
   }
 });

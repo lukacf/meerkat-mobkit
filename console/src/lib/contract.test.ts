@@ -258,7 +258,7 @@ function parseAxumRoutes(source: string): Set<string> {
 
 function parseJsonRpcDispatchMethods(source: string): Set<string> {
   const methods = new Set<string>();
-  const armPattern = /^\s*"([^"]+)"\s*=>\s*\{/gm;
+  const armPattern = /^\s*"([^"]+)"\s*=>/gm;
   for (const match of source.matchAll(armPattern)) {
     methods.add(match[1]!);
   }

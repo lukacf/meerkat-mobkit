@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseConversationRichBlocks, parseConversationSummary, renderConversationInlineMarkdown } from "./rich-content";
+import { parseConversationRichBlocks, parseConversationSummary, renderConversationInlineMarkdown, safeConsoleHref } from "./rich-content";
 
 test("parseConversationRichBlocks parses markdown tables into structured table blocks", () => {
   const blocks = parseConversationRichBlocks(`
@@ -60,4 +60,6 @@ test("renderConversationInlineMarkdown allowlists link schemes", () => {
     renderConversationInlineMarkdown("[Data](data:text/plain;base64,abc)"),
     "Data",
   );
+  assert.equal(safeConsoleHref("//evil.test/phish"), null);
+  assert.equal(safeConsoleHref("mailto:ops@example.test\r\nbcc:evil@example.test"), null);
 });

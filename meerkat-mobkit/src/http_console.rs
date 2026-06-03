@@ -1176,16 +1176,16 @@ fn console_send_rpc_code(err: &ConsoleSendError) -> i64 {
 }
 
 fn console_send_rpc_error(response_id: Value, err: ConsoleSendError) -> Value {
+    response_value(response_id, None, Some(console_send_json_rpc_error(err)))
+}
+
+fn console_send_json_rpc_error(err: ConsoleSendError) -> JsonRpcError {
     let code = console_send_rpc_code(&err);
-    response_value(
-        response_id,
-        None,
-        Some(JsonRpcError {
-            code,
-            message: console_send_public_message(&err),
-            data: None,
-        }),
-    )
+    JsonRpcError {
+        code,
+        message: console_send_public_message(&err),
+        data: None,
+    }
 }
 
 fn console_send_public_message(err: &ConsoleSendError) -> String {
@@ -1952,6 +1952,15 @@ fn invalid_params(id: Value, message: impl Into<String>) -> Value {
     )
 }
 
+fn gating_decision_failed_error(id: Value, err: impl std::fmt::Display) -> Value {
+    tracing::warn!(
+        target: "mobkit::console",
+        error = %err,
+        "console gating decision failed"
+    );
+    invalid_params(id, "gating decision failed")
+}
+
 fn runtime_binding_from_wire(
     binding: WireRuntimeBinding,
 ) -> Result<meerkat_mob::RuntimeBinding, String> {
@@ -2070,12 +2079,17 @@ fn console_timeline_replay_unavailable_response(
     requested_cursor: Option<&ConsoleCursor>,
     latest_cursor: Option<ConsoleCursor>,
 ) -> Value {
+    tracing::warn!(
+        target: "mobkit::console",
+        error = %err,
+        "console timeline replay unavailable"
+    );
     response_value(
         id,
         None,
         Some(JsonRpcError {
             code: crate::rpc::CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
-            message: format!("query_timeline failed: {err}"),
+            message: "timeline replay unavailable".to_string(),
             data: Some(json!({
                 "error": "replay_unavailable",
                 "stream": "timeline",
@@ -3121,15 +3135,9 @@ async fn handle_console_aggregator_rpc(
                     Some(serde_json::to_value(accepted).unwrap_or(Value::Null)),
                     None,
                 ),
-                Err(err) => response_value(
-                    response_id,
-                    None,
-                    Some(JsonRpcError {
-                        code: console_send_rpc_code(&err),
-                        message: err.to_string(),
-                        data: None,
-                    }),
-                ),
+                Err(err) => {
+                    response_value(response_id, None, Some(console_send_json_rpc_error(err)))
+                }
             }
         }
         "mobkit/retire" => {
@@ -3495,15 +3503,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                         Some(serde_json::to_value(accepted).unwrap_or(Value::Null)),
                         None,
                     ),
-                    Err(err) => response_value(
-                        response_id,
-                        None,
-                        Some(JsonRpcError {
-                            code: console_send_rpc_code(&err),
-                            message: err.to_string(),
-                            data: None,
-                        }),
-                    ),
+                    Err(err) => {
+                        response_value(response_id, None, Some(console_send_json_rpc_error(err)))
+                    }
                 };
             }
             match Box::pin(aggregator.send(send_request)).await {
@@ -3512,15 +3514,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     Some(serde_json::to_value(accepted).unwrap_or(Value::Null)),
                     None,
                 ),
-                Err(err) => response_value(
-                    response_id,
-                    None,
-                    Some(JsonRpcError {
-                        code: console_send_rpc_code(&err),
-                        message: err.to_string(),
-                        data: None,
-                    }),
-                ),
+                Err(err) => {
+                    response_value(response_id, None, Some(console_send_json_rpc_error(err)))
+                }
             }
         }
         "mobkit/blob/get" => {
@@ -4695,7 +4691,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     Some(serde_json::to_value(result).unwrap_or(Value::Null)),
                     None,
                 ),
-                Err(err) => invalid_params(response_id, format!("gating decision failed: {err}")),
+                Err(err) => gating_decision_failed_error(response_id, err),
             }
         }
         "mobkit/ensure_member" => {
@@ -7073,6 +7069,50 @@ comms = true
 
         assert_eq!(message, "console send failed");
         assert!(!message.contains("secret backend DSN"));
+    }
+
+    #[test]
+    fn console_send_json_rpc_error_hides_backend_details() {
+        let response = super::console_send_rpc_error(
+            json!(7),
+            crate::console_aggregator::ConsoleSendError::Dispatch("secret backend DSN".to_string()),
+        );
+
+        assert_eq!(response["error"]["code"], json!(-32000));
+        assert_eq!(response["error"]["message"], json!("console send failed"));
+        assert!(!response.to_string().contains("secret backend DSN"));
+    }
+
+    #[test]
+    fn console_timeline_replay_error_hides_backend_details() {
+        let response = super::console_timeline_replay_unavailable_response(
+            json!(7),
+            Box::new(std::io::Error::other("secret backend DSN")),
+            None,
+            None,
+        );
+
+        assert_eq!(
+            response["error"]["code"],
+            json!(crate::rpc::CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE)
+        );
+        assert_eq!(
+            response["error"]["message"],
+            json!("timeline replay unavailable")
+        );
+        assert!(!response.to_string().contains("secret backend DSN"));
+    }
+
+    #[test]
+    fn gating_decision_error_hides_backend_details() {
+        let response = super::gating_decision_failed_error(json!(7), "secret backend DSN");
+
+        assert_eq!(response["error"]["code"], json!(-32602));
+        assert_eq!(
+            response["error"]["message"],
+            json!("gating decision failed")
+        );
+        assert!(!response.to_string().contains("secret backend DSN"));
     }
 
     #[tokio::test]

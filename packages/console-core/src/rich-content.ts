@@ -126,7 +126,9 @@ function escapeHtml(value: string): string {
 export function safeConsoleHref(value: string): string | null {
   const trimmed = String(value || "").trim();
   if (!trimmed) return null;
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return null;
   const lower = trimmed.toLowerCase();
+  if (lower.startsWith("//")) return null;
   if (
     lower.startsWith("http://") ||
     lower.startsWith("https://") ||

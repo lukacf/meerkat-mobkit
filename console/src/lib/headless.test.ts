@@ -50,6 +50,7 @@ function createFakeTransport(options: {
   queryPages?: ConsoleTimelinePage[];
   accepted?: ConsoleTimelineAccepted;
 } = {}): MobKitConsoleTransport & {
+  capabilityCalls: number;
   live?: (frame: ConsoleFrame) => void;
   sends: unknown[];
   subscriptions: unknown[];
@@ -59,17 +60,19 @@ function createFakeTransport(options: {
     ? [...options.capabilities]
     : [];
   const fake = {
+    capabilityCalls: 0,
     sends: [] as unknown[],
     subscriptions: [] as unknown[],
     loadExperience: async () => ({ contract_version: "fake" }),
-    capabilities: async () => (
-      capabilitiesQueue.shift()
-      || (!Array.isArray(options.capabilities) && options.capabilities)
-      || {
-        version: "fake-capabilities",
-        methods: [CONSOLE_RPC_METHODS.send, CONSOLE_RPC_METHODS.inspectIdentity],
-      }
-    ),
+    capabilities: async () => {
+      fake.capabilityCalls += 1;
+      return capabilitiesQueue.shift()
+        || (!Array.isArray(options.capabilities) && options.capabilities)
+        || {
+          version: "fake-capabilities",
+          methods: [CONSOLE_RPC_METHODS.send, CONSOLE_RPC_METHODS.inspectIdentity],
+        };
+    },
     queryTimeline: async () => queryPages.shift() || { frames: [], available: true },
     subscribeTimeline: (input, onFrame) => {
       fake.subscriptions.push(input);
@@ -94,6 +97,7 @@ function createFakeTransport(options: {
     upload: async () => ({ blob_id: "blob-1" }),
     blobUrl: (blobId) => `/blobs/${blobId}`,
   } satisfies MobKitConsoleTransport & {
+    capabilityCalls: number;
     live?: (frame: ConsoleFrame) => void;
     sends: unknown[];
     subscriptions: unknown[];
@@ -133,6 +137,7 @@ test("headless timeline controller seeds, subscribes after cursor, backfills rep
 
 test("headless timeline dedup keeps a bounded recent identity window", async () => {
   const seedFrames = Array.from({ length: 1_001 }, (_value, index) => ({
+    id: `seed:${index}`,
     event: "text_delta",
     identity: "identity:lead",
     data: { index },
@@ -149,11 +154,30 @@ test("headless timeline dedup keeps a bounded recent identity window", async () 
   );
   assert.equal(delivered.length, 1_001);
 
-  transport.live?.({ event: "text_delta", identity: "identity:lead", data: { index: 1_000 } });
+  transport.live?.({ id: "seed:1000", event: "text_delta", identity: "identity:lead", data: { index: 1_000 } });
   assert.equal(delivered.length, 1_001, "recent duplicate should still be suppressed");
 
-  transport.live?.({ event: "text_delta", identity: "identity:lead", data: { index: 0 } });
+  transport.live?.({ id: "seed:0", event: "text_delta", identity: "identity:lead", data: { index: 0 } });
   assert.equal(delivered.length, 1_002, "oldest key should be evicted once the bounded window advances");
+  unsubscribe();
+});
+
+test("headless timeline dedup does not collapse anonymous identical frames", async () => {
+  const transport = createFakeTransport({
+    queryPages: [{ frames: [], available: true, latestCursor: "console:1" }],
+  });
+  const controller = createMobKitConsoleController({ transport });
+  const delivered: ConsoleFrame[] = [];
+
+  const unsubscribe = await controller.timeline.subscribeWithBackfill(
+    { identity: "identity:lead", limit: 1 },
+    (frame) => delivered.push(frame.value),
+  );
+
+  transport.live?.({ id: "", event: "text_delta", identity: "identity:lead", data: { text: "same" } });
+  transport.live?.({ id: "", event: "text_delta", identity: "identity:lead", data: { text: "same" } });
+
+  assert.equal(delivered.length, 2);
   unsubscribe();
 });
 
@@ -194,6 +218,55 @@ test("headless command surface refreshes stale missing capabilities before faili
   });
 
   assert.equal(result.accepted.provenance.capabilityVersion, "fresh");
+  assert.equal(transport.sends.length, 1);
+});
+
+test("headless command surface coalesces concurrent capability loads", async () => {
+  const transport = createFakeTransport();
+  const controller = createMobKitConsoleController({ transport });
+
+  await Promise.all([
+    controller.commands.sendMessage(identityTarget(), {
+      content: "first",
+      origin: "test",
+      idempotencyKey: "idem-coalesce-1",
+    }),
+    controller.commands.sendMessage(identityTarget(), {
+      content: "second",
+      origin: "test",
+      idempotencyKey: "idem-coalesce-2",
+    }),
+  ]);
+
+  assert.equal(transport.capabilityCalls, 1);
+  assert.equal(transport.sends.length, 2);
+});
+
+test("headless command surface refreshes previously-present capabilities before reuse", async () => {
+  const transport = createFakeTransport({
+    capabilities: [
+      { version: "allowed", methods: [CONSOLE_RPC_METHODS.send] },
+      { version: "revoked", methods: [] },
+      { version: "still-revoked", methods: [] },
+    ],
+  });
+  const controller = createMobKitConsoleController({ transport });
+
+  await controller.commands.sendMessage(identityTarget(), {
+    content: "first",
+    origin: "test",
+    idempotencyKey: "idem-revoke-1",
+  });
+  await assert.rejects(
+    () => controller.commands.sendMessage(identityTarget(), {
+      content: "second",
+      origin: "test",
+      idempotencyKey: "idem-revoke-2",
+    }),
+    /MobKit capability missing for mobkit\/console\/send/,
+  );
+
+  assert.equal(transport.capabilityCalls, 3);
   assert.equal(transport.sends.length, 1);
 });
 

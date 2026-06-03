@@ -225,6 +225,10 @@ async function fetchWithConsoleTimeout(
 
 async function responseErrorPreview(response: Response): Promise<string> {
   const text = await response.text();
+  return responseTextErrorPreview(text);
+}
+
+function responseTextErrorPreview(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) {
     return "";
@@ -569,7 +573,8 @@ async function streamFramesFromResponse(
       (error as Error & { replayError?: ConsoleReplayUnavailablePayload }).replayError = replayError;
       throw error;
     }
-    throw new Error(`interaction stream request failed ${response.status}: ${text}`);
+    const preview = responseTextErrorPreview(text);
+    throw new Error(`interaction stream request failed ${response.status}${preview ? `: ${preview}` : ""}`);
   }
 
   const replayUnavailableError = (frame: ConsoleFrame): Error | null => {

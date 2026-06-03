@@ -315,14 +315,20 @@ function createConsoleCommandSurface(
   facts: MobKitConsoleController["facts"],
 ): ConsoleCommandSurface {
   let cachedCapabilities: ConsoleCapabilities | null = null;
+  let capabilitiesRequest: Promise<ConsoleCapabilities> | null = null;
   const capabilities = async (force = false) => {
     if (force || !cachedCapabilities) {
-      cachedCapabilities = await transport.capabilities();
+      if (!capabilitiesRequest) {
+        capabilitiesRequest = transport.capabilities().finally(() => {
+          capabilitiesRequest = null;
+        });
+      }
+      cachedCapabilities = await capabilitiesRequest;
     }
     return cachedCapabilities;
   };
   const requireFreshCapability = async (method: string) => {
-    let currentCapabilities = await capabilities();
+    let currentCapabilities = await capabilities(true);
     if (!hasCapability(currentCapabilities, method)) {
       currentCapabilities = await capabilities(true);
     }
@@ -398,7 +404,7 @@ function createTimelineController(
       const delivered = createBoundedTimelineDedupSet(input.limit);
       const deliver = (frame: ConsoleFrame) => {
         const key = timelineDedupKey(frame);
-        if (!delivered.add(key)) return;
+        if (key && !delivered.add(key)) return;
         onFrame(facts.mobkit(frame, {
           routeOrMethod: CONSOLE_REST_PATHS.timelineStream,
           cursor: frame.cursor,
@@ -446,7 +452,7 @@ function createBoundedTimelineDedupSet(limit: number | undefined): { add(key: st
   };
 }
 
-function timelineDedupKey(frame: ConsoleFrame): string {
+function timelineDedupKey(frame: ConsoleFrame): string | null {
   const id = frame.id?.trim();
   if (id) return `id:${id}`;
   const cursor = frame.cursor?.trim();
@@ -455,7 +461,7 @@ function timelineDedupKey(frame: ConsoleFrame): string {
   if (typeof timestamp === "number") {
     return `timestamp:${frame.event || ""}:${frame.identity || ""}:${timestamp}:${stableDedupText(frame.data)}`;
   }
-  return `payload:${frame.event || ""}:${frame.identity || ""}:${stableDedupText(frame.data)}`;
+  return null;
 }
 
 function stableDedupText(value: unknown): string {
