@@ -2997,7 +2997,7 @@ pub async fn send_message_on_mob_with_mode_observed(
         return Err(MobRuntimeError::InvalidInput("content must not be empty"));
     }
     let mid = meerkat_mob::ids::MeerkatId::from(member_id);
-    let receipt = handle
+    let _receipt = handle
         .member(&mid)
         .await?
         .send(content, handling_mode)
@@ -3005,7 +3005,7 @@ pub async fn send_message_on_mob_with_mode_observed(
     if let Some(session_id) = handle.resolve_bridge_session_id(&mid).await {
         return Ok(MobDeliveryOutcome {
             session_id: session_id.to_string(),
-            completion: receipt.completion,
+            completion: None,
         });
     }
 
@@ -3013,7 +3013,7 @@ pub async fn send_message_on_mob_with_mode_observed(
     if status.external_member.is_some() {
         return Ok(MobDeliveryOutcome {
             session_id: String::new(),
-            completion: receipt.completion,
+            completion: None,
         });
     }
 

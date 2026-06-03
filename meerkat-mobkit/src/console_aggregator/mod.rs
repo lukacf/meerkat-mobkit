@@ -53,6 +53,8 @@ const TIMELINE_RAW_SCAN_PAGE_LIMIT: usize = 1_000;
 const TIMELINE_MAX_RAW_SCAN_FRAMES: usize = 100_000;
 const TIMELINE_RECENT_ANCHOR_RAW_SCAN_LIMIT: usize = 5_000;
 const IDENTITY_RECENT_ANCHOR_LIMIT: usize = 8;
+const DELIVERY_COMPLETION_OBSERVER_TIMEOUT: Duration = Duration::from_secs(150);
+const DELIVERY_COMPLETION_OBSERVER_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentityCollectionMode {
@@ -2460,22 +2462,34 @@ fn spawn_console_send_dispatch(
                         "failed to append console steer terminal frame"
                     );
                 }
-                if let Some(completion) = outcome.completion
-                    && let Err(err) = append_delivery_completion_terminal(
-                        &inner,
-                        &user_frame,
-                        &interaction_id,
-                        &outcome.session_id,
-                        completion,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        frame_id = %user_frame.id,
-                        interaction_id = %interaction_id,
-                        error = %err,
-                        "failed to append console delivery completion frame"
-                    );
+                match outcome.completion {
+                    Some(completion) => {
+                        if let Err(err) = append_delivery_completion_terminal(
+                            &inner,
+                            &user_frame,
+                            &interaction_id,
+                            &outcome.session_id,
+                            completion,
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                frame_id = %user_frame.id,
+                                interaction_id = %interaction_id,
+                                error = %err,
+                                "failed to append console delivery completion frame"
+                            );
+                        }
+                    }
+                    None if handling_mode == HandlingMode::Queue => {
+                        spawn_delivery_completion_observer(
+                            inner.clone(),
+                            user_frame.clone(),
+                            interaction_id.clone(),
+                            outcome.session_id,
+                        );
+                    }
+                    None => {}
                 }
             }
             Err(err) => {
@@ -2524,6 +2538,129 @@ fn spawn_console_send_dispatch(
             }
         }
     });
+}
+
+fn spawn_delivery_completion_observer(
+    inner: Arc<AggregatorInner>,
+    user_frame: ConsoleFrame,
+    interaction_id: String,
+    delivered_session_id: String,
+) {
+    tokio::spawn(async move {
+        if let Err(err) = observe_delivery_completion_from_session_history(
+            inner.clone(),
+            &user_frame,
+            &interaction_id,
+            &delivered_session_id,
+        )
+        .await
+        {
+            tracing::warn!(
+                frame_id = %user_frame.id,
+                interaction_id = %interaction_id,
+                error = %err,
+                "failed to observe console delivery completion"
+            );
+        }
+    });
+}
+
+async fn observe_delivery_completion_from_session_history(
+    inner: Arc<AggregatorInner>,
+    user_frame: &ConsoleFrame,
+    interaction_id: &str,
+    delivered_session_id: &str,
+) -> ConsoleLogResult<()> {
+    let deadline = tokio::time::Instant::now() + DELIVERY_COMPLETION_OBSERVER_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        for target in session_backfill_targets_for_identity(&inner, &user_frame.identity).await {
+            if delivered_session_id.trim().is_empty()
+                || target.session_id.as_str() == delivered_session_id
+            {
+                run_targeted_session_history_backfill(inner.clone(), target, true).await?;
+            }
+        }
+
+        let page = inner
+            .store
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
+                identity: Some(user_frame.identity.clone()),
+                conversation_id: Some(user_frame.identity.clone()),
+                after: Some(user_frame.cursor.clone()),
+                before: None,
+                mode: ConsoleTimelineMode::Since,
+                limit: TIMELINE_RAW_SCAN_PAGE_LIMIT,
+            })
+            .await?;
+        for frame in page.frames {
+            if frame.timestamp_ms < user_frame.timestamp_ms {
+                continue;
+            }
+            let Some(completion) =
+                delivery_completion_from_history_frame(&frame, delivered_session_id)
+            else {
+                continue;
+            };
+            append_delivery_completion_terminal(
+                &inner,
+                user_frame,
+                interaction_id,
+                delivered_session_id,
+                completion,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        tokio::time::sleep(DELIVERY_COMPLETION_OBSERVER_POLL_INTERVAL).await;
+    }
+    Ok(())
+}
+
+fn delivery_completion_from_history_frame(
+    frame: &ConsoleFrame,
+    delivered_session_id: &str,
+) -> Option<meerkat_contracts::wire::supervisor_bridge::BridgeDeliveryCompletion> {
+    if !matches!(
+        frame.kind.as_str(),
+        "interaction_complete" | "text_complete" | "run_completed"
+    ) {
+        return None;
+    }
+    if frame.source.kind != ConsoleFrameSourceKind::SessionHistory {
+        return None;
+    }
+    if !delivered_session_id.trim().is_empty()
+        && frame.session_id.as_deref() != Some(delivered_session_id)
+    {
+        return None;
+    }
+    let text = payload_display_text(&frame.payload)?;
+    if text.trim().is_empty() {
+        return None;
+    }
+    let session_id = frame
+        .session_id
+        .clone()
+        .unwrap_or_else(|| delivered_session_id.to_string());
+    Some(
+        meerkat_contracts::wire::supervisor_bridge::BridgeDeliveryCompletion {
+            session_id,
+            text,
+            turns: frame
+                .payload
+                .get("turns")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .unwrap_or(1),
+            tool_calls: frame
+                .payload
+                .get("tool_calls")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .unwrap_or(0),
+        },
+    )
 }
 
 async fn append_delivery_completion_terminal(
@@ -3817,12 +3954,24 @@ fn tool_result_fingerprint(payload: &Value) -> Option<String> {
 
 fn assistant_terminal_fingerprint(kind: &str, payload: &Value) -> Option<String> {
     match kind {
-        "text_complete" | "interaction_complete" | "run_completed" => payload
-            .get("text")
-            .or_else(|| payload.get("result"))
-            .or_else(|| payload.get("content"))
-            .map(stable_value_fingerprint),
+        "text_complete" | "interaction_complete" | "run_completed" => {
+            payload_terminal_value(payload).map(stable_value_fingerprint)
+        }
         _ => None,
+    }
+}
+
+fn payload_terminal_value(payload: &Value) -> Option<&Value> {
+    payload
+        .get("text")
+        .or_else(|| payload.get("result"))
+        .or_else(|| payload.get("content"))
+}
+
+fn payload_display_text(payload: &Value) -> Option<String> {
+    match payload_terminal_value(payload)? {
+        Value::String(text) => Some(text.clone()),
+        value => Some(stable_value_fingerprint(value)),
     }
 }
 
@@ -6858,6 +7007,59 @@ comms = true
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn console_send_appends_delivery_completion_from_session_history() {
+        let runtime = build_single_member_runtime_with_client(Arc::new(SlowTestClient {
+            delay: Duration::from_millis(50),
+        }))
+        .await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                runtime_entry_for_test("runtime-a", &runtime),
+            );
+
+        let accepted = aggregator
+            .send(ConsoleSendRequest {
+                identity: "test/agent-a".to_string(),
+                content: json!("hello completion marker"),
+                origin: "console:test".to_string(),
+                idempotency_key: "delivery-completion-marker".to_string(),
+                handling_mode: Some("queue".to_string()),
+            })
+            .await
+            .expect("send succeeds");
+
+        let completion = wait_for_delivery_completion_text(
+            &aggregator,
+            "test/agent-a",
+            &accepted.interaction_id,
+            "slow ok",
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("delivery completion frame should be synthesized from real session history");
+
+        assert_eq!(completion.status, ConsoleFrameStatus::Completed);
+        assert_eq!(
+            completion
+                .payload
+                .get("source_event_type")
+                .and_then(Value::as_str),
+            Some("delivery_completion")
+        );
+        assert_eq!(
+            completion.parent_frame_id.as_deref(),
+            Some(accepted.input_frame_id.as_str())
+        );
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn discovered_late_member_session_backfills_without_manual_refresh() -> Result<(), String>
     {
         let runtime = Arc::new(build_empty_runtime("console-aggregator-late-member-test").await);
@@ -7209,6 +7411,44 @@ comms = true
 
         Err(format!(
             "identity {identity:?} with session {session_id:?} was not projected; observed identities: {observed:#?}",
+        ))
+    }
+
+    async fn wait_for_delivery_completion_text(
+        aggregator: &MobKitConsoleAggregator,
+        identity: &str,
+        interaction_id: &str,
+        expected: &str,
+        timeout: Duration,
+    ) -> Result<ConsoleFrame, String> {
+        let deadline = Instant::now() + timeout;
+        let mut observed = Vec::new();
+        while Instant::now() < deadline {
+            let page = aggregator
+                .query_timeline(ConsoleTimelineQuery {
+                    identity: Some(identity.to_string()),
+                    limit: 50,
+                    ..ConsoleTimelineQuery::default()
+                })
+                .await
+                .expect("query timeline");
+            observed = page.frames;
+            if let Some(frame) = observed.iter().find(|frame| {
+                frame.interaction_id.as_deref() == Some(interaction_id)
+                    && frame
+                        .payload
+                        .get("source_event_type")
+                        .and_then(Value::as_str)
+                        == Some("delivery_completion")
+                    && frame.payload.get("text").and_then(Value::as_str) == Some(expected)
+            }) {
+                return Ok(frame.clone());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        Err(format!(
+            "delivery completion text {expected:?} was not appended; observed frames: {observed:#?}",
         ))
     }
 

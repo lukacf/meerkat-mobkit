@@ -7,7 +7,7 @@ version="${1:-}"
 
 if [[ -z "$version" ]]; then
   echo "usage: use-meerkat-version.sh <version>" >&2
-  echo "example: use-meerkat-version.sh 0.6.32" >&2
+  echo "example: use-meerkat-version.sh 0.6.33" >&2
   exit 2
 fi
 

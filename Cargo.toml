@@ -2,11 +2,6 @@
 members = [
     "meerkat-mobkit",
 ]
-exclude = [
-    "third_party/meerkat-contracts-0.6.32",
-    "third_party/meerkat-mob-0.6.32",
-    "third_party/meerkat-runtime-0.6.32",
-]
 resolver = "2"
 
 [workspace.package]
@@ -104,8 +99,3 @@ tag-message = "Release v{{version}}"
 pre-release-hook = ["bash", "-c", "$(git rev-parse --show-toplevel)/scripts/release-hook.sh {{version}}"]
 publish = false
 push = true
-
-[patch.crates-io]
-meerkat-contracts = { path = "third_party/meerkat-contracts-0.6.32" }
-meerkat-mob = { path = "third_party/meerkat-mob-0.6.32" }
-meerkat-runtime = { path = "third_party/meerkat-runtime-0.6.32" }

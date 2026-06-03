@@ -59,14 +59,15 @@ MDM_SUPERVISOR_ADVERTISED_ADDRESS=tcp://<console-reachable-host>:5790
 ```
 
 The advertised address must be reachable from every target. The pack is pinned
-to the Meerkat 0.6.30 family, which includes the bridge reply decode and
-production reply-route fixes needed by real external members.
+to the Meerkat 0.6.33 family, which includes the bridge reply decode,
+production reply-route, and delivery-completion behavior needed by real
+external members.
 
 Version check and smoke:
 
 ```bash
 cd examples
-npm run mdm:upgrade-meerkat -- 0.6.30
+npm run mdm:upgrade-meerkat -- 0.6.33
 npm run mdm:real-target-smoke
 ```
 
@@ -102,5 +103,5 @@ Ask hive to query target hardware or OS state. Passing means the target answers
 from its own host via peer traffic, not from labels or static bindings.
 
 Current published-crate status: `mdm:smoke` and `mdm:real-target-smoke` pass on
-Meerkat 0.6.30. The real-target smoke now also checks that the target process
+Meerkat 0.6.33. The real-target smoke now also checks that the target process
 observed a peer turn, so a supervisor-side accepted-send is not enough.

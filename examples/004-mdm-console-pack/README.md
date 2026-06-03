@@ -149,12 +149,12 @@ pairs it with the hive, adopts it as an external mob member, and sends a queued
 mob turn to that target. That is the release gate for the Meerkat bridge
 integration.
 
-The pack is pinned to the Meerkat 0.6.32 family. Re-apply and validate the pin
+The pack is pinned to the Meerkat 0.6.33 family. Re-apply and validate the pin
 with:
 
 ```bash
 cd examples
-npm run mdm:upgrade-meerkat -- 0.6.32
+npm run mdm:upgrade-meerkat -- 0.6.33
 npm run mdm:real-target-smoke
 ```
 
@@ -164,7 +164,8 @@ something like: "Ask every target what machine it is running on." The answer
 should come from target-side peer turns, not from roster labels.
 
 `mdm:real-target-smoke`, `mdm:hive-target-smoke`, and `mdm:resume-smoke` are the
-release gates for the vendored Meerkat 0.6.32 bridge patch set in this branch.
+release gates for the published Meerkat 0.6.33 bridge behavior used by this
+branch.
 If they fail, treat that as a real bridge or MobKit regression rather than
 falling back to labels, demo model text, or static binding metadata.
 

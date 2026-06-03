@@ -75,12 +75,12 @@ MDM_SUPERVISOR_ADVERTISED_ADDRESS=tcp://<console-reachable-host>:5790 \
 ## Current Integration Gate
 
 The deployment helpers now create real target runtimes and real MobKit external
-member bindings. The pack is pinned to the Meerkat 0.6.30 family, which includes
-the typed bridge reply and production reply-route fixes needed for peer-only
-external targets. Validate from `examples/` with:
+member bindings. The pack is pinned to the Meerkat 0.6.33 family, which includes
+the typed bridge reply, production reply-route, and delivery-completion behavior
+needed for peer-only external targets. Validate from `examples/` with:
 
 ```bash
-npm run mdm:upgrade-meerkat -- 0.6.30
+npm run mdm:upgrade-meerkat -- 0.6.33
 npm run mdm:real-target-smoke
 ```
 
