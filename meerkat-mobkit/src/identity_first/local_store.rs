@@ -238,7 +238,9 @@ impl ContinuityStore for LocalContinuityStore {
             .map_err(|e| ContinuityStoreError::Io(format!("begin tx: {e}")))?;
 
         // Check fencing token and checkpoint version against the current
-        // continuity record for this exact session stream.
+        // continuity record for this identity/generation stream. The session
+        // id must match the current binding, but a rebind does not reset the
+        // generation-scoped checkpoint counter.
         let mut stmt = tx
             .prepare_cached(
                 "SELECT session_id, generation, fencing_token, checkpoint_version

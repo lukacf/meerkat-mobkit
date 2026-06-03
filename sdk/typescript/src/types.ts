@@ -1630,6 +1630,10 @@ export interface ContinuityRecord {
   readonly agentRuntimeId: string;
   readonly sessionId: string;
   readonly generation: number;
+  /**
+   * Monotonic for (identity, generation). It advances across session rotations
+   * and resets only after destructive reset advances generation.
+   */
   readonly checkpointVersion: number;
 }
 
@@ -1832,6 +1836,7 @@ export function leaseRenewResultToDict(
 export interface ContinuityStore {
   resolveMany(identities: string[]): Promise<Record<string, ContinuityResolveState>>;
   loadSessionSnapshot(sessionId: string): Promise<SessionSnapshot | null>;
+  /** Save only if fencingToken is current and version advances the identity/generation head. */
   saveSessionSnapshot(
     identity: string,
     sessionId: string,
@@ -1840,6 +1845,7 @@ export interface ContinuityStore {
     fencingToken: number,
     snapshot: SessionSnapshot,
   ): Promise<void>;
+  /** Persist the binding without rewinding checkpointVersion on session rebind. */
   upsertContinuityRecord(record: ContinuityRecord, fencingToken: number): Promise<void>;
   deleteContinuityRecord(identity: string, fencingToken: number): Promise<void>;
   deleteSessionSnapshotIfCurrentRevision?(

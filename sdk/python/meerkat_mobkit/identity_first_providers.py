@@ -12,6 +12,13 @@ from typing import Any, Protocol, runtime_checkable
 
 @dataclass(frozen=True)
 class ContinuityRecord:
+    """Durable identity binding.
+
+    checkpoint_version is monotonic for (identity, generation). It advances
+    across session_id rotations and resets only after a destructive reset
+    advances generation.
+    """
+
     identity: str
     agent_runtime_id: str
     session_id: str
@@ -210,11 +217,15 @@ class ContinuityStoreProvider(Protocol):
     async def save_session_snapshot(
         self, identity: str, session_id: str, generation: int,
         version: int, fencing_token: int, snapshot: SessionSnapshot,
-    ) -> None: ...
+    ) -> None:
+        """Persist a snapshot if fencing_token is current and version advances the identity/generation head."""
+        ...
 
     async def upsert_continuity_record(
         self, record: ContinuityRecord, fencing_token: int,
-    ) -> None: ...
+    ) -> None:
+        """Persist the current binding without rewinding checkpoint_version on session rebind."""
+        ...
 
     async def delete_continuity_record(
         self, identity: str, fencing_token: int,

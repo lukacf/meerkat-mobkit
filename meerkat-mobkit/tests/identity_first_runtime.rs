@@ -549,6 +549,113 @@ impl FaultyContinuityStore {
     }
 }
 
+struct IdentityScopedVersionStore {
+    inner: Arc<LocalContinuityStore>,
+    heads: Mutex<BTreeMap<(AgentIdentity, ContinuityGeneration), CheckpointVersion>>,
+}
+
+impl IdentityScopedVersionStore {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(LocalContinuityStore::in_memory().unwrap()),
+            heads: Mutex::new(BTreeMap::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl ContinuityStore for IdentityScopedVersionStore {
+    async fn resolve_many(
+        &self,
+        identities: &[AgentIdentity],
+    ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError> {
+        self.inner.resolve_many(identities).await
+    }
+
+    async fn load_session_snapshot(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+        self.inner.load_session_snapshot(session_id).await
+    }
+
+    async fn save_session_snapshot(
+        &self,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+        generation: ContinuityGeneration,
+        version: CheckpointVersion,
+        fencing_token: FencingToken,
+        snapshot: &SessionSnapshot,
+    ) -> Result<(), ContinuityStoreError> {
+        {
+            let heads = self
+                .heads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(current) = heads.get(&(identity.clone(), generation))
+                && version <= *current
+            {
+                return Err(ContinuityStoreError::StaleCheckpointVersion {
+                    identity: identity.clone(),
+                    presented: version,
+                    current: *current,
+                });
+            }
+        }
+        self.inner
+            .save_session_snapshot(
+                identity,
+                session_id,
+                generation,
+                version,
+                fencing_token,
+                snapshot,
+            )
+            .await?;
+        self.heads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((identity.clone(), generation), version);
+        Ok(())
+    }
+
+    async fn upsert_continuity_record(
+        &self,
+        record: &ContinuityRecord,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .upsert_continuity_record(record, fencing_token)
+            .await?;
+        let mut heads = self
+            .heads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (record.identity.clone(), record.generation);
+        heads
+            .entry(key)
+            .and_modify(|current| *current = (*current).max(record.checkpoint_version))
+            .or_insert(record.checkpoint_version);
+        Ok(())
+    }
+
+    async fn delete_continuity_record(
+        &self,
+        identity: &AgentIdentity,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .delete_continuity_record(identity, fencing_token)
+            .await?;
+        self.heads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(head_identity, _), _| head_identity != identity);
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl ContinuityStore for FaultyContinuityStore {
     async fn resolve_many(
@@ -1110,7 +1217,7 @@ async fn identity_first_runtime_send_rebinds_rotated_bridge_session() {
         panic!("expected rebound continuity record");
     };
     assert_eq!(record.session_id, live_session_id);
-    assert_eq!(record.checkpoint_version, CheckpointVersion::new(0));
+    assert_eq!(record.checkpoint_version, CheckpointVersion::new(2));
     let unregistered = bridge.unregistered_session_ids.lock().await.clone();
     assert!(
         unregistered.contains(&original_session_id.to_string()),
@@ -1741,9 +1848,59 @@ async fn identity_first_runtime_rebind_after_live_respawn_updates_session() {
     assert_eq!(rebound.agent_runtime_id, record.agent_runtime_id);
     assert_eq!(rebound.generation, record.generation);
     assert_eq!(rebound.session_id, live_session_id);
+    assert_eq!(rebound.checkpoint_version, record.checkpoint_version);
 
     let status = runtime.status(&id).await.unwrap();
     assert_eq!(status.session_id, Some(live_session_id));
+    assert_eq!(status.checkpoint_version, Some(record.checkpoint_version));
+}
+
+#[tokio::test]
+async fn identity_first_runtime_rebind_preserves_identity_scoped_checkpoint_head() {
+    let store = Arc::new(IdentityScopedVersionStore::new());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let runtime = make_runtime(store.clone(), lease_prov.clone());
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 1473);
+    store
+        .upsert_continuity_record(&record, FencingToken::new(1))
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(record.clone()),
+            Some(make_grant("triage:main", 1)),
+        )
+        .await;
+
+    let live_session_id = meerkat_core::types::SessionId::new();
+    let rebound = runtime
+        .rebind_session_after_live_respawn(&id, live_session_id.clone())
+        .await
+        .unwrap();
+    assert_eq!(rebound.session_id, live_session_id);
+    assert_eq!(rebound.checkpoint_version, CheckpointVersion::new(1473));
+
+    let next_version = runtime
+        .checkpoint(
+            &id,
+            &SessionSnapshot {
+                data: b"post-rebind".to_vec(),
+            },
+        )
+        .await
+        .expect("post-rebind checkpoint must advance the identity-generation head");
+    assert_eq!(next_version, CheckpointVersion::new(1474));
+
+    let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
+    let ContinuityResolveState::Ready { record } = resolved.get(&id).unwrap() else {
+        panic!("expected ready record after rebind checkpoint");
+    };
+    assert_eq!(record.session_id, live_session_id);
+    assert_eq!(record.checkpoint_version, CheckpointVersion::new(1474));
 }
 
 #[tokio::test]

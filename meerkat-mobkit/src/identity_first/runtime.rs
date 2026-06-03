@@ -2452,7 +2452,6 @@ impl IdentityRuntime {
         }
         let previous_session_id = record.session_id.clone();
         record.session_id = session_id;
-        record.checkpoint_version = CheckpointVersion::new(0);
 
         if let Err(err) = self
             .continuity_store
