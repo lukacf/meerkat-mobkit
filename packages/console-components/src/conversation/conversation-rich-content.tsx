@@ -331,6 +331,27 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
           <span className="cc-tool-call__status">{statusIcon}</span>
           <CopyBtn text={toolBlockCopyText(block)} />
         </button>
+        {block.peerImages && block.peerImages.length > 0 && (
+          <div className="cc-tool-call__attachments">
+            {block.peerImages.map((image, index) => (
+              <button
+                className="cc-tool-call__image-button"
+                key={`${image.blobId || image.imageId || image.src}-${index}`}
+                onClick={() => window.open(image.src, "_blank", "noopener,noreferrer")}
+                type="button"
+              >
+                <img
+                  alt={image.alt || ""}
+                  className="cc-tool-call__image"
+                  height={image.height}
+                  loading="lazy"
+                  src={image.src}
+                  width={image.width}
+                />
+              </button>
+            ))}
+          </div>
+        )}
         {expanded && (
           <div className="cc-tool-call__body">
             <div className="cc-tool-call__section">

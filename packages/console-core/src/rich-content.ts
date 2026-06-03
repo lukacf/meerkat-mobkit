@@ -64,6 +64,7 @@ export interface ConversationRichToolCallBlock {
   peerTarget?: string;
   peerIntent?: string;
   peerBody?: string;
+  peerImages?: ConversationRichImageBlock[];
   /** Incoming peer message (received via comms drain, not a tool call) */
   peerIncoming?: boolean;
 }
@@ -204,7 +205,11 @@ export function conversationRichBlockCopyText(block: ConversationRichBlock): str
     case "tool-call": {
       if (block.peerTarget) {
         const dir = block.peerIncoming ? "← from" : "→ to";
-        return [`${dir} ${block.peerTarget}`, block.peerIntent, block.peerBody, block.result].filter(Boolean).join(": ").trim();
+        const images = (block.peerImages || [])
+          .map((image) => [image.alt || "image", image.blobId || image.src].filter(Boolean).join(" "))
+          .filter(Boolean)
+          .join(" ");
+        return [`${dir} ${block.peerTarget}`, block.peerIntent, block.peerBody, images, block.result].filter(Boolean).join(": ").trim();
       }
       const parts = [`$ ${block.name}`];
       if (block.arguments) parts.push(`Input: ${block.arguments}`);
