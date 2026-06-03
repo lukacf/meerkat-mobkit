@@ -9208,6 +9208,85 @@ function buildSidebarVirtualRows(args) {
   }
   return rows;
 }
+function sidebarNavigationLabel(row) {
+  switch (row.kind) {
+    case "section":
+      return row.bucket;
+    case "subgroup":
+      return row.label;
+    case "empty":
+      return row.sectionConfig?.empty_title || row.sectionConfig?.empty_text || "No agents";
+    case "agent":
+      return row.row.agent.label;
+  }
+}
+function sidebarNavigationNodeForRow(row) {
+  const base = {
+    id: row.key,
+    label: sidebarNavigationLabel(row),
+    target: row
+  };
+  if (row.kind === "section" || row.kind === "subgroup") {
+    return {
+      ...base,
+      type: "group",
+      expanded: !row.collapsed,
+      children: []
+    };
+  }
+  return {
+    ...base,
+    type: "item"
+  };
+}
+function sidebarNavigationModelFromRows(rows) {
+  const nodes = [];
+  let currentSection = null;
+  let currentSubgroup = null;
+  for (const row of rows) {
+    const node = sidebarNavigationNodeForRow(row);
+    if (row.kind === "section") {
+      nodes.push(node);
+      currentSection = node;
+      currentSubgroup = null;
+      continue;
+    }
+    if (row.kind === "subgroup") {
+      if (currentSection?.type === "group") {
+        currentSection.children.push(node);
+      } else {
+        nodes.push(node);
+      }
+      currentSubgroup = node;
+      continue;
+    }
+    const parent = currentSubgroup?.type === "group" ? currentSubgroup : currentSection?.type === "group" ? currentSection : null;
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      nodes.push(node);
+    }
+  }
+  return normalizeConsoleNavigationModel({
+    orientation: "vertical",
+    nodes,
+    order: { orderedNodeIds: [] }
+  });
+}
+function buildStockSidebarNavigationModel(args) {
+  return sidebarNavigationModelFromRows(buildSidebarVirtualRows(args));
+}
+function sidebarNavigationRows(model) {
+  const normalized = normalizeConsoleNavigationModel(model);
+  const rows = [];
+  const visit = (node) => {
+    if (node.target) rows.push(node.target);
+    if (node.type !== "group" || !node.expanded) return;
+    for (const child of node.children) visit(child);
+  };
+  for (const node of normalized.nodes) visit(node);
+  return rows;
+}
 function deriveStateAttr(agent) {
   const state = (agent.state || "").toLowerCase();
   if (state === "retired" || state === "retiring" || state === "stopped") return "retired";
@@ -9630,8 +9709,8 @@ function Sidebar({
       window.removeEventListener("pointercancel", onDone);
     };
   }, [draggingOrder, finishPointerOrderDrag, movePointerOrderDrag]);
-  const virtualRows = import_react17.default.useMemo(() => {
-    return buildSidebarVirtualRows({
+  const sidebarNavigationModel = import_react17.default.useMemo(() => {
+    return buildStockSidebarNavigationModel({
       sectionNames,
       grouped,
       grouping,
@@ -9643,6 +9722,10 @@ function Sidebar({
       searchActive: Boolean(q)
     });
   }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q]);
+  const virtualRows = import_react17.default.useMemo(
+    () => sidebarNavigationRows(sidebarNavigationModel),
+    [sidebarNavigationModel]
+  );
   const virtualOffsets = import_react17.default.useMemo(() => sidebarVirtualOffsets(virtualRows), [virtualRows]);
   const [listRef, listHeight] = useMeasuredHeight();
   const [scrollTop, setScrollTop] = import_react17.default.useState(0);

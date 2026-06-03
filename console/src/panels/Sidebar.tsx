@@ -7,6 +7,7 @@ import {
   SUBGROUP_COLLAPSE_STORAGE_PREFIX,
   applyConsoleNavigationReorderIntent,
   applyConsoleSidebarOrder as applySidebarOrder,
+  normalizeConsoleNavigationModel,
   pruneStaleSidebarStorage,
   readSidebarStringList,
   readSidebarStringSet,
@@ -15,6 +16,8 @@ import {
   sidebarStorageKey,
   writeSidebarStringList,
   writeSidebarStringSet,
+  type ConsoleNavigationModel,
+  type ConsoleNavigationNode,
   type ConsoleSidebarDropPosition,
   type ConsoleSidebarStorageLike,
 } from "@console-core";
@@ -118,6 +121,9 @@ type SidebarVirtualRow =
   | { kind: "empty"; key: string; bucket: string; sectionConfig: ReturnType<typeof sectionConfigFor> }
   | { kind: "subgroup"; key: string; bucket: string; label: string; count: number; collapsed: boolean; storageKey: string; reorderable: boolean }
   | { kind: "agent"; key: string; bucket: string; row: AgentRow };
+
+type SidebarNavigationModel = ConsoleNavigationModel<SidebarVirtualRow>;
+type SidebarNavigationNode = ConsoleNavigationNode<SidebarVirtualRow>;
 
 interface SidebarDragPreview {
   x: number;
@@ -268,6 +274,9 @@ export const __sidebarTest = {
   collapsedSubgroupsForStorage,
   sidebarSubgroupStorageId,
   buildSidebarVirtualRows,
+  buildStockSidebarNavigationModel,
+  sidebarNavigationRows,
+  sidebarNavigationModelFromRows,
   sidebarDragPreviewRows,
   sidebarVirtualOffsets,
   sidebarVisibleRange,
@@ -842,6 +851,94 @@ function buildSidebarVirtualRows(args: {
   return rows;
 }
 
+function sidebarNavigationLabel(row: SidebarVirtualRow): string {
+  switch (row.kind) {
+    case "section":
+      return row.bucket;
+    case "subgroup":
+      return row.label;
+    case "empty":
+      return row.sectionConfig?.empty_title || row.sectionConfig?.empty_text || "No agents";
+    case "agent":
+      return row.row.agent.label;
+  }
+}
+
+function sidebarNavigationNodeForRow(row: SidebarVirtualRow): SidebarNavigationNode {
+  const base = {
+    id: row.key,
+    label: sidebarNavigationLabel(row),
+    target: row,
+  };
+  if (row.kind === "section" || row.kind === "subgroup") {
+    return {
+      ...base,
+      type: "group",
+      expanded: !row.collapsed,
+      children: [],
+    };
+  }
+  return {
+    ...base,
+    type: "item",
+  };
+}
+
+function sidebarNavigationModelFromRows(rows: SidebarVirtualRow[]): SidebarNavigationModel {
+  const nodes: SidebarNavigationNode[] = [];
+  let currentSection: SidebarNavigationNode | null = null;
+  let currentSubgroup: SidebarNavigationNode | null = null;
+  for (const row of rows) {
+    const node = sidebarNavigationNodeForRow(row);
+    if (row.kind === "section") {
+      nodes.push(node);
+      currentSection = node;
+      currentSubgroup = null;
+      continue;
+    }
+    if (row.kind === "subgroup") {
+      if (currentSection?.type === "group") {
+        currentSection.children.push(node);
+      } else {
+        nodes.push(node);
+      }
+      currentSubgroup = node;
+      continue;
+    }
+    const parent = currentSubgroup?.type === "group"
+      ? currentSubgroup
+      : currentSection?.type === "group"
+        ? currentSection
+        : null;
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      nodes.push(node);
+    }
+  }
+  return normalizeConsoleNavigationModel({
+    orientation: "vertical",
+    nodes,
+    order: { orderedNodeIds: [] },
+  });
+}
+
+function buildStockSidebarNavigationModel(args: Parameters<typeof buildSidebarVirtualRows>[0]): SidebarNavigationModel {
+  return sidebarNavigationModelFromRows(buildSidebarVirtualRows(args));
+}
+
+function sidebarNavigationRows(model: SidebarNavigationModel): SidebarVirtualRow[] {
+  const normalized = normalizeConsoleNavigationModel(model);
+  const rows: SidebarVirtualRow[] = [];
+  const visit = (node: SidebarNavigationNode): void => {
+    if (node.target) rows.push(node.target);
+    if (node.type !== "group" || !node.expanded) return;
+    for (const child of node.children) visit(child);
+  };
+  for (const node of normalized.nodes) visit(node);
+  return rows;
+}
+
 function deriveStateAttr(agent: ConsoleAgent): "active" | "degraded" | "retired" {
   const state = (agent.state || "").toLowerCase();
   if (state === "retired" || state === "retiring" || state === "stopped") return "retired";
@@ -1342,8 +1439,8 @@ export function Sidebar({
       window.removeEventListener("pointercancel", onDone);
     };
   }, [draggingOrder, finishPointerOrderDrag, movePointerOrderDrag]);
-  const virtualRows = React.useMemo<SidebarVirtualRow[]>(() => {
-    return buildSidebarVirtualRows({
+  const sidebarNavigationModel = React.useMemo<SidebarNavigationModel>(() => {
+    return buildStockSidebarNavigationModel({
       sectionNames,
       grouped,
       grouping,
@@ -1355,6 +1452,10 @@ export function Sidebar({
       searchActive: Boolean(q),
     });
   }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q]);
+  const virtualRows = React.useMemo<SidebarVirtualRow[]>(
+    () => sidebarNavigationRows(sidebarNavigationModel),
+    [sidebarNavigationModel],
+  );
   const virtualOffsets = React.useMemo(() => sidebarVirtualOffsets(virtualRows), [virtualRows]);
   const [listRef, listHeight] = useMeasuredHeight<HTMLDivElement>();
   const [scrollTop, setScrollTop] = React.useState(0);

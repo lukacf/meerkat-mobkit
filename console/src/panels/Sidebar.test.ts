@@ -874,6 +874,48 @@ test("sidebar configured OB3-like grouping yields configured sections and scope 
   );
 });
 
+test("stock sidebar renderer flattens its ConsoleNavigationModel", () => {
+  const agents = [
+    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:cto" }),
+    ob3Agent({ id: "initiative-liveops", label: "LiveOps Initiative", group: "initiatives", scope: "liveops", role: "initiative" }),
+    ob3Agent({ id: "worker-liveops", label: "LiveOps Worker", group: "workers", scope: "liveops", role: "worker" }),
+  ];
+  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const input = {
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    grouped,
+    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    collapsedSections: new Set<string>(),
+    collapsedSubgroups: new Set<string>(),
+    pinnedAgentIds: new Set(["initiative:cto"]),
+  };
+  const legacyRows = __sidebarTest.buildSidebarVirtualRows(input);
+  const model = __sidebarTest.buildStockSidebarNavigationModel(input);
+  const renderedRows = __sidebarTest.sidebarNavigationRows(model);
+
+  assert.equal(model.orientation, "vertical");
+  assert.deepEqual(
+    model.nodes.map((node) => [node.type, node.id, node.label]),
+    [
+      ["group", "section:Pinned", "Pinned"],
+      ["group", "section:initiatives", "initiatives"],
+      ["group", "section:workers", "workers"],
+    ],
+  );
+  assert.deepEqual(
+    model.nodes[1]?.type === "group"
+      ? model.nodes[1].children.map((node) => [node.type, node.id, node.label])
+      : [],
+    [
+      ["group", "subgroup:initiatives:liveops", "liveops"],
+    ],
+  );
+  assert.deepEqual(
+    renderedRows.map((row) => row.key),
+    legacyRows.map((row) => row.key),
+  );
+});
+
 test("sidebar applies persisted section and subgroup drag order without moving Pinned from the top", () => {
   const agents = [
     ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:cto" }),

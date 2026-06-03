@@ -751,11 +751,9 @@ Implementation tasks:
 
 - Move reusable visual surfaces out of stock-only panels only when their props
   are model/callback driven.
-- Begin the stock sidebar migration by routing stock reorder commits through
-  the neutral navigation move operation, while preserving existing grouping,
-  pinning, collapse, order, and localStorage precedence. A full replacement of
-  the stock sidebar renderer with a `ConsoleNavigationModel` renderer remains a
-  later milestone and is not claimed by this PR.
+- Make the stock sidebar renderer consume a stock-specific
+  `ConsoleNavigationModel` while preserving existing grouping, pinning,
+  collapse, order, and localStorage precedence.
 - Add component tests for keyboard reorder, focus retention, accessible labels,
   reduced-motion drag preview behavior, and no app-only imports.
 - Add an alternate shell fixture with non-sidebar navigation.
@@ -771,8 +769,7 @@ Gate checklist:
 - [x] A local alternate-shell fixture renders non-sidebar navigation using
       MobKit models/components.
 - [x] Stock console browser e2e still passes.
-- [ ] Full stock sidebar renderer replacement over `ConsoleNavigationModel`.
-      This is intentionally future work, not a claim made by this PR.
+- [x] Full stock sidebar renderer replacement over `ConsoleNavigationModel`.
 
 Partial evidence:
 
@@ -783,6 +780,8 @@ Partial evidence:
 - Existing sidebar renderer tests:
   `packages/console-components/src/sidebar/console-sidebar.test.tsx` and
   `console/src/panels/Sidebar.test.ts`.
+- Stock sidebar renderer model proof:
+  `stock sidebar renderer flattens its ConsoleNavigationModel`.
 - Layout-neutral move, focus intent, and live announcement tests:
   `packages/console-core/src/navigation.test.ts`.
 - Shared keyboard/pointer reorder operation:
@@ -883,9 +882,7 @@ Gate checklist:
 
 - [x] Every Phase 0-5 gate claimed by this private implementation pass has a
       named local command or source-level assertion.
-- [ ] Every Phase 0-5 target-state gate is complete. The remaining known
-      target-state gap is the full stock sidebar renderer replacement over
-      `ConsoleNavigationModel`.
+- [x] Every Phase 0-5 target-state gate is complete.
 - [x] Public package or SDK-subpath names are chosen, or the surfaces are
       explicitly kept private.
 - [x] Stable and experimental exports are labeled and tested.
