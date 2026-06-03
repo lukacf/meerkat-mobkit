@@ -3318,6 +3318,73 @@ async fn identity_first_runtime_lazy_first_send_materializes_reachable_peers_and
 }
 
 #[tokio::test]
+async fn identity_first_runtime_send_and_dispatch_continue_when_reachable_peer_materialize_fails() {
+    struct StaticTopology(Vec<(&'static str, &'static str)>);
+
+    #[async_trait]
+    impl TopologyProvider for StaticTopology {
+        async fn compute_edges(
+            &self,
+            _target_identities: &[AgentIdentity],
+            _context: &TopologyContext,
+        ) -> Result<Vec<ManagedPeerEdge>, TopologyError> {
+            self.0
+                .iter()
+                .map(|(a, b)| {
+                    ManagedPeerEdge::new(make_identity(a), make_identity(b))
+                        .map_err(|err| TopologyError::InvalidEdge(format!("{err}")))
+                })
+                .collect()
+        }
+    }
+
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+    let initiator = make_identity("review:singleton");
+    let broken_peer = make_identity("initiative:broken");
+
+    lazy_register_flow(
+        &runtime,
+        &[
+            make_spec("review:singleton"),
+            make_spec("initiative:broken"),
+        ],
+        Some(&StaticTopology(vec![(
+            "review:singleton",
+            "initiative:broken",
+        )])),
+    )
+    .await
+    .unwrap();
+    runtime.materialize(&initiator).await.unwrap();
+    bridge.fail_create();
+
+    runtime.send(&initiator, &make_content()).await.unwrap();
+    let (_token, is_durable) = runtime
+        .dispatch(&initiator, &make_dispatch_input())
+        .await
+        .unwrap();
+
+    assert!(is_durable);
+    assert_eq!(
+        bridge.deliver_calls.load(Ordering::SeqCst),
+        2,
+        "send and dispatch must still deliver to the healthy initiator"
+    );
+    assert_eq!(
+        runtime.status(&initiator).await.unwrap().state,
+        IdentityLifecycleState::Active
+    );
+    assert_eq!(
+        runtime.status(&broken_peer).await.unwrap().state,
+        IdentityLifecycleState::Dormant,
+        "failed peer hydration must not become the initiator's failure"
+    );
+}
+
+#[tokio::test]
 async fn identity_first_runtime_lazy_register_warns_on_topology_reconcile_failure() {
     struct StaticTopology(Vec<(&'static str, &'static str)>);
 
@@ -3507,6 +3574,38 @@ async fn identity_first_runtime_materialize_all_hydrates_registered_identities_i
             IdentityLifecycleState::Active
         );
     }
+}
+
+#[tokio::test]
+async fn identity_first_runtime_materialize_all_continues_when_one_identity_fails() {
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+    let healthy = make_identity("agent:healthy");
+    let broken = make_identity("agent:broken");
+
+    lazy_register_flow(
+        &runtime,
+        &[make_spec("agent:healthy"), make_spec("agent:broken")],
+        None,
+    )
+    .await
+    .unwrap();
+    let healthy_record = runtime.materialize(&healthy).await.unwrap();
+    bridge.fail_create();
+
+    let records = runtime.materialize_all().await.unwrap();
+
+    assert_eq!(records, vec![healthy_record]);
+    assert_eq!(
+        runtime.status(&healthy).await.unwrap().state,
+        IdentityLifecycleState::Active
+    );
+    assert_eq!(
+        runtime.status(&broken).await.unwrap().state,
+        IdentityLifecycleState::Dormant
+    );
 }
 
 #[tokio::test]

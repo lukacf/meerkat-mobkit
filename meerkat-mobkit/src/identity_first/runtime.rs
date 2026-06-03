@@ -1304,18 +1304,26 @@ impl IdentityRuntime {
     /// before calling `run_flow`.
     pub async fn materialize_all(&self) -> Result<Vec<ContinuityRecord>, IdentityRuntimeError> {
         let identities = self.registered_identities().await;
-        let results = stream::iter(
-            identities
-                .into_iter()
-                .map(|identity| async move { self.materialize(&identity).await }),
-        )
+        let results = stream::iter(identities.into_iter().map(|identity| async move {
+            let result = self.materialize(&identity).await;
+            (identity, result)
+        }))
         .buffer_unordered(MANAGED_PEER_RECONCILE_CONCURRENCY)
         .collect::<Vec<_>>()
         .await;
 
         let mut records = Vec::with_capacity(results.len());
-        for result in results {
-            records.push(result?);
+        for (identity, result) in results {
+            match result {
+                Ok(record) => records.push(record),
+                Err(err) => {
+                    tracing::warn!(
+                        identity = %identity,
+                        error = %err,
+                        "identity materialize_all skipped identity after materialization failure"
+                    );
+                }
+            }
         }
 
         let desired_edges = self.desired_peer_edges.read().await.clone();
@@ -1338,18 +1346,27 @@ impl IdentityRuntime {
         identity: &AgentIdentity,
     ) -> Result<Vec<ContinuityRecord>, IdentityRuntimeError> {
         let peers = self.reachable_peer_identities(identity).await;
-        let results = stream::iter(
-            peers
-                .into_iter()
-                .map(|peer| async move { self.materialize(&peer).await }),
-        )
+        let results = stream::iter(peers.into_iter().map(|peer| async move {
+            let result = self.materialize(&peer).await;
+            (peer, result)
+        }))
         .buffer_unordered(MANAGED_PEER_RECONCILE_CONCURRENCY)
         .collect::<Vec<_>>()
         .await;
 
         let mut records = Vec::with_capacity(results.len());
-        for result in results {
-            records.push(result?);
+        for (peer, result) in results {
+            match result {
+                Ok(record) => records.push(record),
+                Err(err) => {
+                    tracing::warn!(
+                        identity = %identity,
+                        peer = %peer,
+                        error = %err,
+                        "identity reachable-peer materialization skipped peer after materialization failure"
+                    );
+                }
+            }
         }
 
         let desired_edges = self.desired_peer_edges.read().await.clone();
