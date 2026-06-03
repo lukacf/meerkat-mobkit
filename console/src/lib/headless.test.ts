@@ -463,3 +463,44 @@ test("createHttpConsoleTransport falls back to legacy inspect RPC when the conso
     globalThis.fetch = previousFetch;
   }
 });
+
+test("createHttpConsoleTransport does not fall back on non-method-missing inspect errors", async () => {
+  const methods: string[] = [];
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const requestUrl = String(url);
+    if (requestUrl.endsWith(CONSOLE_RPC_PATHS.jsonRpc)) {
+      const body = JSON.parse(String(init?.body || "{}"));
+      methods.push(body.method);
+      if (body.method === CONSOLE_RPC_METHODS.inspectIdentity) {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          error: { code: -32000, message: "backend unavailable" },
+        }), { status: 200 });
+      }
+      if (body.method === "mobkit/inspect_identity") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: { identity: body.params.identity, status: "legacy-ready" },
+        }), { status: 200 });
+      }
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    const transport = createHttpConsoleTransport({ baseUrl: "http://console.test" });
+    await assert.rejects(
+      () => transport.executeCommand?.({
+        command: CONSOLE_COMMAND_NAMES.inspectIdentity,
+        target: identityTarget(),
+      }),
+      /backend unavailable/,
+    );
+    assert.deepEqual(methods, [CONSOLE_RPC_METHODS.inspectIdentity]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});

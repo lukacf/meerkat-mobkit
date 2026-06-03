@@ -46,3 +46,18 @@ test("renderConversationInlineMarkdown does not italicize underscores inside ide
   assert.equal(renderConversationInlineMarkdown("api_investigator"), "api_investigator");
   assert.equal(renderConversationInlineMarkdown("Use _emphasis_ here."), "Use <em>emphasis</em> here.");
 });
+
+test("renderConversationInlineMarkdown allowlists link schemes", () => {
+  assert.equal(
+    renderConversationInlineMarkdown("[Docs](https://example.test/docs)"),
+    '<a href="https://example.test/docs" rel="noreferrer">Docs</a>',
+  );
+  assert.equal(
+    renderConversationInlineMarkdown("[Local](/console) [Unsafe](javascript:alert(1))"),
+    '<a href="/console" rel="noreferrer">Local</a> Unsafe',
+  );
+  assert.equal(
+    renderConversationInlineMarkdown("[Data](data:text/plain;base64,abc)"),
+    "Data",
+  );
+});

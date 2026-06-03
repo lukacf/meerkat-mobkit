@@ -348,6 +348,11 @@ function startMockConsoleServer(port, options = {}) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
           contract_version: "0.4.0",
+          runtime_capabilities: {
+            can_send_messages: true,
+            can_retire_members: true,
+            can_spawn_members: true,
+          },
           agent_sidebar: {
             panel_id: "console.agent_sidebar",
             schema_version: "1",
@@ -2416,12 +2421,25 @@ async function runHeadlessControlSurfaceBrowserProof() {
     await waitForRpcMethod(server, "mobkit/gating/pending");
     await waitForRpcMethod(server, "mobkit/gating/audit");
     await page.getByTestId("gating-action:gate-control-1:approve").click();
-    await waitForRpcMethod(server, "mobkit/gating/decide");
+    await waitForRpcMethod(server, "mobkit/gating/decide", 1);
+    await page.getByTestId("gating-action:gate-control-1:reject").waitFor({ timeout: 10_000 });
+    await page.getByTestId("gating-action:gate-control-1:reject").click();
+    await waitForRpcMethod(server, "mobkit/gating/decide", 2);
+    await page.getByTestId("gating-action:gate-control-1:escalate").waitFor({ timeout: 10_000 });
+    await page.getByTestId("gating-action:gate-control-1:escalate").click();
+    await waitForRpcMethod(server, "mobkit/gating/decide", 3);
 
     await openSidebarAgentChat(page, "Identity Luka");
+    await page.getByTestId("conv-action:respawn").waitFor({ timeout: 10_000 });
+    await page.getByTestId("conv-action:respawn").click();
+    await waitForRpcMethod(server, "mobkit/respawn");
     await page.getByTestId("conv-action:retire").waitFor({ timeout: 10_000 });
     await page.getByTestId("conv-action:retire").click();
     await waitForRpcMethod(server, "mobkit/retire");
+    await page.getByTestId("conv-action:details").click();
+    await page.getByTestId("inspect-action:identity:luka:reset").waitFor({ timeout: 10_000 });
+    await page.getByTestId("inspect-action:identity:luka:reset").click();
+    await waitForRpcMethod(server, "mobkit/reset");
 
     process.stdout.write("browser headless control surface ok\n");
   } finally {

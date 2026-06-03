@@ -147,6 +147,7 @@ test("console contract route and method names stay synchronized with Rust http c
   ) as ContractSchema;
   const rustSource = readFileSync(resolve(process.cwd(), "../meerkat-mobkit/src/http_console.rs"), "utf8");
   const registeredRoutes = parseAxumRoutes(rustSource);
+  const dispatchedRpcMethods = parseJsonRpcDispatchMethods(rustSource);
   const contractedRoutes = contractRoutes(schema);
   const frontendRoutes = new Set([
     "GET /",
@@ -178,10 +179,10 @@ test("console contract route and method names stay synchronized with Rust http c
   }
 
   for (const method of Object.keys(schema.surfaces.rpc.methods)) {
-    assert.match(
-      rustSource,
-      new RegExp(JSON.stringify(method).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-      `expected http_console.rs to contain RPC method ${method}`,
+    assert.equal(
+      dispatchedRpcMethods.has(method),
+      true,
+      `expected http_console.rs to dispatch RPC method ${method}`,
     );
   }
 });
@@ -213,6 +214,15 @@ function parseAxumRoutes(source: string): Set<string> {
     routes.add(`${match[2]!.toUpperCase()} ${match[1]}`);
   }
   return routes;
+}
+
+function parseJsonRpcDispatchMethods(source: string): Set<string> {
+  const methods = new Set<string>();
+  const armPattern = /^\s*"([^"]+)"\s*=>\s*\{/gm;
+  for (const match of source.matchAll(armPattern)) {
+    methods.add(match[1]!);
+  }
+  return methods;
 }
 
 function contractRoutes(schema: ContractSchema): Set<string> {

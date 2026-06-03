@@ -47,7 +47,7 @@ use crate::runtime::{
     ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember, ConsoleModelCapabilities,
     ConsoleRestJsonRequest, DeliveryHistoryRequest, GatingDecideRequest, GatingDecision,
     RuntimeDecisionState, extract_bearer_token_from_header,
-    handle_console_rest_json_route_with_snapshot, validate_console_token,
+    handle_console_rest_json_route_with_snapshot, resolve_authorized_console_auth_from_token,
 };
 use crate::runtime::{MetadataScope, RuntimeMetadataTable, labels_to_json_value};
 use crate::unified_runtime::console_events::ConsoleEventStore;
@@ -72,6 +72,11 @@ pub struct ConsoleJsonState {
     pub(crate) metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
     pub(crate) visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
     pub(crate) snapshot_read_model: ConsoleSnapshotReadModel,
+}
+
+#[derive(Debug, Clone)]
+struct ConsoleHttpAuthContext {
+    principal: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -487,19 +492,22 @@ pub async fn console_rpc_handler(
     // - When require_app_auth is true: validate bearer token (OIDC + allowlist)
     // - When require_app_auth is false: only allow read-only methods
     //   (mutating operations require auth to be configured)
-    if !console_request_authorized(&state, &headers, &uri) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json::<Value>(serde_json::json!({
-                "jsonrpc": JSONRPC_VERSION,
-                "id": parsed_request.id.unwrap_or(Value::Null),
-                "error": {
-                    "code": -32600,
-                    "message": "unauthorized: console rpc requires a valid auth token",
-                }
-            })),
-        );
-    }
+    let auth_context = match console_request_auth_context(&state, &headers, &uri) {
+        Some(context) => context,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json::<Value>(serde_json::json!({
+                    "jsonrpc": JSONRPC_VERSION,
+                    "id": parsed_request.id.unwrap_or(Value::Null),
+                    "error": {
+                        "code": -32600,
+                        "message": "unauthorized: console rpc requires a valid auth token",
+                    }
+                })),
+            );
+        }
+    };
     // No auth configured: all methods allowed. The operator has explicitly
     // opted out of authentication (require_app_auth = false), so the console
     // is an open local deployment where every RPC method should work.
@@ -532,6 +540,7 @@ pub async fn console_rpc_handler(
         state.visibility_policy.as_ref(),
         parsed_request,
         is_authenticated,
+        auth_context.principal.as_deref(),
     ))
     .await;
     (StatusCode::OK, Json::<Value>(response_value))
@@ -1250,19 +1259,22 @@ pub async fn console_rpc_multipart_handler(
     uri: Uri,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    if !console_request_authorized(&state, &headers, &uri) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json::<Value>(serde_json::json!({
-                "jsonrpc": JSONRPC_VERSION,
-                "id": Value::Null,
-                "error": {
-                    "code": -32600,
-                    "message": "unauthorized: console rpc requires a valid auth token",
-                }
-            })),
-        );
-    }
+    let auth_context = match console_request_auth_context(&state, &headers, &uri) {
+        Some(context) => context,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json::<Value>(serde_json::json!({
+                    "jsonrpc": JSONRPC_VERSION,
+                    "id": Value::Null,
+                    "error": {
+                        "code": -32600,
+                        "message": "unauthorized: console rpc requires a valid auth token",
+                    }
+                })),
+            );
+        }
+    };
 
     let mut payload: Option<String> = None;
     let mut files: std::collections::BTreeMap<String, MultipartImageUpload> =
@@ -1555,6 +1567,7 @@ pub async fn console_rpc_multipart_handler(
                 state.visibility_policy.as_ref(),
                 parsed_request,
                 true,
+                auth_context.principal.as_deref(),
             ))
             .await
         };
@@ -1634,11 +1647,22 @@ fn blob_payload_response(payload: BinaryBlobPayload) -> axum::response::Response
 }
 
 fn console_request_authorized(state: &ConsoleJsonState, headers: &HeaderMap, uri: &Uri) -> bool {
+    console_request_auth_context(state, headers, uri).is_some()
+}
+
+fn console_request_auth_context(
+    state: &ConsoleJsonState,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> Option<ConsoleHttpAuthContext> {
     if !state.decisions.console.require_app_auth {
-        return true;
+        return Some(ConsoleHttpAuthContext { principal: None });
     }
-    console_request_token(headers, uri)
-        .is_some_and(|token| validate_console_token(&state.decisions, &token))
+    let token = console_request_token(headers, uri)?;
+    let auth = resolve_authorized_console_auth_from_token(&state.decisions, &token)?;
+    Some(ConsoleHttpAuthContext {
+        principal: Some(auth.email),
+    })
 }
 
 fn console_request_token(headers: &HeaderMap, uri: &Uri) -> Option<String> {
@@ -3153,6 +3177,26 @@ fn console_aggregator_unavailable(response_id: Value) -> Value {
     )
 }
 
+fn resolve_gating_approver_id(
+    params: &Value,
+    authenticated_principal: Option<&str>,
+) -> Result<String, &'static str> {
+    if let Some(principal) = authenticated_principal.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    }) {
+        return Ok(principal.to_string());
+    }
+    let Some(approver_id) = params.get("approver_id").and_then(Value::as_str) else {
+        return Err("approver_id required");
+    };
+    let trimmed = approver_id.trim();
+    if trimmed.is_empty() {
+        return Err("approver_id required");
+    }
+    Ok(trimmed.to_string())
+}
+
 #[allow(clippy::large_futures, clippy::too_many_arguments)]
 #[cfg(test)]
 async fn handle_console_runtime_rpc(
@@ -3181,6 +3225,7 @@ async fn handle_console_runtime_rpc(
         &crate::console_aggregator::AllowAllConsoleVisibilityPolicy,
         request,
         is_authenticated,
+        None,
     )
     .await
 }
@@ -3199,6 +3244,7 @@ async fn handle_console_runtime_rpc_with_visibility(
     visibility_policy: &dyn ConsoleVisibilityPolicy,
     request: JsonRpcRequest,
     is_authenticated: bool,
+    authenticated_principal: Option<&str>,
 ) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
 
@@ -4591,10 +4637,11 @@ async fn handle_console_runtime_rpc_with_visibility(
             let Some(pending_id) = request.params.get("pending_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "pending_id required");
             };
-            let Some(approver_id) = request.params.get("approver_id").and_then(Value::as_str)
-            else {
-                return invalid_params(response_id, "approver_id required");
-            };
+            let approver_id =
+                match resolve_gating_approver_id(&request.params, authenticated_principal) {
+                    Ok(approver_id) => approver_id,
+                    Err(message) => return invalid_params(response_id, message),
+                };
             let Some(raw_decision) = request.params.get("decision").and_then(Value::as_str) else {
                 return invalid_params(response_id, "decision required");
             };
@@ -4619,7 +4666,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .await
                 .decide_gating_action(GatingDecideRequest {
                     pending_id: pending_id.to_string(),
-                    approver_id: approver_id.to_string(),
+                    approver_id,
                     decision,
                     reason,
                 }) {
@@ -6964,6 +7011,28 @@ comms = true
         }
     }
 
+    #[test]
+    fn authenticated_gating_approver_comes_from_console_principal() {
+        let forged_params = json!({ "approver_id": "forged-browser-value" });
+
+        assert_eq!(
+            super::resolve_gating_approver_id(&forged_params, Some("admin@example.com"),),
+            Ok("admin@example.com".to_string()),
+        );
+    }
+
+    #[test]
+    fn unauthenticated_local_gating_approver_requires_request_param() {
+        assert_eq!(
+            super::resolve_gating_approver_id(&json!({ "approver_id": " local-operator " }), None,),
+            Ok("local-operator".to_string()),
+        );
+        assert_eq!(
+            super::resolve_gating_approver_id(&json!({}), None),
+            Err("approver_id required"),
+        );
+    }
+
     #[tokio::test]
     async fn console_runtime_identity_controls_resolve_durable_member_aliases()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -7548,6 +7617,7 @@ comms = true
                 &HideIdentityPolicy("review:singleton"),
                 rpc_request_with_params(method, json!({ "identity": "review:singleton" })),
                 true,
+                None,
             ))
             .await;
             assert_ne!(
@@ -7650,6 +7720,7 @@ comms = true
                     &HideOnlyMemberPolicy("rt:review:singleton:0"),
                     rpc_request_with_params(method, json!({ "identity": requested_identity })),
                     true,
+                    None,
                 ))
                 .await;
                 assert_eq!(
@@ -7717,6 +7788,7 @@ comms = true
                 &HideMemberPolicy("rt:review:singleton:0"),
                 rpc_request_with_params(method, json!({ "identity": "review:singleton" })),
                 true,
+                None,
             ))
             .await;
             assert_ne!(
@@ -7964,6 +8036,7 @@ comms = true
             &HideMemberPolicy("hidden:singleton"),
             rpc_request("mobkit/reset_all"),
             true,
+            None,
         ))
         .await;
         assert_eq!(
@@ -8054,6 +8127,7 @@ comms = true
             &HideOnlyMemberPolicy("rt:review:singleton:0"),
             rpc_request("mobkit/reset_all"),
             true,
+            None,
         ))
         .await;
         assert_eq!(
@@ -8166,6 +8240,7 @@ comms = true
             &HideOnlyMemberPolicy("rt:review:singleton:1"),
             rpc_request_with_params("mobkit/retire", json!({ "identity": "review:singleton" })),
             true,
+            None,
         ))
         .await;
         assert_eq!(

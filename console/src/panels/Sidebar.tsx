@@ -1076,6 +1076,7 @@ export function Sidebar({
   const [draggingOrder, setDraggingOrder] = React.useState<{ kind: "section" | "subgroup"; id: string; bucket?: string } | null>(null);
   const [dragOverOrder, setDragOverOrder] = React.useState<{ kind: "section" | "subgroup"; id: string; where: SidebarDropPosition } | null>(null);
   const [dragPreview, setDragPreview] = React.useState<SidebarDragPreview | null>(null);
+  const [orderAnnouncement, setOrderAnnouncement] = React.useState("");
   const draggingOrderRef = React.useRef<{ kind: "section" | "subgroup"; id: string; bucket?: string } | null>(null);
   const pointerDragRef = React.useRef<{
     kind: "section" | "subgroup";
@@ -1171,6 +1172,7 @@ export function Sidebar({
       writeSidebarStringList(localSidebarStorage(), sectionOrderStorageKey, next);
       return next;
     });
+    setOrderAnnouncement(`Moved section ${draggedId} ${where} ${target}.`);
   }, [sectionNames, sectionOrderStorageKey]);
   const subgroupIdsForBucket = React.useCallback((bucket: string): string[] => {
     const list = grouped.get(bucket) || [];
@@ -1197,7 +1199,26 @@ export function Sidebar({
       writeSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey, next);
       return next;
     });
+    setOrderAnnouncement(`Moved subgroup ${draggedId} ${where} ${target}.`);
   }, [subgroupIdsForBucket, subgroupOrderStorageKey]);
+  const handleSectionOrderKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLElement>, bucket: string) => {
+    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    const ordered = applySidebarOrder(sectionNames, sectionOrder);
+    const index = ordered.indexOf(bucket);
+    const target = event.key === "ArrowUp" ? ordered[index - 1] : ordered[index + 1];
+    if (!target) return;
+    event.preventDefault();
+    completeSectionDrop(target, event.key === "ArrowUp" ? "before" : "after", bucket);
+  }, [completeSectionDrop, sectionNames, sectionOrder]);
+  const handleSubgroupOrderKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLElement>, storageKey: string, bucket: string) => {
+    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    const ordered = applySidebarOrder(subgroupIdsForBucket(bucket), subgroupOrder);
+    const index = ordered.indexOf(storageKey);
+    const target = event.key === "ArrowUp" ? ordered[index - 1] : ordered[index + 1];
+    if (!target) return;
+    event.preventDefault();
+    completeSubgroupDrop(target, bucket, event.key === "ArrowUp" ? "before" : "after", storageKey, bucket);
+  }, [completeSubgroupDrop, subgroupIdsForBucket, subgroupOrder]);
   const beginPointerOrderDrag = React.useCallback((
     event: React.PointerEvent<HTMLElement>,
     item: { kind: "section" | "subgroup"; id: string; bucket?: string },
@@ -1330,6 +1351,23 @@ export function Sidebar({
 
   return (
     <aside className="sidebar" data-testid="sidebar-root">
+      <div
+        aria-live="polite"
+        data-testid="sidebar-reorder-live"
+        style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: "hidden",
+          clip: "rect(0 0 0 0)",
+          whiteSpace: "nowrap",
+          border: 0,
+        }}
+      >
+        {orderAnnouncement}
+      </div>
       <div className="sidebar__mast">
         <div>
           <div className="sidebar__mast-title">Roster</div>
@@ -1429,6 +1467,7 @@ export function Sidebar({
                       data-sidebar-order-id={row.reorderable ? row.bucket : undefined}
                       data-reorderable={row.reorderable ? "true" : undefined}
                       onPointerDown={row.reorderable ? (event) => beginPointerOrderDrag(event, { kind: "section", id: row.bucket }) : undefined}
+                      onKeyDown={row.reorderable ? (event) => handleSectionOrderKeyDown(event, row.bucket) : undefined}
                       onClick={() => {
                         if (suppressOrderClickRef.current) return;
                         setCollapsedSections((current) => {
@@ -1464,6 +1503,7 @@ export function Sidebar({
                     data-reorderable={row.reorderable ? "true" : undefined}
                     data-testid={`sidebar-subgroup-toggle:${row.bucket}:${row.label}`}
                     onPointerDown={row.reorderable ? (event) => beginPointerOrderDrag(event, { kind: "subgroup", id: row.storageKey, bucket: row.bucket }) : undefined}
+                    onKeyDown={row.reorderable ? (event) => handleSubgroupOrderKeyDown(event, row.storageKey, row.bucket) : undefined}
                     onClick={() => {
                       if (suppressOrderClickRef.current) return;
                       setCollapsedSubgroups((current) => {

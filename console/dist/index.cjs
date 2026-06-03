@@ -344,12 +344,24 @@ var TERMINAL_STATUS_RE = /^(Success|Running|Failed|Cancelled)$/i;
 function escapeHtml(value) {
   return String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
+function safeMarkdownHref(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("mailto:") || lower.startsWith("/") || lower.startsWith("./") || lower.startsWith("../") || lower.startsWith("#")) {
+    return trimmed;
+  }
+  return null;
+}
 function renderConversationInlineMarkdown(text) {
   const codeTokens = [];
   const escaped = escapeHtml(text || "").replace(/`([^`]+)`/g, (_match, code) => {
     const index = codeTokens.push(`<code class="cc-rich-inline-code">${code}</code>`) - 1;
     return `@@CODE_${index}@@`;
-  }).replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^A-Za-z0-9_*])\*([^*\n]+)\*(?![A-Za-z0-9_*])/g, "$1<em>$2</em>").replace(/(^|[^A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])/g, "$1<em>$2</em>").replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>').replace(/\n/g, "<br />");
+  }).replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^A-Za-z0-9_*])\*([^*\n]+)\*(?![A-Za-z0-9_*])/g, "$1<em>$2</em>").replace(/(^|[^A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])/g, "$1<em>$2</em>").replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+    const safeHref = safeMarkdownHref(href);
+    return safeHref ? `<a href="${safeHref}" rel="noreferrer">${label}</a>` : label;
+  }).replace(/\n/g, "<br />");
   return escaped.replace(/@@CODE_(\d+)@@/g, (_match, index) => codeTokens[Number(index)] || "");
 }
 function conversationRichBlockCopyText(block) {
@@ -5038,23 +5050,25 @@ async function rpc(baseUrl, method, params) {
   if (result.error) {
     const typedError = normalizeConsoleInteractionRejectedError(result.error);
     if (typedError) {
-      const error = new Error(`${method} RPC error ${typedError.code}: ${typedError.message}`);
-      error.rpcError = typedError;
-      throw error;
+      const error2 = new Error(`${method} RPC error ${typedError.code}: ${typedError.message}`);
+      error2.rpcError = typedError;
+      throw error2;
     }
     const replayError = normalizeReplayUnavailableError(result.error.data);
     if (replayError || result.error.code === CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE) {
-      const error = new Error(
+      const error2 = new Error(
         `${method} RPC replay unavailable: ${result.error.message || JSON.stringify(result.error)}`
       );
-      const annotated = error;
+      const annotated = error2;
       if (replayError) {
         annotated.replayError = replayError;
       }
       annotated.timelineReplayUnavailable = true;
-      throw error;
+      throw error2;
     }
-    throw new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    const error = new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    error.rpcError = result.error;
+    throw error;
   }
   return result.result;
 }
@@ -5559,7 +5573,7 @@ function createHttpConsoleTransport({
       try {
         result = await callConsoleRpc(baseUrl, spec.method, params);
       } catch (error) {
-        if (spec.method !== CONSOLE_RPC_METHODS.inspectIdentity) {
+        if (spec.method !== CONSOLE_RPC_METHODS.inspectIdentity || !isJsonRpcMethodNotFoundError(error)) {
           throw error;
         }
         result = await callConsoleRpc(baseUrl, LEGACY_INSPECT_IDENTITY_METHOD, params);
@@ -5584,6 +5598,10 @@ function createMobKitConsoleController({
     timeline: createTimelineController(transport, facts),
     commands: createConsoleCommandSurface(transport, facts)
   };
+}
+function isJsonRpcMethodNotFoundError(error) {
+  const rpcError = error?.rpcError;
+  return rpcError?.code === -32601;
 }
 function createConsoleCommandSurface(transport, facts) {
   let cachedCapabilities = null;
@@ -9088,6 +9106,7 @@ function Sidebar({
   const [draggingOrder, setDraggingOrder] = import_react17.default.useState(null);
   const [dragOverOrder, setDragOverOrder] = import_react17.default.useState(null);
   const [dragPreview, setDragPreview] = import_react17.default.useState(null);
+  const [orderAnnouncement, setOrderAnnouncement] = import_react17.default.useState("");
   const draggingOrderRef = import_react17.default.useRef(null);
   const pointerDragRef = import_react17.default.useRef(null);
   const suppressOrderClickRef = import_react17.default.useRef(false);
@@ -9168,6 +9187,7 @@ function Sidebar({
       writeSidebarStringList(localSidebarStorage(), sectionOrderStorageKey, next);
       return next;
     });
+    setOrderAnnouncement(`Moved section ${draggedId} ${where} ${target}.`);
   }, [sectionNames, sectionOrderStorageKey]);
   const subgroupIdsForBucket = import_react17.default.useCallback((bucket) => {
     const list = grouped.get(bucket) || [];
@@ -9187,7 +9207,26 @@ function Sidebar({
       writeSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey, next);
       return next;
     });
+    setOrderAnnouncement(`Moved subgroup ${draggedId} ${where} ${target}.`);
   }, [subgroupIdsForBucket, subgroupOrderStorageKey]);
+  const handleSectionOrderKeyDown = import_react17.default.useCallback((event, bucket) => {
+    if (!event.altKey || event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    const ordered = applyConsoleSidebarOrder(sectionNames, sectionOrder);
+    const index = ordered.indexOf(bucket);
+    const target = event.key === "ArrowUp" ? ordered[index - 1] : ordered[index + 1];
+    if (!target) return;
+    event.preventDefault();
+    completeSectionDrop(target, event.key === "ArrowUp" ? "before" : "after", bucket);
+  }, [completeSectionDrop, sectionNames, sectionOrder]);
+  const handleSubgroupOrderKeyDown = import_react17.default.useCallback((event, storageKey, bucket) => {
+    if (!event.altKey || event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    const ordered = applyConsoleSidebarOrder(subgroupIdsForBucket(bucket), subgroupOrder);
+    const index = ordered.indexOf(storageKey);
+    const target = event.key === "ArrowUp" ? ordered[index - 1] : ordered[index + 1];
+    if (!target) return;
+    event.preventDefault();
+    completeSubgroupDrop(target, bucket, event.key === "ArrowUp" ? "before" : "after", storageKey, bucket);
+  }, [completeSubgroupDrop, subgroupIdsForBucket, subgroupOrder]);
   const beginPointerOrderDrag = import_react17.default.useCallback((event, item) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -9312,6 +9351,25 @@ function Sidebar({
     );
   }
   return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("aside", { className: "sidebar", "data-testid": "sidebar-root", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
+      "div",
+      {
+        "aria-live": "polite",
+        "data-testid": "sidebar-reorder-live",
+        style: {
+          position: "absolute",
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: "hidden",
+          clip: "rect(0 0 0 0)",
+          whiteSpace: "nowrap",
+          border: 0
+        },
+        children: orderAnnouncement
+      }
+    ),
     /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "sidebar__mast", children: /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { children: [
       /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "sidebar__mast-title", children: "Roster" }),
       /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "sidebar__mast-sub", children: [
@@ -9408,6 +9466,7 @@ function Sidebar({
                       "data-sidebar-order-id": row.reorderable ? row.bucket : void 0,
                       "data-reorderable": row.reorderable ? "true" : void 0,
                       onPointerDown: row.reorderable ? (event) => beginPointerOrderDrag(event, { kind: "section", id: row.bucket }) : void 0,
+                      onKeyDown: row.reorderable ? (event) => handleSectionOrderKeyDown(event, row.bucket) : void 0,
                       onClick: () => {
                         if (suppressOrderClickRef.current) return;
                         setCollapsedSections((current) => {
@@ -9444,6 +9503,7 @@ function Sidebar({
                   "data-reorderable": row.reorderable ? "true" : void 0,
                   "data-testid": `sidebar-subgroup-toggle:${row.bucket}:${row.label}`,
                   onPointerDown: row.reorderable ? (event) => beginPointerOrderDrag(event, { kind: "subgroup", id: row.storageKey, bucket: row.bucket }) : void 0,
+                  onKeyDown: row.reorderable ? (event) => handleSubgroupOrderKeyDown(event, row.storageKey, row.bucket) : void 0,
                   onClick: () => {
                     if (suppressOrderClickRef.current) return;
                     setCollapsedSubgroups((current) => {

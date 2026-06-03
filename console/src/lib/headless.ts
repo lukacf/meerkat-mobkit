@@ -268,7 +268,10 @@ export function createHttpConsoleTransport({
       try {
         result = await callConsoleRpc<unknown>(baseUrl, spec.method, params);
       } catch (error) {
-        if (spec.method !== CONSOLE_RPC_METHODS.inspectIdentity) {
+        if (
+          spec.method !== CONSOLE_RPC_METHODS.inspectIdentity ||
+          !isJsonRpcMethodNotFoundError(error)
+        ) {
           throw error;
         }
         result = await callConsoleRpc<unknown>(baseUrl, LEGACY_INSPECT_IDENTITY_METHOD, params);
@@ -296,6 +299,11 @@ export function createMobKitConsoleController({
     timeline: createTimelineController(transport, facts),
     commands: createConsoleCommandSurface(transport, facts),
   };
+}
+
+function isJsonRpcMethodNotFoundError(error: unknown): boolean {
+  const rpcError = (error as { rpcError?: { code?: unknown } } | null)?.rpcError;
+  return rpcError?.code === -32601;
 }
 
 function createConsoleCommandSurface(

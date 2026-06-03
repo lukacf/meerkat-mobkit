@@ -894,12 +894,17 @@ pub fn extract_bearer_token_from_header(header_value: &str) -> Option<&str> {
 /// the email allowlist / provider policy (via `enforce_console_route_access`).
 /// Returns `true` only if the token is valid AND the caller is authorized.
 pub fn validate_console_token(decisions: &RuntimeDecisionState, token: &str) -> bool {
-    let auth = match resolve_console_auth_from_token(decisions, token) {
-        Ok(auth) => auth,
-        Err(_) => return false,
-    };
+    resolve_authorized_console_auth_from_token(decisions, token).is_some()
+}
+
+pub(crate) fn resolve_authorized_console_auth_from_token(
+    decisions: &RuntimeDecisionState,
+    token: &str,
+) -> Option<ConsoleAccessRequest> {
+    let auth = resolve_console_auth_from_token(decisions, token).ok()?;
     crate::decisions::enforce_console_route_access(&decisions.auth, &decisions.console, &auth)
-        .is_ok()
+        .ok()?;
+    Some(auth)
 }
 
 fn resolve_console_auth_from_token(

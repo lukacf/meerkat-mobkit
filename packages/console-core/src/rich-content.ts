@@ -123,6 +123,24 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+function safeMarkdownHref(value: string): string | null {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.startsWith("http://") ||
+    lower.startsWith("https://") ||
+    lower.startsWith("mailto:") ||
+    lower.startsWith("/") ||
+    lower.startsWith("./") ||
+    lower.startsWith("../") ||
+    lower.startsWith("#")
+  ) {
+    return trimmed;
+  }
+  return null;
+}
+
 export function renderConversationInlineMarkdown(text: string): string {
   // Order: code spans first (mask their contents from later passes),
   // then bold (`**x**`), then italic (single `*x*`). Bold must come
@@ -137,7 +155,12 @@ export function renderConversationInlineMarkdown(text: string): string {
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^A-Za-z0-9_*])\*([^*\n]+)\*(?![A-Za-z0-9_*])/g, "$1<em>$2</em>")
     .replace(/(^|[^A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])/g, "$1<em>$2</em>")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+      const safeHref = safeMarkdownHref(href);
+      return safeHref
+        ? `<a href="${safeHref}" rel="noreferrer">${label}</a>`
+        : label;
+    })
     .replace(/\n/g, "<br />");
 
   return escaped.replace(/@@CODE_(\d+)@@/g, (_match, index) => codeTokens[Number(index)] || "");

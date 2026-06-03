@@ -269,7 +269,9 @@ async function rpc<T>(
       annotated.timelineReplayUnavailable = true;
       throw error;
     }
-    throw new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    const error = new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    (error as Error & { rpcError?: { code?: unknown; message?: unknown; data?: unknown } }).rpcError = result.error;
+    throw error;
   }
 
   return result.result as T;
