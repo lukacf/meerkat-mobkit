@@ -16,6 +16,11 @@ on:
         required: false
         default: false
         type: boolean
+      release_tag:
+        description: "Existing release tag to use for manual GitHub asset publication"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -65,6 +70,19 @@ jobs:
       - name: Verify tag matches version
         if: startsWith(github.ref, 'refs/tags/v')
         run: make verify-version
+
+      - name: Verify requested release tag matches version
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
+        run: |
+          set -euo pipefail
+          version=$(scripts/repo-cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "meerkat-mobkit") | .version')
+          tag="${{ github.event.inputs.release_tag }}"
+          tag="${tag#v}"
+          if [[ "$version" != "$tag" ]]; then
+            echo "Version mismatch: Cargo.toml has $version but requested release tag is $tag" >&2
+            exit 1
+          fi
+          echo "Version $version matches requested release tag"
 
       - name: Check formatting
         run: make fmt-check
@@ -117,16 +135,16 @@ jobs:
             export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256
           fi
           if [[ "${{ matrix.cargo_jobs }}" != "0" ]]; then
-            scripts/repo-cargo build -p meerkat-mobkit --release --target "${{ matrix.target }}" -j "${{ matrix.cargo_jobs }}"
+            scripts/repo-cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}" -j "${{ matrix.cargo_jobs }}"
           else
-            scripts/repo-cargo build -p meerkat-mobkit --release --target "${{ matrix.target }}"
+            scripts/repo-cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}"
           fi
 
       - name: Package artifacts
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
           ARCHIVE_EXT: ${{ matrix.archive_ext }}
         run: |
           set -euo pipefail
@@ -170,7 +188,7 @@ jobs:
 
   publish_github_release:
     name: Publish GitHub release assets
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')
     needs: [build_binaries]
     runs-on: ubuntu-latest
     steps:
@@ -186,6 +204,8 @@ jobs:
 
       - name: Build checksum manifest
         working-directory: release-artifacts
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
           find . -type f \( -name "*.tar.gz" -o -name "*.zip" \) | sort > manifest_files.txt
@@ -205,7 +225,7 @@ jobs:
               if p.is_file() and (p.name.endswith(".tar.gz") or p.name.endswith(".zip"))
           ]
 
-          tag = os.environ["GITHUB_REF_NAME"]
+          tag = os.environ["RELEASE_TAG"]
           manifest = {
               "version": tag.lstrip("v"),
               "tag": tag,
@@ -220,6 +240,7 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
           files: |
             release-artifacts/**/*.tar.gz
             release-artifacts/**/*.zip
