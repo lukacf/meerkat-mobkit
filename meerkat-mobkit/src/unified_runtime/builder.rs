@@ -618,6 +618,7 @@ impl UnifiedRuntimeBuilder {
             identity_runtime
                 .set_agent_customizer(self.agent_customizer.clone())
                 .await;
+            identity_runtime.set_error_hook(self.error_hook.clone());
 
             let roster_specs = roster_provider
                 .roster(&RosterContext {
@@ -693,13 +694,7 @@ impl UnifiedRuntimeBuilder {
                         stream::iter(warm_identities.into_iter().map(|identity| {
                             let runtime = warm_runtime.clone();
                             async move {
-                                if let Err(err) = runtime.materialize(&identity).await {
-                                    tracing::warn!(
-                                        %identity,
-                                        error = %err,
-                                        "identity-first background warm failed"
-                                    );
-                                }
+                                runtime.best_effort_background_warm_identity(identity).await;
                             }
                         }))
                         .buffer_unordered(concurrency)

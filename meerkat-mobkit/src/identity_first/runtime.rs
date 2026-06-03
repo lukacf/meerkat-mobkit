@@ -7,7 +7,7 @@
 //! - Ownership: lease tracking, fencing, and invariant enforcement
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
@@ -28,6 +28,7 @@ use super::types::{
 };
 
 const MANAGED_PEER_RECONCILE_CONCURRENCY: usize = 64;
+const MATERIALIZATION_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
 
 fn durable_spec_uses_external_binding(spec: &DurableAgentSpec) -> bool {
     matches!(spec.backend, Some(meerkat_mob::MobBackendKind::External))
@@ -337,10 +338,19 @@ pub struct IdentityRuntime {
     managed_peer_reconcile_lock: Mutex<()>,
     desired_peer_edges: RwLock<Vec<ManagedPeerEdge>>,
     materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
+    best_effort_materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     lifecycle_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     customizer: RwLock<Option<Arc<dyn AgentCustomizer>>>,
     lease_renewal_notify: Notify,
     default_timeout: Duration,
+    materialization_failure_backoff: RwLock<BTreeMap<AgentIdentity, MaterializationFailureBackoff>>,
+    error_hook: StdRwLock<Option<crate::unified_runtime::ErrorHook>>,
+}
+
+#[derive(Debug, Clone)]
+struct MaterializationFailureBackoff {
+    suppress_until: Instant,
+    error: String,
 }
 
 impl IdentityRuntime {
@@ -360,10 +370,13 @@ impl IdentityRuntime {
             managed_peer_reconcile_lock: Mutex::new(()),
             desired_peer_edges: RwLock::new(Vec::new()),
             materialization_locks: RwLock::new(BTreeMap::new()),
+            best_effort_materialization_locks: RwLock::new(BTreeMap::new()),
             lifecycle_locks: RwLock::new(BTreeMap::new()),
             customizer: RwLock::new(None),
             lease_renewal_notify: Notify::new(),
             default_timeout: config.default_timeout.unwrap_or(Duration::from_secs(90)),
+            materialization_failure_backoff: RwLock::new(BTreeMap::new()),
+            error_hook: StdRwLock::new(None),
         }
     }
 
@@ -378,6 +391,19 @@ impl IdentityRuntime {
 
     pub async fn set_agent_customizer(&self, customizer: Option<Arc<dyn AgentCustomizer>>) {
         *self.customizer.write().await = customizer;
+    }
+
+    /// Attach a best-effort operational error hook used for alerting.
+    pub fn set_error_hook(&self, hook: Option<crate::unified_runtime::ErrorHook>) {
+        match self.error_hook.write() {
+            Ok(mut stored_hook) => *stored_hook = hook,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "identity runtime error hook lock poisoned; dropping hook update"
+                );
+            }
+        }
     }
 
     /// Spawn a background supervisor that renews active identity leases before
@@ -678,6 +704,67 @@ impl IdentityRuntime {
         }
     }
 
+    fn emit_error(&self, event: crate::unified_runtime::types::ErrorEvent) {
+        let hook = match self.error_hook.read() {
+            Ok(stored_hook) => stored_hook.clone(),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "identity runtime error hook lock poisoned; dropping error event"
+                );
+                None
+            }
+        };
+        if let Some(hook) = hook {
+            tokio::spawn(async move {
+                let () = hook(event).await;
+            });
+        }
+    }
+
+    async fn materialization_backoff_error(&self, identity: &AgentIdentity) -> Option<String> {
+        let backoffs = self.materialization_failure_backoff.read().await;
+        let backoff = backoffs.get(identity)?;
+        if Instant::now() < backoff.suppress_until {
+            Some(backoff.error.clone())
+        } else {
+            None
+        }
+    }
+
+    async fn clear_materialization_backoff(&self, identity: &AgentIdentity) {
+        self.materialization_failure_backoff
+            .write()
+            .await
+            .remove(identity);
+    }
+
+    async fn record_best_effort_materialization_failure(
+        &self,
+        identity: &AgentIdentity,
+        initiator: Option<&AgentIdentity>,
+        operation: &'static str,
+        err: &IdentityRuntimeError,
+    ) {
+        let error = err.to_string();
+        let suppress_until = Instant::now() + MATERIALIZATION_FAILURE_BACKOFF;
+        self.materialization_failure_backoff.write().await.insert(
+            identity.clone(),
+            MaterializationFailureBackoff {
+                suppress_until,
+                error: error.clone(),
+            },
+        );
+        self.emit_error(
+            crate::unified_runtime::types::ErrorEvent::IdentityMaterializationFailure {
+                identity: identity.to_string(),
+                initiator: initiator.map(ToString::to_string),
+                operation: operation.to_string(),
+                error,
+            },
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Registration / activation
     // -----------------------------------------------------------------------
@@ -734,6 +821,25 @@ impl IdentityRuntime {
             .clone()
     }
 
+    async fn best_effort_materialization_lock_for(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Arc<Mutex<()>> {
+        if let Some(lock) = self
+            .best_effort_materialization_locks
+            .read()
+            .await
+            .get(identity)
+        {
+            return lock.clone();
+        }
+        let mut locks = self.best_effort_materialization_locks.write().await;
+        locks
+            .entry(identity.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
     async fn lifecycle_lock_for(&self, identity: &AgentIdentity) -> Arc<Mutex<()>> {
         if let Some(lock) = self.lifecycle_locks.read().await.get(identity) {
             return lock.clone();
@@ -766,11 +872,14 @@ impl IdentityRuntime {
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
             if entry.state == IdentityLifecycleState::Active {
-                return entry.continuity.clone().ok_or_else(|| {
+                let continuity = entry.continuity.clone().ok_or_else(|| {
                     IdentityRuntimeError::Internal(format!(
                         "active identity {identity} has no continuity record"
                     ))
-                });
+                })?;
+                drop(entries);
+                self.clear_materialization_backoff(identity).await;
+                return Ok(continuity);
             }
             (entry.spec.clone(), entry.continuity.clone(), entry.state)
         };
@@ -1293,30 +1402,81 @@ impl IdentityRuntime {
                 "identity materialized with topology reconcile warning"
             );
         }
+        self.clear_materialization_backoff(identity).await;
         Ok(record)
+    }
+
+    async fn best_effort_materialize_identity(
+        &self,
+        identity: AgentIdentity,
+        initiator: Option<&AgentIdentity>,
+        operation: &'static str,
+    ) -> Option<ContinuityRecord> {
+        let attempt_lock = self.best_effort_materialization_lock_for(&identity).await;
+        let _attempt_guard = attempt_lock.lock().await;
+
+        if let Some(error) = self.materialization_backoff_error(&identity).await {
+            tracing::debug!(
+                identity = %identity,
+                initiator = initiator.map(ToString::to_string).as_deref(),
+                error = %error,
+                "identity best-effort materialization skipped due to materialization backoff"
+            );
+            return None;
+        }
+
+        match self.materialize(&identity).await {
+            Ok(record) => {
+                self.clear_materialization_backoff(&identity).await;
+                Some(record)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    identity = %identity,
+                    initiator = initiator.map(ToString::to_string).as_deref(),
+                    error = %err,
+                    "identity best-effort materialization skipped identity after materialization failure"
+                );
+                self.record_best_effort_materialization_failure(
+                    &identity, initiator, operation, &err,
+                )
+                .await;
+                None
+            }
+        }
+    }
+
+    async fn materialize_all_records(
+        &self,
+    ) -> Vec<(
+        AgentIdentity,
+        Result<ContinuityRecord, IdentityRuntimeError>,
+    )> {
+        let identities = self.registered_identities().await;
+        stream::iter(identities.into_iter().map(|identity| async move {
+            let result = self.materialize(&identity).await;
+            (identity, result)
+        }))
+        .buffer_unordered(MANAGED_PEER_RECONCILE_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await
     }
 
     /// Materialize all identities currently registered with the runtime.
     ///
-    /// Lazy bootstrap keeps `build()` metadata-only, but flow execution still
-    /// enters the mob runtime through concrete member IDs. This helper gives
-    /// flow entrypoints a single choke point to hydrate the concrete mob graph
-    /// before calling `run_flow`.
+    /// Fleet hydration is best-effort: one member that cannot build is skipped
+    /// and surfaced through logs/error hooks rather than aborting unrelated
+    /// members.
     pub async fn materialize_all(&self) -> Result<Vec<ContinuityRecord>, IdentityRuntimeError> {
         let identities = self.registered_identities().await;
-        let results = stream::iter(
-            identities
-                .into_iter()
-                .map(|identity| async move { self.materialize(&identity).await }),
-        )
+        let records = stream::iter(identities.into_iter().map(|identity| async move {
+            self.best_effort_materialize_identity(identity, None, "materialize_all")
+                .await
+        }))
         .buffer_unordered(MANAGED_PEER_RECONCILE_CONCURRENCY)
+        .filter_map(async move |record| record)
         .collect::<Vec<_>>()
         .await;
-
-        let mut records = Vec::with_capacity(results.len());
-        for result in results {
-            records.push(result?);
-        }
 
         let desired_edges = self.desired_peer_edges.read().await.clone();
         if !desired_edges.is_empty()
@@ -1331,6 +1491,44 @@ impl IdentityRuntime {
         Ok(records)
     }
 
+    /// Materialize all identities and fail if any registered identity cannot
+    /// hydrate. Flow admission uses this strict variant so a run is not accepted
+    /// with a partially materialized identity-first fleet.
+    pub async fn materialize_all_required(
+        &self,
+    ) -> Result<Vec<ContinuityRecord>, IdentityRuntimeError> {
+        let results = self.materialize_all_records().await;
+        let mut records = Vec::with_capacity(results.len());
+        let mut failures = Vec::new();
+
+        for (identity, result) in results {
+            match result {
+                Ok(record) => records.push(record),
+                Err(err) => failures.push(format!("{identity}: {err}")),
+            }
+        }
+
+        if !failures.is_empty() {
+            return Err(IdentityRuntimeError::Internal(format!(
+                "identity-first required materialization failed for {} identities: {}",
+                failures.len(),
+                failures.join("; ")
+            )));
+        }
+
+        let desired_edges = self.desired_peer_edges.read().await.clone();
+        if !desired_edges.is_empty() {
+            self.reconcile_managed_peer_edges(&desired_edges).await?;
+        }
+
+        Ok(records)
+    }
+
+    pub(crate) async fn best_effort_background_warm_identity(&self, identity: AgentIdentity) {
+        self.best_effort_materialize_identity(identity, None, "background_warm")
+            .await;
+    }
+
     /// Ensure an active identity's desired peer neighborhood exists in the
     /// concrete mob graph before ordinary communication starts.
     pub async fn materialize_reachable_peers(
@@ -1338,19 +1536,18 @@ impl IdentityRuntime {
         identity: &AgentIdentity,
     ) -> Result<Vec<ContinuityRecord>, IdentityRuntimeError> {
         let peers = self.reachable_peer_identities(identity).await;
-        let results = stream::iter(
-            peers
-                .into_iter()
-                .map(|peer| async move { self.materialize(&peer).await }),
-        )
+        let records = stream::iter(peers.into_iter().map(|peer| async move {
+            self.best_effort_materialize_identity(
+                peer,
+                Some(identity),
+                "materialize_reachable_peers",
+            )
+            .await
+        }))
         .buffer_unordered(MANAGED_PEER_RECONCILE_CONCURRENCY)
+        .filter_map(async move |record| record)
         .collect::<Vec<_>>()
         .await;
-
-        let mut records = Vec::with_capacity(results.len());
-        for result in results {
-            records.push(result?);
-        }
 
         let desired_edges = self.desired_peer_edges.read().await.clone();
         if !desired_edges.is_empty()
@@ -2452,7 +2649,6 @@ impl IdentityRuntime {
         }
         let previous_session_id = record.session_id.clone();
         record.session_id = session_id;
-        record.checkpoint_version = CheckpointVersion::new(0);
 
         if let Err(err) = self
             .continuity_store

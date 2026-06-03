@@ -1167,6 +1167,14 @@ export function parseErrorEvent(raw: unknown): ErrorEvent {
     case ErrorCategory.REDISCOVER_FAILURE:
       message = error;
       break;
+    case "identity_materialization_failure": {
+      const identity = String(context.identity ?? "");
+      const initiator = String(context.initiator ?? "");
+      const operation = String(context.operation ?? "");
+      const target = initiator ? `${identity} for ${initiator}` : identity;
+      message = [target, operation, error].filter(Boolean).join(": ");
+      break;
+    }
     default:
       message = JSON.stringify(d);
       break;
@@ -1630,6 +1638,10 @@ export interface ContinuityRecord {
   readonly agentRuntimeId: string;
   readonly sessionId: string;
   readonly generation: number;
+  /**
+   * Monotonic for (identity, generation). It advances across session rotations
+   * and resets only after destructive reset advances generation.
+   */
   readonly checkpointVersion: number;
 }
 
@@ -1832,6 +1844,7 @@ export function leaseRenewResultToDict(
 export interface ContinuityStore {
   resolveMany(identities: string[]): Promise<Record<string, ContinuityResolveState>>;
   loadSessionSnapshot(sessionId: string): Promise<SessionSnapshot | null>;
+  /** Save only if fencingToken is current and version advances the identity/generation head. */
   saveSessionSnapshot(
     identity: string,
     sessionId: string,
@@ -1840,6 +1853,7 @@ export interface ContinuityStore {
     fencingToken: number,
     snapshot: SessionSnapshot,
   ): Promise<void>;
+  /** Persist the binding without rewinding checkpointVersion on session rebind. */
   upsertContinuityRecord(record: ContinuityRecord, fencingToken: number): Promise<void>;
   deleteContinuityRecord(identity: string, fencingToken: number): Promise<void>;
   deleteSessionSnapshotIfCurrentRevision?(

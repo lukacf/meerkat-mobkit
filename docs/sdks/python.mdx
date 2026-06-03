@@ -276,6 +276,10 @@ External identity providers follow the Rust gateway's authoritative path: set
 `.continuity_store(provider)`, `.lease_provider(provider)`, and
 `.scratch_dir(path)` together. The Python callback dispatcher speaks the Rust
 wire contract for leases (`result` tags and `ttl`) and continuity deletes.
+For continuity stores, `checkpoint_version` is monotonic per identity and
+continuity generation. A live session rebind changes `session_id` without
+resetting the version; only destructive reset advances `generation` and starts
+the version stream over.
 
 Gateway memory config currently accepts Elephant as `{backend, endpoint}`.
 `memory(stores=...)` is intentionally rejected because the Rust gateway does not

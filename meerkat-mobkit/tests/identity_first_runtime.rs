@@ -36,6 +36,7 @@ use meerkat_mobkit::identity_first::{
     ManagedPeerEdge, SessionBridge, SessionSnapshot, TopologyContext, TopologyError,
 };
 use meerkat_mobkit::identity_first::{LocalContinuityStore, LocalLeaseProvider};
+use meerkat_mobkit::{ErrorEvent, ErrorHook};
 
 // ===========================================================================
 // Helpers
@@ -546,6 +547,113 @@ impl FaultyContinuityStore {
         self.allow_upserts.store(count, Ordering::SeqCst);
         self.fail_upsert_once.store(false, Ordering::SeqCst);
         self.fail_upsert();
+    }
+}
+
+struct IdentityScopedVersionStore {
+    inner: Arc<LocalContinuityStore>,
+    heads: Mutex<BTreeMap<(AgentIdentity, ContinuityGeneration), CheckpointVersion>>,
+}
+
+impl IdentityScopedVersionStore {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(LocalContinuityStore::in_memory().unwrap()),
+            heads: Mutex::new(BTreeMap::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl ContinuityStore for IdentityScopedVersionStore {
+    async fn resolve_many(
+        &self,
+        identities: &[AgentIdentity],
+    ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError> {
+        self.inner.resolve_many(identities).await
+    }
+
+    async fn load_session_snapshot(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+        self.inner.load_session_snapshot(session_id).await
+    }
+
+    async fn save_session_snapshot(
+        &self,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+        generation: ContinuityGeneration,
+        version: CheckpointVersion,
+        fencing_token: FencingToken,
+        snapshot: &SessionSnapshot,
+    ) -> Result<(), ContinuityStoreError> {
+        {
+            let heads = self
+                .heads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(current) = heads.get(&(identity.clone(), generation))
+                && version <= *current
+            {
+                return Err(ContinuityStoreError::StaleCheckpointVersion {
+                    identity: identity.clone(),
+                    presented: version,
+                    current: *current,
+                });
+            }
+        }
+        self.inner
+            .save_session_snapshot(
+                identity,
+                session_id,
+                generation,
+                version,
+                fencing_token,
+                snapshot,
+            )
+            .await?;
+        self.heads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((identity.clone(), generation), version);
+        Ok(())
+    }
+
+    async fn upsert_continuity_record(
+        &self,
+        record: &ContinuityRecord,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .upsert_continuity_record(record, fencing_token)
+            .await?;
+        let mut heads = self
+            .heads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (record.identity.clone(), record.generation);
+        heads
+            .entry(key)
+            .and_modify(|current| *current = (*current).max(record.checkpoint_version))
+            .or_insert(record.checkpoint_version);
+        Ok(())
+    }
+
+    async fn delete_continuity_record(
+        &self,
+        identity: &AgentIdentity,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .delete_continuity_record(identity, fencing_token)
+            .await?;
+        self.heads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(head_identity, _), _| head_identity != identity);
+        Ok(())
     }
 }
 
@@ -1110,7 +1218,7 @@ async fn identity_first_runtime_send_rebinds_rotated_bridge_session() {
         panic!("expected rebound continuity record");
     };
     assert_eq!(record.session_id, live_session_id);
-    assert_eq!(record.checkpoint_version, CheckpointVersion::new(0));
+    assert_eq!(record.checkpoint_version, CheckpointVersion::new(2));
     let unregistered = bridge.unregistered_session_ids.lock().await.clone();
     assert!(
         unregistered.contains(&original_session_id.to_string()),
@@ -1741,9 +1849,59 @@ async fn identity_first_runtime_rebind_after_live_respawn_updates_session() {
     assert_eq!(rebound.agent_runtime_id, record.agent_runtime_id);
     assert_eq!(rebound.generation, record.generation);
     assert_eq!(rebound.session_id, live_session_id);
+    assert_eq!(rebound.checkpoint_version, record.checkpoint_version);
 
     let status = runtime.status(&id).await.unwrap();
     assert_eq!(status.session_id, Some(live_session_id));
+    assert_eq!(status.checkpoint_version, Some(record.checkpoint_version));
+}
+
+#[tokio::test]
+async fn identity_first_runtime_rebind_preserves_identity_scoped_checkpoint_head() {
+    let store = Arc::new(IdentityScopedVersionStore::new());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let runtime = make_runtime(store.clone(), lease_prov.clone());
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 1473);
+    store
+        .upsert_continuity_record(&record, FencingToken::new(1))
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(record.clone()),
+            Some(make_grant("triage:main", 1)),
+        )
+        .await;
+
+    let live_session_id = meerkat_core::types::SessionId::new();
+    let rebound = runtime
+        .rebind_session_after_live_respawn(&id, live_session_id.clone())
+        .await
+        .unwrap();
+    assert_eq!(rebound.session_id, live_session_id);
+    assert_eq!(rebound.checkpoint_version, CheckpointVersion::new(1473));
+
+    let next_version = runtime
+        .checkpoint(
+            &id,
+            &SessionSnapshot {
+                data: b"post-rebind".to_vec(),
+            },
+        )
+        .await
+        .expect("post-rebind checkpoint must advance the identity-generation head");
+    assert_eq!(next_version, CheckpointVersion::new(1474));
+
+    let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
+    let ContinuityResolveState::Ready { record } = resolved.get(&id).unwrap() else {
+        panic!("expected ready record after rebind checkpoint");
+    };
+    assert_eq!(record.session_id, live_session_id);
+    assert_eq!(record.checkpoint_version, CheckpointVersion::new(1474));
 }
 
 #[tokio::test]
@@ -3161,6 +3319,220 @@ async fn identity_first_runtime_lazy_first_send_materializes_reachable_peers_and
 }
 
 #[tokio::test]
+async fn identity_first_runtime_send_and_dispatch_continue_when_reachable_peer_materialize_fails() {
+    struct StaticTopology(Vec<(&'static str, &'static str)>);
+
+    #[async_trait]
+    impl TopologyProvider for StaticTopology {
+        async fn compute_edges(
+            &self,
+            _target_identities: &[AgentIdentity],
+            _context: &TopologyContext,
+        ) -> Result<Vec<ManagedPeerEdge>, TopologyError> {
+            self.0
+                .iter()
+                .map(|(a, b)| {
+                    ManagedPeerEdge::new(make_identity(a), make_identity(b))
+                        .map_err(|err| TopologyError::InvalidEdge(format!("{err}")))
+                })
+                .collect()
+        }
+    }
+
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+    let initiator = make_identity("review:singleton");
+    let broken_peer = make_identity("initiative:broken");
+
+    lazy_register_flow(
+        &runtime,
+        &[
+            make_spec("review:singleton"),
+            make_spec("initiative:broken"),
+        ],
+        Some(&StaticTopology(vec![(
+            "review:singleton",
+            "initiative:broken",
+        )])),
+    )
+    .await
+    .unwrap();
+    let captured_errors: Arc<tokio::sync::Mutex<Vec<ErrorEvent>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let captured = captured_errors.clone();
+    let hook: ErrorHook = Arc::new(move |event| {
+        let captured = captured.clone();
+        Box::pin(async move {
+            captured.lock().await.push(event);
+        })
+    });
+    runtime.set_error_hook(Some(hook));
+    runtime.materialize(&initiator).await.unwrap();
+    bridge.fail_create();
+
+    runtime.send(&initiator, &make_content()).await.unwrap();
+    let create_calls_after_first_failure = bridge.create_calls.load(Ordering::SeqCst);
+    let (_token, is_durable) = runtime
+        .dispatch(&initiator, &make_dispatch_input())
+        .await
+        .unwrap();
+    for _ in 0..10 {
+        if !captured_errors.lock().await.is_empty() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    assert!(is_durable);
+    assert_eq!(
+        bridge.deliver_calls.load(Ordering::SeqCst),
+        2,
+        "send and dispatch must still deliver to the healthy initiator"
+    );
+    assert_eq!(
+        bridge.create_calls.load(Ordering::SeqCst),
+        create_calls_after_first_failure,
+        "immediate dispatch should skip the broken peer through materialization backoff"
+    );
+    let captured_errors = captured_errors.lock().await;
+    assert_eq!(captured_errors.len(), 1);
+    match &captured_errors[0] {
+        ErrorEvent::IdentityMaterializationFailure {
+            identity,
+            initiator: Some(event_initiator),
+            operation,
+            error,
+        } => {
+            assert_eq!(identity, "initiative:broken");
+            assert_eq!(event_initiator, "review:singleton");
+            assert_eq!(operation, "materialize_reachable_peers");
+            assert!(error.contains("bridge create_session"));
+        }
+        other => panic!("expected IdentityMaterializationFailure, got {other:?}"),
+    }
+    drop(captured_errors);
+    assert_eq!(
+        runtime.status(&initiator).await.unwrap().state,
+        IdentityLifecycleState::Active
+    );
+    assert_eq!(
+        runtime.status(&broken_peer).await.unwrap().state,
+        IdentityLifecycleState::Dormant,
+        "failed peer hydration must not become the initiator's failure"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_reachable_peer_materialization_backoff_coalesces_concurrent_sends()
+{
+    struct StaticTopology(Vec<(&'static str, &'static str)>);
+
+    #[async_trait]
+    impl TopologyProvider for StaticTopology {
+        async fn compute_edges(
+            &self,
+            _target_identities: &[AgentIdentity],
+            _context: &TopologyContext,
+        ) -> Result<Vec<ManagedPeerEdge>, TopologyError> {
+            self.0
+                .iter()
+                .map(|(a, b)| {
+                    ManagedPeerEdge::new(make_identity(a), make_identity(b))
+                        .map_err(|err| TopologyError::InvalidEdge(format!("{err}")))
+                })
+                .collect()
+        }
+    }
+
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+    let initiator = make_identity("review:singleton");
+    let broken_peer = make_identity("initiative:broken");
+
+    lazy_register_flow(
+        &runtime,
+        &[
+            make_spec("review:singleton"),
+            make_spec("initiative:broken"),
+        ],
+        Some(&StaticTopology(vec![(
+            "review:singleton",
+            "initiative:broken",
+        )])),
+    )
+    .await
+    .unwrap();
+
+    let captured_errors: Arc<tokio::sync::Mutex<Vec<ErrorEvent>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let captured = captured_errors.clone();
+    let hook: ErrorHook = Arc::new(move |event| {
+        let captured = captured.clone();
+        Box::pin(async move {
+            captured.lock().await.push(event);
+        })
+    });
+    runtime.set_error_hook(Some(hook));
+
+    runtime.materialize(&initiator).await.unwrap();
+    bridge.fail_create();
+
+    let sends = (0..8)
+        .map(|_| {
+            let runtime = runtime.clone();
+            let initiator = initiator.clone();
+            async move { runtime.send(&initiator, &make_content()).await }
+        })
+        .collect::<Vec<_>>();
+    for result in futures::future::join_all(sends).await {
+        result.unwrap();
+    }
+
+    for _ in 0..10 {
+        if !captured_errors.lock().await.is_empty() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(
+        bridge.create_calls.load(Ordering::SeqCst),
+        2,
+        "only the initiator and one failed peer attempt should reach create_session"
+    );
+    assert_eq!(
+        bridge.deliver_calls.load(Ordering::SeqCst),
+        8,
+        "all sends must still deliver to the healthy initiator"
+    );
+    let captured_errors = captured_errors.lock().await;
+    assert_eq!(
+        captured_errors.len(),
+        1,
+        "concurrent sends should coalesce repeated peer build failures behind one alert"
+    );
+    assert!(matches!(
+        &captured_errors[0],
+        ErrorEvent::IdentityMaterializationFailure {
+            identity,
+            initiator: Some(event_initiator),
+            operation,
+            ..
+        } if identity == "initiative:broken"
+            && event_initiator == "review:singleton"
+            && operation == "materialize_reachable_peers"
+    ));
+    assert_eq!(
+        runtime.status(&broken_peer).await.unwrap().state,
+        IdentityLifecycleState::Dormant
+    );
+}
+
+#[tokio::test]
 async fn identity_first_runtime_lazy_register_warns_on_topology_reconcile_failure() {
     struct StaticTopology(Vec<(&'static str, &'static str)>);
 
@@ -3350,6 +3722,74 @@ async fn identity_first_runtime_materialize_all_hydrates_registered_identities_i
             IdentityLifecycleState::Active
         );
     }
+}
+
+#[tokio::test]
+async fn identity_first_runtime_materialize_all_continues_when_one_identity_fails() {
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+    let healthy = make_identity("agent:healthy");
+    let broken = make_identity("agent:broken");
+
+    lazy_register_flow(
+        &runtime,
+        &[make_spec("agent:healthy"), make_spec("agent:broken")],
+        None,
+    )
+    .await
+    .unwrap();
+    let healthy_record = runtime.materialize(&healthy).await.unwrap();
+    bridge.fail_create();
+
+    let records = runtime.materialize_all().await.unwrap();
+
+    assert_eq!(records, vec![healthy_record]);
+    assert_eq!(
+        runtime.status(&healthy).await.unwrap().state,
+        IdentityLifecycleState::Active
+    );
+    assert_eq!(
+        runtime.status(&broken).await.unwrap().state,
+        IdentityLifecycleState::Dormant
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_materialize_all_required_fails_on_partial_hydration() {
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+    let healthy = make_identity("agent:healthy");
+    let broken = make_identity("agent:broken");
+
+    lazy_register_flow(
+        &runtime,
+        &[make_spec("agent:healthy"), make_spec("agent:broken")],
+        None,
+    )
+    .await
+    .unwrap();
+    runtime.materialize(&healthy).await.unwrap();
+    bridge.fail_create();
+
+    let err = runtime.materialize_all_required().await.unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("identity-first required materialization failed")
+    );
+    assert!(err.to_string().contains("agent:broken"));
+    assert_eq!(
+        runtime.status(&healthy).await.unwrap().state,
+        IdentityLifecycleState::Active
+    );
+    assert_eq!(
+        runtime.status(&broken).await.unwrap().state,
+        IdentityLifecycleState::Dormant
+    );
 }
 
 #[tokio::test]

@@ -1040,6 +1040,22 @@ describe("parseErrorEvent", () => {
     assert.equal(result.message, "network unreachable");
   });
 
+  it("parses identity_materialization_failure", () => {
+    const result = parseErrorEvent({
+      category: "identity_materialization_failure",
+      identity: "initiative:broken",
+      initiator: "review:singleton",
+      operation: "materialize_reachable_peers",
+      error: "bridge create_session: missing skill",
+    });
+    assert.equal(result.category, "identity_materialization_failure");
+    assert.equal(
+      result.message,
+      "initiative:broken for review:singleton: materialize_reachable_peers: bridge create_session: missing skill",
+    );
+    assert.equal(result.context.identity, "initiative:broken");
+  });
+
   it("parses unknown category as JSON", () => {
     const result = parseErrorEvent({
       category: "alien_invasion",

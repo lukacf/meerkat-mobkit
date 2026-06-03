@@ -5102,7 +5102,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             let flow_id = meerkat_mob::FlowId::from(flow_id_str);
             let flow_params = request.params.get("params").cloned().unwrap_or(Value::Null);
             if let Some(identity_runtime) = &identity_runtime
-                && let Err(err) = identity_runtime.materialize_all().await
+                && let Err(err) = identity_runtime.materialize_all_required().await
             {
                 return internal_error(
                     response_id,

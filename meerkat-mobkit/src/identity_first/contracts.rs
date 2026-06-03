@@ -28,6 +28,13 @@ use crate::mob_handle_runtime::SessionCreatedContext;
 /// Implementations are responsible for persisting `ContinuityRecord`s and
 /// `SessionSnapshot`s. The store treats `FencingToken` as an opaque monotonic
 /// write-precondition — stale tokens are rejected via compare-and-set.
+/// `CheckpointVersion` is the monotonic snapshot/version counter for
+/// `(AgentIdentity, ContinuityGeneration)`: it advances across session
+/// rotations and resets only when a destructive continuity reset advances the
+/// generation. Session-local snapshot storage may still be keyed by
+/// `SessionId`, but stale snapshot rejection must compare against the current
+/// identity/generation head rather than treating a rebind as a fresh version
+/// stream.
 ///
 /// `resolve_many` MUST return an entry for every requested identity. Missing
 /// entries are treated as a provider error, not implicit `Uninitialized`.
@@ -60,7 +67,7 @@ pub trait ContinuityStore: Send + Sync {
         Ok(false)
     }
 
-    /// Save a session snapshot with fencing and version preconditions.
+    /// Save a session snapshot with fencing and identity-generation version preconditions.
     async fn save_session_snapshot(
         &self,
         identity: &AgentIdentity,
@@ -72,6 +79,9 @@ pub trait ContinuityStore: Send + Sync {
     ) -> Result<(), ContinuityStoreError>;
 
     /// Upsert a continuity record with fencing precondition.
+    ///
+    /// Rebinding an identity to a new session without changing
+    /// `ContinuityGeneration` must not rewind `record.checkpoint_version`.
     async fn upsert_continuity_record(
         &self,
         record: &ContinuityRecord,

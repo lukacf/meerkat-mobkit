@@ -335,6 +335,7 @@ pub struct ShutdownDrainReport {
 /// - `RediscoverFailure` — `lifecycle.rs` rediscover error path
 /// - `HostLoopCrash` — `lifecycle.rs` detects `run_failed` agent events during drain
 /// - `CheckpointFailure` — via `run_periodic_gc_with_error_callback` in session store
+/// - `IdentityMaterializationFailure` — identity-first peer/fleet hydration skipped a member
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "category", rename_all = "snake_case")]
@@ -360,6 +361,12 @@ pub enum ErrorEvent {
         error: String,
     },
     EventLogFlushFailure {
+        error: String,
+    },
+    IdentityMaterializationFailure {
+        identity: String,
+        initiator: Option<String>,
+        operation: String,
         error: String,
     },
 }
@@ -389,6 +396,24 @@ impl Display for ErrorEvent {
             }
             Self::EventLogFlushFailure { error } => {
                 write!(f, "event_log_flush_failure: {error}")
+            }
+            Self::IdentityMaterializationFailure {
+                identity,
+                initiator,
+                operation,
+                error,
+            } => {
+                if let Some(initiator) = initiator {
+                    write!(
+                        f,
+                        "identity_materialization_failure: {identity} for {initiator} during {operation}: {error}"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "identity_materialization_failure: {identity} during {operation}: {error}"
+                    )
+                }
             }
         }
     }
