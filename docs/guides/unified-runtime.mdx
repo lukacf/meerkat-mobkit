@@ -48,7 +48,7 @@ Missing required fields produce `UnifiedRuntimeBuilderError::MissingRequiredFiel
     The unified runtime automatically registers delivery routes for each mob member using the pattern `mob.member.{member_id}.notification`, enabling inter-member messaging through the delivery subsystem.
   </Step>
   <Step title="HTTP serving">
-    The runtime composes Axum routers for the console frontend, console JSON API, and interaction SSE endpoint into a single HTTP server.
+    The runtime composes Axum routers for the console frontend, console JSON API, console JSON-RPC, timeline SSE, agent/mob SSE, structural mob-events SSE, and blob serving into a single HTTP server.
   </Step>
 </Steps>
 
@@ -102,7 +102,7 @@ The unified runtime composes three Axum routers:
 // Console frontend (HTML + JS)
 let frontend = console_frontend_router();
 
-// Console JSON API (experience, modules)
+// Console JSON API/RPC/SSE with live runtime projection
 let json_api = console_json_router_with_runtime(decisions, mob_runtime.clone());
 
 // Compose into a single app
@@ -113,8 +113,19 @@ let app = frontend.merge(json_api);
 |-------|--------|-------------|
 | `/console` | GET | Admin console HTML |
 | `/console/assets/console-app.js` | GET | React bundle |
+| `/console/assets/console-app.css` | GET | Stylesheet |
 | `/console/experience` | GET | Experience metadata JSON |
 | `/console/modules` | GET | Loaded modules JSON |
+| `/console/identities` | GET | Identity records |
+| `/console/timeline` | GET | Replayable timeline page |
+| `/console/timeline/stream` | GET | Timeline replay/live SSE |
+| `/console/identity/{identity}/stream` | GET | Identity-filtered timeline SSE |
+| `/console/rpc` | POST | Console JSON-RPC |
+| `/console/rpc/multipart` | POST | Multipart console JSON-RPC |
+| `/blobs/{blob_id}` | GET | Blob/image retrieval |
+| `/agents/{agent_id}/events` | GET | Per-agent event SSE |
+| `/mob/events` | GET | Mob-merged event SSE |
+| `/mobkit/mob_events/stream` | GET | Structural mob-events SSE |
 
 ## Error hierarchy
 

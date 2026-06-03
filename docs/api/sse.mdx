@@ -6,11 +6,11 @@ icon: "bolt"
 
 MobKit uses Server-Sent Events (SSE) for several real-time flows:
 
-- interaction-scoped streaming through `POST /interactions/stream`
 - agent-scoped streaming through `GET /agents/{agent_id}/events`
 - mob-merged streaming through `GET /mob/events`
 - structural mob events through `GET /mobkit/mob_events/stream`
 - console timeline replay and live continuation through `GET /console/timeline/stream`
+- identity-filtered console timeline streaming through `GET /console/identity/{identity}/stream`
 - event subscription and replay through `mobkit/events/subscribe`
 
 ## Authentication
@@ -25,22 +25,13 @@ Missing or invalid credentials return HTTP **401**. Tokens are
 percent-decoded; a token containing characters that need URL-encoding
 (`=`, `&`, `+`, `%`) is handled correctly.
 
-## Interaction stream
+## Agent event stream
 
 ```
-POST /interactions/stream
+GET /agents/{agent_id}/events
 ```
 
-Start an interaction with a specific member and receive an SSE response stream (`Content-Type: text/event-stream`).
-
-### Request body
-
-```json
-{
-  "member_id": "lead-1",
-  "message": "Analyze the latest delivery failures."
-}
-```
+Subscribe to raw Meerkat agent events for one agent (`Content-Type: text/event-stream`).
 
 ### Frame format
 
@@ -77,6 +68,14 @@ If replay cannot satisfy the requested cursor, the server returns HTTP **409** w
 ```
 
 Clients should resume from `latest_cursor` rather than retrying the stale cursor.
+
+## Identity timeline stream
+
+```
+GET /console/identity/{identity}/stream
+```
+
+Convenience route for an identity-filtered console timeline stream. It sets the timeline query `identity` from the path and otherwise behaves like `GET /console/timeline/stream`.
 
 ## Event subscription
 
@@ -188,11 +187,7 @@ The server sends keep-alive frames at a configurable interval (default: 15 secon
 : keep-alive
 ```
 
-When the broadcast lags (slow consumer, channel saturated), the
-console SSE routes emit a synthetic `stream_lagged` envelope with
-the count of skipped events instead of silently breaking the
-connection. Clients should refetch via the catch-up endpoint or
-reconnect with a fresh `last-event-id`.
+When the console timeline broadcast lags (slow consumer, channel saturated), the stream closes. Clients should refetch a recent timeline page and reconnect from the returned `latest_cursor` or a fresh `Last-Event-ID`.
 
 ## Sending messages
 
@@ -206,11 +201,11 @@ To send a message to an agent, use the `mobkit/send_message` RPC method and capt
 }
 ```
 
-Then observe streamed responses via `POST /interactions/stream` and broader replayable event history via `mobkit/events/subscribe`.
+Then observe streamed responses via `GET /console/timeline/stream`, `GET /console/identity/{identity}/stream`, or broader replayable event history via `mobkit/events/subscribe`.
 
 ## Error handling
 
-If the target member does not exist or the interaction request is malformed, the interaction endpoint returns an HTTP error response:
+If the target agent/member does not exist or a subscription request is malformed, SSE routes return an HTTP error response before opening the stream:
 
 | Status | Cause |
 |--------|-------|

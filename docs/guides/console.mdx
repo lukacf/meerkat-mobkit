@@ -1,10 +1,10 @@
 ---
 title: "Console"
-description: "Three-column agent console with grouped sidebar, multi-panel chat dock, activity rail, and full dark theme."
+description: "Embedded MobKit console with configurable branding, grouped roster, chat workspace, timeline replay, signals, logs, and operator controls."
 icon: "desktop"
 ---
 
-MobKit ships a web-based admin console embedded directly in the Rust gateway binary. The console provides real-time visibility into agents, conversations, and events — all in a dark-themed, IDE-style layout powered by the shared `@console-core` and `@console-components` packages.
+MobKit ships a web-based admin console embedded directly in the Rust gateway binary. The console provides real-time visibility into agents, conversations, events, logs, approvals, and recovery actions. The stock shell is built from shared `@console-core` and `@console-components` packages, while app-specific policy stays in runtime config and host code.
 
 ## Accessing the console
 
@@ -14,7 +14,7 @@ Once the runtime is serving HTTP, open the console at:
 http://localhost:8080/console
 ```
 
-The HTML, JavaScript, and CSS are compiled into the binary via `include_str!` — no external CDN or build step at deployment time.
+The HTML, JavaScript, and CSS are compiled into the binary via `include_str!`, with no external CDN or build step at deployment time.
 
 For development with instant hot-reload:
 
@@ -23,9 +23,27 @@ cd console
 npm run dev    # starts Vite at http://localhost:5199 with proxy to gateway
 ```
 
+## Runtime contract
+
+The bundled console uses a small set of stable protocol surfaces:
+
+| Surface | Purpose |
+|---------|---------|
+| `GET /console/experience` | Initial runtime snapshot, affordances, topology, health, and `console_config`. |
+| `GET /console/modules` | Loaded module summary. |
+| `GET /console/identities` | Identity-first list and inspection summary. |
+| `GET /console/timeline` | Replayable console frames for initial load and older-history paging. |
+| `GET /console/timeline/stream` | Bounded replay followed by live timeline frames. |
+| `GET /console/identity/{identity}/stream` | Identity-filtered timeline stream convenience route. |
+| `POST /console/rpc` | JSON-RPC 2.0 endpoint for console commands. |
+| `POST /console/rpc/multipart` | Multipart JSON-RPC for image send/upload. |
+| `GET /blobs/{blob_id}` | Blob/image retrieval for rendered media. |
+
+The console contract version is `0.5.0` in `console/src/lib/contract.ts` and `docs/rct/console-rest-sse-contract-v0.5.0.json`. The runtime JSON-RPC contract is separately versioned by `MOBKIT_CONTRACT_VERSION`.
+
 ## Layout
 
-The console uses a three-column layout built on the shared `ConsoleWorkbench` component:
+The console uses a configurable workbench layout built on the shared `ConsoleWorkbench` component:
 
 ```
 ┌─────────────┬──────────────────────────┬────────────────┐
@@ -48,22 +66,27 @@ The console uses a three-column layout built on the shared `ConsoleWorkbench` co
 └─────────────┴──────────────────────────┴────────────────┘
 ```
 
-### Sidebar — Agent roster
+### Sidebar - controls and roster
 
-The left column shows all agents organized by group. Groups are determined by the `group` label on each agent (falls back to profile name if not set).
+The left column is navigation. It can show stock controls such as topology, roster, logs, health, and approvals, plus app-defined buttons. Clicking an agent opens chat; details and profile-style data belong in roster surfaces.
 
-**Action strip** at the top provides top-level operations:
-- **Spawn agent** — create a new agent in the mob
-- **Reconcile** — reconcile the mob roster
+Agents can be grouped by configured selectors. The default useful pattern is labels first, then structural fallbacks:
 
-**Agents header** has inline icon actions:
-- **+** — spawn agent in group
-- **≡** — sort & filter
+```toml
+[agent_list]
+group_by = ["labels.console_group", "labels.group", "role"]
+subgroup_by = ["labels.org", "labels.realm"]
+section_order = ["Personal", "Initiatives", "Internal"]
+fallback_group = "Agents"
+fallback_subgroup = "Other"
+default_pinned_agent_ids = ["identity:ops-lead"]
+collapse_single_subgroup = true
+```
 
 Each agent row shows:
 - Agent display name and member ID
 - Status badge (active, running, idle)
-- Pin action (on hover) — pinned agents sort to top
+- Pin action; pinned agents persist in local storage after the first user interaction
 
 Non-addressable agents (e.g., Gate, Health Monitor) appear dimmed and cannot be messaged.
 
@@ -83,13 +106,15 @@ The center area is a multi-panel tabbed workspace. Each panel contains a `Conver
 - Send button (↑) — also supports Enter to send, Shift+Enter for newline
 - Footer shows: target agent, member ID, profile, and status
 
-### Activity rail — Event feed
+### Signals rail - event feed
 
-The right column shows a chronological event pulse feed. Events appear as agents process messages — each event shows the event type and a data preview.
+The right column shows user-meaningful signals: requests, assistant replies, peer messages, image events, relevant tool activity, and alert levels. Low-level transport envelopes, scaffold prompts, raw checksum tokens, and raw tool metadata are filtered out before reaching the user-facing view.
 
 ## Agent grouping
 
-Agents are grouped in the sidebar using the well-known `group` label. Set this at spawn time:
+Agents are grouped in the sidebar by `console_config.agent_list`. Selectors support `labels.<key>`, `label:<key>`, raw label keys, and direct fields such as `group`, `subgroup`, `role`, `kind`, `identity`, `member_id`, and `agent_id`.
+
+Prefer mob member labels for domain-specific grouping:
 
 ```rust
 use std::collections::BTreeMap;
@@ -101,7 +126,8 @@ fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 SpawnMemberSpec::new(ProfileName::from("lead"), MeerkatId::from("domain:billing"))
     .with_labels(labels(&[
         ("display_name", "Billing"),
-        ("group", "Domain"),
+        ("console_group", "Domain"),
+        ("org", "Payments"),
     ]));
 ```
 
@@ -110,9 +136,99 @@ SpawnMemberSpec::new(ProfileName::from("lead"), MeerkatId::from("domain:billing"
 | Label | Purpose |
 |-------|---------|
 | `display_name` | Human-readable name shown in the sidebar (overrides member_id) |
-| `group` | Sidebar group name (overrides profile-based grouping) |
+| `console_group` | Recommended domain grouping selector for the stock console |
+| `group` | Legacy/sidebar group fallback |
+| `org` / `realm` | Common subgroup selectors |
 | `addressable` | Set `"false"` to hide send-message actions for internal agents |
 | `singleton` | Set `"true"` to prevent agent retirement |
+
+## Console configuration
+
+The stock console can be shaped by `config/console.toml` in the conventional workspace layout. `mobkit_gateway` loads that file automatically; `rpc_gateway` accepts `runtime_options.console_config_path`, and the TypeScript builder exposes `.consoleConfig("config/console.toml")`.
+
+The parsed config is projected through `GET /console/experience` as `console_config`.
+
+```toml
+title = "OB3"
+
+[brand]
+label = "Open Brain"
+logo_url = "/assets/ob3.svg"
+logo_alt = "OB3"
+
+[appearance]
+default_theme = "dark"
+default_variant = "graphite"
+
+[environment]
+label = "prod"
+
+[layout]
+initial_preset = "two_columns"
+initial_control = "roster"
+initial_agent = "identity:ops-lead"
+sidebar_collapsed = false
+
+[rail]
+visible = true
+collapsed = false
+active_preset_id = "critical"
+empty_text = "No meaningful signals yet."
+
+[[rail.filter_presets]]
+id = "critical"
+label = "Critical"
+alert_levels = ["critical"]
+
+[sidebar]
+visible_controls = ["topology", "roster", "logs", "health"]
+hidden_controls = []
+
+[[sidebar.buttons]]
+id = "ob3-board"
+label = "OB3 Board"
+href = "https://example.test/ob3"
+target = "_blank"
+icon_name = "external-link"
+
+[agent_list]
+group_by = ["labels.console_group", "labels.group", "role"]
+subgroup_by = ["labels.org", "labels.realm"]
+section_order = ["Personal", "Initiatives", "Internal"]
+fallback_group = "Agents"
+fallback_subgroup = "Other"
+default_pinned_agent_ids = ["identity:ops-lead"]
+collapse_single_subgroup = true
+
+[[agent_list.badges]]
+id = "org"
+label = "Org"
+field = "labels.org"
+tone = "info"
+
+[[agent_list.sections]]
+name = "Initiatives"
+collapsed = false
+empty_title = "No initiatives"
+empty_text = "Create one in Linear."
+
+[actions]
+inspect_label = "Profile"
+chat_label = "Open chat"
+send_label = "Send to agent"
+respawn_label = "Respawn"
+retire_label = "Retire"
+reset_label = "Reset"
+show_reset = false
+
+[realms.ob3]
+title = "OB3"
+
+[realms.ob3.agent_list]
+subgroup_by = ["labels.org"]
+```
+
+Keep this config view-level. It should decide presentation, ordering, visibility, labels, defaults, and links. It should not decide runtime authorization, routing, or whether an agent exists.
 
 ## CSS customization
 
@@ -176,25 +292,31 @@ Identity-first status and inspect payloads use lowercase wire enums for addressa
 ## Messaging protocol
 
 <Steps>
-  <Step title="Open the right stream first">
-    Identity-addressed panels post to `/console/identity/stream` with `{ "identity": "identity:luka" }` before sending. Legacy member-addressed panels still use `/interactions/stream` with `member_id`. Opening the stream first avoids dropping fast responses.
+  <Step title="Seed the timeline">
+    Panels load recent visible frames with `GET /console/timeline?identity=identity:luka&mode=recent&limit=...`. Older history is paged with `before`; live continuation uses `latest_cursor`.
   </Step>
   <Step title="Send message">
-    Identity-addressed panels call `mobkit/interact`:
+    Identity-addressed panels call `mobkit/console/send` through `POST /console/rpc`:
     ```json
-    { "identity": "identity:luka", "content": "What is on my calendar tomorrow?", "origin": "console:panel-1" }
+    {
+      "identity": "identity:luka",
+      "content": "What is on my calendar tomorrow?",
+      "origin": "console:panel-1",
+      "idempotency_key": "panel-1:turn-1",
+      "handling_mode": "queue"
+    }
     ```
     Returns `{ "interaction_id": "...", "identity": "..." }`.
 
-    Legacy member-addressed panels still use `mobkit/send_message` and receive `{ "accepted": true, "member_id": "...", "session_id": "..." }`.
+    The legacy `POST /console/send` route still exists for compatibility. New console clients should prefer JSON-RPC.
   </Step>
   <Step title="Receive response frames">
-    The identity stream delivers canonical console envelopes filtered by `interaction_id`:
+    The timeline stream delivers canonical console frames:
     ```
-    event: interaction_complete
-    data: {"event_id":"evt-1","interaction_id":"turn-1","identity":"identity:luka","event_type":"interaction_complete","timestamp_ms":2,"data":{"text":"done"}}
+    event: text_delta
+    data: {"id":"frame-1","cursor":"console:241","identity":"identity:luka","event":"text_delta","data":{"text":"done"}}
     ```
-    The all-events rail uses `GET /console/events/stream`. Legacy member/session streams continue to work during migration, but new hosts should prefer the identity-native feeds.
+    If a requested cursor is no longer replayable, the stream returns `409 replay_unavailable`; refetch a recent page and resume from its `latest_cursor`.
   </Step>
 </Steps>
 
@@ -207,15 +329,24 @@ Identity-first status and inspect payloads use lowercase wire enums for addressa
 | `/console/assets/console-app.css` | GET | Stylesheet (CSS) |
 | `/console/experience` | GET | Experience metadata (JSON) |
 | `/console/modules` | GET | Loaded modules list (JSON) |
+| `/console/identities` | GET | Identity-first records |
+| `/console/timeline` | GET | Replayable console timeline page |
+| `/console/timeline/stream` | GET | Timeline SSE replay and live continuation |
+| `/console/identity/{identity}/stream` | GET | Identity-filtered timeline SSE |
+| `/console/send` | POST | Legacy console send |
 | `/console/rpc` | POST | JSON-RPC 2.0 endpoint |
-| `/console/identity/stream` | POST | Identity-scoped SSE stream |
-| `/console/events/stream` | GET | All-events SSE stream |
-| `/interactions/stream` | POST | Interaction-scoped SSE stream |
+| `/console/rpc/multipart` | POST | Multipart JSON-RPC for images/blobs |
+| `/blobs/{blob_id}` | GET | Blob/image retrieval |
 
 Primary RPC methods:
 
-- `mobkit/interact` — identity-addressed, non-blocking interaction accept
-- `mobkit/send_message` — legacy member-addressed send path
+- `mobkit/console/send` - identity-addressed console send
+- `mobkit/interact` - identity-addressed interaction that returns a `/console/identity/{identity}/stream` route
+- `mobkit/console/query_timeline` - timeline replay query
+- `mobkit/console/list_identities` and `mobkit/console/inspect_identity` - identity-first inspection
+- `mobkit/blob/upload` - multipart blob upload
+- `mobkit/retire`, `mobkit/respawn`, and `mobkit/reset` - operator lifecycle actions
+- `mobkit/send_message` - legacy member-addressed send path
 
 ## Authentication
 

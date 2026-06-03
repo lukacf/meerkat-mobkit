@@ -99,10 +99,117 @@ The stock SDK gateway consumes the `runtime_options` object sent by Python and T
 | `scheduling_files` | String array | Loads JSON or TOML schedule definitions and uses them as the default schedules for `mobkit/scheduling/evaluate` and `mobkit/scheduling/dispatch` when the RPC request omits `schedules`. |
 | `gating_config_path` | String | Loads JSON or TOML action policies from an `actions` object and supplies a configured `risk_tier` for `mobkit/gating/evaluate` requests that omit `risk_tier`. |
 | `auth_config` | Object | Supports JWT shared-secret auth (`provider = "jwt"` / `shared_secret`) and wires the reference HTTP console/SSE routes to the configured trusted issuer, audience, and email allowlist. |
+| `console_config_path` | String | Loads a TOML `ConsoleUiConfig` and projects it through `/console/experience` as `console_config`. |
+| `console_require_app_auth` | Boolean | Overrides `ConsolePolicy.require_app_auth` for explicit gateway builds, commonly `false` for local demos. |
 | `console_fetch_timeout_ms` | Positive integer | Sets `RuntimeDecisionState.console.fetch_timeout_ms`, which the bundled console uses for JSON fetches after the initial 60s default. |
 | `event_log` | Object | Supports the built-in memory event log with `storage = "memory"`, `batch_size`, and `flush_interval_ms`; `mobkit/query_events` returns the configured store instead of `no_event_log_configured`. |
 
 Unsupported nested fields fail initialization with `-32602` instead of being silently ignored.
+
+## ConsoleUiConfig
+
+View-level configuration for the stock console. `mobkit_gateway` discovers `config/console.toml` in the conventional workspace layout; `rpc_gateway` accepts the same file via `runtime_options.console_config_path`, and the TypeScript builder exposes `.consoleConfig("config/console.toml")`.
+
+The config is normalized and projected through `GET /console/experience` as `console_config`.
+
+```toml
+title = "OB3"
+
+[brand]
+label = "Open Brain"
+logo_url = "/assets/ob3.svg"
+logo_alt = "OB3"
+
+[appearance]
+default_theme = "dark"
+default_variant = "graphite"
+
+[environment]
+label = "prod"
+
+[layout]
+initial_preset = "two_columns"
+initial_control = "roster"
+initial_agent = "identity:ops-lead"
+sidebar_collapsed = false
+
+[rail]
+visible = true
+collapsed = false
+active_preset_id = "critical"
+empty_text = "No meaningful signals yet."
+
+[[rail.filter_presets]]
+id = "critical"
+label = "Critical"
+watched_only = true
+alert_levels = ["critical"]
+
+[sidebar]
+visible_controls = ["topology", "roster", "logs", "health"]
+hidden_controls = []
+
+[[sidebar.buttons]]
+id = "ob3-board"
+label = "OB3 Board"
+href = "https://example.test/ob3"
+target = "_blank"
+icon_name = "external-link"
+
+[agent_list]
+group_by = ["labels.console_group", "labels.group", "role"]
+subgroup_by = ["labels.org", "labels.realm"]
+section_order = ["Personal", "Initiatives", "Internal"]
+fallback_group = "Agents"
+fallback_subgroup = "Other"
+default_pinned_agent_ids = ["identity:ops-lead"]
+collapse_single_subgroup = true
+
+[[agent_list.badges]]
+id = "org"
+label = "Org"
+field = "labels.org"
+tone = "info"
+
+[[agent_list.sections]]
+name = "Initiatives"
+collapsed = false
+empty_title = "No initiatives"
+empty_text = "Create one in Linear."
+
+[actions]
+inspect_label = "Profile"
+chat_label = "Open chat"
+send_label = "Send to agent"
+respawn_label = "Respawn"
+retire_label = "Retire"
+reset_label = "Reset"
+show_reset = false
+
+[realms.ob3]
+title = "OB3"
+
+[realms.ob3.agent_list]
+subgroup_by = ["labels.org"]
+```
+
+| Section | Description |
+|---------|-------------|
+| `brand` | Label and logo metadata. |
+| `appearance` | Default theme and variant. |
+| `environment` | Short environment label shown in the topbar. |
+| `layout` | Initial preset/control/agent and sidebar collapsed default. |
+| `rail` | Signals rail visibility, collapsed state, empty text, and filter presets. |
+| `sidebar` | Stock control visibility and custom buttons. |
+| `agent_list` | Grouping selectors, section order, default pins, badges, and empty states. |
+| `actions` | Operator-facing action labels and visibility toggles. |
+| `realms.<id>` | Partial overlay applied when the gateway is launched for a realm. |
+
+Agent grouping selectors and badge fields support `labels.<key>`, `label:<key>`, raw label keys, and direct fields such as `group`, `subgroup`, `role`, `kind`, `identity`, `member_id`, and `agent_id`.
+
+<Note>
+`ConsoleUiConfig` is intentionally view-level. It controls presentation, ordering, labels, default pins, and links; it does not decide runtime authorization, routing, or whether an agent exists.
+</Note>
 
 ## AuthPolicy
 

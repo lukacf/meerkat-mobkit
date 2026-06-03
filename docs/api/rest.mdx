@@ -1,10 +1,10 @@
 ---
 title: "REST API"
-description: "HTTP endpoints for console access, experience metadata, module inspection, and agent interactions."
+description: "HTTP endpoints for console access, experience metadata, module inspection, timeline replay, JSON-RPC ingress, and blobs."
 icon: "globe"
 ---
 
-MobKit serves a REST API over HTTP using Axum. The API provides console access, runtime inspection, and agent interaction endpoints.
+MobKit serves a REST API over HTTP using Axum. The API provides console access, runtime inspection, timeline replay, JSON-RPC ingress, legacy console send compatibility, multipart upload/send, and blob retrieval.
 
 ## Base URL
 
@@ -29,6 +29,12 @@ Returns the admin console HTML page. The page is a self-contained single-page Re
 Returns the console React bundle as JavaScript.
 
 **Response:** `application/javascript`
+
+### `GET /console/assets/console-app.css`
+
+Returns the console stylesheet.
+
+**Response:** `text/css`
 
 ---
 
@@ -75,7 +81,7 @@ Returns experience metadata describing the current runtime state. This is the pr
 }
 ```
 
-When a Meerkat mob runtime is configured, the response includes live agent data from the mob. Without a mob runtime, only module-level information is returned.
+When a Meerkat mob runtime is configured, the response includes live agent data from the mob. Without a mob runtime, only module-level information is returned. When console UI config is loaded, the response includes `console_config`, the view-level contract consumed by the bundled console.
 
 ### `GET /console/modules`
 
@@ -92,6 +98,12 @@ Returns the list of loaded modules.
   ]
 }
 ```
+
+### `GET /console/identities`
+
+Returns identity-first records and inspection metadata when an identity runtime is configured.
+
+**Response:** JSON object containing identity records and affordances.
 
 ### `GET /console/timeline`
 
@@ -118,6 +130,39 @@ Response frames are visibility-filtered and returned in display order. `next_cur
   "exhausted": false
 }
 ```
+
+### `GET /console/timeline/stream`
+
+Streams a bounded timeline replay followed by live console frames. It accepts the same query parameters as `GET /console/timeline` and returns `text/event-stream`.
+
+If the requested cursor can no longer be replayed, the route returns HTTP **409** with `{"error":"replay_unavailable"}` and cursor context. Clients should refetch a recent page and resume from `latest_cursor`.
+
+### `GET /console/identity/{identity}/stream`
+
+Identity-filtered convenience route for the same console timeline stream. It sets the `identity` filter from the path and accepts the remaining timeline query parameters.
+
+### `POST /console/send`
+
+Legacy console send route backed by the console aggregator. New clients should prefer `POST /console/rpc` with `mobkit/console/send`.
+
+### `POST /console/rpc`
+
+JSON-RPC 2.0 endpoint for console and runtime operations.
+
+### `POST /console/rpc/multipart`
+
+Multipart JSON-RPC endpoint. Supported methods:
+
+| Method | Purpose |
+|--------|---------|
+| `mobkit/console/send` | Send console content with image upload placeholders. |
+| `mobkit/blob/upload` | Store a single blob/image and return a blob ID. |
+
+Multipart image uploads are bounded by the server-side image count and byte limits.
+
+### `GET /blobs/{blob_id}`
+
+Returns blob/image content by ID when a blob store is configured.
 
 ---
 

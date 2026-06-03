@@ -1,5 +1,7 @@
 # MobKit Console: Unified Platform Direction (v5)
 
+> Status: historical direction memo. The current implemented console contract is `docs/rct/console-rest-sse-contract-v0.5.0.json`: `POST /console/rpc` with `mobkit/console/send`, `GET /console/timeline`, `GET /console/timeline/stream`, and `GET /console/identity/{identity}/stream`. Older references below to `POST /interactions/stream`, `POST /console/identity/stream`, or `GET /console/events/stream` describe pre-implementation design alternatives, not the current surface.
+
 ## Framing
 
 One console type: **operator/debugging workbench for identity-based multi-agent systems**.

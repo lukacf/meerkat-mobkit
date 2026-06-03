@@ -21,6 +21,7 @@ const rt = await MobKit.builder()
   .mob("config/mob.toml")
   .memory(memory.elephant("http://127.0.0.1:8080"))
   .persistentState(".mobkit/state")
+  .consoleConfig("config/console.toml")
   .gateway("./target/debug/rpc_gateway")
   .build();
 
@@ -157,6 +158,8 @@ The TypeScript SDK targets the JSON-RPC gateway. Rust also exposes lower-level n
 External identity providers are all-or-nothing: configure `continuityStore()`, `leaseProvider()`, and `scratchDir()` together. The SDK sends the corresponding init flags to Rust, and provider callbacks use Rust's wire shape (`result` tags and `ttl`).
 
 Gateway memory config currently accepts the Elephant backend as `{ backend, endpoint }`. Store, collection, and space selectors are retained on the helper object for app code but are not sent to the Rust gateway. Gateway auth config supports JWT validation; Google/OIDC helpers are model objects, not accepted by `mobkit/init` today.
+
+The builder forwards `consoleConfig(path)` as `runtime_options.console_config_path`, which lets the bundled console consume the same `console_config` contract projected by `/console/experience`. Use `consoleAuthRequired(false)` only for explicit local demos.
 
 ## HTTP transport timeout
 

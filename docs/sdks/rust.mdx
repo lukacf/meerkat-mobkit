@@ -10,7 +10,7 @@ The Rust crate `meerkat-mobkit` is the primary interface for MobKit. All other i
 
 ```toml Cargo.toml
 [dependencies]
-meerkat-mobkit = "0.6.47"
+meerkat-mobkit = "0.6.55"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
@@ -204,10 +204,10 @@ fn validate_traceability_statuses(statuses: &[&str]) -> Result<(), GovernanceVal
 Build Axum routers for serving the console and interactions:
 
 ```rust
-// Console frontend (HTML + JS)
+// Console frontend (HTML + JS + CSS)
 let frontend: Router = console_frontend_router();
 
-// Console JSON API
+// Console JSON API, JSON-RPC, timeline SSE, multipart upload/send, and blobs
 let json_api: Router = console_json_router(decisions);
 let json_api: Router = console_json_router_with_runtime(decisions, mob_runtime);
 ```

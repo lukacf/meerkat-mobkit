@@ -4,11 +4,12 @@ description: "JSON-RPC 2.0 protocol for MobKit runtime operations: gating, memor
 icon: "plug"
 ---
 
-MobKit exposes its full operational API over JSON-RPC 2.0 via stdio. This is the primary programmatic interface for SDKs and tooling.
+MobKit exposes its operational API over JSON-RPC 2.0. SDK gateways use JSON lines over stdio, while the embedded console uses `POST /console/rpc` for the console-specific subset and runtime passthrough.
 
 ## Protocol
 
-- **Transport:** JSON lines over stdio (one JSON object per line)
+- **SDK transport:** JSON lines over stdio (one JSON object per line)
+- **Console transport:** HTTP `POST /console/rpc`
 - **Version:** JSON-RPC 2.0
 - **Contract version:** `0.4.0`
 
@@ -28,7 +29,7 @@ Clients must validate the contract version before sending requests.
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "gating.evaluate",
+  "method": "mobkit/gating/evaluate",
   "params": { ... }
 }
 ```
@@ -110,6 +111,16 @@ up gaplessly with the same predicate.
 
 ## Console timeline
 
+Console-specific RPC methods are handled by the HTTP console dispatcher and are also listed in the console contract `v0.5.0`.
+
+### `mobkit/console/list_identities`
+
+List identities known to the console aggregator.
+
+### `mobkit/console/inspect_identity`
+
+Inspect one console identity and return status, affordances, output preview, and reachability metadata. Older servers may only support the legacy `mobkit/inspect_identity`; the headless console controller keeps that as a compatibility fallback.
+
 ### `mobkit/console/query_timeline`
 
 Query the console log store for timeline frames. The method backs the bundled console chat and activity panes.
@@ -138,7 +149,27 @@ Response:
 
 `next_cursor` never advances past visible frames omitted due to `limit`, so clients can page with `mode: "since"` without gaps. `latest_cursor` is the live-continuation cursor for `mode: "recent"` seed queries.
 
-### `list_runs`
+### `mobkit/console/send`
+
+Submit an identity-addressed console interaction through the console aggregator.
+
+```json
+{
+  "identity": "identity:luka",
+  "content": "What is on my calendar tomorrow?",
+  "origin": "console:panel-1",
+  "idempotency_key": "panel-1:turn-1",
+  "handling_mode": "queue"
+}
+```
+
+The response includes `interaction_id` and `identity`. The multipart JSON-RPC endpoint also accepts this method when `content` contains `image_upload` placeholders.
+
+### `mobkit/blob/upload`
+
+Upload a single blob/image through `POST /console/rpc/multipart`. The response includes a `blob_id` that can be rendered through `GET /blobs/{blob_id}`.
+
+### `mobkit/list_runs`
 
 List flow runs for this mob.
 
@@ -158,7 +189,7 @@ Returns `{runs: MobRun[]}` carrying the full meerkat ledger projection:
 
 ## Gating methods
 
-### `gating.evaluate`
+### `mobkit/gating/evaluate`
 
 Evaluate the risk tier for a proposed action.
 
@@ -181,7 +212,7 @@ Evaluate the risk tier for a proposed action.
 ```
 </Accordion>
 
-### `gating.decide`
+### `mobkit/gating/decide`
 
 Approve or deny a pending gated action.
 
@@ -193,11 +224,11 @@ Approve or deny a pending gated action.
 | `decided_by` | `string` | yes | Who made the decision |
 </Accordion>
 
-### `gating.pending`
+### `mobkit/gating/pending`
 
 List all pending gated actions awaiting approval.
 
-### `gating.audit`
+### `mobkit/gating/audit`
 
 Return the gating audit log (most recent entries, bounded by retention limit).
 
@@ -205,7 +236,7 @@ Return the gating audit log (most recent entries, bounded by retention limit).
 
 ## Memory methods
 
-### `memory.index`
+### `mobkit/memory/index`
 
 Index content into Elephant's knowledge store.
 
@@ -217,7 +248,7 @@ Index content into Elephant's knowledge store.
 | `metadata` | `object` | no | Additional metadata for filtering |
 </Accordion>
 
-### `memory.query`
+### `mobkit/memory/query`
 
 Query indexed content by semantic similarity.
 
@@ -229,7 +260,7 @@ Query indexed content by semantic similarity.
 | `filters` | `object` | no | Metadata filters |
 </Accordion>
 
-### `memory.stores`
+### `mobkit/memory/stores`
 
 Return information about configured memory backends.
 
@@ -237,7 +268,7 @@ Return information about configured memory backends.
 
 ## Routing methods
 
-### `routing.resolve`
+### `mobkit/routing/resolve`
 
 Resolve a logical destination to a physical route.
 
@@ -259,11 +290,11 @@ Resolve a logical destination to a physical route.
 ```
 </Accordion>
 
-### `routing.routes`
+### `mobkit/routing/routes/list`
 
 List all registered routes.
 
-### `routing.route.add`
+### `mobkit/routing/routes/add`
 
 Register a new route.
 
@@ -276,7 +307,7 @@ Register a new route.
 | `target_module` | `string` | yes | Module that handles delivery |
 </Accordion>
 
-### `routing.route.delete`
+### `mobkit/routing/routes/delete`
 
 Remove a registered route.
 
@@ -284,7 +315,7 @@ Remove a registered route.
 
 ## Delivery methods
 
-### `delivery.send`
+### `mobkit/delivery/send`
 
 Send a message through a resolved route.
 
@@ -296,7 +327,7 @@ Send a message through a resolved route.
 | `idempotency_key` | `string` | yes | Key for idempotent delivery |
 </Accordion>
 
-### `delivery.history`
+### `mobkit/delivery/history`
 
 Return delivery records for audit and inspection.
 
@@ -304,7 +335,7 @@ Return delivery records for audit and inspection.
 
 ## Scheduling methods
 
-### `scheduling.evaluate`
+### `mobkit/scheduling/evaluate`
 
 Evaluate schedules at a given tick and return due triggers.
 
@@ -339,23 +370,7 @@ Maximum 256 schedules per request.
 
 ## Session store methods
 
-### `session_store.write`
-
-Persist a session row.
-
-### `session_store.read`
-
-Load a session row by ID.
-
-### `session_store.list`
-
-List all session IDs.
-
-### `session_store.delete`
-
-Remove a session row.
-
-### `session_store.bigquery`
+### `mobkit/session_store/bigquery`
 
 Execute BigQuery-specific session store operations.
 
@@ -363,7 +378,7 @@ Execute BigQuery-specific session store operations.
 
 ## Subscribe methods
 
-### `subscribe`
+### `mobkit/events/subscribe`
 
 Subscribe to runtime events with scope filtering.
 
@@ -378,23 +393,7 @@ Subscribe to runtime events with scope filtering.
 
 ## Console ingress
 
-### `console.route`
-
-Route a console REST-style request through the RPC interface:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "console.route",
-  "params": {
-    "path": "/console/experience",
-    "method": "GET"
-  }
-}
-```
-
-This enables RPC clients to access console data without a separate HTTP connection.
+The older `console.route` style is not the stock console contract. Use `GET /console/experience`, `GET /console/timeline`, and `POST /console/rpc` instead.
 
 ## See also
 
