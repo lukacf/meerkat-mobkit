@@ -4,6 +4,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { build } = require("esbuild");
+const { EMBEDDED_SHARED_FILES } = require("./generated-assets.cjs");
 
 const outDir = path.join(__dirname, "dist");
 const embeddedOutDir = path.join(__dirname, "../meerkat-mobkit/console-dist");
@@ -99,11 +100,11 @@ async function main() {
     "utf8",
   );
 
-  await Promise.all([
-    fs.copyFile(appBundlePath, path.join(embeddedOutDir, "console-app.js")),
-    fs.copyFile(path.join(outDir, "console-app.css"), path.join(embeddedOutDir, "console-app.css")),
-    fs.copyFile(htmlPath, path.join(embeddedOutDir, "index.html")),
-  ]);
+  await Promise.all(
+    EMBEDDED_SHARED_FILES.map((file) => (
+      fs.copyFile(path.join(outDir, file), path.join(embeddedOutDir, file))
+    )),
+  );
 }
 
 main().catch((error) => {

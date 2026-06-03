@@ -49,6 +49,108 @@ test("fetchJson defaults console requests to a 60 second timeout with an abort r
   }
 });
 
+test("console RPC requests use the configured timeout with an abort reason", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let scheduledMs: number | undefined;
+  let cleared = false;
+
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number) => {
+    scheduledMs = timeout;
+    return originalSetTimeout(handler, 0);
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle?: number) => {
+    cleared = true;
+    return originalClearTimeout(handle);
+  }) as typeof clearTimeout;
+  globalThis.fetch = (async (_input, init) => {
+    const signal = init?.signal;
+    return new Promise<Response>((_resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(signal.reason));
+    });
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      queryTimeline("http://127.0.0.1:7000", { identity: "agent-a" }, 10, 25),
+      /console rpc timeout after 25 ms/,
+    );
+    assert.equal(scheduledMs, 25);
+    assert.equal(cleared, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("console multipart requests use the configured timeout with an abort reason", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let scheduledMs: number | undefined;
+  let cleared = false;
+
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number) => {
+    scheduledMs = timeout;
+    return originalSetTimeout(handler, 0);
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle?: number) => {
+    cleared = true;
+    return originalClearTimeout(handle);
+  }) as typeof clearTimeout;
+  globalThis.fetch = (async (_input, init) => {
+    const signal = init?.signal;
+    return new Promise<Response>((_resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(signal.reason));
+    });
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      sendConsoleMultipart(
+        "http://127.0.0.1:7000",
+        "agent-a",
+        "hello",
+        [new File(["png"], "image.png", { type: "image/png" })],
+        "test",
+        "idem-timeout",
+        "queue",
+        25,
+      ),
+      /console multipart timeout after 25 ms/,
+    );
+    assert.equal(scheduledMs, 25);
+    assert.equal(cleared, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("console HTTP errors expose bounded response previews", async () => {
+  const originalFetch = globalThis.fetch;
+  const body = `prefix-${"x".repeat(700)}-secret-tail`;
+  globalThis.fetch = (async () => new Response(body, { status: 502 })) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      fetchJson("http://127.0.0.1:7000", "/console/experience", 60_000),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /Request failed 502/);
+        assert.match(error.message, /prefix-/);
+        assert.doesNotMatch(error.message, /secret-tail/);
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("queryTimeline normalizes aggregate log frames", async () => {
   const originalFetch = globalThis.fetch;
 

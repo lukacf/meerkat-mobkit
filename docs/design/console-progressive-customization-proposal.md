@@ -751,8 +751,11 @@ Implementation tasks:
 
 - Move reusable visual surfaces out of stock-only panels only when their props
   are model/callback driven.
-- Make stock sidebar a renderer over neutral navigation, while preserving
-  existing grouping, pinning, collapse, order, and localStorage precedence.
+- Begin the stock sidebar migration by routing stock reorder commits through
+  the neutral navigation move operation, while preserving existing grouping,
+  pinning, collapse, order, and localStorage precedence. A full replacement of
+  the stock sidebar renderer with a `ConsoleNavigationModel` renderer remains a
+  later milestone and is not claimed by this PR.
 - Add component tests for keyboard reorder, focus retention, accessible labels,
   reduced-motion drag preview behavior, and no app-only imports.
 - Add an alternate shell fixture with non-sidebar navigation.
@@ -768,6 +771,8 @@ Gate checklist:
 - [x] A local alternate-shell fixture renders non-sidebar navigation using
       MobKit models/components.
 - [x] Stock console browser e2e still passes.
+- [ ] Full stock sidebar renderer replacement over `ConsoleNavigationModel`.
+      This is intentionally future work, not a claim made by this PR.
 
 Partial evidence:
 
@@ -781,7 +786,8 @@ Partial evidence:
 - Layout-neutral move, focus intent, and live announcement tests:
   `packages/console-core/src/navigation.test.ts`.
 - Shared keyboard/pointer reorder operation:
-  `applyConsoleNavigationReorderIntent`.
+  `applyConsoleNavigationReorderIntent`, used by the stock sidebar reorder
+  commit path in `console/src/panels/Sidebar.tsx`.
 - Alternate shell render proof:
   `console/src/lib/component-render.test.tsx`.
 - Stock browser command:
@@ -875,7 +881,11 @@ Implementation tasks:
 
 Gate checklist:
 
-- [x] Every Phase 0-5 gate is complete.
+- [x] Every Phase 0-5 gate claimed by this private implementation pass has a
+      named local command or source-level assertion.
+- [ ] Every Phase 0-5 target-state gate is complete. The remaining known
+      target-state gap is the full stock sidebar renderer replacement over
+      `ConsoleNavigationModel`.
 - [x] Public package or SDK-subpath names are chosen, or the surfaces are
       explicitly kept private.
 - [x] Stable and experimental exports are labeled and tested.

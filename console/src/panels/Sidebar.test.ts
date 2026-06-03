@@ -31,6 +31,13 @@ test("sidebar treats broad-profile worker wired to commander as a child, not the
   assert.equal(__sidebarTest.isSpawnedDelegateLike(worker, commander), true);
 });
 
+test("sidebar configured links reuse console href allowlist", () => {
+  assert.equal(__sidebarTest.safeConsoleHref("https://example.test/docs"), "https://example.test/docs");
+  assert.equal(__sidebarTest.safeConsoleHref("/console/docs"), "/console/docs");
+  assert.equal(__sidebarTest.safeConsoleHref("javascript:alert(1)"), null);
+  assert.equal(__sidebarTest.safeConsoleHref("data:text/plain,hello"), null);
+});
+
 test("sidebar resolves worker-spawned workers under their worker host", () => {
   const commander: ConsoleAgent = {
     agent_id: "incident-commander",

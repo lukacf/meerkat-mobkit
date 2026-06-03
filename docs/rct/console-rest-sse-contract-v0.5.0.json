@@ -2,9 +2,9 @@
   "contract_version": "0.5.0",
   "version_pin": "v0.5.0",
   "spec_source": {
-    "rct_spec_markdown": ".rct/spec.md",
-    "rct_spec_yaml": ".rct/spec.yaml",
-    "previous_contract": "docs/rct/console-rest-sse-contract-v0.4.0.json"
+    "checked_contract": "docs/rct/console-rest-sse-contract-v0.5.0.json",
+    "previous_contract": "docs/rct/console-rest-sse-contract-v0.4.0.json",
+    "note": "This checked-in JSON file is the canonical contract source for v0.5.0; .rct planning files are not required inputs for this release gate."
   },
   "type_refs": {
     "experience": "TYPE-005",
@@ -550,7 +550,8 @@
             {
               "codes": [
                 -32004,
-                -32000
+                -32000,
+                -32601
               ]
             }
           ]
@@ -572,7 +573,8 @@
             {
               "codes": [
                 -32004,
-                -32000
+                -32000,
+                -32601
               ]
             }
           ]
@@ -587,7 +589,8 @@
             {
               "codes": [
                 -32004,
-                -32000
+                -32000,
+                -32601
               ]
             }
           ]
@@ -607,7 +610,8 @@
             {
               "codes": [
                 -32004,
-                -32000
+                -32000,
+                -32601
               ]
             }
           ]
@@ -631,7 +635,8 @@
               "codes": [
                 -32004,
                 -32602,
-                -32000
+                -32000,
+                -32601
               ]
             }
           ]

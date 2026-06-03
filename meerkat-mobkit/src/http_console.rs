@@ -588,11 +588,14 @@ async fn console_identities_handler(
             Json::<Value>(json!({ "identities": identities })),
         )
             .into_response(),
-        Err(err) => console_json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal_error",
-            &err.to_string(),
-        ),
+        Err(err) => {
+            tracing::warn!(target: "mobkit::console", error = %err, "console identities request failed");
+            console_json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "console identities unavailable",
+            )
+        }
     }
 }
 
@@ -1153,7 +1156,7 @@ fn console_send_error_response(err: ConsoleSendError) -> axum::response::Respons
             (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
         }
     };
-    console_json_error(status, code, &err.to_string())
+    console_json_error(status, code, &console_send_public_message(&err))
 }
 
 fn console_send_rpc_code(err: &ConsoleSendError) -> i64 {
@@ -1173,15 +1176,26 @@ fn console_send_rpc_code(err: &ConsoleSendError) -> i64 {
 }
 
 fn console_send_rpc_error(response_id: Value, err: ConsoleSendError) -> Value {
+    let code = console_send_rpc_code(&err);
     response_value(
         response_id,
         None,
         Some(JsonRpcError {
-            code: console_send_rpc_code(&err),
-            message: err.to_string(),
+            code,
+            message: console_send_public_message(&err),
             data: None,
         }),
     )
+}
+
+fn console_send_public_message(err: &ConsoleSendError) -> String {
+    match err {
+        ConsoleSendError::State(_) | ConsoleSendError::Dispatch(_) | ConsoleSendError::Log(_) => {
+            tracing::warn!(target: "mobkit::console", error = %err, "console send internal error");
+            "console send failed".to_string()
+        }
+        _ => err.to_string(),
+    }
 }
 
 fn timeline_event_matches(
@@ -2011,13 +2025,19 @@ async fn member_entry_to_console_json(
 }
 
 fn internal_error(id: Value, message: impl Into<String>) -> Value {
+    let message = message.into();
+    tracing::warn!(
+        target: "mobkit::console",
+        error = %message,
+        "console JSON-RPC internal error"
+    );
     response_value(
         id,
         None,
         Some(JsonRpcError {
             code: -32000,
-            message: message.into(),
-            data: None,
+            message: "internal error".to_string(),
+            data: Some(json!({ "error": "internal_error" })),
         }),
     )
 }
@@ -7031,6 +7051,28 @@ comms = true
             super::resolve_gating_approver_id(&json!({}), None),
             Err("approver_id required"),
         );
+    }
+
+    #[test]
+    fn internal_error_does_not_disclose_backend_details() {
+        let response = super::internal_error(json!(7), "secret backend DSN");
+
+        assert_eq!(response["error"]["code"], json!(-32000));
+        assert_eq!(response["error"]["message"], json!("internal error"));
+        assert_eq!(response["error"]["data"]["error"], json!("internal_error"));
+        assert!(!response.to_string().contains("secret backend DSN"));
+    }
+
+    #[test]
+    fn console_send_public_message_hides_dispatch_details() {
+        let message = super::console_send_public_message(
+            &crate::console_aggregator::ConsoleSendError::Dispatch(
+                "secret backend DSN".to_string(),
+            ),
+        );
+
+        assert_eq!(message, "console send failed");
+        assert!(!message.contains("secret backend DSN"));
     }
 
     #[tokio::test]

@@ -52,7 +52,11 @@ export function writeSidebarStringSet(
 ): void {
   if (!storage) return;
   try {
-    storage.setItem(key, JSON.stringify(Array.from(value).sort()));
+    const normalized = Array.from(value)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .sort();
+    storage.setItem(key, JSON.stringify(Array.from(new Set(normalized))));
   } catch {
     /* ignore */
   }

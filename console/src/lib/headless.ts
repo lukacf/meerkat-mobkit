@@ -106,6 +106,7 @@ type ConsoleCommandSpec = {
 };
 
 const LEGACY_INSPECT_IDENTITY_METHOD = "mobkit/inspect_identity";
+const MIN_TIMELINE_DEDUP_KEYS = 1_000;
 
 const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
   [CONSOLE_COMMAND_NAMES.inspectIdentity]: {
@@ -205,6 +206,7 @@ export interface ConsoleCommandSurface {
     optimistic: ConsoleFact<{ idempotencyKey: string; targetId: string }>;
     accepted: ConsoleFact<ConsoleTimelineAccepted>;
   }>;
+  uploadBlob(input: ConsoleUploadInput): Promise<ConsoleFact<ConsoleUploadResult>>;
   execute(input: ConsoleCommandRequest): Promise<ConsoleCommandResult>;
 }
 
@@ -228,9 +230,9 @@ export function createHttpConsoleTransport({
     loadExperience: () => fetchJson<ConsoleExperience>(baseUrl, CONSOLE_REST_PATHS.experience, timeout()),
     loadModules: () => fetchJson<ConsoleModulesResponse>(baseUrl, CONSOLE_REST_PATHS.modules, timeout()),
     capabilities: async () => normalizeCapabilities(
-      await callConsoleRpc<unknown>(baseUrl, CONSOLE_RPC_METHODS.capabilities),
+      await callConsoleRpc<unknown>(baseUrl, CONSOLE_RPC_METHODS.capabilities, {}, timeout()),
     ),
-    queryTimeline: (input) => queryTimeline(baseUrl, input, input.limit),
+    queryTimeline: (input) => queryTimeline(baseUrl, input, input.limit, timeout()),
     subscribeTimeline: (input, onFrame) => subscribeTimelineEvents(baseUrl, input, onFrame),
     send: (input) => {
       const handlingMode = input.handlingMode ?? "queue";
@@ -243,6 +245,7 @@ export function createHttpConsoleTransport({
           input.origin,
           input.idempotencyKey,
           handlingMode,
+          timeout(),
         );
       }
       return sendConsole(
@@ -252,6 +255,7 @@ export function createHttpConsoleTransport({
         input.origin,
         input.idempotencyKey,
         handlingMode,
+        timeout(),
       );
     },
     executeCommand: async (input) => {
@@ -266,7 +270,7 @@ export function createHttpConsoleTransport({
       }
       let result: unknown;
       try {
-        result = await callConsoleRpc<unknown>(baseUrl, spec.method, params);
+        result = await callConsoleRpc<unknown>(baseUrl, spec.method, params, timeout());
       } catch (error) {
         if (
           spec.method !== CONSOLE_RPC_METHODS.inspectIdentity ||
@@ -274,7 +278,7 @@ export function createHttpConsoleTransport({
         ) {
           throw error;
         }
-        result = await callConsoleRpc<unknown>(baseUrl, LEGACY_INSPECT_IDENTITY_METHOD, params);
+        result = await callConsoleRpc<unknown>(baseUrl, LEGACY_INSPECT_IDENTITY_METHOD, params, timeout());
       }
       return {
         command: input.command,
@@ -282,7 +286,7 @@ export function createHttpConsoleTransport({
         result,
       };
     },
-    upload: (input) => uploadConsoleBlobMultipart(baseUrl, input),
+    upload: (input) => uploadConsoleBlobMultipart(baseUrl, input, timeout()),
     blobUrl: (blobId) => `${baseUrl}${CONSOLE_BLOB_PATH_PREFIX}${encodeURIComponent(blobId)}`,
   };
 }
@@ -311,11 +315,19 @@ function createConsoleCommandSurface(
   facts: MobKitConsoleController["facts"],
 ): ConsoleCommandSurface {
   let cachedCapabilities: ConsoleCapabilities | null = null;
-  const capabilities = async () => {
-    if (!cachedCapabilities) {
+  const capabilities = async (force = false) => {
+    if (force || !cachedCapabilities) {
       cachedCapabilities = await transport.capabilities();
     }
     return cachedCapabilities;
+  };
+  const requireFreshCapability = async (method: string) => {
+    let currentCapabilities = await capabilities();
+    if (!hasCapability(currentCapabilities, method)) {
+      currentCapabilities = await capabilities(true);
+    }
+    requireCapability(currentCapabilities, method);
+    return currentCapabilities;
   };
   return {
     async sendMessage(target, input) {
@@ -323,8 +335,7 @@ function createConsoleCommandSurface(
       if (!identity) {
         throw new Error(`target ${target.kind} cannot send MobKit console messages`);
       }
-      const currentCapabilities = await capabilities();
-      requireCapability(currentCapabilities, CONSOLE_RPC_METHODS.send);
+      const currentCapabilities = await requireFreshCapability(CONSOLE_RPC_METHODS.send);
       const optimistic = facts.optimistic({
         idempotencyKey: input.idempotencyKey,
         targetId: target.id,
@@ -343,6 +354,17 @@ function createConsoleCommandSurface(
         }),
       };
     },
+    async uploadBlob(input) {
+      const currentCapabilities = await requireFreshCapability(CONSOLE_RPC_METHODS.blobUpload);
+      if (!transport.upload) {
+        throw new Error(`transport does not implement ${CONSOLE_RPC_METHODS.blobUpload}`);
+      }
+      const uploaded = await transport.upload(input);
+      return facts.mobkit(uploaded, {
+        routeOrMethod: CONSOLE_RPC_METHODS.blobUpload,
+        capabilityVersion: currentCapabilities.version,
+      });
+    },
     async execute(input) {
       if (!isMobKitTarget(input.target)) {
         throw new Error(`host target ${input.target.kind} cannot execute MobKit commands`);
@@ -351,8 +373,7 @@ function createConsoleCommandSurface(
       if (!spec.targetKinds.has(input.target.kind)) {
         throw new Error(`target ${input.target.kind} cannot execute command ${input.command}`);
       }
-      const currentCapabilities = await capabilities();
-      requireCapability(currentCapabilities, spec.method);
+      await requireFreshCapability(spec.method);
       if (!transport.executeCommand) {
         throw new Error(`transport does not implement command ${input.command}`);
       }
@@ -374,11 +395,10 @@ function createTimelineController(
       });
     },
     async subscribeWithBackfill(input, onFrame) {
-      const delivered = new Set<string>();
+      const delivered = createBoundedTimelineDedupSet(input.limit);
       const deliver = (frame: ConsoleFrame) => {
-        const key = frame.id || `${frame.event}:${frame.cursor || frame.timestampMs || delivered.size}`;
-        if (delivered.has(key)) return;
-        delivered.add(key);
+        const key = timelineDedupKey(frame);
+        if (!delivered.add(key)) return;
         onFrame(facts.mobkit(frame, {
           routeOrMethod: CONSOLE_REST_PATHS.timelineStream,
           cursor: frame.cursor,
@@ -402,6 +422,57 @@ function createTimelineController(
       return unsubscribe;
     },
   };
+}
+
+function createBoundedTimelineDedupSet(limit: number | undefined): { add(key: string): boolean } {
+  const max = Math.max(MIN_TIMELINE_DEDUP_KEYS, (limit || 400) * 4);
+  const keys = new Set<string>();
+  const order: string[] = [];
+  return {
+    add(key) {
+      if (keys.has(key)) {
+        return false;
+      }
+      keys.add(key);
+      order.push(key);
+      while (order.length > max) {
+        const oldest = order.shift();
+        if (oldest) {
+          keys.delete(oldest);
+        }
+      }
+      return true;
+    },
+  };
+}
+
+function timelineDedupKey(frame: ConsoleFrame): string {
+  const id = frame.id?.trim();
+  if (id) return `id:${id}`;
+  const cursor = frame.cursor?.trim();
+  if (cursor) return `cursor:${cursor}`;
+  const timestamp = frame.timestampMs;
+  if (typeof timestamp === "number") {
+    return `timestamp:${frame.event || ""}:${frame.identity || ""}:${timestamp}:${stableDedupText(frame.data)}`;
+  }
+  return `payload:${frame.event || ""}:${frame.identity || ""}:${stableDedupText(frame.data)}`;
+}
+
+function stableDedupText(value: unknown): string {
+  try {
+    return JSON.stringify(value, (_key, nested) => {
+      if (!nested || typeof nested !== "object" || Array.isArray(nested)) {
+        return nested;
+      }
+      return Object.fromEntries(
+        Object.entries(nested as Record<string, unknown>).sort(([left], [right]) => (
+          left.localeCompare(right)
+        )),
+      );
+    });
+  } catch {
+    return String(value);
+  }
 }
 
 function createFactFactory(): MobKitConsoleController["facts"] {
@@ -439,9 +510,13 @@ function normalizeCapabilities(value: unknown): ConsoleCapabilities {
 }
 
 function requireCapability(capabilities: ConsoleCapabilities, method: string) {
-  if (!capabilities.methods.includes(method)) {
+  if (!hasCapability(capabilities, method)) {
     throw new Error(`MobKit capability missing for ${method}`);
   }
+}
+
+function hasCapability(capabilities: ConsoleCapabilities, method: string): boolean {
+  return capabilities.methods.includes(method);
 }
 
 function commandSpec(command: ConsoleCommandName): ConsoleCommandSpec {

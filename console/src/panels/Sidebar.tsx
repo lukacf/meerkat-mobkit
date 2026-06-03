@@ -5,11 +5,13 @@ import {
   SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
   SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
   SUBGROUP_COLLAPSE_STORAGE_PREFIX,
+  applyConsoleNavigationReorderIntent,
   applyConsoleSidebarOrder as applySidebarOrder,
   pruneStaleSidebarStorage,
   readSidebarStringList,
   readSidebarStringSet,
   reorderConsoleSidebarOrder as reorderSidebarOrder,
+  safeConsoleHref,
   sidebarStorageKey,
   writeSidebarStringList,
   writeSidebarStringSet,
@@ -274,6 +276,7 @@ export const __sidebarTest = {
   isAgentPinned,
   sidebarPinnedFamilyPinIds,
   pruneStaleSidebarStorage,
+  safeConsoleHref,
   SIDEBAR_PINS_STORAGE_PREFIX,
   SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
   SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
@@ -597,6 +600,32 @@ function sidebarSubgroupStorageId(bucket: string, subgroup: string): string {
 }
 
 export type SidebarDropPosition = ConsoleSidebarDropPosition;
+
+function reorderSidebarOrderWithNavigationModel(
+  baseOrder: string[],
+  draggedId: string,
+  target: string,
+  where: SidebarDropPosition,
+  inputSource: "keyboard" | "pointer",
+): string[] {
+  const allowed = new Set(baseOrder);
+  const result = applyConsoleNavigationReorderIntent({
+    orientation: "vertical",
+    nodes: baseOrder.map((id) => ({
+      type: "item" as const,
+      id,
+      label: id,
+    })),
+    order: { orderedNodeIds: baseOrder },
+  }, {
+    id: draggedId,
+    targetId: target,
+    position: where,
+    scope: "siblings",
+    inputSource,
+  });
+  return result.model.order.orderedNodeIds.filter((id) => allowed.has(id));
+}
 
 function collectPinnedRows(rows: AgentRow[], pinnedAgentIds: Set<string> | undefined): Set<string> {
   const pinned = new Set<string>();
@@ -1164,11 +1193,16 @@ export function Sidebar({
     () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
     [customButtons],
   );
-  const completeSectionDrop = React.useCallback((target: string, where: SidebarDropPosition, draggedId = draggingOrderRef.current?.id) => {
+  const completeSectionDrop = React.useCallback((
+    target: string,
+    where: SidebarDropPosition,
+    draggedId = draggingOrderRef.current?.id,
+    inputSource: "keyboard" | "pointer" = "pointer",
+  ) => {
     if (!draggedId || draggedId === target) return;
     setSectionOrder((current) => {
       const baseOrder = applySidebarOrder(sectionNames, current);
-      const next = reorderSidebarOrder(baseOrder, draggedId, target, where);
+      const next = reorderSidebarOrderWithNavigationModel(baseOrder, draggedId, target, where, inputSource);
       writeSidebarStringList(localSidebarStorage(), sectionOrderStorageKey, next);
       return next;
     });
@@ -1182,7 +1216,14 @@ export function Sidebar({
       .map((subgroup) => sidebarSubgroupStorageId(bucket, subgroup));
     return Array.from(new Set(ids));
   }, [grouped]);
-  const completeSubgroupDrop = React.useCallback((target: string, bucket: string, where: SidebarDropPosition, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket) => {
+  const completeSubgroupDrop = React.useCallback((
+    target: string,
+    bucket: string,
+    where: SidebarDropPosition,
+    draggedId = draggingOrderRef.current?.id,
+    draggedBucket = draggingOrderRef.current?.bucket,
+    inputSource: "keyboard" | "pointer" = "pointer",
+  ) => {
     if (
       !draggedId ||
       draggedBucket !== bucket ||
@@ -1190,7 +1231,7 @@ export function Sidebar({
     ) return;
     setSubgroupOrder((current) => {
       const bucketOrder = applySidebarOrder(subgroupIdsForBucket(bucket), current);
-      const nextBucketOrder = reorderSidebarOrder(bucketOrder, draggedId, target, where);
+      const nextBucketOrder = reorderSidebarOrderWithNavigationModel(bucketOrder, draggedId, target, where, inputSource);
       const nextBucketSet = new Set(nextBucketOrder);
       const next = [
         ...current.filter((id) => !nextBucketSet.has(id)),
@@ -1208,7 +1249,7 @@ export function Sidebar({
     const target = event.key === "ArrowUp" ? ordered[index - 1] : ordered[index + 1];
     if (!target) return;
     event.preventDefault();
-    completeSectionDrop(target, event.key === "ArrowUp" ? "before" : "after", bucket);
+    completeSectionDrop(target, event.key === "ArrowUp" ? "before" : "after", bucket, "keyboard");
   }, [completeSectionDrop, sectionNames, sectionOrder]);
   const handleSubgroupOrderKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLElement>, storageKey: string, bucket: string) => {
     if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
@@ -1217,7 +1258,7 @@ export function Sidebar({
     const target = event.key === "ArrowUp" ? ordered[index - 1] : ordered[index + 1];
     if (!target) return;
     event.preventDefault();
-    completeSubgroupDrop(target, bucket, event.key === "ArrowUp" ? "before" : "after", storageKey, bucket);
+    completeSubgroupDrop(target, bucket, event.key === "ArrowUp" ? "before" : "after", storageKey, bucket, "keyboard");
   }, [completeSubgroupDrop, subgroupIdsForBucket, subgroupOrder]);
   const beginPointerOrderDrag = React.useCallback((
     event: React.PointerEvent<HTMLElement>,
@@ -1274,9 +1315,9 @@ export function Sidebar({
     pointerDragRef.current = null;
     if (drag.moved && drag.over) {
       if (drag.kind === "section") {
-        completeSectionDrop(drag.over.id, drag.over.where, drag.id);
+        completeSectionDrop(drag.over.id, drag.over.where, drag.id, "pointer");
       } else if (drag.over.bucket) {
-        completeSubgroupDrop(drag.over.id, drag.over.bucket, drag.over.where, drag.id, drag.bucket);
+        completeSubgroupDrop(drag.over.id, drag.over.bucket, drag.over.where, drag.id, drag.bucket, "pointer");
       }
       suppressOrderClickRef.current = true;
       window.setTimeout(() => {
@@ -1415,13 +1456,19 @@ export function Sidebar({
               );
             }
             if (button.href) {
+              const safeHref = safeConsoleHref(button.href);
+              if (!safeHref) {
+                return null;
+              }
+              const target = button.target || undefined;
+              const rel = target === "_blank" ? "noopener noreferrer" : undefined;
               return (
                 <a
                   key={button.id}
                   className="sidebar__navitem"
-                  href={button.href}
-                  target={button.target || undefined}
-                  rel={button.target === "_blank" ? "noreferrer" : undefined}
+                  href={safeHref}
+                  target={target}
+                  rel={rel}
                   data-testid={`nav-custom:${button.id}`}
                   title={button.label}
                 >

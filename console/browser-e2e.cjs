@@ -116,6 +116,23 @@ async function clickSend(page) {
   await send.click();
 }
 
+async function clickLoadOlderHistory(pane) {
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const button = pane.getByRole("button", { name: "Load older history" });
+      await button.waitFor({ state: "visible", timeout: 30_000 });
+      await button.scrollIntoViewIfNeeded();
+      await button.evaluate((node) => node.click());
+      return;
+    } catch (error) {
+      lastError = error;
+      await sleep(100);
+    }
+  }
+  throw lastError;
+}
+
 async function openSidebarAgentChat(page, labelPattern) {
   const row = page
     .locator('.agent[role="button"], .cc-sidebar-row')
@@ -1864,7 +1881,7 @@ async function runChatPaneOlderHistoryDemandPagingProof() {
     const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
     await pane.getByText("Older-demand worker line 250").waitFor({ timeout: 10_000 });
     await assertNoText(page, "Older-demand worker line 42");
-    await pane.getByRole("button", { name: "Load older history" }).click();
+    await clickLoadOlderHistory(pane);
     await pane.getByText("Older-demand worker line 42").waitFor({ timeout: 10_000 });
     const body = pane.locator(".conv__body");
     const scrollState = await body.evaluate((node) => ({
@@ -1934,7 +1951,7 @@ async function runChatPaneAsyncBackfillRestoresOlderHistoryProof() {
     const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
     await pane.getByText("Async-backfill worker line 250").waitFor({ timeout: 10_000 });
     await assertNoText(page, "Async-backfill worker line 42");
-    await pane.getByRole("button", { name: "Load older history" }).click();
+    await clickLoadOlderHistory(pane);
     await pane.getByText("Async-backfill worker line 42").waitFor({ timeout: 10_000 });
 
     const identityRequests = server.requests
@@ -1996,7 +2013,7 @@ async function runChatPaneNonEmptyAsyncBackfillRestoresOlderHistoryProof() {
     const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
     await pane.getByText("Non-empty async-backfill worker line 250").waitFor({ timeout: 10_000 });
     await assertNoText(page, "Non-empty async-backfill worker line 42");
-    await pane.getByRole("button", { name: "Load older history" }).click();
+    await clickLoadOlderHistory(pane);
     await pane.getByText("Non-empty async-backfill worker line 42").waitFor({ timeout: 10_000 });
 
     const identityRequests = server.requests

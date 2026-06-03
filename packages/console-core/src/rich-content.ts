@@ -123,7 +123,7 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function safeMarkdownHref(value: string): string | null {
+export function safeConsoleHref(value: string): string | null {
   const trimmed = String(value || "").trim();
   if (!trimmed) return null;
   const lower = trimmed.toLowerCase();
@@ -156,7 +156,7 @@ export function renderConversationInlineMarkdown(text: string): string {
     .replace(/(^|[^A-Za-z0-9_*])\*([^*\n]+)\*(?![A-Za-z0-9_*])/g, "$1<em>$2</em>")
     .replace(/(^|[^A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])/g, "$1<em>$2</em>")
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
-      const safeHref = safeMarkdownHref(href);
+      const safeHref = safeConsoleHref(href);
       return safeHref
         ? `<a href="${safeHref}" rel="noreferrer">${label}</a>`
         : label;

@@ -46,7 +46,7 @@ function controlTarget(kind: "routing" | "gating"): ConsoleWorkbenchTarget {
 }
 
 function createFakeTransport(options: {
-  capabilities?: ConsoleCapabilities;
+  capabilities?: ConsoleCapabilities | ConsoleCapabilities[];
   queryPages?: ConsoleTimelinePage[];
   accepted?: ConsoleTimelineAccepted;
 } = {}): MobKitConsoleTransport & {
@@ -55,14 +55,21 @@ function createFakeTransport(options: {
   subscriptions: unknown[];
 } {
   const queryPages = [...(options.queryPages || [])];
+  const capabilitiesQueue = Array.isArray(options.capabilities)
+    ? [...options.capabilities]
+    : [];
   const fake = {
     sends: [] as unknown[],
     subscriptions: [] as unknown[],
     loadExperience: async () => ({ contract_version: "fake" }),
-    capabilities: async () => options.capabilities || {
-      version: "fake-capabilities",
-      methods: [CONSOLE_RPC_METHODS.send, CONSOLE_RPC_METHODS.inspectIdentity],
-    },
+    capabilities: async () => (
+      capabilitiesQueue.shift()
+      || (!Array.isArray(options.capabilities) && options.capabilities)
+      || {
+        version: "fake-capabilities",
+        methods: [CONSOLE_RPC_METHODS.send, CONSOLE_RPC_METHODS.inspectIdentity],
+      }
+    ),
     queryTimeline: async () => queryPages.shift() || { frames: [], available: true },
     subscribeTimeline: (input, onFrame) => {
       fake.subscriptions.push(input);
@@ -124,6 +131,32 @@ test("headless timeline controller seeds, subscribes after cursor, backfills rep
   assert.deepEqual(delivered.map((frame) => frame.id), ["seed", "backfill", "live"]);
 });
 
+test("headless timeline dedup keeps a bounded recent identity window", async () => {
+  const seedFrames = Array.from({ length: 1_001 }, (_value, index) => ({
+    event: "text_delta",
+    identity: "identity:lead",
+    data: { index },
+  } satisfies ConsoleFrame));
+  const transport = createFakeTransport({
+    queryPages: [{ frames: seedFrames, available: true, latestCursor: "console:1001" }],
+  });
+  const controller = createMobKitConsoleController({ transport });
+  const delivered: ConsoleFrame[] = [];
+
+  const unsubscribe = await controller.timeline.subscribeWithBackfill(
+    { identity: "identity:lead", limit: 1 },
+    (frame) => delivered.push(frame.value),
+  );
+  assert.equal(delivered.length, 1_001);
+
+  transport.live?.({ event: "text_delta", identity: "identity:lead", data: { index: 1_000 } });
+  assert.equal(delivered.length, 1_001, "recent duplicate should still be suppressed");
+
+  transport.live?.({ event: "text_delta", identity: "identity:lead", data: { index: 0 } });
+  assert.equal(delivered.length, 1_002, "oldest key should be evicted once the bounded window advances");
+  unsubscribe();
+});
+
 test("headless command surface sends only capability-gated MobKit identity targets and returns optimistic plus accepted facts", async () => {
   const transport = createFakeTransport();
   const controller = createMobKitConsoleController({ transport });
@@ -143,6 +176,46 @@ test("headless command surface sends only capability-gated MobKit identity targe
   assert.equal(result.accepted.provenance.capabilityVersion, "fake-capabilities");
   assert.equal(transport.sends.length, 1);
   assert.equal((transport.sends[0] as { identity?: string }).identity, "identity:lead");
+});
+
+test("headless command surface refreshes stale missing capabilities before failing closed", async () => {
+  const transport = createFakeTransport({
+    capabilities: [
+      { version: "empty", methods: [] },
+      { version: "fresh", methods: [CONSOLE_RPC_METHODS.send] },
+    ],
+  });
+  const controller = createMobKitConsoleController({ transport });
+
+  const result = await controller.commands.sendMessage(identityTarget(), {
+    content: "hello",
+    origin: "test",
+    idempotencyKey: "idem-refresh",
+  });
+
+  assert.equal(result.accepted.provenance.capabilityVersion, "fresh");
+  assert.equal(transport.sends.length, 1);
+});
+
+test("headless command surface exposes capability-gated blob upload", async () => {
+  const controller = createMobKitConsoleController({
+    transport: createFakeTransport({
+      capabilities: {
+        version: "blob-capabilities",
+        methods: [CONSOLE_RPC_METHODS.blobUpload],
+      },
+    }),
+  });
+
+  const result = await controller.commands.uploadBlob({
+    file: {} as File,
+    mediaType: "image/png",
+  });
+
+  assert.deepEqual(result.value, { blob_id: "blob-1" });
+  assert.equal(result.provenance.source, "mobkit-protocol");
+  assert.equal(result.provenance.routeOrMethod, CONSOLE_RPC_METHODS.blobUpload);
+  assert.equal(result.provenance.capabilityVersion, "blob-capabilities");
 });
 
 test("headless command surface fails closed on missing capabilities and inert host targets", async () => {

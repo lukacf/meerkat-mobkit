@@ -47,9 +47,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: console/package-lock.json
 
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
+
+      - name: Install console dependencies
+        run: npm --prefix console ci --silent --no-fund --no-audit
 
       - name: Verify embedded console bundle freshness
         run: npm --prefix console run embedded:freshness --silent
@@ -112,9 +117,9 @@ jobs:
             export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256
           fi
           if [[ "${{ matrix.cargo_jobs }}" != "0" ]]; then
-            cargo build -p meerkat-mobkit --release --target "${{ matrix.target }}" -j "${{ matrix.cargo_jobs }}"
+            scripts/repo-cargo build -p meerkat-mobkit --release --target "${{ matrix.target }}" -j "${{ matrix.cargo_jobs }}"
           else
-            cargo build -p meerkat-mobkit --release --target "${{ matrix.target }}"
+            scripts/repo-cargo build -p meerkat-mobkit --release --target "${{ matrix.target }}"
           fi
 
       - name: Package artifacts
@@ -261,10 +266,10 @@ jobs:
           DRY_RUN="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.registry_dry_run == 'true' }}"
           if [[ "$DRY_RUN" == "true" ]]; then
             echo "Running cargo publish in dry-run mode"
-            cargo publish -p meerkat-mobkit --locked --dry-run
+            scripts/repo-cargo publish -p meerkat-mobkit --locked --dry-run
           else
             echo "Publishing meerkat-mobkit to crates.io"
-            output=$(cargo publish -p meerkat-mobkit --locked 2>&1) && true
+            output=$(scripts/repo-cargo publish -p meerkat-mobkit --locked 2>&1) && true
             rc=$?
             if [[ $rc -eq 0 ]]; then
               echo "  meerkat-mobkit: published"
