@@ -150,14 +150,19 @@ jobs:
           set -euo pipefail
           BINARIES=("mobkit_gateway")
           mkdir -p dist
+          target_dir="$(scripts/repo-cargo --print-env | sed -n 's/^CARGO_TARGET_DIR=//p')"
+          if [[ -z "$target_dir" ]]; then
+            echo "Unable to resolve CARGO_TARGET_DIR from scripts/repo-cargo" >&2
+            exit 1
+          fi
           VERSION="${VERSION#v}"
           VERSION="${VERSION//\//-}"
 
           for bin in "${BINARIES[@]}"; do
             if [[ "${RUNNER_OS}" == "Windows" ]]; then
-              src="target/${TARGET}/release/${bin}.exe"
+              src="${target_dir}/${TARGET}/release/${bin}.exe"
             else
-              src="target/${TARGET}/release/${bin}"
+              src="${target_dir}/${TARGET}/release/${bin}"
             fi
             artifact_name="mobkit-gateway-${VERSION}-${TARGET}.${ARCHIVE_EXT}"
 
