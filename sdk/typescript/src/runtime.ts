@@ -1363,6 +1363,20 @@ export class MobHandle {
     return out;
   }
 
+  async supervisorPeerInfo(): Promise<Record<string, string>> {
+    const raw = await this._runtime._rpc(
+      "mobkit/cross_mob/supervisor_peer_info",
+      {},
+    );
+    const out: Record<string, string> = {};
+    if (typeof raw === "object" && raw !== null) {
+      for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        out[k] = String(v);
+      }
+    }
+    return out;
+  }
+
   async peerPubkey(): Promise<string> {
     const raw = await this._runtime._rpc("mobkit/peer_pubkey");
     return typeof raw === "object" && raw !== null

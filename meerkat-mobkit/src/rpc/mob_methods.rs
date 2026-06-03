@@ -1234,7 +1234,7 @@ pub(super) async fn handle_cross_mob_peer_info(
     let member_id = params.get("member_id").and_then(Value::as_str);
     match member_id {
         Some(mid) if !mid.is_empty() => match runtime.local_member_peer_info(mid).await {
-            Ok((peer_id, comms_name, address)) => JsonRpcResponse {
+            Ok((peer_id, comms_name, address, pubkey)) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id,
                 result: Some(serde_json::json!({
@@ -1243,6 +1243,7 @@ pub(super) async fn handle_cross_mob_peer_info(
                     "comms_name": comms_name,
                     "peer_id": peer_id,
                     "address": address,
+                    "pubkey_b64": base64::engine::general_purpose::STANDARD.encode(pubkey),
                 })),
                 error: None,
             },
@@ -1264,6 +1265,37 @@ pub(super) async fn handle_cross_mob_peer_info(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: member_id required".to_string(),
+                data: None,
+            }),
+        },
+    }
+}
+
+/// Return comms peer info for the local mob supervisor bridge.
+pub(super) async fn handle_cross_mob_supervisor_peer_info(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+) -> JsonRpcResponse {
+    match runtime.local_supervisor_peer_info().await {
+        Ok((peer_id, comms_name, address, pubkey)) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(serde_json::json!({
+                "mob_id": runtime.mob_id(),
+                "comms_name": comms_name,
+                "peer_id": peer_id,
+                "address": address,
+                "pubkey_b64": base64::engine::general_purpose::STANDARD.encode(pubkey),
+            })),
+            error: None,
+        },
+        Err(err) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: format!("cross_mob/supervisor_peer_info failed: {err}"),
                 data: None,
             }),
         },

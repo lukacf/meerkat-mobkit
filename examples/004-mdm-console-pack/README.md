@@ -22,8 +22,7 @@ console:
     "site": "local",
     "platform": "darwin-local",
     "address": "tcp://127.0.0.1:5791",
-    "public_key": "ed25519:...",
-    "bootstrap_token": "..."
+    "pairing_password": "demo-password"
   }
 ]
 ```
@@ -57,8 +56,8 @@ npm install
 ./004-mdm-console-pack/scripts/start-console.sh
 ```
 
-The local target helper starts the real `mdm_mob_target` Rust example, waits
-until it writes a binding, and upserts that binding into
+The local target helper starts a vanilla `rkat run --keep-alive` target with
+signed TCP comms and a pairing password, waits until it writes a binding, and upserts that binding into
 `004-mdm-console-pack/.state/target-bindings.json`.
 
 For a GCP target:
@@ -71,10 +70,10 @@ $EDITOR .env.gcp
 ./scripts/start-console.sh
 ```
 
-`gcp-target.sh` creates the VM if needed, syncs the repo, forwards provider
-credential env vars such as `OPENAI_API_KEY`, starts the same real target
-runtime on the VM, fetches its binding, and merges it into the console target
-file.
+`gcp-target.sh` creates the VM if needed, syncs the configured local Meerkat
+worktree, forwards provider credential env vars such as `OPENAI_API_KEY`,
+builds `rkat` on the VM, starts a vanilla `rkat run` target, fetches its binding,
+and merges it into the console target file.
 
 Important: target `--listen HOST:PORT` is the bind address. Target
 `--advertise tcp://HOST:PORT` is the address the console host dials. The GCP
@@ -95,7 +94,6 @@ loopback tunnels, use one stable port per target and keep the target's
 
 gcloud compute ssh mobkit-mdm-target-target-b -- -N \
   -L 127.0.0.1:5792:127.0.0.1:5792 \
-  -R 127.0.0.1:5790:127.0.0.1:5790 \
   -R 127.0.0.1:5793:127.0.0.1:5793
 ```
 
@@ -104,19 +102,16 @@ you need to advertise a public DNS name or a NAT address that the VM cannot bind
 directly, pass both `--listen` and `--advertise` and make sure the resulting
 binding address is the one Meerkat should validate.
 
-For cross-host targets, the console's Meerkat supervisor bridge must also be
-reachable from the targets. The hive/local members also need a routable comms
-address so target peer responses can get back to the console process:
+For cross-host targets, the target listener must be reachable from the console,
+and the console member comms listener must be reachable from the targets so peer
+responses can get back to the console process:
 
 ```bash
-MDM_SUPERVISOR_BIND_ADDRESS=0.0.0.0:5790 \
-MDM_SUPERVISOR_ADVERTISED_ADDRESS=tcp://<console-reachable-host>:5790 \
 MDM_AGENT_COMMS_ADDRESS=<console-reachable-host>:5793 \
 ./004-mdm-console-pack/scripts/start-console.sh
 ```
 
-For a local-only demo, the default supervisor bridge is
-`tcp://127.0.0.1:5790` and the default local member comms listener is
+For a local-only demo, the default local member comms listener is
 `tcp://127.0.0.1:5793`. For SSH loopback tunnels, keep
 `MDM_AGENT_COMMS_ADDRESS=127.0.0.1:5793` and include the reverse tunnel above.
 
@@ -149,10 +144,10 @@ npm run mdm:console
 ```
 
 The empty-target smokes verify that the console boots without the old kennel
-path. `mdm:real-target-smoke` starts a disposable real `mdm_mob_target`, binds it
-as an external mob member, sends a queued mob turn to that target, and checks
-that the target process observed the peer turn. That is the release gate for the
-Meerkat bridge integration.
+path. `mdm:real-target-smoke` starts a disposable vanilla `rkat run` target,
+pairs it with the hive, adopts it as an external mob member, and sends a queued
+mob turn to that target. That is the release gate for the Meerkat bridge
+integration.
 
 The pack is pinned to the Meerkat 0.6.32 family. Re-apply and validate the pin
 with:
@@ -173,5 +168,5 @@ release gates for the vendored Meerkat 0.6.32 bridge patch set in this branch.
 If they fail, treat that as a real bridge or MobKit regression rather than
 falling back to labels, demo model text, or static binding metadata.
 
-On small GCP VMs the target helper builds `mdm_mob_target` with incremental
-artifacts and debug info disabled to avoid filling the default 10 GB boot disk.
+On small GCP VMs the target helper builds `rkat` with incremental artifacts and
+debug info disabled to avoid filling the default 10 GB boot disk.

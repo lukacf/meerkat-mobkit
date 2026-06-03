@@ -45,7 +45,7 @@ memory = true
 [profiles.target]
 model = "gpt-5.5"
 external_addressable = true
-runtime_mode = "turn_driven"
+runtime_mode = "autonomous_host"
 skills = ["mdm_protocol", "target_role"]
 peer_description = "Remote managed machine with target-side tools."
 

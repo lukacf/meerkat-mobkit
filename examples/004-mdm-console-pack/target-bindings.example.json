@@ -5,8 +5,20 @@
     "site": "local",
     "platform": "darwin-local",
     "address": "tcp://127.0.0.1:5791",
-    "public_key": "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
-    "bootstrap_token": "replace-with-target-bootstrap-token"
+    "pairing_password": "demo-password",
+    "binding": {
+      "kind": "external",
+      "address": "tcp://127.0.0.1:5791",
+      "bootstrap_token": "replace-with-target-bootstrap-token",
+      "identity": {
+        "kind": "ed25519_public_key",
+        "public_key": "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+      }
+    },
+    "labels": {
+      "target_runtime": "rkat_run",
+      "shell": "unrestricted"
+    }
   },
   {
     "id": "target-b",
@@ -14,7 +26,19 @@
     "site": "gcp-live",
     "platform": "linux-gcp-vm",
     "address": "tcp://10.0.0.10:5791",
-    "public_key": "ed25519:CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=",
-    "bootstrap_token": "replace-with-target-bootstrap-token"
+    "pairing_password": "demo-password",
+    "binding": {
+      "kind": "external",
+      "address": "tcp://10.0.0.10:5791",
+      "bootstrap_token": "replace-with-target-bootstrap-token",
+      "identity": {
+        "kind": "ed25519_public_key",
+        "public_key": "ed25519:CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg="
+      }
+    },
+    "labels": {
+      "target_runtime": "rkat_run",
+      "shell": "unrestricted"
+    }
   }
 ]

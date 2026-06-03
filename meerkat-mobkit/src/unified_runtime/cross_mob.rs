@@ -490,20 +490,38 @@ impl UnifiedRuntime {
     }
 
     /// Get comms peer info for a local member.
-    /// Returns `(peer_id, comms_name, address)` — the address is always
+    /// Returns `(peer_id, comms_name, address, pubkey)` — the address is always
     /// `inproc://{comms_name}` for local members. For cross-process peering,
     /// the caller should replace the address with the remote gateway's
     /// TCP/UDS endpoint.
     pub async fn local_member_peer_info(
         &self,
         member_id: &str,
-    ) -> Result<(String, String, String), CrossMobError> {
+    ) -> Result<(String, String, String, [u8; 32]), CrossMobError> {
         let handle = self.mob_runtime.handle();
         let mob_id = handle.mob_id().to_string();
         let mid = MeerkatId::from(member_id);
         let info = self.get_member_peer_info(&handle, &mid, &mob_id).await?;
         let address = format!("inproc://{}", info.comms_name);
-        Ok((info.peer_id, info.comms_name, address))
+        Ok((info.peer_id, info.comms_name, address, info.pubkey))
+    }
+
+    /// Get comms peer info for the local mob supervisor bridge.
+    pub async fn local_supervisor_peer_info(
+        &self,
+    ) -> Result<(String, String, String, [u8; 32]), CrossMobError> {
+        let descriptor = self
+            .mob_runtime
+            .handle()
+            .routable_supervisor_peer()
+            .await
+            .map_err(CrossMobError::Mob)?;
+        Ok((
+            descriptor.peer_id.to_string(),
+            descriptor.name.to_string(),
+            descriptor.address.to_string(),
+            descriptor.pubkey,
+        ))
     }
 
     /// Wire a local member to an external peer using provided comms info.

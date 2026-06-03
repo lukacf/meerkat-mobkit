@@ -1087,6 +1087,7 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/mob_events/subscribe",
                 // Always available: local-only member introspection
                 "mobkit/cross_mob/peer_info",
+                "mobkit/cross_mob/supervisor_peer_info",
                 "mobkit/cross_mob/wire_local",
                 "mobkit/cross_mob/unwire_local",
                 "mobkit/peer_pubkey",
@@ -1925,6 +1926,9 @@ async fn handle_unified_rpc_json_inner(
         }
         "mobkit/cross_mob/peer_info" => {
             mob_methods::handle_cross_mob_peer_info(runtime, response_id, &request.params).await
+        }
+        "mobkit/cross_mob/supervisor_peer_info" => {
+            mob_methods::handle_cross_mob_supervisor_peer_info(runtime, response_id).await
         }
         "mobkit/cross_mob/wire_local" => {
             mob_methods::handle_cross_mob_wire_local(runtime, response_id, &request.params).await

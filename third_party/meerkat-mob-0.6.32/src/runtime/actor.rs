@@ -2042,6 +2042,7 @@ impl MobActor {
             #[cfg(feature = "runtime-adapter")]
             runtime_adapter: self.runtime_adapter.clone(),
             restore_diagnostics: self.restore_diagnostics.clone(),
+            supervisor_bridge: self.supervisor_bridge.clone(),
             machine_state_watch_rx: self.machine_state_watch_tx.subscribe(),
             phase_watch_rx: self.phase_watch_tx.subscribe(),
             // W2-E: the actor's internal handle-for-tools does not carry the
@@ -11345,7 +11346,10 @@ impl MobActor {
         member_ref: MemberRef,
         req: Box<meerkat_core::service::StartTurnRequest>,
         reply_tx: oneshot::Sender<
-            Result<Option<meerkat_contracts::wire::supervisor_bridge::BridgeDeliveryCompletion>, MobError>,
+            Result<
+                Option<meerkat_contracts::wire::supervisor_bridge::BridgeDeliveryCompletion>,
+                MobError,
+            >,
         >,
     ) {
         tokio::spawn(async move {
@@ -11359,7 +11363,10 @@ impl MobActor {
         member_ref: MemberRef,
         req: Box<meerkat_core::service::StartTurnRequest>,
         reply_tx: oneshot::Sender<
-            Result<Option<meerkat_contracts::wire::supervisor_bridge::BridgeDeliveryCompletion>, MobError>,
+            Result<
+                Option<meerkat_contracts::wire::supervisor_bridge::BridgeDeliveryCompletion>,
+                MobError,
+            >,
         >,
     ) {
         tokio::spawn(async move {
@@ -13104,11 +13111,8 @@ impl MobActor {
                         entry.agent_identity
                     ))
                 })?;
-                let spec = Self::peer_only_spec_for_binding_with_name(
-                    &binding,
-                    &comms_name,
-                    context,
-                )?;
+                let spec =
+                    Self::peer_only_spec_for_binding_with_name(&binding, &comms_name, context)?;
                 Ok(WiringEndpoint::PeerOnly { spec, binding })
             }
             MemberRef::Session { .. } => Err(MobError::WiringError(format!(

@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
+import net from "node:net";
 import YAML from "yaml";
 
 import {
@@ -51,6 +53,7 @@ type RemoteTargetBinding = {
   public_key?: string;
   identity?: Record<string, unknown>;
   bootstrap_token?: string;
+  pairing_password?: string;
   binding?: Record<string, unknown>;
   labels?: Record<string, string>;
 };
@@ -81,56 +84,58 @@ function stringArg(args: Args, key: string): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function tomlString(value: string): string {
-  return JSON.stringify(value);
+function tcpAdvertisedAddress(address: string): string {
+  return address.startsWith("tcp://") ? address : `tcp://${address}`;
 }
 
-function socketHost(socketAddress: string): string {
-  if (socketAddress.startsWith("[")) {
-    const end = socketAddress.indexOf("]");
-    if (end > 0) return socketAddress.slice(1, end);
-  }
-  const colon = socketAddress.lastIndexOf(":");
-  return colon >= 0 ? socketAddress.slice(0, colon) : socketAddress;
+function tcpBindAddress(address: string): string {
+  return address.startsWith("tcp://") ? address.slice("tcp://".length) : address;
 }
 
-function isUnspecifiedHost(host: string): boolean {
-  return host === "0.0.0.0" || host === "::" || host === "[::]";
-}
+function supervisorBridgeEndpoint(args: Args):
+  | { bindAddress: string; advertisedAddress: string }
+  | undefined {
+  const single =
+    stringArg(args, "supervisor-bridge-address") ??
+    process.env.MDM_SUPERVISOR_BRIDGE_ADDRESS;
+  const bindAddress =
+    stringArg(args, "supervisor-bridge-bind") ??
+    process.env.MDM_SUPERVISOR_BRIDGE_BIND ??
+    (single ? tcpBindAddress(single) : undefined);
+  const advertisedAddress =
+    stringArg(args, "supervisor-bridge-advertise") ??
+    process.env.MDM_SUPERVISOR_BRIDGE_ADVERTISE ??
+    (single ? tcpAdvertisedAddress(single) : undefined);
 
-function defaultSupervisorAdvertisedAddress(bindAddress: string): string {
-  const host = socketHost(bindAddress);
-  if (isUnspecifiedHost(host)) {
+  if (!bindAddress && !advertisedAddress) return undefined;
+  if (!bindAddress || !advertisedAddress) {
     throw new Error(
-      "MDM supervisor bridge bind address is unspecified; set --supervisor-advertised tcp://<console-reachable-host>:<port> or MDM_SUPERVISOR_ADVERTISED_ADDRESS",
+      "supervisor bridge configuration requires both bind and advertised addresses",
     );
   }
-  return `tcp://${bindAddress}`;
+  return {
+    bindAddress: tcpBindAddress(bindAddress),
+    advertisedAddress: tcpAdvertisedAddress(advertisedAddress),
+  };
 }
 
-function writeRuntimeMobConfig(args: Args, stateDir: string): {
+function writeRuntimeMobConfig(stateDir: string, args: Args): {
   path: string;
-  bindAddress: string;
-  advertisedAddress: string;
 } {
-  const bindAddress =
-    stringArg(args, "supervisor-bind") ??
-    process.env.MDM_SUPERVISOR_BIND_ADDRESS ??
-    "127.0.0.1:5790";
-  const advertisedAddress =
-    stringArg(args, "supervisor-advertised") ??
-    process.env.MDM_SUPERVISOR_ADVERTISED_ADDRESS ??
-    defaultSupervisorAdvertisedAddress(bindAddress);
-  const source = readFileSync(join(configDir, "mob.toml"), "utf8");
+  let source = readFileSync(join(configDir, "mob.toml"), "utf8");
+  const supervisor = supervisorBridgeEndpoint(args);
+  if (supervisor) {
+    source += [
+      "",
+      "[backend.external.supervisor_bridge]",
+      `bind_address = ${JSON.stringify(supervisor.bindAddress)}`,
+      `advertised_address = ${JSON.stringify(supervisor.advertisedAddress)}`,
+      "",
+    ].join("\n");
+  }
   const path = join(stateDir, "mob.generated.toml");
-  const content = `${source.trimEnd()}
-
-[backend.external.supervisor_bridge]
-bind_address = ${tomlString(bindAddress)}
-advertised_address = ${tomlString(advertisedAddress)}
-`;
-  writeFileSync(path, content);
-  return { path, bindAddress, advertisedAddress };
+  writeFileSync(path, source);
+  return { path };
 }
 
 function agentCommsAddress(args: Args): string {
@@ -142,10 +147,14 @@ function agentCommsAddress(args: Args): string {
 }
 
 function repoCargoEnv(): Record<string, string> {
-  const result = spawnSync(join(repoRoot, "scripts/repo-cargo"), ["--print-env"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
+  const result = spawnSync(
+    join(repoRoot, "scripts/repo-cargo"),
+    ["--print-env"],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+    },
+  );
   if (result.status !== 0) {
     throw new Error(`repo-cargo --print-env failed:\n${result.stderr}`);
   }
@@ -159,7 +168,8 @@ function repoCargoEnv(): Record<string, string> {
 }
 
 function ensureGatewayBin(skipBuild: boolean): string {
-  if (process.env.MOBKIT_RPC_GATEWAY_BIN) return process.env.MOBKIT_RPC_GATEWAY_BIN;
+  if (process.env.MOBKIT_RPC_GATEWAY_BIN)
+    return process.env.MOBKIT_RPC_GATEWAY_BIN;
   const env = repoCargoEnv();
   const gateway = join(env.CARGO_TARGET_DIR, "debug", "rpc_gateway");
   if (!skipBuild || !existsSync(gateway)) {
@@ -195,7 +205,8 @@ function readTargetBindings(args: Args): RemoteTargetBinding[] {
 
 function bindingFor(target: RemoteTargetBinding): Record<string, unknown> {
   const source = target.binding ?? target;
-  const address = typeof source.address === "string" ? source.address : target.address;
+  const address =
+    typeof source.address === "string" ? source.address : target.address;
   const bootstrapToken =
     typeof source.bootstrap_token === "string"
       ? source.bootstrap_token
@@ -230,6 +241,144 @@ function bindingFor(target: RemoteTargetBinding): Record<string, unknown> {
   };
 }
 
+function pairingProof(
+  password: string,
+  challenge: string,
+  callerPublicKey: string,
+  callerAddress: string,
+): string {
+  const hash = crypto.createHash("sha256");
+  hash.update("meerkat-comms-pairing-v1");
+  hash.update(Buffer.from([0]));
+  hash.update(password);
+  hash.update(Buffer.from([0]));
+  hash.update(challenge);
+  hash.update(Buffer.from([0]));
+  hash.update(callerPublicKey);
+  hash.update(Buffer.from([0]));
+  hash.update(callerAddress);
+  return hash.digest("base64");
+}
+
+function tcpAddressParts(address: string): { host: string; port: number } {
+  const url = new URL(address);
+  if (url.protocol !== "tcp:") {
+    throw new Error(`pairing address must use tcp://, got ${address}`);
+  }
+  const port = Number(url.port);
+  if (!url.hostname || !Number.isInteger(port) || port <= 0) {
+    throw new Error(`invalid pairing TCP address: ${address}`);
+  }
+  return { host: url.hostname, port };
+}
+
+function socketReadLine(socket: net.Socket): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    const cleanup = () => {
+      socket.off("data", onData);
+      socket.off("error", onError);
+      socket.off("close", onClose);
+    };
+    const onData = (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      const newline = buffer.indexOf("\n");
+      if (newline === -1) return;
+      const line = buffer.slice(0, newline);
+      cleanup();
+      resolve(line);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("pairing socket closed before a full line arrived"));
+    };
+    socket.on("data", onData);
+    socket.on("error", onError);
+    socket.on("close", onClose);
+  });
+}
+
+async function pairTargetWithPeer(
+  target: RemoteTargetBinding,
+  peerInfo: Record<string, string>,
+  localAgentCommsAddress: string,
+  peerLabel: string,
+): Promise<RemoteTargetBinding> {
+  if (!target.pairing_password) return target;
+  if (!target.address) {
+    throw new Error(`target ${target.id} has pairing_password but no address`);
+  }
+  const pubkeyB64 = peerInfo.pubkey_b64;
+  const commsName = peerInfo.comms_name;
+  if (!pubkeyB64 || !commsName) {
+    throw new Error(`${peerLabel} peer_info did not include comms_name/pubkey_b64`);
+  }
+  const callerPublicKey = `ed25519:${pubkeyB64}`;
+  const callerAddress =
+    peerInfo.address && peerInfo.address.startsWith("tcp://")
+      ? peerInfo.address
+      : `tcp://${localAgentCommsAddress}`;
+  const { host, port } = tcpAddressParts(target.address);
+  const socket = net.createConnection({ host, port });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write(
+      `${JSON.stringify({ kind: "meerkat_pairing_hello", version: 1 })}\n`,
+    );
+    const challenge = JSON.parse(await socketReadLine(socket)) as {
+      kind?: string;
+      challenge?: string;
+    };
+    if (
+      challenge.kind !== "meerkat_pairing_challenge" ||
+      !challenge.challenge
+    ) {
+      throw new Error(`unexpected pairing challenge from ${target.id}`);
+    }
+    socket.write(
+      `${JSON.stringify({
+        kind: "meerkat_pairing_proof",
+        version: 1,
+        password_proof: pairingProof(
+          target.pairing_password,
+          challenge.challenge,
+          callerPublicKey,
+          callerAddress,
+        ),
+        caller: {
+          name: commsName,
+          address: callerAddress,
+          identity: {
+            kind: "ed25519_public_key",
+            public_key: callerPublicKey,
+          },
+        },
+      })}\n`,
+    );
+    const complete = JSON.parse(await socketReadLine(socket)) as {
+      kind?: string;
+      binding?: Record<string, unknown>;
+    };
+    if (complete.kind !== "meerkat_pairing_complete" || !complete.binding) {
+      throw new Error(`unexpected pairing completion from ${target.id}`);
+    }
+    const binding = { ...complete.binding, address: target.address };
+    console.log(
+      `[mdm] paired target ${target.id} with ${peerLabel} at ${target.address}`,
+    );
+    return { ...target, binding };
+  } finally {
+    socket.destroy();
+  }
+}
+
 function scenarioTarget(id: string): ScenarioTarget | undefined {
   return scenario.targets.find((target) => target.id === id);
 }
@@ -249,34 +398,7 @@ function targetLabels(target: RemoteTargetBinding): Record<string, string> {
 }
 
 class MdmRosterProvider implements RosterProvider {
-  constructor(private readonly targets: RemoteTargetBinding[]) {}
-
   async roster(): Promise<DurableAgentSpec[]> {
-    const targetSpecs: DurableAgentSpec[] = this.targets.map((target) => {
-      const scenarioEntry = scenarioTarget(target.id);
-      const displayName = target.name ?? scenarioEntry?.name ?? target.id;
-      const spec: DurableAgentSpec = {
-        identity: target.id,
-        profile: "target",
-        addressability: "addressable",
-        displayName,
-        labels: {
-          ...targetLabels(target),
-          display_name: displayName,
-          transport: "mob_remote",
-        },
-        context: { target },
-        additionalInstructions: [
-          "You are a visible MDM target agent backed by a runtime on the target host.",
-          "For every host/system/hardware/process/file/network question, inspect the real host before answering.",
-          "Do not answer target-machine questions from roster labels or binding metadata.",
-        ],
-        runtimeModeOverride: "turn_driven",
-      };
-      spec.backend = "external";
-      spec.binding = bindingFor(target);
-      return spec;
-    });
     return [
       {
         identity: "hive",
@@ -299,7 +421,6 @@ class MdmRosterProvider implements RosterProvider {
           "If no target peers are reachable, say that explicitly instead of inventing a target answer.",
         ],
       },
-      ...targetSpecs,
     ];
   }
 }
@@ -310,7 +431,9 @@ class MdmSessionBuilder implements SessionAgentBuilder {
   async buildAgent(options: SessionBuildOptions): Promise<void> {
     const identity = options.labels.durable_identity;
     if (identity && identity !== "hive") {
-      const target = this.targets.find((candidate) => candidate.id === identity);
+      const target = this.targets.find(
+        (candidate) => candidate.id === identity,
+      );
       if (!target) return;
       options.additionalInstructions.push(
         "You are a remote managed target. Inspect this host with your target-side shell tools for host/system/hardware questions.",
@@ -335,7 +458,8 @@ class MdmTopologyProvider implements TopologyProvider {
     const identities = new Set(targetIdentities);
     const edges: ManagedPeerEdge[] = [];
     const add = (a: string, b: string) => {
-      if (identities.has(a) && identities.has(b) && a !== b) edges.push({ a, b });
+      if (identities.has(a) && identities.has(b) && a !== b)
+        edges.push({ a, b });
     };
     for (const [a, b] of scenario.links) add(a, b);
     for (const target of this.targets) add("hive", target.id);
@@ -360,7 +484,8 @@ class MdmCustomizer implements AgentCustomizer {
 
 async function getConsoleTitle(baseUrl: string): Promise<string | undefined> {
   const response = await fetch(`${baseUrl}/console/experience`);
-  if (!response.ok) throw new Error(`/console/experience returned ${response.status}`);
+  if (!response.ok)
+    throw new Error(`/console/experience returned ${response.status}`);
   const experience = (await response.json()) as {
     console_config?: { title?: string };
   };
@@ -399,11 +524,15 @@ async function sendConsoleTargetTurn(
   });
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`console send to ${identity} returned ${response.status}: ${text}`);
+    throw new Error(
+      `console send to ${identity} returned ${response.status}: ${text}`,
+    );
   }
   const accepted = JSON.parse(text) as ConsoleAccepted;
   if (!accepted.interaction_id) {
-    throw new Error(`console send to ${identity} returned no interaction_id: ${text}`);
+    throw new Error(
+      `console send to ${identity} returned no interaction_id: ${text}`,
+    );
   }
   return accepted;
 }
@@ -448,6 +577,7 @@ async function waitForIdentityTextContaining(
   baseUrl: string,
   identity: string,
   required: string[],
+  forbidden: string[] = [],
 ): Promise<ConsoleFrame> {
   const deadline = Date.now() + 180_000;
   let lastPayload = "";
@@ -462,13 +592,15 @@ async function waitForIdentityTextContaining(
     }
     const page = JSON.parse(text) as { frames?: ConsoleFrame[] };
     for (const frame of page.frames ?? []) {
-      const content = typeof frame.payload?.text === "string" ? frame.payload.text : "";
+      const content =
+        typeof frame.payload?.text === "string" ? frame.payload.text : "";
       const lower = content.toLowerCase();
       if (
         frame.identity === identity &&
         frame.kind === "interaction_complete" &&
         content.trim() &&
-        required.every((needle) => lower.includes(needle.toLowerCase()))
+        required.every((needle) => lower.includes(needle.toLowerCase())) &&
+        forbidden.every((needle) => !lower.includes(needle.toLowerCase()))
       ) {
         return frame;
       }
@@ -487,7 +619,9 @@ async function wireHiveToTargets(
 ): Promise<void> {
   const members = await handle.listMembers();
   const activeMembers = new Set(members.map((member) => member.agentIdentity));
-  const hive = members.find((member) => member.agentIdentity.startsWith("rt:hive:"));
+  const hive = members.find((member) =>
+    member.agentIdentity.startsWith("rt:hive:"),
+  );
   if (!hive) {
     throw new Error(
       `expected hive runtime member in mob roster, got: ${[...activeMembers].join(", ")}`,
@@ -502,6 +636,47 @@ async function wireHiveToTargets(
     }
     await handle.wireMember(hive.agentIdentity, target.id);
     console.log(`[mdm] wired hive ${hive.agentIdentity} <-> ${target.id}`);
+  }
+}
+
+async function hiveMemberIdentity(handle: MobHandle): Promise<string> {
+  const members = await handle.listMembers();
+  const hive = members.find((member) =>
+    member.agentIdentity.startsWith("rt:hive:"),
+  );
+  if (!hive) {
+    throw new Error(
+      `expected hive runtime member in mob roster, got: ${members.map((member) => member.agentIdentity).join(", ")}`,
+    );
+  }
+  return hive.agentIdentity;
+}
+
+async function adoptExternalTargets(
+  handle: MobHandle,
+  targets: RemoteTargetBinding[],
+): Promise<void> {
+  for (const target of targets) {
+    const scenarioEntry = scenarioTarget(target.id);
+    const displayName = target.name ?? scenarioEntry?.name ?? target.id;
+    const member = await handle.ensureMember(target.id, "target", {
+      backend: "external",
+      binding: bindingFor(target),
+      labels: {
+        ...targetLabels(target),
+        display_name: displayName,
+        transport: "mob_remote",
+      },
+      context: { target },
+      additionalInstructions: [
+        "You are a visible MDM target agent backed by a runtime on the target host.",
+        "For every host/system/hardware/process/file/network question, inspect the real host before answering.",
+        "Do not answer target-machine questions from roster labels or binding metadata.",
+      ],
+    });
+    console.log(
+      `[mdm] adopted external target ${target.id} -> ${member.agentIdentity}`,
+    );
   }
 }
 
@@ -553,7 +728,9 @@ async function runHiveTargetSmoke(
   }
   const members = await handle.listMembers();
   const activeMembers = new Set(members.map((member) => member.agentIdentity));
-  const hive = members.find((member) => member.agentIdentity.startsWith("rt:hive:"));
+  const hive = members.find((member) =>
+    member.agentIdentity.startsWith("rt:hive:"),
+  );
   if (!hive) {
     throw new Error(
       `hive target smoke expected autonomous hive member, got: ${[...activeMembers].join(", ")}`,
@@ -578,12 +755,17 @@ async function runHiveTargetSmoke(
     "Include the checksum token in your final answer.",
   ].join(" ");
   await sendConsoleTargetTurn(baseUrl, "hive", prompt);
-  const completion = await waitForIdentityTextContaining(baseUrl, "hive", [
-    token,
-    "hostname",
-    "cpu",
-    "memory",
-  ]);
+  const completion = await waitForIdentityTextContaining(
+    baseUrl,
+    "hive",
+    [token, "hostname", "cpu", "memory"],
+    [
+      "no correlated peerresponse",
+      "no correlated peer response",
+      "cannot truthfully summarize",
+      "without violating the instruction",
+    ],
+  );
   const text =
     typeof completion.payload?.text === "string" ? completion.payload.text : "";
   console.log(
@@ -609,7 +791,7 @@ async function main() {
 
   const stateDir = stringArg(args, "state-dir") ?? join(here, ".state");
   mkdirSync(stateDir, { recursive: true });
-  const mobConfig = writeRuntimeMobConfig(args, stateDir);
+  const mobConfig = writeRuntimeMobConfig(stateDir, args);
   const localAgentCommsAddress = agentCommsAddress(args);
   let builder = MobKit.builder()
     .mob(mobConfig.path)
@@ -620,7 +802,7 @@ async function main() {
     .consoleFetchTimeoutMs(120_000)
     .persistentState(stateDir)
     .sessionService(new MdmSessionBuilder(targets))
-    .rosterProvider(new MdmRosterProvider(targets))
+    .rosterProvider(new MdmRosterProvider())
     .topologyProvider(new MdmTopologyProvider(targets))
     .agentCustomizer(new MdmCustomizer());
   if (useDemoLlm) builder = builder.demoLlm();
@@ -633,15 +815,37 @@ async function main() {
       scenario: scenario.scenario_id,
       remote_targets: String(targets.length),
       remote_topology: "mob-roster",
-      supervisor_bridge: mobConfig.advertisedAddress,
+      remote_transport: "meerkat-comms-peer-only",
     });
+    const hiveIdentity = await hiveMemberIdentity(handle);
+    const hivePeerInfo = await handle.peerInfo(hiveIdentity);
+    const supervisorPeerInfo = await handle.supervisorPeerInfo();
+    const pairedTargets: RemoteTargetBinding[] = [];
+    for (const target of targets) {
+      const supervisorPaired = await pairTargetWithPeer(
+        target,
+        supervisorPeerInfo,
+        localAgentCommsAddress,
+        "mob-supervisor",
+      );
+      pairedTargets.push(
+        await pairTargetWithPeer(
+          supervisorPaired,
+          hivePeerInfo,
+          localAgentCommsAddress,
+          "hive",
+        ),
+      );
+    }
+    await adoptExternalTargets(handle, pairedTargets);
     await handle.reconcileEdges();
-    await wireHiveToTargets(handle, targets);
+    await wireHiveToTargets(handle, pairedTargets);
     const baseUrl = runtime.rustHttpBaseUrl;
-    if (!baseUrl) throw new Error("MobKit runtime did not expose an HTTP console URL");
+    if (!baseUrl)
+      throw new Error("MobKit runtime did not expose an HTTP console URL");
     console.log(`[mdm] console: ${baseUrl}/console`);
-    console.log(`[mdm] remote-targets: ${targets.length}`);
-    console.log(`[mdm] supervisor-bridge: ${mobConfig.advertisedAddress}`);
+    console.log(`[mdm] remote-targets: ${pairedTargets.length}`);
+    console.log("[mdm] remote-transport: meerkat-comms-peer-only");
     console.log(`[mdm] local-agent-comms: tcp://${localAgentCommsAddress}`);
 
     if (smoke || realTargetSmoke || hiveTargetSmoke) {
@@ -651,7 +855,7 @@ async function main() {
       }
     }
     if (realTargetSmoke) {
-      await runRealTargetSmoke(baseUrl, handle, targets);
+      await runRealTargetSmoke(baseUrl, handle, pairedTargets);
       console.log("[mdm-real-target-smoke] ok");
     }
     if (hiveTargetSmoke) {
@@ -660,7 +864,7 @@ async function main() {
           "hive target smoke requires a real model; set OPENAI_API_KEY and do not pass --demo-llm",
         );
       }
-      await runHiveTargetSmoke(baseUrl, handle, targets);
+      await runHiveTargetSmoke(baseUrl, handle, pairedTargets);
     }
     if (smoke) {
       console.log("[mdm-smoke] ok");
