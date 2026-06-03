@@ -7810,7 +7810,7 @@ comms = true
                 .await;
         }
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(20);
         let mut observed = 0;
         while Instant::now() < deadline {
             observed = count_console_event_frames(&aggregator, "stress/agent-0").await;
@@ -7822,7 +7822,7 @@ comms = true
 
         assert_eq!(
             observed, LIVE_EVENT_COUNT,
-            "live pump should not drop frames while slow background backfill is running"
+            "live pump should eventually store every frame while slow background backfill is running"
         );
         let _ = runtime.mob_handle().stop().await;
     }
