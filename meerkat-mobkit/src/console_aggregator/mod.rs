@@ -524,7 +524,12 @@ impl MobKitConsoleAggregator {
                         .cloned()
                         .unwrap_or_default();
                     if console_identity_record_visible(entry, &record).await {
-                        durable_matches.push((entry.clone(), record));
+                        durable_matches.push((
+                            entry.clone(),
+                            identity_runtime.clone(),
+                            parsed_identity,
+                            record,
+                        ));
                     }
                 }
             }
@@ -532,7 +537,7 @@ impl MobKitConsoleAggregator {
         if durable_matches.len() > 1 {
             let candidates = durable_matches
                 .iter()
-                .map(|(_, record)| record.runtime_member_id.clone())
+                .map(|(_, _, _, record)| record.runtime_member_id.clone())
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
@@ -540,7 +545,9 @@ impl MobKitConsoleAggregator {
             )
             .into());
         }
-        if let Some((entry, record)) = durable_matches.into_iter().next() {
+        if let Some((entry, identity_runtime, parsed_identity, mut record)) =
+            durable_matches.into_iter().next()
+        {
             let durable_live_records = self
                 .live_records_for_durable_record(&entry, identity, &record, &live_records)
                 .await;
@@ -550,6 +557,19 @@ impl MobKitConsoleAggregator {
                 ambiguous_live_alias_error(identity, &visible_durable_live_records)
             {
                 return Err(ambiguous_error.into());
+            }
+            if let Some(rebound_record) = self_heal_durable_session_mismatch(
+                &entry,
+                identity_runtime.as_ref(),
+                &parsed_identity,
+                identity,
+                &record,
+                &durable_live_records,
+            )
+            .await
+            .map_err(ConsoleLogError::from)?
+            {
+                record = rebound_record;
             }
             if let Some(stale_error) =
                 stale_durable_record_error(identity, &record, &durable_live_records)
@@ -601,13 +621,13 @@ impl MobKitConsoleAggregator {
                 .cloned()
                 .unwrap_or_default();
             if console_identity_record_visible(entry, &record).await {
-                runtime_id_matches.push((entry.clone(), record));
+                runtime_id_matches.push((entry.clone(), identity_runtime, status.identity, record));
             }
         }
         if runtime_id_matches.len() > 1 {
             let candidates = runtime_id_matches
                 .iter()
-                .map(|(_, record)| record.identity.clone())
+                .map(|(_, _, _, record)| record.identity.clone())
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
@@ -615,7 +635,9 @@ impl MobKitConsoleAggregator {
             )
             .into());
         }
-        if let Some((entry, record)) = runtime_id_matches.into_iter().next() {
+        if let Some((entry, identity_runtime, parsed_identity, mut record)) =
+            runtime_id_matches.into_iter().next()
+        {
             let durable_live_records = self
                 .live_records_for_durable_record(&entry, identity, &record, &live_records)
                 .await;
@@ -625,6 +647,19 @@ impl MobKitConsoleAggregator {
                 ambiguous_live_alias_error(&record.identity, &visible_durable_live_records)
             {
                 return Err(ambiguous_error.into());
+            }
+            if let Some(rebound_record) = self_heal_durable_session_mismatch(
+                &entry,
+                identity_runtime.as_ref(),
+                &parsed_identity,
+                identity,
+                &record,
+                &durable_live_records,
+            )
+            .await
+            .map_err(ConsoleLogError::from)?
+            {
+                record = rebound_record;
             }
             if let Some(stale_error) =
                 stale_durable_record_error(identity, &record, &durable_live_records)
@@ -665,7 +700,7 @@ impl MobKitConsoleAggregator {
                 return Ok(None);
             };
             if let Some(stale_error) =
-                stale_live_record_binding_error(&resolved.entry, identity, &record).await
+                reconcile_stale_live_record_binding(&resolved.entry, identity, &record).await
             {
                 return Err(stale_error.into());
             }
@@ -674,7 +709,7 @@ impl MobKitConsoleAggregator {
                     crate::identity_first::AgentIdentity::parse(&record.identity)
                 && let Ok(status) = identity_runtime.status(&parsed_identity).await
             {
-                let durable_record = identity_record_for_status(&resolved.entry, &status);
+                let mut durable_record = identity_record_for_status(&resolved.entry, &status);
                 let durable_live_records = self
                     .live_records_for_durable_record(
                         &resolved.entry,
@@ -689,6 +724,19 @@ impl MobKitConsoleAggregator {
                     ambiguous_live_alias_error(&record.identity, &visible_durable_live_records)
                 {
                     return Err(ambiguous_error.into());
+                }
+                if let Some(rebound_record) = self_heal_durable_session_mismatch(
+                    &resolved.entry,
+                    identity_runtime.as_ref(),
+                    &parsed_identity,
+                    identity,
+                    &durable_record,
+                    &durable_live_records,
+                )
+                .await
+                .map_err(ConsoleLogError::from)?
+                {
+                    durable_record = rebound_record;
                 }
                 if let Some(stale_error) =
                     stale_durable_record_error(identity, &durable_record, &durable_live_records)
@@ -781,7 +829,7 @@ impl MobKitConsoleAggregator {
             )
             .into());
         }
-        if let Some((entry, identity_runtime, parsed_identity, record)) =
+        if let Some((entry, identity_runtime, parsed_identity, mut record)) =
             durable_matches.into_iter().next()
         {
             let durable_live_records = self
@@ -793,6 +841,19 @@ impl MobKitConsoleAggregator {
                 ambiguous_live_alias_error(identity, &visible_durable_live_records)
             {
                 return Err(ambiguous_error.into());
+            }
+            if let Some(rebound_record) = self_heal_durable_session_mismatch(
+                &entry,
+                identity_runtime.as_ref(),
+                &parsed_identity,
+                identity,
+                &record,
+                &durable_live_records,
+            )
+            .await
+            .map_err(ConsoleLogError::from)?
+            {
+                record = rebound_record;
             }
             if let Some(stale_error) =
                 stale_durable_record_error(identity, &record, &durable_live_records)
@@ -845,7 +906,7 @@ impl MobKitConsoleAggregator {
                 continue;
             }
             if let Some(stale_error) =
-                stale_live_record_binding_error(&resolved.entry, identity, &record).await
+                reconcile_stale_live_record_binding(&resolved.entry, identity, &record).await
             {
                 return Err(stale_error.into());
             }
@@ -854,7 +915,7 @@ impl MobKitConsoleAggregator {
                     crate::identity_first::AgentIdentity::parse(&record.identity)
                 && let Ok(status) = identity_runtime.status(&parsed_identity).await
             {
-                let durable_record = identity_record_for_status(&resolved.entry, &status);
+                let mut durable_record = identity_record_for_status(&resolved.entry, &status);
                 let durable_live_records = self
                     .live_records_for_durable_record(
                         &resolved.entry,
@@ -869,6 +930,19 @@ impl MobKitConsoleAggregator {
                     ambiguous_live_alias_error(&record.identity, &visible_durable_live_records)
                 {
                     return Err(ambiguous_error.into());
+                }
+                if let Some(rebound_record) = self_heal_durable_session_mismatch(
+                    &resolved.entry,
+                    identity_runtime.as_ref(),
+                    &parsed_identity,
+                    identity,
+                    &durable_record,
+                    &durable_live_records,
+                )
+                .await
+                .map_err(ConsoleLogError::from)?
+                {
+                    durable_record = rebound_record;
                 }
                 if let Some(stale_error) =
                     stale_durable_record_error(identity, &durable_record, &durable_live_records)
@@ -1477,21 +1551,28 @@ impl MobKitConsoleAggregator {
                         hidden_durable_match = true;
                         continue;
                     }
-                    durable_matches.push((entry.clone(), record));
+                    durable_matches.push((
+                        entry.clone(),
+                        identity_runtime.clone(),
+                        parsed_identity,
+                        record,
+                    ));
                 }
             }
         }
         if durable_matches.len() > 1 {
             let candidates = durable_matches
                 .iter()
-                .map(|(entry, record)| format!("{}@{}", record.identity, entry.runtime_key))
+                .map(|(entry, _, _, record)| format!("{}@{}", record.identity, entry.runtime_key))
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(ConsoleSendError::InvalidRequest(format!(
                 "ambiguous durable identity alias {identity}: candidates [{candidates}]"
             )));
         }
-        if let Some((entry, record)) = durable_matches.into_iter().next() {
+        if let Some((entry, identity_runtime, parsed_identity, mut record)) =
+            durable_matches.into_iter().next()
+        {
             let live_records = self.live_records_for_identity(identity).await;
             let durable_live_records = self
                 .live_records_for_durable_record(&entry, identity, &record, &live_records)
@@ -1502,6 +1583,19 @@ impl MobKitConsoleAggregator {
                 ambiguous_live_alias_error(identity, &visible_durable_live_records)
             {
                 return Err(ConsoleSendError::InvalidRequest(ambiguous_error));
+            }
+            if let Some(rebound_record) = self_heal_durable_session_mismatch(
+                &entry,
+                identity_runtime.as_ref(),
+                &parsed_identity,
+                identity,
+                &record,
+                &durable_live_records,
+            )
+            .await
+            .map_err(ConsoleSendError::InvalidRequest)?
+            {
+                record = rebound_record;
             }
             if let Some(stale_error) =
                 stale_durable_record_error(identity, &record, &durable_live_records)
@@ -1637,7 +1731,7 @@ impl MobKitConsoleAggregator {
         };
         if let Some(record) = identity_record_for_resolved_member(&resolved).await
             && let Some(stale_error) =
-                stale_live_record_binding_error(&resolved.entry, identity, &record).await
+                reconcile_stale_live_record_binding(&resolved.entry, identity, &record).await
         {
             return Err(ConsoleSendError::InvalidRequest(stale_error));
         }
@@ -1681,13 +1775,18 @@ impl MobKitConsoleAggregator {
                 if !console_identity_record_visible(entry, &record).await {
                     continue;
                 }
-                durable_matches.push((entry.clone(), record));
+                durable_matches.push((
+                    entry.clone(),
+                    identity_runtime.clone(),
+                    parsed_identity,
+                    record,
+                ));
             }
         }
         if durable_matches.len() > 1 {
             let candidates = durable_matches
                 .iter()
-                .map(|(_, record)| record.runtime_member_id.clone())
+                .map(|(_, _, _, record)| record.runtime_member_id.clone())
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(ConsoleSendError::AmbiguousIdentity {
@@ -1695,7 +1794,9 @@ impl MobKitConsoleAggregator {
                 candidates,
             });
         }
-        let Some((entry, durable_record)) = durable_matches.into_iter().next() else {
+        let Some((entry, identity_runtime, parsed_identity, mut durable_record)) =
+            durable_matches.into_iter().next()
+        else {
             return Ok(None);
         };
         let durable_live_records = self
@@ -1707,6 +1808,19 @@ impl MobKitConsoleAggregator {
             ambiguous_live_alias_error(&durable_record.identity, &visible_durable_live_records)
         {
             return Err(ConsoleSendError::InvalidRequest(ambiguous_error));
+        }
+        if let Some(rebound_record) = self_heal_durable_session_mismatch(
+            &entry,
+            identity_runtime.as_ref(),
+            &parsed_identity,
+            identity,
+            &durable_record,
+            &durable_live_records,
+        )
+        .await
+        .map_err(ConsoleSendError::InvalidRequest)?
+        {
+            durable_record = rebound_record;
         }
         Ok(stale_durable_record_error(
             identity,
@@ -1946,7 +2060,7 @@ async fn visible_live_records_for_entry(
     visible
 }
 
-async fn stale_live_record_binding_error(
+async fn reconcile_stale_live_record_binding(
     entry: &RuntimeEntry,
     requested_identity: &str,
     live_record: &ConsoleIdentityRecord,
@@ -1961,6 +2075,39 @@ async fn stale_live_record_binding_error(
             continue;
         }
         let durable_record = identity_record_for_status(entry, &status);
+        if let Some(session_mismatch) =
+            stale_durable_session_mismatch(&durable_record, std::slice::from_ref(live_record))
+        {
+            let Some(live_session_id) = session_mismatch.session_id.as_deref() else {
+                continue;
+            };
+            let Ok(session_id) = meerkat_core::types::SessionId::parse(live_session_id) else {
+                return Some(format!(
+                    "stale durable identity alias {requested_identity}: live console alias resolves to invalid session {live_session_id}"
+                ));
+            };
+            return match identity_runtime
+                .rebind_session_after_live_respawn(&status.identity, session_id)
+                .await
+            {
+                Ok(_) => {
+                    tracing::warn!(
+                        requested_identity,
+                        identity = %durable_record.identity,
+                        runtime_member_id = %durable_record.runtime_member_id,
+                        old_session_id = durable_record.session_id.as_deref().unwrap_or("<none>"),
+                        new_session_id = session_mismatch.session_id.as_deref().unwrap_or("<none>"),
+                        "self-healed stale durable identity alias session mismatch"
+                    );
+                    None
+                }
+                Err(err) => Some(format!(
+                    "stale durable identity alias {requested_identity}: failed to rebind {} to live session {}: {err}",
+                    durable_record.identity,
+                    session_mismatch.session_id.as_deref().unwrap_or("<none>")
+                )),
+            };
+        }
         if let Some(stale_error) = stale_durable_record_error(
             requested_identity,
             &durable_record,
@@ -1970,6 +2117,67 @@ async fn stale_live_record_binding_error(
         }
     }
     None
+}
+
+async fn self_heal_durable_session_mismatch(
+    entry: &RuntimeEntry,
+    identity_runtime: &crate::identity_first::IdentityRuntime,
+    parsed_identity: &crate::identity_first::AgentIdentity,
+    requested_identity: &str,
+    durable: &ConsoleIdentityRecord,
+    live_records: &[ConsoleIdentityRecord],
+) -> Result<Option<ConsoleIdentityRecord>, String> {
+    let Some(session_mismatch) = stale_durable_session_mismatch(durable, live_records) else {
+        return Ok(None);
+    };
+    let Some(live_session_id) = session_mismatch.session_id.as_deref() else {
+        return Ok(None);
+    };
+    let session_id = meerkat_core::types::SessionId::parse(live_session_id).map_err(|err| {
+        format!(
+            "stale durable identity alias {requested_identity}: live console alias resolves to invalid session {live_session_id}: {err}"
+        )
+    })?;
+    identity_runtime
+        .rebind_session_after_live_respawn(parsed_identity, session_id)
+        .await
+        .map_err(|err| {
+            format!(
+                "stale durable identity alias {requested_identity}: failed to rebind {} to live session {}: {err}",
+                durable.identity, live_session_id
+            )
+        })?;
+    tracing::warn!(
+        requested_identity,
+        identity = %durable.identity,
+        runtime_member_id = %durable.runtime_member_id,
+        old_session_id = durable.session_id.as_deref().unwrap_or("<none>"),
+        new_session_id = live_session_id,
+        "self-healed stale durable identity alias session mismatch"
+    );
+    let status = identity_runtime
+        .status(parsed_identity)
+        .await
+        .map_err(|err| {
+            format!(
+                "stale durable identity alias {requested_identity}: failed to reload rebound identity {}: {err}",
+                durable.identity
+            )
+        })?;
+    Ok(Some(identity_record_for_status(entry, &status)))
+}
+
+fn stale_durable_session_mismatch<'a>(
+    durable: &ConsoleIdentityRecord,
+    live_records: &'a [ConsoleIdentityRecord],
+) -> Option<&'a ConsoleIdentityRecord> {
+    live_records.iter().find(|record| {
+        record.identity == durable.identity
+            && record.runtime_member_id == durable.runtime_member_id
+            && durable.session_id.is_some()
+            && record.session_id.is_some()
+            && durable.session_id != record.session_id
+    })
 }
 
 fn stale_durable_record_error(
@@ -1992,12 +2200,7 @@ fn stale_durable_record_error(
     if matching_live.is_empty() {
         return None;
     }
-    if let Some(session_mismatch) = matching_live.iter().find(|record| {
-        record.runtime_member_id == durable.runtime_member_id
-            && durable.session_id.is_some()
-            && record.session_id.is_some()
-            && durable.session_id != record.session_id
-    }) {
+    if let Some(session_mismatch) = stale_durable_session_mismatch(durable, live_records) {
         return Some(format!(
             "stale durable identity alias {requested_identity}: identity runtime binding for {} points at {} session {}, but live console alias resolves to session {}",
             durable.identity,
@@ -5372,6 +5575,130 @@ comms = true
                 .any(|record| record.identity == "review:singleton"
                     && record.runtime_member_id == "rt:review:singleton:1"),
             "stale durable binding should remain visible as split-brain evidence; records: {records:#?}"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_first_alias_self_heals_session_only_split_brain()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-session-rebind-test").await;
+        let mut labels = BTreeMap::new();
+        labels.insert("agent_identity".to_string(), "review:singleton".to_string());
+        runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:review:singleton:0".to_string(),
+                    Some("You are the live Review Agent.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(labels),
+            )
+            .await
+            .expect("member spawns");
+        let live_session_id = runtime
+            .mob_handle()
+            .resolve_bridge_session_id_observation(&MeerkatId::from("rt:review:singleton:0"))
+            .await
+            .expect("live member has bridge session");
+
+        let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()?
+                ),
+                lease_provider: Arc::new(crate::identity_first::LocalLeaseProvider::new()),
+                runtime_instance_id: "console-aggregator-session-rebind-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        let identity = crate::identity_first::AgentIdentity::parse("review:singleton")?;
+        let stale_session_id = SessionId::new();
+        assert_ne!(stale_session_id, live_session_id);
+        let record = crate::identity_first::ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                "rt:review:singleton:0",
+            )?,
+            session_id: stale_session_id,
+            generation: crate::identity_first::ContinuityGeneration::new(1),
+            checkpoint_version: crate::identity_first::CheckpointVersion::new(3),
+        };
+        identity_runtime
+            .register(
+                crate::identity_first::DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: crate::identity_first::AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                crate::identity_first::IdentityLifecycleState::Active,
+                Some(record),
+                Some(crate::identity_first::LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: crate::identity_first::FencingToken::new(7),
+                    ttl: Duration::from_mins(5),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                RuntimeEntry {
+                    runtime_key: "runtime-a".to_string(),
+                    identity_namespace: String::new(),
+                    runtime: runtime.mob_runtime().clone(),
+                    identity_runtime: Some(identity_runtime.clone()),
+                    console_events: runtime.console_events(),
+                    visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+                },
+            );
+
+        aggregator
+            .reserve_identity_first_interaction(
+                ConsoleSendRequest {
+                    identity: "review:singleton".to_string(),
+                    content: json!("hello"),
+                    origin: "console:test".to_string(),
+                    idempotency_key: "session-rebind-reserve".to_string(),
+                    handling_mode: Some("queue".to_string()),
+                },
+                None,
+            )
+            .await
+            .expect("session-only split-brain should self-heal before reserve");
+
+        let rebound_status = identity_runtime.status(&identity).await?;
+        assert_eq!(rebound_status.session_id, Some(live_session_id.clone()));
+
+        let inspection = aggregator
+            .inspect_identity("review:singleton")
+            .await?
+            .expect("rebound identity should inspect");
+        let live_session_string = live_session_id.to_string();
+        assert_eq!(
+            inspection.identity.session_id.as_deref(),
+            Some(live_session_string.as_str())
         );
 
         let _ = runtime.mob_handle().stop().await;
