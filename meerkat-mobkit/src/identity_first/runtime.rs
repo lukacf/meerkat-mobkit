@@ -1946,7 +1946,7 @@ impl IdentityRuntime {
             }
         }
 
-        let token = self.ensure_active_lease(identity).await?;
+        let mut token = self.ensure_active_lease(identity).await?;
         let runtime_id = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -1960,10 +1960,16 @@ impl IdentityRuntime {
 
         // Deliver through the session bridge when available.
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
-            bridge
+            let delivered_session_id = bridge
                 .deliver_with_mode(rid, content, handling_mode)
                 .await
                 .map_err(|e| IdentityRuntimeError::Internal(format!("bridge deliver: {e}")))?;
+            if let Some(rebound_token) = self
+                .reconcile_delivered_session_locked(identity, delivered_session_id)
+                .await?
+            {
+                token = rebound_token;
+            }
         }
 
         Ok(token)
@@ -2016,7 +2022,7 @@ impl IdentityRuntime {
             }
         }
 
-        let token = self.ensure_active_lease(identity).await?;
+        let mut token = self.ensure_active_lease(identity).await?;
         let (is_durable, runtime_id) = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -2035,10 +2041,16 @@ impl IdentityRuntime {
 
         // Deliver through the session bridge when available.
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
-            bridge
+            let delivered_session_id = bridge
                 .deliver(rid, &input.content)
                 .await
                 .map_err(|e| IdentityRuntimeError::Internal(format!("bridge dispatch: {e}")))?;
+            if let Some(rebound_token) = self
+                .reconcile_delivered_session_locked(identity, delivered_session_id)
+                .await?
+            {
+                token = rebound_token;
+            }
         }
 
         Ok((token, is_durable))
@@ -2337,6 +2349,54 @@ impl IdentityRuntime {
     ) -> Result<ContinuityRecord, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        self.rebind_session_after_live_respawn_locked(identity, session_id)
+            .await
+    }
+
+    async fn reconcile_delivered_session_locked(
+        &self,
+        identity: &AgentIdentity,
+        delivered_session_id: SessionId,
+    ) -> Result<Option<FencingToken>, IdentityRuntimeError> {
+        let current_session_id = {
+            let entries = self.entries.read().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            entry
+                .continuity
+                .as_ref()
+                .map(|record| record.session_id.clone())
+        };
+
+        let Some(current_session_id) = current_session_id else {
+            return Ok(None);
+        };
+        if current_session_id == delivered_session_id {
+            return Ok(None);
+        }
+
+        tracing::warn!(
+            %identity,
+            old_session_id = %current_session_id,
+            new_session_id = %delivered_session_id,
+            "identity bridge delivery returned a rotated session; rebinding continuity"
+        );
+        self.rebind_session_after_live_respawn_locked(identity, delivered_session_id)
+            .await?;
+
+        let entries = self.entries.read().await;
+        let entry = entries
+            .get(identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        Ok(entry.lease.as_ref().map(|lease| lease.fencing_token))
+    }
+
+    async fn rebind_session_after_live_respawn_locked(
+        &self,
+        identity: &AgentIdentity,
+        session_id: SessionId,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
         let registered_entry = self
             .mark_lifecycle_in_progress(identity, IdentityLifecycleState::Suspended)
             .await?;

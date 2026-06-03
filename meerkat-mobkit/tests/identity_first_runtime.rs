@@ -740,6 +740,7 @@ struct CountingBridge {
     resume_barrier: tokio::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     create_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
     fallback_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
+    deliver_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
     unregistered_session_ids: tokio::sync::Mutex<Vec<String>>,
     wires: tokio::sync::Mutex<Vec<(String, String)>>,
     current_wires: tokio::sync::Mutex<Vec<(String, String)>>,
@@ -761,6 +762,10 @@ impl CountingBridge {
 
     async fn set_create_session_id(&self, session_id: meerkat_core::types::SessionId) {
         *self.create_session_id.lock().await = Some(session_id);
+    }
+
+    async fn set_deliver_session_id(&self, session_id: meerkat_core::types::SessionId) {
+        *self.deliver_session_id.lock().await = Some(session_id);
     }
 
     fn fail_create(&self) {
@@ -803,12 +808,14 @@ impl SessionBridge for CountingBridge {
         if self.fail_create.load(Ordering::SeqCst) {
             return Err(BridgeError::Mob("create failed".to_string()));
         }
-        Ok(self
+        let created_session_id = self
             .create_session_id
             .lock()
             .await
             .clone()
-            .unwrap_or_else(|| session_id.clone()))
+            .unwrap_or_else(|| session_id.clone());
+        *self.deliver_session_id.lock().await = Some(created_session_id.clone());
+        Ok(created_session_id)
     }
 
     async fn resume_session(
@@ -835,6 +842,7 @@ impl SessionBridge for CountingBridge {
                 .await
                 .clone()
                 .unwrap_or_else(meerkat_core::types::SessionId::new);
+            *self.deliver_session_id.lock().await = Some(fallback_session_id.clone());
             return Ok(
                 meerkat_mobkit::identity_first::ResumeSessionOutcome::FreshSpawned {
                     session_id: fallback_session_id,
@@ -845,6 +853,7 @@ impl SessionBridge for CountingBridge {
                 },
             );
         }
+        *self.deliver_session_id.lock().await = Some(session_id.clone());
         Ok(
             meerkat_mobkit::identity_first::ResumeSessionOutcome::Resumed {
                 session_id: session_id.clone(),
@@ -858,7 +867,12 @@ impl SessionBridge for CountingBridge {
         _content: &meerkat_core::ContentInput,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         self.deliver_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(meerkat_core::types::SessionId::new())
+        Ok(self
+            .deliver_session_id
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_else(meerkat_core::types::SessionId::new))
     }
 
     async fn checkpoint_session(
@@ -1062,6 +1076,89 @@ async fn identity_first_runtime_send_to_addressable_delivers() {
 }
 
 #[tokio::test]
+async fn identity_first_runtime_send_rebinds_rotated_bridge_session() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 2);
+    let original_session_id = record.session_id.clone();
+    store
+        .upsert_continuity_record(&record, FencingToken::new(1))
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(make_grant("triage:main", 1)),
+        )
+        .await;
+
+    let live_session_id = meerkat_core::types::SessionId::new();
+    bridge.set_deliver_session_id(live_session_id.clone()).await;
+
+    runtime.send(&id, &make_content()).await.unwrap();
+
+    let status = runtime.status(&id).await.unwrap();
+    assert_eq!(status.session_id, Some(live_session_id.clone()));
+    let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
+    let ContinuityResolveState::Ready { record } = resolved.get(&id).unwrap() else {
+        panic!("expected rebound continuity record");
+    };
+    assert_eq!(record.session_id, live_session_id);
+    assert_eq!(record.checkpoint_version, CheckpointVersion::new(0));
+    let unregistered = bridge.unregistered_session_ids.lock().await.clone();
+    assert!(
+        unregistered.contains(&original_session_id.to_string()),
+        "rotated delivery must unregister the stale session runtime state; got {unregistered:?}"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_send_keeps_matching_bridge_session_unchanged() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 2);
+    let original_session_id = record.session_id.clone();
+    store
+        .upsert_continuity_record(&record, FencingToken::new(1))
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(make_grant("triage:main", 1)),
+        )
+        .await;
+    bridge
+        .set_deliver_session_id(original_session_id.clone())
+        .await;
+
+    let token = runtime.send(&id, &make_content()).await.unwrap();
+
+    assert_eq!(token, FencingToken::new(1));
+    assert_eq!(
+        runtime.status(&id).await.unwrap().session_id,
+        Some(original_session_id)
+    );
+    assert_eq!(
+        bridge.unregister_calls.load(Ordering::SeqCst),
+        0,
+        "matching delivery session should not trigger a rebind cleanup"
+    );
+}
+
+#[tokio::test]
 async fn identity_first_runtime_send_to_internal_only_rejected() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
     let lease = Arc::new(LocalLeaseProvider::new());
@@ -1138,6 +1235,51 @@ async fn identity_first_runtime_dispatch_to_addressable_succeeds() {
     let (token, is_durable) = result.unwrap();
     assert_eq!(token, FencingToken::new(1));
     assert!(!is_durable); // no runtime_store
+}
+
+#[tokio::test]
+async fn identity_first_runtime_dispatch_rebinds_rotated_bridge_session() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 2);
+    let original_session_id = record.session_id.clone();
+    store
+        .upsert_continuity_record(&record, FencingToken::new(1))
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(make_grant("triage:main", 1)),
+        )
+        .await;
+
+    let live_session_id = meerkat_core::types::SessionId::new();
+    bridge.set_deliver_session_id(live_session_id.clone()).await;
+
+    let (_token, is_durable) = runtime.dispatch(&id, &make_dispatch_input()).await.unwrap();
+
+    assert!(is_durable);
+    assert_eq!(
+        runtime.status(&id).await.unwrap().session_id,
+        Some(live_session_id.clone())
+    );
+    let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
+    let ContinuityResolveState::Ready { record } = resolved.get(&id).unwrap() else {
+        panic!("expected rebound continuity record");
+    };
+    assert_eq!(record.session_id, live_session_id);
+    let unregistered = bridge.unregistered_session_ids.lock().await.clone();
+    assert!(
+        unregistered.contains(&original_session_id.to_string()),
+        "rotated dispatch must unregister the stale session runtime state; got {unregistered:?}"
+    );
 }
 
 #[tokio::test]
