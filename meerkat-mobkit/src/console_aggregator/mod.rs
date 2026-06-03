@@ -1724,7 +1724,7 @@ impl MobKitConsoleAggregator {
             });
         }
         let Some(resolved) = matches.into_iter().next() else {
-            if let Some(stale_error) = self.durable_send_binding_error(identity).await? {
+            if let Some(stale_error) = Box::pin(self.durable_send_binding_error(identity)).await? {
                 return Err(ConsoleSendError::InvalidRequest(stale_error));
             }
             return Ok(None);
@@ -1735,7 +1735,7 @@ impl MobKitConsoleAggregator {
         {
             return Err(ConsoleSendError::InvalidRequest(stale_error));
         }
-        if let Some(stale_error) = self.durable_send_binding_error(identity).await? {
+        if let Some(stale_error) = Box::pin(self.durable_send_binding_error(identity)).await? {
             return Err(ConsoleSendError::InvalidRequest(stale_error));
         }
         Ok(Some(resolved))
