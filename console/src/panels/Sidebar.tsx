@@ -905,7 +905,13 @@ function sidebarNavigationModelFromRows(rows: SidebarVirtualRow[]): SidebarNavig
       currentSubgroup = node;
       continue;
     }
-    const parent = currentSubgroup?.type === "group"
+    const belongsToCurrentSubgroup = row.kind === "agent"
+      && Boolean(row.row.subgroup)
+      && currentSubgroup?.type === "group"
+      && currentSubgroup.target?.kind === "subgroup"
+      && currentSubgroup.target.bucket === row.bucket
+      && currentSubgroup.target.label === row.row.subgroup;
+    const parent = belongsToCurrentSubgroup
       ? currentSubgroup
       : currentSection?.type === "group"
         ? currentSection

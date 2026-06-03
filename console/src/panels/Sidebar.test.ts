@@ -916,6 +916,46 @@ test("stock sidebar renderer flattens its ConsoleNavigationModel", () => {
   );
 });
 
+test("stock sidebar navigation model keeps ungrouped agents at section level", () => {
+  const agents = [
+    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
+    {
+      agent_id: "rt:initiative-unscoped",
+      member_id: "member:initiative-unscoped",
+      label: "Unscoped Initiative",
+      kind: "mob_agent",
+      role: "initiative",
+      labels: { group: "initiatives" },
+    } satisfies ConsoleAgent,
+  ];
+  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const model = __sidebarTest.buildStockSidebarNavigationModel({
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    grouped,
+    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    collapsedSections: new Set<string>(),
+    collapsedSubgroups: new Set<string>(),
+  });
+  const initiatives = model.nodes.find((node) => node.id === "section:initiatives");
+  assert.equal(initiatives?.type, "group");
+  assert.deepEqual(
+    initiatives?.type === "group"
+      ? initiatives.children.map((node) => [node.type, node.id, node.label])
+      : [],
+    [
+      ["group", "subgroup:initiatives:cto", "cto"],
+      ["item", "agent:member:initiative-unscoped", "Unscoped Initiative"],
+    ],
+  );
+  const cto = initiatives?.type === "group"
+    ? initiatives.children.find((node) => node.id === "subgroup:initiatives:cto")
+    : null;
+  assert.deepEqual(
+    cto?.type === "group" ? cto.children.map((node) => node.id) : [],
+    ["agent:member:initiative-cto"],
+  );
+});
+
 test("sidebar applies persisted section and subgroup drag order without moving Pinned from the top", () => {
   const agents = [
     ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:cto" }),
