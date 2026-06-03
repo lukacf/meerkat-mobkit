@@ -4754,8 +4754,10 @@ test("mapFramesToTimelineEntries renders session-history peer image notices as c
                 { type: "text", text: "Generated incident badge forwarded." },
                 {
                   type: "image_ref",
-                  source: "blob",
-                  blob_id: "sha256:badge/1",
+                  blob_ref: {
+                    blob_id: "sha256:badge/1",
+                    media_type: "image/png",
+                  },
                   media_type: "image/png",
                   alt: "incident badge",
                 },
@@ -4775,17 +4777,200 @@ test("mapFramesToTimelineEntries renders session-history peer image notices as c
   assert.equal(entries[0]?.identity.id, "comms");
   assert.equal(entries[0]?.variant, "rich");
   const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks || [] : [];
-  assert.equal(blocks.length, 2);
+  assert.equal(blocks.length, 1);
   assert.equal(blocks[0]?.type, "tool-call");
   assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerIncoming : false, true);
   assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerTarget : "", "scribe");
   assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerBody : "", "Generated incident badge forwarded.");
-  assert.equal(blocks[1]?.type, "image");
+  const peerImages = blocks[0]?.type === "tool-call" ? blocks[0].peerImages || [] : [];
+  assert.equal(peerImages.length, 1);
   assert.equal(
-    blocks[1]?.type === "image" ? blocks[1].src : "",
+    peerImages[0]?.src || "",
     "http://127.0.0.1:7000/blobs/sha256%3Abadge%2F1",
   );
-  assert.equal(blocks[1]?.type === "image" ? blocks[1].alt : "", "incident badge");
+  assert.equal(peerImages[0]?.alt || "", "incident badge");
+});
+
+test("mapFramesToTimelineEntries renders live typed peer blob-ref image notices as comms plus image", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "image-recipient",
+      member_id: "image-recipient",
+      label: "Image Recipient",
+      kind: "identity",
+    },
+    [
+      {
+        id: "live-peer-image",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-06-03T21:12:00.000Z"),
+        data: {
+          message: {
+            role: "system_notice",
+            blocks: [{
+              type: "comms",
+              kind: "message",
+              peer: { display_name: "ob3/delegate/image-artist-2" },
+              request_id: "peer-image-live-1",
+              content: [
+                { type: "text", text: "Saved to generated_images/ob3_admin_role_v2.png." },
+                {
+                  type: "image",
+                  image: {
+                    blob_ref: {
+                      blob_id: "sha256:ob3-admin-role",
+                      media_type: "image/png",
+                    },
+                    width: 1024,
+                    height: 1024,
+                    image_id: "image-ob3-admin-role",
+                  },
+                },
+              ],
+            }],
+          },
+        },
+      },
+    ],
+    {
+      blobBaseUrl: "http://127.0.0.1:7000",
+      renderInteractionStartsAsUser: true,
+    },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks || [] : [];
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0]?.type, "tool-call");
+  assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerTarget : "", "image-artist-2");
+  assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerBody : "", "Saved to generated_images/ob3_admin_role_v2.png.");
+  const peerImages = blocks[0]?.type === "tool-call" ? blocks[0].peerImages || [] : [];
+  assert.equal(peerImages.length, 1);
+  assert.equal(
+    peerImages[0]?.src || "",
+    "http://127.0.0.1:7000/blobs/sha256%3Aob3-admin-role",
+  );
+  assert.equal(peerImages[0]?.width || 0, 1024);
+  assert.equal(peerImages[0]?.imageId || "", "image-ob3-admin-role");
+});
+
+test("mapFramesToTimelineEntries suppresses raw peer image prompts when structured comms image exists", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "scribe",
+      member_id: "scribe",
+      label: "Scribe",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-06-03T22:06:43.000Z"),
+        data: {
+          prompt:
+            "Peer message\n"
+            + "Peer message from incident-command-center/commander/incident-commander:\n"
+            + "Peer message from incident-command-center/commander/incident-commander:\n"
+            + "Generated fictional CardinalPay payments-api outage dashboard image with required labels and rollback 64%.\n"
+            + "Generated fictional CardinalPay payments-api outage dashboard image with required labels and rollback 64%.\n"
+            + "[image: image/png]\n"
+            + "Peer message",
+        },
+      },
+      {
+        id: "structured-comms-image",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-06-03T22:06:42.000Z"),
+        data: {
+          message: {
+            role: "system_notice",
+            blocks: [{
+              type: "comms",
+              kind: "message",
+              peer: { display_name: "incident-command-center/commander/incident-commander" },
+              request_id: "peer-image-duplicate",
+              content: [
+                {
+                  type: "text",
+                  text:
+                    "Generated fictional CardinalPay payments-api outage dashboard image with required labels and rollback 64%.\n"
+                    + "Generated fictional CardinalPay payments-api outage dashboard image with required labels and rollback 64%.",
+                },
+                {
+                  type: "image_ref",
+                  blob_ref: {
+                    blob_id: "sha256:cardinalpay-dashboard",
+                    media_type: "image/png",
+                  },
+                  media_type: "image/png",
+                },
+              ],
+            }],
+          },
+        },
+      },
+    ],
+    {
+      blobBaseUrl: "http://127.0.0.1:7000",
+      renderInteractionStartsAsUser: true,
+    },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks || [] : [];
+  assert.equal(blocks.length, 1);
+  const block = blocks[0];
+  assert.equal(block?.type, "tool-call");
+  assert.equal(block?.type === "tool-call" ? block.peerTarget : "", "incident-commander");
+  assert.equal(block?.type === "tool-call" ? (block.peerImages || []).length : 0, 1);
+});
+
+test("mapFramesToTimelineEntries does not render raw peer image run-started prompts", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "scribe",
+      member_id: "scribe",
+      label: "Scribe",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-peer-image-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-06-03T22:30:01.655Z"),
+        data: {
+          prompt: [
+            {
+              type: "text",
+              text:
+                "Peer message\n"
+                + "Peer message from incident-command-center/commander/incident-commander:\n"
+                + "Peer message from incident-command-center/commander/incident-commander:\n"
+                + "codex-comms-image-mpyn1bac Generated fictional CardinalPay payments-api outage dashboard image with required labels and rollback 64%.\n"
+                + "codex-comms-image-mpyn1bac Generated fictional CardinalPay payments-api outage dashboard image with required labels and rollback 64%.\n"
+                + "[image: image/png]\n"
+                + "Peer message",
+            },
+            {
+              type: "image",
+              source: "inline",
+              media_type: "image/png",
+              data: "iVBORw0KGgo=",
+            },
+          ],
+        },
+      },
+    ],
+    {
+      blobBaseUrl: "http://127.0.0.1:7000",
+      renderInteractionStartsAsUser: true,
+    },
+  );
+
+  assert.equal(entries.length, 0);
 });
 
 test("mapFramesToTimelineEntries resolves session-history peer tool targets from live peers results", () => {
@@ -4965,10 +5150,18 @@ test("mapFramesToTimelineEntries renders inbound content-block run_started promp
 
   assert.equal(entries.length, 2);
   assert.equal(entries[0]?.identity.role, "user");
+  assert.equal(entries[0]?.variant, "rich");
+  const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks || [] : [];
+  assert.equal(blocks.length, 3);
   assert.equal(
-    entries[0] && "text" in entries[0] ? entries[0].text : "",
+    blocks
+      .filter((block) => block.type === "paragraph")
+      .map((block) => block.type === "paragraph" ? block.text : "")
+      .join("\n"),
     "[COMMS MESSAGE from incident-command-center/commander/incident-commander]\nPlease describe this generated self-portrait image.",
   );
+  assert.equal(blocks[2]?.type, "image");
+  assert.equal(blocks[2]?.type === "image" ? blocks[2].src : "", "data:image/png;base64,base64-image-data");
   assert.equal(entries[1]?.identity.id, "scribe");
 });
 

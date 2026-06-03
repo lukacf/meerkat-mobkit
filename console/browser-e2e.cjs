@@ -1082,25 +1082,46 @@ async function runImageRenderingBrowserProof() {
 
     await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
     await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Image Agent" }).click();
-    await page.waitForSelector('img.cc-rich-image', { timeout: 30_000 });
-    await page.waitForFunction(() => document.querySelectorAll("img.cc-rich-image").length >= 3);
+    await page.waitForSelector("img.cc-rich-image", { timeout: 30_000 });
+    await page.waitForSelector(".cc-tool-call img.cc-tool-call__image", { timeout: 30_000 });
 
-    const imageSources = await page.$$eval(
+    const richImageSources = await page.$$eval(
       "img.cc-rich-image",
       (images) => images.map((image) => image.getAttribute("src") || ""),
     );
-    assert.equal(imageSources.length, 3);
+    assert.equal(richImageSources.length, 2);
     assert(
-      imageSources.some((src) => src.endsWith("/blobs/sha256%3Auser-image")),
-      `missing user image ref: ${JSON.stringify(imageSources)}`,
+      richImageSources.some((src) => src.endsWith("/blobs/sha256%3Auser-image")),
+      `missing user image ref: ${JSON.stringify(richImageSources)}`,
     );
     assert(
-      imageSources.some((src) => src.endsWith("/blobs/sha256%3Agenerated-image")),
-      `missing generated assistant image: ${JSON.stringify(imageSources)}`,
+      richImageSources.some((src) => src.endsWith("/blobs/sha256%3Agenerated-image")),
+      `missing generated assistant image: ${JSON.stringify(richImageSources)}`,
     );
+
+    const peerImageSources = await page.$$eval(
+      ".cc-tool-call img.cc-tool-call__image",
+      (images) => images.map((image) => image.getAttribute("src") || ""),
+    );
+    assert.equal(peerImageSources.length, 1);
     assert(
-      imageSources.some((src) => src.endsWith("/blobs/sha256%3Apeer-image")),
-      `missing peer forwarded image ref: ${JSON.stringify(imageSources)}`,
+      peerImageSources[0]?.endsWith("/blobs/sha256%3Apeer-image"),
+      `missing peer forwarded image ref inside tool call: ${JSON.stringify(peerImageSources)}`,
+    );
+    const peerImagePlacement = await page.evaluate(() => {
+      const image = document.querySelector(".cc-tool-call img.cc-tool-call__image");
+      const toolCall = image?.closest(".cc-tool-call");
+      return {
+        hasImage: Boolean(image),
+        hasToolCall: Boolean(toolCall),
+        standalonePeerImageCount: Array.from(document.querySelectorAll('img[src$="/blobs/sha256%3Apeer-image"]'))
+          .filter((candidate) => !candidate.closest(".cc-tool-call")).length,
+      };
+    });
+    assert.deepEqual(
+      peerImagePlacement,
+      { hasImage: true, hasToolCall: true, standalonePeerImageCount: 0 },
+      "peer image should be inline within the peer tool call",
     );
 
     const bodyText = await page.locator("body").innerText();

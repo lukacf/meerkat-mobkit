@@ -398,7 +398,8 @@ function conversationRichBlockCopyText(block) {
     case "tool-call": {
       if (block.peerTarget) {
         const dir = block.peerIncoming ? "\u2190 from" : "\u2192 to";
-        return [`${dir} ${block.peerTarget}`, block.peerIntent, block.peerBody, block.result].filter(Boolean).join(": ").trim();
+        const images = (block.peerImages || []).map((image) => [image.alt || "image", image.blobId || image.src].filter(Boolean).join(" ")).filter(Boolean).join(" ");
+        return [`${dir} ${block.peerTarget}`, block.peerIntent, block.peerBody, images, block.result].filter(Boolean).join(": ").trim();
       }
       const parts = [`$ ${block.name}`];
       if (block.arguments) parts.push(`Input: ${block.arguments}`);
@@ -2235,6 +2236,26 @@ function ToolCallBlock({ block }) {
           ]
         }
       ),
+      block.peerImages && block.peerImages.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__attachments", children: block.peerImages.map((image, index) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+        "button",
+        {
+          className: "cc-tool-call__image-button",
+          onClick: () => window.open(image.src, "_blank", "noopener,noreferrer"),
+          type: "button",
+          children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+            "img",
+            {
+              alt: image.alt || "",
+              className: "cc-tool-call__image",
+              height: image.height,
+              loading: "lazy",
+              src: image.src,
+              width: image.width
+            }
+          )
+        },
+        `${image.blobId || image.imageId || image.src}-${index}`
+      )) }),
       expanded && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__body", children: [
         /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__section", children: [
           /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__section-label", children: "Tool" }),
@@ -3596,8 +3617,12 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
     return [];
   }
   const record = frame.data;
+  const promptBlocks = contentToUserBlocks(record.prompt, options.blobBaseUrl);
   const prompt = extractPromptText(record.prompt).trim();
   if (!prompt) {
+    return [];
+  }
+  if (isCommsLikeRunStartedPrompt(prompt) && runStartedPromptHasImagePlaceholder(frame)) {
     return [];
   }
   if (options.suppressStructuredCommsPrompt) {
@@ -3606,6 +3631,17 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
   const createdAt = isoFromTimestampMs(frame.timestampMs);
   const entries = [];
   if (!options.suppressEmbeddedRpcPrompt) {
+    if (promptBlocks.length > 0 && promptBlocks.some((block) => block.type === "image")) {
+      entries.push({
+        kind: "message",
+        id: entryId,
+        identity: USER_IDENTITY,
+        variant: "rich",
+        ...createdAt ? { createdAt } : {},
+        blocks: promptBlocks
+      });
+      return entries;
+    }
     entries.push({
       kind: "message",
       id: entryId,
@@ -3667,15 +3703,19 @@ function contentToUserBlocks(content, blobBaseUrl) {
       continue;
     }
     if (type === "image" || type === "image_ref") {
-      const source = typeof record.source === "string" ? record.source : "";
-      const blobId = typeof record.blob_id === "string" ? record.blob_id : typeof record.blobId === "string" ? record.blobId : "";
-      const mediaType = typeof record.media_type === "string" ? record.media_type : typeof record.mediaType === "string" ? record.mediaType : "image/png";
-      const inlineData = typeof record.data === "string" ? record.data : typeof record.base64 === "string" ? record.base64 : "";
-      const src = source === "blob" && blobId ? buildBlobUrl(blobId, blobBaseUrl) : inlineData ? `data:${mediaType};base64,${inlineData}` : "";
+      const image = record.image && typeof record.image === "object" ? record.image : record;
+      const blobRef = image.blob_ref && typeof image.blob_ref === "object" ? image.blob_ref : image.blobRef && typeof image.blobRef === "object" ? image.blobRef : null;
+      const source = typeof image.source === "string" ? image.source : "";
+      const blobId = typeof record.blob_id === "string" ? record.blob_id : typeof image.blob_id === "string" ? image.blob_id : typeof record.blobId === "string" ? record.blobId : typeof image.blobId === "string" ? image.blobId : typeof blobRef?.blob_id === "string" ? blobRef.blob_id : typeof blobRef?.blobId === "string" ? blobRef.blobId : "";
+      const mediaType = typeof image.media_type === "string" ? image.media_type : typeof image.mediaType === "string" ? image.mediaType : typeof blobRef?.media_type === "string" ? blobRef.media_type : typeof blobRef?.mediaType === "string" ? blobRef.mediaType : "image/png";
+      const inlineData = typeof image.data === "string" ? image.data : typeof image.base64 === "string" ? image.base64 : "";
+      const directSrc = typeof image.src === "string" && image.src.trim() ? image.src.trim() : typeof image.url === "string" && image.url.trim() ? image.url.trim() : "";
+      const src = blobId && (source === "blob" || !directSrc) ? buildBlobUrl(blobId, blobBaseUrl) : inlineData ? `data:${mediaType};base64,${inlineData}` : directSrc;
       if (!src) continue;
-      const alt = typeof record.alt === "string" && record.alt.trim() ? record.alt.trim() : type === "image_ref" ? "referenced image" : "attached image";
-      const width = typeof record.width === "number" ? record.width : void 0;
-      const height = typeof record.height === "number" ? record.height : void 0;
+      const alt = typeof image.alt === "string" && image.alt.trim() ? image.alt.trim() : type === "image_ref" ? "referenced image" : "attached image";
+      const width = typeof image.width === "number" ? image.width : void 0;
+      const height = typeof image.height === "number" ? image.height : void 0;
+      const imageId = typeof image.image_id === "string" ? image.image_id : void 0;
       blocks.push({
         type: "image",
         src,
@@ -3683,7 +3723,8 @@ function contentToUserBlocks(content, blobBaseUrl) {
         alt,
         ...width !== void 0 ? { width } : {},
         ...height !== void 0 ? { height } : {},
-        ...blobId ? { blobId } : {}
+        ...blobId ? { blobId } : {},
+        ...imageId ? { imageId } : {}
       });
     }
   }
@@ -3955,6 +3996,9 @@ function isPeerEnvelopeScaffoldLine(line, peerAliases = [], allowStandaloneScaff
   }
   return false;
 }
+function isImagePlaceholderLine(line) {
+  return /^\[image:\s*[^\]]+\]$/i.test(line.trim());
+}
 function normalizePeerEnvelopeText(text, peerAliases = []) {
   const allowGenericEnvelopeStrip = peerAliases.length === 0;
   const intentBodyStripped = stripCommsIntentBodyPrefix(text, peerAliases);
@@ -3966,6 +4010,7 @@ function normalizePeerEnvelopeText(text, peerAliases = []) {
       peerAliases,
       allowGenericEnvelopeStrip || aliasStripped !== null
     )) return false;
+    if (isImagePlaceholderLine(line)) return false;
     if (allowGenericEnvelopeStrip && PEER_ENVELOPE_LINE_RE.test(line) && !line.replace(PEER_ENVELOPE_LINE_RE, "$2").trim()) return false;
     return true;
   }).join("\n");
@@ -4113,6 +4158,13 @@ function runStartedPromptMatchesStructuredCommsNotice(frame, signature) {
   }
   return Boolean(signature.body && normalizedPrompt === signature.body);
 }
+function runStartedPromptHasImagePlaceholder(frame) {
+  if (frame.event !== "run_started" || typeof frame.data !== "object" || frame.data === null) {
+    return false;
+  }
+  const prompt = extractPromptText(frame.data.prompt);
+  return prompt.replace(/\r/g, "\n").split("\n").some(isImagePlaceholderLine);
+}
 function structuredCommsPromptSuppressionKeys(frames, structuredCommsSignatures) {
   const keys = /* @__PURE__ */ new Set();
   const consumed = /* @__PURE__ */ new Set();
@@ -4134,7 +4186,9 @@ function structuredCommsPromptSuppressionKeys(frames, structuredCommsSignatures)
       const key = `${frame.id || frame.event || "frame"}:${index}`;
       if (consumed.has(key)) continue;
       if (typeof signature.timestampMs === "number" && typeof frame.timestampMs === "number") {
-        if (frame.timestampMs > signature.timestampMs) continue;
+        if (frame.timestampMs > signature.timestampMs && !runStartedPromptHasImagePlaceholder(frame)) {
+          continue;
+        }
         if (frame.timestampMs === signature.timestampMs && typeof signature.sourceIndex === "number" && index > signature.sourceIndex) continue;
       } else if (typeof signature.sourceIndex === "number" && index > signature.sourceIndex) {
         continue;
@@ -4323,6 +4377,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
       const requestId = textFromUnknown(record.request_id) || `typed-comms:${peerLabel}:${kind}`;
       const contentBlocks2 = typedNoticeContentBlocks(record.content, blobBaseUrl);
       const contentText = contentBlocks2.map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n").trim();
+      const peerImages = contentBlocks2.filter((item) => item.type === "image");
       const displayBodySource = contentText || typedCommsStableBodyText(record) || bodyText;
       const preserveStructuredContentEnvelope = structuredCommsBodyShouldPreserveLeadingEnvelope(
         displayBodySource,
@@ -4341,9 +4396,9 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
         peerIncoming: direction !== "outgoing",
         peerTarget: peerLabel,
         ...intent ? { peerIntent: intent } : {},
-        peerBody: displayBody || void 0
+        peerBody: displayBody || void 0,
+        ...peerImages.length > 0 ? { peerImages } : {}
       });
-      rich.push(...contentBlocks2.filter((item) => item.type !== "paragraph"));
       continue;
     }
     const legacyDedupeKeys = commsNoticeDedupeKeysFromBlock(record, bodyText, index);
@@ -4655,7 +4710,8 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       flushPendingText();
       const promptEntries = renderRunStartedPromptEntries(frame, entryId, {
         suppressEmbeddedRpcPrompt: options.suppressEmbeddedRunStartedPrompt === true,
-        suppressStructuredCommsPrompt: structuredCommsPromptSuppression.has(entryId)
+        suppressStructuredCommsPrompt: structuredCommsPromptSuppression.has(entryId),
+        blobBaseUrl: options.blobBaseUrl
       });
       if (promptEntries.length > 0) {
         for (const promptEntry of promptEntries) {

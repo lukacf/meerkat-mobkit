@@ -1323,14 +1323,19 @@ function renderRunStartedPromptEntries(
   options: {
     suppressEmbeddedRpcPrompt?: boolean;
     suppressStructuredCommsPrompt?: boolean;
+    blobBaseUrl?: string;
   } = {},
 ): ConversationTimelineEntry[] {
   if (frame.event !== "run_started" || typeof frame.data !== "object" || frame.data === null) {
     return [];
   }
   const record = frame.data as Record<string, unknown>;
+  const promptBlocks = contentToUserBlocks(record.prompt, options.blobBaseUrl);
   const prompt = extractPromptText(record.prompt).trim();
   if (!prompt) {
+    return [];
+  }
+  if (isCommsLikeRunStartedPrompt(prompt) && runStartedPromptHasImagePlaceholder(frame)) {
     return [];
   }
   if (options.suppressStructuredCommsPrompt) {
@@ -1340,6 +1345,17 @@ function renderRunStartedPromptEntries(
   const entries: ConversationTimelineEntry[] = [];
 
   if (!options.suppressEmbeddedRpcPrompt) {
+    if (promptBlocks.length > 0 && promptBlocks.some((block) => block.type === "image")) {
+      entries.push({
+        kind: "message",
+        id: entryId,
+        identity: USER_IDENTITY,
+        variant: "rich",
+        ...(createdAt ? { createdAt } : {}),
+        blocks: promptBlocks,
+      });
+      return entries;
+    }
     entries.push({
       kind: "message",
       id: entryId,
@@ -1415,35 +1431,61 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
       continue;
     }
     if (type === "image" || type === "image_ref") {
-      const source = typeof record.source === "string" ? record.source : "";
+      const image = record.image && typeof record.image === "object"
+        ? record.image as Record<string, unknown>
+        : record;
+      const blobRef = image.blob_ref && typeof image.blob_ref === "object"
+        ? image.blob_ref as Record<string, unknown>
+        : image.blobRef && typeof image.blobRef === "object"
+          ? image.blobRef as Record<string, unknown>
+          : null;
+      const source = typeof image.source === "string" ? image.source : "";
       const blobId = typeof record.blob_id === "string"
         ? record.blob_id
-        : typeof record.blobId === "string"
-          ? record.blobId
+        : typeof image.blob_id === "string"
+          ? image.blob_id
+          : typeof record.blobId === "string"
+            ? record.blobId
+            : typeof image.blobId === "string"
+              ? image.blobId
+              : typeof blobRef?.blob_id === "string"
+                ? blobRef.blob_id
+                : typeof blobRef?.blobId === "string"
+                  ? blobRef.blobId
+                  : "";
+      const mediaType = typeof image.media_type === "string"
+        ? image.media_type
+        : typeof image.mediaType === "string"
+          ? image.mediaType
+          : typeof blobRef?.media_type === "string"
+            ? blobRef.media_type
+            : typeof blobRef?.mediaType === "string"
+              ? blobRef.mediaType
+              : "image/png";
+      const inlineData = typeof image.data === "string"
+        ? image.data
+        : typeof image.base64 === "string"
+          ? image.base64
           : "";
-      const mediaType = typeof record.media_type === "string"
-        ? record.media_type
-        : typeof record.mediaType === "string"
-          ? record.mediaType
-          : "image/png";
-      const inlineData = typeof record.data === "string"
-        ? record.data
-        : typeof record.base64 === "string"
-          ? record.base64
+      const directSrc = typeof image.src === "string" && image.src.trim()
+        ? image.src.trim()
+        : typeof image.url === "string" && image.url.trim()
+          ? image.url.trim()
           : "";
-      const src = source === "blob" && blobId
+      const src = blobId && (source === "blob" || !directSrc)
         ? buildBlobUrl(blobId, blobBaseUrl)
         : inlineData
           ? `data:${mediaType};base64,${inlineData}`
-          : "";
+          : directSrc;
       if (!src) continue;
-      const alt = typeof record.alt === "string" && record.alt.trim()
-        ? record.alt.trim()
+      const alt = typeof image.alt === "string" && image.alt.trim()
+        ? image.alt.trim()
         : type === "image_ref"
           ? "referenced image"
           : "attached image";
-      const width = typeof record.width === "number" ? record.width : undefined;
-      const height = typeof record.height === "number" ? record.height : undefined;
+      const width = typeof image.width === "number" ? image.width : undefined;
+      const height = typeof image.height === "number" ? image.height : undefined;
+      const imageId = typeof image.image_id === "string" ? image.image_id : undefined;
       blocks.push({
         type: "image",
         src,
@@ -1452,6 +1494,7 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
         ...(width !== undefined ? { width } : {}),
         ...(height !== undefined ? { height } : {}),
         ...(blobId ? { blobId } : {}),
+        ...(imageId ? { imageId } : {}),
       });
     }
   }
@@ -1823,6 +1866,10 @@ function isPeerEnvelopeScaffoldLine(
   return false;
 }
 
+function isImagePlaceholderLine(line: string): boolean {
+  return /^\[image:\s*[^\]]+\]$/i.test(line.trim());
+}
+
 function normalizePeerEnvelopeText(text: string, peerAliases: string[] = []): string {
   const allowGenericEnvelopeStrip = peerAliases.length === 0;
   const intentBodyStripped = stripCommsIntentBodyPrefix(text, peerAliases);
@@ -1846,6 +1893,7 @@ function normalizePeerEnvelopeText(text: string, peerAliases: string[] = []): st
           allowGenericEnvelopeStrip || aliasStripped !== null,
         )
       ) return false;
+      if (isImagePlaceholderLine(line)) return false;
       if (
         allowGenericEnvelopeStrip
         && PEER_ENVELOPE_LINE_RE.test(line)
@@ -2063,6 +2111,17 @@ function runStartedPromptMatchesStructuredCommsNotice(
   return Boolean(signature.body && normalizedPrompt === signature.body);
 }
 
+function runStartedPromptHasImagePlaceholder(frame: ConsoleFrame): boolean {
+  if (frame.event !== "run_started" || typeof frame.data !== "object" || frame.data === null) {
+    return false;
+  }
+  const prompt = extractPromptText((frame.data as Record<string, unknown>).prompt);
+  return prompt
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .some(isImagePlaceholderLine);
+}
+
 function structuredCommsPromptSuppressionKeys(
   frames: ConsoleFrame[],
   structuredCommsSignatures: StructuredCommsNoticeSignature[],
@@ -2090,7 +2149,9 @@ function structuredCommsPromptSuppressionKeys(
         typeof signature.timestampMs === "number"
         && typeof frame.timestampMs === "number"
       ) {
-        if (frame.timestampMs > signature.timestampMs) continue;
+        if (frame.timestampMs > signature.timestampMs && !runStartedPromptHasImagePlaceholder(frame)) {
+          continue;
+        }
         if (
           frame.timestampMs === signature.timestampMs
           && typeof signature.sourceIndex === "number"
@@ -2354,6 +2415,7 @@ function typedSystemNoticeBlocksToRich(
         .filter(Boolean)
         .join("\n")
         .trim();
+      const peerImages = contentBlocks.filter((item) => item.type === "image");
       const displayBodySource = contentText || typedCommsStableBodyText(record) || bodyText;
       const preserveStructuredContentEnvelope = structuredCommsBodyShouldPreserveLeadingEnvelope(
         displayBodySource,
@@ -2373,8 +2435,8 @@ function typedSystemNoticeBlocksToRich(
         peerTarget: peerLabel,
         ...(intent ? { peerIntent: intent } : {}),
         peerBody: displayBody || undefined,
+        ...(peerImages.length > 0 ? { peerImages } : {}),
       });
-      rich.push(...contentBlocks.filter((item) => item.type !== "paragraph"));
       continue;
     }
     const legacyDedupeKeys = commsNoticeDedupeKeysFromBlock(record, bodyText, index);
@@ -2806,6 +2868,7 @@ export function mapFramesToTimelineEntries(
       const promptEntries = renderRunStartedPromptEntries(frame, entryId, {
         suppressEmbeddedRpcPrompt: options.suppressEmbeddedRunStartedPrompt === true,
         suppressStructuredCommsPrompt: structuredCommsPromptSuppression.has(entryId),
+        blobBaseUrl: options.blobBaseUrl,
       });
       if (promptEntries.length > 0) {
         for (const promptEntry of promptEntries) {
