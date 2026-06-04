@@ -330,6 +330,40 @@ function isTerminalTurnCompletedFrame(frame: ConsoleFrame): boolean {
   return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
 }
 
+function isActiveServerToolContentFrame(frame: ConsoleFrame): boolean {
+  if (frame.event !== "server_tool_content") return false;
+  const record =
+    frame.data && typeof frame.data === "object"
+      ? (frame.data as Record<string, unknown>)
+      : null;
+  const content =
+    record?.content && typeof record.content === "object"
+      ? (record.content as Record<string, unknown>)
+      : null;
+  const type =
+    typeof content?.type === "string"
+      ? content.type
+      : typeof record?.type === "string"
+        ? record.type
+        : "";
+  if (
+    type === "message_annotations" ||
+    Array.isArray(content?.annotations) ||
+    type.includes(".completed") ||
+    type.includes(".done") ||
+    type.includes(".failed") ||
+    type.includes(".error")
+  ) {
+    return false;
+  }
+  return (
+    type.includes(".in_progress") ||
+    type.includes(".searching") ||
+    type.includes(".started") ||
+    type.includes("_call")
+  );
+}
+
 // --- Event sets for the SSE handler ---
 const REFRESH_TRIGGER_EVENTS = new Set([
   "interaction_complete",
@@ -345,6 +379,7 @@ const REFRESH_TRIGGER_EVENTS = new Set([
   "tool_result_received",
   "tool_execution_started",
   "tool_execution_completed",
+  "server_tool_content",
 ]);
 const PANEL_ROUTABLE_EVENTS = new Set([
   "user_input",
@@ -363,6 +398,7 @@ const PANEL_ROUTABLE_EVENTS = new Set([
   "tool_result_received",
   "tool_execution_started",
   "tool_execution_completed",
+  "server_tool_content",
   "run_started",
   "run_completed",
   "run_failed",
@@ -399,6 +435,7 @@ const ACTIVITY_SKIP_EVENTS = new Set([
   "tool_execution_started",
   "tool_result_received",
   "tool_execution_completed",
+  "server_tool_content",
 ]);
 
 // ============================================================================
@@ -828,6 +865,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       frame.event === "tool_call_requested" ||
       frame.event === "tool_call" ||
       frame.event === "tool_execution_started" ||
+      (frame.event === "server_tool_content" && isActiveServerToolContentFrame(frame)) ||
       frame.event === "tool_result_received" ||
       frame.event === "tool_execution_completed"
     ) {
@@ -1399,6 +1437,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       case "tool_call_requested":
       case "tool_call":
       case "tool_execution_started":
+      case "server_tool_content":
+        if (frame.event === "server_tool_content" && !isActiveServerToolContentFrame(frame)) {
+          return false;
+        }
         if (currentPhase === "waiting" && elapsedMs < 300) {
           schedulePanelPhase(panelKey, "tool-executing", 300 - elapsedMs);
           return true;

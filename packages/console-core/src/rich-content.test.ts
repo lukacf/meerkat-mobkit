@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseConversationRichBlocks, parseConversationSummary, renderConversationInlineMarkdown, safeConsoleHref } from "./rich-content";
+import {
+  parseConversationRichBlocks,
+  parseConversationSummary,
+  parseStreamingConversationRichBlocks,
+  renderConversationInlineMarkdown,
+  safeConsoleHref,
+} from "./rich-content";
 
 test("parseConversationRichBlocks parses markdown tables into structured table blocks", () => {
   const blocks = parseConversationRichBlocks(`
@@ -21,6 +27,63 @@ test("parseConversationRichBlocks parses markdown tables into structured table b
       ["Sidebar", "next", "2"],
     ],
   });
+});
+
+test("parseStreamingConversationRichBlocks renders only stable markdown blocks", () => {
+  const blocks = parseStreamingConversationRichBlocks("## Risk\n\n- first\n- seco");
+
+  assert.equal(blocks.length, 2);
+  assert.deepEqual(blocks[0], {
+    type: "heading",
+    level: 2,
+    text: "Risk",
+  });
+  assert.deepEqual(blocks[1], {
+    type: "paragraph",
+    text: "- first\n- seco",
+  });
+});
+
+test("parseStreamingConversationRichBlocks keeps unclosed fences as plain tail text", () => {
+  const blocks = parseStreamingConversationRichBlocks("Intro\n\n```ts\nconst answer = 1");
+
+  assert.equal(blocks.length, 2);
+  assert.deepEqual(blocks[0], {
+    type: "paragraph",
+    text: "Intro",
+  });
+  assert.deepEqual(blocks[1], {
+    type: "paragraph",
+    text: "```ts\nconst answer = 1",
+  });
+});
+
+test("parseStreamingConversationRichBlocks hides unfinished inline markdown spans", () => {
+  const unfinished = parseStreamingConversationRichBlocks("Having *proper render");
+  assert.equal(unfinished.length, 1);
+  assert.deepEqual(unfinished[0], {
+    type: "paragraph",
+    text: "Having",
+    streaming: true,
+  });
+
+  const finished = parseStreamingConversationRichBlocks("Having *proper rendering* is essential.");
+  assert.equal(finished.length, 1);
+  assert.deepEqual(finished[0], {
+    type: "paragraph",
+    text: "Having *proper rendering* is essential.",
+    streaming: true,
+  });
+  assert.equal(
+    renderConversationInlineMarkdown(finished[0]?.type === "paragraph" ? finished[0].text : ""),
+    "Having <em>proper rendering</em> is essential.",
+  );
+});
+
+test("parseStreamingConversationRichBlocks does not treat identifiers as unfinished markdown", () => {
+  const blocks = parseStreamingConversationRichBlocks("Use api_investigator and ORDER_THREE_OK.");
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0]?.type === "paragraph" ? blocks[0].text : "", "Use api_investigator and ORDER_THREE_OK.");
 });
 
 test("parseConversationSummary parses summary paragraphs into structured summary metadata", () => {

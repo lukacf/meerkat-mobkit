@@ -8,10 +8,12 @@ use axum::response::{IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
+use futures::StreamExt;
 use futures::future::join_all;
 use meerkat_contracts::WireRuntimeBinding;
 use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerDescriptor;
+use meerkat_core::event::agent_event_type;
 use meerkat_mob::MobState;
 use meerkat_mob::ids::{MeerkatId, MobId};
 use meerkat_mob::launch::MemberLaunchMode;
@@ -50,6 +52,7 @@ use crate::runtime::{
     handle_console_rest_json_route_with_snapshot, resolve_authorized_console_auth_from_token,
 };
 use crate::runtime::{MetadataScope, RuntimeMetadataTable, labels_to_json_value};
+use crate::types::{EventEnvelope, UnifiedEvent};
 use crate::unified_runtime::console_events::ConsoleEventStore;
 use crate::unified_runtime::mob_events::MobEventsStore;
 use crate::unified_runtime::{EventLogStore, EventQuery};
@@ -656,6 +659,7 @@ async fn console_send_handler(
         return match Box::pin(console_send_with_identity_first_fallback(
             aggregator,
             identity_runtime.clone(),
+            state.runtime.as_ref(),
             state.console_events.as_ref(),
             request,
         ))
@@ -686,6 +690,7 @@ async fn console_send_handler(
 async fn console_send_with_identity_first_fallback(
     aggregator: &MobKitConsoleAggregator,
     identity_runtime: Arc<crate::identity_first::IdentityRuntime>,
+    runtime: Option<&MobRuntime>,
     console_events: Option<&ConsoleEventStore>,
     request: ConsoleSendRequest,
 ) -> Result<crate::console_aggregator::ConsoleInteractionAccepted, ConsoleSendError> {
@@ -693,6 +698,7 @@ async fn console_send_with_identity_first_fallback(
     match Box::pin(console_send_identity_first(
         aggregator,
         identity_runtime,
+        runtime,
         console_events,
         request,
     ))
@@ -708,6 +714,7 @@ async fn console_send_with_identity_first_fallback(
 async fn console_send_identity_first(
     aggregator: &MobKitConsoleAggregator,
     identity_runtime: Arc<crate::identity_first::IdentityRuntime>,
+    runtime: Option<&MobRuntime>,
     console_events: Option<&ConsoleEventStore>,
     mut request: ConsoleSendRequest,
 ) -> Result<crate::console_aggregator::ConsoleInteractionAccepted, ConsoleSendError> {
@@ -781,6 +788,20 @@ async fn console_send_identity_first(
             )
             .await
             .map_err(ConsoleSendError::State)?;
+    }
+
+    if let (Some(runtime), Some(events), Some(runtime_member_id)) = (
+        runtime,
+        console_events.cloned(),
+        runtime_member_id.as_deref(),
+    ) {
+        start_identity_first_console_live_projection(
+            runtime,
+            events,
+            identity.as_str(),
+            runtime_member_id,
+        )
+        .await;
     }
 
     if handling_mode == meerkat_core::types::HandlingMode::Steer {
@@ -883,6 +904,52 @@ async fn console_send_identity_first(
         }
     });
     Ok(accepted)
+}
+
+async fn start_identity_first_console_live_projection(
+    runtime: &MobRuntime,
+    console_events: ConsoleEventStore,
+    identity: &str,
+    runtime_member_id: &str,
+) {
+    let identity = identity.to_string();
+    let runtime_member_id = runtime_member_id.to_string();
+    let mut stream = match runtime
+        .handle()
+        .subscribe_agent_events(&MeerkatId::from(runtime_member_id.as_str()))
+        .await
+    {
+        Ok(stream) => stream,
+        Err(err) => {
+            tracing::warn!(
+                identity = %identity,
+                runtime_member_id = %runtime_member_id,
+                error = %err,
+                "console identity-first live projection could not subscribe to agent events"
+            );
+            return;
+        }
+    };
+
+    tokio::spawn(async move {
+        while let Some(envelope) = stream.next().await {
+            let event_type = agent_event_type(&envelope.payload).to_string();
+            let unified = EventEnvelope {
+                event_id: format!("evt-agent-{}", envelope.event_id),
+                source: "agent".to_string(),
+                timestamp_ms: envelope.timestamp_ms,
+                event: UnifiedEvent::Agent {
+                    agent_id: runtime_member_id.clone(),
+                    event_type: event_type.clone(),
+                    payload: serde_json::to_value(&envelope.payload).ok(),
+                },
+            };
+            console_events.project_unified_event(&unified).await;
+            if matches!(event_type.as_str(), "run_completed" | "run_failed") {
+                break;
+            }
+        }
+    });
 }
 
 fn parse_identity_first_handling_mode(
@@ -3493,6 +3560,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 return match Box::pin(console_send_with_identity_first_fallback(
                     aggregator,
                     identity_runtime.clone(),
+                    Some(runtime),
                     console_events.as_ref(),
                     send_request,
                 ))
@@ -8682,6 +8750,7 @@ comms = true
         let accepted = console_send_identity_first(
             &aggregator,
             runtime.clone(),
+            Some(&mob_runtime),
             Some(&events),
             crate::console_aggregator::ConsoleSendRequest {
                 identity: identity.as_str().to_string(),
@@ -8756,6 +8825,7 @@ comms = true
         let accepted = console_send_with_identity_first_fallback(
             &aggregator,
             identity_runtime,
+            Some(&mob_runtime),
             Some(&events),
             crate::console_aggregator::ConsoleSendRequest {
                 identity: "agent:member-only".to_string(),
@@ -8841,6 +8911,7 @@ comms = true
             console_send_identity_first(
                 &aggregator,
                 runtime,
+                None,
                 None,
                 crate::console_aggregator::ConsoleSendRequest {
                     identity: identity.as_str().to_string(),
@@ -8933,6 +9004,7 @@ comms = true
                 &aggregator,
                 runtime,
                 None,
+                None,
                 crate::console_aggregator::ConsoleSendRequest {
                     identity: identity.as_str().to_string(),
                     content: serde_json::to_value(meerkat_core::ContentInput::Text(
@@ -9010,6 +9082,7 @@ comms = true
         let accepted = console_send_identity_first(
             &aggregator,
             runtime,
+            None,
             None,
             crate::console_aggregator::ConsoleSendRequest {
                 identity: identity.as_str().to_string(),

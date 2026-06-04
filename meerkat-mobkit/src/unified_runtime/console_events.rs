@@ -387,7 +387,7 @@ impl ConsoleEventStore {
                         .response_phase_by_identity
                         .insert(identity.clone(), Some("tool-executing".to_string()));
                 }
-                "text_delta" => {
+                "text_delta" | "reasoning_delta" => {
                     state
                         .response_phase_by_identity
                         .insert(identity.clone(), Some("generating".to_string()));

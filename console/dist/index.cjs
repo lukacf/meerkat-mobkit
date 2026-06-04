@@ -457,6 +457,98 @@ function parseConversationRichBlocks(content) {
   blocks.push(...parseConversationTextBlocks(source.slice(lastIndex)));
   return compactConversationBlocks(blocks);
 }
+function parseStreamingConversationRichBlocks(content) {
+  const source = String(content || "").trimEnd();
+  if (!source.trim()) {
+    return [];
+  }
+  const stableEnd = streamingStablePrefixLength(source);
+  const stable = stableEnd > 0 ? source.slice(0, stableEnd).trim() : "";
+  const tail = source.slice(stableEnd).trim();
+  const blocks = stable ? parseConversationRichBlocks(stable) : [];
+  if (tail) {
+    const tailText = tail.replace(/\n{3,}/g, "\n\n");
+    const visibleTail = hideIncompleteInlineTail(tailText).trim();
+    if (visibleTail) {
+      blocks.push({ type: "paragraph", text: visibleTail, streaming: true });
+    }
+  }
+  return compactConversationBlocks(blocks);
+}
+function streamingStablePrefixLength(source) {
+  const fenceStart = unclosedFenceStartIndex(source);
+  const scanEnd = fenceStart ?? source.length;
+  const scanSource = source.slice(0, scanEnd);
+  let stableEnd = 0;
+  const blankLineRe = /\n[ \t]*\n/gu;
+  let match;
+  while (match = blankLineRe.exec(scanSource)) {
+    stableEnd = blankLineRe.lastIndex;
+  }
+  return stableEnd;
+}
+function hideIncompleteInlineTail(source) {
+  const firstOpen = firstUnclosedInlineMarkerIndex(source);
+  if (firstOpen === null) {
+    return source;
+  }
+  return source.slice(0, firstOpen).replace(/\s+$/u, "");
+}
+function firstUnclosedInlineMarkerIndex(source) {
+  return minNullable([
+    unclosedDelimitedMarkerIndex(source, "`"),
+    unclosedDelimitedMarkerIndex(source, "**"),
+    unclosedDelimitedMarkerIndex(source, "*"),
+    unclosedDelimitedMarkerIndex(source, "_"),
+    unclosedLinkStartIndex(source)
+  ]);
+}
+function minNullable(values) {
+  return values.reduce((min, value) => {
+    if (value === null) return min;
+    return min === null || value < min ? value : min;
+  }, null);
+}
+function unclosedDelimitedMarkerIndex(source, delimiter) {
+  const positions = [];
+  for (let index = 0; index < source.length; index++) {
+    if (source[index - 1] === "\\") continue;
+    if (delimiter === "**") {
+      if (source.slice(index, index + 2) !== "**") continue;
+      positions.push(index);
+      index += 1;
+      continue;
+    }
+    const char = source[index];
+    if (char !== delimiter) continue;
+    if (delimiter === "*" && (source[index - 1] === "*" || source[index + 1] === "*")) continue;
+    if (delimiter === "_" && isAlphaNumeric(source[index - 1]) && isAlphaNumeric(source[index + 1])) continue;
+    if ((delimiter === "*" || delimiter === "_") && isLineBulletMarker(source, index)) continue;
+    positions.push(index);
+  }
+  return positions.length % 2 === 1 ? positions.at(-1) ?? null : null;
+}
+function unclosedLinkStartIndex(source) {
+  const match = source.match(/\[[^\]\n]*\]\([^)\n]*$/u);
+  return match?.index ?? null;
+}
+function isAlphaNumeric(value) {
+  return Boolean(value && /[A-Za-z0-9]/u.test(value));
+}
+function isLineBulletMarker(source, index) {
+  const before = source.slice(0, index);
+  const linePrefix = before.slice(before.lastIndexOf("\n") + 1);
+  return linePrefix.trim().length === 0 && /\s/u.test(source[index + 1] || "");
+}
+function unclosedFenceStartIndex(source) {
+  const fenceRe = /^```/gmu;
+  let match;
+  let openStart = null;
+  while (match = fenceRe.exec(source)) {
+    openStart = openStart === null ? match.index : null;
+  }
+  return openStart;
+}
 function parseConversationTextBlocks(fragment) {
   const source = String(fragment || "").trim();
   if (!source) {
@@ -1799,6 +1891,7 @@ var HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "snapshot_started",
   "run_failed",
   "keep-alive",
+  "server_tool_content",
   "tool_config_changed",
   "tool_scope_changed"
 ]);
@@ -1807,6 +1900,7 @@ var ACTIVITY_HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "text_delta",
   "tool_call_requested",
   "tool_call",
+  "server_tool_content",
   "tool_execution_started",
   "tool_result_received",
   "tool_execution_completed"
@@ -3183,14 +3277,55 @@ var HIDDEN_EVENTS2 = /* @__PURE__ */ new Set([
   "snapshot_started",
   "run_failed",
   "keep-alive",
+  "server_tool_content",
   "tool_config_changed",
   "tool_scope_changed"
 ]);
+function appendDistinctText(parts, value) {
+  const text = value.trim();
+  if (!text) return;
+  const comparable = normalizeComparableText(text);
+  if (parts.some((part) => normalizeComparableText(part) === comparable)) return;
+  parts.push(text);
+}
+function textFromReasoningValue(value) {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value.map((item) => textFromReasoningValue(item)).filter(Boolean).join("\n\n").trim();
+  }
+  if (!value || typeof value !== "object") return "";
+  const record = value;
+  const parts = [];
+  appendDistinctText(parts, textFromReasoningValue(record.summary));
+  appendDistinctText(parts, textFromReasoningValue(record.text));
+  appendDistinctText(parts, textFromReasoningValue(record.content));
+  appendDistinctText(parts, textFromReasoningValue(record.delta));
+  return parts.join("\n\n").trim();
+}
+function reasoningBlockText(block) {
+  const data = block.data && typeof block.data === "object" ? block.data : block;
+  const parts = [];
+  appendDistinctText(parts, textFromReasoningValue(data.summary));
+  appendDistinctText(parts, textFromReasoningValue(data.text));
+  appendDistinctText(parts, textFromReasoningValue(data.content));
+  appendDistinctText(parts, textFromReasoningValue(block.summary));
+  appendDistinctText(parts, textFromReasoningValue(block.text));
+  appendDistinctText(parts, textFromReasoningValue(block.content));
+  return parts.join("\n\n").trim();
+}
+function reasoningFrameText(frame) {
+  const data = frame.data && typeof frame.data === "object" ? frame.data : frame.data;
+  if (frame.event === "reasoning_delta" && typeof data?.delta === "string") {
+    return data.delta;
+  }
+  return textFromReasoningValue(data).trim();
+}
 var ACTIVITY_HIDDEN_EVENTS2 = /* @__PURE__ */ new Set([
   ...HIDDEN_EVENTS2,
   "text_delta",
   "tool_call_requested",
   "tool_call",
+  "server_tool_content",
   "tool_execution_started",
   "tool_result_received",
   "tool_execution_completed"
@@ -3203,15 +3338,32 @@ function isoFromTimestampMs(timestampMs) {
 }
 function parseToolCallId(frame) {
   const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  if (frame.event === "server_tool_content") {
+    const content = record?.content && typeof record.content === "object" ? record.content : null;
+    const type = typeof content?.type === "string" ? content.type : "";
+    const isAnnotationPayload = type === "message_annotations" || Array.isArray(content?.annotations);
+    const id2 = isAnnotationPayload ? content?.item_id ?? record?.item_id ?? record?.tool_call_id : content?.item_id ?? content?.id ?? record?.item_id ?? record?.tool_call_id ?? record?.id;
+    return typeof id2 === "string" && id2.trim() ? id2.trim() : null;
+  }
   const id = record?.tool_call_id ?? record?.id;
   return typeof id === "string" && id.trim() ? id.trim() : null;
 }
 function parseToolName(frame) {
   const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  if (frame.event === "server_tool_content") {
+    const content = record?.content && typeof record.content === "object" ? record.content : null;
+    const name = content?.name ?? record?.tool_name ?? record?.name;
+    return typeof name === "string" && name.trim() ? name.trim() : "tool";
+  }
   return typeof record?.name === "string" && record.name.trim() ? record.name : "tool";
 }
 function parseToolArguments(frame) {
   const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  if (frame.event === "server_tool_content") {
+    const content = record?.content && typeof record.content === "object" ? record.content : null;
+    const query = content?.query ?? content?.input;
+    return typeof query === "string" && query.trim() ? query.trim() : "";
+  }
   if (typeof record?.arguments === "string" && record.arguments.trim()) {
     return record.arguments;
   }
@@ -3249,7 +3401,7 @@ function liveToolDedupeState(frames, toolBlocks) {
   const liveToolSignatureCounts = /* @__PURE__ */ new Map();
   for (const frame of frames) {
     if (frame.sourceKind === "session_history") continue;
-    if (frame.event !== "tool_call_requested" && frame.event !== "tool_call" && frame.event !== "tool_execution_started") {
+    if (frame.event !== "tool_call_requested" && frame.event !== "tool_call" && frame.event !== "tool_execution_started" && frame.event !== "server_tool_content") {
       continue;
     }
     const toolCallId = parseToolCallId(frame);
@@ -3399,6 +3551,45 @@ function buildToolBlocks(frames) {
   const pendingResults = /* @__PURE__ */ new Map();
   const peerRegistry = buildPeerRegistry(frames);
   for (const frame of frames) {
+    if (frame.event === "server_tool_content") {
+      const toolCallId = parseToolCallId(frame);
+      const parsed = serverToolContentSummary(frame);
+      if (!toolCallId) {
+        if (parsed && parsed.status !== "pending") {
+          const name = parseToolName(frame);
+          const targetName = name.replace(/_annotations$/, "");
+          const existing2 = [...toolCalls.values()].reverse().find(
+            (block) => !block.result && (block.name === targetName || block.name === name || name.startsWith(block.name))
+          );
+          if (existing2) {
+            toolCalls.set(existing2.toolCallId, {
+              ...existing2,
+              ...parsed.result ? { result: parsed.result } : {},
+              status: parsed.status
+            });
+          }
+        }
+        continue;
+      }
+      const existing = toolCalls.get(toolCallId);
+      if (existing) {
+        toolCalls.set(toolCallId, {
+          ...existing,
+          ...parsed?.result ? { result: parsed.result } : {},
+          status: parsed?.status || existing.status
+        });
+        continue;
+      }
+      toolCalls.set(toolCallId, {
+        type: "tool-call",
+        toolCallId,
+        name: parseToolName(frame),
+        arguments: parseToolArguments(frame),
+        ...parsed?.result ? { result: parsed.result } : {},
+        status: parsed?.status || "pending"
+      });
+      continue;
+    }
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       const toolCallId = parseToolCallId(frame);
       const data = frame.data;
@@ -3652,6 +3843,7 @@ function conversationEntryVisibleText(entry) {
   return entry.blocks.map((block) => {
     if (!block || typeof block !== "object") return "";
     const record = block;
+    if (record.type === "thinking") return "";
     if (typeof record.text === "string") return record.text;
     if (typeof record.peerBody === "string") return record.peerBody;
     return "";
@@ -3910,6 +4102,40 @@ function summarizeToolResultForDisplay(toolName2, result) {
   }
   return null;
 }
+function formatServerToolAnnotations(annotations) {
+  return annotations.map((annotation, index) => {
+    const record = annotation && typeof annotation === "object" ? annotation : null;
+    const title = typeof record?.title === "string" && record.title.trim() ? record.title.trim() : typeof record?.text === "string" && record.text.trim() ? record.text.trim() : `Source ${index + 1}`;
+    const url = typeof record?.url === "string" && record.url.trim() ? record.url.trim() : "";
+    return url ? `${index + 1}. ${title}
+${url}` : `${index + 1}. ${title}`;
+  }).join("\n\n").trim();
+}
+function serverToolContentSummary(frame) {
+  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content = record?.content && typeof record.content === "object" ? record.content : null;
+  const type = typeof content?.type === "string" ? content.type : typeof record?.type === "string" ? record.type : "";
+  if (type.includes(".failed") || type.includes(".error")) {
+    return { status: "error" };
+  }
+  if (Array.isArray(content?.annotations)) {
+    const result = formatServerToolAnnotations(content.annotations);
+    return {
+      status: "success",
+      ...result ? { result } : {}
+    };
+  }
+  if (type.includes(".completed") || type.includes(".done")) {
+    return { status: "success" };
+  }
+  if (type.includes(".in_progress") || type.includes(".searching") || type.includes(".started") || type.includes("_call")) {
+    return { status: "pending" };
+  }
+  return null;
+}
+function isActiveServerToolContentFrame(frame) {
+  return serverToolContentSummary(frame)?.status === "pending";
+}
 function toolResultTextFromContent(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -3944,39 +4170,73 @@ function historyToolResults(frames) {
   }
   return results;
 }
-function blockAssistantToolBlocks(blocks, peerRegistry, toolResults) {
-  const toolBlocks = [];
+function blockAssistantToolBlock(item, index, peerRegistry, toolResults) {
+  const blockType = typeof item.block_type === "string" ? item.block_type : typeof item.type === "string" ? item.type : "";
+  if (blockType !== "tool_use") return null;
+  const data = item.data && typeof item.data === "object" ? item.data : item;
+  const name = typeof data.name === "string" && data.name.trim() ? data.name.trim() : "tool";
+  const id = typeof data.id === "string" && data.id.trim() ? data.id.trim() : `history-tool-${index + 1}`;
+  const args = data.args !== void 0 ? data.args : data.arguments;
+  const argsRecord = args && typeof args === "object" ? args : null;
+  const argumentsText = args === void 0 ? "" : typeof args === "string" ? args : JSON.stringify(args);
+  const isPeerTool = name === "send_request" || name === "send_message" || name === "send_response";
+  const peerTarget2 = isPeerTool ? peerTargetFromArgs(argsRecord, peerRegistry) : void 0;
+  const rawPeerIntent = isPeerTool && typeof argsRecord?.intent === "string" ? argsRecord.intent : void 0;
+  const peerIntent = displayPeerIntent(rawPeerIntent);
+  const peerBody = isPeerTool ? extractPeerBodyFromArgs(argsRecord) : void 0;
+  const result = toolResults?.get(id);
+  const displayResult = result?.result ? summarizeToolResultForDisplay(name, result.result) || result.result : void 0;
+  return {
+    type: "tool-call",
+    toolCallId: id,
+    name,
+    arguments: argumentsText,
+    ...displayResult ? { result: displayResult } : {},
+    status: result?.status || "success",
+    ...peerTarget2 ? { peerTarget: peerTarget2 } : {},
+    ...peerIntent ? { peerIntent } : {},
+    ...peerBody ? { peerBody } : {}
+  };
+}
+function blockAssistantRichBlocks(blocks, peerRegistry, toolResults) {
+  const reasoningBlocks = [];
+  const actionAndTextBlocks = [];
+  let hasNonTextBlock = false;
+  let toolIndex = 0;
   for (const block of blocks) {
     if (!block || typeof block !== "object") continue;
     const item = block;
     const blockType = typeof item.block_type === "string" ? item.block_type : typeof item.type === "string" ? item.type : "";
-    if (blockType !== "tool_use") continue;
-    const data = item.data && typeof item.data === "object" ? item.data : item;
-    const name = typeof data.name === "string" && data.name.trim() ? data.name.trim() : "tool";
-    const id = typeof data.id === "string" && data.id.trim() ? data.id.trim() : `history-tool-${toolBlocks.length + 1}`;
-    const args = data.args !== void 0 ? data.args : data.arguments;
-    const argsRecord = args && typeof args === "object" ? args : null;
-    const argumentsText = args === void 0 ? "" : typeof args === "string" ? args : JSON.stringify(args);
-    const isPeerTool = name === "send_request" || name === "send_message" || name === "send_response";
-    const peerTarget2 = isPeerTool ? peerTargetFromArgs(argsRecord, peerRegistry) : void 0;
-    const rawPeerIntent = isPeerTool && typeof argsRecord?.intent === "string" ? argsRecord.intent : void 0;
-    const peerIntent = displayPeerIntent(rawPeerIntent);
-    const peerBody = isPeerTool ? extractPeerBodyFromArgs(argsRecord) : void 0;
-    const result = toolResults?.get(id);
-    const displayResult = result?.result ? summarizeToolResultForDisplay(name, result.result) || result.result : void 0;
-    toolBlocks.push({
-      type: "tool-call",
-      toolCallId: id,
-      name,
-      arguments: argumentsText,
-      ...displayResult ? { result: displayResult } : {},
-      status: result?.status || "success",
-      ...peerTarget2 ? { peerTarget: peerTarget2 } : {},
-      ...peerIntent ? { peerIntent } : {},
-      ...peerBody ? { peerBody } : {}
-    });
+    const data = item.data && typeof item.data === "object" ? item.data : {};
+    if (blockType === "reasoning") {
+      const text = reasoningBlockText(item);
+      if (text) {
+        hasNonTextBlock = true;
+        reasoningBlocks.push({
+          type: "thinking",
+          label: "",
+          text,
+          final: true,
+          persisted: true
+        });
+      }
+      continue;
+    }
+    if (blockType === "tool_use") {
+      const toolBlock = blockAssistantToolBlock(item, toolIndex, peerRegistry, toolResults);
+      toolIndex += 1;
+      if (toolBlock) {
+        hasNonTextBlock = true;
+        actionAndTextBlocks.push(toolBlock);
+      }
+      continue;
+    }
+    if (blockType === "text") {
+      const text = typeof data.text === "string" ? data.text : typeof item.text === "string" ? item.text : "";
+      if (text.trim()) actionAndTextBlocks.push(...parseConversationRichBlocks(text));
+    }
   }
-  return toolBlocks;
+  return hasNonTextBlock ? [...reasoningBlocks, ...actionAndTextBlocks] : [];
 }
 function textFromUnknown(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -4609,7 +4869,7 @@ function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults, sou
       return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
     case "block_assistant": {
       const blocks = Array.isArray(record.blocks) ? record.blocks : [];
-      const toolBlocks = blockAssistantToolBlocks(blocks, peerRegistry, toolResults);
+      const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults);
       const text = blocks.map((block) => {
         if (!block || typeof block !== "object") return "";
         const item = block;
@@ -4621,7 +4881,7 @@ function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults, sou
         }
         return "";
       }).filter((value) => value.trim().length > 0).join("\n\n");
-      return { role: "assistant", text, ...toolBlocks.length > 0 ? { blocks: toolBlocks } : {} };
+      return { role: "assistant", text, ...richBlocks.length > 0 ? { blocks: richBlocks } : {} };
     }
     case "system":
       return { role: "system", text: typeof record.content === "string" ? record.content : "" };
@@ -4738,11 +4998,33 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   let pendingText = "";
   let pendingId = "";
   let pendingCreatedAt;
+  let pendingReasoningText = "";
+  let pendingReasoningId = "";
+  let pendingReasoningCreatedAt;
   let streamedInteractionText = "";
   let streamedInteractionId = "";
-  function flushPendingText() {
+  function flushPendingReasoning(final = false) {
+    if (!pendingReasoningText.trim()) return;
+    entries.push({
+      kind: "message",
+      id: pendingReasoningId,
+      identity: agentIdentity(agent),
+      variant: "rich",
+      ...pendingReasoningCreatedAt ? { createdAt: pendingReasoningCreatedAt } : {},
+      blocks: [{
+        type: "thinking",
+        label: "",
+        text: pendingReasoningText,
+        ...final ? { final: true } : {}
+      }]
+    });
+    pendingReasoningText = "";
+    pendingReasoningId = "";
+    pendingReasoningCreatedAt = void 0;
+  }
+  function flushPendingText(final = true) {
     if (!pendingText) return;
-    const blocks = parseConversationRichBlocks(pendingText);
+    const blocks = final ? parseConversationRichBlocks(pendingText) : parseStreamingConversationRichBlocks(pendingText);
     entries.push({
       kind: "message",
       id: pendingId,
@@ -4758,10 +5040,33 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   for (let i = 0; i < orderedFrames.length; i++) {
     const frame = orderedFrames[i];
     const entryId = `${frame.id || frame.event || "frame"}:${i}`;
+    if (frame.event === "reasoning_delta") {
+      const delta = reasoningFrameText(frame);
+      if (!delta) continue;
+      if (!pendingReasoningId) {
+        pendingReasoningId = entryId;
+        pendingReasoningCreatedAt = isoFromTimestampMs(frame.timestampMs);
+      }
+      pendingReasoningText += delta;
+      continue;
+    }
+    if (frame.event === "reasoning_complete") {
+      const text2 = reasoningFrameText(frame);
+      if (text2) {
+        pendingReasoningText = text2;
+        if (!pendingReasoningId) {
+          pendingReasoningId = entryId;
+          pendingReasoningCreatedAt = isoFromTimestampMs(frame.timestampMs);
+        }
+      }
+      flushPendingReasoning(true);
+      continue;
+    }
     if (frame.event === "text_delta") {
       if (options.renderTextDeltas === false) {
         continue;
       }
+      flushPendingReasoning(true);
       const frameInteractionId = frame.interactionId?.trim() || "";
       if (frameInteractionId !== streamedInteractionId) {
         streamedInteractionText = "";
@@ -4777,6 +5082,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       continue;
     }
     if (frame.event === "assistant_image" || frame.event === "assistant_image_appended") {
+      flushPendingReasoning(true);
       flushPendingText();
       const imageEntry = renderAssistantImageEntry(agent, frame, entryId, options.blobBaseUrl);
       if (imageEntry) {
@@ -4790,7 +5096,8 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       continue;
     }
     const toolCallId = parseToolCallId(frame);
-    if (toolCallId && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started") && !emittedToolCalls.has(toolCallId)) {
+    if (toolCallId && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "server_tool_content") && !emittedToolCalls.has(toolCallId)) {
+      flushPendingReasoning(true);
       flushPendingText();
       const block = toolBlocks.get(toolCallId);
       if (block) {
@@ -4817,6 +5124,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       continue;
     }
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      flushPendingReasoning(true);
       const imageEntries = renderGeneratedImageToolResultEntries(
         agent,
         frame,
@@ -4832,6 +5140,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       continue;
     }
     if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
+      flushPendingReasoning(true);
       flushPendingText();
       const frameInteractionId = frame.interactionId?.trim() || "";
       if (frameInteractionId !== streamedInteractionId) {
@@ -4850,6 +5159,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       continue;
     }
     if (frame.event === "run_started") {
+      flushPendingReasoning(true);
       flushPendingText();
       const promptEntries = renderRunStartedPromptEntries(frame, entryId, {
         suppressEmbeddedRpcPrompt: options.suppressEmbeddedRunStartedPrompt === true,
@@ -4869,6 +5179,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       }
     }
     if (frame.event === "system_notice") {
+      flushPendingReasoning(true);
       flushPendingText();
       if (shouldSuppressDuplicateCommsNotice(frame, emittedCommsNotices)) {
         continue;
@@ -4890,6 +5201,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       continue;
     }
     if (frame.event === "text_complete") {
+      flushPendingReasoning(true);
       if (frame.sourceKind !== "session_history") {
         const text2 = terminalFrameVisibleText(frame).trim();
         if (text2 && pendingText && normalizeComparableText(pendingText) === normalizeComparableText(text2)) {
@@ -4937,6 +5249,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
     }
     if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_failed") {
       const streamedText = streamedInteractionText || pendingText;
+      flushPendingReasoning(true);
       flushPendingText();
       streamedInteractionText = "";
       streamedInteractionId = "";
@@ -4978,6 +5291,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
     if (HIDDEN_EVENTS2.has(frame.event)) {
       continue;
     }
+    flushPendingReasoning(true);
     flushPendingText();
     const peerEntry = renderPeerEntry(frame, entryId);
     if (peerEntry) {
@@ -4997,7 +5311,8 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       text
     });
   }
-  flushPendingText();
+  flushPendingReasoning(false);
+  flushPendingText(false);
   return entries;
 }
 function createUserEntry2(message, images = []) {
@@ -5047,6 +5362,9 @@ function inferResponsePhaseFromFrames2(frames, fallback = null) {
       case "tool_call":
       case "tool_execution_started":
         phase = "tool-executing";
+        break;
+      case "server_tool_content":
+        if (isActiveServerToolContentFrame(frame)) phase = "tool-executing";
         break;
       case "tool_result_received":
       case "tool_execution_completed":
@@ -12292,6 +12610,16 @@ function isTerminalTurnCompletedFrame(frame) {
   const stopReason = data.stop_reason ?? data.stopReason;
   return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
 }
+function isActiveServerToolContentFrame2(frame) {
+  if (frame.event !== "server_tool_content") return false;
+  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content = record?.content && typeof record.content === "object" ? record.content : null;
+  const type = typeof content?.type === "string" ? content.type : typeof record?.type === "string" ? record.type : "";
+  if (type === "message_annotations" || Array.isArray(content?.annotations) || type.includes(".completed") || type.includes(".done") || type.includes(".failed") || type.includes(".error")) {
+    return false;
+  }
+  return type.includes(".in_progress") || type.includes(".searching") || type.includes(".started") || type.includes("_call");
+}
 var REFRESH_TRIGGER_EVENTS = /* @__PURE__ */ new Set([
   "interaction_complete",
   "interaction_failed",
@@ -12305,7 +12633,8 @@ var REFRESH_TRIGGER_EVENTS = /* @__PURE__ */ new Set([
   "tool_call",
   "tool_result_received",
   "tool_execution_started",
-  "tool_execution_completed"
+  "tool_execution_completed",
+  "server_tool_content"
 ]);
 var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
   "user_input",
@@ -12324,6 +12653,7 @@ var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
   "tool_result_received",
   "tool_execution_started",
   "tool_execution_completed",
+  "server_tool_content",
   "run_started",
   "run_completed",
   "run_failed",
@@ -12358,7 +12688,8 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "tool_call",
   "tool_execution_started",
   "tool_result_received",
-  "tool_execution_completed"
+  "tool_execution_completed",
+  "server_tool_content"
 ]);
 function ConsoleApp({ baseUrl }) {
   const consoleFetchTimeoutMsRef = import_react27.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2);
@@ -12672,7 +13003,7 @@ function ConsoleApp({ baseUrl }) {
     if (frame.event === "user_input") {
       return isTerminalUserInputStatus2(frame.status) ? false : true;
     }
-    if (frame.event === "interaction_started" || frame.event === "run_started" || frame.event === "reasoning_delta" || frame.event === "reasoning_complete" || frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+    if (frame.event === "interaction_started" || frame.event === "run_started" || frame.event === "reasoning_delta" || frame.event === "reasoning_complete" || frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "server_tool_content" && isActiveServerToolContentFrame2(frame) || frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       return true;
     }
     if (frame.event === "turn_completed" && isTerminalTurnCompletedFrame(frame) || frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "system_notice" && systemNoticeClearsBusyState2(frame) || frame.event === "message_delivery_failed") {
@@ -13040,6 +13371,10 @@ function ConsoleApp({ baseUrl }) {
       case "tool_call_requested":
       case "tool_call":
       case "tool_execution_started":
+      case "server_tool_content":
+        if (frame.event === "server_tool_content" && !isActiveServerToolContentFrame2(frame)) {
+          return false;
+        }
         if (currentPhase === "waiting" && elapsedMs < 300) {
           schedulePanelPhase(panelKey, "tool-executing", 300 - elapsedMs);
           return true;
