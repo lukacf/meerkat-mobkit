@@ -136,11 +136,20 @@ describe("shared console portability", () => {
     expect(corePackage.name).toBe("@console-core");
     expect(corePackage.exports).toEqual({
       ".": "./src/index.ts",
+      "./adapters": "./src/adapters.ts",
+      "./contract": "./src/contract.ts",
+      "./headless": "./src/headless.ts",
+      "./network": "./src/network.ts",
+      "./runtime-types": "./src/runtime-types.ts",
       "./runtime": "./index.js",
     });
     expect(componentsPackage.name).toBe("@console-components");
     expect(componentsPackage.exports).toEqual({
       ".": "./src/index.ts",
+      "./conversation/console-conversation-panel": "./src/conversation/console-conversation-panel.tsx",
+      "./pending/console-pending-stack": "./src/pending/console-pending-stack.tsx",
+      "./topology/topology-panel": "./src/topology/topology-panel.tsx",
+      "./topology/types": "./src/topology/types.ts",
       "./styles": "./src/styles/index.ts",
     });
     expect(componentsPackage.peerDependencies).toMatchObject({

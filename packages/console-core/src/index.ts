@@ -229,6 +229,98 @@ export {
 } from "./format";
 
 export type {
+  AgentChatTarget,
+  ControlTargetKind,
+  GatesPanelTarget,
+  GatingPanelTarget,
+  HealthPanelTarget,
+  IdentityInspectTarget,
+  LogsPanelTarget,
+  MobKitDockTarget,
+  OptimisticUserMessage,
+  RosterPanelTarget,
+  RoutingPanelTarget,
+  TimelinePanelTarget,
+  TopologyPanelTarget,
+} from "./adapters";
+export {
+  appendOptimisticConversationEntry,
+  buildActivityRailViewState,
+  buildControlTarget,
+  buildConversationViewState,
+  buildDockTarget,
+  buildInspectTarget,
+  buildPanelConversationKey,
+  buildRoutingSectionView,
+  buildSidebarViewState,
+  createUserEntry,
+  inferResponsePhaseFromFrames,
+  isAgentPinned,
+  mapFramesToTimelineEntries,
+  mergeConversationFrames,
+  optimisticUserMessageForPanel,
+  resolvePanelResponsePhase,
+  sidebarAgentPinId,
+  sortConversationTimelineEntries,
+  systemNoticeClearsBusyState,
+} from "./adapters";
+
+export {
+  CONSOLE_BLOB_PATH_PREFIX,
+  CONSOLE_CONTRACT_VERSION,
+  CONSOLE_REST_PATHS,
+  CONSOLE_RPC_METHODS,
+  CONSOLE_RPC_PATHS,
+  CONSOLE_TIMELINE_QUERY_MODES,
+  CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
+} from "./contract";
+
+export type {
+  ConsoleCapabilities,
+  ConsoleCommandName,
+  ConsoleCommandRequest,
+  ConsoleCommandResult,
+  ConsoleCommandSurface,
+  ConsoleFact,
+  ConsoleFactSource,
+  ConsoleSendInput,
+  ConsoleTimelineController,
+  ConsoleTimelineQueryInput,
+  ConsoleTimelineSubscribeInput,
+  ConsoleUploadInput,
+  ConsoleUploadResult,
+  MobKitConsoleController,
+  MobKitConsoleTransport,
+} from "./headless";
+export {
+  CONSOLE_COMMAND_NAMES,
+  createHttpConsoleTransport,
+  createMobKitConsoleController,
+} from "./headless";
+
+export type {
+  ConsoleAgent,
+  ConsoleAgentAffordances,
+  ConsoleExperience,
+  ConsoleExperienceAgentSnapshotRow,
+  ConsoleFrame,
+  ConsoleGatewayInteractionRejectedError,
+  ConsoleModelCapabilities,
+  ConsoleModulesResponse,
+  ConsoleReplayUnavailablePayload,
+  ConsoleSidebarButtonConfig,
+  ConsoleSidebarUiConfig,
+  ConsoleTimelineAccepted,
+  ConsoleTimelinePage,
+} from "./runtime-types";
+
+export {
+  DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
+  parseSseFrames,
+  subscribeTimelineEvents,
+} from "./network";
+
+export type {
   ConsoleWorkbenchTarget,
   HostWorkbenchTarget,
   MobKitControlTargetKind,

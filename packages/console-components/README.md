@@ -11,11 +11,15 @@ fixtures; they are not an npm-public API promise.
 Components:
 
 - `ConversationEmptyState`
+- `ConsoleConversationPanel`
 - `ConversationPane`
 - `ConversationTranscript`
 - `ConsoleActivityRail`
+- `ConsoleComposer`
 - `ConsoleDock`
+- `ConsolePendingStack`
 - `ConsoleSidebar`
+- `TopologyPanel`
 - `ConsoleWorkbench`
 
 Hooks:
@@ -25,16 +29,23 @@ Hooks:
 Types:
 
 - `ConversationEmptyStateProps`
+- `ConsoleConversationPanelPhase`
+- `ConsoleConversationPanelProps`
 - `ConversationPaneProps`
 - `ConversationTranscriptProps`
 - `ConsoleActivityRailProps`
+- `ConsoleComposerProps`
 - `ConsoleDockController`
 - `ConsoleDockProps`
+- `ConsolePendingDropWhere`
+- `ConsolePendingItem`
+- `ConsolePendingStackProps`
 - `ConsoleSidebarActionButtonScope`
 - `ConsoleSidebarItemTrailingRenderArgs`
 - `ConsoleSidebarProps`
 - `ConsoleSidebarSectionContainerRenderArgs`
 - `ConsoleSidebarSectionHeaderRenderArgs`
+- `ConsoleTopologyNode`
 - `ConsoleWorkbenchProps`
 - `IconRenderer`
 - `UseConsoleDockControllerOptions`
@@ -50,10 +61,14 @@ The shared stylesheet is organized by domain:
 - `tokens.css`
 - `themes.css`
 - `conversation.css`
+- `conversation-panel.css`
 - `workbench.css`
 - `dock.css`
 - `sidebar.css`
 - `activity.css`
+- `composer.css`
+- `pending-stack.css`
+- `topology.css`
 
 ## Host token contract
 
@@ -98,5 +113,9 @@ The most useful overrides are:
    - `ConsoleSidebar`
    - `ConsoleDock`
    - `ConsoleActivityRail`
+   - `ConsoleComposer`
+   - `ConsolePendingStack`
+   - `TopologyPanel`
    - `ConsoleWorkbench`
-5. Resolve each dock target into a `ConversationViewState` and panel footer/composer binding in host code.
+5. Resolve each dock target into timeline entries plus host callbacks and render
+   `ConsoleConversationPanel`.
