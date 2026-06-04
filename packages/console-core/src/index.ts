@@ -200,6 +200,7 @@ export type {
   ConversationRichDividerBlock,
   ConversationRichFileChangeBlock,
   ConversationRichHeadingBlock,
+  ConversationRichImageBlock,
   ConversationRichParagraphBlock,
   ConversationRichTableBlock,
   ConversationRichThinkingBlock,

@@ -17,8 +17,8 @@ test("migrateConsoleWorkbenchTarget maps legacy agent-chat targets to namespaced
   });
 
   assert.equal(target?.kind, "mobkit/identity-chat");
-  assert.equal(target?.kind === "mobkit/identity-chat" ? target.identity : null, "identity:luka");
-  assert.equal(target?.kind === "mobkit/identity-chat" ? target.addressingMode : null, "identity");
+  assert.equal(target?.kind === "mobkit/identity-chat" && "identity" in target ? target.identity : null, "identity:luka");
+  assert.equal(target?.kind === "mobkit/identity-chat" && "addressingMode" in target ? target.addressingMode : null, "identity");
 });
 
 test("migrateConsoleWorkbenchTarget maps legacy identity-inspect, routing, and gating targets", () => {
