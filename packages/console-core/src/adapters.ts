@@ -649,7 +649,15 @@ function parseToolArguments(frame: ConsoleFrame): string {
     const content = record?.content && typeof record.content === "object"
       ? record.content as Record<string, unknown>
       : null;
-    const query = content?.query ?? content?.input;
+    const action = content?.action && typeof content.action === "object"
+      ? content.action as Record<string, unknown>
+      : null;
+    const queries = Array.isArray(action?.queries)
+      ? action.queries.filter((query): query is string => typeof query === "string" && query.trim().length > 0)
+      : [];
+    const query = queries.length > 0
+      ? queries.join("\n")
+      : content?.query ?? content?.input ?? action?.query;
     return typeof query === "string" && query.trim() ? query.trim() : "";
   }
   if (typeof record?.arguments === "string" && record.arguments.trim()) {
@@ -1718,7 +1726,17 @@ function serverToolContentSummary(frame: ConsoleFrame): { result?: string; statu
     : typeof record?.type === "string"
       ? record.type
       : "";
-  if (type.includes(".failed") || type.includes(".error")) {
+  const status = typeof content?.status === "string"
+    ? content.status
+    : typeof record?.status === "string"
+      ? record.status
+      : "";
+  if (
+    type.includes(".failed") ||
+    type.includes(".error") ||
+    status === "failed" ||
+    status === "error"
+  ) {
     return { status: "error" };
   }
   if (Array.isArray(content?.annotations)) {
@@ -1728,13 +1746,22 @@ function serverToolContentSummary(frame: ConsoleFrame): { result?: string; statu
       ...(result ? { result } : {}),
     };
   }
-  if (type.includes(".completed") || type.includes(".done")) {
+  if (
+    type.includes(".completed") ||
+    type.includes(".done") ||
+    status === "completed" ||
+    status === "done" ||
+    status === "succeeded"
+  ) {
     return { status: "success" };
   }
   if (
     type.includes(".in_progress") ||
     type.includes(".searching") ||
     type.includes(".started") ||
+    status === "in_progress" ||
+    status === "searching" ||
+    status === "queued" ||
     type.includes("_call")
   ) {
     return { status: "pending" };
@@ -1744,6 +1771,17 @@ function serverToolContentSummary(frame: ConsoleFrame): { result?: string; statu
 
 function isActiveServerToolContentFrame(frame: ConsoleFrame): boolean {
   return serverToolContentSummary(frame)?.status === "pending";
+}
+
+function isTerminalServerToolContentFrame(frame: ConsoleFrame): boolean {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  const content = record?.content && typeof record.content === "object"
+    ? record.content as Record<string, unknown>
+    : null;
+  const type = typeof content?.type === "string" ? content.type : "";
+  if (type === "message_annotations" || Array.isArray(content?.annotations)) return false;
+  const status = serverToolContentSummary(frame)?.status;
+  return status === "success" || status === "error";
 }
 
 type HistoryToolResult = {
@@ -2982,27 +3020,91 @@ export function mapFramesToTimelineEntries(
   let pendingReasoningText = "";
   let pendingReasoningId = "";
   let pendingReasoningCreatedAt: string | undefined;
+  let pendingReasoningInteractionId = "";
+  const emittedReasoning = new Map<string, Array<{ normalized: string; block: { text: string } }>>();
   let streamedInteractionText = "";
   let streamedInteractionId = "";
 
+  function reasoningInteractionKey(interactionId: string): string {
+    return interactionId || "__unscoped__";
+  }
+
+  function reconcileEmittedReasoning(interactionId: string, text: string): boolean {
+    const normalized = normalizeComparableText(text);
+    if (!normalized) return false;
+    const previous = emittedReasoning.get(reasoningInteractionKey(interactionId)) || [];
+    for (const candidate of previous) {
+      if (candidate.normalized === normalized || candidate.normalized.includes(normalized)) {
+        return true;
+      }
+      if (normalized.includes(candidate.normalized)) {
+        if (!interactionId) {
+          return true;
+        }
+        candidate.normalized = normalized;
+        candidate.block.text = text;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function markEmittedReasoning(interactionId: string, text: string, block: { text: string }): void {
+    const normalized = normalizeComparableText(text);
+    if (!normalized) return;
+    const key = reasoningInteractionKey(interactionId);
+    const previous = emittedReasoning.get(key) || [];
+    if (!previous.some((candidate) => candidate.normalized === normalized)) {
+      emittedReasoning.set(key, [...previous, { normalized, block }]);
+    }
+  }
+
   function flushPendingReasoning(final = false) {
     if (!pendingReasoningText.trim()) return;
+    if (final && reconcileEmittedReasoning(pendingReasoningInteractionId, pendingReasoningText)) {
+      pendingReasoningText = "";
+      pendingReasoningId = "";
+      pendingReasoningCreatedAt = undefined;
+      pendingReasoningInteractionId = "";
+      return;
+    }
+    const thinkingBlock = {
+      type: "thinking" as const,
+      label: "",
+      text: pendingReasoningText,
+      ...(final ? { final: true } : {}),
+    };
     entries.push({
       kind: "message",
       id: pendingReasoningId,
       identity: agentIdentity(agent),
       variant: "rich",
       ...(pendingReasoningCreatedAt ? { createdAt: pendingReasoningCreatedAt } : {}),
-      blocks: [{
-        type: "thinking",
-        label: "",
-        text: pendingReasoningText,
-        ...(final ? { final: true } : {}),
-      }],
+      blocks: [thinkingBlock],
     });
+    if (final) {
+      markEmittedReasoning(pendingReasoningInteractionId, pendingReasoningText, thinkingBlock);
+    }
     pendingReasoningText = "";
     pendingReasoningId = "";
     pendingReasoningCreatedAt = undefined;
+    pendingReasoningInteractionId = "";
+  }
+
+  function reconcilePendingReasoning(interactionId: string, text: string): boolean {
+    if (!pendingReasoningId || interactionId !== pendingReasoningInteractionId) return false;
+    const normalizedPending = normalizeComparableText(pendingReasoningText);
+    const normalizedText = normalizeComparableText(text);
+    if (!normalizedPending || !normalizedText) return false;
+    if (normalizedPending === normalizedText || normalizedPending.includes(normalizedText)) {
+      return true;
+    }
+    if (normalizedText.includes(normalizedPending)) {
+      pendingReasoningText = text;
+      return true;
+    }
+    pendingReasoningText = `${pendingReasoningText.trimEnd()}\n\n${text.trimStart()}`;
+    return true;
   }
 
   function flushPendingText(final = true) {
@@ -3030,22 +3132,43 @@ export function mapFramesToTimelineEntries(
     if (frame.event === "reasoning_delta") {
       const delta = reasoningFrameText(frame);
       if (!delta) continue;
+      const frameInteractionId = frame.interactionId?.trim() || "";
+      if (pendingReasoningId && frameInteractionId !== pendingReasoningInteractionId) {
+        flushPendingReasoning(true);
+      }
       if (!pendingReasoningId) {
         pendingReasoningId = entryId;
         pendingReasoningCreatedAt = isoFromTimestampMs(frame.timestampMs);
+        pendingReasoningInteractionId = frameInteractionId;
       }
       pendingReasoningText += delta;
       continue;
     }
 
     if (frame.event === "reasoning_complete") {
+      const frameInteractionId = frame.interactionId?.trim() || pendingReasoningInteractionId;
+      if (pendingReasoningId && frameInteractionId !== pendingReasoningInteractionId) {
+        flushPendingReasoning(true);
+      }
       const text = reasoningFrameText(frame);
       if (text) {
+        if (reconcilePendingReasoning(frameInteractionId, text)) {
+          flushPendingReasoning(true);
+          continue;
+        }
+        if (reconcileEmittedReasoning(frameInteractionId, text)) {
+          pendingReasoningText = "";
+          pendingReasoningId = "";
+          pendingReasoningCreatedAt = undefined;
+          pendingReasoningInteractionId = "";
+          continue;
+        }
         pendingReasoningText = text;
         if (!pendingReasoningId) {
           pendingReasoningId = entryId;
           pendingReasoningCreatedAt = isoFromTimestampMs(frame.timestampMs);
         }
+        pendingReasoningInteractionId = frameInteractionId;
       }
       flushPendingReasoning(true);
       continue;
@@ -3465,6 +3588,7 @@ export function inferResponsePhaseFromFrames(
         break;
       case "server_tool_content":
         if (isActiveServerToolContentFrame(frame)) phase = "tool-executing";
+        else if (isTerminalServerToolContentFrame(frame)) phase = "waiting";
         break;
       case "tool_result_received":
       case "tool_execution_completed":

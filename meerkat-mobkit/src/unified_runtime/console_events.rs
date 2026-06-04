@@ -130,9 +130,16 @@ impl ConsoleEventStore {
         envelope
     }
 
-    pub(crate) async fn append_envelope(&self, envelope: ConsoleIdentityEventEnvelope) {
+    pub(crate) async fn append_envelope(&self, envelope: ConsoleIdentityEventEnvelope) -> bool {
         {
             let mut state = self.state.write().await;
+            if state
+                .all_events
+                .iter()
+                .any(|existing| existing.event_id == envelope.event_id)
+            {
+                return false;
+            }
             state.all_events.push_back(envelope.clone());
             trim_deque(&mut state.all_events, ALL_EVENTS_REPLAY_CAP);
 
@@ -144,6 +151,7 @@ impl ConsoleEventStore {
             trim_deque(replay, IDENTITY_REPLAY_CAP);
         }
         let _ = self.event_tx.send(envelope);
+        true
     }
 
     pub(crate) async fn register_runtime_identity(
@@ -345,15 +353,19 @@ impl ConsoleEventStore {
             other => other,
         };
 
-        self.append_envelope(ConsoleIdentityEventEnvelope {
-            event_id: event.event_id.clone(),
-            interaction_id: interaction_id.clone(),
-            identity: identity.clone(),
-            event_type: projected_type.to_string(),
-            timestamp_ms: event.timestamp_ms,
-            data: projected_data.clone(),
-        })
-        .await;
+        let inserted = self
+            .append_envelope(ConsoleIdentityEventEnvelope {
+                event_id: event.event_id.clone(),
+                interaction_id: interaction_id.clone(),
+                identity: identity.clone(),
+                event_type: projected_type.to_string(),
+                timestamp_ms: event.timestamp_ms,
+                data: projected_data.clone(),
+            })
+            .await;
+        if !inserted {
+            return;
+        }
 
         if let Some(image_result) = parse_generate_image_tool_result(&projected_data) {
             for (idx, image) in image_result.images.iter().enumerate() {
@@ -715,6 +727,48 @@ mod tests {
             .find(|event| event.event_id == "evt-3")
             .expect("run completion should be replayed");
         assert_eq!(run_completed.interaction_id.as_deref(), Some("turn-1"));
+    }
+
+    #[tokio::test]
+    async fn duplicate_unified_event_ids_are_projected_once() {
+        let store = ConsoleEventStore::new();
+        store
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "turn-1",
+                "console",
+                json!({}),
+            )
+            .await
+            .expect("reserve interaction");
+
+        let event = EventEnvelope {
+            event_id: "evt-duplicate".to_string(),
+            source: "test".to_string(),
+            timestamp_ms: 1,
+            event: UnifiedEvent::Agent {
+                agent_id: "rt:worker:1".to_string(),
+                event_type: "run_completed".to_string(),
+                payload: Some(json!({ "result": "done" })),
+            },
+        };
+        store.project_unified_event(&event).await;
+        store.project_unified_event(&event).await;
+
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("all-events replay should succeed");
+        let projected = replay
+            .iter()
+            .filter(|event| event.event_id == "evt-duplicate")
+            .collect::<Vec<_>>();
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].interaction_id.as_deref(), Some("turn-1"));
     }
 
     #[tokio::test]

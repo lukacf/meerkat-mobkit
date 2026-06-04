@@ -364,6 +364,44 @@ function isActiveServerToolContentFrame(frame: ConsoleFrame): boolean {
   );
 }
 
+function isTerminalServerToolContentFrame(frame: ConsoleFrame): boolean {
+  if (frame.event !== "server_tool_content") return false;
+  const record =
+    frame.data && typeof frame.data === "object"
+      ? (frame.data as Record<string, unknown>)
+      : null;
+  const content =
+    record?.content && typeof record.content === "object"
+      ? (record.content as Record<string, unknown>)
+      : null;
+  const type =
+    typeof content?.type === "string"
+      ? content.type
+      : typeof record?.type === "string"
+        ? record.type
+        : "";
+  const status =
+    typeof content?.status === "string"
+      ? content.status
+      : typeof record?.status === "string"
+        ? record.status
+        : "";
+  if (type === "message_annotations" || Array.isArray(content?.annotations)) {
+    return false;
+  }
+  return (
+    type.includes(".completed") ||
+    type.includes(".done") ||
+    type.includes(".failed") ||
+    type.includes(".error") ||
+    status === "completed" ||
+    status === "done" ||
+    status === "succeeded" ||
+    status === "failed" ||
+    status === "error"
+  );
+}
+
 // --- Event sets for the SSE handler ---
 const REFRESH_TRIGGER_EVENTS = new Set([
   "interaction_complete",
@@ -866,6 +904,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       frame.event === "tool_call" ||
       frame.event === "tool_execution_started" ||
       (frame.event === "server_tool_content" && isActiveServerToolContentFrame(frame)) ||
+      (frame.event === "server_tool_content" && isTerminalServerToolContentFrame(frame)) ||
       frame.event === "tool_result_received" ||
       frame.event === "tool_execution_completed"
     ) {
@@ -1438,8 +1477,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       case "tool_call":
       case "tool_execution_started":
       case "server_tool_content":
-        if (frame.event === "server_tool_content" && !isActiveServerToolContentFrame(frame)) {
-          return false;
+        if (frame.event === "server_tool_content") {
+          if (isTerminalServerToolContentFrame(frame)) {
+            return commitPanelPhase(panelKey, "waiting");
+          }
+          if (!isActiveServerToolContentFrame(frame)) {
+            return false;
+          }
         }
         if (currentPhase === "waiting" && elapsedMs < 300) {
           schedulePanelPhase(panelKey, "tool-executing", 300 - elapsedMs);

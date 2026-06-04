@@ -3361,7 +3361,9 @@ function parseToolArguments(frame) {
   const record = frame.data && typeof frame.data === "object" ? frame.data : null;
   if (frame.event === "server_tool_content") {
     const content = record?.content && typeof record.content === "object" ? record.content : null;
-    const query = content?.query ?? content?.input;
+    const action = content?.action && typeof content.action === "object" ? content.action : null;
+    const queries = Array.isArray(action?.queries) ? action.queries.filter((query2) => typeof query2 === "string" && query2.trim().length > 0) : [];
+    const query = queries.length > 0 ? queries.join("\n") : content?.query ?? content?.input ?? action?.query;
     return typeof query === "string" && query.trim() ? query.trim() : "";
   }
   if (typeof record?.arguments === "string" && record.arguments.trim()) {
@@ -4115,7 +4117,8 @@ function serverToolContentSummary(frame) {
   const record = frame.data && typeof frame.data === "object" ? frame.data : null;
   const content = record?.content && typeof record.content === "object" ? record.content : null;
   const type = typeof content?.type === "string" ? content.type : typeof record?.type === "string" ? record.type : "";
-  if (type.includes(".failed") || type.includes(".error")) {
+  const status = typeof content?.status === "string" ? content.status : typeof record?.status === "string" ? record.status : "";
+  if (type.includes(".failed") || type.includes(".error") || status === "failed" || status === "error") {
     return { status: "error" };
   }
   if (Array.isArray(content?.annotations)) {
@@ -4125,16 +4128,24 @@ function serverToolContentSummary(frame) {
       ...result ? { result } : {}
     };
   }
-  if (type.includes(".completed") || type.includes(".done")) {
+  if (type.includes(".completed") || type.includes(".done") || status === "completed" || status === "done" || status === "succeeded") {
     return { status: "success" };
   }
-  if (type.includes(".in_progress") || type.includes(".searching") || type.includes(".started") || type.includes("_call")) {
+  if (type.includes(".in_progress") || type.includes(".searching") || type.includes(".started") || status === "in_progress" || status === "searching" || status === "queued" || type.includes("_call")) {
     return { status: "pending" };
   }
   return null;
 }
 function isActiveServerToolContentFrame(frame) {
   return serverToolContentSummary(frame)?.status === "pending";
+}
+function isTerminalServerToolContentFrame(frame) {
+  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content = record?.content && typeof record.content === "object" ? record.content : null;
+  const type = typeof content?.type === "string" ? content.type : "";
+  if (type === "message_annotations" || Array.isArray(content?.annotations)) return false;
+  const status = serverToolContentSummary(frame)?.status;
+  return status === "success" || status === "error";
 }
 function toolResultTextFromContent(content) {
   if (typeof content === "string") return content;
@@ -5001,26 +5012,88 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   let pendingReasoningText = "";
   let pendingReasoningId = "";
   let pendingReasoningCreatedAt;
+  let pendingReasoningInteractionId = "";
+  const emittedReasoning = /* @__PURE__ */ new Map();
   let streamedInteractionText = "";
   let streamedInteractionId = "";
+  function reasoningInteractionKey(interactionId) {
+    return interactionId || "__unscoped__";
+  }
+  function reconcileEmittedReasoning(interactionId, text) {
+    const normalized = normalizeComparableText(text);
+    if (!normalized) return false;
+    const previous = emittedReasoning.get(reasoningInteractionKey(interactionId)) || [];
+    for (const candidate of previous) {
+      if (candidate.normalized === normalized || candidate.normalized.includes(normalized)) {
+        return true;
+      }
+      if (normalized.includes(candidate.normalized)) {
+        if (!interactionId) {
+          return true;
+        }
+        candidate.normalized = normalized;
+        candidate.block.text = text;
+        return true;
+      }
+    }
+    return false;
+  }
+  function markEmittedReasoning(interactionId, text, block) {
+    const normalized = normalizeComparableText(text);
+    if (!normalized) return;
+    const key = reasoningInteractionKey(interactionId);
+    const previous = emittedReasoning.get(key) || [];
+    if (!previous.some((candidate) => candidate.normalized === normalized)) {
+      emittedReasoning.set(key, [...previous, { normalized, block }]);
+    }
+  }
   function flushPendingReasoning(final = false) {
     if (!pendingReasoningText.trim()) return;
+    if (final && reconcileEmittedReasoning(pendingReasoningInteractionId, pendingReasoningText)) {
+      pendingReasoningText = "";
+      pendingReasoningId = "";
+      pendingReasoningCreatedAt = void 0;
+      pendingReasoningInteractionId = "";
+      return;
+    }
+    const thinkingBlock = {
+      type: "thinking",
+      label: "",
+      text: pendingReasoningText,
+      ...final ? { final: true } : {}
+    };
     entries.push({
       kind: "message",
       id: pendingReasoningId,
       identity: agentIdentity(agent),
       variant: "rich",
       ...pendingReasoningCreatedAt ? { createdAt: pendingReasoningCreatedAt } : {},
-      blocks: [{
-        type: "thinking",
-        label: "",
-        text: pendingReasoningText,
-        ...final ? { final: true } : {}
-      }]
+      blocks: [thinkingBlock]
     });
+    if (final) {
+      markEmittedReasoning(pendingReasoningInteractionId, pendingReasoningText, thinkingBlock);
+    }
     pendingReasoningText = "";
     pendingReasoningId = "";
     pendingReasoningCreatedAt = void 0;
+    pendingReasoningInteractionId = "";
+  }
+  function reconcilePendingReasoning(interactionId, text) {
+    if (!pendingReasoningId || interactionId !== pendingReasoningInteractionId) return false;
+    const normalizedPending = normalizeComparableText(pendingReasoningText);
+    const normalizedText = normalizeComparableText(text);
+    if (!normalizedPending || !normalizedText) return false;
+    if (normalizedPending === normalizedText || normalizedPending.includes(normalizedText)) {
+      return true;
+    }
+    if (normalizedText.includes(normalizedPending)) {
+      pendingReasoningText = text;
+      return true;
+    }
+    pendingReasoningText = `${pendingReasoningText.trimEnd()}
+
+${text.trimStart()}`;
+    return true;
   }
   function flushPendingText(final = true) {
     if (!pendingText) return;
@@ -5043,21 +5116,42 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
     if (frame.event === "reasoning_delta") {
       const delta = reasoningFrameText(frame);
       if (!delta) continue;
+      const frameInteractionId = frame.interactionId?.trim() || "";
+      if (pendingReasoningId && frameInteractionId !== pendingReasoningInteractionId) {
+        flushPendingReasoning(true);
+      }
       if (!pendingReasoningId) {
         pendingReasoningId = entryId;
         pendingReasoningCreatedAt = isoFromTimestampMs(frame.timestampMs);
+        pendingReasoningInteractionId = frameInteractionId;
       }
       pendingReasoningText += delta;
       continue;
     }
     if (frame.event === "reasoning_complete") {
+      const frameInteractionId = frame.interactionId?.trim() || pendingReasoningInteractionId;
+      if (pendingReasoningId && frameInteractionId !== pendingReasoningInteractionId) {
+        flushPendingReasoning(true);
+      }
       const text2 = reasoningFrameText(frame);
       if (text2) {
+        if (reconcilePendingReasoning(frameInteractionId, text2)) {
+          flushPendingReasoning(true);
+          continue;
+        }
+        if (reconcileEmittedReasoning(frameInteractionId, text2)) {
+          pendingReasoningText = "";
+          pendingReasoningId = "";
+          pendingReasoningCreatedAt = void 0;
+          pendingReasoningInteractionId = "";
+          continue;
+        }
         pendingReasoningText = text2;
         if (!pendingReasoningId) {
           pendingReasoningId = entryId;
           pendingReasoningCreatedAt = isoFromTimestampMs(frame.timestampMs);
         }
+        pendingReasoningInteractionId = frameInteractionId;
       }
       flushPendingReasoning(true);
       continue;
@@ -5365,6 +5459,7 @@ function inferResponsePhaseFromFrames2(frames, fallback = null) {
         break;
       case "server_tool_content":
         if (isActiveServerToolContentFrame(frame)) phase = "tool-executing";
+        else if (isTerminalServerToolContentFrame(frame)) phase = "waiting";
         break;
       case "tool_result_received":
       case "tool_execution_completed":
@@ -12620,6 +12715,17 @@ function isActiveServerToolContentFrame2(frame) {
   }
   return type.includes(".in_progress") || type.includes(".searching") || type.includes(".started") || type.includes("_call");
 }
+function isTerminalServerToolContentFrame2(frame) {
+  if (frame.event !== "server_tool_content") return false;
+  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const content = record?.content && typeof record.content === "object" ? record.content : null;
+  const type = typeof content?.type === "string" ? content.type : typeof record?.type === "string" ? record.type : "";
+  const status = typeof content?.status === "string" ? content.status : typeof record?.status === "string" ? record.status : "";
+  if (type === "message_annotations" || Array.isArray(content?.annotations)) {
+    return false;
+  }
+  return type.includes(".completed") || type.includes(".done") || type.includes(".failed") || type.includes(".error") || status === "completed" || status === "done" || status === "succeeded" || status === "failed" || status === "error";
+}
 var REFRESH_TRIGGER_EVENTS = /* @__PURE__ */ new Set([
   "interaction_complete",
   "interaction_failed",
@@ -13003,7 +13109,7 @@ function ConsoleApp({ baseUrl }) {
     if (frame.event === "user_input") {
       return isTerminalUserInputStatus2(frame.status) ? false : true;
     }
-    if (frame.event === "interaction_started" || frame.event === "run_started" || frame.event === "reasoning_delta" || frame.event === "reasoning_complete" || frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "server_tool_content" && isActiveServerToolContentFrame2(frame) || frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+    if (frame.event === "interaction_started" || frame.event === "run_started" || frame.event === "reasoning_delta" || frame.event === "reasoning_complete" || frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "server_tool_content" && isActiveServerToolContentFrame2(frame) || frame.event === "server_tool_content" && isTerminalServerToolContentFrame2(frame) || frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       return true;
     }
     if (frame.event === "turn_completed" && isTerminalTurnCompletedFrame(frame) || frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "system_notice" && systemNoticeClearsBusyState2(frame) || frame.event === "message_delivery_failed") {
@@ -13372,8 +13478,13 @@ function ConsoleApp({ baseUrl }) {
       case "tool_call":
       case "tool_execution_started":
       case "server_tool_content":
-        if (frame.event === "server_tool_content" && !isActiveServerToolContentFrame2(frame)) {
-          return false;
+        if (frame.event === "server_tool_content") {
+          if (isTerminalServerToolContentFrame2(frame)) {
+            return commitPanelPhase(panelKey, "waiting");
+          }
+          if (!isActiveServerToolContentFrame2(frame)) {
+            return false;
+          }
         }
         if (currentPhase === "waiting" && elapsedMs < 300) {
           schedulePanelPhase(panelKey, "tool-executing", 300 - elapsedMs);
