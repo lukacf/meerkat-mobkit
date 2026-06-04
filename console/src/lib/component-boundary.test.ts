@@ -9,6 +9,7 @@ const root = path.basename(process.cwd()) === "console"
 const componentsSrc = path.join(root, "packages", "console-components", "src");
 const coreActivitySource = path.join(root, "packages", "console-core", "src", "activity.ts");
 const componentIndex = path.join(componentsSrc, "index.ts");
+const coreIndex = path.join(root, "packages", "console-core", "src", "index.ts");
 const stockConsoleAppSource = path.join(root, "console", "src", "ConsoleApp.tsx");
 
 const forbiddenImportPatterns = [
@@ -53,12 +54,31 @@ test("console-components root barrel exposes reusable composition surfaces", () 
   for (const symbol of [
     "ConsoleActivityRail",
     "ConsoleComposer",
+    "ConsoleConversationPanel",
     "ConsoleDock",
+    "ConsolePendingStack",
     "ConsoleSidebar",
     "ConsoleWorkbench",
     "ConversationPane",
     "ConversationTranscript",
+    "TopologyPanel",
     "useConsoleDockController",
+  ]) {
+    assert.match(source, new RegExp(`\\b${symbol}\\b`));
+  }
+});
+
+test("console-core root barrel exposes reusable controller and adapter surfaces", () => {
+  const source = fs.readFileSync(coreIndex, "utf8");
+  for (const symbol of [
+    "CONSOLE_RPC_METHODS",
+    "createMobKitConsoleController",
+    "createHttpConsoleTransport",
+    "mapFramesToTimelineEntries",
+    "buildConversationViewState",
+    "buildSidebarViewState",
+    "ConsoleFrame",
+    "ConsoleAgent",
   ]) {
     assert.match(source, new RegExp(`\\b${symbol}\\b`));
   }

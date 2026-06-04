@@ -5,24 +5,32 @@
 ## Workspace-stable domains
 
 - `conversation`
+- `composer`
 - `dock`
 - `sidebar`
 - `activity`
+- `adapters`
+- `contract`
+- `headless`
+- `network`
 - `rich-content`
+- `runtime-types`
 
 ## What stays here
 
-- transcript/view-model types
+- conversation timeline-entry, grouping, and view-state helpers
+- composer view-state types
 - dock state, presets, reducer-style operations, and view-state builders
 - sidebar schema normalization
 - activity-rail view-model types
+- MobKit console target/adapters, contract constants, headless controller, network client, and runtime frame types
 - rich-content parsing and structured block helpers
 
 ## What stays app-side
 
 - Zustand or other app stores
 - Electron/Desktop bridge code
-- network or RPC calls
+- Electron/Desktop bridge code and app-owned network transport implementations
 - panel-local session state such as drafts, provider/model selection, permissions, branches, and execution mode
 - host-specific adapters from app contracts into shared models
 
@@ -34,7 +42,8 @@
    - `ConversationViewState`
    - `ConsoleSidebarViewState`
    - `ConsoleActivityRailViewState`
-4. Keep any panel-local state in a host-owned map keyed by `panelId`.
+4. Use `createMobKitConsoleController` with a host transport or HTTP transport for MobKit console command/timeline flows.
+5. Keep any panel-local state in a host-owned map keyed by `panelId`.
 
 ## Workspace entrypoint
 
