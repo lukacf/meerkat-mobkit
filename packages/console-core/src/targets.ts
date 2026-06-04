@@ -38,7 +38,7 @@ export interface HostWorkbenchTarget<TPayload = unknown> extends ConsoleDockTarg
   provenance: "host";
 }
 
-export type ConsoleWorkbenchTarget<THost = never> =
+export type ConsoleWorkbenchTarget<THost = unknown> =
   | MobKitWorkbenchTarget
   | HostWorkbenchTarget<THost>;
 

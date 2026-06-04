@@ -11,6 +11,7 @@ import {
   normalizeConsoleDockViewState,
   type ConsoleDockTarget,
   type ConsoleDockNode,
+  type ConsoleDockSplitNode,
   type ConsoleDockPanelView,
   type ConsoleDockPanelSplitDirection,
   type ConsoleDockTabView,
@@ -74,6 +75,20 @@ function PanelActionButton({
   );
 }
 
+type PanelNodeViewProps<TTarget extends ConsoleDockTarget> = {
+  node: ConsoleDockNode;
+  panelsById: Map<string, ConsoleDockPanelView<TTarget>>;
+  focusedPanelId: string | null;
+  isSinglePanelLayout: boolean;
+  Icon?: IconRenderer | null;
+  onClosePanel?: (panel: ConsoleDockPanelView<TTarget>) => void;
+  onFocusPanel?: (panel: ConsoleDockPanelView<TTarget>) => void;
+  onResizeSplit?: (splitId: string, ratio: number) => void;
+  onSplitPanel?: (panel: ConsoleDockPanelView<TTarget>, direction: ConsoleDockPanelSplitDirection) => void;
+  renderPanelBody: (panel: ConsoleDockPanelView<TTarget>) => ReactNode;
+  renderPanelFooter?: (panel: ConsoleDockPanelView<TTarget>) => ReactNode;
+};
+
 function PanelNodeView<TTarget extends ConsoleDockTarget>({
   node,
   panelsById,
@@ -86,19 +101,7 @@ function PanelNodeView<TTarget extends ConsoleDockTarget>({
   onSplitPanel,
   renderPanelBody,
   renderPanelFooter,
-}: {
-  node: ConsoleDockNode;
-  panelsById: Map<string, ConsoleDockPanelView<TTarget>>;
-  focusedPanelId: string | null;
-  isSinglePanelLayout: boolean;
-  Icon?: IconRenderer | null;
-  onClosePanel?: (panel: ConsoleDockPanelView<TTarget>) => void;
-  onFocusPanel?: (panel: ConsoleDockPanelView<TTarget>) => void;
-  onResizeSplit?: (splitId: string, ratio: number) => void;
-  onSplitPanel?: (panel: ConsoleDockPanelView<TTarget>, direction: ConsoleDockPanelSplitDirection) => void;
-  renderPanelBody: (panel: ConsoleDockPanelView<TTarget>) => ReactNode;
-  renderPanelFooter?: (panel: ConsoleDockPanelView<TTarget>) => ReactNode;
-}) {
+}: PanelNodeViewProps<TTarget>) {
   if (node.kind === "panel") {
     const panel = panelsById.get(node.panelId);
 
@@ -184,7 +187,36 @@ function PanelNodeView<TTarget extends ConsoleDockTarget>({
     );
   }
 
-  const splitNode = node;
+  return (
+    <SplitNodeView
+      focusedPanelId={focusedPanelId}
+      Icon={Icon}
+      isSinglePanelLayout={isSinglePanelLayout}
+      node={node}
+      onClosePanel={onClosePanel}
+      onFocusPanel={onFocusPanel}
+      onResizeSplit={onResizeSplit}
+      onSplitPanel={onSplitPanel}
+      panelsById={panelsById}
+      renderPanelBody={renderPanelBody}
+      renderPanelFooter={renderPanelFooter}
+    />
+  );
+}
+
+function SplitNodeView<TTarget extends ConsoleDockTarget>({
+  node: splitNode,
+  panelsById,
+  focusedPanelId,
+  isSinglePanelLayout,
+  Icon,
+  onClosePanel,
+  onFocusPanel,
+  onResizeSplit,
+  onSplitPanel,
+  renderPanelBody,
+  renderPanelFooter,
+}: Omit<PanelNodeViewProps<TTarget>, "node"> & { node: ConsoleDockSplitNode }) {
   const splitRef = useRef<HTMLDivElement | null>(null);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
   const firstFlex = typeof splitNode.ratio === "number" && splitNode.ratio > 0 && splitNode.ratio < 1 ? splitNode.ratio : 0.5;
@@ -287,7 +319,7 @@ function PanelNodeView<TTarget extends ConsoleDockTarget>({
           focusedPanelId={focusedPanelId}
           Icon={Icon}
           isSinglePanelLayout={isSinglePanelLayout}
-          node={node.first}
+          node={splitNode.first}
           onClosePanel={onClosePanel}
           onFocusPanel={onFocusPanel}
           onResizeSplit={onResizeSplit}
@@ -311,7 +343,7 @@ function PanelNodeView<TTarget extends ConsoleDockTarget>({
           focusedPanelId={focusedPanelId}
           Icon={Icon}
           isSinglePanelLayout={isSinglePanelLayout}
-          node={node.second}
+          node={splitNode.second}
           onClosePanel={onClosePanel}
           onFocusPanel={onFocusPanel}
           onResizeSplit={onResizeSplit}
@@ -361,8 +393,8 @@ export function ConsoleDock<TTarget extends ConsoleDockTarget = ConsoleDockTarge
       )}
     >
       {hasMultipleTabs || hasTabToolbar ? (
-        <header className={clsx("cc-dock__tab-strip", !hasMultipleTabs && normalized.tabs.length === 0 && "is-toolbar-only")}>
-          {normalized.tabs.length > 0 ? (
+        <header className={clsx("cc-dock__tab-strip", !hasMultipleTabs && "is-toolbar-only")}>
+          {hasMultipleTabs ? (
             <div className="cc-dock__tabs" role="tablist" aria-label="Dock tabs">
               {normalized.tabs.map((tab) => (
                 <div

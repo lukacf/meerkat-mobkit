@@ -832,7 +832,6 @@ function suggestDockTargets({
   const usedIds = new Set(excludedIds);
   for (const target of suggested) {
     if (!target) {
-      results.push(null);
       continue;
     }
     if (usedIds.has(target.id)) {
@@ -973,9 +972,10 @@ function buildConsoleDockPresetState({
     excludedIds: [],
     suggestTargets
   });
-  const [secondTarget, thirdTarget, fourthTarget] = remainingTargets.filter(
+  const [secondTarget, thirdTarget, suggestedFourthTarget] = remainingTargets.filter(
     (target) => Boolean(target)
   );
+  const fourthTarget = suggestedFourthTarget || (presetId === "grid" && thirdTarget && preferredTarget && thirdTarget.id !== preferredTarget.id ? preferredTarget : null);
   const primary = createPanelState({
     target: preferredPanel ? preferredTarget ?? preferredPanel.target : firstTarget || null,
     sourcePanel: preferredPanel || null
