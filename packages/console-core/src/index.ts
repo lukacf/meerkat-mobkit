@@ -213,6 +213,7 @@ export {
   conversationRichBlocksToText,
   parseConversationRichBlocks,
   parseConversationSummary,
+  parseStreamingConversationRichBlocks,
   renderConversationInlineMarkdown,
   safeConsoleHref,
 } from "./rich-content";

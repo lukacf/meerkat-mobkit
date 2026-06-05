@@ -181,6 +181,58 @@ test("mapFramesToTimelineEntries renders a partial assistant message while delta
   assert.equal(text, "Status is stable.");
 });
 
+test("mapFramesToTimelineEntries keeps incomplete streamed markdown tails conservative", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "risk-red-team",
+      member_id: "risk-red-team",
+      label: "Risk Red Team",
+      kind: "identity",
+    },
+    [
+      { id: "evt-1", event: "text_delta", data: { delta: "## Risk\n\n" } },
+      { id: "evt-2", event: "text_delta", data: { delta: "- first\n- seco" } },
+    ],
+  );
+
+  assert.equal(entries.length, 1);
+  const blocks = "blocks" in entries[0]! ? entries[0].blocks : [];
+  assert.equal(blocks?.[0]?.type, "heading");
+  assert.equal(blocks?.[1]?.type, "paragraph");
+  assert.equal(blocks?.[1]?.type === "paragraph" ? blocks[1].text : "", "- first\n- seco");
+});
+
+test("mapFramesToTimelineEntries reparses completed streamed markdown normally", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "risk-red-team",
+      member_id: "risk-red-team",
+      label: "Risk Red Team",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-1",
+        event: "text_delta",
+        interactionId: "turn-1",
+        data: { delta: "## Risk\n\n- first\n- second" },
+      },
+      {
+        id: "evt-2",
+        event: "interaction_complete",
+        interactionId: "turn-1",
+        data: {},
+      },
+    ],
+  );
+
+  const assistant = entries.find((entry) => entry.kind === "message" && entry.identity.role === "assistant");
+  const blocks = assistant && "blocks" in assistant ? assistant.blocks : [];
+  assert.equal(blocks?.[0]?.type, "heading");
+  assert.equal(blocks?.[1]?.type, "paragraph");
+  assert.equal(blocks?.[1]?.type === "paragraph" ? blocks[1].text : "", "first\nsecond");
+});
+
 test("mapFramesToTimelineEntries renders run_started parent prompts as the inbound turn", () => {
   const entries = mapFramesToTimelineEntries(
     {
@@ -578,6 +630,88 @@ test("inferResponsePhaseFromFrames clears working state on terminal text and ter
       { id: "evt-2", event: "tool_call_requested", data: { name: "next_tool" } },
     ]),
     "tool-executing",
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      {
+        id: "evt-1",
+        event: "server_tool_content",
+        data: {
+          content: {
+            id: "ws-1",
+            name: "web_search",
+            type: "response.web_search_call.searching",
+          },
+        },
+      },
+    ]),
+    "tool-executing",
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      {
+        id: "evt-1",
+        event: "server_tool_content",
+        data: {
+          content: {
+            id: "ws-1",
+            name: "web_search",
+            type: "response.web_search_call.in_progress",
+          },
+        },
+      },
+      {
+        id: "evt-2",
+        event: "server_tool_content",
+        data: {
+          content: {
+            id: "ws-1",
+            name: "web_search",
+            type: "web_search_call",
+            status: "completed",
+          },
+        },
+      },
+    ]),
+    "waiting",
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      {
+        id: "evt-1",
+        event: "server_tool_content",
+        data: {
+          content: {
+            id: "msg-1",
+            name: "web_search_annotations",
+            type: "message_annotations",
+            annotations: [{ title: "Example", url: "https://example.com" }],
+          },
+        },
+      },
+    ]),
+    null,
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      {
+        id: "evt-1",
+        event: "server_tool_content",
+        data: {
+          content: {
+            id: "ws-1",
+            name: "web_search",
+            type: "response.web_search_call.in_progress",
+          },
+        },
+      },
+      { id: "evt-2", event: "interaction_complete", data: { result: "Done." } },
+    ]),
+    null,
   );
 });
 
@@ -1128,6 +1262,141 @@ test("mapFramesToTimelineEntries renders tool turns without raw tool lifecycle s
   );
 });
 
+test("mapFramesToTimelineEntries renders server tool content as tool activity without raw JSON", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-search-1",
+        event: "server_tool_content",
+        data: {
+          content: {
+            id: "ws-1",
+            item_id: "ws-1",
+            name: "web_search",
+            type: "response.web_search_call.in_progress",
+          },
+        },
+      },
+      {
+        id: "evt-search-2",
+        event: "server_tool_content",
+        data: {
+          content: {
+            id: "ws-1",
+            item_id: "ws-1",
+            name: "web_search",
+            type: "response.web_search_call.completed",
+          },
+        },
+      },
+      {
+        id: "evt-annotations",
+        event: "server_tool_content",
+        data: {
+          content: {
+            id: "msg-1",
+            name: "web_search_annotations",
+            type: "message_annotations",
+            annotations: [
+              { title: "Example", url: "https://example.com" },
+            ],
+          },
+        },
+      },
+      {
+        id: "evt-answer",
+        event: "interaction_complete",
+        data: { result: "I found one source." },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 2);
+  const tool = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(tool?.type, "tool-call");
+  if (tool?.type === "tool-call") {
+    assert.equal(tool.name, "web_search");
+    assert.equal(tool.status, "success");
+    assert.match(tool.result || "", /Example/);
+    assert.match(tool.result || "", /https:\/\/example\.com/);
+  }
+  const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
+  assert.equal(answer?.type, "paragraph");
+  assert.equal(answer?.text, "I found one source.");
+});
+
+test("mapFramesToTimelineEntries renders completed web_search_call status and query context", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-search-1",
+        event: "server_tool_content",
+        data: {
+          content: {
+            id: "ws-1",
+            item_id: "ws-1",
+            name: "web_search_call",
+            type: "web_search_call",
+            status: "completed",
+            action: {
+              queries: ["stockholm continuity risk", "muskö naval base"],
+            },
+          },
+        },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 1);
+  const tool = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(tool?.type, "tool-call");
+  if (tool?.type === "tool-call") {
+    assert.equal(tool.status, "success");
+    assert.equal(tool.arguments, "stockholm continuity risk\nmuskö naval base");
+  }
+});
+
+test("mapFramesToTimelineEntries hides orphan server tool annotations", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-annotations",
+        event: "server_tool_content",
+        data: {
+          content: {
+            id: "msg-1",
+            name: "web_search_annotations",
+            type: "message_annotations",
+            annotations: [
+              { title: "Example", url: "https://example.com" },
+            ],
+          },
+        },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 0);
+});
+
 test("mapFramesToTimelineEntries preserves text and tool interleaving inside one interaction", () => {
   const entries = mapFramesToTimelineEntries(
     {
@@ -1389,7 +1658,7 @@ test("mapFramesToTimelineEntries renders session-history assistant text_complete
   );
 });
 
-test("mapFramesToTimelineEntries renders session-history interaction completions from text blocks only", () => {
+test("mapFramesToTimelineEntries renders session-history reasoning blocks outside answer text", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "incident-worker-1",
@@ -1431,14 +1700,14 @@ test("mapFramesToTimelineEntries renders session-history interaction completions
             role: "block_assistant",
             blocks: [
               {
-                block_type: "reasoning",
-                data: { text: "**Considering event response**\n\nI should not be rendered as an answer." },
-              },
-              {
                 block_type: "text",
                 data: {
                   text: "Ready as the incident investigation worker and standing by for follow-up tasks.",
                 },
+              },
+              {
+                block_type: "reasoning",
+                data: { text: "**Considering event response**\n\nI should not be rendered as an answer." },
               },
             ],
           },
@@ -1451,10 +1720,22 @@ test("mapFramesToTimelineEntries renders session-history interaction completions
 
   assert.equal(entries.length, 2);
   assert.equal(entries[0]?.identity.id, "incident-worker-1");
-  const toolBlock = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  const reasoningOnlyBlocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks : [];
+  assert.equal(reasoningOnlyBlocks?.[0]?.type, "thinking");
+  assert.equal(reasoningOnlyBlocks?.[0]?.text, "**Deciding on communication approach**\n\nI should think this through.");
+  assert.equal(reasoningOnlyBlocks?.[0]?.label, "");
+  assert.equal(reasoningOnlyBlocks?.[0]?.final, true);
+  assert.equal(reasoningOnlyBlocks?.[0]?.persisted, true);
+  const toolBlock = reasoningOnlyBlocks?.[1];
   assert.equal(toolBlock?.type, "tool-call");
   assert.equal(toolBlock?.name, "peers");
   assert.equal(entries[1]?.identity.id, "incident-worker-1");
+  const finalBlocks = entries[1] && "blocks" in entries[1] ? entries[1].blocks : [];
+  assert.equal(finalBlocks?.[0]?.type, "thinking");
+  assert.equal(finalBlocks?.[0]?.text, "**Considering event response**\n\nI should not be rendered as an answer.");
+  assert.equal(finalBlocks?.[0]?.label, "");
+  assert.equal(finalBlocks?.[1]?.type, "paragraph");
+  assert.equal(finalBlocks?.[1]?.text, "Ready as the incident investigation worker and standing by for follow-up tasks.");
   const renderedText = entries[1] && "text" in entries[1]
     ? entries[1].text
     : entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
@@ -1464,6 +1745,348 @@ test("mapFramesToTimelineEntries renders session-history interaction completions
     renderedText,
     "Ready as the incident investigation worker and standing by for follow-up tasks.",
   );
+});
+
+test("mapFramesToTimelineEntries renders live reasoning deltas as thought blocks", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-worker-1",
+      member_id: "incident-worker-1",
+      label: "incident-worker-1",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "reasoning-1",
+        event: "reasoning_delta",
+        identity: "incident-worker-1",
+        data: { delta: "Planning " },
+      },
+      {
+        id: "reasoning-2",
+        event: "reasoning_delta",
+        identity: "incident-worker-1",
+        data: { delta: "the next move." },
+      },
+      {
+        id: "text-1",
+        event: "text_delta",
+        identity: "incident-worker-1",
+        data: { delta: "Ready." },
+      },
+      {
+        id: "done-1",
+        event: "interaction_complete",
+        identity: "incident-worker-1",
+        data: { result: "Ready." },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 2);
+  const thought = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(thought?.type, "thinking");
+  assert.equal(thought?.text, "Planning the next move.");
+  assert.equal(thought?.label, "");
+  assert.equal(thought?.final, true);
+  const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
+  assert.equal(answer?.type, "paragraph");
+  assert.equal(answer?.text, "Ready.");
+});
+
+test("mapFramesToTimelineEntries suppresses history reasoning replay after a streamed answer", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-worker-1",
+      member_id: "incident-worker-1",
+      label: "incident-worker-1",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "reasoning-1",
+        event: "reasoning_delta",
+        identity: "incident-worker-1",
+        data: { delta: "Planning before answering." },
+      },
+      {
+        id: "text-1",
+        event: "text_delta",
+        identity: "incident-worker-1",
+        data: { delta: "Ready." },
+      },
+      {
+        id: "history-final",
+        event: "interaction_complete",
+        identity: "incident-worker-1",
+        sourceKind: "session_history",
+        data: {
+          message: {
+            role: "block_assistant",
+            blocks: [
+              {
+                block_type: "text",
+                data: { text: "Ready." },
+              },
+              {
+                block_type: "reasoning",
+                data: { text: "Planning before answering." },
+              },
+            ],
+          },
+          text: "Ready.",
+          result: "Ready.",
+        },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 2);
+  const thought = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(thought?.type, "thinking");
+  assert.equal(thought?.text, "Planning before answering.");
+  const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
+  assert.equal(answer?.type, "paragraph");
+  assert.equal(answer?.text, "Ready.");
+});
+
+test("mapFramesToTimelineEntries suppresses late completed reasoning slices after an answer", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-worker-1",
+      member_id: "incident-worker-1",
+      label: "incident-worker-1",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "reasoning-1",
+        event: "reasoning_delta",
+        interactionId: "turn-1",
+        identity: "incident-worker-1",
+        data: { delta: "Searching for context.\n\nEvaluating choices." },
+      },
+      {
+        id: "text-1",
+        event: "text_delta",
+        interactionId: "turn-1",
+        identity: "incident-worker-1",
+        data: { delta: "Ready." },
+      },
+      {
+        id: "done-1",
+        event: "interaction_complete",
+        interactionId: "turn-1",
+        identity: "incident-worker-1",
+        data: { result: "Ready." },
+      },
+      {
+        id: "reasoning-complete-late",
+        event: "reasoning_complete",
+        interactionId: "turn-1",
+        identity: "incident-worker-1",
+        data: { text: "Evaluating choices." },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 2);
+  const thought = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(thought?.type, "thinking");
+  assert.equal(thought?.text, "Searching for context.\n\nEvaluating choices.");
+  const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
+  assert.equal(answer?.type, "paragraph");
+  assert.equal(answer?.text, "Ready.");
+});
+
+test("mapFramesToTimelineEntries keeps pending reasoning when a complete slice arrives before an answer", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "risk-red-team",
+      member_id: "risk-red-team",
+      label: "risk-red-team",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "reasoning-1",
+        event: "reasoning_delta",
+        interactionId: "turn-1",
+        identity: "risk-red-team",
+        data: { delta: "Searching for context.\n\nEvaluating relocation choices." },
+      },
+      {
+        id: "reasoning-complete-slice",
+        event: "reasoning_complete",
+        interactionId: "turn-1",
+        identity: "risk-red-team",
+        data: { text: "Evaluating relocation choices." },
+      },
+      {
+        id: "text-1",
+        event: "text_delta",
+        interactionId: "turn-1",
+        identity: "risk-red-team",
+        data: { delta: "Answer." },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 2);
+  const thinking = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
+  assert.equal(thinking?.type, "thinking");
+  assert.equal(thinking?.text, "Searching for context.\n\nEvaluating relocation choices.");
+  assert.equal(answer?.type, "paragraph");
+  assert.equal(answer?.text, "Answer.");
+});
+
+test("mapFramesToTimelineEntries upgrades prior reasoning when a late complete is fuller", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-worker-1",
+      member_id: "incident-worker-1",
+      label: "incident-worker-1",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "reasoning-1",
+        event: "reasoning_delta",
+        interactionId: "turn-1",
+        identity: "incident-worker-1",
+        data: { delta: "Searching for context." },
+      },
+      {
+        id: "text-1",
+        event: "text_delta",
+        interactionId: "turn-1",
+        identity: "incident-worker-1",
+        data: { delta: "Ready." },
+      },
+      {
+        id: "done-1",
+        event: "interaction_complete",
+        interactionId: "turn-1",
+        identity: "incident-worker-1",
+        data: { result: "Ready." },
+      },
+      {
+        id: "reasoning-complete-late",
+        event: "reasoning_complete",
+        interactionId: "turn-1",
+        identity: "incident-worker-1",
+        data: { text: "Searching for context.\n\nEvaluating choices." },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 2);
+  const thought = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(thought?.type, "thinking");
+  assert.equal(thought?.text, "Searching for context.\n\nEvaluating choices.");
+  const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
+  assert.equal(answer?.type, "paragraph");
+  assert.equal(answer?.text, "Ready.");
+});
+
+test("mapFramesToTimelineEntries flushes pending reasoning before another interaction completes", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-worker-1",
+      member_id: "incident-worker-1",
+      label: "incident-worker-1",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "reasoning-1",
+        event: "reasoning_delta",
+        interactionId: "turn-1",
+        identity: "incident-worker-1",
+        data: { delta: "First turn reasoning." },
+      },
+      {
+        id: "reasoning-complete-2",
+        event: "reasoning_complete",
+        interactionId: "turn-2",
+        identity: "incident-worker-1",
+        data: { text: "Second turn reasoning." },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 2);
+  const first = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  const second = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
+  assert.equal(first?.type, "thinking");
+  assert.equal(first?.text, "First turn reasoning.");
+  assert.equal(second?.type, "thinking");
+  assert.equal(second?.text, "Second turn reasoning.");
+});
+
+test("mapFramesToTimelineEntries suppresses late unscoped reasoning without mutating prior traces", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-worker-1",
+      member_id: "incident-worker-1",
+      label: "incident-worker-1",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "reasoning-1",
+        event: "reasoning_delta",
+        identity: "incident-worker-1",
+        data: { delta: "Searching for context." },
+      },
+      {
+        id: "text-1",
+        event: "text_delta",
+        identity: "incident-worker-1",
+        data: { delta: "Ready." },
+      },
+      {
+        id: "reasoning-2",
+        event: "reasoning_complete",
+        identity: "incident-worker-1",
+        data: { text: "Searching for context.\n\nEvaluating a later independent turn." },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 2);
+  const first = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  const answer = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
+  assert.equal(first?.type, "thinking");
+  assert.equal(first?.text, "Searching for context.");
+  assert.equal(answer?.type, "paragraph");
+  assert.equal(answer?.text, "Ready.");
+});
+
+test("mapFramesToTimelineEntries marks in-flight reasoning deltas as non-final", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-worker-1",
+      member_id: "incident-worker-1",
+      label: "incident-worker-1",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "reasoning-1",
+        event: "reasoning_delta",
+        identity: "incident-worker-1",
+        data: { delta: "Still thinking" },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 1);
+  const thought = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(thought?.type, "thinking");
+  assert.equal(thought?.text, "Still thinking");
+  assert.equal(thought?.final, undefined);
 });
 
 test("mapFramesToTimelineEntries renders session-history tool-use only assistant turns", () => {

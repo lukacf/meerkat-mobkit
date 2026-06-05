@@ -2107,6 +2107,9 @@ external_addressable = true
         None
     };
 
+    let runtime = Arc::new(runtime);
+    let event_drain_task = runtime.clone().spawn_event_drain_task();
+
     // 6. Bind HTTP server on ephemeral port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -2200,6 +2203,7 @@ external_addressable = true
     // 10. Graceful shutdown: stop HTTP server, then runtime
     let _ = shutdown_tx.send(true);
     let _ = serve_task.await;
+    event_drain_task.abort();
     runtime.shutdown().await;
     drop(rpc_tx);
     drop(stdout_tx);

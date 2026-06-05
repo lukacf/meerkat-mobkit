@@ -22,6 +22,7 @@ export interface ConversationParsedSummary {
 export interface ConversationRichParagraphBlock {
   type: "paragraph";
   text: string;
+  streaming?: boolean;
 }
 
 export interface ConversationRichHeadingBlock {
@@ -328,6 +329,111 @@ export function parseConversationRichBlocks(content: string): ConversationRichBl
 
   blocks.push(...parseConversationTextBlocks(source.slice(lastIndex)));
   return compactConversationBlocks(blocks);
+}
+
+export function parseStreamingConversationRichBlocks(content: string): ConversationRichBlock[] {
+  const source = String(content || "").trimEnd();
+  if (!source.trim()) {
+    return [];
+  }
+
+  const stableEnd = streamingStablePrefixLength(source);
+  const stable = stableEnd > 0 ? source.slice(0, stableEnd).trim() : "";
+  const tail = source.slice(stableEnd).trim();
+  const blocks = stable ? parseConversationRichBlocks(stable) : [];
+
+  if (tail) {
+    const tailText = tail.replace(/\n{3,}/g, "\n\n");
+    const visibleTail = hideIncompleteInlineTail(tailText).trim();
+    if (visibleTail) {
+      blocks.push({ type: "paragraph", text: visibleTail, streaming: true });
+    }
+  }
+
+  return compactConversationBlocks(blocks);
+}
+
+function streamingStablePrefixLength(source: string): number {
+  const fenceStart = unclosedFenceStartIndex(source);
+  const scanEnd = fenceStart ?? source.length;
+  const scanSource = source.slice(0, scanEnd);
+  let stableEnd = 0;
+  const blankLineRe = /\n[ \t]*\n/gu;
+  let match: RegExpExecArray | null;
+  while ((match = blankLineRe.exec(scanSource))) {
+    stableEnd = blankLineRe.lastIndex;
+  }
+  return stableEnd;
+}
+
+function hideIncompleteInlineTail(source: string): string {
+  const firstOpen = firstUnclosedInlineMarkerIndex(source);
+  if (firstOpen === null) {
+    return source;
+  }
+  return source.slice(0, firstOpen).replace(/\s+$/u, "");
+}
+
+function firstUnclosedInlineMarkerIndex(source: string): number | null {
+  return minNullable([
+    unclosedDelimitedMarkerIndex(source, "`"),
+    unclosedDelimitedMarkerIndex(source, "**"),
+    unclosedDelimitedMarkerIndex(source, "*"),
+    unclosedDelimitedMarkerIndex(source, "_"),
+    unclosedLinkStartIndex(source),
+  ]);
+}
+
+function minNullable(values: Array<number | null>): number | null {
+  return values.reduce<number | null>((min, value) => {
+    if (value === null) return min;
+    return min === null || value < min ? value : min;
+  }, null);
+}
+
+function unclosedDelimitedMarkerIndex(source: string, delimiter: "`" | "*" | "**" | "_"): number | null {
+  const positions: number[] = [];
+  for (let index = 0; index < source.length; index++) {
+    if (source[index - 1] === "\\") continue;
+    if (delimiter === "**") {
+      if (source.slice(index, index + 2) !== "**") continue;
+      positions.push(index);
+      index += 1;
+      continue;
+    }
+    const char = source[index];
+    if (char !== delimiter) continue;
+    if (delimiter === "*" && (source[index - 1] === "*" || source[index + 1] === "*")) continue;
+    if (delimiter === "_" && isAlphaNumeric(source[index - 1]) && isAlphaNumeric(source[index + 1])) continue;
+    if ((delimiter === "*" || delimiter === "_") && isLineBulletMarker(source, index)) continue;
+    positions.push(index);
+  }
+  return positions.length % 2 === 1 ? positions.at(-1) ?? null : null;
+}
+
+function unclosedLinkStartIndex(source: string): number | null {
+  const match = source.match(/\[[^\]\n]*\]\([^)\n]*$/u);
+  return match?.index ?? null;
+}
+
+function isAlphaNumeric(value: string | undefined): boolean {
+  return Boolean(value && /[A-Za-z0-9]/u.test(value));
+}
+
+function isLineBulletMarker(source: string, index: number): boolean {
+  const before = source.slice(0, index);
+  const linePrefix = before.slice(before.lastIndexOf("\n") + 1);
+  return linePrefix.trim().length === 0 && /\s/u.test(source[index + 1] || "");
+}
+
+function unclosedFenceStartIndex(source: string): number | null {
+  const fenceRe = /^```/gmu;
+  let match: RegExpExecArray | null;
+  let openStart: number | null = null;
+  while ((match = fenceRe.exec(source))) {
+    openStart = openStart === null ? match.index : null;
+  }
+  return openStart;
 }
 
 function parseConversationTextBlocks(fragment: string): ConversationRichBlock[] {

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use futures::stream::{SelectAll, StreamExt};
+use futures::stream::{BoxStream, SelectAll, StreamExt};
 use meerkat_core::comms::EventStream;
 use meerkat_core::event::{AgentEvent, agent_event_type};
 use meerkat_mob::ids::MeerkatId;
@@ -596,12 +596,13 @@ type TaggedAgentEvent = (
     meerkat_core::event::EventEnvelope<AgentEvent>,
 );
 
-type TaggedAgentEventStream = futures::stream::Map<
-    EventStream,
-    Box<dyn FnMut(meerkat_core::event::EventEnvelope<AgentEvent>) -> TaggedAgentEvent + Send>,
->;
+enum ForwardedAgentEvent {
+    Event(Box<TaggedAgentEvent>),
+    Closed(TrackedAgentEventStream),
+}
 
-type TrackedAgentEventStream = (String, AgentIdentity);
+type TrackedAgentEventStream = (String, AgentIdentity, AgentRuntimeId, FenceToken);
+type TaggedAgentEventStream = BoxStream<'static, ForwardedAgentEvent>;
 
 async fn run_resilient_mob_agent_event_forwarder(
     handle: MobHandle,
@@ -619,25 +620,33 @@ async fn run_resilient_mob_agent_event_forwarder(
 
     loop {
         tokio::select! {
-            Some((source, source_fence_token, role, envelope)) = streams.next() => {
-                let attributed_event = AttributedEvent {
-                    source,
-                    source_fence_token,
-                    role,
-                    envelope,
-                };
-                // Fan out to the structural mob events store. Today this is a
-                // no-op for attributed agent events (they don't carry mob/run/
-                // step fields), but the projection seam keeps the surface
-                // symmetric with the structural `MobEvent` subscriber and lets
-                // future code add attribution without touching this shape.
-                let _ = mob_events.project_attributed_event(&attributed_event).await;
-                if event_tx
-                    .send(attributed_event_to_unified(attributed_event))
-                    .await
-                    .is_err()
-                {
-                    break;
+            Some(forwarded) = streams.next() => {
+                match forwarded {
+                    ForwardedAgentEvent::Event(event) => {
+                        let (source, source_fence_token, role, envelope) = *event;
+                        let attributed_event = AttributedEvent {
+                            source,
+                            source_fence_token,
+                            role,
+                            envelope,
+                        };
+                        // Fan out to the structural mob events store. Today this is a
+                        // no-op for attributed agent events (they don't carry mob/run/
+                        // step fields), but the projection seam keeps the surface
+                        // symmetric with the structural `MobEvent` subscriber and lets
+                        // future code add attribution without touching this shape.
+                        let _ = mob_events.project_attributed_event(&attributed_event).await;
+                        if event_tx
+                            .send(attributed_event_to_unified(attributed_event))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    ForwardedAgentEvent::Closed(tracked_key) => {
+                        tracked.remove(&tracked_key);
+                    }
                 }
             }
             _ = reconcile_interval.tick() => {
@@ -670,37 +679,53 @@ async fn reconcile_agent_event_streams(
     let mut current: HashSet<TrackedAgentEventStream> = HashSet::new();
     for handle in &handles {
         let mob_id = handle.mob_id().to_string();
-        for entry in handle.list_members_observation_snapshot().await {
-            current.insert((mob_id.clone(), entry.agent_identity.clone()));
+        for entry in handle.list_members_including_retiring().await {
+            let (runtime_id, fence_token) = entry.binding_atoms();
+            current.insert((
+                mob_id.clone(),
+                entry.agent_identity.clone(),
+                runtime_id,
+                fence_token,
+            ));
         }
     }
 
-    tracked.retain(|identity| current.contains(identity));
+    tracked.retain(|tracked_key| current.contains(tracked_key));
 
     for handle in handles {
         let mob_id = handle.mob_id().to_string();
-        for entry in handle.list_members_observation_snapshot().await {
-            let tracked_key = (mob_id.clone(), entry.agent_identity.clone());
+        for entry in handle.list_members_including_retiring().await {
+            let identity = entry.agent_identity.clone();
+            let (runtime_id, fence_token) = entry.binding_atoms();
+            let tracked_key = (
+                mob_id.clone(),
+                identity.clone(),
+                runtime_id.clone(),
+                fence_token,
+            );
             if tracked.contains(&tracked_key) {
                 continue;
             }
 
-            let identity = entry.agent_identity.clone();
-            let (runtime_id, fence_token) = entry.binding_atoms();
             let role = entry.role.clone();
 
-            match handle.subscribe_agent_events_observation(&identity).await {
+            match subscribe_agent_events_for_console_forwarder(&handle, &identity).await {
                 Ok(stream) => {
+                    let close_key = tracked_key.clone();
                     tracked.insert(tracked_key);
-                    let mapped = stream.map(Box::new(move |envelope| {
-                        (runtime_id.clone(), fence_token, role.clone(), envelope)
-                    })
-                        as Box<
-                            dyn FnMut(
-                                    meerkat_core::event::EventEnvelope<AgentEvent>,
-                                ) -> TaggedAgentEvent
-                                + Send,
-                        >);
+                    let mapped = stream
+                        .map(move |envelope| {
+                            ForwardedAgentEvent::Event(Box::new((
+                                runtime_id.clone(),
+                                fence_token,
+                                role.clone(),
+                                envelope,
+                            )))
+                        })
+                        .chain(futures::stream::once(async move {
+                            ForwardedAgentEvent::Closed(close_key)
+                        }))
+                        .boxed();
                     streams.push(mapped);
                 }
                 Err(error) => {
@@ -717,6 +742,18 @@ async fn reconcile_agent_event_streams(
             }
         }
     }
+}
+
+async fn subscribe_agent_events_for_console_forwarder(
+    handle: &MobHandle,
+    identity: &AgentIdentity,
+) -> Result<EventStream, meerkat_mob::MobError> {
+    // Keep the console forwarder on the same authoritative subscription path
+    // as `/agents/{id}/events`. The observation shortcut can lag the actor's
+    // runtime-member projection in identity-first/runtime-backed packs, which
+    // leaves the console with only session-history backfill while direct agent
+    // SSE streams live deltas correctly.
+    handle.subscribe_agent_events(identity).await
 }
 
 /// Streaming subscription against the meerkat mob event ledger. Each

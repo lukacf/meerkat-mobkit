@@ -23,6 +23,7 @@ import type {
 } from "./sidebar";
 import {
   parseConversationRichBlocks,
+  parseStreamingConversationRichBlocks,
 } from "./rich-content";
 import type {
   ConversationRichBlock,
@@ -521,15 +522,68 @@ const HIDDEN_EVENTS = new Set([
   "snapshot_started",
   "run_failed",
   "keep-alive",
+  "server_tool_content",
   "tool_config_changed",
   "tool_scope_changed",
 ]);
+
+function appendDistinctText(parts: string[], value: string): void {
+  const text = value.trim();
+  if (!text) return;
+  const comparable = normalizeComparableText(text);
+  if (parts.some((part) => normalizeComparableText(part) === comparable)) return;
+  parts.push(text);
+}
+
+function textFromReasoningValue(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => textFromReasoningValue(item))
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+  }
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  const parts: string[] = [];
+  appendDistinctText(parts, textFromReasoningValue(record.summary));
+  appendDistinctText(parts, textFromReasoningValue(record.text));
+  appendDistinctText(parts, textFromReasoningValue(record.content));
+  appendDistinctText(parts, textFromReasoningValue(record.delta));
+  return parts.join("\n\n").trim();
+}
+
+function reasoningBlockText(block: Record<string, unknown>): string {
+  const data = block.data && typeof block.data === "object"
+    ? block.data as Record<string, unknown>
+    : block;
+  const parts: string[] = [];
+  appendDistinctText(parts, textFromReasoningValue(data.summary));
+  appendDistinctText(parts, textFromReasoningValue(data.text));
+  appendDistinctText(parts, textFromReasoningValue(data.content));
+  appendDistinctText(parts, textFromReasoningValue(block.summary));
+  appendDistinctText(parts, textFromReasoningValue(block.text));
+  appendDistinctText(parts, textFromReasoningValue(block.content));
+  return parts.join("\n\n").trim();
+}
+
+function reasoningFrameText(frame: ConsoleFrame): string {
+  const data = frame.data && typeof frame.data === "object"
+    ? frame.data as Record<string, unknown>
+    : frame.data;
+  if (frame.event === "reasoning_delta" && typeof (data as Record<string, unknown>)?.delta === "string") {
+    return (data as Record<string, string>).delta;
+  }
+  return textFromReasoningValue(data).trim();
+}
 
 const ACTIVITY_HIDDEN_EVENTS = new Set([
   ...HIDDEN_EVENTS,
   "text_delta",
   "tool_call_requested",
   "tool_call",
+  "server_tool_content",
   "tool_execution_started",
   "tool_result_received",
   "tool_execution_completed",
@@ -562,17 +616,50 @@ function isoFromTimestampMs(timestampMs: number | undefined): string | undefined
 
 function parseToolCallId(frame: ConsoleFrame): string | null {
   const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  if (frame.event === "server_tool_content") {
+    const content = record?.content && typeof record.content === "object"
+      ? record.content as Record<string, unknown>
+      : null;
+    const type = typeof content?.type === "string" ? content.type : "";
+    const isAnnotationPayload = type === "message_annotations" || Array.isArray(content?.annotations);
+    const id = isAnnotationPayload
+      ? content?.item_id ?? record?.item_id ?? record?.tool_call_id
+      : content?.item_id ?? content?.id ?? record?.item_id ?? record?.tool_call_id ?? record?.id;
+    return typeof id === "string" && id.trim() ? id.trim() : null;
+  }
   const id = record?.tool_call_id ?? record?.id;
   return typeof id === "string" && id.trim() ? id.trim() : null;
 }
 
 function parseToolName(frame: ConsoleFrame): string {
   const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  if (frame.event === "server_tool_content") {
+    const content = record?.content && typeof record.content === "object"
+      ? record.content as Record<string, unknown>
+      : null;
+    const name = content?.name ?? record?.tool_name ?? record?.name;
+    return typeof name === "string" && name.trim() ? name.trim() : "tool";
+  }
   return typeof record?.name === "string" && record.name.trim() ? record.name : "tool";
 }
 
 function parseToolArguments(frame: ConsoleFrame): string {
   const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  if (frame.event === "server_tool_content") {
+    const content = record?.content && typeof record.content === "object"
+      ? record.content as Record<string, unknown>
+      : null;
+    const action = content?.action && typeof content.action === "object"
+      ? content.action as Record<string, unknown>
+      : null;
+    const queries = Array.isArray(action?.queries)
+      ? action.queries.filter((query): query is string => typeof query === "string" && query.trim().length > 0)
+      : [];
+    const query = queries.length > 0
+      ? queries.join("\n")
+      : content?.query ?? content?.input ?? action?.query;
+    return typeof query === "string" && query.trim() ? query.trim() : "";
+  }
   if (typeof record?.arguments === "string" && record.arguments.trim()) {
     return record.arguments;
   }
@@ -629,6 +716,7 @@ function liveToolDedupeState(
       frame.event !== "tool_call_requested"
       && frame.event !== "tool_call"
       && frame.event !== "tool_execution_started"
+      && frame.event !== "server_tool_content"
     ) {
       continue;
     }
@@ -860,6 +948,47 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
   const peerRegistry = buildPeerRegistry(frames);
 
   for (const frame of frames) {
+    if (frame.event === "server_tool_content") {
+      const toolCallId = parseToolCallId(frame);
+      const parsed = serverToolContentSummary(frame);
+      if (!toolCallId) {
+        if (parsed && parsed.status !== "pending") {
+          const name = parseToolName(frame);
+          const targetName = name.replace(/_annotations$/, "");
+          const existing = [...toolCalls.values()].reverse().find((block) =>
+            !block.result &&
+            (block.name === targetName || block.name === name || name.startsWith(block.name))
+          );
+          if (existing) {
+            toolCalls.set(existing.toolCallId, {
+              ...existing,
+              ...(parsed.result ? { result: parsed.result } : {}),
+              status: parsed.status,
+            });
+          }
+        }
+        continue;
+      }
+      const existing = toolCalls.get(toolCallId);
+      if (existing) {
+        toolCalls.set(toolCallId, {
+          ...existing,
+          ...(parsed?.result ? { result: parsed.result } : {}),
+          status: parsed?.status || existing.status,
+        });
+        continue;
+      }
+      toolCalls.set(toolCallId, {
+        type: "tool-call",
+        toolCallId,
+        name: parseToolName(frame),
+        arguments: parseToolArguments(frame),
+        ...(parsed?.result ? { result: parsed.result } : {}),
+        status: parsed?.status || "pending",
+      });
+      continue;
+    }
+
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       const toolCallId = parseToolCallId(frame);
       const data = frame.data as Record<string, unknown> | undefined;
@@ -1201,6 +1330,7 @@ function conversationEntryVisibleText(entry: ConversationTimelineEntry): string 
     .map((block) => {
       if (!block || typeof block !== "object") return "";
       const record = block as unknown as Record<string, unknown>;
+      if (record.type === "thinking") return "";
       if (typeof record.text === "string") return record.text;
       if (typeof record.peerBody === "string") return record.peerBody;
       return "";
@@ -1566,6 +1696,94 @@ function summarizeToolResultForDisplay(toolName: string | undefined, result: unk
   return null;
 }
 
+function formatServerToolAnnotations(annotations: unknown[]): string {
+  return annotations
+    .map((annotation, index) => {
+      const record = annotation && typeof annotation === "object"
+        ? annotation as Record<string, unknown>
+        : null;
+      const title = typeof record?.title === "string" && record.title.trim()
+        ? record.title.trim()
+        : typeof record?.text === "string" && record.text.trim()
+          ? record.text.trim()
+          : `Source ${index + 1}`;
+      const url = typeof record?.url === "string" && record.url.trim()
+        ? record.url.trim()
+        : "";
+      return url ? `${index + 1}. ${title}\n${url}` : `${index + 1}. ${title}`;
+    })
+    .join("\n\n")
+    .trim();
+}
+
+function serverToolContentSummary(frame: ConsoleFrame): { result?: string; status: "pending" | "success" | "error" } | null {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  const content = record?.content && typeof record.content === "object"
+    ? record.content as Record<string, unknown>
+    : null;
+  const type = typeof content?.type === "string"
+    ? content.type
+    : typeof record?.type === "string"
+      ? record.type
+      : "";
+  const status = typeof content?.status === "string"
+    ? content.status
+    : typeof record?.status === "string"
+      ? record.status
+      : "";
+  if (
+    type.includes(".failed") ||
+    type.includes(".error") ||
+    status === "failed" ||
+    status === "error"
+  ) {
+    return { status: "error" };
+  }
+  if (Array.isArray(content?.annotations)) {
+    const result = formatServerToolAnnotations(content.annotations);
+    return {
+      status: "success",
+      ...(result ? { result } : {}),
+    };
+  }
+  if (
+    type.includes(".completed") ||
+    type.includes(".done") ||
+    status === "completed" ||
+    status === "done" ||
+    status === "succeeded"
+  ) {
+    return { status: "success" };
+  }
+  if (
+    type.includes(".in_progress") ||
+    type.includes(".searching") ||
+    type.includes(".started") ||
+    status === "in_progress" ||
+    status === "searching" ||
+    status === "queued" ||
+    type.includes("_call")
+  ) {
+    return { status: "pending" };
+  }
+  return null;
+}
+
+function isActiveServerToolContentFrame(frame: ConsoleFrame): boolean {
+  return serverToolContentSummary(frame)?.status === "pending";
+}
+
+function isTerminalServerToolContentFrame(frame: ConsoleFrame): boolean {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  const content = record?.content && typeof record.content === "object"
+    ? record.content as Record<string, unknown>
+    : null;
+  const type = typeof content?.type === "string" ? content.type : "";
+  if (type === "message_annotations" || Array.isArray(content?.annotations)) return false;
+  const status = serverToolContentSummary(frame)?.status;
+  return status === "success" || status === "error";
+}
+
 type HistoryToolResult = {
   result?: string;
   status: "success" | "error";
@@ -1629,15 +1847,30 @@ function blockAssistantToolBlocks(
   toolResults?: Map<string, HistoryToolResult>,
 ): ConversationRichToolCallBlock[] {
   const toolBlocks: ConversationRichToolCallBlock[] = [];
+  let toolIndex = 0;
   for (const block of blocks) {
     if (!block || typeof block !== "object") continue;
     const item = block as Record<string, unknown>;
+    const toolBlock = blockAssistantToolBlock(item, toolIndex, peerRegistry, toolResults);
+    if (!toolBlock) continue;
+    toolIndex += 1;
+    toolBlocks.push(toolBlock);
+  }
+  return toolBlocks;
+}
+
+function blockAssistantToolBlock(
+  item: Record<string, unknown>,
+  index: number,
+  peerRegistry?: Map<string, string>,
+  toolResults?: Map<string, HistoryToolResult>,
+): ConversationRichToolCallBlock | null {
     const blockType = typeof item.block_type === "string"
       ? item.block_type
       : typeof item.type === "string"
         ? item.type
         : "";
-    if (blockType !== "tool_use") continue;
+    if (blockType !== "tool_use") return null;
     const data = item.data && typeof item.data === "object"
       ? item.data as Record<string, unknown>
       : item;
@@ -1646,7 +1879,7 @@ function blockAssistantToolBlocks(
       : "tool";
     const id = typeof data.id === "string" && data.id.trim()
       ? data.id.trim()
-      : `history-tool-${toolBlocks.length + 1}`;
+      : `history-tool-${index + 1}`;
     const args = data.args !== undefined ? data.args : data.arguments;
     const argsRecord = args && typeof args === "object" ? args as Record<string, unknown> : null;
     const argumentsText = args === undefined
@@ -1665,7 +1898,7 @@ function blockAssistantToolBlocks(
     const displayResult = result?.result
       ? summarizeToolResultForDisplay(name, result.result) || result.result
       : undefined;
-    toolBlocks.push({
+    return {
       type: "tool-call",
       toolCallId: id,
       name,
@@ -1675,9 +1908,62 @@ function blockAssistantToolBlocks(
       ...(peerTarget ? { peerTarget } : {}),
       ...(peerIntent ? { peerIntent } : {}),
       ...(peerBody ? { peerBody } : {}),
-    });
+    };
+}
+
+function blockAssistantRichBlocks(
+  blocks: unknown[],
+  peerRegistry?: Map<string, string>,
+  toolResults?: Map<string, HistoryToolResult>,
+): ConversationRichBlock[] {
+  const reasoningBlocks: ConversationRichBlock[] = [];
+  const actionAndTextBlocks: ConversationRichBlock[] = [];
+  let hasNonTextBlock = false;
+  let toolIndex = 0;
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const item = block as Record<string, unknown>;
+    const blockType = typeof item.block_type === "string"
+      ? item.block_type
+      : typeof item.type === "string"
+        ? item.type
+        : "";
+    const data = item.data && typeof item.data === "object"
+      ? item.data as Record<string, unknown>
+      : {};
+    if (blockType === "reasoning") {
+      const text = reasoningBlockText(item);
+      if (text) {
+        hasNonTextBlock = true;
+        reasoningBlocks.push({
+          type: "thinking",
+          label: "",
+          text,
+          final: true,
+          persisted: true,
+        });
+      }
+      continue;
+    }
+    if (blockType === "tool_use") {
+      const toolBlock = blockAssistantToolBlock(item, toolIndex, peerRegistry, toolResults);
+      toolIndex += 1;
+      if (toolBlock) {
+        hasNonTextBlock = true;
+        actionAndTextBlocks.push(toolBlock);
+      }
+      continue;
+    }
+    if (blockType === "text") {
+      const text = typeof data.text === "string"
+        ? data.text
+        : typeof item.text === "string"
+          ? item.text
+          : "";
+      if (text.trim()) actionAndTextBlocks.push(...parseConversationRichBlocks(text));
+    }
   }
-  return toolBlocks;
+  return hasNonTextBlock ? [...reasoningBlocks, ...actionAndTextBlocks] : [];
 }
 
 function textFromUnknown(value: unknown): string {
@@ -2536,7 +2822,7 @@ function historyMessageText(
       return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
     case "block_assistant": {
       const blocks = Array.isArray(record.blocks) ? record.blocks : [];
-      const toolBlocks = blockAssistantToolBlocks(blocks, peerRegistry, toolResults);
+      const richBlocks = blockAssistantRichBlocks(blocks, peerRegistry, toolResults);
       const text = blocks
         .map((block) => {
           if (!block || typeof block !== "object") return "";
@@ -2557,7 +2843,7 @@ function historyMessageText(
         })
         .filter((value) => value.trim().length > 0)
         .join("\n\n");
-      return { role: "assistant", text, ...(toolBlocks.length > 0 ? { blocks: toolBlocks } : {}) };
+      return { role: "assistant", text, ...(richBlocks.length > 0 ? { blocks: richBlocks } : {}) };
     }
     case "system":
       return { role: "system", text: typeof record.content === "string" ? record.content : "" };
@@ -2731,12 +3017,101 @@ export function mapFramesToTimelineEntries(
   let pendingText = "";
   let pendingId = "";
   let pendingCreatedAt: string | undefined;
+  let pendingReasoningText = "";
+  let pendingReasoningId = "";
+  let pendingReasoningCreatedAt: string | undefined;
+  let pendingReasoningInteractionId = "";
+  const emittedReasoning = new Map<string, Array<{ normalized: string; block: { text: string } }>>();
   let streamedInteractionText = "";
   let streamedInteractionId = "";
 
-  function flushPendingText() {
+  function reasoningInteractionKey(interactionId: string): string {
+    return interactionId || "__unscoped__";
+  }
+
+  function reconcileEmittedReasoning(interactionId: string, text: string): boolean {
+    const normalized = normalizeComparableText(text);
+    if (!normalized) return false;
+    const previous = emittedReasoning.get(reasoningInteractionKey(interactionId)) || [];
+    for (const candidate of previous) {
+      if (candidate.normalized === normalized || candidate.normalized.includes(normalized)) {
+        return true;
+      }
+      if (normalized.includes(candidate.normalized)) {
+        if (!interactionId) {
+          return true;
+        }
+        candidate.normalized = normalized;
+        candidate.block.text = text;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function markEmittedReasoning(interactionId: string, text: string, block: { text: string }): void {
+    const normalized = normalizeComparableText(text);
+    if (!normalized) return;
+    const key = reasoningInteractionKey(interactionId);
+    const previous = emittedReasoning.get(key) || [];
+    if (!previous.some((candidate) => candidate.normalized === normalized)) {
+      emittedReasoning.set(key, [...previous, { normalized, block }]);
+    }
+  }
+
+  function flushPendingReasoning(final = false) {
+    if (!pendingReasoningText.trim()) return;
+    if (final && reconcileEmittedReasoning(pendingReasoningInteractionId, pendingReasoningText)) {
+      pendingReasoningText = "";
+      pendingReasoningId = "";
+      pendingReasoningCreatedAt = undefined;
+      pendingReasoningInteractionId = "";
+      return;
+    }
+    const thinkingBlock = {
+      type: "thinking" as const,
+      label: "",
+      text: pendingReasoningText,
+      ...(final ? { final: true } : {}),
+    };
+    entries.push({
+      kind: "message",
+      id: pendingReasoningId,
+      identity: agentIdentity(agent),
+      variant: "rich",
+      ...(pendingReasoningCreatedAt ? { createdAt: pendingReasoningCreatedAt } : {}),
+      blocks: [thinkingBlock],
+    });
+    if (final) {
+      markEmittedReasoning(pendingReasoningInteractionId, pendingReasoningText, thinkingBlock);
+    }
+    pendingReasoningText = "";
+    pendingReasoningId = "";
+    pendingReasoningCreatedAt = undefined;
+    pendingReasoningInteractionId = "";
+  }
+
+  function reconcilePendingReasoning(interactionId: string, text: string): boolean {
+    if (!pendingReasoningId || interactionId !== pendingReasoningInteractionId) return false;
+    const normalizedPending = normalizeComparableText(pendingReasoningText);
+    const normalizedText = normalizeComparableText(text);
+    if (!normalizedPending || !normalizedText) return false;
+    if (normalizedPending === normalizedText || normalizedPending.includes(normalizedText)) {
+      return true;
+    }
+    if (normalizedText.includes(normalizedPending)) {
+      pendingReasoningText = text;
+      return true;
+    }
+    pendingReasoningText = `${pendingReasoningText.trimEnd()}\n\n${text.trimStart()}`;
+    return true;
+  }
+
+  function flushPendingText(final = true) {
     if (!pendingText) return;
-    const blocks = parseConversationRichBlocks(pendingText);
+    const blocks = final
+      ? parseConversationRichBlocks(pendingText)
+      : parseStreamingConversationRichBlocks(pendingText);
     entries.push({
       kind: "message",
       id: pendingId,
@@ -2754,10 +3129,56 @@ export function mapFramesToTimelineEntries(
     const frame = orderedFrames[i];
     const entryId = `${frame.id || frame.event || "frame"}:${i}`;
 
+    if (frame.event === "reasoning_delta") {
+      const delta = reasoningFrameText(frame);
+      if (!delta) continue;
+      const frameInteractionId = frame.interactionId?.trim() || "";
+      if (pendingReasoningId && frameInteractionId !== pendingReasoningInteractionId) {
+        flushPendingReasoning(true);
+      }
+      if (!pendingReasoningId) {
+        pendingReasoningId = entryId;
+        pendingReasoningCreatedAt = isoFromTimestampMs(frame.timestampMs);
+        pendingReasoningInteractionId = frameInteractionId;
+      }
+      pendingReasoningText += delta;
+      continue;
+    }
+
+    if (frame.event === "reasoning_complete") {
+      const frameInteractionId = frame.interactionId?.trim() || pendingReasoningInteractionId;
+      if (pendingReasoningId && frameInteractionId !== pendingReasoningInteractionId) {
+        flushPendingReasoning(true);
+      }
+      const text = reasoningFrameText(frame);
+      if (text) {
+        if (reconcilePendingReasoning(frameInteractionId, text)) {
+          flushPendingReasoning(true);
+          continue;
+        }
+        if (reconcileEmittedReasoning(frameInteractionId, text)) {
+          pendingReasoningText = "";
+          pendingReasoningId = "";
+          pendingReasoningCreatedAt = undefined;
+          pendingReasoningInteractionId = "";
+          continue;
+        }
+        pendingReasoningText = text;
+        if (!pendingReasoningId) {
+          pendingReasoningId = entryId;
+          pendingReasoningCreatedAt = isoFromTimestampMs(frame.timestampMs);
+        }
+        pendingReasoningInteractionId = frameInteractionId;
+      }
+      flushPendingReasoning(true);
+      continue;
+    }
+
     if (frame.event === "text_delta") {
       if (options.renderTextDeltas === false) {
         continue;
       }
+      flushPendingReasoning(true);
       const frameInteractionId = frame.interactionId?.trim() || "";
       if (frameInteractionId !== streamedInteractionId) {
         streamedInteractionText = "";
@@ -2774,6 +3195,7 @@ export function mapFramesToTimelineEntries(
     }
 
     if (frame.event === "assistant_image" || frame.event === "assistant_image_appended") {
+      flushPendingReasoning(true);
       flushPendingText();
       const imageEntry = renderAssistantImageEntry(agent, frame, entryId, options.blobBaseUrl);
       if (imageEntry) {
@@ -2790,9 +3212,15 @@ export function mapFramesToTimelineEntries(
     const toolCallId = parseToolCallId(frame);
     if (
       toolCallId
-      && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started")
+      && (
+        frame.event === "tool_call_requested" ||
+        frame.event === "tool_call" ||
+        frame.event === "tool_execution_started" ||
+        frame.event === "server_tool_content"
+      )
       && !emittedToolCalls.has(toolCallId)
     ) {
+      flushPendingReasoning(true);
       flushPendingText();
       const block = toolBlocks.get(toolCallId);
       if (block) {
@@ -2840,6 +3268,7 @@ export function mapFramesToTimelineEntries(
     }
 
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      flushPendingReasoning(true);
       const imageEntries = renderGeneratedImageToolResultEntries(
         agent,
         frame,
@@ -2856,6 +3285,7 @@ export function mapFramesToTimelineEntries(
     }
 
     if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
+      flushPendingReasoning(true);
       flushPendingText();
       const frameInteractionId = frame.interactionId?.trim() || "";
       if (frameInteractionId !== streamedInteractionId) {
@@ -2875,6 +3305,7 @@ export function mapFramesToTimelineEntries(
     }
 
     if (frame.event === "run_started") {
+      flushPendingReasoning(true);
       flushPendingText();
       const promptEntries = renderRunStartedPromptEntries(frame, entryId, {
         suppressEmbeddedRpcPrompt: options.suppressEmbeddedRunStartedPrompt === true,
@@ -2895,6 +3326,7 @@ export function mapFramesToTimelineEntries(
     }
 
     if (frame.event === "system_notice") {
+      flushPendingReasoning(true);
       flushPendingText();
       if (shouldSuppressDuplicateCommsNotice(frame, emittedCommsNotices)) {
         continue;
@@ -2920,6 +3352,7 @@ export function mapFramesToTimelineEntries(
     }
 
     if (frame.event === "text_complete") {
+      flushPendingReasoning(true);
       if (frame.sourceKind !== "session_history") {
         const text = terminalFrameVisibleText(frame).trim();
         if (
@@ -2988,6 +3421,7 @@ export function mapFramesToTimelineEntries(
       || frame.event === "run_failed"
     ) {
       const streamedText = streamedInteractionText || pendingText;
+      flushPendingReasoning(true);
       flushPendingText();
       streamedInteractionText = "";
       streamedInteractionId = "";
@@ -3037,6 +3471,7 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
+    flushPendingReasoning(true);
     flushPendingText();
 
     // Try to render as a clean peer message
@@ -3063,7 +3498,8 @@ export function mapFramesToTimelineEntries(
     });
   }
 
-  flushPendingText();
+  flushPendingReasoning(false);
+  flushPendingText(false);
   return entries;
 }
 
@@ -3149,6 +3585,10 @@ export function inferResponsePhaseFromFrames(
       case "tool_call":
       case "tool_execution_started":
         phase = "tool-executing";
+        break;
+      case "server_tool_content":
+        if (isActiveServerToolContentFrame(frame)) phase = "tool-executing";
+        else if (isTerminalServerToolContentFrame(frame)) phase = "waiting";
         break;
       case "tool_result_received":
       case "tool_execution_completed":
