@@ -246,6 +246,7 @@ assert.match(inspectorEdgeBlock, /edgeState\.ownerPlaceholderOption/, "Graph edg
 assert.match(inspectorTerminalBlock, /terminalState\.eyebrow/, "Graph terminal inspector must render terminal header through the controller plane");
 assert.match(inspectorTerminalBlock, /terminalState\.labelValue/, "Graph terminal inspector must render terminal label value through the controller plane");
 assert.match(graphEdgeCanvasBlock, /MobKitFlowController\.graphEdgeCanvasState/, "Graph canvas must render edge class, label, glyph, color, and marker metadata through the controller plane");
+assert.match(graphEdgeCanvasBlock, /graphEdgeCanvasState\(\{[\s\S]*contract/, "Graph canvas edge projection must receive the MobKit graph edge-kind contract");
 assert.match(graph, /MobKitFlowController\.graphNodeCanvasState/, "Graph canvas must render node member/tool/source metadata through the controller plane");
 assert.match(graph, /MobKitFlowController\.graphCanvasInstances/, "Graph canvas must ask the controller plane for renderable graph instances including the mob.toml source-file adornment");
 assert.match(graph, /MobKitFlowController\.graphGateCanvasState/, "Graph canvas must render gate glyph and sublabels through the controller plane");
@@ -254,6 +255,7 @@ assert.match(controller, /function graphTemplateInspectorState/, "controller pla
 assert.match(controller, /function graphInstanceControlState/, "controller plane must own Graph instance summary and launch-source projection");
 assert.match(controller, /function graphTerminalControlState/, "controller plane must own Graph terminal kind projection");
 assert.match(controller, /function graphEdgeCanvasState/, "controller plane must own Graph edge canvas projection");
+assert.match(controller, /function graphProjectionEdgeKinds/, "controller plane must own schema-backed graph edge-kind projection");
 assert.match(controller, /function graphNodeCanvasState/, "controller plane must own Graph node canvas projection");
 assert.match(controller, /function graphSourceFileNode/, "controller plane must own Graph source-file adornment projection");
 assert.match(controller, /function graphCanvasInstances/, "controller plane must own Graph canvas instance assembly");
@@ -339,6 +341,10 @@ assert.match(controller, /function mergeSkillRealms/, "controller plane must own
 assert.match(controller, /function hydrateMobpackDocumentState/, "controller plane must own imported document hydration semantics");
 assert.match(controller, /function flowFromHydratedDocument/, "controller plane must own hydrated flow reset semantics");
 assert.match(controller, /function graphProjectionForDocument/, "controller plane must own hydrated graph projection semantics");
+assert.match(app, /graphProjectionForFlow\(flow,\s*studio\.members,\s*contract\)/, "Basic-to-Graph live projection must use the loaded MobKit graph contract");
+assert.match(app, /buildDocument\(\{[\s\S]*deploySettings,[\s\S]*contract/, "Mobpack document export must pass the loaded MobKit contract into controller projection");
+assert.match(app, /hydrateMobpackDocumentState\(result,\s*\{[\s\S]*contractSkillRealms:[\s\S]*contract/, "Mobpack import hydration must pass the loaded MobKit contract into graph projection");
+assert.match(controller, /graphProjectionForDocument\(document,\s*members,\s*contract\)/, "controller hydration graph projection must accept the MobKit graph contract");
 assert.match(controller, /missing_editor_flow/, "controller hydration must reject MobKit documents that do not include document.flow.steps");
 assert(!/flowFromHydratedDocument[\s\S]{0,520}untitled-mob|flowFromHydratedDocument[\s\S]{0,700}id:\s*["']input_1["']/.test(controller), "hydration must not synthesize local input-only flows when MobKit import omits a real flow");
 assert.match(app, /if \(hydration\.ok === false\) \{[\s\S]*setValidationResults\(hydration\.validationRows \|\| \[\]\);[\s\S]*setStage\(hydration\.stage \|\| "draft"\);[\s\S]*setValidate\(true\);[\s\S]*return;/, "app shell must not mutate editor state when controller rejects imported document hydration");

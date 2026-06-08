@@ -4159,12 +4159,13 @@ window.MOBKIT_BOOT = {
     return { glyph, sublabel, gateKind };
   }
 
-  function graphEdgeCanvasState({ edge, to, active = false, selected = false, edgeStyle = "" } = {}) {
+  function graphEdgeCanvasState({ edge, to, active = false, selected = false, edgeStyle = "", contract = null } = {}) {
     const kind = String(edge?.kind || "next").trim();
     const terminalTarget = !!to?.isTerminal;
     const labelText = String(edge?.label || edge?.kind || "");
-    const isCondition = kind === "cond";
-    const isFanout = kind === "fanout";
+    const edgeKinds = graphProjectionEdgeKinds(contract);
+    const isCondition = kind === edgeKinds.conditionKind;
+    const isFanout = kind === edgeKinds.fanoutKind;
     const mode = edgeStyle === "icons" ? "icons" : edgeStyle === "colored" ? "colored" : "text";
     return {
       kind,
@@ -4547,7 +4548,7 @@ window.MOBKIT_BOOT = {
     return step;
   }
 
-  function buildDocument({ flow, studio, currentFlow, deploySettings }) {
+  function buildDocument({ flow, studio, currentFlow, deploySettings, contract }) {
     const members = studio?.members || [];
     const schemas = studio?.schemas || [];
     const displayName = currentFlow?.name || flow?.mobName || flow?.name || "MobKit flow";
@@ -4560,9 +4561,9 @@ window.MOBKIT_BOOT = {
       name: displayName,
       mob_settings: mobSettings,
       members,
-      instances: instancesForDocument(documentFlow, members, studio?.instances || studio?.nodes || []),
-      edges: edgesForDocument(documentFlow, members, studio?.edges || []),
-      frames: framesForDocument(documentFlow, members, studio?.frames || []),
+      instances: instancesForDocument(documentFlow, members, studio?.instances || studio?.nodes || [], contract),
+      edges: edgesForDocument(documentFlow, members, studio?.edges || [], contract),
+      frames: framesForDocument(documentFlow, members, studio?.frames || [], contract),
       schemas,
       skill_realms: skillRealmsForDocument(members, studio?.skillRealms),
       flow: documentFlow,
@@ -4630,8 +4631,8 @@ window.MOBKIT_BOOT = {
     return next;
   }
 
-  function edgesForDocument(flow, members, existingEdges) {
-    const projected = graphProjectionForFlow(flow, members).edges || [];
+  function edgesForDocument(flow, members, existingEdges, contract) {
+    const projected = graphProjectionForFlow(flow, members, contract).edges || [];
     const canonicalByKey = new Map();
     for (const edge of projected) {
       const normalized = normalizeGraphEdgeForDocument(edge);
@@ -4682,8 +4683,8 @@ window.MOBKIT_BOOT = {
     return from && to ? `${from}\n${to}\n${kind}` : "";
   }
 
-  function instancesForDocument(flow, members, existingInstances) {
-    const projected = graphProjectionForFlow(flow, members).instances || [];
+  function instancesForDocument(flow, members, existingInstances, contract) {
+    const projected = graphProjectionForFlow(flow, members, contract).instances || [];
     const canonicalById = new Map();
     for (const instance of projected) {
       if (instance?.id && !canonicalById.has(String(instance.id))) {
@@ -4741,11 +4742,28 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function graphProjectionForFlow(flow, members) {
+  function graphProjectionEdgeKinds(contract) {
+    return {
+      defaultKind: contractDefaultValue(contract, "graph_edge_kind") || legacyGraphProjectionEdgeKind("graph_edge_kind"),
+      conditionKind: contractDefaultValue(contract, "graph_condition_edge_kind") || legacyGraphProjectionEdgeKind("graph_condition_edge_kind"),
+      fanoutKind: contractDefaultValue(contract, "graph_fanout_edge_kind") || legacyGraphProjectionEdgeKind("graph_fanout_edge_kind"),
+    };
+  }
+
+  function legacyGraphProjectionEdgeKind(name) {
+    return {
+      graph_edge_kind: "next",
+      graph_condition_edge_kind: "cond",
+      graph_fanout_edge_kind: "fanout",
+    }[name] || "";
+  }
+
+  function graphProjectionForFlow(flow, members, contract) {
+    const edgeKinds = graphProjectionEdgeKinds(contract);
     const projection = { instances: [], edges: [], frames: [] };
     const edgeId = () => `e${projection.edges.length + 1}`;
 
-    function connectEdges(fromIds, toIds, kind = "next", label = "", extra = {}) {
+    function connectEdges(fromIds, toIds, kind = edgeKinds.defaultKind, label = "", extra = {}) {
       for (const from of fromIds || []) {
         for (const to of toIds || []) {
           if (!from || !to) continue;
@@ -4754,7 +4772,7 @@ window.MOBKIT_BOOT = {
       }
     }
 
-    function emit(steps, startCol, row = 0, initialPrevExits = [], entryKind = "next", entryLabel = "", lane = "") {
+    function emit(steps, startCol, row = 0, initialPrevExits = [], entryKind = edgeKinds.defaultKind, entryLabel = "", lane = "") {
       let col = startCol;
       let prevExits = initialPrevExits || [];
       let entries = [];
@@ -4763,7 +4781,7 @@ window.MOBKIT_BOOT = {
         if (!entries.length) entries = (ids || []).filter(Boolean);
       };
       const connectPrev = (targets, extra = {}) => {
-        const kind = firstConnection ? entryKind : "next";
+        const kind = firstConnection ? entryKind : edgeKinds.defaultKind;
         const label = firstConnection ? entryLabel : "";
         connectEdges(prevExits, targets, kind, label, extra);
         firstConnection = false;
@@ -4834,7 +4852,7 @@ window.MOBKIT_BOOT = {
               gateCol + 1,
               row + index,
               [gateId],
-              isFallback ? "next" : isBranch ? "cond" : "fanout",
+              isFallback ? edgeKinds.defaultKind : isBranch ? edgeKinds.conditionKind : edgeKinds.fanoutKind,
               isFallback ? "fallback" : isBranch ? (branch.condition || "") : "",
               isFallback ? "fallback" : "",
             );
@@ -4859,7 +4877,7 @@ window.MOBKIT_BOOT = {
             col: maxCol,
             row,
           });
-          connectEdges(exits, [joinId], "next", "");
+          connectEdges(exits, [joinId], edgeKinds.defaultKind, "");
           projection.frames.push({
             id: `frame_${step.type}_${step.id}`,
             kind: isBranch ? "Branch" : "Parallel",
@@ -4879,7 +4897,7 @@ window.MOBKIT_BOOT = {
             col,
             row,
             prevExits,
-            firstConnection ? entryKind : "next",
+            firstConnection ? entryKind : edgeKinds.defaultKind,
             firstConnection ? entryLabel : "",
             lane,
           );
@@ -4889,7 +4907,7 @@ window.MOBKIT_BOOT = {
           connectEdges(
             loopProjection.exits,
             loopProjection.entries,
-            "cond",
+            edgeKinds.conditionKind,
             step.until ? `until ${step.until}` : "until condition",
             cond ? { cond } : {},
           );
@@ -4971,8 +4989,8 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function framesForDocument(flow, members, existingFrames) {
-    const projected = graphProjectionForFlow(flow, members).frames || [];
+  function framesForDocument(flow, members, existingFrames, contract) {
+    const projected = graphProjectionForFlow(flow, members, contract).frames || [];
     const required = requiredFramesFromFlow(flow);
     const canonicalFrames = new Map();
     for (const frame of [...projected, ...required]) {
@@ -6217,11 +6235,11 @@ window.MOBKIT_BOOT = {
     return null;
   }
 
-  function graphProjectionForDocument(document, members) {
+  function graphProjectionForDocument(document, members, contract) {
     const storedFrames = Array.isArray(document?.frames) ? document.frames : [];
     const hasStoredEditorGraph = storedFrames.length > 0;
     if (!hasStoredEditorGraph && document?.flow && Array.isArray(document.flow.steps)) {
-      return graphProjectionForFlow(document.flow, members || []);
+      return graphProjectionForFlow(document.flow, members || [], contract);
     }
     return {
       instances: Array.isArray(document?.instances) ? document.instances : [],
@@ -6263,7 +6281,7 @@ window.MOBKIT_BOOT = {
       };
     }
     const skillRealms = mergeSkillRealms(document.skill_realms, options.contractSkillRealms || []);
-    const graphProjection = graphProjectionForDocument({ ...document, flow }, members);
+    const graphProjection = graphProjectionForDocument({ ...document, flow }, members, options.contract);
     const hasDeploySettings = document.deploy && typeof document.deploy === "object" && !Array.isArray(document.deploy);
     const hasMobSettings = document.mob_settings && typeof document.mob_settings === "object" && !Array.isArray(document.mob_settings);
     const id = String(options.id || "f_imported");
@@ -9613,7 +9631,8 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       to: ti,
       active: isActive,
       selected: isSelected,
-      edgeStyle
+      edgeStyle,
+      contract
     });
     let labelEl;
     if (edgeState.mode === "icons") {
@@ -11231,12 +11250,12 @@ function App() {
     }
     if (editorMode === "advanced") return;
     if (!window.MobKitFlowController?.graphProjectionForFlow) return;
-    const { instances, edges, frames } = window.MobKitFlowController.graphProjectionForFlow(flow, studio.members);
+    const { instances, edges, frames } = window.MobKitFlowController.graphProjectionForFlow(flow, studio.members, contract);
     graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(instances, edges);
     studio.setInstances(instances);
     studio.setEdges(edges);
     studio.setFrames(frames || []);
-  }, [flow, editorMode]);
+  }, [flow, editorMode, contract]);
   React.useEffect(() => {
     if (editorMode !== "advanced") return;
     if (!window.MobKitFlowController?.graphToFlow) return;
@@ -11429,7 +11448,8 @@ function App() {
     flow: effectiveAuthoringFlow(),
     studio: { ...studio, mobSettings },
     currentFlow,
-    deploySettings
+    deploySettings,
+    contract
   });
   const rememberCurrentDocument = (document2, validation, nextStage = stage) => {
     const persistence = window.MobKitFlowController.flowRegistryDocumentPersistence({
@@ -11647,7 +11667,8 @@ function App() {
       flowRow: options.flowRow || null,
       deployDefaults: options.deployDefaults || catalogs.deployDefaults,
       mobDefaults: options.mobDefaults || catalogs.mobDefaults,
-      contractSkillRealms: contractSkillRealms.current
+      contractSkillRealms: contractSkillRealms.current,
+      contract
     });
     if (hydration.ok === false) {
       setValidationResults(hydration.validationRows || []);

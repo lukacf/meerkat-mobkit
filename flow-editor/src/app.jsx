@@ -208,12 +208,12 @@ function App() {
     }
     if (editorMode === "advanced") return;
     if (!window.MobKitFlowController?.graphProjectionForFlow) return;
-    const { instances, edges, frames } = window.MobKitFlowController.graphProjectionForFlow(flow, studio.members);
+    const { instances, edges, frames } = window.MobKitFlowController.graphProjectionForFlow(flow, studio.members, contract);
     graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(instances, edges);
     studio.setInstances(instances);
     studio.setEdges(edges);
     studio.setFrames(frames || []);
-  }, [flow, editorMode]);
+  }, [flow, editorMode, contract]);
 
   React.useEffect(() => {
     if (editorMode !== "advanced") return;
@@ -428,6 +428,7 @@ function App() {
     studio: { ...studio, mobSettings },
     currentFlow,
     deploySettings,
+    contract,
   });
   const rememberCurrentDocument = (document, validation, nextStage = stage) => {
     const persistence = window.MobKitFlowController.flowRegistryDocumentPersistence({
@@ -656,6 +657,7 @@ function App() {
       deployDefaults: options.deployDefaults || catalogs.deployDefaults,
       mobDefaults: options.mobDefaults || catalogs.mobDefaults,
       contractSkillRealms: contractSkillRealms.current,
+      contract,
     });
     if (hydration.ok === false) {
       setValidationResults(hydration.validationRows || []);

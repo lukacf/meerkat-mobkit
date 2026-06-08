@@ -4683,6 +4683,38 @@ assert.equal(controller.contractDefaultValue(graphShapeContract, "graph_fanout_e
 assert.equal(controller.contractDefaultValue(graphShapeContract, "graph_terminal_kind"), "success");
 assert.equal(controller.contractDefaultValue(graphShapeContract, "runtime_mode"), "turn_driven");
 
+const customProjectionContract = {
+  mob_definition: {
+    defaults: {
+      graph_edge_kind: "straight",
+      graph_condition_edge_kind: "when",
+      graph_fanout_edge_kind: "spread",
+      condition_operator: "==",
+    },
+    graph_edge_kinds: ["straight", "when", "spread"],
+    editor_graph_draft: testEditorGraphDraft,
+  },
+};
+const customProjectionFlow = {
+  name: "custom projection",
+  steps: [
+    { id: "input", type: "input" },
+    {
+      id: "route",
+      type: "branch",
+      branches: [{ id: "br_docs", condition: "params.kind == \"docs\"", steps: [{ id: "left", type: "member", role: "m_left" }] }],
+      fallback: [{ id: "right", type: "member", role: "m_right" }],
+    },
+    {
+      id: "fan",
+      type: "parallel",
+      branches: [
+        { id: "br_a", steps: [{ id: "review", type: "member", role: "m_review" }] },
+        { id: "br_b", steps: [{ id: "writer", type: "member", role: "m_writer" }] },
+      ],
+    },
+  ],
+};
 assert.deepEqual(controller.graphConnectionEdgeDraft({
   id: "edge_next",
   from: { id: "plan", col: 0, row: 0 },
@@ -4822,6 +4854,36 @@ const graphProjectionMembers = [
   { id: "m_writer", name: "Writer", role: "writer", schema: "Draft", tools: ["builtins", "shell", "git", "comms"] },
   { id: "m_review", name: "Reviewer", role: "reviewer", schema: "", tools: [] },
 ];
+const customGraphProjectionMembers = [
+  ...graphProjectionMembers,
+  { id: "m_left", name: "Left", role: "left", schema: "", tools: [] },
+  { id: "m_right", name: "Right", role: "right", schema: "", tools: [] },
+];
+const customProjection = controller.graphProjectionForFlow(customProjectionFlow, customGraphProjectionMembers, customProjectionContract);
+assert.deepEqual(customProjection.edges.map((edge) => [edge.from, edge.to, edge.kind, edge.label]), [
+  ["g_branch_route", "left", "when", "params.kind == \"docs\""],
+  ["g_branch_route", "right", "straight", "fallback"],
+  ["left", "j_branch_route", "straight", ""],
+  ["right", "j_branch_route", "straight", ""],
+  ["j_branch_route", "g_parallel_fan", "straight", ""],
+  ["g_parallel_fan", "review", "spread", ""],
+  ["g_parallel_fan", "writer", "spread", ""],
+  ["review", "j_parallel_fan", "straight", ""],
+  ["writer", "j_parallel_fan", "straight", ""],
+]);
+const customProjectionDocument = controller.buildDocument({
+  flow: customProjectionFlow,
+  studio: {
+    members: customGraphProjectionMembers,
+    schemas: [],
+    instances: [],
+    edges: [],
+    frames: [],
+  },
+  deploySettings: testDeploySettings(),
+  contract: customProjectionContract,
+});
+assert.deepEqual(customProjectionDocument.edges.map((edge) => edge.kind), customProjection.edges.map((edge) => edge.kind));
 const graphProjectionInstances = [
   { id: "n_writer", memberId: "m_writer", col: 0, row: 0 },
   { id: "n_review", memberId: "m_review", col: 1, row: 0 },
@@ -5023,6 +5085,16 @@ assert.deepEqual(controller.graphEdgeCanvasState({
   to: { id: "n_done", isTerminal: true },
   edgeStyle: "colored",
 }).markerEnd, "url(#arr-acc)");
+assert.deepEqual(controller.graphEdgeCanvasState({
+  edge: { id: "e_when", kind: "when", label: "route" },
+  to: { id: "n_review" },
+  contract: customProjectionContract,
+}).lineClass, "edge-line is-cond");
+assert.deepEqual(controller.graphEdgeCanvasState({
+  edge: { id: "e_spread", kind: "spread", label: "" },
+  to: { id: "n_review" },
+  contract: customProjectionContract,
+}).iconGlyph, "‖");
 assert.deepEqual(controller.graphEdgeCanvasState({
   edge: { id: "e_term", kind: "next", label: "done" },
   to: { id: "n_done", isTerminal: true },

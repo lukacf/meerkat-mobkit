@@ -458,6 +458,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       active: isActive,
       selected: isSelected,
       edgeStyle,
+      contract,
     });
 
     let labelEl;
