@@ -4379,6 +4379,14 @@ const graphShapeContract = {
     dependency_modes: ["all", "any"],
     condition_operators: ["==", ">", "<"],
     editor_schema_field_types: ["string", "enum"],
+    editor_input_param_draft: {
+      added_field: {
+        name: "param",
+        required: true,
+        description: "",
+        enumValues: [],
+      },
+    },
   },
 };
 
@@ -5240,6 +5248,21 @@ assert.deepEqual(controller.inputParamAddPatch([
       { id: "p2", name: "param_2", type: "string", required: true, description: "", enumValues: [] },
     ],
     fields: "param: string, param_2: string",
+  },
+});
+assert.deepEqual(controller.inputParamAddPatch([
+  { id: "p1", name: "param", type: "string", required: true, description: "", enumValues: [] },
+], {
+  mob_definition: {
+    defaults: { schema_field_type: "string" },
+    editor_schema_field_types: ["string"],
+  },
+}), {
+  ok: false,
+  error: "MobKit schema is missing mob_definition.editor_input_param_draft",
+  patch: {
+    inputParams: [{ id: "p1", name: "param", type: "string", required: true, description: "", enumValues: [] }],
+    fields: "param: string",
   },
 });
 

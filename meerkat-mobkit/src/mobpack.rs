@@ -750,6 +750,16 @@ pub fn mobpack_schema_response() -> Value {
         "budget_split_policy_document_path": "document.launch_modes[].budget_split_policy",
         "input_schema_document_path": "document.flow.steps[type=input].inputParams",
         "input_schema_archive_path": "schemas/main-input.json",
+        "editor_input_param_draft": {
+            "document_path": "document.flow.steps[type=input].inputParams",
+            "archive_path": "schemas/main-input.json",
+            "added_field": {
+                "name": "param",
+                "required": true,
+                "description": "",
+                "enumValues": []
+            }
+        },
         "editor_schema_field_types": editor_schema_field_type_values(),
         "editor_schema_draft": {
             "document_path": "document.schemas[]",
@@ -15077,6 +15087,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_schema_field_types"],
             json!(editor_schema_field_type_values())
+        );
+        assert_eq!(
+            mob_definition["editor_input_param_draft"]["document_path"],
+            json!("document.flow.steps[type=input].inputParams")
+        );
+        assert_eq!(
+            mob_definition["editor_input_param_draft"]["archive_path"],
+            json!("schemas/main-input.json")
+        );
+        assert_eq!(
+            mob_definition["editor_input_param_draft"]["added_field"]["name"],
+            json!("param")
+        );
+        assert_eq!(
+            mob_definition["editor_input_param_draft"]["added_field"]["required"],
+            json!(true)
         );
         assert_eq!(
             mob_definition["editor_schema_draft"]["schema_id_prefix"],

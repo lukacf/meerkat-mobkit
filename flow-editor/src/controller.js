@@ -3099,14 +3099,22 @@
 
   function inputParamAddPatch(params, contract) {
     const current = Array.isArray(params) ? params : [];
+    const draft = editorInputParamDraftContract(contract);
+    if (!draft) {
+      return {
+        ok: false,
+        error: "MobKit schema is missing mob_definition.editor_input_param_draft",
+        patch: { inputParams: current, fields: inputParamSummary(current, contract) },
+      };
+    }
     const nextNumber = Math.max(0, ...current.map((param) => Number(String(param?.id || "p0").slice(1)) || 0)) + 1;
     const param = {
       id: `p${nextNumber}`,
-      name: uniqueInputParamName(current, "param"),
-      type: contractDefaultValue(contract, "schema_field_type"),
-      required: true,
-      description: "",
-      enumValues: [],
+      name: uniqueInputParamName(current, draft.addedField.name),
+      type: draft.schemaFieldType,
+      required: draft.addedField.required,
+      description: draft.addedField.description,
+      enumValues: draft.addedField.enumValues,
     };
     const next = [...current, param];
     return { param, patch: { inputParams: next, fields: inputParamSummary(next, contract) } };
@@ -6601,6 +6609,15 @@
     const addedField = editorSchemaDraftField(draft.added_field);
     if (!schemaIdPrefix || !schemaFieldType || !initialField || !addedField) return null;
     return { schemaIdPrefix, schemaFieldType, initialField, addedField };
+  }
+
+  function editorInputParamDraftContract(contract) {
+    const draft = contract?.mob_definition?.editor_input_param_draft;
+    if (!draft || typeof draft !== "object") return null;
+    const schemaFieldType = contractDefaultValue(contract, "schema_field_type");
+    const addedField = editorSchemaDraftField(draft.added_field);
+    if (!schemaFieldType || !addedField) return null;
+    return { schemaFieldType, addedField };
   }
 
   function graphControlShape({ gateKind, at, members, instances, edges, flow, contract } = {}) {

@@ -406,6 +406,8 @@ assert.match(builder, /MobKitFlowController\.inputParamDeletePatch/, "Basic edit
 assert.match(builder, /MobKitFlowController\.inputParamRenamePatch/, "Basic editor must rename input params through the controller plane");
 assert.match(builder, /MobKitFlowController\.inputParamAddPatch/, "Basic editor must add input params through the controller plane");
 assert.match(controller, /function inputParamAddPatch/, "controller plane must own schema-backed input-param creation");
+assert.match(controller, /mob_definition\?\.editor_input_param_draft/, "Basic input-param creation must hydrate from the MobKit editor_input_param_draft contract");
+assert(!/inputParamAddPatch[\s\S]{0,420}["']param["']/.test(controller), "controller must not own the local Basic input-param draft name");
 assert.match(controller, /function basicInputControlState/, "controller plane must own Basic input panel projection");
 assert.match(controller, /function parseLegacyInputFields/, "controller plane must own legacy input field parsing");
 assert(!/function (?:sanitizeFieldName|uniqueParamName|parseLegacyInputFields|inputParamsForStep|inputParamSummary|inputParamOptions)\(/.test(builder), "Basic editor must not own input-param parsing or summary helpers");

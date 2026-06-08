@@ -477,6 +477,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
     };
     const addParam = () => {
       const result = window.MobKitFlowController.inputParamAddPatch(params, contract);
+      if (result.ok === false) return;
       update(step.id, result.patch);
     };
     return (
