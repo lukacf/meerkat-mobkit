@@ -83,6 +83,10 @@ function App() {
       setFlows((rows) => window.MobKitFlowController.flowRegistryMarkDraftPatch(rows, currentFlowId));
     }
   }, [clearSourceProjection, currentFlowId]);
+  const setAuthoringFlow = React.useCallback((next) => {
+    markDraft();
+    setFlow(next);
+  }, [markDraft]);
   const studio = useStudioState({
     members: [],
     instances: [],
@@ -90,11 +94,10 @@ function App() {
     frames: [],
     schemas: [],
     skillRealms: [],
-  }, markDraft);
-  const setAuthoringFlow = React.useCallback((next) => {
-    markDraft();
-    setFlow(next);
-  }, [markDraft]);
+  }, markDraft, {
+    flow,
+    setFlow: setAuthoringFlow,
+  });
   const setAuthoringDeploySettings = React.useCallback((next) => {
     markDraft();
     setDeploySettings(next);

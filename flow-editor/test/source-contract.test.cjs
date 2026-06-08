@@ -126,7 +126,9 @@ assert.match(graph, /MobKitFlowController\.studioDeleteEdgePatch/, "Graph state 
 assert.match(graph, /MobKitFlowController\.studioAddSchemaPatch/, "Graph state hook must ask controller plane to add schemas");
 assert.match(graph, /MobKitFlowController\.studioUpdateSchemaPatch/, "Graph state hook must ask controller plane to update schemas");
 assert.match(graph, /MobKitFlowController\.studioDeleteSchemaPatch/, "Graph state hook must ask controller plane to cascade schema deletes");
-assert.match(graph, /studioDeleteSchemaPatch\(\{\s*schemas,\s*members,\s*edges,\s*instances\s*\}/, "Graph state hook must pass graph context into schema-delete cascade cleanup");
+assert.match(graph, /studioDeleteSchemaPatch\(\{[\s\S]*schemas,[\s\S]*members,[\s\S]*flow:\s*authoring\.flow,[\s\S]*edges,[\s\S]*instances,[\s\S]*\}, id\)/, "Graph state hook must pass Basic and Graph context into schema-delete cascade cleanup");
+assert.match(graph, /if \(next\.flow !== authoring\.flow && authoring\.setFlow\) authoring\.setFlow\(next\.flow\)/, "Graph state hook must apply controller-cleaned Basic flow after schema deletes");
+assert.match(app, /useStudioState\(\{[\s\S]*skillRealms:\s*\[\],[\s\S]*\}, markDraft, \{[\s\S]*flow,[\s\S]*setFlow:\s*setAuthoringFlow,[\s\S]*\}\)/, "app shell must wire the shared studio hook to the Basic authoring flow");
 assert.match(graph, /MobKitFlowController\.studioHistorySnapshotPatch/, "Graph state hook must ask controller plane to snapshot undo history");
 assert.match(graph, /MobKitFlowController\.studioUndoPatch/, "Graph state hook must ask controller plane to compute undo transitions");
 assert.match(graph, /MobKitFlowController\.studioRedoPatch/, "Graph state hook must ask controller plane to compute redo transitions");

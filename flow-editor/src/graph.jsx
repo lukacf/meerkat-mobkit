@@ -18,7 +18,7 @@ function dynGrid(instances, gridBase) {
   return { ...gridBase, cols: maxCol + 2, rows: maxRow + 2 };
 }
 
-function useStudioState(initial, onDirty) {
+function useStudioState(initial, onDirty, authoring = {}) {
   const [members, setMembers] = React.useState(initial.members);
   const [instances, setInstances] = React.useState(initial.instances);
   const [edges, setEdges] = React.useState(initial.edges);
@@ -136,9 +136,16 @@ function useStudioState(initial, onDirty) {
   };
   const deleteSchema = (id) => {
     snap();
-    const next = window.MobKitFlowController.studioDeleteSchemaPatch({ schemas, members, edges, instances }, id);
+    const next = window.MobKitFlowController.studioDeleteSchemaPatch({
+      schemas,
+      members,
+      flow: authoring.flow,
+      edges,
+      instances,
+    }, id);
     setSchemas(next.schemas);
     setMembers(next.members);
+    if (next.flow !== authoring.flow && authoring.setFlow) authoring.setFlow(next.flow);
     if (next.edges) setEdges(next.edges);
   };
   const updateSkillRealms = (next) => {
