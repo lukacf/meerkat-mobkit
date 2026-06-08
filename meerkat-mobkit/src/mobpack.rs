@@ -751,6 +751,23 @@ pub fn mobpack_schema_response() -> Value {
         "input_schema_document_path": "document.flow.steps[type=input].inputParams",
         "input_schema_archive_path": "schemas/main-input.json",
         "editor_schema_field_types": editor_schema_field_type_values(),
+        "editor_schema_draft": {
+            "document_path": "document.schemas[]",
+            "archive_path": "schemas/<schema-id>.json",
+            "schema_id_prefix": "Artifact",
+            "initial_field": {
+                "name": "field_one",
+                "required": true,
+                "description": "",
+                "enumValues": []
+            },
+            "added_field": {
+                "name": "new_field",
+                "required": false,
+                "description": "",
+                "enumValues": []
+            }
+        },
         "condition_operators": ["==", ">", "<"],
         "step_output_formats": step_output_format_values(),
         "skill_source_document_path": "document.skill_realms[].skills[]",
@@ -15060,6 +15077,34 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_schema_field_types"],
             json!(editor_schema_field_type_values())
+        );
+        assert_eq!(
+            mob_definition["editor_schema_draft"]["schema_id_prefix"],
+            json!("Artifact")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_draft"]["document_path"],
+            json!("document.schemas[]")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_draft"]["archive_path"],
+            json!("schemas/<schema-id>.json")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_draft"]["initial_field"]["name"],
+            json!("field_one")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_draft"]["initial_field"]["required"],
+            json!(true)
+        );
+        assert_eq!(
+            mob_definition["editor_schema_draft"]["added_field"]["name"],
+            json!("new_field")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_draft"]["added_field"]["required"],
+            json!(false)
         );
         assert_eq!(
             mob_definition["condition_operators"],

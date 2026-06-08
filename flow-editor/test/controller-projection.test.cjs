@@ -2510,6 +2510,21 @@ const schemaDraftContract = {
   mob_definition: {
     defaults: { schema_field_type: "enum" },
     editor_schema_field_types: ["enum", "string"],
+    editor_schema_draft: {
+      schema_id_prefix: "Artifact",
+      initial_field: {
+        name: "field_one",
+        required: true,
+        description: "",
+        enumValues: [],
+      },
+      added_field: {
+        name: "new_field",
+        required: false,
+        description: "",
+        enumValues: [],
+      },
+    },
   },
 };
 assert.deepEqual(controller.schemaDefinitionAddPatch([{ id: "Artifact1" }], schemaDraftContract), {
@@ -2536,6 +2551,28 @@ assert.deepEqual(controller.schemaFieldAddPatch({
     { id: "f1", name: "new_field", type: "string" },
     { id: "f2", name: "new_field_2", type: "enum", required: false, description: "", enumValues: [] },
   ] },
+});
+assert.deepEqual(controller.schemaDefinitionAddPatch([], {
+  mob_definition: {
+    defaults: { schema_field_type: "enum" },
+    editor_schema_field_types: ["enum", "string"],
+  },
+}), {
+  ok: false,
+  error: "MobKit schema is missing mob_definition.editor_schema_draft",
+  schemas: [],
+});
+assert.deepEqual(controller.schemaFieldAddPatch({
+  fields: [{ id: "f1", name: "existing", type: "string" }],
+}, {
+  mob_definition: {
+    defaults: { schema_field_type: "enum" },
+    editor_schema_field_types: ["enum", "string"],
+  },
+}), {
+  ok: false,
+  error: "MobKit schema is missing mob_definition.editor_schema_draft",
+  patch: { fields: [{ id: "f1", name: "existing", type: "string" }] },
 });
 assert.deepEqual(controller.schemaFieldUpdatePatch({
   fields: [{ id: "f1", name: "old", type: "string" }],

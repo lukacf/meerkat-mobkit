@@ -783,6 +783,8 @@ assert(!/if \(!studio\.schemas\.some[\s\S]{0,180}studio\.addSchema/.test(agents)
 assert.match(agents, /MobKitFlowController\.schemaDefinitionAddPatch/, "Agent Editor must create schema drafts through the controller plane");
 assert.match(controller, /function schemaDefinitionAddPatch/, "controller plane must own schema draft creation");
 assert.match(agents, /MobKitFlowController\.schemaFieldAddPatch/, "Agent Editor must add schema fields through the controller plane");
+assert.match(controller, /mob_definition\?\.editor_schema_draft/, "schema draft creation must hydrate from the MobKit editor_schema_draft contract");
+assert(!/`Artifact|["']field_one["']|["']new_field["']/.test(controller), "controller must not own local schema id or field-name draft defaults");
 assert.match(agents, /MobKitFlowController\.schemaFieldUpdatePatch/, "Agent Editor must update schema fields through the controller plane");
 assert.match(agents, /MobKitFlowController\.schemaFieldDeleteCascadePatch/, "Agent Editor must delete schema fields through the controller cascade plane");
 assert.match(agents, /schemaFieldDeleteCascadePatch\(\{[\s\S]*schema,[\s\S]*schemas:\s*studio\.schemas,[\s\S]*flow,[\s\S]*edges:\s*studio\.edges,[\s\S]*instances:\s*studio\.instances/, "Agent Editor schema-field deletes must pass Basic and Graph context into controller cleanup");

@@ -86,6 +86,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions 
           className="agents-list__add"
           onClick={() => {
             const result = window.MobKitFlowController.schemaDefinitionAddPatch(studio.schemas, contract);
+            if (result.ok === false) return;
             if (studio.snap) studio.snap();
             studio.setSchemas(result.schemas);
             setAgentSel({ kind: "schema", id: result.schema.id });
@@ -515,7 +516,9 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow }) 
   };
 
   const addField = () => {
-    change(window.MobKitFlowController.schemaFieldAddPatch(schema, contract).patch);
+    const result = window.MobKitFlowController.schemaFieldAddPatch(schema, contract);
+    if (result.ok === false) return;
+    change(result.patch);
   };
 
   const deleteSchema = () => {

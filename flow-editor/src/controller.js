@@ -2223,18 +2223,26 @@
 
   function schemaDefinitionAddPatch(existingSchemas, contract) {
     const schemas = Array.isArray(existingSchemas) ? existingSchemas : [];
+    const draft = editorSchemaDraftContract(contract);
+    if (!draft) {
+      return {
+        ok: false,
+        error: "MobKit schema is missing mob_definition.editor_schema_draft",
+        schemas,
+      };
+    }
     let n = 1;
-    while (schemas.some((schema) => schema?.id === `Artifact${n}`)) n += 1;
+    while (schemas.some((schema) => schema?.id === `${draft.schemaIdPrefix}${n}`)) n += 1;
     const schema = {
-      id: `Artifact${n}`,
+      id: `${draft.schemaIdPrefix}${n}`,
       description: "",
       fields: [{
         id: "f1",
-        name: uniqueSchemaFieldName([], "field_one"),
-        type: contractDefaultValue(contract, "schema_field_type"),
-        required: true,
-        description: "",
-        enumValues: [],
+        name: uniqueSchemaFieldName([], draft.initialField.name),
+        type: draft.schemaFieldType,
+        required: draft.initialField.required,
+        description: draft.initialField.description,
+        enumValues: draft.initialField.enumValues,
       }],
     };
     return { schema, schemas: [...schemas, schema] };
@@ -2414,14 +2422,22 @@
 
   function schemaFieldAddPatch(schema, contract) {
     const fields = Array.isArray(schema?.fields) ? schema.fields : [];
+    const draft = editorSchemaDraftContract(contract);
+    if (!draft) {
+      return {
+        ok: false,
+        error: "MobKit schema is missing mob_definition.editor_schema_draft",
+        patch: { fields },
+      };
+    }
     const nextNumber = Math.max(0, ...fields.map((field) => Number(String(field?.id || "f0").slice(1)) || 0)) + 1;
     const field = {
       id: `f${nextNumber}`,
-      name: uniqueSchemaFieldName(fields, "new_field"),
-      type: contractDefaultValue(contract, "schema_field_type"),
-      required: false,
-      description: "",
-      enumValues: [],
+      name: uniqueSchemaFieldName(fields, draft.addedField.name),
+      type: draft.schemaFieldType,
+      required: draft.addedField.required,
+      description: draft.addedField.description,
+      enumValues: draft.addedField.enumValues,
     };
     return { field, patch: { fields: [...fields, field] } };
   }
@@ -6560,6 +6576,31 @@
       default:
         return "";
     }
+  }
+
+  function editorSchemaDraftField(rawField) {
+    if (!rawField || typeof rawField !== "object") return null;
+    const name = schemaFieldName(rawField.name, "");
+    if (!name) return null;
+    return {
+      name,
+      required: rawField.required === true,
+      description: String(rawField.description || ""),
+      enumValues: Array.isArray(rawField.enumValues)
+        ? rawField.enumValues.map((value) => String(value || "").trim()).filter(Boolean)
+        : [],
+    };
+  }
+
+  function editorSchemaDraftContract(contract) {
+    const draft = contract?.mob_definition?.editor_schema_draft;
+    if (!draft || typeof draft !== "object") return null;
+    const schemaIdPrefix = String(draft.schema_id_prefix || "").trim();
+    const schemaFieldType = contractDefaultValue(contract, "schema_field_type");
+    const initialField = editorSchemaDraftField(draft.initial_field);
+    const addedField = editorSchemaDraftField(draft.added_field);
+    if (!schemaIdPrefix || !schemaFieldType || !initialField || !addedField) return null;
+    return { schemaIdPrefix, schemaFieldType, initialField, addedField };
   }
 
   function graphControlShape({ gateKind, at, members, instances, edges, flow, contract } = {}) {
