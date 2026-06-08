@@ -879,6 +879,14 @@ fn agent_definition_catalog(sample_mobpacks: &Value) -> Value {
                 else {
                     continue;
                 };
+                let Some(model) = member
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    continue;
+                };
                 let key = sanitize_identifier(role);
                 templates.entry(key.clone()).or_insert_with(|| {
                     let name = member.get("name").and_then(Value::as_str).unwrap_or(role);
@@ -893,7 +901,7 @@ fn agent_definition_catalog(sample_mobpacks: &Value) -> Value {
                         "role": role,
                         "label": name,
                         "name": name,
-                        "model": member.get("model").and_then(Value::as_str).unwrap_or_default(),
+                        "model": model,
                         "schema": schema_id,
                         "schemaDefinition": schema_definition,
                         "skills": member.get("skills").cloned().unwrap_or_else(|| json!([])),
@@ -14817,6 +14825,20 @@ model = "gpt-5.5"
                     "members": [{
                         "role": "no_id",
                         "name": "No ID",
+                        "profileBinding": "inline",
+                        "runtimeMode": "turn_driven",
+                        "tools": ["builtins"],
+                        "skills": []
+                    }]
+                }
+            },
+            {
+                "id": "model_less_sample",
+                "source": "mobkit/sample-mobpack",
+                "document": {
+                    "members": [{
+                        "role": "model_less",
+                        "name": "Model Less",
                         "profileBinding": "inline",
                         "runtimeMode": "turn_driven",
                         "tools": ["builtins"],

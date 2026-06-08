@@ -434,6 +434,7 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
     role: "reviewer",
     definitionType: "mobkit/profile-member",
     source: "mobkit/sample-mobpack",
+    model: "gpt-5.5",
     profileBinding: "inline",
     runtimeMode: "turn_driven",
   }],
@@ -1807,6 +1808,20 @@ assert.deepEqual(controller.agentDefinitionsFromSchema({
     source: "mobkit/mobpack-profile-member",
     sourceMobpack: "sample_partial",
     sourceDocumentPath: "document.members[]",
+  }],
+}), []);
+
+assert.deepEqual(controller.agentDefinitionsFromSchema({
+  agent_definitions: [{
+    id: "model_less",
+    role: "model_less",
+    name: "Model Less",
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/mobpack-profile-member",
+    sourceMobpack: "sample_partial",
+    sourceDocumentPath: "document.members[]",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
   }],
 }), []);
 

@@ -7654,17 +7654,19 @@ window.MOBKIT_BOOT = {
       .filter((template) => String(template.source || template.source_mobpack || template.sourceMobpack || "").trim())
       .filter((template) => String(template.profileBinding || template.profile_binding || "").trim())
       .filter((template) => String(template.runtimeMode || template.runtime_mode || "").trim())
+      .filter((template) => String(template.model || "").trim())
       .map((template) => {
         const id = String(template.id || "").trim();
         const role = String(template.role || "").trim();
         const name = String(template.name || template.label || "").trim();
+        const model = String(template.model || "").trim();
         if (!id || !role || !name) return null;
         return {
           id,
           role,
           label: String(template.label || name),
           name,
-          model: String(template.model || ""),
+          model,
           schema: String(template.schema || ""),
           schemaDefinition: normalizeAgentSchemaDefinition(template.schemaDefinition || template.schema_definition),
           skills: Array.isArray(template.skills) ? [...template.skills] : [],

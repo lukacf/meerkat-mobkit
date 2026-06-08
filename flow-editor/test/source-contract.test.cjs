@@ -761,6 +761,7 @@ assert(!/schema\.tool_config|schema\.tool_catalog[\s\S]{0,80}schema\.tool_config
 assert(!/model\.vendor \|\| model\.provider \|\| ["']provider["']|tool\.desc \|\| tool\.description \|\| tool\.summary \|\| ["']MobKit tool_config["']|tool\.kind \|\| tool\.type \|\| ["']tool["']/.test(controller), "Catalog hydration must not invent model/tool display metadata");
 assert(!/profileBinding:\s*(?:String\([^)]*["']inline|source\.profileBinding\s*\|\|\s*["']inline)/.test(controller), "Agent definitions must carry real MobKit profileBinding values instead of controller-local inline defaults");
 assert(!/runtimeMode:\s*(?:String\([^)]*["']turn_driven|source\.runtimeMode\s*\|\|\s*["']turn_driven)/.test(controller), "Agent definitions must carry real MobKit runtimeMode values instead of controller-local turn_driven defaults");
+assert.match(controller, /agentDefinitionsFromSchema[\s\S]*\.filter\(\(template\) => String\(template\.model \|\| ""\)\.trim\(\)\)/, "Agent definitions must hydrate only real model-backed MobKit profiles");
 assert(!/member\.profileBinding\s*\|\|\s*\(member\.realmProfile \? ["']realm_profile["'] : ["']inline["']\)/.test(agents), "Agent Editor must not display missing profileBinding as inline");
 assert(!/const\s+defaultRuntimeMode[\s\S]{0,120}member\.runtimeMode\s*\|\|\s*defaultRuntimeMode/.test(agents), "Agent Editor must not display missing runtimeMode as turn_driven");
 assert.match(controller, /missing profile binding/, "controller plane must expose missing profile binding explicitly");
