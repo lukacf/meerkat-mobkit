@@ -758,6 +758,94 @@
     };
   }
 
+  function deployViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_deploy_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      brandLabel: String(view.brand_label || "").trim(),
+      flowsTabLabel: String(view.flows_tab_label || "").trim(),
+      agentsTabLabel: String(view.agents_tab_label || "").trim(),
+      mobStatusTitle: String(view.mob_status_title || "").trim(),
+      mobFileLabel: String(view.mob_file_label || "").trim(),
+      apiErrorLabel: String(view.api_error_label || "").trim(),
+      apiReadyLabel: String(view.api_ready_label || "").trim(),
+      apiLoadingLabel: String(view.api_loading_label || "").trim(),
+      deployPrefixLabel: String(view.deploy_prefix_label || "").trim(),
+      flowsCrumbLabel: String(view.flows_crumb_label || "").trim(),
+      crumbSeparator: String(view.crumb_separator || "").trim(),
+      planTraceLabel: String(view.plan_trace_label || "").trim(),
+      importLabel: String(view.import_label || "").trim(),
+      validateLabel: String(view.validate_label || "").trim(),
+      publishLabel: String(view.publish_label || "").trim(),
+      deployPlanLabel: String(view.deploy_plan_label || "").trim(),
+      deployLabel: String(view.deploy_label || "").trim(),
+      themeSwitchPrefix: String(view.theme_switch_prefix || "").trim(),
+      themeSwitchSuffix: String(view.theme_switch_suffix || "").trim(),
+      darkThemeLabel: String(view.dark_theme_label || "").trim(),
+      lightThemeLabel: String(view.light_theme_label || "").trim(),
+      basicModeTitle: String(view.basic_mode_title || "").trim(),
+      basicModeLabel: String(view.basic_mode_label || "").trim(),
+      graphModeTitle: String(view.graph_mode_title || "").trim(),
+      graphModeLabel: String(view.graph_mode_label || "").trim(),
+      validationEyebrow: String(view.validation_eyebrow || "").trim(),
+      validationPassedLabel: String(view.validation_passed_label || "").trim(),
+      validationWarningsLabel: String(view.validation_warnings_label || "").trim(),
+      validationBlockingLabel: String(view.validation_blocking_label || "").trim(),
+      closeLabel: String(view.close_label || "").trim(),
+      planEyebrow: String(view.plan_eyebrow || "").trim(),
+      planUnavailableHead: String(view.plan_unavailable_head || "").trim(),
+      planUnavailableBody: String(view.plan_unavailable_body || "").trim(),
+      planFirstLabel: String(view.plan_first_label || "").trim(),
+      planStepLabel: String(view.plan_step_label || "").trim(),
+      planPreviousLabel: String(view.plan_previous_label || "").trim(),
+      planNextLabel: String(view.plan_next_label || "").trim(),
+    };
+    return Object.values(out).every(Boolean) ? out : null;
+  }
+
+  function deployViewForState(deployView) {
+    const view = deployView && typeof deployView === "object" ? deployView : null;
+    return {
+      brandLabel: String(view?.brandLabel || ""),
+      flowsTabLabel: String(view?.flowsTabLabel || ""),
+      agentsTabLabel: String(view?.agentsTabLabel || ""),
+      mobStatusTitle: String(view?.mobStatusTitle || ""),
+      mobFileLabel: String(view?.mobFileLabel || ""),
+      apiErrorLabel: String(view?.apiErrorLabel || ""),
+      apiReadyLabel: String(view?.apiReadyLabel || ""),
+      apiLoadingLabel: String(view?.apiLoadingLabel || ""),
+      deployPrefixLabel: String(view?.deployPrefixLabel || ""),
+      flowsCrumbLabel: String(view?.flowsCrumbLabel || ""),
+      crumbSeparator: String(view?.crumbSeparator || ""),
+      planTraceLabel: String(view?.planTraceLabel || ""),
+      importLabel: String(view?.importLabel || ""),
+      validateLabel: String(view?.validateLabel || ""),
+      publishLabel: String(view?.publishLabel || ""),
+      deployPlanLabel: String(view?.deployPlanLabel || ""),
+      deployLabel: String(view?.deployLabel || ""),
+      themeSwitchPrefix: String(view?.themeSwitchPrefix || ""),
+      themeSwitchSuffix: String(view?.themeSwitchSuffix || ""),
+      darkThemeLabel: String(view?.darkThemeLabel || ""),
+      lightThemeLabel: String(view?.lightThemeLabel || ""),
+      basicModeTitle: String(view?.basicModeTitle || ""),
+      basicModeLabel: String(view?.basicModeLabel || ""),
+      graphModeTitle: String(view?.graphModeTitle || ""),
+      graphModeLabel: String(view?.graphModeLabel || ""),
+      validationEyebrow: String(view?.validationEyebrow || ""),
+      validationPassedLabel: String(view?.validationPassedLabel || ""),
+      validationWarningsLabel: String(view?.validationWarningsLabel || ""),
+      validationBlockingLabel: String(view?.validationBlockingLabel || ""),
+      closeLabel: String(view?.closeLabel || ""),
+      planEyebrow: String(view?.planEyebrow || ""),
+      planUnavailableHead: String(view?.planUnavailableHead || ""),
+      planUnavailableBody: String(view?.planUnavailableBody || ""),
+      planFirstLabel: String(view?.planFirstLabel || ""),
+      planStepLabel: String(view?.planStepLabel || ""),
+      planPreviousLabel: String(view?.planPreviousLabel || ""),
+      planNextLabel: String(view?.planNextLabel || ""),
+    };
+  }
+
   function basicViewFromSchema(schema) {
     const view = schema?.mob_definition?.editor_basic_view;
     if (!view || typeof view !== "object") return null;
@@ -6261,6 +6349,7 @@
       sourceView: null,
       agentView: null,
       agentDetailView: null,
+      deployView: null,
       schemaView: null,
       basicView: null,
       graphView: null,
@@ -6293,6 +6382,7 @@
       sourceView: sourceViewFromSchema(schema),
       agentView: agentViewFromSchema(schema),
       agentDetailView: agentDetailViewFromSchema(schema),
+      deployView: deployViewFromSchema(schema),
       schemaView: schemaViewFromSchema(schema),
       basicView: basicViewFromSchema(schema),
       graphView: graphViewFromSchema(schema),
@@ -7523,6 +7613,7 @@
   }
 
   function validationSheetState(results, options = {}) {
+    const view = deployViewForState(options.deployView);
     const rows = Array.isArray(results) ? results : [];
     const counts = rows.reduce((acc, row) => {
       const kind = row?.kind || "warn";
@@ -7536,74 +7627,76 @@
     return {
       rows,
       counts,
-      eyebrow: "VALIDATE · MobKit",
-      title: `${counts.ok} passed · ${counts.warn} warnings · ${counts.crit} blocking`,
-      publishLabel: "PUBLISH",
-      deployPlanLabel: "DEPLOY PLAN",
-      deployLabel: "DEPLOY",
-      closeLabel: "×",
+      eyebrow: view.validationEyebrow,
+      title: `${counts.ok} ${view.validationPassedLabel} · ${counts.warn} ${view.validationWarningsLabel} · ${counts.crit} ${view.validationBlockingLabel}`,
+      publishLabel: view.publishLabel,
+      deployPlanLabel: view.deployPlanLabel,
+      deployLabel: view.deployLabel,
+      closeLabel: view.closeLabel,
       actionsDisabled: counts.crit > 0 || stageBlocksActions,
     };
   }
 
-  function deployPlanTraceState(document, plan) {
+  function deployPlanTraceState(document, plan, options = {}) {
+    const view = deployViewForState(options.deployView);
     const steps = Array.isArray(plan?.plan_trace) && plan.plan_trace.length
       ? plan.plan_trace
       : [{
         node: null,
-        head: "DEPLOY TRACE UNAVAILABLE",
-        body: "mobkit/mobpacks/deploy did not return plan_trace.",
+        head: view.planUnavailableHead,
+        body: view.planUnavailableBody,
       }];
     const title = document?.mob_id || document?.name || "mobkit_flow";
     const subtitle = plan?.command || "";
     const packLabel = plan?.pack_path || "";
     return {
       steps,
-      eyebrow: "DEPLOY PLAN",
+      eyebrow: view.planEyebrow,
       title,
       subtitle,
       packLabel,
-      firstLabel: "first",
-      closeLabel: "×",
-      stepLabel: "step",
-      previousLabel: "‹",
-      nextLabel: "›",
+      firstLabel: view.planFirstLabel,
+      closeLabel: view.closeLabel,
+      stepLabel: view.planStepLabel,
+      previousLabel: view.planPreviousLabel,
+      nextLabel: view.planNextLabel,
     };
   }
 
-  function topRailState({ contract, deploySettings, stage, view, theme } = {}) {
+  function topRailState({ contract, deploySettings, stage, view, theme, deployView } = {}) {
+    const shell = deployViewForState(deployView);
     const inEditor = view === "editor";
-    const contractState = contract?.error ? "api error" : contract ? "api ready" : "loading";
+    const contractState = contract?.error ? shell.apiErrorLabel : contract ? shell.apiReadyLabel : shell.apiLoadingLabel;
     const deployCommand = contract?.deploy_settings?.command || "";
     const deploySurface = deploySettings?.surface || contract?.deploy_settings?.surfaces?.[0] || "";
     const deployActionsDisabled = stage !== "valid";
     const nextTheme = theme === "dark" ? "light" : "dark";
     return {
       inEditor,
-      brandLabel: "MobKit · Flow Editor",
-      flowsTabLabel: "FLOWS",
-      agentsTabLabel: "AGENTS",
-      mobStatusTitle: "Active mob configuration",
-      mobFileLabel: "mob.toml",
+      brandLabel: shell.brandLabel,
+      flowsTabLabel: shell.flowsTabLabel,
+      agentsTabLabel: shell.agentsTabLabel,
+      mobStatusTitle: shell.mobStatusTitle,
+      mobFileLabel: shell.mobFileLabel,
       contractState,
-      deployPrefixLabel: "deploy:",
+      deployPrefixLabel: shell.deployPrefixLabel,
       deployCommand,
       deploySurface,
-      flowsCrumbLabel: "flows",
-      crumbSeparator: "/",
-      planTraceLabel: "PLAN TRACE",
-      importLabel: "IMPORT",
-      validateLabel: "VALIDATE",
-      publishLabel: "PUBLISH",
-      deployPlanLabel: "DEPLOY PLAN",
-      deployLabel: "DEPLOY",
+      flowsCrumbLabel: shell.flowsCrumbLabel,
+      crumbSeparator: shell.crumbSeparator,
+      planTraceLabel: shell.planTraceLabel,
+      importLabel: shell.importLabel,
+      validateLabel: shell.validateLabel,
+      publishLabel: shell.publishLabel,
+      deployPlanLabel: shell.deployPlanLabel,
+      deployLabel: shell.deployLabel,
       deployActionsDisabled,
-      themeToggleTitle: `Switch to ${nextTheme} mode`,
-      themeToggleLabel: nextTheme === "light" ? "☾ dark" : "☀ light",
-      basicModeTitle: "Basic Editor",
-      basicModeLabel: "Basic",
-      graphModeTitle: "Graph Editor",
-      graphModeLabel: "Graph",
+      themeToggleTitle: `${shell.themeSwitchPrefix} ${nextTheme} ${shell.themeSwitchSuffix}`,
+      themeToggleLabel: nextTheme === "light" ? shell.darkThemeLabel : shell.lightThemeLabel,
+      basicModeTitle: shell.basicModeTitle,
+      basicModeLabel: shell.basicModeLabel,
+      graphModeTitle: shell.graphModeTitle,
+      graphModeLabel: shell.graphModeLabel,
     };
   }
 

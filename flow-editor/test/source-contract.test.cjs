@@ -104,6 +104,7 @@ assert.match(controller, /template:\s*graphTemplateSeedFromBlankMobpack\(blankMo
 assert.match(app, /<Tweaks[\s\S]*modelCatalog=\{catalogs\.models\}/, "deploy settings UI must receive MobKit model catalog via props");
 assert.match(app, /setDeploySettings\(nextCatalogs\.deployDefaults\)/, "app shell must hydrate deploy defaults from MobKit schema");
 assert.match(app, /setMobSettings\(nextCatalogs\.mobDefaults\)/, "app shell must hydrate mob settings defaults from MobKit schema");
+assert.match(controller, /mob_definition\?\.editor_deploy_view/, "controller plane must hydrate deploy/top-rail chrome from MobKit schema");
 assert.match(app, /MobKitFlowController\.reconcileFlowMemberSchemas/, "app shell must keep Basic/Graph member-step schema metadata synchronized with Agent definitions");
 assert.match(controller, /function reconcileFlowMemberSchemas/, "controller plane must own member/schema flow reconciliation");
 assert.match(agents, /MobKitFlowController\.renameSchemaDefinition/, "Agent editor must ask the controller plane to rename schemas and member schema refs");
@@ -611,8 +612,8 @@ assert.match(controller, /columns:\s*\[[\s\S]*label:\s*"NAME"[\s\S]*label:\s*"ST
 assert(!/flows\.length|disabled=\{!canCreate\}|title=\{canCreate \?|className=\{"flows-list__row"|f\.id === currentFlowId|>FLOWS<\/div>|>\+ NEW FLOW<\/button>|<span>NAME<\/span>|<span>TRIGGER<\/span>|<span>VERSION<\/span>|<span>STAGE<\/span>/.test((app.match(/function FlowsView[\s\S]*?function NewFlowModal/) || [""])[0]), "Flows view must not derive registry title, create affordance, column labels, or current row class locally");
 assert.match(app, /const handleDrySim = async \(\) => \{[\s\S]*MobKitFlowController\.deployDocument\(document, \{ execute: false \}\)[\s\S]*setDrySimPlan\(plan\)/, "Plan Trace must render a non-executing MobKit deploy plan, not a local simulation");
 assert.match(controller, /function deployPlanTraceState/, "controller plane must own deploy-plan trace display projection");
-assert.match(controller, /plan\?\.plan_trace[\s\S]*mobkit\/mobpacks\/deploy did not return plan_trace/, "controller plane must consume MobKit deploy plan_trace and own the unavailable-trace fallback");
-assert.match(src("overlays.jsx"), /MobKitFlowController\.deployPlanTraceState\(document, plan\)/, "Plan Trace overlay must render controller-projected deploy-plan state");
+assert.match(controller, /plan\?\.plan_trace[\s\S]*view\.planUnavailableHead[\s\S]*view\.planUnavailableBody/, "controller plane must consume MobKit deploy plan_trace and own the schema-backed unavailable-trace fallback");
+assert.match(src("overlays.jsx"), /MobKitFlowController\.deployPlanTraceState\(document, plan, \{ deployView \}\)/, "Plan Trace overlay must render controller-projected deploy-plan state from MobKit view chrome");
 assert.match(src("overlays.jsx"), /traceState\.eyebrow/, "Plan Trace overlay header must render through controller state");
 assert.match(src("overlays.jsx"), /traceState\.firstLabel/, "Plan Trace first action label must render through controller state");
 assert.match(src("overlays.jsx"), /traceState\.stepLabel/, "Plan Trace progress label must render through controller state");
@@ -660,7 +661,7 @@ assert.match(controller, /function deployErrorOutcome/, "controller plane must o
 assert.match(controller, /function sourceErrorOutcome/, "controller plane must own source export error diagnostic rows");
 assert.match(controller, /function validationSheetState/, "controller plane must own validation sheet severity counts and action enablement");
 assert.match(app, /<ValidateSheet[\s\S]*results=\{validationResults\}[\s\S]*stage=\{stage\}/, "validation sheet deploy actions must be gated by the authoritative authoring stage");
-assert.match(src("overlays.jsx"), /MobKitFlowController\.validationSheetState\(results, \{ stage \}\)/, "validation sheet must render controller-projected MobKit display row and stage state");
+assert.match(src("overlays.jsx"), /MobKitFlowController\.validationSheetState\(results, \{ stage, deployView \}\)/, "validation sheet must render controller-projected MobKit display row, stage, and view state");
 assert.match(controller, /function validationSheetState\(results, options = \{\}\)[\s\S]*stage !== "valid"[\s\S]*actionsDisabled: counts\.crit > 0 \|\| stageBlocksActions/, "controller plane must disable publish/deploy sheet actions unless validation stage is valid");
 assert.match(src("overlays.jsx"), /sheetState\.eyebrow/, "validation sheet header must render through controller state");
 assert.match(src("overlays.jsx"), /sheetState\.publishLabel/, "validation sheet publish action label must render through controller state");
@@ -789,9 +790,11 @@ assert(!/backendDefault\s*\|\|\s*["']session["']|trustPolicy\s*\|\|\s*["']permis
 assert.match(controller, /function topRailState/, "controller plane must own top-rail deploy/API display projection");
 assert.match(controller, /deployCommand = contract\?\.deploy_settings\?\.command \|\| "";/, "Top rail deploy command must stay blank until MobKit schema provides it");
 assert.match(controller, /deploySurface = deploySettings\?\.surface \|\| contract\?\.deploy_settings\?\.surfaces\?\.\[0\] \|\| "";/, "Top rail deploy surface must stay blank until schema-backed settings exist");
-assert.match(app, /MobKitFlowController\.topRailState\(\{ contract, deploySettings, stage, view, theme: t\.theme \}\)/, "Top rail must render controller-projected deploy/API display state");
+assert.match(app, /MobKitFlowController\.topRailState\(\{ contract, deploySettings, stage, view, theme: t\.theme, deployView: catalogs\.deployView \}\)/, "Top rail must render controller-projected deploy/API display state from MobKit view chrome");
 assert.match(app, /<TopRail[\s\S]*railState=\{shellState\}/, "Top rail must receive the shared controller-projected shell state");
 assert.match(app, /<ModeToggle[\s\S]*railState=\{shellState\}/, "Mode toggle labels must use the shared controller-projected shell state");
+assert.match(app, /<DrySim[\s\S]*deployView=\{catalogs\.deployView\}/, "Deploy plan overlay must receive schema-backed deploy view state");
+assert.match(app, /<ValidateSheet[\s\S]*deployView=\{catalogs\.deployView\}/, "Validation sheet must receive schema-backed deploy view state");
 assert.match(app, /railState\.brandLabel/, "Top rail brand label must render through controller state");
 assert.match(app, /railState\.planTraceLabel/, "Top rail deploy-plan trace label must render through controller state");
 assert.match(app, /railState\.themeToggleTitle/, "Top rail theme affordance title must render through controller state");

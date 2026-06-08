@@ -795,6 +795,45 @@ pub fn mobpack_schema_response() -> Value {
         "edit_schema_label": "Edit schema →",
         "empty_schema_hint": "No structured output. Agent returns free-form text."
     });
+    let editor_deploy_view = json!({
+        "brand_label": "MobKit · Flow Editor",
+        "flows_tab_label": "FLOWS",
+        "agents_tab_label": "AGENTS",
+        "mob_status_title": "Active mob configuration",
+        "mob_file_label": "mob.toml",
+        "api_error_label": "api error",
+        "api_ready_label": "api ready",
+        "api_loading_label": "loading",
+        "deploy_prefix_label": "deploy:",
+        "flows_crumb_label": "flows",
+        "crumb_separator": "/",
+        "plan_trace_label": "PLAN TRACE",
+        "import_label": "IMPORT",
+        "validate_label": "VALIDATE",
+        "publish_label": "PUBLISH",
+        "deploy_plan_label": "DEPLOY PLAN",
+        "deploy_label": "DEPLOY",
+        "theme_switch_prefix": "Switch to",
+        "theme_switch_suffix": "mode",
+        "dark_theme_label": "☾ dark",
+        "light_theme_label": "☀ light",
+        "basic_mode_title": "Basic Editor",
+        "basic_mode_label": "Basic",
+        "graph_mode_title": "Graph Editor",
+        "graph_mode_label": "Graph",
+        "validation_eyebrow": "VALIDATE · MobKit",
+        "validation_passed_label": "passed",
+        "validation_warnings_label": "warnings",
+        "validation_blocking_label": "blocking",
+        "close_label": "×",
+        "plan_eyebrow": "DEPLOY PLAN",
+        "plan_unavailable_head": "DEPLOY TRACE UNAVAILABLE",
+        "plan_unavailable_body": "mobkit/mobpacks/deploy did not return plan_trace.",
+        "plan_first_label": "first",
+        "plan_step_label": "step",
+        "plan_previous_label": "‹",
+        "plan_next_label": "›"
+    });
     let editor_basic_view = json!({
         "start_label": "START",
         "loop_badge": "LOOP",
@@ -954,6 +993,7 @@ pub fn mobpack_schema_response() -> Value {
         "dependency_modes": dependency_mode_values()
     });
     mob_definition["editor_agent_detail_view"] = editor_agent_detail_view;
+    mob_definition["editor_deploy_view"] = editor_deploy_view;
     json!({
         "schema_version": MOBPACK_SCHEMA_VERSION,
         "media_type": MOBPACK_MEDIA_TYPE,
@@ -15388,6 +15428,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["empty_schema_hint"],
             json!("No structured output. Agent returns free-form text.")
+        );
+        assert_eq!(
+            mob_definition["editor_deploy_view"]["brand_label"],
+            json!("MobKit · Flow Editor")
+        );
+        assert_eq!(
+            mob_definition["editor_deploy_view"]["deploy_label"],
+            json!("DEPLOY")
+        );
+        assert_eq!(
+            mob_definition["editor_deploy_view"]["validation_eyebrow"],
+            json!("VALIDATE · MobKit")
+        );
+        assert_eq!(
+            mob_definition["editor_deploy_view"]["plan_unavailable_body"],
+            json!("mobkit/mobpacks/deploy did not return plan_trace.")
         );
         assert_eq!(
             mob_definition["editor_schema_view"]["eyebrow"],

@@ -722,7 +722,7 @@ function App() {
     }
   };
 
-  const shellState = window.MobKitFlowController.topRailState({ contract, deploySettings, stage, view, theme: t.theme });
+  const shellState = window.MobKitFlowController.topRailState({ contract, deploySettings, stage, view, theme: t.theme, deployView: catalogs.deployView });
 
   return (
     <div className={"app density--" + t.density + " inspector--" + t.inspectorLayout + " view--" + view}>
@@ -901,8 +901,8 @@ function App() {
         />
       )}
 
-      <DrySim open={drySim} onClose={() => setDrySim(false)} onActiveStep={setActiveStepId} runKey={drySimKey} document={drySimDocument} plan={drySimPlan} />
-      <ValidateSheet open={validate} onClose={() => setValidate(false)} onPublish={handlePublish} onDeployPlan={handleDeployPlan} onDeployRun={handleDeployRun} results={validationResults} stage={stage} />
+      <DrySim open={drySim} onClose={() => setDrySim(false)} onActiveStep={setActiveStepId} runKey={drySimKey} document={drySimDocument} plan={drySimPlan} deployView={catalogs.deployView} />
+      <ValidateSheet open={validate} onClose={() => setValidate(false)} onPublish={handlePublish} onDeployPlan={handleDeployPlan} onDeployRun={handleDeployRun} results={validationResults} stage={stage} deployView={catalogs.deployView} />
       <SourceDrawer open={sourceOpen} onClose={clearSourceProjection} state={sourceDocument} sourceView={catalogs.sourceView} />
       <Tweaks
         t={t}

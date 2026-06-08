@@ -1,10 +1,10 @@
 /* global React */
 // Deploy plan trace, validate sheet, source drawer.
 
-function DrySim({ open, onClose, onActiveStep, runKey, document, plan }) {
+function DrySim({ open, onClose, onActiveStep, runKey, document, plan, deployView = null }) {
   const traceState = React.useMemo(() =>
-    window.MobKitFlowController.deployPlanTraceState(document, plan),
-    [document, plan]);
+    window.MobKitFlowController.deployPlanTraceState(document, plan, { deployView }),
+    [document, plan, deployView]);
   const [idx, setIdx] = React.useState(0);
   const bodyRef = React.useRef(null);
 
@@ -64,9 +64,9 @@ function DrySim({ open, onClose, onActiveStep, runKey, document, plan }) {
   );
 }
 
-function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, results, stage }) {
+function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, results, stage, deployView = null }) {
   if (!open) return null;
-  const sheetState = window.MobKitFlowController.validationSheetState(results, { stage });
+  const sheetState = window.MobKitFlowController.validationSheetState(results, { stage, deployView });
   return (
     <div className="validate">
       <div className="validate__head">

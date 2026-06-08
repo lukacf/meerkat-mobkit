@@ -9,6 +9,84 @@ assert.deepEqual(controller.emptyAuthoringFlowState(), {
   name: "",
   steps: [],
 });
+const TEST_DEPLOY_VIEW_SCHEMA = {
+  brand_label: "MobKit · Flow Editor",
+  flows_tab_label: "FLOWS",
+  agents_tab_label: "AGENTS",
+  mob_status_title: "Active mob configuration",
+  mob_file_label: "mob.toml",
+  api_error_label: "api error",
+  api_ready_label: "api ready",
+  api_loading_label: "loading",
+  deploy_prefix_label: "deploy:",
+  flows_crumb_label: "flows",
+  crumb_separator: "/",
+  plan_trace_label: "PLAN TRACE",
+  import_label: "IMPORT",
+  validate_label: "VALIDATE",
+  publish_label: "PUBLISH",
+  deploy_plan_label: "DEPLOY PLAN",
+  deploy_label: "DEPLOY",
+  theme_switch_prefix: "Switch to",
+  theme_switch_suffix: "mode",
+  dark_theme_label: "☾ dark",
+  light_theme_label: "☀ light",
+  basic_mode_title: "Basic Editor",
+  basic_mode_label: "Basic",
+  graph_mode_title: "Graph Editor",
+  graph_mode_label: "Graph",
+  validation_eyebrow: "VALIDATE · MobKit",
+  validation_passed_label: "passed",
+  validation_warnings_label: "warnings",
+  validation_blocking_label: "blocking",
+  close_label: "×",
+  plan_eyebrow: "DEPLOY PLAN",
+  plan_unavailable_head: "DEPLOY TRACE UNAVAILABLE",
+  plan_unavailable_body: "mobkit/mobpacks/deploy did not return plan_trace.",
+  plan_first_label: "first",
+  plan_step_label: "step",
+  plan_previous_label: "‹",
+  plan_next_label: "›",
+};
+const TEST_DEPLOY_VIEW = {
+  brandLabel: "MobKit · Flow Editor",
+  flowsTabLabel: "FLOWS",
+  agentsTabLabel: "AGENTS",
+  mobStatusTitle: "Active mob configuration",
+  mobFileLabel: "mob.toml",
+  apiErrorLabel: "api error",
+  apiReadyLabel: "api ready",
+  apiLoadingLabel: "loading",
+  deployPrefixLabel: "deploy:",
+  flowsCrumbLabel: "flows",
+  crumbSeparator: "/",
+  planTraceLabel: "PLAN TRACE",
+  importLabel: "IMPORT",
+  validateLabel: "VALIDATE",
+  publishLabel: "PUBLISH",
+  deployPlanLabel: "DEPLOY PLAN",
+  deployLabel: "DEPLOY",
+  themeSwitchPrefix: "Switch to",
+  themeSwitchSuffix: "mode",
+  darkThemeLabel: "☾ dark",
+  lightThemeLabel: "☀ light",
+  basicModeTitle: "Basic Editor",
+  basicModeLabel: "Basic",
+  graphModeTitle: "Graph Editor",
+  graphModeLabel: "Graph",
+  validationEyebrow: "VALIDATE · MobKit",
+  validationPassedLabel: "passed",
+  validationWarningsLabel: "warnings",
+  validationBlockingLabel: "blocking",
+  closeLabel: "×",
+  planEyebrow: "DEPLOY PLAN",
+  planUnavailableHead: "DEPLOY TRACE UNAVAILABLE",
+  planUnavailableBody: "mobkit/mobpacks/deploy did not return plan_trace.",
+  planFirstLabel: "first",
+  planStepLabel: "step",
+  planPreviousLabel: "‹",
+  planNextLabel: "›",
+};
 const TEST_SCHEMA = {
   deploy_settings: {
     command: "rkat mob deploy",
@@ -32,6 +110,7 @@ const TEST_SCHEMA = {
     },
   },
   mob_definition: {
+    editor_deploy_view: TEST_DEPLOY_VIEW_SCHEMA,
     mob_settings: {
       defaults: {
         orchestrator: "",
@@ -79,6 +158,7 @@ assert.deepEqual(controller.topRailState({
   stage: "draft",
   view: "flows",
   theme: "light",
+  deployView: TEST_DEPLOY_VIEW,
 }), {
   inEditor: false,
   brandLabel: "MobKit · Flow Editor",
@@ -112,6 +192,7 @@ assert.deepEqual(controller.topRailState({
   stage: "valid",
   view: "editor",
   theme: "dark",
+  deployView: TEST_DEPLOY_VIEW,
 }), {
   inEditor: true,
   brandLabel: "MobKit · Flow Editor",
@@ -144,6 +225,7 @@ assert.equal(controller.topRailState({
   deploySettings: { surface: "" },
   stage: "published",
   view: "editor",
+  deployView: TEST_DEPLOY_VIEW,
 }).contractState, "api error");
 
 assert.equal(controller.buildBlankDocument, undefined, "blank mobpack documents must come from MobKit schema, not a local builder");
@@ -498,6 +580,7 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       edit_schema_label: "Edit schema →",
       empty_schema_hint: "No structured output. Agent returns free-form text.",
     },
+    editor_deploy_view: TEST_DEPLOY_VIEW_SCHEMA,
     editor_schema_view: {
       eyebrow: "OUTPUT SCHEMA",
       description_title: "DESCRIPTION",
@@ -657,6 +740,7 @@ assert.deepEqual(hydratedCatalogs.agentDetailView, {
   editSchemaLabel: "Edit schema →",
   emptySchemaHint: "No structured output. Agent returns free-form text.",
 });
+assert.deepEqual(hydratedCatalogs.deployView, TEST_DEPLOY_VIEW);
 assert.deepEqual(hydratedCatalogs.schemaView, {
   eyebrow: "OUTPUT SCHEMA",
   descriptionTitle: "DESCRIPTION",
@@ -3663,7 +3747,7 @@ assert.deepEqual(controller.deployPlanTraceState({ mob_id: "deploy_me" }, {
     { node: "step_1", head: "MOBPACK · deploy_me", body: "ready" },
     { node: "step_2", head: "VALIDATION · ACCEPTED", body: "ok" },
   ],
-}), {
+}, { deployView: TEST_DEPLOY_VIEW }), {
   steps: [
     { node: "step_1", head: "MOBPACK · deploy_me", body: "ready" },
     { node: "step_2", head: "VALIDATION · ACCEPTED", body: "ok" },
@@ -3678,7 +3762,7 @@ assert.deepEqual(controller.deployPlanTraceState({ mob_id: "deploy_me" }, {
   previousLabel: "‹",
   nextLabel: "›",
 });
-assert.deepEqual(controller.deployPlanTraceState({ name: "fallback mob" }, {}), {
+assert.deepEqual(controller.deployPlanTraceState({ name: "fallback mob" }, {}, { deployView: TEST_DEPLOY_VIEW }), {
   steps: [{
     node: null,
     head: "DEPLOY TRACE UNAVAILABLE",
@@ -3724,7 +3808,7 @@ assert.deepEqual(controller.validationSheetState([
   { kind: "warn", head: "signature" },
   { kind: "crit", head: "missing profile" },
   { kind: "", head: "unclassified" },
-]), {
+], { deployView: TEST_DEPLOY_VIEW }), {
   rows: [
     { kind: "ok", head: "mob" },
     { kind: "warn", head: "signature" },
@@ -3740,10 +3824,10 @@ assert.deepEqual(controller.validationSheetState([
   closeLabel: "×",
   actionsDisabled: true,
 });
-assert.equal(controller.validationSheetState([{ kind: "ok" }, { kind: "warn" }]).actionsDisabled, false);
-assert.equal(controller.validationSheetState([{ kind: "ok" }], { stage: "draft" }).actionsDisabled, true);
-assert.equal(controller.validationSheetState([{ kind: "ok" }], { stage: "valid" }).actionsDisabled, false);
-assert.equal(controller.validationSheetState([{ kind: "crit" }], { stage: "valid" }).actionsDisabled, true);
+assert.equal(controller.validationSheetState([{ kind: "ok" }, { kind: "warn" }], { deployView: TEST_DEPLOY_VIEW }).actionsDisabled, false);
+assert.equal(controller.validationSheetState([{ kind: "ok" }], { stage: "draft", deployView: TEST_DEPLOY_VIEW }).actionsDisabled, true);
+assert.equal(controller.validationSheetState([{ kind: "ok" }], { stage: "valid", deployView: TEST_DEPLOY_VIEW }).actionsDisabled, false);
+assert.equal(controller.validationSheetState([{ kind: "crit" }], { stage: "valid", deployView: TEST_DEPLOY_VIEW }).actionsDisabled, true);
 
 assert.deepEqual(controller.sourceErrorOutcome(new Error("missing toml")).validationRows[0], {
   kind: "crit",
