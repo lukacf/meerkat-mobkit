@@ -3870,6 +3870,12 @@
     };
   }
 
+  function graphCanvasInstances({ instances = [] } = {}) {
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    const sourceFileNode = graphSourceFileNode({ instances: sourceInstances });
+    return sourceFileNode ? [sourceFileNode, ...sourceInstances] : sourceInstances;
+  }
+
   function graphGateCanvasState({ inst, edges = [] } = {}) {
     const gateKind = String(inst?.gateKind || "");
     const glyph = gateKind === "fork" ? "‖"
@@ -8037,6 +8043,7 @@
     graphInstanceControlState,
     graphToolTagClass,
     graphSourceFileNode,
+    graphCanvasInstances,
     graphNodeCanvasState,
     graphGateCanvasState,
     graphEdgeCanvasState,

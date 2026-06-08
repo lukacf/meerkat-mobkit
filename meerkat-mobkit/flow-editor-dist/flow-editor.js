@@ -3911,6 +3911,12 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function graphCanvasInstances({ instances = [] } = {}) {
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    const sourceFileNode = graphSourceFileNode({ instances: sourceInstances });
+    return sourceFileNode ? [sourceFileNode, ...sourceInstances] : sourceInstances;
+  }
+
   function graphGateCanvasState({ inst, edges = [] } = {}) {
     const gateKind = String(inst?.gateKind || "");
     const glyph = gateKind === "fork" ? "‖"
@@ -8078,6 +8084,7 @@ window.MOBKIT_BOOT = {
     graphInstanceControlState,
     graphToolTagClass,
     graphSourceFileNode,
+    graphCanvasInstances,
     graphNodeCanvasState,
     graphGateCanvasState,
     graphEdgeCanvasState,
@@ -9219,8 +9226,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       selectEdge(edge.id);
     } }, /* @__PURE__ */ React.createElement("path", { d, className: "edge-hit" }), /* @__PURE__ */ React.createElement("path", { d, className: edgeState.lineClass, markerEnd: edgeState.markerEnd }), labelEl);
   });
-  const sourceFileNode = window.MobKitFlowController.graphSourceFileNode({ instances: state.instances });
-  const canvasInstances = sourceFileNode ? [sourceFileNode, ...state.instances] : state.instances;
+  const canvasInstances = window.MobKitFlowController.graphCanvasInstances({ instances: state.instances });
   const nodeEls = canvasInstances.map((inst) => {
     if (inst.isGate) {
       return /* @__PURE__ */ React.createElement(

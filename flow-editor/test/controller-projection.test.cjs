@@ -4528,6 +4528,13 @@ assert.deepEqual(graphSourceFileNode, {
 assert.equal(controller.graphSourceFileNode({
   instances: [{ id: "source_mob_toml", label: "mob.toml", isTerminal: true }],
 }), null);
+assert.deepEqual(controller.graphCanvasInstances({
+  instances: graphProjectionInstances,
+}).map((instance) => instance.id), ["source_mob_toml", "n_writer", "n_review", "n_done"]);
+const existingSourceInstances = [{ id: "source_mob_toml", label: "mob.toml", isTerminal: true }];
+assert.equal(controller.graphCanvasInstances({
+  instances: existingSourceInstances,
+}), existingSourceInstances);
 assert.deepEqual(controller.graphGateCanvasState({
   inst: { id: "join_1", gateKind: "join", collection: "quorum", quorum: { n: 2, m: 3 } },
   edges: [{ to: "join_1" }, { to: "join_1" }],

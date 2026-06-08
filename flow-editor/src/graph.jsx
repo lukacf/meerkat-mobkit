@@ -477,8 +477,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     );
   });
 
-  const sourceFileNode = window.MobKitFlowController.graphSourceFileNode({ instances: state.instances });
-  const canvasInstances = sourceFileNode ? [sourceFileNode, ...state.instances] : state.instances;
+  const canvasInstances = window.MobKitFlowController.graphCanvasInstances({ instances: state.instances });
   const nodeEls = canvasInstances.map(inst => {
     if (inst.isGate) {
       return (
