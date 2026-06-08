@@ -3482,6 +3482,8 @@ fn frame_from_console_event(
     let identity = apply_namespace(&envelope.identity, &entry.identity_namespace);
     let dedupe_key = reasoning_payload_text(&event_type, &payload)
         .map(|reasoning_text| {
+            // Reasoning hashes assume console events carry full/cumulative text; if deltas become
+            // fragmentary, key by a stable reasoning segment id or emit only the complete frame.
             let turn_scope = interaction_id
                 .as_deref()
                 .or(turn_id.as_deref())
