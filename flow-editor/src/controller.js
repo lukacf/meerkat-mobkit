@@ -960,9 +960,14 @@
       profileNoneLabel: String(view.profile_none_label || "").trim(),
       autoWireLabel: String(view.auto_wire_label || "").trim(),
       autoWireOptions: settingsViewOptionsFromSchema(view.auto_wire_options),
+      roleWiringLabel: String(view.role_wiring_label || "").trim(),
+      roleWiringAddLabel: String(view.role_wiring_add_label || "").trim(),
       defaultBackendLabel: String(view.default_backend_label || "").trim(),
       externalBaseLabel: String(view.external_base_label || "").trim(),
       externalBasePlaceholder: String(view.external_base_placeholder || "").trim(),
+      advancedLabel: String(view.advanced_label || "").trim(),
+      advancedObjectRequiredError: String(view.advanced_object_required_error || "").trim(),
+      advancedInvalidJsonError: String(view.advanced_invalid_json_error || "").trim(),
       deployTitle: String(view.deploy_title || "").trim(),
       surfaceLabel: String(view.surface_label || "").trim(),
       trustLabel: String(view.trust_label || "").trim(),
@@ -1021,9 +1026,14 @@
       profileNoneLabel: String(view?.profileNoneLabel || ""),
       autoWireLabel: String(view?.autoWireLabel || ""),
       autoWireOptions: Array.isArray(view?.autoWireOptions) ? view.autoWireOptions : [],
+      roleWiringLabel: String(view?.roleWiringLabel || ""),
+      roleWiringAddLabel: String(view?.roleWiringAddLabel || ""),
       defaultBackendLabel: String(view?.defaultBackendLabel || ""),
       externalBaseLabel: String(view?.externalBaseLabel || ""),
       externalBasePlaceholder: String(view?.externalBasePlaceholder || ""),
+      advancedLabel: String(view?.advancedLabel || ""),
+      advancedObjectRequiredError: String(view?.advancedObjectRequiredError || ""),
+      advancedInvalidJsonError: String(view?.advancedInvalidJsonError || ""),
       deployTitle: String(view?.deployTitle || ""),
       surfaceLabel: String(view?.surfaceLabel || ""),
       trustLabel: String(view?.trustLabel || ""),
@@ -6904,9 +6914,14 @@
       orchestratorLabel: view.orchestratorLabel,
       autoWireLabel: view.autoWireLabel,
       autoWireOptions: view.autoWireOptions,
+      roleWiringLabel: view.roleWiringLabel,
+      roleWiringAddLabel: view.roleWiringAddLabel,
       defaultBackendLabel: view.defaultBackendLabel,
       externalBaseLabel: view.externalBaseLabel,
       externalBasePlaceholder: view.externalBasePlaceholder,
+      advancedLabel: view.advancedLabel,
+      advancedObjectRequiredError: view.advancedObjectRequiredError,
+      advancedInvalidJsonError: view.advancedInvalidJsonError,
       deployTitle: view.deployTitle,
       surfaceLabel: view.surfaceLabel,
       trustLabel: view.trustLabel,
@@ -7695,13 +7710,14 @@
       .filter((rule) => rule.a && rule.b);
   }
 
-  function mobRoleWiringEditorState(value, profileOptions) {
+  function mobRoleWiringEditorState(value, profileOptions, settingsView = null) {
+    const view = settingsViewForState(settingsView);
     const options = Array.isArray(profileOptions) ? profileOptions : [];
     const wiring = normalizeRoleWiring(value);
     return {
-      label: "Role wiring",
+      label: view.roleWiringLabel,
       countLabel: String(wiring.length),
-      addLabel: "+ rule",
+      addLabel: view.roleWiringAddLabel,
       addDisabled: !options.length,
       options,
       wiring,
@@ -7747,22 +7763,24 @@
     ]);
   }
 
-  function advancedMobSettingsEditorState(value) {
+  function advancedMobSettingsEditorState(value, settingsView = null) {
+    const view = settingsViewForState(settingsView);
     return {
-      label: "Advanced",
+      label: view.advancedLabel,
       text: JSON.stringify(value || {}, null, 2),
     };
   }
 
-  function advancedMobSettingsDraftPatch(text) {
+  function advancedMobSettingsDraftPatch(text, settingsView = null) {
+    const view = settingsViewForState(settingsView);
     try {
       const parsed = String(text || "").trim() ? JSON.parse(String(text)) : {};
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        return { ok: false, error: "object required", value: null };
+        return { ok: false, error: view.advancedObjectRequiredError, value: null };
       }
       return { ok: true, error: "", value: normalizeMobSettings({ advanced: parsed }).advanced };
     } catch (err) {
-      return { ok: false, error: err?.message || "invalid JSON", value: null };
+      return { ok: false, error: err?.message || view.advancedInvalidJsonError, value: null };
     }
   }
 

@@ -926,6 +926,11 @@ pub fn mobpack_schema_response() -> Value {
         { "value": "no", "label": "No" },
         { "value": "yes", "label": "Yes" }
     ]);
+    editor_settings_view["role_wiring_label"] = json!("Role wiring");
+    editor_settings_view["role_wiring_add_label"] = json!("+ rule");
+    editor_settings_view["advanced_label"] = json!("Advanced");
+    editor_settings_view["advanced_object_required_error"] = json!("object required");
+    editor_settings_view["advanced_invalid_json_error"] = json!("invalid JSON");
     editor_settings_view["realm_options"] = json!([
         { "value": "isolated", "label": "Isolated" },
         { "value": "shared", "label": "Shared" }
@@ -15579,6 +15584,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_settings_view"]["inspector_layout_options"][0]["label"],
             json!("Right")
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["role_wiring_add_label"],
+            json!("+ rule")
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["advanced_object_required_error"],
+            json!("object required")
         );
         assert_eq!(
             mob_definition["editor_schema_view"]["eyebrow"],

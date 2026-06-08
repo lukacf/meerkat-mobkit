@@ -1167,6 +1167,7 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
         <RoleWiringEditor
           value={mobSettings.roleWiring || []}
           profileOptions={controlState.profileChoices}
+          settingsView={settingsView}
           onChange={(roleWiring) => setMobField("roleWiring", roleWiring)}
         />
         <TweakSelect label={controlState.defaultBackendLabel} value={mobSettings.backendDefault || ""} onChange={v => setMobField("backendDefault", v)}
@@ -1176,6 +1177,7 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
         )}
         <AdvancedMobSettingsEditor
           value={mobSettings.advanced || {}}
+          settingsView={settingsView}
           onChange={(advanced) => setMobField("advanced", advanced)}
         />
       </TweakSection>
@@ -1212,8 +1214,8 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
   );
 }
 
-function RoleWiringEditor({ value, profileOptions, onChange }) {
-  const wiringState = window.MobKitFlowController.mobRoleWiringEditorState(value, profileOptions);
+function RoleWiringEditor({ value, profileOptions, settingsView, onChange }) {
+  const wiringState = window.MobKitFlowController.mobRoleWiringEditorState(value, profileOptions, settingsView);
   const updateRule = (index, patch) => {
     onChange(window.MobKitFlowController.mobRoleWiringUpdatePatch(wiringState.wiring, index, patch, wiringState.options));
   };
@@ -1247,8 +1249,8 @@ function RoleWiringEditor({ value, profileOptions, onChange }) {
   );
 }
 
-function AdvancedMobSettingsEditor({ value, onChange }) {
-  const advancedState = window.MobKitFlowController.advancedMobSettingsEditorState(value);
+function AdvancedMobSettingsEditor({ value, settingsView, onChange }) {
+  const advancedState = window.MobKitFlowController.advancedMobSettingsEditorState(value, settingsView);
   const [draft, setDraft] = React.useState(advancedState.text);
   const [error, setError] = React.useState("");
   React.useEffect(() => {
@@ -1257,7 +1259,7 @@ function AdvancedMobSettingsEditor({ value, onChange }) {
   }, [advancedState.text]);
   const commit = (next) => {
     setDraft(next);
-    const result = window.MobKitFlowController.advancedMobSettingsDraftPatch(next);
+    const result = window.MobKitFlowController.advancedMobSettingsDraftPatch(next, settingsView);
     setError(result.error || "");
     if (result.ok) onChange(result.value);
   };

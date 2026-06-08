@@ -170,9 +170,14 @@ const TEST_SETTINGS_VIEW_SCHEMA = {
   profile_none_label: "none",
   auto_wire_label: "Auto wire",
   auto_wire_options: [{ value: "no", label: "No" }, { value: "yes", label: "Yes" }],
+  role_wiring_label: "Role wiring",
+  role_wiring_add_label: "+ rule",
   default_backend_label: "Default backend",
   external_base_label: "External base",
   external_base_placeholder: "http://127.0.0.1:9000",
+  advanced_label: "Advanced",
+  advanced_object_required_error: "object required",
+  advanced_invalid_json_error: "invalid JSON",
   deploy_title: "Deploy",
   surface_label: "Surface",
   trust_label: "Trust",
@@ -219,9 +224,14 @@ const TEST_SETTINGS_VIEW = {
   profileNoneLabel: "none",
   autoWireLabel: "Auto wire",
   autoWireOptions: [{ value: "no", label: "No" }, { value: "yes", label: "Yes" }],
+  roleWiringLabel: "Role wiring",
+  roleWiringAddLabel: "+ rule",
   defaultBackendLabel: "Default backend",
   externalBaseLabel: "External base",
   externalBasePlaceholder: "http://127.0.0.1:9000",
+  advancedLabel: "Advanced",
+  advancedObjectRequiredError: "object required",
+  advancedInvalidJsonError: "invalid JSON",
   deployTitle: "Deploy",
   surfaceLabel: "Surface",
   trustLabel: "Trust",
@@ -7154,7 +7164,11 @@ assert.equal(controller.mobSettingsPatch(catalogedMob, { backendDefault: "" }, {
 
 const roleRules = [{ a: "planner", b: "coder" }, { a: "coder", b: "reviewer" }];
 assert.deepEqual(
-  controller.mobRoleWiringEditorState([{ a: " planner ", b: "coder" }, { a: "", b: "ignored" }], [{ value: "planner", label: "Planner" }, { value: "coder", label: "Coder" }]),
+  controller.mobRoleWiringEditorState(
+    [{ a: " planner ", b: "coder" }, { a: "", b: "ignored" }],
+    [{ value: "planner", label: "Planner" }, { value: "coder", label: "Coder" }],
+    TEST_SETTINGS_VIEW,
+  ),
   {
     label: "Role wiring",
     countLabel: "1",
@@ -7164,7 +7178,7 @@ assert.deepEqual(
     wiring: [{ a: "planner", b: "coder" }],
   },
 );
-assert.equal(controller.mobRoleWiringEditorState([], []).addDisabled, true);
+assert.equal(controller.mobRoleWiringEditorState([], [], TEST_SETTINGS_VIEW).addDisabled, true);
 const roleOptions = [{ value: "planner" }, { value: "coder" }, { value: "reviewer" }];
 assert.deepEqual(
   controller.mobRoleWiringUpdatePatch(roleRules, 1, { b: "planner" }, roleOptions),
@@ -7183,11 +7197,11 @@ assert.deepEqual(
   [{ a: "planner", b: "coder" }, { a: "coder", b: "reviewer" }, { a: "reviewer", b: "planner" }],
 );
 
-assert.deepEqual(controller.advancedMobSettingsEditorState({ limits: { max_members: 3 } }), {
+assert.deepEqual(controller.advancedMobSettingsEditorState({ limits: { max_members: 3 } }, TEST_SETTINGS_VIEW), {
   label: "Advanced",
   text: '{\n  "limits": {\n    "max_members": 3\n  }\n}',
 });
-const advancedOk = controller.advancedMobSettingsDraftPatch('{"limits":{"max_members":3},"spawnPolicy":{"mode":"manual"}}');
+const advancedOk = controller.advancedMobSettingsDraftPatch('{"limits":{"max_members":3},"spawnPolicy":{"mode":"manual"}}', TEST_SETTINGS_VIEW);
 assert.equal(advancedOk.ok, true);
 assert.deepEqual(advancedOk.value, {
   topology: null,
@@ -7196,8 +7210,8 @@ assert.deepEqual(advancedOk.value, {
   spawnPolicy: { mode: "manual" },
   eventRouter: null,
 });
-assert.equal(controller.advancedMobSettingsDraftPatch("[]").error, "object required");
-assert.equal(controller.advancedMobSettingsDraftPatch("{").ok, false);
+assert.equal(controller.advancedMobSettingsDraftPatch("[]", TEST_SETTINGS_VIEW).error, "object required");
+assert.equal(controller.advancedMobSettingsDraftPatch("{", TEST_SETTINGS_VIEW).ok, false);
 
 const enumField = { type: "string", enumValues: [] };
 assert.deepEqual(controller.schemaLikeFieldTypePatch(enumField, "enum", graphShapeContract), { type: "enum", enumValues: ["value"] });

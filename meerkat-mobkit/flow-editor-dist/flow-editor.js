@@ -993,9 +993,14 @@ window.MOBKIT_BOOT = {
       profileNoneLabel: String(view.profile_none_label || "").trim(),
       autoWireLabel: String(view.auto_wire_label || "").trim(),
       autoWireOptions: settingsViewOptionsFromSchema(view.auto_wire_options),
+      roleWiringLabel: String(view.role_wiring_label || "").trim(),
+      roleWiringAddLabel: String(view.role_wiring_add_label || "").trim(),
       defaultBackendLabel: String(view.default_backend_label || "").trim(),
       externalBaseLabel: String(view.external_base_label || "").trim(),
       externalBasePlaceholder: String(view.external_base_placeholder || "").trim(),
+      advancedLabel: String(view.advanced_label || "").trim(),
+      advancedObjectRequiredError: String(view.advanced_object_required_error || "").trim(),
+      advancedInvalidJsonError: String(view.advanced_invalid_json_error || "").trim(),
       deployTitle: String(view.deploy_title || "").trim(),
       surfaceLabel: String(view.surface_label || "").trim(),
       trustLabel: String(view.trust_label || "").trim(),
@@ -1054,9 +1059,14 @@ window.MOBKIT_BOOT = {
       profileNoneLabel: String(view?.profileNoneLabel || ""),
       autoWireLabel: String(view?.autoWireLabel || ""),
       autoWireOptions: Array.isArray(view?.autoWireOptions) ? view.autoWireOptions : [],
+      roleWiringLabel: String(view?.roleWiringLabel || ""),
+      roleWiringAddLabel: String(view?.roleWiringAddLabel || ""),
       defaultBackendLabel: String(view?.defaultBackendLabel || ""),
       externalBaseLabel: String(view?.externalBaseLabel || ""),
       externalBasePlaceholder: String(view?.externalBasePlaceholder || ""),
+      advancedLabel: String(view?.advancedLabel || ""),
+      advancedObjectRequiredError: String(view?.advancedObjectRequiredError || ""),
+      advancedInvalidJsonError: String(view?.advancedInvalidJsonError || ""),
       deployTitle: String(view?.deployTitle || ""),
       surfaceLabel: String(view?.surfaceLabel || ""),
       trustLabel: String(view?.trustLabel || ""),
@@ -6937,9 +6947,14 @@ window.MOBKIT_BOOT = {
       orchestratorLabel: view.orchestratorLabel,
       autoWireLabel: view.autoWireLabel,
       autoWireOptions: view.autoWireOptions,
+      roleWiringLabel: view.roleWiringLabel,
+      roleWiringAddLabel: view.roleWiringAddLabel,
       defaultBackendLabel: view.defaultBackendLabel,
       externalBaseLabel: view.externalBaseLabel,
       externalBasePlaceholder: view.externalBasePlaceholder,
+      advancedLabel: view.advancedLabel,
+      advancedObjectRequiredError: view.advancedObjectRequiredError,
+      advancedInvalidJsonError: view.advancedInvalidJsonError,
       deployTitle: view.deployTitle,
       surfaceLabel: view.surfaceLabel,
       trustLabel: view.trustLabel,
@@ -7728,13 +7743,14 @@ window.MOBKIT_BOOT = {
       .filter((rule) => rule.a && rule.b);
   }
 
-  function mobRoleWiringEditorState(value, profileOptions) {
+  function mobRoleWiringEditorState(value, profileOptions, settingsView = null) {
+    const view = settingsViewForState(settingsView);
     const options = Array.isArray(profileOptions) ? profileOptions : [];
     const wiring = normalizeRoleWiring(value);
     return {
-      label: "Role wiring",
+      label: view.roleWiringLabel,
       countLabel: String(wiring.length),
-      addLabel: "+ rule",
+      addLabel: view.roleWiringAddLabel,
       addDisabled: !options.length,
       options,
       wiring,
@@ -7780,22 +7796,24 @@ window.MOBKIT_BOOT = {
     ]);
   }
 
-  function advancedMobSettingsEditorState(value) {
+  function advancedMobSettingsEditorState(value, settingsView = null) {
+    const view = settingsViewForState(settingsView);
     return {
-      label: "Advanced",
+      label: view.advancedLabel,
       text: JSON.stringify(value || {}, null, 2),
     };
   }
 
-  function advancedMobSettingsDraftPatch(text) {
+  function advancedMobSettingsDraftPatch(text, settingsView = null) {
+    const view = settingsViewForState(settingsView);
     try {
       const parsed = String(text || "").trim() ? JSON.parse(String(text)) : {};
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        return { ok: false, error: "object required", value: null };
+        return { ok: false, error: view.advancedObjectRequiredError, value: null };
       }
       return { ok: true, error: "", value: normalizeMobSettings({ advanced: parsed }).advanced };
     } catch (err) {
-      return { ok: false, error: err?.message || "invalid JSON", value: null };
+      return { ok: false, error: err?.message || view.advancedInvalidJsonError, value: null };
     }
   }
 
@@ -12525,6 +12543,7 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     {
       value: mobSettings.roleWiring || [],
       profileOptions: controlState.profileChoices,
+      settingsView,
       onChange: (roleWiring) => setMobField("roleWiring", roleWiring)
     }
   ), /* @__PURE__ */ React.createElement(
@@ -12539,6 +12558,7 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     AdvancedMobSettingsEditor,
     {
       value: mobSettings.advanced || {},
+      settingsView,
       onChange: (advanced) => setMobField("advanced", advanced)
     }
   )), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.deployTitle }, /* @__PURE__ */ React.createElement(
@@ -12591,8 +12611,8 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     }
   )));
 }
-function RoleWiringEditor({ value, profileOptions, onChange }) {
-  const wiringState = window.MobKitFlowController.mobRoleWiringEditorState(value, profileOptions);
+function RoleWiringEditor({ value, profileOptions, settingsView, onChange }) {
+  const wiringState = window.MobKitFlowController.mobRoleWiringEditorState(value, profileOptions, settingsView);
   const updateRule = (index, patch) => {
     onChange(window.MobKitFlowController.mobRoleWiringUpdatePatch(wiringState.wiring, index, patch, wiringState.options));
   };
@@ -12604,8 +12624,8 @@ function RoleWiringEditor({ value, profileOptions, onChange }) {
   };
   return /* @__PURE__ */ React.createElement("div", { className: "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, wiringState.label), /* @__PURE__ */ React.createElement("span", null, wiringState.countLabel)), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 6 } }, wiringState.wiring.map((rule, index) => /* @__PURE__ */ React.createElement("div", { key: `${rule.a}:${rule.b}:${index}`, style: { display: "grid", gridTemplateColumns: "1fr 1fr 26px", gap: 6 } }, /* @__PURE__ */ React.createElement("select", { className: "twk-field", value: rule.a, onChange: (e) => updateRule(index, { a: e.target.value }) }, wiringState.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "twk-field", value: rule.b, onChange: (e) => updateRule(index, { b: e.target.value }) }, wiringState.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("button", { className: "twk-field", style: { padding: 0 }, type: "button", onClick: () => removeRule(index) }, "\xD7"))), /* @__PURE__ */ React.createElement("button", { className: "twk-field", type: "button", disabled: wiringState.addDisabled, onClick: addRule }, wiringState.addLabel)));
 }
-function AdvancedMobSettingsEditor({ value, onChange }) {
-  const advancedState = window.MobKitFlowController.advancedMobSettingsEditorState(value);
+function AdvancedMobSettingsEditor({ value, settingsView, onChange }) {
+  const advancedState = window.MobKitFlowController.advancedMobSettingsEditorState(value, settingsView);
   const [draft, setDraft] = React.useState(advancedState.text);
   const [error, setError] = React.useState("");
   React.useEffect(() => {
@@ -12614,7 +12634,7 @@ function AdvancedMobSettingsEditor({ value, onChange }) {
   }, [advancedState.text]);
   const commit = (next) => {
     setDraft(next);
-    const result = window.MobKitFlowController.advancedMobSettingsDraftPatch(next);
+    const result = window.MobKitFlowController.advancedMobSettingsDraftPatch(next, settingsView);
     setError(result.error || "");
     if (result.ok) onChange(result.value);
   };
