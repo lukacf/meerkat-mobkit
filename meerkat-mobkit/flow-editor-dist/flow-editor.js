@@ -10730,6 +10730,7 @@ function App() {
   const hydratingDocumentRef = React.useRef(false);
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const canCreateAuthoring = !!catalogs.contractMeta.loaded && !contract?.error;
+  const deployContractLoaded = !!catalogs.contractMeta.loaded;
   React.useEffect(() => {
     document.documentElement.dataset.ccVariant = "rams";
     document.documentElement.dataset.ccTheme = t.theme || "light";
@@ -10737,6 +10738,11 @@ function App() {
   React.useEffect(() => {
     let cancelled = false;
     setDeployCommandPreview("");
+    if (!deployContractLoaded) {
+      return () => {
+        cancelled = true;
+      };
+    }
     window.MobKitFlowController.deployCommandPreview(deploySettings, {
       packPath: "<pack.mobpack>",
       prompt: deploySettings.prompt || "<prompt>"
@@ -10752,7 +10758,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [deploySettings]);
+  }, [deploySettings, deployContractLoaded]);
   React.useEffect(() => {
     let cancelled = false;
     window.MobKitFlowController.configure({ rpcUrl: rpcUrlFromShell() });
