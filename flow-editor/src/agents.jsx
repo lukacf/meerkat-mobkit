@@ -21,7 +21,7 @@ function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, f
     <div className="agents-view">
       <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} agentDefinitions={agentDefinitions} agentView={agentView} />
       <div className="agents-view__main">
-        <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} />
+        <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} />
       </div>
     </div>
   );
@@ -140,26 +140,28 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [] }) {
   );
 }
 
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog }) {
+function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
     selection: agentSel,
     members: studio.members,
     schemas: studio.schemas,
+    agentView,
   });
   if (selectionState.kind === "empty") {
     return (
       <div className="agents-empty">
-        <div className="agents-empty__head">AGENT LIBRARY</div>
-        <div className="agents-empty__line">Select an agent or schema on the left.</div>
-        <div className="agents-empty__line">Agents are reusable across topologies. Edit one here and every placement updates.</div>
+        <div className="agents-empty__head">{selectionState.emptyState.title}</div>
+        {selectionState.emptyState.lines.map((line, index) => (
+          <div className="agents-empty__line" key={index}>{line}</div>
+        ))}
       </div>
     );
   }
   if (selectionState.kind === "schema") {
-    if (!selectionState.schema) return <div className="agents-empty">Schema not found.</div>;
+    if (!selectionState.schema) return <div className="agents-empty">{selectionState.missingSchemaLabel}</div>;
     return <SchemaEditor studio={studio} schema={selectionState.schema} setAgentSel={setAgentSel} contract={contract} flow={flow} setFlow={setFlow} />;
   }
-  if (!selectionState.member) return <div className="agents-empty">Agent not found.</div>;
+  if (!selectionState.member) return <div className="agents-empty">{selectionState.missingAgentLabel}</div>;
   return <AgentEditor studio={studio} member={selectionState.member} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} />;
 }
 

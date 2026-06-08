@@ -724,7 +724,14 @@ pub fn mobpack_schema_response() -> Value {
     let editor_agent_view = json!({
         "agents_heading": "AGENTS",
         "schemas_heading": "SCHEMAS",
-        "add_schema_label": "+ new schema"
+        "add_schema_label": "+ new schema",
+        "empty_title": "AGENT LIBRARY",
+        "empty_lines": [
+            "Select an agent or schema on the left.",
+            "Agents are reusable across topologies. Edit one here and every placement updates."
+        ],
+        "missing_schema_label": "Schema not found.",
+        "missing_agent_label": "Agent not found."
     });
     let editor_basic_view = json!({
         "start_label": "START",
@@ -15280,6 +15287,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_view"]["add_schema_label"],
             json!("+ new schema")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["empty_title"],
+            json!("AGENT LIBRARY")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["empty_lines"][0],
+            json!("Select an agent or schema on the left.")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["missing_agent_label"],
+            json!("Agent not found.")
         );
         assert_eq!(
             mob_definition["editor_basic_view"]["start_label"],

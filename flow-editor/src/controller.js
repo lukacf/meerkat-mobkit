@@ -566,6 +566,10 @@
       agentsHeading: view.agentsHeading,
       schemasHeading: view.schemasHeading,
       addSchemaLabel: view.addSchemaLabel,
+      emptyTitle: view.emptyTitle,
+      emptyLines: view.emptyLines,
+      missingSchemaLabel: view.missingSchemaLabel,
+      missingAgentLabel: view.missingAgentLabel,
       memberCount: memberRows.length,
       schemaCount: schemaRows.length,
       memberRows,
@@ -580,8 +584,15 @@
       agentsHeading: String(view.agents_heading || "").trim(),
       schemasHeading: String(view.schemas_heading || "").trim(),
       addSchemaLabel: String(view.add_schema_label || "").trim(),
+      emptyTitle: String(view.empty_title || "").trim(),
+      emptyLines: Array.isArray(view.empty_lines)
+        ? view.empty_lines.map((line) => String(line || "").trim()).filter(Boolean)
+        : [],
+      missingSchemaLabel: String(view.missing_schema_label || "").trim(),
+      missingAgentLabel: String(view.missing_agent_label || "").trim(),
     };
     return out.agentsHeading && out.schemasHeading && out.addSchemaLabel
+      && out.emptyTitle && out.emptyLines.length && out.missingSchemaLabel && out.missingAgentLabel
       ? out
       : null;
   }
@@ -592,6 +603,10 @@
       agentsHeading: String(view?.agentsHeading || ""),
       schemasHeading: String(view?.schemasHeading || ""),
       addSchemaLabel: String(view?.addSchemaLabel || ""),
+      emptyTitle: String(view?.emptyTitle || ""),
+      emptyLines: Array.isArray(view?.emptyLines) ? view.emptyLines : [],
+      missingSchemaLabel: String(view?.missingSchemaLabel || ""),
+      missingAgentLabel: String(view?.missingAgentLabel || ""),
     };
   }
 
@@ -686,17 +701,27 @@
     };
   }
 
-  function agentSelectionState({ selection = null, members = [], schemas = [] } = {}) {
-    if (!selection) return { kind: "empty", member: null, schema: null, missing: false };
+  function agentSelectionState({ selection = null, members = [], schemas = [], agentView = null } = {}) {
+    const view = agentViewForState(agentView);
+    const emptyState = {
+      title: view.emptyTitle,
+      lines: view.emptyLines,
+    };
+    const base = {
+      emptyState,
+      missingSchemaLabel: view.missingSchemaLabel,
+      missingAgentLabel: view.missingAgentLabel,
+    };
+    if (!selection) return { ...base, kind: "empty", member: null, schema: null, missing: false };
     if (selection.kind === "schema") {
       const schema = (Array.isArray(schemas) ? schemas : []).find((candidate) => candidate.id === selection.id) || null;
-      return { kind: "schema", member: null, schema, missing: !schema };
+      return { ...base, kind: "schema", member: null, schema, missing: !schema };
     }
     if (selection.kind === "agent") {
       const member = (Array.isArray(members) ? members : []).find((candidate) => candidate.id === selection.id) || null;
-      return { kind: "agent", member, schema: null, missing: !member };
+      return { ...base, kind: "agent", member, schema: null, missing: !member };
     }
-    return { kind: String(selection.kind || ""), member: null, schema: null, missing: true };
+    return { ...base, kind: String(selection.kind || ""), member: null, schema: null, missing: true };
   }
 
   function agentEditorControlState({ member, instances = [], schemas = [], contract, deploySettings, modelCatalog = [] } = {}) {

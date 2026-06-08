@@ -453,6 +453,13 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       agents_heading: "AGENTS",
       schemas_heading: "SCHEMAS",
       add_schema_label: "+ new schema",
+      empty_title: "AGENT LIBRARY",
+      empty_lines: [
+        "Select an agent or schema on the left.",
+        "Agents are reusable across topologies. Edit one here and every placement updates.",
+      ],
+      missing_schema_label: "Schema not found.",
+      missing_agent_label: "Agent not found.",
     },
     editor_basic_view: {
       start_label: "START",
@@ -543,6 +550,13 @@ assert.deepEqual(hydratedCatalogs.agentView, {
   agentsHeading: "AGENTS",
   schemasHeading: "SCHEMAS",
   addSchemaLabel: "+ new schema",
+  emptyTitle: "AGENT LIBRARY",
+  emptyLines: [
+    "Select an agent or schema on the left.",
+    "Agents are reusable across topologies. Edit one here and every placement updates.",
+  ],
+  missingSchemaLabel: "Schema not found.",
+  missingAgentLabel: "Agent not found.",
 });
 assert.deepEqual(hydratedCatalogs.basicView, {
   startLabel: "START",
@@ -2421,6 +2435,13 @@ assert.deepEqual(controller.agentListState({
   agentsHeading: "AGENTS",
   schemasHeading: "SCHEMAS",
   addSchemaLabel: "+ new schema",
+  emptyTitle: "AGENT LIBRARY",
+  emptyLines: [
+    "Select an agent or schema on the left.",
+    "Agents are reusable across topologies. Edit one here and every placement updates.",
+  ],
+  missingSchemaLabel: "Schema not found.",
+  missingAgentLabel: "Agent not found.",
   memberCount: 2,
   schemaCount: 2,
   memberRows: [
@@ -2486,6 +2507,10 @@ assert.deepEqual(controller.agentListState({}), {
   agentsHeading: "",
   schemasHeading: "",
   addSchemaLabel: "",
+  emptyTitle: "",
+  emptyLines: [],
+  missingSchemaLabel: "",
+  missingAgentLabel: "",
   memberCount: 0,
   schemaCount: 0,
   memberRows: [],
@@ -2495,12 +2520,37 @@ assert.deepEqual(controller.agentSelectionState({
   selection: { kind: "agent", id: "m_reviewer" },
   members: agentMembersForProjection,
   schemas: agentSchemasForProjection,
+  agentView: hydratedCatalogs.agentView,
 }).member, agentMembersForProjection[1]);
+const emptyAgentSelection = controller.agentSelectionState({
+  selection: null,
+  members: agentMembersForProjection,
+  schemas: agentSchemasForProjection,
+  agentView: hydratedCatalogs.agentView,
+});
+assert.equal(emptyAgentSelection.emptyState.title, "AGENT LIBRARY");
+assert.deepEqual(emptyAgentSelection.emptyState.lines, [
+  "Select an agent or schema on the left.",
+  "Agents are reusable across topologies. Edit one here and every placement updates.",
+]);
 assert.equal(controller.agentSelectionState({
   selection: { kind: "schema", id: "Missing" },
   members: agentMembersForProjection,
   schemas: agentSchemasForProjection,
+  agentView: hydratedCatalogs.agentView,
 }).missing, true);
+assert.equal(controller.agentSelectionState({
+  selection: { kind: "schema", id: "Missing" },
+  members: agentMembersForProjection,
+  schemas: agentSchemasForProjection,
+  agentView: hydratedCatalogs.agentView,
+}).missingSchemaLabel, "Schema not found.");
+assert.equal(controller.agentSelectionState({
+  selection: { kind: "agent", id: "Missing" },
+  members: agentMembersForProjection,
+  schemas: agentSchemasForProjection,
+  agentView: hydratedCatalogs.agentView,
+}).missingAgentLabel, "Agent not found.");
 const agentEditorState = controller.agentEditorControlState({
   member: agentMembersForProjection[1],
   instances: agentInstancesForProjection,

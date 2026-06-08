@@ -599,6 +599,10 @@ window.MOBKIT_BOOT = {
       agentsHeading: view.agentsHeading,
       schemasHeading: view.schemasHeading,
       addSchemaLabel: view.addSchemaLabel,
+      emptyTitle: view.emptyTitle,
+      emptyLines: view.emptyLines,
+      missingSchemaLabel: view.missingSchemaLabel,
+      missingAgentLabel: view.missingAgentLabel,
       memberCount: memberRows.length,
       schemaCount: schemaRows.length,
       memberRows,
@@ -613,8 +617,15 @@ window.MOBKIT_BOOT = {
       agentsHeading: String(view.agents_heading || "").trim(),
       schemasHeading: String(view.schemas_heading || "").trim(),
       addSchemaLabel: String(view.add_schema_label || "").trim(),
+      emptyTitle: String(view.empty_title || "").trim(),
+      emptyLines: Array.isArray(view.empty_lines)
+        ? view.empty_lines.map((line) => String(line || "").trim()).filter(Boolean)
+        : [],
+      missingSchemaLabel: String(view.missing_schema_label || "").trim(),
+      missingAgentLabel: String(view.missing_agent_label || "").trim(),
     };
     return out.agentsHeading && out.schemasHeading && out.addSchemaLabel
+      && out.emptyTitle && out.emptyLines.length && out.missingSchemaLabel && out.missingAgentLabel
       ? out
       : null;
   }
@@ -625,6 +636,10 @@ window.MOBKIT_BOOT = {
       agentsHeading: String(view?.agentsHeading || ""),
       schemasHeading: String(view?.schemasHeading || ""),
       addSchemaLabel: String(view?.addSchemaLabel || ""),
+      emptyTitle: String(view?.emptyTitle || ""),
+      emptyLines: Array.isArray(view?.emptyLines) ? view.emptyLines : [],
+      missingSchemaLabel: String(view?.missingSchemaLabel || ""),
+      missingAgentLabel: String(view?.missingAgentLabel || ""),
     };
   }
 
@@ -719,17 +734,27 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function agentSelectionState({ selection = null, members = [], schemas = [] } = {}) {
-    if (!selection) return { kind: "empty", member: null, schema: null, missing: false };
+  function agentSelectionState({ selection = null, members = [], schemas = [], agentView = null } = {}) {
+    const view = agentViewForState(agentView);
+    const emptyState = {
+      title: view.emptyTitle,
+      lines: view.emptyLines,
+    };
+    const base = {
+      emptyState,
+      missingSchemaLabel: view.missingSchemaLabel,
+      missingAgentLabel: view.missingAgentLabel,
+    };
+    if (!selection) return { ...base, kind: "empty", member: null, schema: null, missing: false };
     if (selection.kind === "schema") {
       const schema = (Array.isArray(schemas) ? schemas : []).find((candidate) => candidate.id === selection.id) || null;
-      return { kind: "schema", member: null, schema, missing: !schema };
+      return { ...base, kind: "schema", member: null, schema, missing: !schema };
     }
     if (selection.kind === "agent") {
       const member = (Array.isArray(members) ? members : []).find((candidate) => candidate.id === selection.id) || null;
-      return { kind: "agent", member, schema: null, missing: !member };
+      return { ...base, kind: "agent", member, schema: null, missing: !member };
     }
-    return { kind: String(selection.kind || ""), member: null, schema: null, missing: true };
+    return { ...base, kind: String(selection.kind || ""), member: null, schema: null, missing: true };
   }
 
   function agentEditorControlState({ member, instances = [], schemas = [], contract, deploySettings, modelCatalog = [] } = {}) {
@@ -9977,7 +10002,7 @@ window.InlineSourceEditor = InlineSourceEditor;
 
 {
 function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, agentDefinitions, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog })));
+  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, agentDefinitions, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView })));
 }
 function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions, agentView = null }) {
   const listState = window.MobKitFlowController.agentListState({
@@ -10066,20 +10091,21 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [] }) {
     definitionState.optionRows.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))
   );
 }
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog }) {
+function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
     selection: agentSel,
     members: studio.members,
-    schemas: studio.schemas
+    schemas: studio.schemas,
+    agentView
   });
   if (selectionState.kind === "empty") {
-    return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, /* @__PURE__ */ React.createElement("div", { className: "agents-empty__head" }, "AGENT LIBRARY"), /* @__PURE__ */ React.createElement("div", { className: "agents-empty__line" }, "Select an agent or schema on the left."), /* @__PURE__ */ React.createElement("div", { className: "agents-empty__line" }, "Agents are reusable across topologies. Edit one here and every placement updates."));
+    return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, /* @__PURE__ */ React.createElement("div", { className: "agents-empty__head" }, selectionState.emptyState.title), selectionState.emptyState.lines.map((line, index) => /* @__PURE__ */ React.createElement("div", { className: "agents-empty__line", key: index }, line)));
   }
   if (selectionState.kind === "schema") {
-    if (!selectionState.schema) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, "Schema not found.");
+    if (!selectionState.schema) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingSchemaLabel);
     return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow });
   }
-  if (!selectionState.member) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, "Agent not found.");
+  if (!selectionState.member) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingAgentLabel);
   return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog });
 }
 function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [] }) {
