@@ -3673,24 +3673,26 @@
 
   function graphEdgeFallbackPatch(edge, contract) {
     const kind = contractDefaultValue(contract, "graph_edge_kind");
-    if (!kind) return null;
-    return { kind, label: "fallback", cond: null };
+    const draft = editorGraphDraftContract(contract);
+    if (!kind || !draft) return null;
+    return { kind, label: draft.fallbackEdgeLabel, cond: null };
   }
 
   function graphConnectionEdgeDraft({ from, to, edges, id, contract } = {}) {
     if (!from || !to || !from.id || !to.id || from.id === to.id) return null;
     if ((edges || []).some((edge) => edge.from === from.id && edge.to === to.id)) return null;
 
+    const draft = editorGraphDraftContract(contract);
     const defaultKind = contractDefaultValue(contract, "graph_edge_kind");
     const fanoutKind = contractDefaultValue(contract, "graph_fanout_edge_kind");
     const conditionKind = contractDefaultValue(contract, "graph_condition_edge_kind");
-    if (!defaultKind) return null;
+    if (!defaultKind || !draft) return null;
     let kind = defaultKind;
     let label = "";
 
     if (to.isTerminal) {
       kind = defaultKind;
-      label = "to " + String(to.label || "").toLowerCase();
+      label = draft.terminalEdgeLabelPrefix + String(to.label || "").toLowerCase();
     } else if (from.isGate && from.gateKind === "fork") {
       if (!fanoutKind) return null;
       kind = fanoutKind;
@@ -3699,11 +3701,11 @@
     } else if (to.col === from.col) {
       if (!fanoutKind) return null;
       kind = fanoutKind;
-      label = "parallel";
+      label = draft.parallelEdgeLabel;
     } else if (to.col < from.col) {
       if (!conditionKind) return null;
       kind = conditionKind;
-      label = "rework";
+      label = draft.reworkEdgeLabel;
     }
 
     return {
@@ -6629,6 +6631,33 @@
     return editorInputParamDraftContract(contract)?.addedField?.name || "param";
   }
 
+  function editorGraphDraftContract(contract) {
+    const draft = contract?.mob_definition?.editor_graph_draft;
+    if (!draft || typeof draft !== "object") return null;
+    const parallelLaneLabels = Array.isArray(draft.parallel_lane_labels)
+      ? draft.parallel_lane_labels.map((label) => String(label || "").trim()).filter(Boolean)
+      : [];
+    const out = {
+      branchGateLabel: String(draft.branch_gate_label || "").trim(),
+      branchConditionLaneLabel: String(draft.branch_condition_lane_label || "").trim(),
+      branchFallbackLaneLabel: String(draft.branch_fallback_lane_label || "").trim(),
+      branchJoinLabel: String(draft.branch_join_label || "").trim(),
+      fallbackEdgeLabel: String(draft.fallback_edge_label || "").trim(),
+      parallelLaneLabels,
+      parallelEdgeLabel: String(draft.parallel_edge_label || "").trim(),
+      reworkEdgeLabel: String(draft.rework_edge_label || "").trim(),
+      terminalEdgeLabelPrefix: String(draft.terminal_edge_label_prefix || ""),
+      joinLabelPrefix: String(draft.join_label_prefix || ""),
+    };
+    if (!out.branchGateLabel || !out.branchConditionLaneLabel || !out.branchFallbackLaneLabel
+      || !out.branchJoinLabel || !out.fallbackEdgeLabel || out.parallelLaneLabels.length < 2
+      || !out.parallelEdgeLabel || !out.reworkEdgeLabel || !out.terminalEdgeLabelPrefix
+      || !out.joinLabelPrefix) {
+      return null;
+    }
+    return out;
+  }
+
   function graphControlShape({ gateKind, at, members, instances, edges, flow, contract } = {}) {
     const kind = String(gateKind || "").trim();
     if (kind !== "branch" && kind !== "fork") return null;
@@ -6639,7 +6668,8 @@
 
     const launchKind = contractDefaultValue(contract, "launch_mode");
     const nextEdgeKind = contractDefaultValue(contract, "graph_edge_kind");
-    if (!launchKind || !nextEdgeKind) return null;
+    const draft = editorGraphDraftContract(contract);
+    if (!launchKind || !nextEdgeKind || !draft) return null;
 
     const sourceInstances = Array.isArray(instances) ? instances : [];
     const sourceEdges = Array.isArray(edges) ? edges : [];
@@ -6662,7 +6692,7 @@
         id: gateId,
         isGate: true,
         gateKind: kind,
-        label: isBranch ? "branch" : dispatch,
+        label: isBranch ? draft.branchGateLabel : dispatch,
         dispatch: isBranch ? undefined : dispatch,
         col: cells.gate.col,
         row: cells.gate.row,
@@ -6672,7 +6702,7 @@
         memberId: memberA.id,
         col: cells.laneA.col,
         row: cells.laneA.row,
-        lane: isBranch ? "condition" : "lane 1",
+        lane: isBranch ? draft.branchConditionLaneLabel : draft.parallelLaneLabels[0],
         launchMode: { kind: launchKind },
       },
       {
@@ -6680,14 +6710,14 @@
         memberId: memberB.id,
         col: cells.laneB.col,
         row: cells.laneB.row,
-        lane: isBranch ? "fallback" : "lane 2",
+        lane: isBranch ? draft.branchFallbackLaneLabel : draft.parallelLaneLabels[1],
         launchMode: { kind: launchKind },
       },
       {
         id: joinId,
         isGate: true,
         gateKind: "join",
-        label: isBranch ? "join · branch paths" : `join · ${collection}`,
+        label: isBranch ? draft.branchJoinLabel : `${draft.joinLabelPrefix}${collection}`,
         collection,
         col: cells.join.col,
         row: cells.join.row,
@@ -6707,7 +6737,7 @@
           label: "",
           cond: null,
         },
-        { id: `e_${gateId}_${rightId}`, from: gateId, to: rightId, kind: nextEdgeKind, label: "fallback" },
+        { id: `e_${gateId}_${rightId}`, from: gateId, to: rightId, kind: nextEdgeKind, label: draft.fallbackEdgeLabel },
         { id: `e_${leftId}_${joinId}`, from: leftId, to: joinId, kind: nextEdgeKind, label: "" },
         { id: `e_${rightId}_${joinId}`, from: rightId, to: joinId, kind: nextEdgeKind, label: "" },
       ];

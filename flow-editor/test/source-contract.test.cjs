@@ -528,6 +528,8 @@ assert.match(inspector, /MobKitFlowController\.graphEdgeKindPatch/, "Graph inspe
 assert.match(controller, /function graphEdgeKindPatch/, "controller plane must own Graph edge kind transition semantics");
 assert.match(inspector, /MobKitFlowController\.graphEdgeFallbackPatch/, "Graph inspector must patch branch fallback edges through the controller plane");
 assert.match(controller, /function graphEdgeFallbackPatch/, "controller plane must own Graph fallback edge transition semantics");
+assert.match(controller, /mob_definition\?\.editor_graph_draft/, "Graph draft labels and lane names must hydrate from the MobKit editor_graph_draft contract");
+assert(!/graphEdgeFallbackPatch[\s\S]{0,180}label:\s*["']fallback["']/.test(controller), "Graph fallback edge transition must not own the fallback label locally");
 assert(!/studio\.updateEdge\(e\.id,\s*\{\s*kind:\s*["']next["'],\s*label:\s*["']fallback["'],\s*cond:\s*null\s*\}\s*\)/.test(inspector), "Graph inspector must not hard-code fallback edges as next locally");
 assert(!/`steps\.\$\{/.test(inspector), "Graph inspector must not construct steps.* condition paths locally");
 assert(!/`params\.\$\{/.test(inspector), "Graph inspector must not construct params.* condition paths locally");
@@ -952,6 +954,7 @@ assert.match(app, /MobKitFlowController\.graphMemberInstanceShape/, "Graph edito
 assert.match(app, /graphMemberInstanceShape\(\{[\s\S]*instances:\s*studio\.instances/, "Graph quick member insertion must pass current graph nodes into controller ID creation");
 assert.match(app, /graphControlShape\(\{[\s\S]*instances:\s*studio\.instances,[\s\S]*edges:\s*studio\.edges/, "Graph quick control insertion must pass current graph nodes and edges into controller ID creation");
 assert.match(controller, /function uniqueGraphControlSuffix/, "controller plane must own graph control ID collision handling");
+assert(!/graphControlShape[\s\S]{0,1400}lane:\s*isBranch \? ["']condition["'] : ["']lane 1["']|graphControlShape[\s\S]{0,1800}label:\s*isBranch \? ["']join · branch paths["']/.test(controller), "Graph quick control insertion must not own local lane or join labels");
 assert.match(controller, /function uniqueGraphInstanceId/, "controller plane must own graph member-instance ID collision handling");
 assert.match(controller, /function uniqueGraphEdgeId/, "controller plane must own graph edge ID collision handling");
 assert.match(controller, /id:\s*id\s*\|\|\s*uniqueGraphEdgeId\(from\.id,\s*to\.id,\s*edges\)/, "Graph connection drafts must use deterministic collision-safe edge IDs");

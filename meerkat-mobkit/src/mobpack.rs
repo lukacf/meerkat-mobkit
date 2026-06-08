@@ -702,6 +702,18 @@ pub fn mobpack_schema_response() -> Value {
             "user_config_root"
         ]
     });
+    let editor_graph_draft = json!({
+        "branch_gate_label": "branch",
+        "branch_condition_lane_label": "condition",
+        "branch_fallback_lane_label": "fallback",
+        "branch_join_label": "join · branch paths",
+        "fallback_edge_label": "fallback",
+        "parallel_lane_labels": ["lane 1", "lane 2"],
+        "parallel_edge_label": "parallel",
+        "rework_edge_label": "rework",
+        "terminal_edge_label_prefix": "to ",
+        "join_label_prefix": "join · "
+    });
     let mob_definition = json!({
         "authoritative_type": "meerkat_mob::MobDefinition",
         "defaults": {
@@ -806,6 +818,7 @@ pub fn mobpack_schema_response() -> Value {
         "graph_terminal_kinds": GRAPH_TERMINAL_KINDS,
         "graph_frame_kinds": GRAPH_FRAME_KINDS,
         "graph_edge_kinds": GRAPH_EDGE_KINDS,
+        "editor_graph_draft": editor_graph_draft,
         "dispatch_modes": dispatch_mode_values(),
         "collection_policies": collection_policy_values(),
         "dependency_modes": dependency_mode_values()
@@ -15172,6 +15185,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["graph_edge_kinds"],
             json!(["next", "cond", "fanout"])
+        );
+        assert_eq!(
+            mob_definition["editor_graph_draft"]["branch_gate_label"],
+            json!("branch")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_draft"]["fallback_edge_label"],
+            json!("fallback")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_draft"]["parallel_lane_labels"],
+            json!(["lane 1", "lane 2"])
         );
     }
 

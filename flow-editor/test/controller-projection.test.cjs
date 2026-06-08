@@ -3949,6 +3949,18 @@ assert.deepEqual(conditionKindPatch, {
   cond: { var: "params.route", op: "==", val: "docs" },
   label: "params.route == \"docs\"",
 });
+const testEditorGraphDraft = {
+  branch_gate_label: "branch",
+  branch_condition_lane_label: "condition",
+  branch_fallback_lane_label: "fallback",
+  branch_join_label: "join · branch paths",
+  fallback_edge_label: "fallback",
+  parallel_lane_labels: ["lane 1", "lane 2"],
+  parallel_edge_label: "parallel",
+  rework_edge_label: "rework",
+  terminal_edge_label_prefix: "to ",
+  join_label_prefix: "join · ",
+};
 assert.deepEqual(controller.graphEdgeFallbackPatch({
   id: "e_cond",
   kind: "cond",
@@ -3958,6 +3970,7 @@ assert.deepEqual(controller.graphEdgeFallbackPatch({
   mob_definition: {
     defaults: { graph_edge_kind: "next" },
     graph_edge_kinds: ["next", "cond"],
+    editor_graph_draft: testEditorGraphDraft,
   },
 }), {
   kind: "next",
@@ -3973,10 +3986,14 @@ assert.deepEqual(controller.graphEdgeFallbackPatch({
   mob_definition: {
     defaults: { graph_edge_kind: "straight" },
     graph_edge_kinds: ["straight", "when"],
+    editor_graph_draft: {
+      ...testEditorGraphDraft,
+      fallback_edge_label: "otherwise",
+    },
   },
 }), {
   kind: "straight",
-  label: "fallback",
+  label: "otherwise",
   cond: null,
 });
 assert.equal(controller.graphEdgeFallbackPatch({ kind: "cond" }, {
@@ -4386,6 +4403,7 @@ const graphShapeContract = {
     graph_palette_gate_kinds: ["branch", "fork"],
     graph_terminal_kinds: ["success", "failed", "human"],
     graph_edge_kinds: ["next", "fanout", "cond"],
+    editor_graph_draft: testEditorGraphDraft,
     editor_flow_step_types: ["repeat", "branch", "parallel"],
     launch_modes: ["fresh", "resume", "fork"],
     runtime_modes: ["autonomous_host", "turn_driven"],
@@ -4490,9 +4508,13 @@ assert.deepEqual(controller.graphConnectionEdgeDraft({
         graph_fanout_edge_kind: "fan",
       },
       graph_edge_kinds: ["straight", "when", "fan"],
+      editor_graph_draft: {
+        ...testEditorGraphDraft,
+        rework_edge_label: "revise",
+      },
     },
   },
-}), { id: "edge_schema_names", from: "router", to: "worker", kind: "when", label: "rework" });
+}), { id: "edge_schema_names", from: "router", to: "worker", kind: "when", label: "revise" });
 assert.deepEqual(controller.graphConnectionEdgeDraft({
   from: { id: "plan.node", col: 0, row: 0 },
   to: { id: "code node", col: 1, row: 0 },
@@ -5801,11 +5823,16 @@ const branchShape = controller.graphControlShape({
 });
 assert(branchShape);
 assert.equal(branchShape.instances[0].gateKind, "branch");
+assert.equal(branchShape.instances[0].label, "branch");
 assert.equal(branchShape.instances[1].launchMode.kind, "Fresh");
+assert.equal(branchShape.instances[1].lane, "condition");
+assert.equal(branchShape.instances[2].lane, "fallback");
 assert.equal(branchShape.instances[3].collection, "all");
+assert.equal(branchShape.instances[3].label, "join · branch paths");
 assert.equal(branchShape.edges[0].kind, "cond");
 assert.equal(branchShape.edges[0].label, "");
 assert.equal(branchShape.edges[0].cond, null);
+assert.equal(branchShape.edges[1].label, "fallback");
 assert.equal(branchShape.flow, previousFlow);
 assert.deepEqual(branchShape.flow.steps[0].inputParams, []);
 
@@ -5847,7 +5874,10 @@ const forkShape = controller.graphControlShape({
 });
 assert(forkShape);
 assert.equal(forkShape.instances[0].dispatch, "fan_out");
+assert.equal(forkShape.instances[1].lane, "lane 1");
+assert.equal(forkShape.instances[2].lane, "lane 2");
 assert.equal(forkShape.instances[3].collection, "all");
+assert.equal(forkShape.instances[3].label, "join · all");
 assert.deepEqual(forkShape.edges.map((edge) => edge.kind), ["fanout", "fanout", "next", "next"]);
 
 assert.equal(controller.graphMemberInstanceShape({
