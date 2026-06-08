@@ -540,6 +540,8 @@ assert.match(app, /if \(!canCreateAuthoring\) return;[\s\S]*MobKitFlowController
 assert.match(controller, /function createFlowDraftFromSpec/, "controller plane must own new flow draft document and registry row creation");
 assert.match(app, /MobKitFlowController\.newFlowTemplateOptions\(templates, \{[\s\S]*canCreateBlank: canCreateAuthoring/, "New flow modal must receive controller-projected blank/sample template options");
 assert.match(app, /MobKitFlowController\.newFlowTemplateOptions\(templates, \{[\s\S]*blankTemplate: catalogs\.blankMobpack/, "New flow modal blank option must use the MobKit schema blank mobpack");
+assert(!/blankMobpackFromSchema[\s\S]{0,260}blank\.id \|\| ["']blank["']|blankMobpackFromSchema[\s\S]{0,260}blank\.name \|\| ["']Blank["']/.test(controller), "MobKit blank mobpack hydration must require schema-provided id/name instead of UI defaults");
+assert.match(controller, /newFlowTemplateOptions[\s\S]*label: hasBlankDocument \? String\(blankTemplate\.name \|\| ""\) : "Blank"/, "New-flow blank option must display the MobKit schema blank mobpack name when available");
 assert.match(controller, /function newFlowTemplateOptions/, "controller plane must own new-flow template option projection");
 assert.match(controller, /function newFlowModalState/, "controller plane must own new-flow modal template selection and action enablement");
 assert.match(app, /MobKitFlowController\.newFlowModalState\(state, templateOptions\)/, "New flow modal must render controller-projected modal state");

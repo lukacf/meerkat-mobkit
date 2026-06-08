@@ -7298,8 +7298,8 @@ window.MOBKIT_BOOT = {
     const blank = schema?.blank_mobpack;
     if (!blank || typeof blank !== "object" || !blank.document) return null;
     const source = typeof blank.source === "string" ? blank.source.trim() : "";
-    const id = String(blank.id || "blank").trim();
-    const name = String(blank.name || "Blank").trim();
+    const id = String(blank.id || "").trim();
+    const name = String(blank.name || "").trim();
     if (!id || !name || !source) return null;
     return {
       id,
@@ -7585,7 +7585,7 @@ window.MOBKIT_BOOT = {
     const hasBlankDocument = !!blankTemplate?.document;
     const options = [{
       id: "blank",
-      label: "Blank",
+      label: hasBlankDocument ? String(blankTemplate.name || "") : "Blank",
       sub: hasBlankDocument
         ? String(blankTemplate.trigger || blankTemplate.source || "mobkit/blank-mobpack")
         : "Waiting for MobKit blank mobpack",

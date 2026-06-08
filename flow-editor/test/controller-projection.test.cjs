@@ -163,6 +163,18 @@ const schemaBlankMobpack = controller.blankMobpackFromSchema({
 });
 assert.equal(schemaBlankMobpack.id, "blank");
 assert.equal(schemaBlankMobpack.source, "mobkit/blank-mobpack");
+assert.equal(controller.blankMobpackFromSchema({
+  blank_mobpack: {
+    source: "mobkit/blank-mobpack",
+    document: { mob_id: "blank_mob" },
+  },
+}), null);
+assert.equal(controller.blankMobpackFromSchema({
+  blank_mobpack: {
+    id: "blank",
+    document: { mob_id: "blank_mob" },
+  },
+}), null);
 
 assert.deepEqual(controller.newFlowTemplateOptions([
   { id: "docs", name: "Docs", trigger: "label · docs", validation: { ok: true } },
