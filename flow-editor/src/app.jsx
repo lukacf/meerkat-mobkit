@@ -395,6 +395,7 @@ function App() {
         edges: studio.edges,
         flow,
         contract,
+        graphView: catalogs.graphView,
       });
       if (inserted) {
         studio.snap();
@@ -809,6 +810,7 @@ function App() {
             at={addAt}
             members={studio.members}
             contract={contract}
+            graphView={catalogs.graphView}
             onPick={handlePick}
             onClose={() => setAddAt(null)}
             onJumpToAgents={(id) => { setAddAt(null); setView("agents"); setAgentSel({ kind: "agent", id }); }}

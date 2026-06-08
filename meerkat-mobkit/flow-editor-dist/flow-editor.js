@@ -1492,10 +1492,39 @@ window.MOBKIT_BOOT = {
       fitTitle: String(view.fit_title || "").trim(),
       zoomInTitle: String(view.zoom_in_title || "").trim(),
       portDragTitle: String(view.port_drag_title || "").trim(),
+      addNodeSearchIcon: String(view.add_node_search_icon || "").trim(),
+      addNodeSearchPlaceholder: String(view.add_node_search_placeholder || "").trim(),
+      addNodeCloseLabel: String(view.add_node_close_label || "").trim(),
+      addNodeCloseTitle: String(view.add_node_close_title || "").trim(),
+      addNodeAgentsLabel: String(view.add_node_agents_label || "").trim(),
+      addNodeControlsLabel: String(view.add_node_controls_label || "").trim(),
+      addNodeEmptyPrefix: String(view.add_node_empty_prefix || ""),
+      addNodeEmptySuffix: String(view.add_node_empty_suffix || ""),
+      addNodeJumpLabel: String(view.add_node_jump_label || "").trim(),
+      gatePaletteRows: graphGatePaletteRowsFromSchema(view.gate_palette_rows),
     };
     return out.zoomOutTitle && out.fitTitle && out.zoomInTitle && out.portDragTitle
+      && out.addNodeSearchIcon && out.addNodeSearchPlaceholder && out.addNodeCloseLabel
+      && out.addNodeCloseTitle && out.addNodeAgentsLabel && out.addNodeControlsLabel
+      && out.addNodeEmptyPrefix && out.addNodeEmptySuffix && out.addNodeJumpLabel
+      && out.gatePaletteRows.length
       ? out
       : null;
+  }
+
+  function graphGatePaletteRowsFromSchema(rows) {
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .map((row) => {
+        if (!row || typeof row !== "object") return null;
+        const id = String(row.id || "").trim();
+        const glyph = String(row.glyph || "").trim();
+        const label = String(row.label || "").trim();
+        const meta = String(row.meta || "").trim();
+        if (!id || !glyph || !label || !meta) return null;
+        return { id, glyph, label, meta };
+      })
+      .filter(Boolean);
   }
 
   function graphCanvasViewState(graphView) {
@@ -1505,6 +1534,16 @@ window.MOBKIT_BOOT = {
       fitTitle: String(view?.fitTitle || ""),
       zoomInTitle: String(view?.zoomInTitle || ""),
       portDragTitle: String(view?.portDragTitle || ""),
+      addNodeSearchIcon: String(view?.addNodeSearchIcon || ""),
+      addNodeSearchPlaceholder: String(view?.addNodeSearchPlaceholder || ""),
+      addNodeCloseLabel: String(view?.addNodeCloseLabel || ""),
+      addNodeCloseTitle: String(view?.addNodeCloseTitle || ""),
+      addNodeAgentsLabel: String(view?.addNodeAgentsLabel || ""),
+      addNodeControlsLabel: String(view?.addNodeControlsLabel || ""),
+      addNodeEmptyPrefix: String(view?.addNodeEmptyPrefix || ""),
+      addNodeEmptySuffix: String(view?.addNodeEmptySuffix || ""),
+      addNodeJumpLabel: String(view?.addNodeJumpLabel || ""),
+      gatePaletteRows: Array.isArray(view?.gatePaletteRows) ? view.gatePaletteRows : [],
     };
   }
 
@@ -7431,25 +7470,25 @@ window.MOBKIT_BOOT = {
       .map((type) => metadata[type]);
   }
 
-  function graphControlNodes(contract) {
-    const glyphs = { branch: "⑂", fork: "‖", join: "⋈" };
-    const labels = { branch: "Branch gate", fork: "Parallel fork", join: "Join gate" };
-    const metas = { branch: "conditional split", fork: "fan_out lanes", join: "fan_in barrier" };
+  function graphControlNodes(contract, graphView = null) {
+    const view = graphCanvasViewState(graphView);
+    const metadata = Object.fromEntries((view.gatePaletteRows || []).map((row) => [row.id, row]));
     const paletteKinds = Array.isArray(contract?.mob_definition?.graph_palette_gate_kinds)
       ? contract.mob_definition.graph_palette_gate_kinds.map(String)
       : [];
     return graphGateKindOptions(contract, "")
-      .filter((option) => !option.disabled && paletteKinds.includes(option.value))
+      .filter((option) => !option.disabled && paletteKinds.includes(option.value) && metadata[option.value])
       .map((option) => ({
         id: option.value,
         gateKind: option.value,
-        glyph: glyphs[option.value] || "•",
-        label: labels[option.value] || option.value,
-        meta: metas[option.value] || "MobKit graph gate",
+        glyph: metadata[option.value].glyph,
+        label: metadata[option.value].label,
+        meta: metadata[option.value].meta,
       }));
   }
 
-  function graphAddNodeMenuState({ members = [], contract = null, query = "" } = {}) {
+  function graphAddNodeMenuState({ members = [], contract = null, query = "", graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
     const q = String(query || "");
     const ql = q.trim().toLowerCase();
     const memberRows = (Array.isArray(members) ? members : [])
@@ -7470,7 +7509,7 @@ window.MOBKIT_BOOT = {
       }))
       .filter((row) => row.id);
     const controls = (Array.isArray(members) && members.length)
-      ? graphControlNodes(contract)
+      ? graphControlNodes(contract, graphView)
       : [];
     const controlRows = controls
       .filter((node) => {
@@ -7491,14 +7530,14 @@ window.MOBKIT_BOOT = {
       }))
       .filter((row) => row.id);
     return {
-      searchIcon: "⌕",
-      searchPlaceholder: "Add a node…",
-      closeLabel: "✕",
-      closeTitle: "Close",
-      agentsLabel: "Agents",
-      controlsLabel: "Flow controls",
-      emptyLabel: `No matches for “${q}”`,
-      jumpLabel: "+ New agent in Agents →",
+      searchIcon: view.addNodeSearchIcon,
+      searchPlaceholder: view.addNodeSearchPlaceholder,
+      closeLabel: view.addNodeCloseLabel,
+      closeTitle: view.addNodeCloseTitle,
+      agentsLabel: view.addNodeAgentsLabel,
+      controlsLabel: view.addNodeControlsLabel,
+      emptyLabel: `${view.addNodeEmptyPrefix}${q}${view.addNodeEmptySuffix}`,
+      jumpLabel: view.addNodeJumpLabel,
       memberRows,
       controlRows,
       hasMembers: memberRows.length > 0,
@@ -7724,10 +7763,10 @@ window.MOBKIT_BOOT = {
     return out;
   }
 
-  function graphControlShape({ gateKind, at, members, instances, edges, flow, contract } = {}) {
+  function graphControlShape({ gateKind, at, members, instances, edges, flow, contract, graphView = null } = {}) {
     const kind = String(gateKind || "").trim();
     if (kind !== "branch" && kind !== "fork") return null;
-    const allowed = new Set(graphControlNodes(contract).map((node) => node.gateKind));
+    const allowed = new Set(graphControlNodes(contract, graphView).map((node) => node.gateKind));
     if (!allowed.has(kind)) return null;
     const sourceMembers = Array.isArray(members) ? members : [];
     if (!at || sourceMembers.length === 0) return null;
@@ -10757,13 +10796,13 @@ function EdgeInspector({ studio, flow, edge, clearSelection, contract }) {
     clearSelection();
   } }, edgeState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.edgeKind, onChange: (e) => setEdgeKind(e.target.value) }, edgeState.edgeKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), edgeState.selectedEdgeKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.selectedEdgeKind.reason)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: edge.label || "", onChange: (e) => change(window.MobKitFlowController.graphEdgeLabelPatch(e.target.value)) })), edgeState.isCondition && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.conditionTitle), !edgeState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "cond-row" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.ownerValue, onChange: (e) => setCondOwner(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: edgeState.ownerPlaceholderOption.value }, edgeState.ownerPlaceholderOption.label), edgeState.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.fieldValue, disabled: !edgeState.condOwner, onChange: (e) => setCondField(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, edgeState.fieldPlaceholder), edgeState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", style: { width: 60 }, value: edgeState.operatorValue, onChange: (e) => change(window.MobKitFlowController.graphEdgeConditionOperatorPatch(edge, e.target.value, { defaultOperator: edgeState.defaultOperator, contract })) }, edgeState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: edgeState.condField, value: edge.cond?.val, onChange: (val) => change(window.MobKitFlowController.graphEdgeConditionValuePatch(edge, val, { defaultOperator: edgeState.defaultOperator })) }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.fromTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.fromRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.toTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.toRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))))));
 }
-function AddNodeMenu({ at, members, contract, onPick, onClose, onJumpToAgents }) {
+function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose, onJumpToAgents }) {
   const [q, setQ] = React.useState("");
   React.useEffect(() => {
     setQ("");
   }, [at]);
   if (!at) return null;
-  const menuState = window.MobKitFlowController.graphAddNodeMenuState({ members, contract, query: q });
+  const menuState = window.MobKitFlowController.graphAddNodeMenuState({ members, contract, query: q, graphView });
   return /* @__PURE__ */ React.createElement("div", { className: "add-menu", style: { left: at.x, top: at.y }, onClick: (e) => e.stopPropagation(), onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "add-menu__search" }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__search-icon" }, menuState.searchIcon), /* @__PURE__ */ React.createElement(
     "input",
     {
@@ -12210,7 +12249,8 @@ function App() {
         instances: studio.instances,
         edges: studio.edges,
         flow,
-        contract
+        contract,
+        graphView: catalogs.graphView
       });
       if (inserted) {
         studio.snap();
@@ -12615,6 +12655,7 @@ function App() {
       at: addAt,
       members: studio.members,
       contract,
+      graphView: catalogs.graphView,
       onPick: handlePick,
       onClose: () => setAddAt(null),
       onJumpToAgents: (id) => {

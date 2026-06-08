@@ -543,12 +543,12 @@ function EdgeInspector({ studio, flow, edge, clearSelection, contract }) {
 // ── Add-node dialog ────────────────────────────────────────────────
 // In topology view, you can place existing agents and MobKit flow gates.
 // To define a new agent, jump to the Agents view.
-function AddNodeMenu({ at, members, contract, onPick, onClose, onJumpToAgents }) {
+function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose, onJumpToAgents }) {
   const [q, setQ] = React.useState("");
   React.useEffect(() => { setQ(""); }, [at]);
   if (!at) return null;
 
-  const menuState = window.MobKitFlowController.graphAddNodeMenuState({ members, contract, query: q });
+  const menuState = window.MobKitFlowController.graphAddNodeMenuState({ members, contract, query: q, graphView });
 
   return (
     <div className="add-menu" style={{ left: at.x, top: at.y }} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>

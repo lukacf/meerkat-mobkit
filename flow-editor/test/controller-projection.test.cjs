@@ -983,6 +983,20 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       fit_title: "Fit to view",
       zoom_in_title: "Zoom in",
       port_drag_title: "Drag to a member to connect",
+      add_node_search_icon: "⌕",
+      add_node_search_placeholder: "Add a node…",
+      add_node_close_label: "✕",
+      add_node_close_title: "Close",
+      add_node_agents_label: "Agents",
+      add_node_controls_label: "Flow controls",
+      add_node_empty_prefix: "No matches for “",
+      add_node_empty_suffix: "”",
+      add_node_jump_label: "+ New agent in Agents →",
+      gate_palette_rows: [
+        { id: "branch", glyph: "⑂", label: "Branch gate", meta: "conditional split" },
+        { id: "fork", glyph: "‖", label: "Parallel fork", meta: "fan_out lanes" },
+        { id: "join", glyph: "⋈", label: "Join gate", meta: "fan_in barrier" },
+      ],
     },
     editor_graph_template_view: {
       template_eyebrow: "TEMPLATE",
@@ -1395,6 +1409,20 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   fitTitle: "Fit to view",
   zoomInTitle: "Zoom in",
   portDragTitle: "Drag to a member to connect",
+  addNodeSearchIcon: "⌕",
+  addNodeSearchPlaceholder: "Add a node…",
+  addNodeCloseLabel: "✕",
+  addNodeCloseTitle: "Close",
+  addNodeAgentsLabel: "Agents",
+  addNodeControlsLabel: "Flow controls",
+  addNodeEmptyPrefix: "No matches for “",
+  addNodeEmptySuffix: "”",
+  addNodeJumpLabel: "+ New agent in Agents →",
+  gatePaletteRows: [
+    { id: "branch", glyph: "⑂", label: "Branch gate", meta: "conditional split" },
+    { id: "fork", glyph: "‖", label: "Parallel fork", meta: "fan_out lanes" },
+    { id: "join", glyph: "⋈", label: "Join gate", meta: "fan_in barrier" },
+  ],
 });
 assert.deepEqual(controller.graphCanvasViewState(hydratedCatalogs.graphView), hydratedCatalogs.graphView);
 assert.deepEqual(controller.graphCanvasViewState(null), {
@@ -1402,6 +1430,16 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   fitTitle: "",
   zoomInTitle: "",
   portDragTitle: "",
+  addNodeSearchIcon: "",
+  addNodeSearchPlaceholder: "",
+  addNodeCloseLabel: "",
+  addNodeCloseTitle: "",
+  addNodeAgentsLabel: "",
+  addNodeControlsLabel: "",
+  addNodeEmptyPrefix: "",
+  addNodeEmptySuffix: "",
+  addNodeJumpLabel: "",
+  gatePaletteRows: [],
 });
 assert.deepEqual(hydratedCatalogs.graphTemplateView, {
   templateEyebrow: "TEMPLATE",
@@ -5432,7 +5470,7 @@ assert.deepEqual(
       graph_gate_kinds: ["branch", "fork", "join"],
       graph_palette_gate_kinds: ["branch", "fork"],
     },
-  }).map((node) => node.gateKind),
+  }, hydratedCatalogs.graphView).map((node) => node.gateKind),
   ["branch", "fork"],
 );
 const addNodeMenuState = controller.graphAddNodeMenuState({
@@ -5447,6 +5485,7 @@ const addNodeMenuState = controller.graphAddNodeMenuState({
     },
   },
   query: "fork",
+  graphView: hydratedCatalogs.graphView,
 });
 assert.equal(addNodeMenuState.searchIcon, "⌕");
 assert.equal(addNodeMenuState.searchPlaceholder, "Add a node…");
@@ -5466,6 +5505,7 @@ const emptyAddNodeMenuState = controller.graphAddNodeMenuState({
   members: [{ id: "m_planner", role: "planner", name: "Planner", model: "gpt-5.5" }],
   contract: { mob_definition: { graph_gate_kinds: ["branch"], graph_palette_gate_kinds: ["branch"] } },
   query: "zzz",
+  graphView: hydratedCatalogs.graphView,
 });
 assert.equal(emptyAddNodeMenuState.emptyLabel, "No matches for “zzz”");
 assert.equal(emptyAddNodeMenuState.isEmpty, true);
@@ -7173,6 +7213,7 @@ const branchShape = controller.graphControlShape({
   instances: [],
   flow: previousFlow,
   contract: graphShapeContract,
+  graphView: hydratedCatalogs.graphView,
 });
 assert(branchShape);
 assert.equal(branchShape.instances[0].gateKind, "branch");
@@ -7202,6 +7243,7 @@ const branchShapeAfterCollision = controller.graphControlShape({
   edges: [{ id: "e_g_branch_1_g_branch_1_a", from: "g_branch_1", to: "g_branch_1_a" }],
   flow: previousFlow,
   contract: graphShapeContract,
+  graphView: hydratedCatalogs.graphView,
 });
 assert(branchShapeAfterCollision);
 assert.deepEqual(branchShapeAfterCollision.instances.map((instance) => instance.id), [
@@ -7224,6 +7266,7 @@ const forkShape = controller.graphControlShape({
   instances: [],
   flow: previousFlow,
   contract: graphShapeContract,
+  graphView: hydratedCatalogs.graphView,
 });
 assert(forkShape);
 assert.equal(forkShape.instances[0].dispatch, "fan_out");

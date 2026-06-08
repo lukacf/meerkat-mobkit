@@ -725,7 +725,36 @@ pub fn mobpack_schema_response() -> Value {
         "zoom_out_title": "Zoom out",
         "fit_title": "Fit to view",
         "zoom_in_title": "Zoom in",
-        "port_drag_title": "Drag to a member to connect"
+        "port_drag_title": "Drag to a member to connect",
+        "add_node_search_icon": "⌕",
+        "add_node_search_placeholder": "Add a node…",
+        "add_node_close_label": "✕",
+        "add_node_close_title": "Close",
+        "add_node_agents_label": "Agents",
+        "add_node_controls_label": "Flow controls",
+        "add_node_empty_prefix": "No matches for “",
+        "add_node_empty_suffix": "”",
+        "add_node_jump_label": "+ New agent in Agents →",
+        "gate_palette_rows": [
+            {
+                "id": "branch",
+                "glyph": "⑂",
+                "label": "Branch gate",
+                "meta": "conditional split"
+            },
+            {
+                "id": "fork",
+                "glyph": "‖",
+                "label": "Parallel fork",
+                "meta": "fan_out lanes"
+            },
+            {
+                "id": "join",
+                "glyph": "⋈",
+                "label": "Join gate",
+                "meta": "fan_in barrier"
+            }
+        ]
     });
     let editor_agent_view = json!({
         "agents_heading": "AGENTS",
@@ -15681,6 +15710,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_view"]["port_drag_title"],
             json!("Drag to a member to connect")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["add_node_search_placeholder"],
+            json!("Add a node…")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["gate_palette_rows"][1]["id"],
+            json!("fork")
         );
         assert_eq!(
             mob_definition["editor_agent_view"]["agents_heading"],

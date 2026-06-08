@@ -96,6 +96,8 @@ assert.match(app, /<GraphEditor[\s\S]*grid=\{catalogs\.grid\}/, "app shell must 
 assert.match(app, /<GraphEditor[\s\S]*contract=\{contract\}/, "app shell must inject the MobKit graph contract into Graph editor");
 assert.match(app, /<GraphEditor[\s\S]*graphView=\{catalogs\.graphView\}/, "app shell must inject schema-backed Graph canvas view state");
 assert.match(controller, /mob_definition\?\.editor_graph_view/, "controller plane must hydrate Graph canvas chrome from MobKit schema");
+assert.match(app, /<AddNodeMenu[\s\S]*graphView=\{catalogs\.graphView\}/, "app shell must inject schema-backed Graph add-node menu view state");
+assert.match(controller, /gatePaletteRows:\s*graphGatePaletteRowsFromSchema\(view\.gate_palette_rows\)/, "controller plane must hydrate Graph gate palette rows from MobKit schema");
 assert.match(graphEditorBlock, /graphView(?:\s*=\s*null)?[\s\S]*MobKitFlowController\.graphCanvasViewState\(graphView\)/, "Graph editor must render canvas affordance titles through controller-projected view state");
 assert.match(graphEditorBlock, /(?=[\s\S]*canvasView\.zoomOutTitle)(?=[\s\S]*canvasView\.fitTitle)(?=[\s\S]*canvasView\.zoomInTitle)(?=[\s\S]*canvasView\.portDragTitle)/, "Graph editor must use controller-projected zoom and port titles");
 assert(!/title=["'](?:Zoom out|Fit to view|Zoom in|Drag to a member to connect)["']/.test(graph), "Graph editor JSX must not compose canvas affordance titles locally");
@@ -210,6 +212,7 @@ assert.match(builderStepPickerBlock, /pickerState\.primitiveRows\.map/, "Basic a
 assert.match(builderStepPickerBlock, /pickerState\.kickoffHint/, "Basic add-step kickoff copy must come from controller state");
 assert.match(controller, /function basicStepPickerState/, "controller plane must own Basic add-step search and palette projection");
 assert.match(addNodeMenuBlock, /MobKitFlowController\.graphAddNodeMenuState/, "Graph add-node menu must render controller-projected palette rows");
+assert.match(addNodeMenuBlock, /graphAddNodeMenuState\(\{[\s\S]*graphView/, "Graph add-node menu must pass schema-backed Graph view into controller projection");
 assert.match(addNodeMenuBlock, /menuState\.memberRows\.map/, "Graph add-node member rows must come from controller state");
 assert.match(addNodeMenuBlock, /menuState\.controlRows\.map/, "Graph add-node control rows must come from controller state");
 assert.match(addNodeMenuBlock, /menuState\.emptyLabel/, "Graph add-node empty copy must come from controller state");
@@ -1045,6 +1048,7 @@ assert.match(app, /MobKitFlowController\.graphControlShape/, "Graph editor quick
 assert.match(app, /MobKitFlowController\.graphMemberInstanceShape/, "Graph editor quick member insertion must ask the controller for MobKit-backed member-instance shapes");
 assert.match(app, /graphMemberInstanceShape\(\{[\s\S]*instances:\s*studio\.instances/, "Graph quick member insertion must pass current graph nodes into controller ID creation");
 assert.match(app, /graphControlShape\(\{[\s\S]*instances:\s*studio\.instances,[\s\S]*edges:\s*studio\.edges/, "Graph quick control insertion must pass current graph nodes and edges into controller ID creation");
+assert.match(app, /graphControlShape\(\{[\s\S]*graphView:\s*catalogs\.graphView/, "Graph quick control insertion must pass schema-backed Graph view into controller projection");
 assert.match(controller, /function uniqueGraphControlSuffix/, "controller plane must own graph control ID collision handling");
 assert(!/graphControlShape[\s\S]{0,1400}lane:\s*isBranch \? ["']condition["'] : ["']lane 1["']|graphControlShape[\s\S]{0,1800}label:\s*isBranch \? ["']join · branch paths["']/.test(controller), "Graph quick control insertion must not own local lane or join labels");
 assert.match(controller, /function uniqueGraphInstanceId/, "controller plane must own graph member-instance ID collision handling");

@@ -1459,10 +1459,39 @@
       fitTitle: String(view.fit_title || "").trim(),
       zoomInTitle: String(view.zoom_in_title || "").trim(),
       portDragTitle: String(view.port_drag_title || "").trim(),
+      addNodeSearchIcon: String(view.add_node_search_icon || "").trim(),
+      addNodeSearchPlaceholder: String(view.add_node_search_placeholder || "").trim(),
+      addNodeCloseLabel: String(view.add_node_close_label || "").trim(),
+      addNodeCloseTitle: String(view.add_node_close_title || "").trim(),
+      addNodeAgentsLabel: String(view.add_node_agents_label || "").trim(),
+      addNodeControlsLabel: String(view.add_node_controls_label || "").trim(),
+      addNodeEmptyPrefix: String(view.add_node_empty_prefix || ""),
+      addNodeEmptySuffix: String(view.add_node_empty_suffix || ""),
+      addNodeJumpLabel: String(view.add_node_jump_label || "").trim(),
+      gatePaletteRows: graphGatePaletteRowsFromSchema(view.gate_palette_rows),
     };
     return out.zoomOutTitle && out.fitTitle && out.zoomInTitle && out.portDragTitle
+      && out.addNodeSearchIcon && out.addNodeSearchPlaceholder && out.addNodeCloseLabel
+      && out.addNodeCloseTitle && out.addNodeAgentsLabel && out.addNodeControlsLabel
+      && out.addNodeEmptyPrefix && out.addNodeEmptySuffix && out.addNodeJumpLabel
+      && out.gatePaletteRows.length
       ? out
       : null;
+  }
+
+  function graphGatePaletteRowsFromSchema(rows) {
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .map((row) => {
+        if (!row || typeof row !== "object") return null;
+        const id = String(row.id || "").trim();
+        const glyph = String(row.glyph || "").trim();
+        const label = String(row.label || "").trim();
+        const meta = String(row.meta || "").trim();
+        if (!id || !glyph || !label || !meta) return null;
+        return { id, glyph, label, meta };
+      })
+      .filter(Boolean);
   }
 
   function graphCanvasViewState(graphView) {
@@ -1472,6 +1501,16 @@
       fitTitle: String(view?.fitTitle || ""),
       zoomInTitle: String(view?.zoomInTitle || ""),
       portDragTitle: String(view?.portDragTitle || ""),
+      addNodeSearchIcon: String(view?.addNodeSearchIcon || ""),
+      addNodeSearchPlaceholder: String(view?.addNodeSearchPlaceholder || ""),
+      addNodeCloseLabel: String(view?.addNodeCloseLabel || ""),
+      addNodeCloseTitle: String(view?.addNodeCloseTitle || ""),
+      addNodeAgentsLabel: String(view?.addNodeAgentsLabel || ""),
+      addNodeControlsLabel: String(view?.addNodeControlsLabel || ""),
+      addNodeEmptyPrefix: String(view?.addNodeEmptyPrefix || ""),
+      addNodeEmptySuffix: String(view?.addNodeEmptySuffix || ""),
+      addNodeJumpLabel: String(view?.addNodeJumpLabel || ""),
+      gatePaletteRows: Array.isArray(view?.gatePaletteRows) ? view.gatePaletteRows : [],
     };
   }
 
@@ -7398,25 +7437,25 @@
       .map((type) => metadata[type]);
   }
 
-  function graphControlNodes(contract) {
-    const glyphs = { branch: "⑂", fork: "‖", join: "⋈" };
-    const labels = { branch: "Branch gate", fork: "Parallel fork", join: "Join gate" };
-    const metas = { branch: "conditional split", fork: "fan_out lanes", join: "fan_in barrier" };
+  function graphControlNodes(contract, graphView = null) {
+    const view = graphCanvasViewState(graphView);
+    const metadata = Object.fromEntries((view.gatePaletteRows || []).map((row) => [row.id, row]));
     const paletteKinds = Array.isArray(contract?.mob_definition?.graph_palette_gate_kinds)
       ? contract.mob_definition.graph_palette_gate_kinds.map(String)
       : [];
     return graphGateKindOptions(contract, "")
-      .filter((option) => !option.disabled && paletteKinds.includes(option.value))
+      .filter((option) => !option.disabled && paletteKinds.includes(option.value) && metadata[option.value])
       .map((option) => ({
         id: option.value,
         gateKind: option.value,
-        glyph: glyphs[option.value] || "•",
-        label: labels[option.value] || option.value,
-        meta: metas[option.value] || "MobKit graph gate",
+        glyph: metadata[option.value].glyph,
+        label: metadata[option.value].label,
+        meta: metadata[option.value].meta,
       }));
   }
 
-  function graphAddNodeMenuState({ members = [], contract = null, query = "" } = {}) {
+  function graphAddNodeMenuState({ members = [], contract = null, query = "", graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
     const q = String(query || "");
     const ql = q.trim().toLowerCase();
     const memberRows = (Array.isArray(members) ? members : [])
@@ -7437,7 +7476,7 @@
       }))
       .filter((row) => row.id);
     const controls = (Array.isArray(members) && members.length)
-      ? graphControlNodes(contract)
+      ? graphControlNodes(contract, graphView)
       : [];
     const controlRows = controls
       .filter((node) => {
@@ -7458,14 +7497,14 @@
       }))
       .filter((row) => row.id);
     return {
-      searchIcon: "⌕",
-      searchPlaceholder: "Add a node…",
-      closeLabel: "✕",
-      closeTitle: "Close",
-      agentsLabel: "Agents",
-      controlsLabel: "Flow controls",
-      emptyLabel: `No matches for “${q}”`,
-      jumpLabel: "+ New agent in Agents →",
+      searchIcon: view.addNodeSearchIcon,
+      searchPlaceholder: view.addNodeSearchPlaceholder,
+      closeLabel: view.addNodeCloseLabel,
+      closeTitle: view.addNodeCloseTitle,
+      agentsLabel: view.addNodeAgentsLabel,
+      controlsLabel: view.addNodeControlsLabel,
+      emptyLabel: `${view.addNodeEmptyPrefix}${q}${view.addNodeEmptySuffix}`,
+      jumpLabel: view.addNodeJumpLabel,
       memberRows,
       controlRows,
       hasMembers: memberRows.length > 0,
@@ -7691,10 +7730,10 @@
     return out;
   }
 
-  function graphControlShape({ gateKind, at, members, instances, edges, flow, contract } = {}) {
+  function graphControlShape({ gateKind, at, members, instances, edges, flow, contract, graphView = null } = {}) {
     const kind = String(gateKind || "").trim();
     if (kind !== "branch" && kind !== "fork") return null;
-    const allowed = new Set(graphControlNodes(contract).map((node) => node.gateKind));
+    const allowed = new Set(graphControlNodes(contract, graphView).map((node) => node.gateKind));
     if (!allowed.has(kind)) return null;
     const sourceMembers = Array.isArray(members) ? members : [];
     if (!at || sourceMembers.length === 0) return null;
