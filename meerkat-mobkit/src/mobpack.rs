@@ -1101,6 +1101,31 @@ pub fn mobpack_schema_response() -> Value {
     editor_basic_view["tool_scope_select_member_placeholder"] = json!("select a member first");
     editor_basic_view["tool_scope_block_catalog_placeholder"] = json!("+ block MobKit tool...");
     editor_basic_view["tool_scope_add_profile_placeholder"] = json!("+ add profile tool...");
+    editor_basic_view["input_panel_icon"] = json!("▤");
+    editor_basic_view["input_panel_title"] = json!("Input");
+    editor_basic_view["input_panel_sub"] = json!("The task this mob is run with — its ingress");
+    editor_basic_view["input_task_label"] = json!("Task");
+    editor_basic_view["input_task_placeholder"] = json!("e.g. Fix the issue described below.");
+    editor_basic_view["input_params_title_prefix"] = json!("INPUT PARAMS");
+    editor_basic_view["input_add_param_label"] = json!("+ param");
+    editor_basic_view["input_param_source_label"] = json!("Input params");
+    editor_basic_view["input_param_header_labels"] = json!({
+        "name": "NAME",
+        "type": "TYPE",
+        "required": "REQ",
+        "description": "DESCRIPTION",
+        "action": ""
+    });
+    editor_basic_view["input_empty_params_parts"] = json!([
+        { "key": "prefix", "text": "No params yet. Add one before branching on " },
+        { "key": "ref", "text": "params.*", "kind": "code" },
+        { "key": "suffix", "text": "." }
+    ]);
+    editor_basic_view["input_tips"] = json!([
+        "Run with: rkat mob deploy <pack> \"<task>\" — or run_flow(input).",
+        "Typed fields become the input schema the run is validated against.",
+        "Event sources & schedules live outside the mobpack (e.g. fugue)."
+    ]);
     editor_basic_view["branch_panel_title"] = json!("Branch");
     editor_basic_view["branch_panel_sub"] = json!("Choose one downstream path by condition");
     editor_basic_view["parallel_panel_title"] = json!("Parallel");
@@ -15937,6 +15962,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_basic_view"]["tool_scope_add_profile_placeholder"],
             json!("+ add profile tool...")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["input_panel_title"],
+            json!("Input")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["input_param_header_labels"]["required"],
+            json!("REQ")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["input_empty_params_parts"][1]["text"],
+            json!("params.*")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["input_tips"][0],
+            json!("Run with: rkat mob deploy <pack> \"<task>\" — or run_flow(input).")
         );
         assert_eq!(
             mob_definition["editor_basic_view"]["branch_condition_empty_hint"],

@@ -456,7 +456,7 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
 function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, onInputParamReferenceChange }) {
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   if (step.type === "input") {
-    const inputState = window.MobKitFlowController.basicInputControlState(step, contract);
+    const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
     const updateParam = (id, patch) => update(step.id, window.MobKitFlowController.inputParamUpdatePatch(params, id, patch, contract));
     const deleteParam = (id) => {

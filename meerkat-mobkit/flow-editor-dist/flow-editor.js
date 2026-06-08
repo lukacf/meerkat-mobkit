@@ -1134,6 +1134,25 @@ window.MOBKIT_BOOT = {
       toolScopeSelectMemberPlaceholder: String(view.tool_scope_select_member_placeholder || "").trim(),
       toolScopeBlockCatalogPlaceholder: String(view.tool_scope_block_catalog_placeholder || "").trim(),
       toolScopeAddProfilePlaceholder: String(view.tool_scope_add_profile_placeholder || "").trim(),
+      inputPanelIcon: String(view.input_panel_icon || "").trim(),
+      inputPanelTitle: String(view.input_panel_title || "").trim(),
+      inputPanelSub: String(view.input_panel_sub || "").trim(),
+      inputTaskLabel: String(view.input_task_label || "").trim(),
+      inputTaskPlaceholder: String(view.input_task_placeholder || "").trim(),
+      inputParamsTitlePrefix: String(view.input_params_title_prefix || "").trim(),
+      inputAddParamLabel: String(view.input_add_param_label || "").trim(),
+      inputParamSourceLabel: String(view.input_param_source_label || "").trim(),
+      inputParamHeaderLabels: {
+        name: String(view.input_param_header_labels?.name || "").trim(),
+        type: String(view.input_param_header_labels?.type || "").trim(),
+        required: String(view.input_param_header_labels?.required || "").trim(),
+        description: String(view.input_param_header_labels?.description || "").trim(),
+        action: String(view.input_param_header_labels?.action || ""),
+      },
+      inputEmptyParamsParts: basicViewPartsFromSchema(view.input_empty_params_parts),
+      inputTips: Array.isArray(view.input_tips)
+        ? view.input_tips.map((tip) => String(tip || "").trim()).filter(Boolean)
+        : [],
       branchPanelTitle: String(view.branch_panel_title || "").trim(),
       branchPanelSub: String(view.branch_panel_sub || "").trim(),
       parallelPanelTitle: String(view.parallel_panel_title || "").trim(),
@@ -1215,7 +1234,12 @@ window.MOBKIT_BOOT = {
       pickerNewBadgeLabel: String(view.picker_new_badge_label || "").trim(),
       flowPrimitiveRows: basicFlowPrimitiveRowsFromSchema(view.flow_primitive_rows),
     };
-    return Object.entries(out).every(([key, value]) => Array.isArray(value) ? value.length : !!value)
+    return Object.entries(out).every(([key, value]) => {
+      if (key === "inputParamHeaderLabels") {
+        return value.name && value.type && value.required && value.description;
+      }
+      return Array.isArray(value) ? value.length : !!value;
+    })
       ? out
       : null;
   }
@@ -1291,6 +1315,23 @@ window.MOBKIT_BOOT = {
       toolScopeSelectMemberPlaceholder: String(view?.toolScopeSelectMemberPlaceholder || ""),
       toolScopeBlockCatalogPlaceholder: String(view?.toolScopeBlockCatalogPlaceholder || ""),
       toolScopeAddProfilePlaceholder: String(view?.toolScopeAddProfilePlaceholder || ""),
+      inputPanelIcon: String(view?.inputPanelIcon || ""),
+      inputPanelTitle: String(view?.inputPanelTitle || ""),
+      inputPanelSub: String(view?.inputPanelSub || ""),
+      inputTaskLabel: String(view?.inputTaskLabel || ""),
+      inputTaskPlaceholder: String(view?.inputTaskPlaceholder || ""),
+      inputParamsTitlePrefix: String(view?.inputParamsTitlePrefix || ""),
+      inputAddParamLabel: String(view?.inputAddParamLabel || ""),
+      inputParamSourceLabel: String(view?.inputParamSourceLabel || ""),
+      inputParamHeaderLabels: {
+        name: String(view?.inputParamHeaderLabels?.name || ""),
+        type: String(view?.inputParamHeaderLabels?.type || ""),
+        required: String(view?.inputParamHeaderLabels?.required || ""),
+        description: String(view?.inputParamHeaderLabels?.description || ""),
+        action: String(view?.inputParamHeaderLabels?.action || ""),
+      },
+      inputEmptyParamsParts: Array.isArray(view?.inputEmptyParamsParts) ? view.inputEmptyParamsParts : [],
+      inputTips: Array.isArray(view?.inputTips) ? view.inputTips : [],
       branchPanelTitle: String(view?.branchPanelTitle || ""),
       branchPanelSub: String(view?.branchPanelSub || ""),
       parallelPanelTitle: String(view?.parallelPanelTitle || ""),
@@ -4013,52 +4054,46 @@ window.MOBKIT_BOOT = {
       .join(", ");
   }
 
-  function inputParamOptions(flow) {
+  function inputParamOptions(flow, basicView = null) {
     const input = (flow?.steps || []).find((step) => step.type === "input");
     const fields = inputParamsForStep(input);
     if (!fields.length) return [];
+    const view = basicEditorViewState(basicView);
     return [{
       stepId: "params",
       namespace: "params",
-      label: "Input params",
+      label: view.inputParamSourceLabel,
       fields,
     }];
   }
 
-  function basicInputControlState(step, contract) {
+  function basicInputControlState(step, contract, basicView = null) {
     const params = inputParamsForStep(step);
+    const view = basicEditorViewState(basicView);
     return {
-      panelIcon: "▤",
-      panelTitle: "Input",
-      panelSub: "The task this mob is run with — its ingress",
-      taskLabel: "Task",
-      taskPlaceholder: "e.g. Fix the issue described below.",
+      panelIcon: view.inputPanelIcon,
+      panelTitle: view.inputPanelTitle,
+      panelSub: view.inputPanelSub,
+      taskLabel: view.inputTaskLabel,
+      taskPlaceholder: view.inputTaskPlaceholder,
       params,
-      paramsTitle: `INPUT PARAMS · ${params.length}`,
-      addParamLabel: "+ param",
+      paramsTitle: `${view.inputParamsTitlePrefix} · ${params.length}`,
+      addParamLabel: view.inputAddParamLabel,
       headerRows: [
-        { key: "name", label: "NAME", className: "sb-col sb-col--name" },
-        { key: "type", label: "TYPE", className: "sb-col sb-col--type" },
-        { key: "required", label: "REQ", className: "sb-col sb-col--req" },
-        { key: "description", label: "DESCRIPTION", className: "sb-col sb-col--desc" },
-        { key: "actions", label: "", className: "sb-col sb-col--act" },
+        { key: "name", label: view.inputParamHeaderLabels.name, className: "sb-col sb-col--name" },
+        { key: "type", label: view.inputParamHeaderLabels.type, className: "sb-col sb-col--type" },
+        { key: "required", label: view.inputParamHeaderLabels.required, className: "sb-col sb-col--req" },
+        { key: "description", label: view.inputParamHeaderLabels.description, className: "sb-col sb-col--desc" },
+        { key: "actions", label: view.inputParamHeaderLabels.action, className: "sb-col sb-col--act" },
       ],
-      emptyParamsParts: [
-        { key: "prefix", text: "No params yet. Add one before branching on " },
-        { key: "ref", text: "params.*", kind: "code" },
-        { key: "suffix", text: "." },
-      ],
-      tips: [
-        "Run with: rkat mob deploy <pack> \"<task>\" — or run_flow(input).",
-        "Typed fields become the input schema the run is validated against.",
-        "Event sources & schedules live outside the mobpack (e.g. fugue).",
-      ],
+      emptyParamsParts: view.inputEmptyParamsParts,
+      tips: view.inputTips,
     };
   }
 
-  function basicConditionOptions(flow, targetId, members) {
+  function basicConditionOptions(flow, targetId, members, basicView = null) {
     return [
-      ...inputParamOptions(flow),
+      ...inputParamOptions(flow, basicView),
       ...memberConditionOptionsBefore(flow?.steps || [], targetId, members).out,
     ];
   }
@@ -4326,7 +4361,7 @@ window.MOBKIT_BOOT = {
         member,
       })),
       emptyControllerHint: view.branchEmptyControllerHint,
-      conditionOptions: basicConditionOptions(flow, step?.id, sourceMembers),
+      conditionOptions: basicConditionOptions(flow, step?.id, sourceMembers, basicView),
       branchConditionTitle: view.branchConditionTitle,
       branchConditionIntro: view.branchConditionIntro,
       fallbackTitle: view.branchFallbackTitle,
@@ -11811,7 +11846,7 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
 function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, onInputParamReferenceChange }) {
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   if (step.type === "input") {
-    const inputState = window.MobKitFlowController.basicInputControlState(step, contract);
+    const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
     const updateParam = (id, patch) => update(step.id, window.MobKitFlowController.inputParamUpdatePatch(params, id, patch, contract));
     const deleteParam = (id) => {

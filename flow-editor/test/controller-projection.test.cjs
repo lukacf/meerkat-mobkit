@@ -873,6 +873,31 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       tool_scope_select_member_placeholder: "select a member first",
       tool_scope_block_catalog_placeholder: "+ block MobKit tool...",
       tool_scope_add_profile_placeholder: "+ add profile tool...",
+      input_panel_icon: "▤",
+      input_panel_title: "Input",
+      input_panel_sub: "The task this mob is run with — its ingress",
+      input_task_label: "Task",
+      input_task_placeholder: "e.g. Fix the issue described below.",
+      input_params_title_prefix: "INPUT PARAMS",
+      input_add_param_label: "+ param",
+      input_param_source_label: "Input params",
+      input_param_header_labels: {
+        name: "NAME",
+        type: "TYPE",
+        required: "REQ",
+        description: "DESCRIPTION",
+        action: "",
+      },
+      input_empty_params_parts: [
+        { key: "prefix", text: "No params yet. Add one before branching on " },
+        { key: "ref", text: "params.*", kind: "code" },
+        { key: "suffix", text: "." },
+      ],
+      input_tips: [
+        "Run with: rkat mob deploy <pack> \"<task>\" — or run_flow(input).",
+        "Typed fields become the input schema the run is validated against.",
+        "Event sources & schedules live outside the mobpack (e.g. fugue).",
+      ],
       branch_panel_title: "Branch",
       branch_panel_sub: "Choose one downstream path by condition",
       parallel_panel_title: "Parallel",
@@ -1231,6 +1256,31 @@ assert.deepEqual(hydratedCatalogs.basicView, {
   toolScopeSelectMemberPlaceholder: "select a member first",
   toolScopeBlockCatalogPlaceholder: "+ block MobKit tool...",
   toolScopeAddProfilePlaceholder: "+ add profile tool...",
+  inputPanelIcon: "▤",
+  inputPanelTitle: "Input",
+  inputPanelSub: "The task this mob is run with — its ingress",
+  inputTaskLabel: "Task",
+  inputTaskPlaceholder: "e.g. Fix the issue described below.",
+  inputParamsTitlePrefix: "INPUT PARAMS",
+  inputAddParamLabel: "+ param",
+  inputParamSourceLabel: "Input params",
+  inputParamHeaderLabels: {
+    name: "NAME",
+    type: "TYPE",
+    required: "REQ",
+    description: "DESCRIPTION",
+    action: "",
+  },
+  inputEmptyParamsParts: [
+    { key: "prefix", kind: "text", text: "No params yet. Add one before branching on " },
+    { key: "ref", kind: "code", text: "params.*" },
+    { key: "suffix", kind: "text", text: "." },
+  ],
+  inputTips: [
+    "Run with: rkat mob deploy <pack> \"<task>\" — or run_flow(input).",
+    "Typed fields become the input schema the run is validated against.",
+    "Event sources & schedules live outside the mobpack (e.g. fugue).",
+  ],
   branchPanelTitle: "Branch",
   branchPanelSub: "Choose one downstream path by condition",
   parallelPanelTitle: "Parallel",
@@ -1374,6 +1424,23 @@ assert.deepEqual(controller.basicEditorViewState(null), {
   toolScopeSelectMemberPlaceholder: "",
   toolScopeBlockCatalogPlaceholder: "",
   toolScopeAddProfilePlaceholder: "",
+  inputPanelIcon: "",
+  inputPanelTitle: "",
+  inputPanelSub: "",
+  inputTaskLabel: "",
+  inputTaskPlaceholder: "",
+  inputParamsTitlePrefix: "",
+  inputAddParamLabel: "",
+  inputParamSourceLabel: "",
+  inputParamHeaderLabels: {
+    name: "",
+    type: "",
+    required: "",
+    description: "",
+    action: "",
+  },
+  inputEmptyParamsParts: [],
+  inputTips: [],
   branchPanelTitle: "",
   branchPanelSub: "",
   parallelPanelTitle: "",
@@ -4954,6 +5021,7 @@ assert.deepEqual(controller.basicConditionOptions(
   basicConditionOptionFlow,
   "branch_1",
   basicConditionOptionMembers,
+  { ...hydratedCatalogs.basicView, inputParamSourceLabel: "Runtime input" },
 ).map((option) => ({
   stepId: option.stepId,
   namespace: option.namespace,
@@ -4961,13 +5029,14 @@ assert.deepEqual(controller.basicConditionOptions(
   member: option.member?.id || "",
   fields: (option.fields || []).map((field) => field.name),
 })), [
-  { stepId: "params", namespace: "params", label: "Input params", member: "", fields: ["route"] },
+  { stepId: "params", namespace: "params", label: "Runtime input", member: "", fields: ["route"] },
   { stepId: "plan_step", namespace: "steps", label: "Planner", member: "m_plan", fields: [] },
 ]);
 assert.deepEqual(controller.basicConditionOptions(
   basicConditionOptionFlow,
   "nested_branch",
   basicConditionOptionMembers,
+  hydratedCatalogs.basicView,
 ).map((option) => ({
   stepId: option.stepId,
   namespace: option.namespace,
@@ -4981,6 +5050,7 @@ assert.deepEqual(controller.basicConditionOptions(
   basicConditionOptionFlow,
   "future_step",
   basicConditionOptionMembers,
+  hydratedCatalogs.basicView,
 ).map((option) => option.member?.id).filter(Boolean), ["m_plan"]);
 
 const paramReferenceFlow = {
@@ -6714,10 +6784,10 @@ assert.equal(controller.inputParamSummary([
 ], graphShapeContract), "route: enum, notes: string?");
 assert.deepEqual(controller.inputParamOptions({
   steps: [{ type: "input", fields: "route: enum(code,docs)" }],
-}), [{
+}, { ...hydratedCatalogs.basicView, inputParamSourceLabel: "Runtime input" }), [{
   stepId: "params",
   namespace: "params",
-  label: "Input params",
+  label: "Runtime input",
   fields: [{ id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["code", "docs"] }],
 }]);
 const inputControlState = controller.basicInputControlState({
@@ -6727,25 +6797,37 @@ const inputControlState = controller.basicInputControlState({
   inputParams: [
     { id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["code", "docs"] },
   ],
-}, graphShapeContract);
+}, graphShapeContract, {
+  ...hydratedCatalogs.basicView,
+  inputPanelTitle: "Runtime input",
+  inputParamsTitlePrefix: "RUNTIME FIELDS",
+  inputAddParamLabel: "+ runtime field",
+  inputParamHeaderLabels: {
+    name: "FIELD",
+    type: "KIND",
+    required: "MUST",
+    description: "NOTES",
+    action: "",
+  },
+});
 assert.equal(inputControlState.panelIcon, "▤");
-assert.equal(inputControlState.panelTitle, "Input");
+assert.equal(inputControlState.panelTitle, "Runtime input");
 assert.equal(inputControlState.panelSub, "The task this mob is run with — its ingress");
 assert.equal(inputControlState.taskLabel, "Task");
 assert.equal(inputControlState.taskPlaceholder, "e.g. Fix the issue described below.");
-assert.equal(inputControlState.paramsTitle, "INPUT PARAMS · 1");
-assert.equal(inputControlState.addParamLabel, "+ param");
+assert.equal(inputControlState.paramsTitle, "RUNTIME FIELDS · 1");
+assert.equal(inputControlState.addParamLabel, "+ runtime field");
 assert.deepEqual(inputControlState.headerRows.map((row) => [row.key, row.label, row.className]), [
-  ["name", "NAME", "sb-col sb-col--name"],
-  ["type", "TYPE", "sb-col sb-col--type"],
-  ["required", "REQ", "sb-col sb-col--req"],
-  ["description", "DESCRIPTION", "sb-col sb-col--desc"],
+  ["name", "FIELD", "sb-col sb-col--name"],
+  ["type", "KIND", "sb-col sb-col--type"],
+  ["required", "MUST", "sb-col sb-col--req"],
+  ["description", "NOTES", "sb-col sb-col--desc"],
   ["actions", "", "sb-col sb-col--act"],
 ]);
 assert.deepEqual(inputControlState.emptyParamsParts, [
-  { key: "prefix", text: "No params yet. Add one before branching on " },
+  { key: "prefix", kind: "text", text: "No params yet. Add one before branching on " },
   { key: "ref", text: "params.*", kind: "code" },
-  { key: "suffix", text: "." },
+  { key: "suffix", kind: "text", text: "." },
 ]);
 assert.deepEqual(inputControlState.tips, [
   "Run with: rkat mob deploy <pack> \"<task>\" — or run_flow(input).",

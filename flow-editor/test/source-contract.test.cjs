@@ -21,6 +21,7 @@ const builderCondValueBlock = (builder.match(/function CondValue[\s\S]*?function
 const memberBlockStart = builder.lastIndexOf("// member step");
 const builderMemberBlock = memberBlockStart >= 0 ? builder.slice(memberBlockStart) : "";
 const builderInputParamBlock = (builder.match(/function InputParamField[\s\S]*?function BranchConditionEditor/) || [""])[0];
+const basicInputControlBlock = (controller.match(/function basicInputControlState[\s\S]*?function basicConditionOptions/) || [""])[0];
 const builderBranchConditionBlock = (builder.match(/function BranchConditionEditor[\s\S]*?function BuilderView/) || [""])[0];
 const builderStepInspectorBlock = (builder.match(/function StepInspector[\s\S]*?function ToolScopeEditor/) || [""])[0];
 const builderInputStepBlock = (builderStepInspectorBlock.match(/if \(step\.type === "input"\) \{[\s\S]*?if \(step\.type === "branch"/) || [""])[0];
@@ -456,6 +457,7 @@ assert(!/update\(step\.id,\s*\{\s*(?:controllerRole|role|dispatch|dispatchMode|c
 assert(!/update\(step\.id,\s*\{\s*(?:cond|loopId|iterationInput|allowedTools|blockedTools):/.test(builder), "Basic editor must not assemble repeat or tool-scope semantic patches directly");
 assert(!/update\(step\.id,\s*\{\s*(?:task|instruction):/.test(builder), "Basic editor must not assemble task/instruction text patches directly");
 assert.match(builder, /MobKitFlowController\.basicInputControlState/, "Basic editor must read input-step display state through the controller plane");
+assert.match(builder, /basicInputControlState\(step,\s*contract,\s*basicView\)/, "Basic input panel must pass schema-backed Basic view state into the controller projection");
 assert.match(builderInputStepBlock, /inputState\.params/, "Basic input panel must render params through projected controller state");
 assert.match(builderInputStepBlock, /inputState\.paramsTitle/, "Basic input panel must render param section title through projected controller state");
 assert.match(builderInputStepBlock, /inputState\.headerRows/, "Basic input panel must render schema table headers through projected controller state");
@@ -468,8 +470,12 @@ assert.match(controller, /function inputParamAddPatch/, "controller plane must o
 assert.match(controller, /mob_definition\?\.editor_input_param_draft/, "Basic input-param creation must hydrate from the MobKit editor_input_param_draft contract");
 assert(!/inputParamAddPatch[\s\S]{0,420}["']param["']/.test(controller), "controller must not own the local Basic input-param draft name");
 assert.match(controller, /function basicInputControlState/, "controller plane must own Basic input panel projection");
+assert.match(controller, /inputPanelTitle:\s*String\(view\.input_panel_title/, "controller plane must hydrate Basic input panel title from MobKit schema");
+assert.match(controller, /inputParamHeaderLabels:\s*\{[\s\S]*name:\s*String\(view\.input_param_header_labels\?\.name/, "controller plane must hydrate Basic input param headers from MobKit schema");
+assert.match(controller, /inputTips:\s*Array\.isArray\(view\.input_tips\)/, "controller plane must hydrate Basic input tips from MobKit schema");
 assert.match(controller, /function parseLegacyInputFields/, "controller plane must own legacy input field parsing");
 assert(!/function (?:sanitizeFieldName|uniqueParamName|parseLegacyInputFields|inputParamsForStep|inputParamSummary|inputParamOptions)\(/.test(builder), "Basic editor must not own input-param parsing or summary helpers");
+assert(!/panelTitle:\s*["']Input["']|panelSub:\s*["']The task this mob is run with|taskLabel:\s*["']Task["']|taskPlaceholder:\s*["']e\.g\. Fix|paramsTitle:\s*`INPUT PARAMS|addParamLabel:\s*["']\+ param["']|label:\s*["'](?:NAME|TYPE|REQ|DESCRIPTION)["']|No params yet|params\.\*|Run with: rkat mob deploy|Typed fields become the input schema|Event sources & schedules/.test(basicInputControlBlock), "Basic input controller projection must not compose input labels, headers, empty copy, or tips locally");
 assert(!/title=["']Input["']|sub=["']The task this mob is run with|label=["']Task["']|placeholder=["']e\.g\. Fix the issue described below\.["']|INPUT PARAMS|>\+ param<\/button>|>NAME<\/span>|>TYPE<\/span>|>REQ<\/span>|>DESCRIPTION<\/span>|No params yet|params\.\*|Run with: rkat mob deploy|Typed fields become the input schema|Event sources & schedules/.test(builderInputStepBlock), "Basic input panel must not compose input-step labels, headers, empty state, or tips locally");
 assert.match(controller, /function basicConditionFromText/, "controller plane must own branch condition text parsing");
 assert.match(controller, /function basicConditionLabel/, "controller plane must own branch condition label rendering");
