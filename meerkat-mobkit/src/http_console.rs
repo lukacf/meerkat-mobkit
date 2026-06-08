@@ -25,6 +25,7 @@ use meerkat_mob::{
 use crate::mob_handle_runtime::{
     is_recoverable_lifecycle_cleanup_error, member_entry_to_json,
     model_capabilities_for_member_entry, model_capabilities_for_role,
+    topology_restore_failed_peer_ids, topology_restore_warning_json,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -3019,26 +3020,40 @@ fn lifecycle_archive_cleanup_completed(error: &str) -> bool {
 async fn respawn_console_member(
     handle: &MobHandle,
     runtime_member_id: &MeerkatId,
-) -> Result<(), String> {
+) -> Result<Option<Value>, String> {
     let entry_before_respawn = handle.get_member(runtime_member_id).await;
     match handle.respawn(runtime_member_id.clone(), None).await {
-        Ok(_receipt) => Ok(()),
-        Err(err) if lifecycle_archive_cleanup_completed(&err.to_string()) => {
-            if handle.get_member(runtime_member_id).await.is_none()
-                && let Some(entry) = entry_before_respawn
-            {
-                let mut spec = SpawnMemberSpec::new(entry.role.clone(), runtime_member_id.clone());
-                if !entry.labels.is_empty() {
-                    spec = spec.with_labels(entry.labels.clone());
-                }
-                handle
-                    .ensure_member(spec)
-                    .await
-                    .map_err(|ensure_err| ensure_err.to_string())?;
+        Ok(_receipt) => Ok(None),
+        Err(err) => {
+            if let Some(failed_peer_ids) = topology_restore_failed_peer_ids(&err) {
+                tracing::warn!(
+                    member_id = %runtime_member_id,
+                    failed_peer_count = failed_peer_ids.len(),
+                    failed_peer_ids = ?failed_peer_ids,
+                    "console member respawn restored member with isolated peer edges; continuing degraded respawn"
+                );
+                return Ok(Some(topology_restore_warning_json(&failed_peer_ids)));
             }
-            Ok(())
+
+            if lifecycle_archive_cleanup_completed(&err.to_string()) {
+                if handle.get_member(runtime_member_id).await.is_none()
+                    && let Some(entry) = entry_before_respawn
+                {
+                    let mut spec =
+                        SpawnMemberSpec::new(entry.role.clone(), runtime_member_id.clone());
+                    if !entry.labels.is_empty() {
+                        spec = spec.with_labels(entry.labels.clone());
+                    }
+                    handle
+                        .ensure_member(spec)
+                        .await
+                        .map_err(|ensure_err| ensure_err.to_string())?;
+                }
+                return Ok(None);
+            }
+
+            Err(err.to_string())
         }
-        Err(err) => Err(err.to_string()),
     }
 }
 
@@ -4197,7 +4212,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                         )
                         .await
                         {
-                            Ok(()) => {
+                            Ok(topology_restore_warning) => {
                                 let live_session_id = handle
                                     .resolve_bridge_session_id_observation(&MeerkatId::from(
                                         record.agent_runtime_id.as_str(),
@@ -4213,7 +4228,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                                     {
                                         Ok(updated_record) => {
                                             record = updated_record;
-                                            None
+                                            topology_restore_warning
                                         }
                                         Err(err) => Some(json!({
                                             "kind": "identity_rebind_failed_after_member_respawn",
@@ -4224,7 +4239,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                                         })),
                                     }
                                 } else {
-                                    None
+                                    topology_restore_warning
                                 }
                             }
                             Err(err) => Some(json!({
@@ -4316,13 +4331,17 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             let mid = MeerkatId::from(alias.runtime_member_id.as_str());
             match respawn_console_member(&handle, &mid).await {
-                Ok(()) => {
+                Ok(topology_restore_warning) => {
                     if let Some(store) = &console_events {
                         store
-                            .record_lifecycle(&alias.identity, "identity_respawned", json!({}))
+                            .record_lifecycle(
+                                &alias.identity,
+                                "identity_respawned",
+                                json!({ "topology_restore_warning": topology_restore_warning.clone() }),
+                            )
                             .await;
                     }
-                    let body = match lookup_member_with_session(&handle, &mid).await {
+                    let mut body = match lookup_member_with_session(&handle, &mid).await {
                         Some((entry, session_id)) => console_identity_status_json_for_identity(
                             &alias.identity,
                             &entry,
@@ -4331,6 +4350,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                         ),
                         None => json!({ "identity": alias.identity }),
                     };
+                    if let Some(warning) = topology_restore_warning {
+                        body["topology_restore_warning"] = warning;
+                    }
                     response_value(response_id, Some(body), None)
                 }
                 Err(err) => internal_error(response_id, format!("respawn failed: {err}")),
@@ -4392,17 +4414,18 @@ async fn handle_console_runtime_rpc_with_visibility(
                         }
                         let mid = MeerkatId::from(alias.runtime_member_id.as_str());
                         let response = match respawn_console_member(&handle, &mid).await {
-                            Ok(()) => {
+                            Ok(topology_restore_warning) => {
                                 if let Some(store) = &console_events {
                                     store
                                         .record_lifecycle(
                                             &alias.identity,
                                             "identity_reset",
-                                            json!({}),
+                                            json!({ "topology_restore_warning": topology_restore_warning.clone() }),
                                         )
                                         .await;
                                 }
-                                let body = match lookup_member_with_session(&handle, &mid).await {
+                                let mut body = match lookup_member_with_session(&handle, &mid).await
+                                {
                                     Some((entry, session_id)) => {
                                         console_identity_status_json_for_identity(
                                             &alias.identity,
@@ -4413,6 +4436,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                                     }
                                     None => json!({ "identity": alias.identity }),
                                 };
+                                if let Some(warning) = topology_restore_warning {
+                                    body["topology_restore_warning"] = warning;
+                                }
                                 response_value(response_id, Some(body), None)
                             }
                             Err(err) => internal_error(response_id, format!("reset failed: {err}")),
@@ -4919,7 +4945,26 @@ async fn handle_console_runtime_rpc_with_visibility(
                     Some(serde_json::json!({ "accepted": true })),
                     None,
                 ),
-                Err(err) => internal_error(response_id, format!("respawn_member failed: {err}")),
+                Err(err) => {
+                    if let Some(failed_peer_ids) = topology_restore_failed_peer_ids(&err) {
+                        tracing::warn!(
+                            member_id = %member_id,
+                            failed_peer_count = failed_peer_ids.len(),
+                            failed_peer_ids = ?failed_peer_ids,
+                            "console member respawn restored member with isolated peer edges; accepting degraded respawn"
+                        );
+                        response_value(
+                            response_id,
+                            Some(serde_json::json!({
+                                "accepted": true,
+                                "topology_restore_warning": topology_restore_warning_json(&failed_peer_ids),
+                            })),
+                            None,
+                        )
+                    } else {
+                        internal_error(response_id, format!("respawn_member failed: {err}"))
+                    }
+                }
             }
         }
         "mobkit/reconcile_edges" => response_value(
@@ -6358,18 +6403,25 @@ async fn reset_all_live_console_agents(
                 continue;
             }
             match respawn_console_member(&handle, &MeerkatId::from(runtime_member_id)).await {
-                Ok(()) => {
+                Ok(topology_restore_warning) => {
                     if let Some(store) = console_events {
                         store
                             .record_lifecycle(
                                 &identity,
                                 "identity_reset",
-                                json!({ "scope": "reset_all" }),
+                                json!({
+                                    "scope": "reset_all",
+                                    "topology_restore_warning": topology_restore_warning.clone(),
+                                }),
                             )
                             .await;
                     }
                     reset_main.push(identity.clone());
-                    reset_details.push(json!({ "identity": identity }));
+                    let mut detail = json!({ "identity": identity });
+                    if let Some(warning) = topology_restore_warning {
+                        detail["topology_restore_warning"] = warning;
+                    }
+                    reset_details.push(detail);
                 }
                 Err(err) => failures.push(json!({
                     "identity": identity,
