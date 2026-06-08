@@ -612,6 +612,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
                 onRename={(oldName, newName) => reconcileFieldReferences(oldName, newName)}
                 onDelete={() => deleteField(f.id)}
                 contract={contract}
+                schemaView={schemaView}
               />
             ))}
             {schemaState.fieldRows.length === 0 && (
@@ -640,9 +641,9 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   );
 }
 
-function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contract }) {
+function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contract, schemaView = null }) {
   const nameBeforeEdit = React.useRef(field.name);
-  const fieldState = window.MobKitFlowController.schemaFieldRowControlState(field, contract);
+  const fieldState = window.MobKitFlowController.schemaFieldRowControlState(field, contract, schemaView);
   const typeState = fieldState.typeState;
   const values = fieldState.enumValues;
 

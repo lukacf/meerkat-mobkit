@@ -836,6 +836,12 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       empty_used_by_hint: "Not yet referenced by any agent.",
       delete_label: "DELETE",
       delete_blocked_title: "Unassign from agents first",
+      field_name_placeholder: "field_name",
+      field_description_placeholder: "—",
+      field_remove_title: "Remove field",
+      field_enum_label: "VALUES",
+      field_enum_add_label: "+ value",
+      field_enum_add_value: "value",
     },
     editor_basic_view: {
       start_label: "START",
@@ -892,6 +898,12 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
         description: "DESCRIPTION",
         action: "",
       },
+      input_param_name_placeholder: "param_name",
+      input_param_description_placeholder: "—",
+      input_param_remove_title: "Remove param",
+      input_param_enum_label: "VALUES",
+      input_param_enum_add_label: "+ value",
+      input_param_enum_add_value: "value",
       input_empty_params_parts: [
         { key: "prefix", text: "No params yet. Add one before branching on " },
         { key: "ref", text: "params.*", kind: "code" },
@@ -1228,6 +1240,12 @@ assert.deepEqual(hydratedCatalogs.schemaView, {
   emptyUsedByHint: "Not yet referenced by any agent.",
   deleteLabel: "DELETE",
   deleteBlockedTitle: "Unassign from agents first",
+  fieldNamePlaceholder: "field_name",
+  fieldDescriptionPlaceholder: "—",
+  fieldRemoveTitle: "Remove field",
+  fieldEnumLabel: "VALUES",
+  fieldEnumAddLabel: "+ value",
+  fieldEnumAddValue: "value",
 });
 assert.deepEqual(hydratedCatalogs.basicView, {
   startLabel: "START",
@@ -1284,6 +1302,12 @@ assert.deepEqual(hydratedCatalogs.basicView, {
     description: "DESCRIPTION",
     action: "",
   },
+  inputParamNamePlaceholder: "param_name",
+  inputParamDescriptionPlaceholder: "—",
+  inputParamRemoveTitle: "Remove param",
+  inputParamEnumLabel: "VALUES",
+  inputParamEnumAddLabel: "+ value",
+  inputParamEnumAddValue: "value",
   inputEmptyParamsParts: [
     { key: "prefix", kind: "text", text: "No params yet. Add one before branching on " },
     { key: "ref", kind: "code", text: "params.*" },
@@ -1452,6 +1476,12 @@ assert.deepEqual(controller.basicEditorViewState(null), {
     description: "",
     action: "",
   },
+  inputParamNamePlaceholder: "",
+  inputParamDescriptionPlaceholder: "",
+  inputParamRemoveTitle: "",
+  inputParamEnumLabel: "",
+  inputParamEnumAddLabel: "",
+  inputParamEnumAddValue: "",
   inputEmptyParamsParts: [],
   inputTips: [],
   branchPanelTitle: "",
@@ -7988,7 +8018,11 @@ const unsupportedSchemaTypeControlState = controller.schemaLikeFieldTypeControlS
 assert.equal(unsupportedSchemaTypeControlState.type, "object");
 assert.equal(unsupportedSchemaTypeControlState.selectedType.disabled, true);
 assert.match(unsupportedSchemaTypeControlState.selectedType.reason, /mob_definition\.editor_schema_field_types/);
-const schemaFieldRowState = controller.schemaFieldRowControlState({ type: "enum", enumValues: ["green"] }, graphShapeContract);
+const schemaFieldRowState = controller.schemaFieldRowControlState(
+  { type: "enum", enumValues: ["green"] },
+  graphShapeContract,
+  hydratedCatalogs.schemaView,
+);
 assert.equal(schemaFieldRowState.namePlaceholder, "field_name");
 assert.equal(schemaFieldRowState.descriptionPlaceholder, "—");
 assert.equal(schemaFieldRowState.removeTitle, "Remove field");
@@ -7997,7 +8031,11 @@ assert.equal(schemaFieldRowState.enumAddLabel, "+ value");
 assert.equal(schemaFieldRowState.enumAddValue, "value");
 assert.deepEqual(schemaFieldRowState.enumValues, ["green"]);
 assert.equal(schemaFieldRowState.typeState.type, "enum");
-const inputParamFieldState = controller.inputParamFieldControlState({ type: "enum", enumValues: ["green"] }, graphShapeContract);
+const inputParamFieldState = controller.inputParamFieldControlState(
+  { type: "enum", enumValues: ["green"] },
+  graphShapeContract,
+  hydratedCatalogs.basicView,
+);
 assert.equal(inputParamFieldState.namePlaceholder, "param_name");
 assert.equal(inputParamFieldState.descriptionPlaceholder, "—");
 assert.equal(inputParamFieldState.removeTitle, "Remove param");

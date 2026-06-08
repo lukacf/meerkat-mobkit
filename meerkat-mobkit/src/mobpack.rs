@@ -849,7 +849,13 @@ pub fn mobpack_schema_response() -> Value {
         "used_by_prefix": "USED BY",
         "empty_used_by_hint": "Not yet referenced by any agent.",
         "delete_label": "DELETE",
-        "delete_blocked_title": "Unassign from agents first"
+        "delete_blocked_title": "Unassign from agents first",
+        "field_name_placeholder": "field_name",
+        "field_description_placeholder": "—",
+        "field_remove_title": "Remove field",
+        "field_enum_label": "VALUES",
+        "field_enum_add_label": "+ value",
+        "field_enum_add_value": "value"
     });
     let editor_agent_detail_view = json!({
         "used_in_label": "used in",
@@ -1125,6 +1131,12 @@ pub fn mobpack_schema_response() -> Value {
         "description": "DESCRIPTION",
         "action": ""
     });
+    editor_basic_view["input_param_name_placeholder"] = json!("param_name");
+    editor_basic_view["input_param_description_placeholder"] = json!("—");
+    editor_basic_view["input_param_remove_title"] = json!("Remove param");
+    editor_basic_view["input_param_enum_label"] = json!("VALUES");
+    editor_basic_view["input_param_enum_add_label"] = json!("+ value");
+    editor_basic_view["input_param_enum_add_value"] = json!("value");
     editor_basic_view["input_empty_params_parts"] = json!([
         { "key": "prefix", "text": "No params yet. Add one before branching on " },
         { "key": "ref", "text": "params.*", "kind": "code" },
@@ -15977,6 +15989,14 @@ model = "gpt-5.5"
             json!("Unassign from agents first")
         );
         assert_eq!(
+            mob_definition["editor_schema_view"]["field_name_placeholder"],
+            json!("field_name")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_view"]["field_enum_add_value"],
+            json!("value")
+        );
+        assert_eq!(
             mob_definition["editor_basic_view"]["start_label"],
             json!("START")
         );
@@ -16007,6 +16027,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_basic_view"]["input_param_header_labels"]["required"],
             json!("REQ")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["input_param_name_placeholder"],
+            json!("param_name")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["input_param_enum_add_value"],
+            json!("value")
         );
         assert_eq!(
             mob_definition["editor_basic_view"]["input_empty_params_parts"][1]["text"],

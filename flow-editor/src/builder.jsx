@@ -37,8 +37,8 @@ function CondValue({ field, value, onChange }) {
   return <input className="field__input bld-cond__val" placeholder={control.placeholder} value={control.value} onChange={e => onChange(e.target.value)} />;
 }
 
-function InputParamField({ param, normalizeName, onRename, onChange, onDelete, contract }) {
-  const fieldState = window.MobKitFlowController.inputParamFieldControlState(param, contract);
+function InputParamField({ param, normalizeName, onRename, onChange, onDelete, contract, basicView = null }) {
+  const fieldState = window.MobKitFlowController.inputParamFieldControlState(param, contract, basicView);
   const values = fieldState.enumValues;
   const previousNameRef = React.useRef(null);
   const typeState = fieldState.typeState;
@@ -498,6 +498,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
                 onChange={(patch) => updateParam(param.id, patch)}
                 onDelete={() => deleteParam(param.id)}
                 contract={contract}
+                basicView={basicView}
               />
             ))}
             {params.length === 0 && (

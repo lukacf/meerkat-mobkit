@@ -1170,6 +1170,7 @@ assert(!/JSON\.parse|JSON\.stringify|const\s+serialized|>Advanced<\/span>/.test(
 assert.match(builderInputParamBlock, /MobKitFlowController\.schemaLikeFieldTypePatch/, "Basic input-param type changes must use controller enum/type semantics");
 assert.match(builderInputParamBlock, /schemaLikeFieldTypePatch\(param, e\.target\.value, contract\)/, "Basic input-param type changes must pass the MobKit schema contract into controller validation");
 assert.match(builderInputParamBlock, /MobKitFlowController\.inputParamFieldControlState/, "Basic input-param row display must render through the controller plane");
+assert.match(builderInputParamBlock, /inputParamFieldControlState\(param, contract, basicView\)/, "Basic input-param row projection must receive schema-backed Basic view state");
 assert.match(builderInputParamBlock, /fieldState\.typeState/, "Basic input-param type options must come from row controller state");
 assert.match(builderInputParamBlock, /MobKitFlowController\.enumValueDraftPatch/, "Basic input-param enum draft edits must use controller semantics");
 assert.match(builderInputParamBlock, /MobKitFlowController\.enumValueCommitPatch/, "Basic input-param enum commit edits must use controller semantics");
@@ -1178,6 +1179,7 @@ assert.match(builderInputParamBlock, /MobKitFlowController\.enumValueAddPatch/, 
 assert.match(agentsSchemaFieldBlock, /MobKitFlowController\.schemaLikeFieldTypePatch/, "Agent schema-field type changes must use controller enum/type semantics");
 assert.match(agentsSchemaFieldBlock, /schemaLikeFieldTypePatch\(field, e\.target\.value, contract\)/, "Agent schema-field type changes must pass the MobKit schema contract into controller validation");
 assert.match(agentsSchemaFieldBlock, /MobKitFlowController\.schemaFieldRowControlState/, "Agent schema-field row display must render through the controller plane");
+assert.match(agentsSchemaFieldBlock, /schemaFieldRowControlState\(field, contract, schemaView\)/, "Agent schema-field row projection must receive schema-backed Schema view state");
 assert.match(agentsSchemaFieldBlock, /fieldState\.typeState/, "Agent schema-field type options must come from row controller state");
 assert.match(agentsSchemaFieldBlock, /MobKitFlowController\.enumValueDraftPatch/, "Agent schema-field enum draft edits must use controller semantics");
 assert.match(agentsSchemaFieldBlock, /MobKitFlowController\.enumValueCommitPatch/, "Agent schema-field enum commit edits must use controller semantics");
@@ -1188,6 +1190,8 @@ assert.match(controller, /function schemaFieldTypeAllowedSet/, "controller plane
 assert.match(controller, /function schemaLikeFieldTypeControlState/, "controller plane must own schema-like type option projection");
 assert.match(controller, /function schemaFieldRowControlState/, "controller plane must own Agent schema-field row display projection");
 assert.match(controller, /function inputParamFieldControlState/, "controller plane must own Basic input-param row display projection");
+assert.match(controller, /fieldNamePlaceholder:\s*String\(view\.field_name_placeholder/, "controller plane must hydrate Agent schema-field row labels from MobKit schema");
+assert.match(controller, /inputParamNamePlaceholder:\s*String\(view\.input_param_name_placeholder/, "controller plane must hydrate Basic input-param row labels from MobKit schema");
 assert.match(controller, /function enumValueDraftPatch/, "controller plane must own enum value draft semantics");
 assert.match(controller, /function enumValueCommitPatch/, "controller plane must own enum value commit semantics");
 assert.match(controller, /function enumValueDeletePatch/, "controller plane must own enum value delete semantics");

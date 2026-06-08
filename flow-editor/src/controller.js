@@ -648,10 +648,18 @@
       emptyUsedByHint: String(view.empty_used_by_hint || "").trim(),
       deleteLabel: String(view.delete_label || "").trim(),
       deleteBlockedTitle: String(view.delete_blocked_title || "").trim(),
+      fieldNamePlaceholder: String(view.field_name_placeholder || "").trim(),
+      fieldDescriptionPlaceholder: String(view.field_description_placeholder || "").trim(),
+      fieldRemoveTitle: String(view.field_remove_title || "").trim(),
+      fieldEnumLabel: String(view.field_enum_label || "").trim(),
+      fieldEnumAddLabel: String(view.field_enum_add_label || "").trim(),
+      fieldEnumAddValue: String(view.field_enum_add_value || "").trim(),
     };
     return out.eyebrow && out.descriptionTitle && out.fieldsTitlePrefix && out.addFieldLabel
       && out.headerLabels.name && out.headerLabels.type && out.headerLabels.required && out.headerLabels.description
       && out.emptyFieldsHint && out.usedByPrefix && out.emptyUsedByHint && out.deleteLabel && out.deleteBlockedTitle
+      && out.fieldNamePlaceholder && out.fieldDescriptionPlaceholder && out.fieldRemoveTitle
+      && out.fieldEnumLabel && out.fieldEnumAddLabel && out.fieldEnumAddValue
       ? out
       : null;
   }
@@ -676,6 +684,12 @@
       emptyUsedByHint: String(view?.emptyUsedByHint || ""),
       deleteLabel: String(view?.deleteLabel || ""),
       deleteBlockedTitle: String(view?.deleteBlockedTitle || ""),
+      fieldNamePlaceholder: String(view?.fieldNamePlaceholder || ""),
+      fieldDescriptionPlaceholder: String(view?.fieldDescriptionPlaceholder || ""),
+      fieldRemoveTitle: String(view?.fieldRemoveTitle || ""),
+      fieldEnumLabel: String(view?.fieldEnumLabel || ""),
+      fieldEnumAddLabel: String(view?.fieldEnumAddLabel || ""),
+      fieldEnumAddValue: String(view?.fieldEnumAddValue || ""),
     };
   }
 
@@ -1126,6 +1140,12 @@
         description: String(view.input_param_header_labels?.description || "").trim(),
         action: String(view.input_param_header_labels?.action || ""),
       },
+      inputParamNamePlaceholder: String(view.input_param_name_placeholder || "").trim(),
+      inputParamDescriptionPlaceholder: String(view.input_param_description_placeholder || "").trim(),
+      inputParamRemoveTitle: String(view.input_param_remove_title || "").trim(),
+      inputParamEnumLabel: String(view.input_param_enum_label || "").trim(),
+      inputParamEnumAddLabel: String(view.input_param_enum_add_label || "").trim(),
+      inputParamEnumAddValue: String(view.input_param_enum_add_value || "").trim(),
       inputEmptyParamsParts: basicViewPartsFromSchema(view.input_empty_params_parts),
       inputTips: Array.isArray(view.input_tips)
         ? view.input_tips.map((tip) => String(tip || "").trim()).filter(Boolean)
@@ -1307,6 +1327,12 @@
         description: String(view?.inputParamHeaderLabels?.description || ""),
         action: String(view?.inputParamHeaderLabels?.action || ""),
       },
+      inputParamNamePlaceholder: String(view?.inputParamNamePlaceholder || ""),
+      inputParamDescriptionPlaceholder: String(view?.inputParamDescriptionPlaceholder || ""),
+      inputParamRemoveTitle: String(view?.inputParamRemoveTitle || ""),
+      inputParamEnumLabel: String(view?.inputParamEnumLabel || ""),
+      inputParamEnumAddLabel: String(view?.inputParamEnumAddLabel || ""),
+      inputParamEnumAddValue: String(view?.inputParamEnumAddValue || ""),
       inputEmptyParamsParts: Array.isArray(view?.inputEmptyParamsParts) ? view.inputEmptyParamsParts : [],
       inputTips: Array.isArray(view?.inputTips) ? view.inputTips : [],
       branchPanelTitle: String(view?.branchPanelTitle || ""),
@@ -3420,24 +3446,30 @@
     };
   }
 
-  function schemaFieldRowControlState(field, contract, overrides = {}) {
+  function schemaFieldRowControlState(field, contract, schemaView = null, overrides = {}) {
+    const view = schemaViewForState(schemaView);
     const typeState = schemaLikeFieldTypeControlState(field, contract);
     return {
-      namePlaceholder: overrides.namePlaceholder || "field_name",
-      descriptionPlaceholder: "—",
-      removeTitle: overrides.removeTitle || "Remove field",
-      enumLabel: "VALUES",
-      enumAddLabel: "+ value",
-      enumAddValue: "value",
+      namePlaceholder: overrides.namePlaceholder || view.fieldNamePlaceholder,
+      descriptionPlaceholder: overrides.descriptionPlaceholder || view.fieldDescriptionPlaceholder,
+      removeTitle: overrides.removeTitle || view.fieldRemoveTitle,
+      enumLabel: overrides.enumLabel || view.fieldEnumLabel,
+      enumAddLabel: overrides.enumAddLabel || view.fieldEnumAddLabel,
+      enumAddValue: overrides.enumAddValue || view.fieldEnumAddValue,
       enumValues: enumValuesForField(field),
       typeState,
     };
   }
 
-  function inputParamFieldControlState(param, contract) {
-    return schemaFieldRowControlState(param, contract, {
-      namePlaceholder: "param_name",
-      removeTitle: "Remove param",
+  function inputParamFieldControlState(param, contract, basicView = null) {
+    const view = basicEditorViewState(basicView);
+    return schemaFieldRowControlState(param, contract, null, {
+      namePlaceholder: view.inputParamNamePlaceholder,
+      descriptionPlaceholder: view.inputParamDescriptionPlaceholder,
+      removeTitle: view.inputParamRemoveTitle,
+      enumLabel: view.inputParamEnumLabel,
+      enumAddLabel: view.inputParamEnumAddLabel,
+      enumAddValue: view.inputParamEnumAddValue,
     });
   }
 

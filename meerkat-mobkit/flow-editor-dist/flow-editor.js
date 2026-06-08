@@ -681,10 +681,18 @@ window.MOBKIT_BOOT = {
       emptyUsedByHint: String(view.empty_used_by_hint || "").trim(),
       deleteLabel: String(view.delete_label || "").trim(),
       deleteBlockedTitle: String(view.delete_blocked_title || "").trim(),
+      fieldNamePlaceholder: String(view.field_name_placeholder || "").trim(),
+      fieldDescriptionPlaceholder: String(view.field_description_placeholder || "").trim(),
+      fieldRemoveTitle: String(view.field_remove_title || "").trim(),
+      fieldEnumLabel: String(view.field_enum_label || "").trim(),
+      fieldEnumAddLabel: String(view.field_enum_add_label || "").trim(),
+      fieldEnumAddValue: String(view.field_enum_add_value || "").trim(),
     };
     return out.eyebrow && out.descriptionTitle && out.fieldsTitlePrefix && out.addFieldLabel
       && out.headerLabels.name && out.headerLabels.type && out.headerLabels.required && out.headerLabels.description
       && out.emptyFieldsHint && out.usedByPrefix && out.emptyUsedByHint && out.deleteLabel && out.deleteBlockedTitle
+      && out.fieldNamePlaceholder && out.fieldDescriptionPlaceholder && out.fieldRemoveTitle
+      && out.fieldEnumLabel && out.fieldEnumAddLabel && out.fieldEnumAddValue
       ? out
       : null;
   }
@@ -709,6 +717,12 @@ window.MOBKIT_BOOT = {
       emptyUsedByHint: String(view?.emptyUsedByHint || ""),
       deleteLabel: String(view?.deleteLabel || ""),
       deleteBlockedTitle: String(view?.deleteBlockedTitle || ""),
+      fieldNamePlaceholder: String(view?.fieldNamePlaceholder || ""),
+      fieldDescriptionPlaceholder: String(view?.fieldDescriptionPlaceholder || ""),
+      fieldRemoveTitle: String(view?.fieldRemoveTitle || ""),
+      fieldEnumLabel: String(view?.fieldEnumLabel || ""),
+      fieldEnumAddLabel: String(view?.fieldEnumAddLabel || ""),
+      fieldEnumAddValue: String(view?.fieldEnumAddValue || ""),
     };
   }
 
@@ -1159,6 +1173,12 @@ window.MOBKIT_BOOT = {
         description: String(view.input_param_header_labels?.description || "").trim(),
         action: String(view.input_param_header_labels?.action || ""),
       },
+      inputParamNamePlaceholder: String(view.input_param_name_placeholder || "").trim(),
+      inputParamDescriptionPlaceholder: String(view.input_param_description_placeholder || "").trim(),
+      inputParamRemoveTitle: String(view.input_param_remove_title || "").trim(),
+      inputParamEnumLabel: String(view.input_param_enum_label || "").trim(),
+      inputParamEnumAddLabel: String(view.input_param_enum_add_label || "").trim(),
+      inputParamEnumAddValue: String(view.input_param_enum_add_value || "").trim(),
       inputEmptyParamsParts: basicViewPartsFromSchema(view.input_empty_params_parts),
       inputTips: Array.isArray(view.input_tips)
         ? view.input_tips.map((tip) => String(tip || "").trim()).filter(Boolean)
@@ -1340,6 +1360,12 @@ window.MOBKIT_BOOT = {
         description: String(view?.inputParamHeaderLabels?.description || ""),
         action: String(view?.inputParamHeaderLabels?.action || ""),
       },
+      inputParamNamePlaceholder: String(view?.inputParamNamePlaceholder || ""),
+      inputParamDescriptionPlaceholder: String(view?.inputParamDescriptionPlaceholder || ""),
+      inputParamRemoveTitle: String(view?.inputParamRemoveTitle || ""),
+      inputParamEnumLabel: String(view?.inputParamEnumLabel || ""),
+      inputParamEnumAddLabel: String(view?.inputParamEnumAddLabel || ""),
+      inputParamEnumAddValue: String(view?.inputParamEnumAddValue || ""),
       inputEmptyParamsParts: Array.isArray(view?.inputEmptyParamsParts) ? view.inputEmptyParamsParts : [],
       inputTips: Array.isArray(view?.inputTips) ? view.inputTips : [],
       branchPanelTitle: String(view?.branchPanelTitle || ""),
@@ -3453,24 +3479,30 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function schemaFieldRowControlState(field, contract, overrides = {}) {
+  function schemaFieldRowControlState(field, contract, schemaView = null, overrides = {}) {
+    const view = schemaViewForState(schemaView);
     const typeState = schemaLikeFieldTypeControlState(field, contract);
     return {
-      namePlaceholder: overrides.namePlaceholder || "field_name",
-      descriptionPlaceholder: "—",
-      removeTitle: overrides.removeTitle || "Remove field",
-      enumLabel: "VALUES",
-      enumAddLabel: "+ value",
-      enumAddValue: "value",
+      namePlaceholder: overrides.namePlaceholder || view.fieldNamePlaceholder,
+      descriptionPlaceholder: overrides.descriptionPlaceholder || view.fieldDescriptionPlaceholder,
+      removeTitle: overrides.removeTitle || view.fieldRemoveTitle,
+      enumLabel: overrides.enumLabel || view.fieldEnumLabel,
+      enumAddLabel: overrides.enumAddLabel || view.fieldEnumAddLabel,
+      enumAddValue: overrides.enumAddValue || view.fieldEnumAddValue,
       enumValues: enumValuesForField(field),
       typeState,
     };
   }
 
-  function inputParamFieldControlState(param, contract) {
-    return schemaFieldRowControlState(param, contract, {
-      namePlaceholder: "param_name",
-      removeTitle: "Remove param",
+  function inputParamFieldControlState(param, contract, basicView = null) {
+    const view = basicEditorViewState(basicView);
+    return schemaFieldRowControlState(param, contract, null, {
+      namePlaceholder: view.inputParamNamePlaceholder,
+      descriptionPlaceholder: view.inputParamDescriptionPlaceholder,
+      removeTitle: view.inputParamRemoveTitle,
+      enumLabel: view.inputParamEnumLabel,
+      enumAddLabel: view.inputParamEnumAddLabel,
+      enumAddValue: view.inputParamEnumAddValue,
     });
   }
 
@@ -11431,7 +11463,8 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       onChange: (patch) => updateField(f.id, patch),
       onRename: (oldName, newName) => reconcileFieldReferences(oldName, newName),
       onDelete: () => deleteField(f.id),
-      contract
+      contract,
+      schemaView
     }
   )), schemaState.fieldRows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "schema-builder__empty" }, schemaState.emptyFieldsHint))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, schemaState.usedByTitle), schemaState.usedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaState.emptyUsedByHint), schemaState.usedBy.map((row) => /* @__PURE__ */ React.createElement(
     "button",
@@ -11445,9 +11478,9 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.model)
   )))));
 }
-function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contract }) {
+function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contract, schemaView = null }) {
   const nameBeforeEdit = React.useRef(field.name);
-  const fieldState = window.MobKitFlowController.schemaFieldRowControlState(field, contract);
+  const fieldState = window.MobKitFlowController.schemaFieldRowControlState(field, contract, schemaView);
   const typeState = fieldState.typeState;
   const values = fieldState.enumValues;
   return /* @__PURE__ */ React.createElement("div", { className: "schema-field" }, /* @__PURE__ */ React.createElement(
@@ -11642,8 +11675,8 @@ function CondValue({ field, value, onChange }) {
   }
   return /* @__PURE__ */ React.createElement("input", { className: "field__input bld-cond__val", placeholder: control.placeholder, value: control.value, onChange: (e) => onChange(e.target.value) });
 }
-function InputParamField({ param, normalizeName, onRename, onChange, onDelete, contract }) {
-  const fieldState = window.MobKitFlowController.inputParamFieldControlState(param, contract);
+function InputParamField({ param, normalizeName, onRename, onChange, onDelete, contract, basicView = null }) {
+  const fieldState = window.MobKitFlowController.inputParamFieldControlState(param, contract, basicView);
   const values = fieldState.enumValues;
   const previousNameRef = React.useRef(null);
   const typeState = fieldState.typeState;
@@ -11903,7 +11936,8 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
         onRename: (raw, previousName) => renameParam(param.id, raw, previousName),
         onChange: (patch) => updateParam(param.id, patch),
         onDelete: () => deleteParam(param.id),
-        contract
+        contract,
+        basicView
       }
     )), params.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "schema-builder__empty" }, inputState.emptyParamsParts.map((part) => part.kind === "code" ? /* @__PURE__ */ React.createElement("code", { key: part.key }, part.text) : /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text))))), /* @__PURE__ */ React.createElement(PanelTips, { title: viewState.tipsTitle, items: inputState.tips }));
   }
