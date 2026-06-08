@@ -815,14 +815,16 @@ assert(!/sampleFlowsFromSchema[\s\S]{0,520}sample\.id \|\| sample\.document\?\.m
 assert(!/profileBinding:\s*(?:String\([^)]*["']inline|source\.profileBinding\s*\|\|\s*["']inline)/.test(controller), "Agent definitions must carry real MobKit profileBinding values instead of controller-local inline defaults");
 assert(!/runtimeMode:\s*(?:String\([^)]*["']turn_driven|source\.runtimeMode\s*\|\|\s*["']turn_driven)/.test(controller), "Agent definitions must carry real MobKit runtimeMode values instead of controller-local turn_driven defaults");
 assert.match(controller, /agentDefinitionsFromSchema[\s\S]*\.filter\(\(template\) => String\(template\.model \|\| ""\)\.trim\(\)\)/, "Agent definitions must hydrate only real model-backed MobKit profiles");
+assert.match(controller, /function agentDetailViewFromSchema/, "controller plane must hydrate Agent detail view contract from MobKit schema");
+assert.match(controller, /mob_definition\?\.editor_agent_detail_view/, "Agent detail view copy must come from MobKit editor_agent_detail_view");
 assert.match(controller, /missing its model contract/, "controller plane must reject API-backed agent definitions without a model");
 assert(!/memberFromAgentDefinition[\s\S]{0,900}model:\s*source\.model \|\| ""/.test(controller), "Agent definition member creation must not repair missing models into empty strings");
 assert.match(controller, /missing its id contract[\s\S]*missing its role contract[\s\S]*missing its name contract/, "controller plane must reject API-backed agent definitions without schema-provided identity");
 assert(!/memberFromAgentDefinition[\s\S]{0,1200}slug\(source\.role \|\| source\.name \|\| ["']member["']|memberFromAgentDefinition[\s\S]{0,1200}uniqueMemberName\(source\.name \|\| source\.label \|\| baseRole/.test(controller), "Agent definition member creation must not repair missing role/name into generic members");
 assert(!/member\.profileBinding\s*\|\|\s*\(member\.realmProfile \? ["']realm_profile["'] : ["']inline["']\)/.test(agents), "Agent Editor must not display missing profileBinding as inline");
 assert(!/const\s+defaultRuntimeMode[\s\S]{0,120}member\.runtimeMode\s*\|\|\s*defaultRuntimeMode/.test(agents), "Agent Editor must not display missing runtimeMode as turn_driven");
-assert.match(controller, /missing profile binding/, "controller plane must expose missing profile binding explicitly");
-assert.match(controller, /missing runtime mode/, "controller plane must expose missing runtime mode explicitly");
+assert.match(controller, /missingProfileBindingLabel/, "controller plane must expose missing profile binding through the MobKit view contract");
+assert.match(controller, /missingRuntimeModeLabel/, "controller plane must expose missing runtime mode through the MobKit view contract");
 assert.match(agents, /MobKitFlowController\.agentDefinitionAddByIdPatch/, "Agent Editor must add API-backed agent definitions through one controller-plane operation");
 assert.match(controller, /function agentDefinitionAddPatch/, "controller plane must own combined agent-definition member and schema mutation semantics");
 assert.match(controller, /function agentDefinitionAddByIdPatch/, "controller plane must own agent-definition id resolution");
@@ -877,6 +879,7 @@ assert.match(addAgentControlBlock, /MobKitFlowController\.agentDefinitionAddCont
 assert.match(addAgentControlBlock, /MobKitFlowController\.agentDefinitionAddByIdPatch/, "Agent creation must resolve definition ids through the controller plane");
 assert.match(agentsMainBlock, /MobKitFlowController\.agentSelectionState/, "Agent main pane must resolve selected agents/schemas through the controller plane");
 assert.match(agentEditorBlock, /MobKitFlowController\.agentEditorControlState/, "Agent detail pane must render profile/runtime/backend/schema/usage state through the controller plane");
+assert.match(agentEditorBlock, /agentEditorControlState\(\{[\s\S]*agentDetailView/, "Agent detail pane must pass schema-backed view state into controller projection");
 assert.match(agentEditorBlock, /editorState\.deleteConfirmMessage/, "Agent detail pane must use controller-projected delete confirmation copy");
 assert.match(agentEditorBlock, /editorState\.usageTitle/, "Agent detail pane must use controller-projected usage title");
 assert.match(agentEditorBlock, /editorState\.identityTitle/, "Agent detail pane must use controller-projected identity title");
@@ -915,9 +918,11 @@ assert.match(controller, /function agentDefinitionOptions/, "controller plane mu
 assert.match(controller, /function agentDefinitionAddControlState/, "controller plane must own Agent add-control presentation state");
 assert.match(controller, /mob_definition\?\.editor_agent_view/, "controller plane must hydrate Agent sidebar view labels from MobKit schema");
 assert.match(app, /<AgentsView[\s\S]*agentView=\{catalogs\.agentView\}/, "app shell must inject MobKit Agent sidebar view state");
+assert.match(app, /<AgentsView[\s\S]*agentDetailView=\{catalogs\.agentDetailView\}/, "app shell must inject MobKit Agent detail view state");
 assert.match(agentsListBlock, /agentView(?:\s*=\s*null)?[\s\S]*MobKitFlowController\.agentListState\(\{[\s\S]*agentView/, "Agent sidebar must pass schema-backed view state into controller projection");
 assert.match(agentsListBlock, /listState\.agentsHeading[\s\S]*listState\.schemasHeading[\s\S]*listState\.addSchemaLabel/, "Agent sidebar headings and schema action label must render through controller state");
 assert.match(agentsMainBlock, /agentView(?:\s*=\s*null)?[\s\S]*MobKitFlowController\.agentSelectionState\(\{[\s\S]*agentView/, "Agent main pane must pass schema-backed view state into controller selection projection");
+assert.match(agentsMainBlock, /agentDetailView(?:\s*=\s*null)?[\s\S]*<AgentEditor[\s\S]*agentDetailView=\{agentDetailView\}/, "Agent main pane must pass schema-backed Agent detail view state");
 assert.match(agentsMainBlock, /selectionState\.emptyState\.title[\s\S]*selectionState\.emptyState\.lines\.map[\s\S]*selectionState\.missingSchemaLabel[\s\S]*selectionState\.missingAgentLabel/, "Agent main empty and missing states must render through controller state");
 assert.match(controller, /function schemaEditorControlState/, "controller plane must own schema detail usage projection");
 assert.match(controller, /fieldsTitle: `\$\{view\.fieldsTitlePrefix\} · \$\{fields\.length\}`/, "controller plane must render Schema Editor field-count title from MobKit view contract");

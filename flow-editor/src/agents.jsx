@@ -16,12 +16,12 @@
 //   { kind: "schema", id }  → SchemaEditor (visual, field-by-field)
 //   null                    → empty hint
 
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null, schemaView = null }) {
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null, agentDetailView = null, schemaView = null }) {
   return (
     <div className="agents-view">
       <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} agentDefinitions={agentDefinitions} agentView={agentView} />
       <div className="agents-view__main">
-        <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} schemaView={schemaView} />
+        <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} agentDetailView={agentDetailView} schemaView={schemaView} />
       </div>
     </div>
   );
@@ -140,7 +140,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [] }) {
   );
 }
 
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null, schemaView = null }) {
+function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null, agentDetailView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
     selection: agentSel,
     members: studio.members,
@@ -162,11 +162,11 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
     return <SchemaEditor studio={studio} schema={selectionState.schema} setAgentSel={setAgentSel} contract={contract} flow={flow} setFlow={setFlow} schemaView={schemaView} />;
   }
   if (!selectionState.member) return <div className="agents-empty">{selectionState.missingAgentLabel}</div>;
-  return <AgentEditor studio={studio} member={selectionState.member} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} />;
+  return <AgentEditor studio={studio} member={selectionState.member} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentDetailView={agentDetailView} />;
 }
 
 // ── Agent editor ────────────────────────────────────────────────────
-function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [] }) {
+function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDetailView = null }) {
   const change = (patch) => studio.updateMember(member.id, patch);
   const [toolDraft, setToolDraft] = React.useState("");
   const [toolDraftError, setToolDraftError] = React.useState("");
@@ -178,6 +178,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     contract,
     deploySettings,
     modelCatalog,
+    agentDetailView,
   });
   const addToolAccess = (raw) => {
     const result = window.MobKitFlowController.memberToolAccessCascadePatch({

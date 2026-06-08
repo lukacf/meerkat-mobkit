@@ -663,6 +663,101 @@
     };
   }
 
+  function agentDetailViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_agent_detail_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      usedInLabel: String(view.used_in_label || "").trim(),
+      instanceSingular: String(view.instance_singular || "").trim(),
+      instancePlural: String(view.instance_plural || "").trim(),
+      deleteLabel: String(view.delete_label || "").trim(),
+      deleteConfirmIntro: String(view.delete_confirm_intro || "").trim(),
+      deleteConfirmPlacedPrefix: String(view.delete_confirm_placed_prefix || "").trim(),
+      cellSingular: String(view.cell_singular || "").trim(),
+      cellPlural: String(view.cell_plural || "").trim(),
+      deleteConfirmCellsSuffix: String(view.delete_confirm_cells_suffix || "").trim(),
+      usageTitlePrefix: String(view.usage_title_prefix || "").trim(),
+      emptyUsageHint: String(view.empty_usage_hint || "").trim(),
+      identityTitle: String(view.identity_title || "").trim(),
+      profileBindingLabel: String(view.profile_binding_label || "").trim(),
+      missingProfileBindingLabel: String(view.missing_profile_binding_label || "").trim(),
+      realmProfileLabel: String(view.realm_profile_label || "").trim(),
+      realmProfilePlaceholder: String(view.realm_profile_placeholder || "").trim(),
+      realmProfileImportHintFallback: String(view.realm_profile_import_hint_fallback || "").trim(),
+      realmProfileTitle: String(view.realm_profile_title || "").trim(),
+      realmProfileReferenceHintBefore: String(view.realm_profile_reference_hint_before || "").trim(),
+      realmProfileReferenceHintAfterFallback: String(view.realm_profile_reference_hint_after_fallback || "").trim(),
+      modelLabel: String(view.model_label || "").trim(),
+      runtimeModeLabel: String(view.runtime_mode_label || "").trim(),
+      missingRuntimeModeLabel: String(view.missing_runtime_mode_label || "").trim(),
+      backendLabel: String(view.backend_label || "").trim(),
+      inlinePeerNotificationsLabel: String(view.inline_peer_notifications_label || "").trim(),
+      inlinePeerNotificationsPlaceholder: String(view.inline_peer_notifications_placeholder || "").trim(),
+      systemPromptTitle: String(view.system_prompt_title || "").trim(),
+      applySkeletonLabel: String(view.apply_skeleton_label || "").trim(),
+      applySkeletonTitle: String(view.apply_skeleton_title || "").trim(),
+      systemPromptPlaceholder: String(view.system_prompt_placeholder || "").trim(),
+      outputSchemaTitle: String(view.output_schema_title || "").trim(),
+      schemaNoneLabel: String(view.schema_none_label || "").trim(),
+      schemaRequiredLabel: String(view.schema_required_label || "").trim(),
+      editSchemaLabel: String(view.edit_schema_label || "").trim(),
+      emptySchemaHint: String(view.empty_schema_hint || "").trim(),
+    };
+    return out.usedInLabel && out.instanceSingular && out.instancePlural && out.deleteLabel
+      && out.deleteConfirmIntro && out.deleteConfirmPlacedPrefix && out.cellSingular && out.cellPlural
+      && out.deleteConfirmCellsSuffix && out.usageTitlePrefix
+      && out.emptyUsageHint && out.identityTitle && out.profileBindingLabel && out.missingProfileBindingLabel
+      && out.realmProfileLabel && out.realmProfilePlaceholder && out.realmProfileImportHintFallback
+      && out.realmProfileTitle && out.realmProfileReferenceHintBefore && out.realmProfileReferenceHintAfterFallback
+      && out.modelLabel && out.runtimeModeLabel && out.missingRuntimeModeLabel && out.backendLabel
+      && out.inlinePeerNotificationsLabel && out.inlinePeerNotificationsPlaceholder
+      && out.systemPromptTitle && out.applySkeletonLabel && out.applySkeletonTitle && out.systemPromptPlaceholder
+      && out.outputSchemaTitle && out.schemaNoneLabel && out.schemaRequiredLabel && out.editSchemaLabel && out.emptySchemaHint
+      ? out
+      : null;
+  }
+
+  function agentDetailViewForState(agentDetailView) {
+    const view = agentDetailView && typeof agentDetailView === "object" ? agentDetailView : null;
+    return {
+      usedInLabel: String(view?.usedInLabel || ""),
+      instanceSingular: String(view?.instanceSingular || ""),
+      instancePlural: String(view?.instancePlural || ""),
+      deleteLabel: String(view?.deleteLabel || ""),
+      deleteConfirmIntro: String(view?.deleteConfirmIntro || ""),
+      deleteConfirmPlacedPrefix: String(view?.deleteConfirmPlacedPrefix || ""),
+      cellSingular: String(view?.cellSingular || ""),
+      cellPlural: String(view?.cellPlural || ""),
+      deleteConfirmCellsSuffix: String(view?.deleteConfirmCellsSuffix || ""),
+      usageTitlePrefix: String(view?.usageTitlePrefix || ""),
+      emptyUsageHint: String(view?.emptyUsageHint || ""),
+      identityTitle: String(view?.identityTitle || ""),
+      profileBindingLabel: String(view?.profileBindingLabel || ""),
+      missingProfileBindingLabel: String(view?.missingProfileBindingLabel || ""),
+      realmProfileLabel: String(view?.realmProfileLabel || ""),
+      realmProfilePlaceholder: String(view?.realmProfilePlaceholder || ""),
+      realmProfileImportHintFallback: String(view?.realmProfileImportHintFallback || ""),
+      realmProfileTitle: String(view?.realmProfileTitle || ""),
+      realmProfileReferenceHintBefore: String(view?.realmProfileReferenceHintBefore || ""),
+      realmProfileReferenceHintAfterFallback: String(view?.realmProfileReferenceHintAfterFallback || ""),
+      modelLabel: String(view?.modelLabel || ""),
+      runtimeModeLabel: String(view?.runtimeModeLabel || ""),
+      missingRuntimeModeLabel: String(view?.missingRuntimeModeLabel || ""),
+      backendLabel: String(view?.backendLabel || ""),
+      inlinePeerNotificationsLabel: String(view?.inlinePeerNotificationsLabel || ""),
+      inlinePeerNotificationsPlaceholder: String(view?.inlinePeerNotificationsPlaceholder || ""),
+      systemPromptTitle: String(view?.systemPromptTitle || ""),
+      applySkeletonLabel: String(view?.applySkeletonLabel || ""),
+      applySkeletonTitle: String(view?.applySkeletonTitle || ""),
+      systemPromptPlaceholder: String(view?.systemPromptPlaceholder || ""),
+      outputSchemaTitle: String(view?.outputSchemaTitle || ""),
+      schemaNoneLabel: String(view?.schemaNoneLabel || ""),
+      schemaRequiredLabel: String(view?.schemaRequiredLabel || ""),
+      editSchemaLabel: String(view?.editSchemaLabel || ""),
+      emptySchemaHint: String(view?.emptySchemaHint || ""),
+    };
+  }
+
   function basicViewFromSchema(schema) {
     const view = schema?.mob_definition?.editor_basic_view;
     if (!view || typeof view !== "object") return null;
@@ -801,28 +896,31 @@
     return { ...base, kind: String(selection.kind || ""), member: null, schema: null, missing: true };
   }
 
-  function agentEditorControlState({ member, instances = [], schemas = [], contract, deploySettings, modelCatalog = [] } = {}) {
+  function agentEditorControlState({ member, instances = [], schemas = [], contract, deploySettings, modelCatalog = [], agentDetailView = null } = {}) {
+    const view = agentDetailViewForState(agentDetailView);
     const placedAt = (Array.isArray(instances) ? instances : []).filter((instance) => instance?.memberId === member?.id);
     const placedCount = placedAt.length;
     const memberName = String(member?.name || member?.id || "agent");
+    const instanceNoun = placedCount === 1 ? view.instanceSingular : view.instancePlural;
+    const cellNoun = placedCount === 1 ? view.cellSingular : view.cellPlural;
     const schema = (Array.isArray(schemas) ? schemas : []).find((candidate) => candidate.id === member?.schema) || null;
     const profileBinding = typeof member?.profileBinding === "string"
       ? member.profileBinding
       : (member?.realmProfile ? "realm_profile" : "");
     const realmProfileRestriction = profileBindingRestriction(contract, "realm_profile");
     const bindingOptions = [
-      { value: "", label: "missing profile binding", disabled: false, reason: "" },
+      { value: "", label: view.missingProfileBindingLabel, disabled: false, reason: "" },
       ...profileBindingOptions(contract, profileBinding),
     ];
     const runtimeMode = typeof member?.runtimeMode === "string" ? member.runtimeMode : "";
     const runtimeOptions = [
-      { value: "", label: "missing runtime mode", disabled: false, reason: "" },
+      { value: "", label: view.missingRuntimeModeLabel, disabled: false, reason: "" },
       ...runtimeModeOptions(contract, deploySettings, runtimeMode),
     ];
     const backendValue = String(member?.backend || "");
     const backendOptions = profileBackendOptions(contract, backendValue, true);
     const schemaOptions = [
-      { value: "", label: "— none —", schema: null },
+      { value: "", label: view.schemaNoneLabel, schema: null },
       ...(Array.isArray(schemas) ? schemas : [])
         .filter((candidate) => candidate?.id)
         .map((candidate) => ({ value: candidate.id, label: candidate.id, schema: candidate })),
@@ -833,7 +931,7 @@
         name: field.name,
         type: field.type,
         required: !!field.required,
-        requiredLabel: field.required ? "req" : "",
+        requiredLabel: field.required ? view.schemaRequiredLabel : "",
       }));
     const modelOptions = (Array.isArray(modelCatalog) ? modelCatalog : [])
       .filter((model) => model?.id)
@@ -848,40 +946,40 @@
     return {
       placedAt,
       placedCount,
-      idLine: `${member?.id || ""} · used in ${placedCount} instance${placedCount === 1 ? "" : "s"}`,
-      deleteLabel: "DELETE",
+      idLine: `${member?.id || ""} · ${view.usedInLabel} ${placedCount} ${instanceNoun}`,
+      deleteLabel: view.deleteLabel,
       deleteNeedsConfirmation: placedCount > 0,
       deleteConfirmMessage: placedCount > 0
-        ? `Delete agent "${memberName}"? It is placed in ${placedCount} cell${placedCount === 1 ? "" : "s"} - those nodes will be removed.`
+        ? `${view.deleteConfirmIntro} "${memberName}"? ${view.deleteConfirmPlacedPrefix} ${placedCount} ${cellNoun} - ${view.deleteConfirmCellsSuffix}`
         : "",
-      usageTitle: `USED IN · ${placedCount}`,
-      emptyUsageHint: "Not yet placed in any cell. Switch to Topology to add.",
+      usageTitle: `${view.usageTitlePrefix} · ${placedCount}`,
+      emptyUsageHint: view.emptyUsageHint,
       usageRows: placedAt.map((instance) => ({
         id: instance.id,
         cellLabel: `cell (${Number(instance.col || 0) + 1},${Number(instance.row || 0) + 1})`,
         laneLabel: instance.lane || "—",
         instance,
       })),
-      identityTitle: "IDENTITY",
-      profileBindingLabel: "Profile binding",
-      realmProfileLabel: "Realm profile",
-      realmProfilePlaceholder: "realm profile id",
-      realmProfileImportHint: realmProfileRestriction.reason || "Realm profile refs are import-only for this editor. Mobpack archives must use inline profiles before validation/export.",
-      realmProfileTitle: "REALM PROFILE",
+      identityTitle: view.identityTitle,
+      profileBindingLabel: view.profileBindingLabel,
+      realmProfileLabel: view.realmProfileLabel,
+      realmProfilePlaceholder: view.realmProfilePlaceholder,
+      realmProfileImportHint: realmProfileRestriction.reason || view.realmProfileImportHintFallback,
+      realmProfileTitle: view.realmProfileTitle,
       realmProfileReferenceLabel: member?.realmProfile || member?.role || member?.name || "",
-      realmProfileReferenceHintBefore: "This imported member references",
+      realmProfileReferenceHintBefore: view.realmProfileReferenceHintBefore,
       realmProfileReferenceHintAfter: realmProfileRestriction.reason
         ? `from a target realm. ${realmProfileRestriction.reason}`
-        : "from a target realm. Convert it to an inline profile before validating or exporting a deployable mobpack.",
-      modelLabel: "Model",
-      runtimeModeLabel: "Runtime mode",
-      backendLabel: "Backend",
-      inlinePeerNotificationsLabel: "Inline peer notifications",
-      inlinePeerNotificationsPlaceholder: "runtime default",
-      systemPromptTitle: "SYSTEM PROMPT",
-      applySkeletonLabel: "APPLY SKELETON",
-      applySkeletonTitle: "Apply a MobKit profile prompt skeleton",
-      systemPromptPlaceholder: "Describe the member mandate. This text is exported as the profile peer_description.",
+        : view.realmProfileReferenceHintAfterFallback,
+      modelLabel: view.modelLabel,
+      runtimeModeLabel: view.runtimeModeLabel,
+      backendLabel: view.backendLabel,
+      inlinePeerNotificationsLabel: view.inlinePeerNotificationsLabel,
+      inlinePeerNotificationsPlaceholder: view.inlinePeerNotificationsPlaceholder,
+      systemPromptTitle: view.systemPromptTitle,
+      applySkeletonLabel: view.applySkeletonLabel,
+      applySkeletonTitle: view.applySkeletonTitle,
+      systemPromptPlaceholder: view.systemPromptPlaceholder,
       schema,
       profileBinding,
       bindingOptions,
@@ -894,12 +992,12 @@
       backendOptions,
       selectedBackend: backendOptions.find((option) => option.value === backendValue) || null,
       schemaOptions,
-      outputSchemaTitle: "OUTPUT SCHEMA",
+      outputSchemaTitle: view.outputSchemaTitle,
       schemaPreviewRows,
       hasOutputSchema: !!schema,
-      editSchemaLabel: "Edit schema →",
+      editSchemaLabel: view.editSchemaLabel,
       editSchemaSelection: schema ? { kind: "schema", id: schema.id } : null,
-      emptySchemaHint: "No structured output. Agent returns free-form text.",
+      emptySchemaHint: view.emptySchemaHint,
       modelOptions,
     };
   }
@@ -6162,6 +6260,7 @@
       mobDefinition: null,
       sourceView: null,
       agentView: null,
+      agentDetailView: null,
       schemaView: null,
       basicView: null,
       graphView: null,
@@ -6193,6 +6292,7 @@
       mobDefinition: schema?.mob_definition || null,
       sourceView: sourceViewFromSchema(schema),
       agentView: agentViewFromSchema(schema),
+      agentDetailView: agentDetailViewFromSchema(schema),
       schemaView: schemaViewFromSchema(schema),
       basicView: basicViewFromSchema(schema),
       graphView: graphViewFromSchema(schema),

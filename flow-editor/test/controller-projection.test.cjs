@@ -461,6 +461,43 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       missing_schema_label: "Schema not found.",
       missing_agent_label: "Agent not found.",
     },
+    editor_agent_detail_view: {
+      used_in_label: "used in",
+      instance_singular: "instance",
+      instance_plural: "instances",
+      delete_label: "DELETE",
+      delete_confirm_intro: "Delete agent",
+      delete_confirm_placed_prefix: "It is placed in",
+      cell_singular: "cell",
+      cell_plural: "cells",
+      delete_confirm_cells_suffix: "those nodes will be removed.",
+      usage_title_prefix: "USED IN",
+      empty_usage_hint: "Not yet placed in any cell. Switch to Topology to add.",
+      identity_title: "IDENTITY",
+      profile_binding_label: "Profile binding",
+      missing_profile_binding_label: "missing profile binding",
+      realm_profile_label: "Realm profile",
+      realm_profile_placeholder: "realm profile id",
+      realm_profile_import_hint_fallback: "Realm profile refs are import-only for this editor. Mobpack archives must use inline profiles before validation/export.",
+      realm_profile_title: "REALM PROFILE",
+      realm_profile_reference_hint_before: "This imported member references",
+      realm_profile_reference_hint_after_fallback: "from a target realm. Convert it to an inline profile before validating or exporting a deployable mobpack.",
+      model_label: "Model",
+      runtime_mode_label: "Runtime mode",
+      missing_runtime_mode_label: "missing runtime mode",
+      backend_label: "Backend",
+      inline_peer_notifications_label: "Inline peer notifications",
+      inline_peer_notifications_placeholder: "runtime default",
+      system_prompt_title: "SYSTEM PROMPT",
+      apply_skeleton_label: "APPLY SKELETON",
+      apply_skeleton_title: "Apply a MobKit profile prompt skeleton",
+      system_prompt_placeholder: "Describe the member mandate. This text is exported as the profile peer_description.",
+      output_schema_title: "OUTPUT SCHEMA",
+      schema_none_label: "— none —",
+      schema_required_label: "req",
+      edit_schema_label: "Edit schema →",
+      empty_schema_hint: "No structured output. Agent returns free-form text.",
+    },
     editor_schema_view: {
       eyebrow: "OUTPUT SCHEMA",
       description_title: "DESCRIPTION",
@@ -582,6 +619,43 @@ assert.deepEqual(hydratedCatalogs.agentView, {
   ],
   missingSchemaLabel: "Schema not found.",
   missingAgentLabel: "Agent not found.",
+});
+assert.deepEqual(hydratedCatalogs.agentDetailView, {
+  usedInLabel: "used in",
+  instanceSingular: "instance",
+  instancePlural: "instances",
+  deleteLabel: "DELETE",
+  deleteConfirmIntro: "Delete agent",
+  deleteConfirmPlacedPrefix: "It is placed in",
+  cellSingular: "cell",
+  cellPlural: "cells",
+  deleteConfirmCellsSuffix: "those nodes will be removed.",
+  usageTitlePrefix: "USED IN",
+  emptyUsageHint: "Not yet placed in any cell. Switch to Topology to add.",
+  identityTitle: "IDENTITY",
+  profileBindingLabel: "Profile binding",
+  missingProfileBindingLabel: "missing profile binding",
+  realmProfileLabel: "Realm profile",
+  realmProfilePlaceholder: "realm profile id",
+  realmProfileImportHintFallback: "Realm profile refs are import-only for this editor. Mobpack archives must use inline profiles before validation/export.",
+  realmProfileTitle: "REALM PROFILE",
+  realmProfileReferenceHintBefore: "This imported member references",
+  realmProfileReferenceHintAfterFallback: "from a target realm. Convert it to an inline profile before validating or exporting a deployable mobpack.",
+  modelLabel: "Model",
+  runtimeModeLabel: "Runtime mode",
+  missingRuntimeModeLabel: "missing runtime mode",
+  backendLabel: "Backend",
+  inlinePeerNotificationsLabel: "Inline peer notifications",
+  inlinePeerNotificationsPlaceholder: "runtime default",
+  systemPromptTitle: "SYSTEM PROMPT",
+  applySkeletonLabel: "APPLY SKELETON",
+  applySkeletonTitle: "Apply a MobKit profile prompt skeleton",
+  systemPromptPlaceholder: "Describe the member mandate. This text is exported as the profile peer_description.",
+  outputSchemaTitle: "OUTPUT SCHEMA",
+  schemaNoneLabel: "— none —",
+  schemaRequiredLabel: "req",
+  editSchemaLabel: "Edit schema →",
+  emptySchemaHint: "No structured output. Agent returns free-form text.",
 });
 assert.deepEqual(hydratedCatalogs.schemaView, {
   eyebrow: "OUTPUT SCHEMA",
@@ -2613,6 +2687,43 @@ const agentEditorState = controller.agentEditorControlState({
   instances: agentInstancesForProjection,
   schemas: agentSchemasForProjection,
   modelCatalog: [{ id: "gpt-5.5", label: "GPT-5.5", vendor: "OpenAI" }],
+  agentDetailView: {
+    usedInLabel: "placed in",
+    instanceSingular: "slot",
+    instancePlural: "slots",
+    deleteLabel: "REMOVE",
+    deleteConfirmIntro: "Remove agent",
+    deleteConfirmPlacedPrefix: "It appears in",
+    cellSingular: "cell",
+    cellPlural: "cells",
+    deleteConfirmCellsSuffix: "graph placements will be removed.",
+    usageTitlePrefix: "PLACEMENTS",
+    emptyUsageHint: "No graph placements.",
+    identityTitle: "PROFILE",
+    profileBindingLabel: "Binding",
+    missingProfileBindingLabel: "missing binding",
+    realmProfileLabel: "Realm ref",
+    realmProfilePlaceholder: "realm/profile",
+    realmProfileImportHintFallback: "Realm refs are import-only.",
+    realmProfileTitle: "REALM REF",
+    realmProfileReferenceHintBefore: "Imported profile",
+    realmProfileReferenceHintAfterFallback: "requires inline conversion.",
+    modelLabel: "Model id",
+    runtimeModeLabel: "Runtime",
+    missingRuntimeModeLabel: "missing runtime",
+    backendLabel: "Profile backend",
+    inlinePeerNotificationsLabel: "Inline notifications",
+    inlinePeerNotificationsPlaceholder: "default",
+    systemPromptTitle: "PEER DESCRIPTION",
+    applySkeletonLabel: "SKELETON",
+    applySkeletonTitle: "Apply skeleton",
+    systemPromptPlaceholder: "Describe the mandate.",
+    outputSchemaTitle: "OUTPUT CONTRACT",
+    schemaNoneLabel: "none",
+    schemaRequiredLabel: "required",
+    editSchemaLabel: "Open schema",
+    emptySchemaHint: "Free-form output.",
+  },
   deploySettings: { surface: "cli" },
   contract: {
     mob_definition: {
@@ -2631,49 +2742,49 @@ const agentEditorState = controller.agentEditorControlState({
 });
 assert.equal(agentEditorState.placedAt.length, 2);
 assert.equal(agentEditorState.placedCount, 2);
-assert.equal(agentEditorState.idLine, "m_reviewer · used in 2 instances");
-assert.equal(agentEditorState.deleteLabel, "DELETE");
+assert.equal(agentEditorState.idLine, "m_reviewer · placed in 2 slots");
+assert.equal(agentEditorState.deleteLabel, "REMOVE");
 assert.equal(agentEditorState.deleteNeedsConfirmation, true);
-assert.equal(agentEditorState.deleteConfirmMessage, "Delete agent \"Reviewer\"? It is placed in 2 cells - those nodes will be removed.");
-assert.equal(agentEditorState.usageTitle, "USED IN · 2");
-assert.equal(agentEditorState.emptyUsageHint, "Not yet placed in any cell. Switch to Topology to add.");
+assert.equal(agentEditorState.deleteConfirmMessage, "Remove agent \"Reviewer\"? It appears in 2 cells - graph placements will be removed.");
+assert.equal(agentEditorState.usageTitle, "PLACEMENTS · 2");
+assert.equal(agentEditorState.emptyUsageHint, "No graph placements.");
 assert.deepEqual(agentEditorState.usageRows.map((row) => [row.id, row.cellLabel, row.laneLabel]), [
   ["n_review_1", "cell (2,3)", "main"],
   ["n_review_2", "cell (3,4)", "—"],
 ]);
-assert.equal(agentEditorState.identityTitle, "IDENTITY");
-assert.equal(agentEditorState.profileBindingLabel, "Profile binding");
-assert.equal(agentEditorState.realmProfileLabel, "Realm profile");
-assert.equal(agentEditorState.realmProfilePlaceholder, "realm profile id");
+assert.equal(agentEditorState.identityTitle, "PROFILE");
+assert.equal(agentEditorState.profileBindingLabel, "Binding");
+assert.equal(agentEditorState.realmProfileLabel, "Realm ref");
+assert.equal(agentEditorState.realmProfilePlaceholder, "realm/profile");
 assert.equal(agentEditorState.realmProfileImportHint, "rkat mob validate rejects mobpack profiles that use realm_profile references; export deployable packs with inline profiles.");
-assert.equal(agentEditorState.realmProfileTitle, "REALM PROFILE");
+assert.equal(agentEditorState.realmProfileTitle, "REALM REF");
 assert.equal(agentEditorState.realmProfileReferenceLabel, "reviewer");
-assert.equal(agentEditorState.realmProfileReferenceHintBefore, "This imported member references");
+assert.equal(agentEditorState.realmProfileReferenceHintBefore, "Imported profile");
 assert.equal(agentEditorState.realmProfileReferenceHintAfter, "from a target realm. rkat mob validate rejects mobpack profiles that use realm_profile references; export deployable packs with inline profiles.");
-assert.equal(agentEditorState.modelLabel, "Model");
-assert.equal(agentEditorState.runtimeModeLabel, "Runtime mode");
-assert.equal(agentEditorState.backendLabel, "Backend");
-assert.equal(agentEditorState.inlinePeerNotificationsLabel, "Inline peer notifications");
-assert.equal(agentEditorState.inlinePeerNotificationsPlaceholder, "runtime default");
-assert.equal(agentEditorState.systemPromptTitle, "SYSTEM PROMPT");
-assert.equal(agentEditorState.applySkeletonLabel, "APPLY SKELETON");
-assert.equal(agentEditorState.applySkeletonTitle, "Apply a MobKit profile prompt skeleton");
-assert.equal(agentEditorState.systemPromptPlaceholder, "Describe the member mandate. This text is exported as the profile peer_description.");
+assert.equal(agentEditorState.modelLabel, "Model id");
+assert.equal(agentEditorState.runtimeModeLabel, "Runtime");
+assert.equal(agentEditorState.backendLabel, "Profile backend");
+assert.equal(agentEditorState.inlinePeerNotificationsLabel, "Inline notifications");
+assert.equal(agentEditorState.inlinePeerNotificationsPlaceholder, "default");
+assert.equal(agentEditorState.systemPromptTitle, "PEER DESCRIPTION");
+assert.equal(agentEditorState.applySkeletonLabel, "SKELETON");
+assert.equal(agentEditorState.applySkeletonTitle, "Apply skeleton");
+assert.equal(agentEditorState.systemPromptPlaceholder, "Describe the mandate.");
 assert.deepEqual(controller.agentEditorControlState({
   member: { id: "m_unplaced", name: "Unplaced", role: "writer" },
   instances: [],
   schemas: [],
 }).deleteNeedsConfirmation, false);
 assert.equal(agentEditorState.schema.id, "ReviewArtifact");
-assert.equal(agentEditorState.outputSchemaTitle, "OUTPUT SCHEMA");
+assert.equal(agentEditorState.outputSchemaTitle, "OUTPUT CONTRACT");
 assert.equal(agentEditorState.hasOutputSchema, true);
 assert.deepEqual(agentEditorState.schemaPreviewRows, [
   { id: "f1", name: undefined, type: undefined, required: false, requiredLabel: "" },
   { id: "f2", name: undefined, type: undefined, required: false, requiredLabel: "" },
 ]);
-assert.equal(agentEditorState.editSchemaLabel, "Edit schema →");
+assert.equal(agentEditorState.editSchemaLabel, "Open schema");
 assert.deepEqual(agentEditorState.editSchemaSelection, { kind: "schema", id: "ReviewArtifact" });
-assert.equal(agentEditorState.emptySchemaHint, "No structured output. Agent returns free-form text.");
+assert.equal(agentEditorState.emptySchemaHint, "Free-form output.");
 assert.equal(agentEditorState.profileBinding, "inline");
 assert.equal(agentEditorState.runtimeMode, "turn_driven");
 assert.equal(agentEditorState.backendValue, "session");
@@ -2683,7 +2794,7 @@ assert.deepEqual(controller.agentEditorControlState({
   modelCatalog: [],
 }).modelOptions, [{ value: "custom/model", label: "custom/model", model: null }]);
 assert.deepEqual(agentEditorState.schemaOptions.map((option) => [option.value, option.label]), [
-  ["", "— none —"],
+  ["", "none"],
   ["PlanArtifact", "PlanArtifact"],
   ["ReviewArtifact", "ReviewArtifact"],
 ]);

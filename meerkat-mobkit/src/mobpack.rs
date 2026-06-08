@@ -758,6 +758,43 @@ pub fn mobpack_schema_response() -> Value {
         "delete_label": "DELETE",
         "delete_blocked_title": "Unassign from agents first"
     });
+    let editor_agent_detail_view = json!({
+        "used_in_label": "used in",
+        "instance_singular": "instance",
+        "instance_plural": "instances",
+        "delete_label": "DELETE",
+        "delete_confirm_intro": "Delete agent",
+        "delete_confirm_placed_prefix": "It is placed in",
+        "cell_singular": "cell",
+        "cell_plural": "cells",
+        "delete_confirm_cells_suffix": "those nodes will be removed.",
+        "usage_title_prefix": "USED IN",
+        "empty_usage_hint": "Not yet placed in any cell. Switch to Topology to add.",
+        "identity_title": "IDENTITY",
+        "profile_binding_label": "Profile binding",
+        "missing_profile_binding_label": "missing profile binding",
+        "realm_profile_label": "Realm profile",
+        "realm_profile_placeholder": "realm profile id",
+        "realm_profile_import_hint_fallback": "Realm profile refs are import-only for this editor. Mobpack archives must use inline profiles before validation/export.",
+        "realm_profile_title": "REALM PROFILE",
+        "realm_profile_reference_hint_before": "This imported member references",
+        "realm_profile_reference_hint_after_fallback": "from a target realm. Convert it to an inline profile before validating or exporting a deployable mobpack.",
+        "model_label": "Model",
+        "runtime_mode_label": "Runtime mode",
+        "missing_runtime_mode_label": "missing runtime mode",
+        "backend_label": "Backend",
+        "inline_peer_notifications_label": "Inline peer notifications",
+        "inline_peer_notifications_placeholder": "runtime default",
+        "system_prompt_title": "SYSTEM PROMPT",
+        "apply_skeleton_label": "APPLY SKELETON",
+        "apply_skeleton_title": "Apply a MobKit profile prompt skeleton",
+        "system_prompt_placeholder": "Describe the member mandate. This text is exported as the profile peer_description.",
+        "output_schema_title": "OUTPUT SCHEMA",
+        "schema_none_label": "— none —",
+        "schema_required_label": "req",
+        "edit_schema_label": "Edit schema →",
+        "empty_schema_hint": "No structured output. Agent returns free-form text."
+    });
     let editor_basic_view = json!({
         "start_label": "START",
         "loop_badge": "LOOP",
@@ -801,7 +838,7 @@ pub fn mobpack_schema_response() -> Value {
             ]
         ]
     });
-    let mob_definition = json!({
+    let mut mob_definition = json!({
         "authoritative_type": "meerkat_mob::MobDefinition",
         "defaults": {
             "runtime_mode": "turn_driven",
@@ -916,6 +953,7 @@ pub fn mobpack_schema_response() -> Value {
         "collection_policies": collection_policy_values(),
         "dependency_modes": dependency_mode_values()
     });
+    mob_definition["editor_agent_detail_view"] = editor_agent_detail_view;
     json!({
         "schema_version": MOBPACK_SCHEMA_VERSION,
         "media_type": MOBPACK_MEDIA_TYPE,
@@ -15334,6 +15372,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_view"]["missing_agent_label"],
             json!("Agent not found.")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["identity_title"],
+            json!("IDENTITY")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["missing_profile_binding_label"],
+            json!("missing profile binding")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["system_prompt_title"],
+            json!("SYSTEM PROMPT")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["empty_schema_hint"],
+            json!("No structured output. Agent returns free-form text.")
         );
         assert_eq!(
             mob_definition["editor_schema_view"]["eyebrow"],
