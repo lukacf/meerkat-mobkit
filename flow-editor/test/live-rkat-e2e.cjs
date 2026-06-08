@@ -829,7 +829,11 @@ function buildUnifiedProjectionDocument(schema) {
     throw new Error("unified projection proof needs MobKit agent definitions from schema");
   }
   const model = schema.models?.[0]?.id || coderDefinition.model || reviewerDefinition.model || "gpt-5.5";
-  const toolIds = (schema.tool_catalog || schema.tool_config || []).map((tool) => tool.id).filter(Boolean);
+  const toolCatalog = Array.isArray(schema.tool_catalog) ? schema.tool_catalog : [];
+  if (!toolCatalog.length) {
+    throw new Error("unified projection proof needs real MobKit tools from schema.tool_catalog");
+  }
+  const toolIds = toolCatalog.map((tool) => tool.id).filter(Boolean);
   for (const required of ["builtins", "shell", "comms", "mob"]) {
     if (!toolIds.includes(required)) throw new Error(`unified projection proof missing real tool ${required}`);
   }
