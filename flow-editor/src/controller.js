@@ -1469,12 +1469,20 @@
       addNodeEmptySuffix: String(view.add_node_empty_suffix || ""),
       addNodeJumpLabel: String(view.add_node_jump_label || "").trim(),
       gatePaletteRows: graphGatePaletteRowsFromSchema(view.gate_palette_rows),
+      gateKindLabels: viewStringMapFromSchema(view.graph_gate_kind_labels),
+      terminalKindLabels: viewStringMapFromSchema(view.graph_terminal_kind_labels),
+      frameKindLabels: viewStringMapFromSchema(view.graph_frame_kind_labels),
+      edgeKindLabels: viewStringMapFromSchema(view.graph_edge_kind_labels),
     };
     return out.zoomOutTitle && out.fitTitle && out.zoomInTitle && out.portDragTitle
       && out.addNodeSearchIcon && out.addNodeSearchPlaceholder && out.addNodeCloseLabel
       && out.addNodeCloseTitle && out.addNodeAgentsLabel && out.addNodeControlsLabel
       && out.addNodeEmptyPrefix && out.addNodeEmptySuffix && out.addNodeJumpLabel
       && out.gatePaletteRows.length
+      && Object.keys(out.gateKindLabels).length
+      && Object.keys(out.terminalKindLabels).length
+      && Object.keys(out.frameKindLabels).length
+      && Object.keys(out.edgeKindLabels).length
       ? out
       : null;
   }
@@ -1511,6 +1519,10 @@
       addNodeEmptySuffix: String(view?.addNodeEmptySuffix || ""),
       addNodeJumpLabel: String(view?.addNodeJumpLabel || ""),
       gatePaletteRows: Array.isArray(view?.gatePaletteRows) ? view.gatePaletteRows : [],
+      gateKindLabels: view?.gateKindLabels && typeof view.gateKindLabels === "object" ? view.gateKindLabels : {},
+      terminalKindLabels: view?.terminalKindLabels && typeof view.terminalKindLabels === "object" ? view.terminalKindLabels : {},
+      frameKindLabels: view?.frameKindLabels && typeof view.frameKindLabels === "object" ? view.frameKindLabels : {},
+      edgeKindLabels: view?.edgeKindLabels && typeof view.edgeKindLabels === "object" ? view.edgeKindLabels : {},
     };
   }
 
@@ -4962,12 +4974,12 @@
     };
   }
 
-  function graphGateControlState(inst, { edges, members, contract } = {}) {
+  function graphGateControlState(inst, { edges, members, contract, graphView = null } = {}) {
     const incoming = (edges || []).filter((edge) => edge.to === inst?.id);
     const outgoing = (edges || []).filter((edge) => edge.from === inst?.id);
     const defaultGateKind = contractDefaultValue(contract, "graph_gate_kind");
     const gateKind = String(inst?.gateKind || defaultGateKind || "").trim();
-    const gateKindOptions = graphGateKindOptions(contract, gateKind);
+    const gateKindOptions = graphGateKindOptions(contract, gateKind, graphView);
     const collection = String(inst?.collection || (inst?.quorum?.n ? "quorum" : "")).trim();
     const collectionOptions = [
       { value: "", label: "runtime default", disabled: false, reason: "" },
@@ -5090,10 +5102,10 @@
       });
   }
 
-  function graphTerminalControlState(inst, contract) {
+  function graphTerminalControlState(inst, contract, graphView = null) {
     const defaultTerminalKind = contractDefaultValue(contract, "graph_terminal_kind");
     const terminalKind = String(inst?.kind || defaultTerminalKind || "").trim();
-    const terminalKindOptions = graphTerminalKindOptions(contract, terminalKind);
+    const terminalKindOptions = graphTerminalKindOptions(contract, terminalKind, graphView);
     const id = String(inst?.id || "");
     const labelValue = String(inst?.label || "");
     const col = Number.isFinite(Number(inst?.col)) ? Number(inst.col) + 1 : 1;
@@ -5112,7 +5124,7 @@
     };
   }
 
-  function graphEdgeInspectorState({ edge, instances = [], members = [], schemas = [], flow, contract } = {}) {
+  function graphEdgeInspectorState({ edge, instances = [], members = [], schemas = [], flow, contract, graphView = null } = {}) {
     const sourceInstances = Array.isArray(instances) ? instances : [];
     const sourceMembers = Array.isArray(members) ? members : [];
     const instanceById = new Map(sourceInstances.map((candidate) => [candidate.id, candidate]));
@@ -5137,7 +5149,7 @@
     const defaultEdgeKind = contractDefaultValue(contract, "graph_edge_kind");
     const conditionKind = contractDefaultValue(contract, "graph_condition_edge_kind");
     const edgeKind = String(edge?.kind || defaultEdgeKind || "").trim();
-    const edgeKindOptions = graphEdgeKindOptions(contract, edgeKind);
+    const edgeKindOptions = graphEdgeKindOptions(contract, edgeKind, graphView);
     const isCondition = !!conditionKind && edgeKind === conditionKind;
     return {
       edge,
@@ -7363,54 +7375,42 @@
     });
   }
 
-  function graphGateKindOptions(contract, currentKind) {
+  function graphGateKindOptions(contract, currentKind, graphView = null) {
+    const view = graphCanvasViewState(graphView);
     return simpleContractOptions(
       contract?.mob_definition?.graph_gate_kinds,
       currentKind || contractDefaultValue(contract, "graph_gate_kind"),
-      {
-        branch: "branch — conditional split",
-        fork: "fork — fan out in parallel",
-        join: "join — wait for branches",
-      },
+      view.gateKindLabels,
       "mob_definition.graph_gate_kinds"
     );
   }
 
-  function graphTerminalKindOptions(contract, currentKind) {
+  function graphTerminalKindOptions(contract, currentKind, graphView = null) {
+    const view = graphCanvasViewState(graphView);
     return simpleContractOptions(
       contract?.mob_definition?.graph_terminal_kinds,
       currentKind || contractDefaultValue(contract, "graph_terminal_kind"),
-      {
-        success: "success — done",
-        failed: "failed — blocked",
-        human: "human — needs human",
-      },
+      view.terminalKindLabels,
       "mob_definition.graph_terminal_kinds"
     );
   }
 
-  function graphFrameKindOptions(contract, currentKind) {
+  function graphFrameKindOptions(contract, currentKind, graphView = null) {
+    const view = graphCanvasViewState(graphView);
     return simpleContractOptions(
       contract?.mob_definition?.graph_frame_kinds,
       currentKind || contractDefaultValue(contract, "graph_frame_kind"),
-      {
-        Branch: "Branch — conditional flow frame",
-        Parallel: "Parallel — concurrent flow frame",
-        RepeatUntil: "RepeatUntil — bounded loop frame",
-      },
+      view.frameKindLabels,
       "mob_definition.graph_frame_kinds"
     );
   }
 
-  function graphEdgeKindOptions(contract, currentKind) {
+  function graphEdgeKindOptions(contract, currentKind, graphView = null) {
+    const view = graphCanvasViewState(graphView);
     return simpleContractOptions(
       contract?.mob_definition?.graph_edge_kinds,
       currentKind || contractDefaultValue(contract, "graph_edge_kind"),
-      {
-        next: "next — sequential handoff",
-        fanout: "fanout — parallel sibling",
-        cond: "cond — guarded branch",
-      },
+      view.edgeKindLabels,
       "mob_definition.graph_edge_kinds"
     );
   }

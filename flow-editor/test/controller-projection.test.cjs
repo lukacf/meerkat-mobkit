@@ -997,6 +997,26 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
         { id: "fork", glyph: "‖", label: "Parallel fork", meta: "fan_out lanes" },
         { id: "join", glyph: "⋈", label: "Join gate", meta: "fan_in barrier" },
       ],
+      graph_gate_kind_labels: {
+        branch: "branch — conditional split",
+        fork: "fork — fan out in parallel",
+        join: "join — wait for branches",
+      },
+      graph_terminal_kind_labels: {
+        success: "success — done",
+        failed: "failed — blocked",
+        human: "human — needs human",
+      },
+      graph_frame_kind_labels: {
+        Branch: "Branch — conditional flow frame",
+        Parallel: "Parallel — concurrent flow frame",
+        RepeatUntil: "RepeatUntil — bounded loop frame",
+      },
+      graph_edge_kind_labels: {
+        next: "next — sequential handoff",
+        fanout: "fanout — parallel sibling",
+        cond: "cond — guarded branch",
+      },
     },
     editor_graph_template_view: {
       template_eyebrow: "TEMPLATE",
@@ -1423,6 +1443,26 @@ assert.deepEqual(hydratedCatalogs.graphView, {
     { id: "fork", glyph: "‖", label: "Parallel fork", meta: "fan_out lanes" },
     { id: "join", glyph: "⋈", label: "Join gate", meta: "fan_in barrier" },
   ],
+  gateKindLabels: {
+    branch: "branch — conditional split",
+    fork: "fork — fan out in parallel",
+    join: "join — wait for branches",
+  },
+  terminalKindLabels: {
+    success: "success — done",
+    failed: "failed — blocked",
+    human: "human — needs human",
+  },
+  frameKindLabels: {
+    Branch: "Branch — conditional flow frame",
+    Parallel: "Parallel — concurrent flow frame",
+    RepeatUntil: "RepeatUntil — bounded loop frame",
+  },
+  edgeKindLabels: {
+    next: "next — sequential handoff",
+    fanout: "fanout — parallel sibling",
+    cond: "cond — guarded branch",
+  },
 });
 assert.deepEqual(controller.graphCanvasViewState(hydratedCatalogs.graphView), hydratedCatalogs.graphView);
 assert.deepEqual(controller.graphCanvasViewState(null), {
@@ -1440,6 +1480,10 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   addNodeEmptySuffix: "",
   addNodeJumpLabel: "",
   gatePaletteRows: [],
+  gateKindLabels: {},
+  terminalKindLabels: {},
+  frameKindLabels: {},
+  edgeKindLabels: {},
 });
 assert.deepEqual(hydratedCatalogs.graphTemplateView, {
   templateEyebrow: "TEMPLATE",
@@ -5741,6 +5785,7 @@ const gateState = controller.graphGateControlState({
   ],
   members: [{ id: "m_joiner" }],
   contract: graphShapeContract,
+  graphView: hydratedCatalogs.graphView,
 });
 assert.equal(gateState.gateKind, "join");
 assert.equal(gateState.eyebrow, "GATE · join");
@@ -5749,6 +5794,7 @@ assert.equal(gateState.idLine, "join_1 · cell (1,1)");
 assert.equal(gateState.deleteLabel, "DELETE");
 assert.equal(gateState.labelTitle, "LABEL");
 assert.equal(gateState.kindTitle, "KIND");
+assert.equal(gateState.selectedGateKind.label, "join — wait for branches");
 assert.equal(gateState.collectionTitle, "COLLECTION POLICY");
 assert.equal(gateState.quorumIncomingLabel, "of 2 incoming");
 assert.equal(gateState.joinMemberLabel, "Join member");
@@ -6077,7 +6123,7 @@ const terminalControlState = controller.graphTerminalControlState({
   label: "Done",
   col: 3,
   row: 1,
-}, graphShapeContract);
+}, graphShapeContract, hydratedCatalogs.graphView);
 assert.equal(terminalControlState.eyebrow, "TERMINAL · success");
 assert.equal(terminalControlState.title, "Done");
 assert.equal(terminalControlState.idLine, "n_done · cell (4,2)");
@@ -6096,7 +6142,7 @@ const unsupportedTerminalControlState = controller.graphTerminalControlState({
   id: "n_done",
   isTerminal: true,
   kind: "archived",
-}, graphShapeContract);
+}, graphShapeContract, hydratedCatalogs.graphView);
 assert.equal(unsupportedTerminalControlState.terminalKind, "archived");
 assert.equal(unsupportedTerminalControlState.selectedTerminalKind.disabled, true);
 assert.match(unsupportedTerminalControlState.selectedTerminalKind.reason, /mob_definition\.graph_terminal_kinds/);
@@ -6121,6 +6167,7 @@ const branchConditionRows = controller.graphBranchConditionRows({
   members: graphProjectionMembers,
   schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
   contract: graphShapeContract,
+  graphView: hydratedCatalogs.graphView,
 });
 assert.equal(branchConditionRows.length, 2);
 assert.deepEqual({
@@ -6228,6 +6275,7 @@ const edgeInspectorState = controller.graphEdgeInspectorState({
   members: graphProjectionMembers,
   schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
   contract: graphShapeContract,
+  graphView: hydratedCatalogs.graphView,
 });
 assert.equal(edgeInspectorState.title, "Writer → Reviewer");
 assert.equal(edgeInspectorState.eyebrow, "EDGE · cond");
@@ -6282,6 +6330,7 @@ const customEdgeInspectorState = controller.graphEdgeInspectorState({
   members: graphProjectionMembers,
   schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
   contract: customGraphConditionContract,
+  graphView: hydratedCatalogs.graphView,
 });
 assert.equal(customEdgeInspectorState.edgeKind, "when");
 assert.equal(customEdgeInspectorState.isCondition, true);

@@ -1502,12 +1502,20 @@ window.MOBKIT_BOOT = {
       addNodeEmptySuffix: String(view.add_node_empty_suffix || ""),
       addNodeJumpLabel: String(view.add_node_jump_label || "").trim(),
       gatePaletteRows: graphGatePaletteRowsFromSchema(view.gate_palette_rows),
+      gateKindLabels: viewStringMapFromSchema(view.graph_gate_kind_labels),
+      terminalKindLabels: viewStringMapFromSchema(view.graph_terminal_kind_labels),
+      frameKindLabels: viewStringMapFromSchema(view.graph_frame_kind_labels),
+      edgeKindLabels: viewStringMapFromSchema(view.graph_edge_kind_labels),
     };
     return out.zoomOutTitle && out.fitTitle && out.zoomInTitle && out.portDragTitle
       && out.addNodeSearchIcon && out.addNodeSearchPlaceholder && out.addNodeCloseLabel
       && out.addNodeCloseTitle && out.addNodeAgentsLabel && out.addNodeControlsLabel
       && out.addNodeEmptyPrefix && out.addNodeEmptySuffix && out.addNodeJumpLabel
       && out.gatePaletteRows.length
+      && Object.keys(out.gateKindLabels).length
+      && Object.keys(out.terminalKindLabels).length
+      && Object.keys(out.frameKindLabels).length
+      && Object.keys(out.edgeKindLabels).length
       ? out
       : null;
   }
@@ -1544,6 +1552,10 @@ window.MOBKIT_BOOT = {
       addNodeEmptySuffix: String(view?.addNodeEmptySuffix || ""),
       addNodeJumpLabel: String(view?.addNodeJumpLabel || ""),
       gatePaletteRows: Array.isArray(view?.gatePaletteRows) ? view.gatePaletteRows : [],
+      gateKindLabels: view?.gateKindLabels && typeof view.gateKindLabels === "object" ? view.gateKindLabels : {},
+      terminalKindLabels: view?.terminalKindLabels && typeof view.terminalKindLabels === "object" ? view.terminalKindLabels : {},
+      frameKindLabels: view?.frameKindLabels && typeof view.frameKindLabels === "object" ? view.frameKindLabels : {},
+      edgeKindLabels: view?.edgeKindLabels && typeof view.edgeKindLabels === "object" ? view.edgeKindLabels : {},
     };
   }
 
@@ -4995,12 +5007,12 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function graphGateControlState(inst, { edges, members, contract } = {}) {
+  function graphGateControlState(inst, { edges, members, contract, graphView = null } = {}) {
     const incoming = (edges || []).filter((edge) => edge.to === inst?.id);
     const outgoing = (edges || []).filter((edge) => edge.from === inst?.id);
     const defaultGateKind = contractDefaultValue(contract, "graph_gate_kind");
     const gateKind = String(inst?.gateKind || defaultGateKind || "").trim();
-    const gateKindOptions = graphGateKindOptions(contract, gateKind);
+    const gateKindOptions = graphGateKindOptions(contract, gateKind, graphView);
     const collection = String(inst?.collection || (inst?.quorum?.n ? "quorum" : "")).trim();
     const collectionOptions = [
       { value: "", label: "runtime default", disabled: false, reason: "" },
@@ -5123,10 +5135,10 @@ window.MOBKIT_BOOT = {
       });
   }
 
-  function graphTerminalControlState(inst, contract) {
+  function graphTerminalControlState(inst, contract, graphView = null) {
     const defaultTerminalKind = contractDefaultValue(contract, "graph_terminal_kind");
     const terminalKind = String(inst?.kind || defaultTerminalKind || "").trim();
-    const terminalKindOptions = graphTerminalKindOptions(contract, terminalKind);
+    const terminalKindOptions = graphTerminalKindOptions(contract, terminalKind, graphView);
     const id = String(inst?.id || "");
     const labelValue = String(inst?.label || "");
     const col = Number.isFinite(Number(inst?.col)) ? Number(inst.col) + 1 : 1;
@@ -5145,7 +5157,7 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function graphEdgeInspectorState({ edge, instances = [], members = [], schemas = [], flow, contract } = {}) {
+  function graphEdgeInspectorState({ edge, instances = [], members = [], schemas = [], flow, contract, graphView = null } = {}) {
     const sourceInstances = Array.isArray(instances) ? instances : [];
     const sourceMembers = Array.isArray(members) ? members : [];
     const instanceById = new Map(sourceInstances.map((candidate) => [candidate.id, candidate]));
@@ -5170,7 +5182,7 @@ window.MOBKIT_BOOT = {
     const defaultEdgeKind = contractDefaultValue(contract, "graph_edge_kind");
     const conditionKind = contractDefaultValue(contract, "graph_condition_edge_kind");
     const edgeKind = String(edge?.kind || defaultEdgeKind || "").trim();
-    const edgeKindOptions = graphEdgeKindOptions(contract, edgeKind);
+    const edgeKindOptions = graphEdgeKindOptions(contract, edgeKind, graphView);
     const isCondition = !!conditionKind && edgeKind === conditionKind;
     return {
       edge,
@@ -7396,54 +7408,42 @@ window.MOBKIT_BOOT = {
     });
   }
 
-  function graphGateKindOptions(contract, currentKind) {
+  function graphGateKindOptions(contract, currentKind, graphView = null) {
+    const view = graphCanvasViewState(graphView);
     return simpleContractOptions(
       contract?.mob_definition?.graph_gate_kinds,
       currentKind || contractDefaultValue(contract, "graph_gate_kind"),
-      {
-        branch: "branch — conditional split",
-        fork: "fork — fan out in parallel",
-        join: "join — wait for branches",
-      },
+      view.gateKindLabels,
       "mob_definition.graph_gate_kinds"
     );
   }
 
-  function graphTerminalKindOptions(contract, currentKind) {
+  function graphTerminalKindOptions(contract, currentKind, graphView = null) {
+    const view = graphCanvasViewState(graphView);
     return simpleContractOptions(
       contract?.mob_definition?.graph_terminal_kinds,
       currentKind || contractDefaultValue(contract, "graph_terminal_kind"),
-      {
-        success: "success — done",
-        failed: "failed — blocked",
-        human: "human — needs human",
-      },
+      view.terminalKindLabels,
       "mob_definition.graph_terminal_kinds"
     );
   }
 
-  function graphFrameKindOptions(contract, currentKind) {
+  function graphFrameKindOptions(contract, currentKind, graphView = null) {
+    const view = graphCanvasViewState(graphView);
     return simpleContractOptions(
       contract?.mob_definition?.graph_frame_kinds,
       currentKind || contractDefaultValue(contract, "graph_frame_kind"),
-      {
-        Branch: "Branch — conditional flow frame",
-        Parallel: "Parallel — concurrent flow frame",
-        RepeatUntil: "RepeatUntil — bounded loop frame",
-      },
+      view.frameKindLabels,
       "mob_definition.graph_frame_kinds"
     );
   }
 
-  function graphEdgeKindOptions(contract, currentKind) {
+  function graphEdgeKindOptions(contract, currentKind, graphView = null) {
+    const view = graphCanvasViewState(graphView);
     return simpleContractOptions(
       contract?.mob_definition?.graph_edge_kinds,
       currentKind || contractDefaultValue(contract, "graph_edge_kind"),
-      {
-        next: "next — sequential handoff",
-        fanout: "fanout — parallel sibling",
-        cond: "cond — guarded branch",
-      },
+      view.edgeKindLabels,
       "mob_definition.graph_edge_kinds"
     );
   }
@@ -10631,7 +10631,7 @@ window.GraphEditor = GraphEditor;
 /* inspector.jsx */
 
 {
-function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, launchView: launchView2 = null, flow, contract }) {
+function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, launchView = null, graphView = null, flow, contract }) {
   const selectionState = window.MobKitFlowController.graphSelectionState({
     selection,
     instances: studio.instances,
@@ -10639,11 +10639,11 @@ function Inspector({ studio, selection, selectMember, selectInstance, clearSelec
   });
   if (selectionState.kind === "instance") {
     if (!selectionState.instance) return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
-    return /* @__PURE__ */ React.createElement(InstanceInspector, { studio, flow, inst: selectionState.instance, selectMember, clearSelection, contract });
+    return /* @__PURE__ */ React.createElement(InstanceInspector, { studio, flow, inst: selectionState.instance, selectMember, clearSelection, contract, launchView, graphView });
   }
   if (selectionState.kind === "edge") {
     if (!selectionState.edge) return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
-    return /* @__PURE__ */ React.createElement(EdgeInspector, { studio, flow, edge: selectionState.edge, clearSelection, contract });
+    return /* @__PURE__ */ React.createElement(EdgeInspector, { studio, flow, edge: selectionState.edge, clearSelection, contract, graphView });
   }
   return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
 }
@@ -10655,13 +10655,14 @@ function TemplateInspector({ studio, template, templateSeed, templateView }) {
     return /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text);
   }))))));
 }
-function GateInspector({ studio, flow, inst, clearSelection, contract }) {
+function GateInspector({ studio, flow, inst, clearSelection, contract, graphView = null }) {
   const change = (patch) => studio.updateInstance(inst.id, patch);
   const kind = inst.gateKind;
   const gateState = window.MobKitFlowController.graphGateControlState(inst, {
     edges: studio.edges,
     members: studio.members,
-    contract
+    contract,
+    graphView
   });
   const branchRows = kind === "branch" ? window.MobKitFlowController.graphBranchConditionRows({
     inst,
@@ -10713,7 +10714,7 @@ function GateInspector({ studio, flow, inst, clearSelection, contract }) {
     } }, row.modeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("span", { className: "kv__hint" }, row.targetPrefix, " ", row.targetLabel)), row.isCondition && (!row.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, row.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "bld-cond", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.ownerValue, onChange: (ev) => setCondOwner(ev.target.value) }, row.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.fieldValue, onChange: (ev) => setCondField(ev.target.value) }, /* @__PURE__ */ React.createElement("option", { value: row.fieldPlaceholderOption.value }, row.fieldPlaceholderOption.label), row.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: row.operatorValue, onChange: (ev) => studio.updateEdge(e.id, window.MobKitFlowController.graphEdgeConditionOperatorPatch(e, ev.target.value, { defaultOperator: row.defaultOperator, contract })) }, row.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: row.condField, value: e.cond?.val, onChange: (val) => studio.updateEdge(e.id, window.MobKitFlowController.graphEdgeConditionValuePatch(e, val, { defaultOperator: row.defaultOperator })) }))));
   })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.wiringTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, /* @__PURE__ */ React.createElement("dt", null, gateState.incomingLabel), /* @__PURE__ */ React.createElement("dd", null, gateState.incomingCount), /* @__PURE__ */ React.createElement("dt", null, gateState.outgoingLabel), /* @__PURE__ */ React.createElement("dd", null, gateState.outgoingCount)))));
 }
-function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, contract }) {
+function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, contract, launchView = null, graphView = null }) {
   const instanceState = window.MobKitFlowController.graphInstanceControlState({
     inst,
     instances: studio.instances,
@@ -10722,10 +10723,10 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
   });
   const member = instanceState.member;
   if (inst.isGate) {
-    return /* @__PURE__ */ React.createElement(GateInspector, { studio, flow, inst, clearSelection, contract });
+    return /* @__PURE__ */ React.createElement(GateInspector, { studio, flow, inst, clearSelection, contract, graphView });
   }
   if (inst.isTerminal) {
-    const terminalState = window.MobKitFlowController.graphTerminalControlState(inst, contract);
+    const terminalState = window.MobKitFlowController.graphTerminalControlState(inst, contract, graphView);
     return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, terminalState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, terminalState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, terminalState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
       studio.deleteInstance(inst.id);
       clearSelection();
@@ -10765,14 +10766,15 @@ function GraphCondValue({ field, value, onChange }) {
   }
   return /* @__PURE__ */ React.createElement("input", { className: "field__input", placeholder: control.placeholder, value: control.value, onChange: (e) => onChange(e.target.value) });
 }
-function EdgeInspector({ studio, flow, edge, clearSelection, contract }) {
+function EdgeInspector({ studio, flow, edge, clearSelection, contract, graphView = null }) {
   const edgeState = window.MobKitFlowController.graphEdgeInspectorState({
     edge,
     instances: studio.instances,
     members: studio.members,
     schemas: studio.schemas,
     flow,
-    contract
+    contract,
+    graphView
   });
   const change = (patch) => studio.updateEdge(edge.id, patch);
   const setEdgeKind = (kind) => change(window.MobKitFlowController.graphEdgeKindPatch(edge, kind, {
@@ -12674,6 +12676,7 @@ function App() {
       templateSeed: catalogs.template,
       templateView: catalogs.graphTemplateView,
       launchView: catalogs.launchView,
+      graphView: catalogs.graphView,
       contract,
       deploySettings,
       selectMember: (id) => {

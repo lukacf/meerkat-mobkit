@@ -824,6 +824,7 @@ function App() {
               templateSeed={catalogs.template}
               templateView={catalogs.graphTemplateView}
               launchView={catalogs.launchView}
+              graphView={catalogs.graphView}
               contract={contract}
               deploySettings={deploySettings}
               selectMember={(id) => { setView("agents"); setAgentSel({ kind: "agent", id }); }}

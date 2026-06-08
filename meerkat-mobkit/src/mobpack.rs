@@ -754,7 +754,27 @@ pub fn mobpack_schema_response() -> Value {
                 "label": "Join gate",
                 "meta": "fan_in barrier"
             }
-        ]
+        ],
+        "graph_gate_kind_labels": {
+            "branch": "branch — conditional split",
+            "fork": "fork — fan out in parallel",
+            "join": "join — wait for branches"
+        },
+        "graph_terminal_kind_labels": {
+            "success": "success — done",
+            "failed": "failed — blocked",
+            "human": "human — needs human"
+        },
+        "graph_frame_kind_labels": {
+            "Branch": "Branch — conditional flow frame",
+            "Parallel": "Parallel — concurrent flow frame",
+            "RepeatUntil": "RepeatUntil — bounded loop frame"
+        },
+        "graph_edge_kind_labels": {
+            "next": "next — sequential handoff",
+            "fanout": "fanout — parallel sibling",
+            "cond": "cond — guarded branch"
+        }
     });
     let editor_agent_view = json!({
         "agents_heading": "AGENTS",
@@ -15718,6 +15738,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_view"]["gate_palette_rows"][1]["id"],
             json!("fork")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["graph_gate_kind_labels"]["join"],
+            json!("join — wait for branches")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["graph_edge_kind_labels"]["cond"],
+            json!("cond — guarded branch")
         );
         assert_eq!(
             mob_definition["editor_agent_view"]["agents_heading"],

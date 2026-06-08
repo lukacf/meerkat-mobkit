@@ -98,10 +98,12 @@ assert.match(app, /<GraphEditor[\s\S]*graphView=\{catalogs\.graphView\}/, "app s
 assert.match(controller, /mob_definition\?\.editor_graph_view/, "controller plane must hydrate Graph canvas chrome from MobKit schema");
 assert.match(app, /<AddNodeMenu[\s\S]*graphView=\{catalogs\.graphView\}/, "app shell must inject schema-backed Graph add-node menu view state");
 assert.match(controller, /gatePaletteRows:\s*graphGatePaletteRowsFromSchema\(view\.gate_palette_rows\)/, "controller plane must hydrate Graph gate palette rows from MobKit schema");
+assert.match(controller, /gateKindLabels:\s*viewStringMapFromSchema\(view\.graph_gate_kind_labels\)/, "controller plane must hydrate Graph option labels from MobKit schema");
 assert.match(graphEditorBlock, /graphView(?:\s*=\s*null)?[\s\S]*MobKitFlowController\.graphCanvasViewState\(graphView\)/, "Graph editor must render canvas affordance titles through controller-projected view state");
 assert.match(graphEditorBlock, /(?=[\s\S]*canvasView\.zoomOutTitle)(?=[\s\S]*canvasView\.fitTitle)(?=[\s\S]*canvasView\.zoomInTitle)(?=[\s\S]*canvasView\.portDragTitle)/, "Graph editor must use controller-projected zoom and port titles");
 assert(!/title=["'](?:Zoom out|Fit to view|Zoom in|Drag to a member to connect)["']/.test(graph), "Graph editor JSX must not compose canvas affordance titles locally");
 assert.match(app, /<Inspector[\s\S]*templateSeed=\{catalogs\.template\}/, "app shell must inject MobKit summary seed into Inspector");
+assert.match(app, /<Inspector[\s\S]*graphView=\{catalogs\.graphView\}/, "app shell must inject schema-backed Graph view into Inspector");
 assert.match(controller, /template:\s*graphTemplateSeedFromBlankMobpack\(blankMobpack\)/, "Graph template inspector seed must hydrate from the MobKit blank mobpack template");
 assert.match(app, /<Tweaks[\s\S]*modelCatalog=\{catalogs\.models\}/, "deploy settings UI must receive MobKit model catalog via props");
 assert.match(app, /setDeploySettings\(nextCatalogs\.deployDefaults\)/, "app shell must hydrate deploy defaults from MobKit schema");
@@ -234,6 +236,7 @@ assert.match(inspectorTemplateBlock, /templateState\.templateEyebrow[\s\S]*templ
 assert(!/>TEMPLATE<|>SUMMARY<|>TRIGGERS<|>QUICK START<|>labels<|>default<|library member|empty grid cell|right port|selected instance or edge/.test(inspectorTemplateBlock), "Graph template inspector must not compose template headings, trigger labels, or quick-start copy locally");
 assert.match(inspectorInstanceBlock, /MobKitFlowController\.graphInstanceControlState/, "Graph instance inspector must render member, schema, and fork-source state through the controller plane");
 assert.match(inspectorInstanceBlock, /MobKitFlowController\.graphTerminalControlState/, "Graph terminal inspector must render terminal kind state through the controller plane");
+assert.match(inspectorInstanceBlock, /graphTerminalControlState\(inst,\s*contract,\s*graphView\)/, "Graph terminal inspector must pass schema-backed Graph view into controller projection");
 assert.match(inspectorGateBlock, /gateState\.eyebrow/, "Graph gate inspector must render header through controller state");
 assert.match(inspectorGateBlock, /gateState\.collectionTitle/, "Graph gate collection title must come from controller state");
 assert.match(inspectorGateBlock, /gateState\.joinMemberLabel/, "Graph gate join-member label must come from controller state");
@@ -272,6 +275,7 @@ assert(!/inst\.gateKind ===|inst\.collection ===|state\.edges\.filter|barrier|jo
 assert(!/studio\.instances\.find\(i => i\.id === selection\.id\)|studio\.edges\.find\(e => e\.id === selection\.id\)/.test(inspectorRootBlock), "Graph Inspector root must not resolve selected graph entities locally");
 assert(!/studio\.members\.length|new Set\(studio\.instances\.filter|studio\.instances\.filter\(i => !i\.isTerminal\)|studio\.instances\.filter\(i => i\.isTerminal\)|studio\.edges\.length|studio\.frames\.length/.test(inspectorTemplateBlock), "Graph template inspector must not assemble summary counts locally");
 assert.match(inspector, /MobKitFlowController\.graphGateControlState/, "Graph Inspector must read gate control state through the controller plane");
+assert.match(inspectorGateBlock, /graphGateControlState\(inst,\s*\{[\s\S]*graphView/, "Graph gate inspector must pass schema-backed Graph view into controller projection");
 assert.match(controller, /function graphGateControlState/, "controller plane must own gate control display state");
 assert.match(controller, /joinMemberPlaceholderOption/, "controller plane must own Graph gate join-member placeholder state");
 assert.match(controller, /noConditionOptionsHint/, "controller plane must own Graph condition empty-state copy");
@@ -563,6 +567,7 @@ assert.match(agents, /const flowChanged = result\.flow !== flow;[\s\S]*const edg
 assert.match(agents, /studioDeleteSchemaPatch\(\{[\s\S]*flow,[\s\S]*edges:\s*studio\.edges,[\s\S]*instances:\s*studio\.instances/, "Agent Editor schema deletes must pass Basic and Graph context into the controller cascade");
 assert.match(agents, /function SchemaEditor[\s\S]*const deleteSchema = \(\) => \{[\s\S]*if \(result\.flow !== flow && setFlow\) setFlow\(result\.flow\);[\s\S]*if \(result\.edges !== studio\.edges\) studio\.setEdges\(result\.edges\);[\s\S]*onClick=\{deleteSchema\}/, "Agent Editor schema deletes must apply controller-cleaned Basic flow and Graph edges as one authoring mutation");
 assert.match(inspectorEdgeBlock, /MobKitFlowController\.graphEdgeInspectorState/, "Graph edge inspector must render condition and endpoint state through the controller plane");
+assert.match(inspectorEdgeBlock, /graphEdgeInspectorState\(\{[\s\S]*graphView/, "Graph edge inspector must pass schema-backed Graph view into controller projection");
 assert.match(controller, /function graphEdgeInspectorState/, "controller plane must own Graph edge inspector projection");
 assert.match(controller, /function graphConditionOptions/, "controller plane must own Graph condition owner option semantics");
 assert(!/function (?:parseGraphConditionVar|flowInputParams|graphConditionOptions)\(/.test(inspector), "Graph inspector must not own graph condition parsing or option helpers");

@@ -9,7 +9,7 @@
 // AddNodeMenu lets the user place existing real members. Flow controls are
 // projected from the Basic Editor's deployable flow model.
 
-function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, launchView = null, flow, contract }) {
+function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, launchView = null, graphView = null, flow, contract }) {
   const selectionState = window.MobKitFlowController.graphSelectionState({
     selection,
     instances: studio.instances,
@@ -17,11 +17,11 @@ function Inspector({ studio, selection, selectMember, selectInstance, clearSelec
   });
   if (selectionState.kind === "instance") {
     if (!selectionState.instance) return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
-    return <InstanceInspector studio={studio} flow={flow} inst={selectionState.instance} selectMember={selectMember} clearSelection={clearSelection} contract={contract} />;
+    return <InstanceInspector studio={studio} flow={flow} inst={selectionState.instance} selectMember={selectMember} clearSelection={clearSelection} contract={contract} launchView={launchView} graphView={graphView} />;
   }
   if (selectionState.kind === "edge") {
     if (!selectionState.edge) return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
-    return <EdgeInspector studio={studio} flow={flow} edge={selectionState.edge} clearSelection={clearSelection} contract={contract} />;
+    return <EdgeInspector studio={studio} flow={flow} edge={selectionState.edge} clearSelection={clearSelection} contract={contract} graphView={graphView} />;
   }
   return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
 }
@@ -75,13 +75,14 @@ function TemplateInspector({ studio, template, templateSeed, templateView }) {
 }
 
 // ── Gate (fork / join / branch) ───────────────────────────────────
-function GateInspector({ studio, flow, inst, clearSelection, contract }) {
+function GateInspector({ studio, flow, inst, clearSelection, contract, graphView = null }) {
   const change = (patch) => studio.updateInstance(inst.id, patch);
   const kind = inst.gateKind;
   const gateState = window.MobKitFlowController.graphGateControlState(inst, {
     edges: studio.edges,
     members: studio.members,
     contract,
+    graphView,
   });
   const branchRows = kind === "branch"
     ? window.MobKitFlowController.graphBranchConditionRows({
@@ -239,7 +240,7 @@ function GateInspector({ studio, flow, inst, clearSelection, contract }) {
 }
 
 // ── Instance (graph node) — TEMPLATE-ONLY fields + member summary ──
-function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, contract }) {
+function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, contract, launchView = null, graphView = null }) {
   const instanceState = window.MobKitFlowController.graphInstanceControlState({
     inst,
     instances: studio.instances,
@@ -249,11 +250,11 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
   const member = instanceState.member;
 
   if (inst.isGate) {
-    return <GateInspector studio={studio} flow={flow} inst={inst} clearSelection={clearSelection} contract={contract} />;
+    return <GateInspector studio={studio} flow={flow} inst={inst} clearSelection={clearSelection} contract={contract} graphView={graphView} />;
   }
 
   if (inst.isTerminal) {
-    const terminalState = window.MobKitFlowController.graphTerminalControlState(inst, contract);
+    const terminalState = window.MobKitFlowController.graphTerminalControlState(inst, contract, graphView);
     return (
       <>
         <div className="inspector__head">
@@ -438,7 +439,7 @@ function GraphCondValue({ field, value, onChange }) {
 }
 
 // ── Edge ─────────────────────────────────────────────────────────
-function EdgeInspector({ studio, flow, edge, clearSelection, contract }) {
+function EdgeInspector({ studio, flow, edge, clearSelection, contract, graphView = null }) {
   const edgeState = window.MobKitFlowController.graphEdgeInspectorState({
     edge,
     instances: studio.instances,
@@ -446,6 +447,7 @@ function EdgeInspector({ studio, flow, edge, clearSelection, contract }) {
     schemas: studio.schemas,
     flow,
     contract,
+    graphView,
   });
   const change = (patch) => studio.updateEdge(edge.id, patch);
   const setEdgeKind = (kind) => change(window.MobKitFlowController.graphEdgeKindPatch(edge, kind, {
