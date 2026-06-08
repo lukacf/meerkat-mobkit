@@ -103,14 +103,13 @@
     return "";
   }
 
-  function normalizeSkillId(raw, fallback = "mob.editor.skill") {
-    const value = String(raw || fallback)
+  function normalizeSkillId(raw) {
+    return String(raw || "")
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9_.-]+/g, ".")
       .replace(/^[._-]+|[._-]+$/g, "")
       .replace(/\.{2,}/g, ".");
-    return value || fallback;
   }
 
   function skillIdsFromRealms(realms) {
@@ -125,12 +124,17 @@
 
   function addInlineSkillToRealms(realms, spec = {}) {
     const nextRealms = JSON.parse(JSON.stringify(realms || []));
-    const label = String(spec.label || spec.id || "Mob skill").trim() || "Mob skill";
+    const label = String(spec.label || spec.id || "").trim();
+    if (!label) throw new Error("Inline skill id or label is required.");
     const content = String(spec.content || "").trim();
     if (!content) throw new Error("Inline skill content is required.");
     const used = skillIdsFromRealms(nextRealms);
-    const rawId = spec.id || (label.includes(".") ? label : `mob.${label}`);
+    const explicitId = String(spec.id || "").trim();
+    const identityText = explicitId || label;
+    if (!normalizeSkillId(identityText)) throw new Error("Inline skill id or label must contain letters or numbers.");
+    const rawId = explicitId || (label.includes(".") ? label : `mob.${label}`);
     const baseId = normalizeSkillId(rawId);
+    if (!baseId) throw new Error("Inline skill id or label must contain letters or numbers.");
     let id = baseId;
     let index = 2;
     while (used.has(id)) id = `${baseId}.${index++}`;

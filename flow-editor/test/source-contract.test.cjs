@@ -844,6 +844,8 @@ assert.match(controller, /function memberSkillAccessState/, "controller plane mu
 assert.match(controller, /function memberSkillToggleCascadePatch/, "controller plane must own member skill-toggle cascade semantics");
 assert.match(controller, /function memberSkillRemoveCascadePatch/, "controller plane must own member skill-remove cascade semantics");
 assert.match(controller, /function memberInlineSkillCascadePatch/, "controller plane must own inline skill definition plus member-binding semantics");
+assert(!/normalizeSkillId\(raw,\s*fallback|mob\.editor\.skill|spec\.label \|\| spec\.id \|\| ["']Mob skill["']/.test(controller), "inline skill creation must require explicit MobKit skill identity instead of local default ids or labels");
+assert.match(controller, /Inline skill id or label is required/, "controller plane must reject inline skills without explicit id or label");
 assert.match(controller, /className: `skill-row\$\{selected \? " is-on" : ""\}`/, "controller plane must own Agent skill row selected classes");
 assert.match(controller, /inlineToggleLabel: inlineOpen \? "CANCEL" : "\+ INLINE"/, "controller plane must own Agent inline-skill toggle labels");
 assert.match(controller, /function agentListState/, "controller plane must own Agent sidebar projection");

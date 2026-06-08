@@ -813,6 +813,22 @@ assert.deepEqual(inlineCascade.members[0].skills, ["mob.workpad", "mob.quality.g
 assert.equal(inlineCascade.skillRealms[0].id, "mobkit/editor-inline");
 assert.equal(inlineCascade.skillRealms[0].skills[0].source, "inline");
 assert.equal(inlineCascade.skillRealms[0].skills[0].content, "Review and emit the QualityVerdict schema.");
+assert.throws(
+  () => controller.memberInlineSkillPatch(
+    { skills: [] },
+    [],
+    { content: "Do the work." },
+  ),
+  /id or label is required/,
+);
+assert.throws(
+  () => controller.memberInlineSkillPatch(
+    { skills: [] },
+    [],
+    { label: "!!!", content: "Do the work." },
+  ),
+  /letters or numbers/,
+);
 
 const sampleRows = controller.sampleFlowsFromSchema({
   sample_mobpacks: [
