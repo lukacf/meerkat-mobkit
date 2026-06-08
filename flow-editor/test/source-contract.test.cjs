@@ -793,11 +793,11 @@ assert.match(agents, /schemaFieldDeleteCascadePatch\(\{[\s\S]*schema,[\s\S]*sche
 assert.match(agents, /const deleteField = \(fieldId\) => \{[\s\S]*if \(result\.flow !== flow && setFlow\) setFlow\(result\.flow\);[\s\S]*if \(result\.edges !== studio\.edges\) studio\.setEdges\(result\.edges\);/, "Agent Editor schema-field deletes must apply controller-cleaned Basic flow and Graph edges");
 assert(!/onDelete=\{\(\) => \{[\s\S]*reconcileFieldReferences\(f\.name,\s*[""]{2}\)/.test(agents), "Agent Editor schema-field deletes must not split condition cleanup into a UI-local pre-delete step");
 assert.match(agents, /MobKitFlowController\.uniqueSchemaFieldName/, "Agent Editor must normalize schema field names through the controller plane");
-assert.match(controller, /schemaFieldUpdatePatch[\s\S]{0,720}uniqueSchemaFieldName/, "controller plane must normalize schema field names on every Agent schema-field update");
+assert.match(controller, /schemaFieldUpdatePatch[\s\S]{0,720}uniqueSchemaFieldName[\s\S]{0,160}editorSchemaFieldNameFallback/, "controller plane must normalize schema field names on every Agent schema-field update using MobKit draft fallback names");
 assert.match(controller, /function schemaFieldDeletePatch/, "controller plane must own primitive schema-field deletion semantics");
 assert.match(controller, /function schemaFieldDeleteCascadePatch/, "controller plane must own schema-field delete cascade semantics");
 assert.match(controller, /schemaFieldDeleteCascadePatch[\s\S]*reconcileSchemaFieldReferences\(\{/, "schema-field delete cascade must clear Basic and Graph condition references through controller reconciliation");
-assert.match(controller, /inputParamUpdatePatch[\s\S]{0,720}uniqueInputParamName/, "controller plane must normalize Basic input-param names on every update");
+assert.match(controller, /inputParamUpdatePatch[\s\S]{0,720}uniqueInputParamName[\s\S]{0,160}editorInputParamNameFallback/, "controller plane must normalize Basic input-param names on every update using MobKit draft fallback names");
 assert(!/while \(studio\.schemas\.find[\s\S]{0,180}Artifact/.test(agents), "Agent Editor must not pick schema ids locally");
 assert(!/fields:\s*\[\{\s*id:\s*["']f1["'][\s\S]{0,140}type:\s*["']string["']/.test(agents), "Agent Editor must not hardcode schema field defaults locally");
 assert(!/function\s+uniqueFieldName/.test(agents), "Agent Editor must not own schema field-name uniqueness");

@@ -2193,8 +2193,8 @@
       .replace(/^[0-9]/, "_$&") || fallback;
   }
 
-  function uniqueInputParamName(params, raw, currentId = null) {
-    const base = inputParamName(raw, "param");
+  function uniqueInputParamName(params, raw, currentId = null, fallback = "param") {
+    const base = inputParamName(raw, fallback);
     const taken = new Set((params || [])
       .filter((param) => param?.id !== currentId)
       .map((param) => String(param?.name || "").trim())
@@ -2209,8 +2209,8 @@
     return inputParamName(raw, fallback);
   }
 
-  function uniqueSchemaFieldName(fields, raw, currentId = null) {
-    const base = schemaFieldName(raw, "field");
+  function uniqueSchemaFieldName(fields, raw, currentId = null, fallback = "field") {
+    const base = schemaFieldName(raw, fallback);
     const taken = new Set((fields || [])
       .filter((field) => field?.id !== currentId)
       .map((field) => String(field?.name || "").trim())
@@ -2372,7 +2372,7 @@
     if (!current) return { fields };
     const normalized = normalizeSchemaLikeFieldPatch(current, patch, contract);
     if (Object.prototype.hasOwnProperty.call(normalized, "name")) {
-      normalized.name = uniqueSchemaFieldName(fields, normalized.name, fieldId);
+      normalized.name = uniqueSchemaFieldName(fields, normalized.name, fieldId, editorSchemaFieldNameFallback(contract));
     }
     return { fields: fields.map((field) => field?.id === fieldId ? { ...field, ...normalized } : field) };
   }
@@ -3079,7 +3079,7 @@
     if (!current) return { inputParams: source, fields: inputParamSummary(source, contract) };
     const normalized = normalizeSchemaLikeFieldPatch(current, patch, contract);
     if (Object.prototype.hasOwnProperty.call(normalized, "name")) {
-      normalized.name = uniqueInputParamName(source, normalized.name, id);
+      normalized.name = uniqueInputParamName(source, normalized.name, id, editorInputParamNameFallback(contract));
     }
     const next = source.map((param) => param?.id === id ? { ...param, ...normalized } : param);
     return { inputParams: next, fields: inputParamSummary(next, contract) };
@@ -3092,7 +3092,7 @@
   }
 
   function inputParamRenamePatch(params, id, rawName, contract) {
-    const nextName = uniqueInputParamName(params, rawName, id);
+    const nextName = uniqueInputParamName(params, rawName, id, editorInputParamNameFallback(contract));
     const next = (params || []).map((param) => param?.id === id ? { ...param, name: nextName } : param);
     return { name: nextName, patch: { inputParams: next, fields: inputParamSummary(next, contract) } };
   }
@@ -6618,6 +6618,15 @@
     const addedField = editorSchemaDraftField(draft.added_field);
     if (!schemaFieldType || !addedField) return null;
     return { schemaFieldType, addedField };
+  }
+
+  function editorSchemaFieldNameFallback(contract) {
+    const draft = editorSchemaDraftContract(contract);
+    return draft?.addedField?.name || draft?.initialField?.name || "field";
+  }
+
+  function editorInputParamNameFallback(contract) {
+    return editorInputParamDraftContract(contract)?.addedField?.name || "param";
   }
 
   function graphControlShape({ gateKind, at, members, instances, edges, flow, contract } = {}) {

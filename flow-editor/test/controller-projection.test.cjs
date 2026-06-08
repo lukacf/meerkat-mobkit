@@ -2580,6 +2580,21 @@ assert.deepEqual(controller.schemaFieldUpdatePatch({
   fields: [{ id: "f1", name: "new", type: "string" }],
 });
 assert.deepEqual(controller.schemaFieldUpdatePatch({
+  fields: [{ id: "f1", name: "old", type: "string" }],
+}, "f1", { name: "" }, {
+  mob_definition: {
+    defaults: { schema_field_type: "string" },
+    editor_schema_field_types: ["string"],
+    editor_schema_draft: {
+      schema_id_prefix: "Result",
+      initial_field: { name: "result_field", required: true, description: "", enumValues: [] },
+      added_field: { name: "result_field", required: false, description: "", enumValues: [] },
+    },
+  },
+}), {
+  fields: [{ id: "f1", name: "result_field", type: "string" }],
+});
+assert.deepEqual(controller.schemaFieldUpdatePatch({
   fields: [
     { id: "f1", name: "old", type: "string" },
     { id: "f2", name: "new", type: "string" },
@@ -2593,7 +2608,7 @@ assert.deepEqual(controller.schemaFieldUpdatePatch({
 assert.deepEqual(controller.schemaFieldUpdatePatch({
   fields: [{ id: "f1", name: "old", type: "string" }],
 }, "f1", { name: "" }, schemaDraftContract), {
-  fields: [{ id: "f1", name: "field", type: "string" }],
+  fields: [{ id: "f1", name: "new_field", type: "string" }],
 });
 assert.deepEqual(controller.schemaFieldUpdatePatch({
   fields: [{ id: "f1", name: "old", type: "string", enumValues: [] }],
@@ -5202,6 +5217,20 @@ assert.deepEqual(controller.inputParamUpdatePatch([
 ], "p1", { name: "" }, graphShapeContract), {
   inputParams: [{ id: "p1", name: "param", type: "enum", required: true, description: "", enumValues: ["code"] }],
   fields: "param: enum",
+});
+assert.deepEqual(controller.inputParamUpdatePatch([
+  { id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["code"] },
+], "p1", { name: "" }, {
+  mob_definition: {
+    defaults: { schema_field_type: "enum" },
+    editor_schema_field_types: ["enum"],
+    editor_input_param_draft: {
+      added_field: { name: "input_value", required: true, description: "", enumValues: [] },
+    },
+  },
+}), {
+  inputParams: [{ id: "p1", name: "input_value", type: "enum", required: true, description: "", enumValues: ["code"] }],
+  fields: "input_value: enum",
 });
 assert.deepEqual(controller.inputParamUpdatePatch([
   { id: "p1", name: "route", type: "string", required: true, description: "", enumValues: [] },
