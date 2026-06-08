@@ -944,6 +944,7 @@ assert.match(app, /MobKitFlowController\.flowRegistrySelectionState/, "app shell
 assert.match(app, /MobKitFlowController\.createFlowDraftFromSpec/, "app shell must derive new-flow registry rows through controller draft creation");
 assert.match(app, /existingRows:\s*flows/, "app shell must pass existing flow rows into controller-owned new-flow ID creation");
 assert.match(app, /MobKitFlowController\.hydrateMobpackDocumentState/, "app shell must derive imported registry rows through controller hydration");
+assert.match(app, /const hydrationPersistence = window\.MobKitFlowController\.flowRegistryDocumentPersistence\(\{[\s\S]*currentFlowId: hydration\.id,[\s\S]*document: hydration\.document,[\s\S]*validation: hydration\.validation,[\s\S]*stage: hydration\.stage,[\s\S]*persistedDocumentSig\.current = hydrationPersistence\.signature/, "hydrated registry documents must seed the controller-owned persistence signature before UI effects can clear validation");
 assert.match(app, /MobKitFlowController\.flowRegistryAppendRowPatch/, "app shell must append flow registry rows through the controller plane");
 assert.match(app, /MobKitFlowController\.flowRegistryUpsertRowPatch/, "app shell must upsert flow registry rows through the controller plane");
 assert(!/const\s+id\s*=\s*["']f_["']\s*\+\s*Math\.random|Math\.random\(\)[\s\S]{0,80}createFlowDraftFromSpec/.test(app), "app shell must not mint deployable new-flow ids locally");

@@ -5797,6 +5797,18 @@ const validatedPersistence = controller.flowRegistryDocumentPersistence({
 assert.equal(validatedPersistence.rowPatch.stage, "published");
 assert.deepEqual(validatedPersistence.rowPatch.validation, { ok: true });
 
+const seededHydrationNoop = controller.flowRegistryDocumentPersistence({
+  currentFlowId: "f_existing",
+  document: registryDocument,
+  stage: "valid",
+  validation: null,
+  previousSignature: validatedPersistence.signature,
+  skipIfUnchanged: true,
+});
+assert.equal(seededHydrationNoop.ok, true);
+assert.equal(seededHydrationNoop.changed, false);
+assert.equal(seededHydrationNoop.rowPatch, null);
+
 const unchangedPersistence = controller.flowRegistryDocumentPersistence({
   currentFlowId: "f_existing",
   document: registryDocument,

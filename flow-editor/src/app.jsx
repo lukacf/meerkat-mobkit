@@ -651,6 +651,15 @@ function App() {
       mobDefaults: options.mobDefaults || catalogs.mobDefaults,
       contractSkillRealms: contractSkillRealms.current,
     });
+    const hydrationPersistence = window.MobKitFlowController.flowRegistryDocumentPersistence({
+      currentFlowId: hydration.id,
+      document: hydration.document,
+      validation: hydration.validation,
+      stage: hydration.stage,
+    });
+    if (hydrationPersistence.ok) {
+      persistedDocumentSig.current = hydrationPersistence.signature;
+    }
     hydratingDocumentRef.current = true;
     setCatalogs((current) => window.MobKitFlowController.catalogSkillRealmsPatch(current, hydration.skillRealms));
     studio.setSkillRealms(hydration.skillRealms);
