@@ -897,6 +897,51 @@ const flow = controller.graphToFlow({
   edges: [],
 });
 
+const graphSemanticBaseInstances = [{
+  id: "review_step",
+  memberId: "m_reviewer",
+  col: 0,
+  row: 0,
+  launchMode: { kind: "Fresh" },
+  collection: "all",
+}];
+const graphSemanticMovedInstances = [{
+  ...graphSemanticBaseInstances[0],
+  col: 9,
+  row: 7,
+}];
+const graphSemanticChangedInstances = [{
+  ...graphSemanticBaseInstances[0],
+  launchMode: { kind: "Resume", sessionId: "session-456" },
+}];
+const graphSemanticBaseEdges = [{
+  id: "route",
+  from: "review_step",
+  to: "review_step",
+  kind: "cond",
+  cond: { path: "steps.review_step.verdict", op: "==", value: "green" },
+}];
+const graphSemanticChangedEdges = [{
+  ...graphSemanticBaseEdges[0],
+  cond: { path: "steps.review_step.verdict", op: "!=", value: "red" },
+}];
+assert.notEqual(
+  controller.graphSignature(graphSemanticBaseInstances, graphSemanticBaseEdges),
+  controller.graphSignature(graphSemanticMovedInstances, graphSemanticBaseEdges),
+);
+assert.equal(
+  controller.graphStructureSignature(graphSemanticBaseInstances, graphSemanticBaseEdges),
+  controller.graphStructureSignature(graphSemanticMovedInstances, graphSemanticBaseEdges),
+);
+assert.notEqual(
+  controller.graphStructureSignature(graphSemanticBaseInstances, graphSemanticBaseEdges),
+  controller.graphStructureSignature(graphSemanticChangedInstances, graphSemanticBaseEdges),
+);
+assert.notEqual(
+  controller.graphStructureSignature(graphSemanticBaseInstances, graphSemanticBaseEdges),
+  controller.graphStructureSignature(graphSemanticBaseInstances, graphSemanticChangedEdges),
+);
+
 assert.equal(flow.steps.length, 2);
 assert.deepEqual(flow.steps[1], {
   id: "review_step",
