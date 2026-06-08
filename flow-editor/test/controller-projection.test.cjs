@@ -826,6 +826,15 @@ const sampleRows = controller.sampleFlowsFromSchema({
       document: { mob_id: "" },
     },
     {
+      source: "mobkit/sample-mobpack",
+      document: { mob_id: "document_id_only", name: "Document Id Only" },
+    },
+    {
+      id: "document_name_only",
+      source: "mobkit/sample-mobpack",
+      document: { mob_id: "document_name_only", name: "Document Name Only" },
+    },
+    {
       id: "schema_source",
       name: "Schema source",
       source: "mobkit/sample-mobpack",

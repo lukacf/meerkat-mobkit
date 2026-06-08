@@ -7236,8 +7236,8 @@
       .map((sample) => {
         const source = typeof sample.source === "string" ? sample.source.trim() : "";
         if (!source) return null;
-        const id = String(sample.id || sample.document?.mob_id || "").trim();
-        const name = String(sample.name || sample.document?.name || sample.document?.mob_id || "").trim();
+        const id = String(sample.id || "").trim();
+        const name = String(sample.name || "").trim();
         if (!id || !name) return null;
         return {
           id,
