@@ -595,9 +595,16 @@ impl IdentityRuntime {
             .collect();
 
         let managed_snapshot = self.managed_peer_edges.read().await.clone();
+        let edge_is_managed_and_live = |edge: &(AgentIdentity, AgentIdentity)| {
+            // Managed-but-missing live edges are retried deliberately so tolerant topology restores self-heal.
+            managed_snapshot.contains(edge)
+                && current_logical_edges
+                    .as_ref()
+                    .is_none_or(|edges| edges.contains(edge))
+        };
         let retained_logical_edges: Vec<(AgentIdentity, AgentIdentity)> = desired
             .iter()
-            .filter(|edge| !managed_snapshot.contains(*edge))
+            .filter(|edge| !edge_is_managed_and_live(edge))
             .filter(|edge| {
                 current_logical_edges
                     .as_ref()
@@ -608,7 +615,7 @@ impl IdentityRuntime {
             .collect();
         let to_wire: Vec<(AgentIdentity, AgentIdentity, AgentRuntimeId, AgentRuntimeId)> = desired
             .iter()
-            .filter(|edge| !managed_snapshot.contains(*edge))
+            .filter(|edge| !edge_is_managed_and_live(edge))
             .filter(|edge| {
                 current_logical_edges
                     .as_ref()
@@ -683,7 +690,12 @@ impl IdentityRuntime {
 
         for (a, b) in stale {
             let key = (a.clone(), b.clone());
-            if !active_runtimes.contains_key(&a) || !active_runtimes.contains_key(&b) {
+            if !active_runtimes.contains_key(&a)
+                || !active_runtimes.contains_key(&b)
+                || current_logical_edges
+                    .as_ref()
+                    .is_some_and(|edges| !edges.contains(&key))
+            {
                 managed.remove(&key);
             }
         }

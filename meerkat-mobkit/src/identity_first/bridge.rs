@@ -1,7 +1,7 @@
 //! Session bridge: connects the identity-first control plane to the Meerkat
 //! session pipeline for real session creation, delivery, and retirement.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -16,6 +16,7 @@ use meerkat_mob::{
 use crate::mob_handle_runtime::{
     content_input_has_images, is_previous_member_cleanup_ambiguous_error,
     is_recoverable_lifecycle_cleanup_error, model_capabilities_for_member,
+    topology_restore_failed_peer_ids,
 };
 
 use super::adapters::{ContinuitySessionStoreAdapter, SessionRuntimeState};
@@ -40,6 +41,25 @@ fn is_repairable_bridge_delivery_error(error: &str) -> bool {
 
 fn is_recoverable_bridge_respawn_cleanup_error(error: &str) -> bool {
     is_recoverable_lifecycle_cleanup_error(error)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MemberRepairRespawnFailure {
+    DegradedTopologyRestore { failed_peer_ids: Vec<String> },
+    RecoverableCleanup,
+    Fatal(String),
+}
+
+fn classify_member_repair_respawn_failure(
+    error: &meerkat_mob::MobRespawnError,
+) -> MemberRepairRespawnFailure {
+    if let Some(failed_peer_ids) = topology_restore_failed_peer_ids(error) {
+        return MemberRepairRespawnFailure::DegradedTopologyRestore { failed_peer_ids };
+    }
+    if is_recoverable_bridge_respawn_cleanup_error(&error.to_string()) {
+        return MemberRepairRespawnFailure::RecoverableCleanup;
+    }
+    MemberRepairRespawnFailure::Fatal(error.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -437,6 +457,46 @@ impl MobSessionBridge {
 
         Err(BridgeError::Mob(missing_message.to_string()))
     }
+
+    async fn repair_member_for_delivery(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        member_id: &MeerkatId,
+        member_entry_before_delivery: Option<(meerkat_mob::ProfileName, BTreeMap<String, String>)>,
+    ) -> Result<(), BridgeError> {
+        match self.handle.respawn(member_id.clone(), None).await {
+            Ok(_) => Ok(()),
+            Err(respawn_err) => match classify_member_repair_respawn_failure(&respawn_err) {
+                MemberRepairRespawnFailure::DegradedTopologyRestore { failed_peer_ids } => {
+                    tracing::warn!(
+                        runtime_id = %runtime_id,
+                        member_id = %member_id,
+                        failed_peer_count = failed_peer_ids.len(),
+                        failed_peer_ids = ?failed_peer_ids,
+                        "identity bridge respawn restored member with isolated peer edges; continuing delivery"
+                    );
+                    // meerkat-mob raises this only after the member/session is live; only peer edges are incomplete.
+                    Ok(())
+                }
+                MemberRepairRespawnFailure::RecoverableCleanup => {
+                    if self.handle.get_member(member_id).await.is_none()
+                        && let Some((role, labels)) = member_entry_before_delivery
+                    {
+                        let mut spec = SpawnMemberSpec::new(role, member_id.clone());
+                        if !labels.is_empty() {
+                            spec = spec.with_labels(labels);
+                        }
+                        self.handle
+                            .ensure_member(spec)
+                            .await
+                            .map_err(|e| BridgeError::Mob(e.to_string()))?;
+                    }
+                    Ok(())
+                }
+                MemberRepairRespawnFailure::Fatal(message) => Err(BridgeError::Mob(message)),
+            },
+        }
+    }
 }
 
 fn spec_uses_external_binding(spec: &DurableAgentSpec) -> bool {
@@ -633,7 +693,11 @@ impl SessionBridge for MobSessionBridge {
         content: &meerkat_core::ContentInput,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let mid = self.member_id_for_runtime_id(runtime_id).await;
-        let member_entry_before_delivery = self.handle.get_member(&mid).await;
+        let member_entry_before_delivery = self
+            .handle
+            .get_member(&mid)
+            .await
+            .map(|entry| (entry.role, entry.labels));
         if content_input_has_images(content) {
             let member_entry = self.handle.get_member(&mid).await.ok_or_else(|| {
                 BridgeError::Mob("member not found while checking image capability".to_string())
@@ -664,28 +728,8 @@ impl SessionBridge for MobSessionBridge {
                     error = %err,
                     "identity bridge delivery found stale runtime state; repairing member before retry"
                 );
-                match self.handle.respawn(mid.clone(), None).await {
-                    Ok(_) => {}
-                    Err(respawn_err)
-                        if is_recoverable_bridge_respawn_cleanup_error(
-                            &respawn_err.to_string(),
-                        ) =>
-                    {
-                        if self.handle.get_member(&mid).await.is_none()
-                            && let Some(entry) = member_entry_before_delivery
-                        {
-                            let mut spec = SpawnMemberSpec::new(entry.role.clone(), mid.clone());
-                            if !entry.labels.is_empty() {
-                                spec = spec.with_labels(entry.labels.clone());
-                            }
-                            self.handle
-                                .ensure_member(spec)
-                                .await
-                                .map_err(|e| BridgeError::Mob(e.to_string()))?;
-                        }
-                    }
-                    Err(respawn_err) => return Err(BridgeError::Mob(respawn_err.to_string())),
-                }
+                self.repair_member_for_delivery(runtime_id, &mid, member_entry_before_delivery)
+                    .await?;
                 submit_internal_bridge_work(&self.handle, &mid, content, HandlingMode::Queue)
                     .await?;
             }
@@ -709,7 +753,11 @@ impl SessionBridge for MobSessionBridge {
         handling_mode: HandlingMode,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let mid = self.member_id_for_runtime_id(runtime_id).await;
-        let member_entry_before_delivery = self.handle.get_member(&mid).await;
+        let member_entry_before_delivery = self
+            .handle
+            .get_member(&mid)
+            .await
+            .map(|entry| (entry.role, entry.labels));
         if content_input_has_images(content) {
             let member_entry = self.handle.get_member(&mid).await.ok_or_else(|| {
                 BridgeError::Mob("member not found while checking image capability".to_string())
@@ -735,28 +783,8 @@ impl SessionBridge for MobSessionBridge {
                     error = %err,
                     "identity bridge delivery found stale runtime state; repairing member before retry"
                 );
-                match self.handle.respawn(mid.clone(), None).await {
-                    Ok(_) => {}
-                    Err(respawn_err)
-                        if is_recoverable_bridge_respawn_cleanup_error(
-                            &respawn_err.to_string(),
-                        ) =>
-                    {
-                        if self.handle.get_member(&mid).await.is_none()
-                            && let Some(entry) = member_entry_before_delivery
-                        {
-                            let mut spec = SpawnMemberSpec::new(entry.role.clone(), mid.clone());
-                            if !entry.labels.is_empty() {
-                                spec = spec.with_labels(entry.labels.clone());
-                            }
-                            self.handle
-                                .ensure_member(spec)
-                                .await
-                                .map_err(|e| BridgeError::Mob(e.to_string()))?;
-                        }
-                    }
-                    Err(respawn_err) => return Err(BridgeError::Mob(respawn_err.to_string())),
-                }
+                self.repair_member_for_delivery(runtime_id, &mid, member_entry_before_delivery)
+                    .await?;
                 submit_internal_bridge_work(&self.handle, &mid, content, handling_mode).await?;
             }
             Err(err) => return Err(BridgeError::Mob(err.to_string())),
@@ -975,7 +1003,7 @@ mod tests {
     use meerkat_core::agent::AgentToolDispatcher;
     use meerkat_core::types::ToolCallView;
     use meerkat_core::{ToolDef, error::ToolError, ops::ToolDispatchOutcome};
-    use meerkat_mob::MobRuntimeMode;
+    use meerkat_mob::{MobRespawnError, MobRuntimeMode};
 
     use super::*;
     use crate::identity_first::{AgentAddressability, LocalExternalToolOverlay};
@@ -1135,6 +1163,38 @@ mod tests {
         assert!(
             !is_repairable_bridge_delivery_error("model provider returned rate limit"),
             "ordinary turn failures must not trigger member repair"
+        );
+    }
+
+    #[test]
+    fn bridge_delivery_repair_classifies_topology_restore_failure_as_degraded() {
+        let identity = meerkat_mob::AgentIdentity::from("rt:review:singleton:0");
+        let receipt = meerkat_mob::MemberRespawnReceipt::new(
+            identity.clone(),
+            meerkat_mob::AgentRuntimeId::new(identity, meerkat_mob::ids::Generation::INITIAL),
+            meerkat_mob::FenceToken::new(1),
+            meerkat_mob::FenceToken::new(2),
+        );
+        let err = MobRespawnError::TopologyRestoreFailed {
+            receipt,
+            failed_peer_ids: vec![meerkat_mob::AgentIdentity::from("initiative:broken")],
+        };
+
+        assert_eq!(
+            classify_member_repair_respawn_failure(&err),
+            MemberRepairRespawnFailure::DegradedTopologyRestore {
+                failed_peer_ids: vec!["initiative:broken".to_string()]
+            },
+            "failed peer edges should degrade bridge repair instead of bricking delivery"
+        );
+        assert!(
+            matches!(
+                classify_member_repair_respawn_failure(&MobRespawnError::NoRuntimeControl {
+                    identity: meerkat_mob::AgentIdentity::from("rt:review:singleton:0"),
+                }),
+                MemberRepairRespawnFailure::Fatal(_)
+            ),
+            "ordinary respawn failures must still fail bridge repair"
         );
     }
 }

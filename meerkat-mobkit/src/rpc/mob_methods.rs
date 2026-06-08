@@ -12,7 +12,7 @@ use serde_json::Value;
 use crate::blob_store::is_valid_blob_id_value;
 use crate::mob_handle_runtime::{
     assert_member_accepts_images, is_recoverable_lifecycle_cleanup_error, member_entry_to_json,
-    send_message_on_mob_with_mode,
+    send_message_on_mob_with_mode, topology_restore_failed_peer_ids, topology_restore_warning_json,
 };
 use crate::unified_runtime::UnifiedRuntime;
 
@@ -761,6 +761,7 @@ pub(super) async fn handle_respawn_member(
             let handle = runtime.mob_handle();
             let identity = MeerkatId::from(mid);
             let entry_before_respawn = handle.get_member(&identity).await;
+            let mut topology_restore_warning = None;
             match handle.respawn(identity.clone(), None).await {
                 Ok(_receipt) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
@@ -768,44 +769,61 @@ pub(super) async fn handle_respawn_member(
                     result: Some(serde_json::json!({"accepted": true})),
                     error: None,
                 },
-                Err(err) if lifecycle_archive_cleanup_completed(&err.to_string()) => {
-                    if handle.get_member(&identity).await.is_none()
-                        && let Some(entry) = entry_before_respawn
-                    {
-                        let mut spec = SpawnMemberSpec::new(entry.role.clone(), identity.clone());
-                        if !entry.labels.is_empty() {
-                            spec = spec.with_labels(entry.labels.clone());
+                Err(err) => {
+                    if let Some(failed_peer_ids) = topology_restore_failed_peer_ids(&err) {
+                        tracing::warn!(
+                            member_id = %identity,
+                            failed_peer_count = failed_peer_ids.len(),
+                            failed_peer_ids = ?failed_peer_ids,
+                            "rpc member respawn restored member with isolated peer edges; accepting degraded respawn"
+                        );
+                        topology_restore_warning =
+                            Some(topology_restore_warning_json(&failed_peer_ids));
+                    } else if lifecycle_archive_cleanup_completed(&err.to_string()) {
+                        if handle.get_member(&identity).await.is_none()
+                            && let Some(entry) = entry_before_respawn
+                        {
+                            let mut spec =
+                                SpawnMemberSpec::new(entry.role.clone(), identity.clone());
+                            if !entry.labels.is_empty() {
+                                spec = spec.with_labels(entry.labels.clone());
+                            }
+                            if let Err(ensure_err) = handle.ensure_member(spec).await {
+                                return JsonRpcResponse {
+                                    jsonrpc: JSONRPC_VERSION.to_string(),
+                                    id: response_id,
+                                    result: None,
+                                    error: Some(JsonRpcError {
+                                        code: -32000,
+                                        message: format!("respawn_member failed: {ensure_err}"),
+                                        data: None,
+                                    }),
+                                };
+                            }
                         }
-                        if let Err(ensure_err) = handle.ensure_member(spec).await {
-                            return JsonRpcResponse {
-                                jsonrpc: JSONRPC_VERSION.to_string(),
-                                id: response_id,
-                                result: None,
-                                error: Some(JsonRpcError {
-                                    code: -32000,
-                                    message: format!("respawn_member failed: {ensure_err}"),
-                                    data: None,
-                                }),
-                            };
-                        }
+                    } else {
+                        return JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id,
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32000,
+                                message: format!("respawn_member failed: {err}"),
+                                data: None,
+                            }),
+                        };
                     }
+
                     JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
-                        result: Some(serde_json::json!({"accepted": true})),
+                        result: Some(serde_json::json!({
+                            "accepted": true,
+                            "topology_restore_warning": topology_restore_warning,
+                        })),
                         error: None,
                     }
                 }
-                Err(err) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32000,
-                        message: format!("respawn_member failed: {err}"),
-                        data: None,
-                    }),
-                },
             }
         }
         _ => JsonRpcResponse {
