@@ -2289,9 +2289,7 @@ fn document_from_archive_bytes(bytes: &[u8]) -> Result<MobpackDocument, String> 
         let value: Value = serde_json::from_str(&text)
             .map_err(|err| format!("invalid mobkit/editor.json: {err}"))?;
         let mut document = document_from_value(&value)?;
-        if document.mob_toml.as_deref().unwrap_or("").trim().is_empty()
-            && let Some(mob_toml) = mob_toml.as_ref()
-        {
+        if let Some(mob_toml) = mob_toml.as_ref() {
             document.mob_toml = Some(mob_toml.clone());
         }
         hydrate_path_skill_content_from_archive(&mut document, &files)?;
@@ -14352,6 +14350,57 @@ expected_schema_ref = "schemas/shared.json"
         assert_eq!(
             imported_document.mob_toml.as_deref(),
             Some(exported.mob_toml.as_str())
+        );
+        assert!(imported["validation"]["ok"].as_bool().unwrap_or(false));
+    }
+
+    #[test]
+    fn archive_import_prefers_packed_mob_toml_over_stale_editor_json() {
+        let mut document = document_with_real_launch_modes();
+        document.mob_toml = None;
+        let packed_mob_toml =
+            render_editor_document_mob_toml(&document).expect("render packed mob.toml");
+        document.mob_toml = Some(
+            r#"
+[mob]
+id = "stale-editor-json"
+
+[profiles.ghost]
+model = "gpt-5.5"
+"#
+            .to_string(),
+        );
+        let editor_json = serde_json::to_vec_pretty(&json!({
+            "schema_version": MOBPACK_SCHEMA_VERSION,
+            "media_type": MOBPACK_MEDIA_TYPE,
+            "document": document,
+        }))
+        .expect("editor json");
+
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = Builder::new(encoder);
+        append_archive_file(
+            &mut archive,
+            "manifest.toml",
+            b"surfaces = [\"cli\"]\n\n[mobpack]\nname = \"stale-editor-json\"\n",
+        )
+        .expect("manifest");
+        append_archive_file(&mut archive, "mobkit/editor.json", &editor_json).expect("editor json");
+        append_archive_file(&mut archive, "mobkit/mob.toml", packed_mob_toml.as_bytes())
+            .expect("mob toml");
+        let encoder = archive.into_inner().expect("archive");
+        let bytes = encoder.finish().expect("gzip");
+
+        let imported = import_mobpack(&json!({
+            "content_base64": base64::engine::general_purpose::STANDARD.encode(bytes)
+        }))
+        .expect("import");
+        let imported_document: MobpackDocument =
+            serde_json::from_value(imported["document"].clone()).expect("document");
+
+        assert_eq!(
+            imported_document.mob_toml.as_deref(),
+            Some(packed_mob_toml.as_str())
         );
         assert!(imported["validation"]["ok"].as_bool().unwrap_or(false));
     }
