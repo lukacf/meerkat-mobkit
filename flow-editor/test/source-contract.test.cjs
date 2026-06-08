@@ -16,6 +16,7 @@ const controller = src("controller.js");
 const devServer = fs.readFileSync(path.join(root, "dev-server.cjs"), "utf8");
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const controllerProjectionTest = testSrc("controller-projection.test.cjs");
+const liveRkatE2eTest = testSrc("live-rkat-e2e.cjs");
 const builderCondValueBlock = (builder.match(/function CondValue[\s\S]*?function InputParamField/) || [""])[0];
 const memberBlockStart = builder.lastIndexOf("// member step");
 const builderMemberBlock = memberBlockStart >= 0 ? builder.slice(memberBlockStart) : "";
@@ -754,6 +755,7 @@ assert(!/profileTemplatesFromSchema|memberFromProfileTemplate|profileTemplates:/
 assert.match(controller, /definitionType[\s\S]*mobkit\/profile-member/, "Agent Editor definitions must require explicit MobKit profile-member contracts");
 assert(!/starter_skills/.test(app + "\n" + controller), "Flow Editor frontend must consume skills from schema.skill_realms, not starter_skills fallback catalogs");
 assert(!/schema\?\.tool_config\s*\|\||schema\?\.tool_catalog[\s\S]{0,80}schema\?\.tool_config/.test(controller), "Tool catalog hydration must consume schema.tool_catalog, not compatibility tool_config aliases");
+assert(!/schema\.tool_config|schema\.tool_catalog[\s\S]{0,80}schema\.tool_config/.test(liveRkatE2eTest), "Live rkat e2e proof must require schema.tool_catalog, not compatibility tool_config aliases");
 assert(!/model\.vendor \|\| model\.provider \|\| ["']provider["']|tool\.desc \|\| tool\.description \|\| tool\.summary \|\| ["']MobKit tool_config["']|tool\.kind \|\| tool\.type \|\| ["']tool["']/.test(controller), "Catalog hydration must not invent model/tool display metadata");
 assert(!/profileBinding:\s*(?:String\([^)]*["']inline|source\.profileBinding\s*\|\|\s*["']inline)/.test(controller), "Agent definitions must carry real MobKit profileBinding values instead of controller-local inline defaults");
 assert(!/runtimeMode:\s*(?:String\([^)]*["']turn_driven|source\.runtimeMode\s*\|\|\s*["']turn_driven)/.test(controller), "Agent definitions must carry real MobKit runtimeMode values instead of controller-local turn_driven defaults");

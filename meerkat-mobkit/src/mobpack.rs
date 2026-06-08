@@ -8533,7 +8533,7 @@ fn validate_member_catalog_references(document: &MobpackDocument) -> Vec<Mobpack
                         severity: "error".to_string(),
                         code: "unknown_tool_ref".to_string(),
                         message: format!(
-                            "member references tool '{tool_id}', but it is not present in MobKit tool_config"
+                            "member references tool '{tool_id}', but it is not present in MobKit tool_catalog"
                         ),
                         path: Some(format!("members[{member_index}].tools[{tool_index}]")),
                     });
@@ -9215,7 +9215,7 @@ fn validate_editor_flow_step_tool_ref(
             severity: "error".to_string(),
             code: "unknown_step_tool_ref".to_string(),
             message: format!(
-                "flow step references tool '{tool_id}', but it is not present in MobKit tool_config"
+                "flow step references tool '{tool_id}', but it is not present in MobKit tool_catalog"
             ),
             path: Some(path.to_string()),
         });
@@ -13016,6 +13016,7 @@ message = "stale"
         assert!(result.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "unknown_tool_ref"
                 && diagnostic.path.as_deref() == Some("members[0].tools[1]")
+                && diagnostic.message.contains("MobKit tool_catalog")
         }));
         assert!(result.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "unknown_skill_ref"
@@ -13443,6 +13444,7 @@ message = "Plan the work"
         assert!(validation.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "unknown_step_tool_ref"
                 && diagnostic.path.as_deref() == Some("flow.steps[1].allowedTools[0]")
+                && diagnostic.message.contains("MobKit tool_catalog")
         }));
     }
 
