@@ -7265,18 +7265,24 @@ assert.equal(missingRepeatControlState.fieldPlaceholder, "(no schema)");
 assert.equal(missingRepeatControlState.selectedIterationInput.disabled, true);
 assert.match(missingRepeatControlState.selectedIterationInput.reason, /repeat_iteration_inputs/);
 {
-  const patch = controller.basicBranchAddPatch({ type: "branch", branches: [{ id: "br1", label: "Branch 1", condition: "", steps: [] }] });
+  const patch = controller.basicBranchAddPatch(
+    { type: "branch", branches: [{ id: "br1", label: "Path 1", condition: "", steps: [] }] },
+    { basicView: { ...hydratedCatalogs.basicView, branchConditionRowTitlePrefix: "Path" } }
+  );
   assert.equal(patch.branches.length, 2);
   assert.equal(patch.branches[1].id, "br_1");
-  assert.equal(patch.branches[1].label, "Branch 2");
+  assert.equal(patch.branches[1].label, "Path 2");
   assert.equal(patch.branches[1].condition, "");
   assert.deepEqual(patch.branches[1].steps, []);
 }
 {
-  const patch = controller.basicBranchAddPatch({ type: "parallel", branches: [{ id: "br1", label: "Branch 1", steps: [] }] });
+  const patch = controller.basicBranchAddPatch(
+    { type: "parallel", branches: [{ id: "br1", label: "Path 1", steps: [] }] },
+    { basicView: { ...hydratedCatalogs.basicView, branchConditionRowTitlePrefix: "Path" } }
+  );
   assert.equal(patch.branches.length, 2);
   assert.equal(patch.branches[1].id, "br_1");
-  assert.equal(patch.branches[1].label, "Branch 2");
+  assert.equal(patch.branches[1].label, "Path 2");
   assert.equal(Object.prototype.hasOwnProperty.call(patch.branches[1], "condition"), false);
   assert.deepEqual(patch.branches[1].steps, []);
 }
@@ -7448,13 +7454,16 @@ assert.equal(controller.flowStepTemplate({ kind: "parallel" }, {
   },
 }), null);
 
-const parallelTemplate = controller.flowStepTemplate({ kind: "parallel" }, graphShapeContract);
+const parallelTemplate = controller.flowStepTemplate({ kind: "parallel" }, graphShapeContract, {
+  basicView: { ...hydratedCatalogs.basicView, branchConditionRowTitlePrefix: "Lane" },
+});
 assert(parallelTemplate.id.startsWith("s_"));
 assert.equal(parallelTemplate.type, "parallel");
 assert.equal(parallelTemplate.dispatch, "fan_out");
 assert.equal(parallelTemplate.collection, "all");
 assert.equal(parallelTemplate.dependsMode, "all");
 assert.equal(parallelTemplate.branches.length, 2);
+assert.deepEqual(parallelTemplate.branches.map((branch) => branch.label), ["Lane 1", "Lane 2"]);
 
 const memberTemplate = controller.flowStepTemplate({ kind: "member", id: "m_left" }, graphShapeContract);
 assert(memberTemplate.id.startsWith("s_"));
@@ -7463,6 +7472,7 @@ assert.equal(memberTemplate.role, "m_left");
 assert.equal(memberTemplate.dependsMode, "all");
 
 const collisionFlowTemplate = controller.flowStepTemplate({ kind: "parallel" }, graphShapeContract, {
+  basicView: { ...hydratedCatalogs.basicView, branchConditionRowTitlePrefix: "Lane" },
   flow: {
     steps: [
       { id: "s_1", type: "member", role: "m_left" },
@@ -7480,6 +7490,7 @@ const collisionFlowTemplate = controller.flowStepTemplate({ kind: "parallel" }, 
 });
 assert.equal(collisionFlowTemplate.id, "s_3");
 assert.deepEqual(collisionFlowTemplate.branches.map((branch) => branch.id), ["br_3", "br_4"]);
+assert.deepEqual(collisionFlowTemplate.branches.map((branch) => branch.label), ["Lane 1", "Lane 2"]);
 assert.deepEqual(controller.flowStepInsertPatch({
   name: "collision-proof",
   steps: [

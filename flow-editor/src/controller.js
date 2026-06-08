@@ -4201,11 +4201,17 @@
     }
     const nextBranch = {
       id: reserveFlowBranchId("br", branchIds),
-      label: "Branch " + (branches.length + 1),
+      label: basicBranchDefaultLabel(branches.length + 1, options.basicView),
       steps: [],
     };
     if (step?.type !== "parallel") nextBranch.condition = "";
     return { branches: [...branches, nextBranch] };
+  }
+
+  function basicBranchDefaultLabel(index, basicView = null) {
+    const view = basicEditorViewState(basicView);
+    const prefix = view.branchConditionRowTitlePrefix;
+    return [prefix, String(index || 1)].filter(Boolean).join(" ");
   }
 
   function basicConditionLabel(cond, options = [], config = {}) {
@@ -7946,7 +7952,7 @@
         id,
         type: "branch",
         controllerRole: "",
-        branches: [{ id: reserveFlowBranchId("br", branchIds), label: "Branch 1", condition: "", steps: [] }],
+        branches: [{ id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(1, options.basicView), condition: "", steps: [] }],
         fallback: [],
         dependsMode: dependencyMode,
       };
@@ -7962,8 +7968,8 @@
         dispatch,
         collection,
         branches: [
-          { id: reserveFlowBranchId("br", branchIds), label: "Branch 1", steps: [] },
-          { id: reserveFlowBranchId("br", branchIds), label: "Branch 2", steps: [] },
+          { id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(1, options.basicView), steps: [] },
+          { id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(2, options.basicView), steps: [] },
         ],
         dependsMode: dependencyMode,
       };

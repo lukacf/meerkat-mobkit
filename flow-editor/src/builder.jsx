@@ -178,7 +178,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const selStep = findStep(flow.steps, sel);
 
   const insertAt = (laneRef, pick) => {
-    const newStep = window.MobKitFlowController.flowStepTemplate(pick, contract, { flow });
+    const newStep = window.MobKitFlowController.flowStepTemplate(pick, contract, { flow, basicView });
     if (!newStep) return;
     setFlow(f => window.MobKitFlowController.flowStepInsertPatch(f, laneRef, newStep, { members }));
     setSel(newStep.id);
@@ -527,7 +527,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
     const setBranchCondition = (branch, patch) => {
       update(step.id, window.MobKitFlowController.basicBranchConditionPatch(step, branch.id, patch, contract));
     };
-    const addBranch = () => update(step.id, window.MobKitFlowController.basicBranchAddPatch(step, { flow }));
+    const addBranch = () => update(step.id, window.MobKitFlowController.basicBranchAddPatch(step, { flow, basicView }));
     return (
       <div className="bld-panel__inner">
         <PanelHead icon={branchState.panelIcon} iconTint="member" title={branchState.panelTitle} sub={branchState.panelSub} onClose={onDelete} deleteMode />

@@ -4234,11 +4234,17 @@ window.MOBKIT_BOOT = {
     }
     const nextBranch = {
       id: reserveFlowBranchId("br", branchIds),
-      label: "Branch " + (branches.length + 1),
+      label: basicBranchDefaultLabel(branches.length + 1, options.basicView),
       steps: [],
     };
     if (step?.type !== "parallel") nextBranch.condition = "";
     return { branches: [...branches, nextBranch] };
+  }
+
+  function basicBranchDefaultLabel(index, basicView = null) {
+    const view = basicEditorViewState(basicView);
+    const prefix = view.branchConditionRowTitlePrefix;
+    return [prefix, String(index || 1)].filter(Boolean).join(" ");
   }
 
   function basicConditionLabel(cond, options = [], config = {}) {
@@ -7979,7 +7985,7 @@ window.MOBKIT_BOOT = {
         id,
         type: "branch",
         controllerRole: "",
-        branches: [{ id: reserveFlowBranchId("br", branchIds), label: "Branch 1", condition: "", steps: [] }],
+        branches: [{ id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(1, options.basicView), condition: "", steps: [] }],
         fallback: [],
         dependsMode: dependencyMode,
       };
@@ -7995,8 +8001,8 @@ window.MOBKIT_BOOT = {
         dispatch,
         collection,
         branches: [
-          { id: reserveFlowBranchId("br", branchIds), label: "Branch 1", steps: [] },
-          { id: reserveFlowBranchId("br", branchIds), label: "Branch 2", steps: [] },
+          { id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(1, options.basicView), steps: [] },
+          { id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(2, options.basicView), steps: [] },
         ],
         dependsMode: dependencyMode,
       };
@@ -11666,7 +11672,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   };
   const selStep = findStep(flow.steps, sel);
   const insertAt = (laneRef, pick) => {
-    const newStep = window.MobKitFlowController.flowStepTemplate(pick, contract, { flow });
+    const newStep = window.MobKitFlowController.flowStepTemplate(pick, contract, { flow, basicView });
     if (!newStep) return;
     setFlow((f) => window.MobKitFlowController.flowStepInsertPatch(f, laneRef, newStep, { members }));
     setSel(newStep.id);
@@ -11849,7 +11855,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
     const setBranchCondition = (branch, patch) => {
       update(step.id, window.MobKitFlowController.basicBranchConditionPatch(step, branch.id, patch, contract));
     };
-    const addBranch = () => update(step.id, window.MobKitFlowController.basicBranchAddPatch(step, { flow }));
+    const addBranch = () => update(step.id, window.MobKitFlowController.basicBranchAddPatch(step, { flow, basicView }));
     return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: branchState.panelIcon, iconTint: "member", title: branchState.panelTitle, sub: branchState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: branchState.controllerLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: branchState.controllerRole, onChange: (e) => update(step.id, window.MobKitFlowController.flowStepControllerRolePatch(e.target.value, members)) }, /* @__PURE__ */ React.createElement("option", { value: "" }, branchState.controllerPlaceholderLabel), branchState.memberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), !branchState.controllerRole && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { marginTop: 8 } }, branchState.emptyControllerHint), !branchState.isParallel && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bld-section-label" }, branchState.branchConditionTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, branchState.branchConditionIntro), step.branches.map((b, i) => /* @__PURE__ */ React.createElement(
       BranchConditionEditor,
       {
