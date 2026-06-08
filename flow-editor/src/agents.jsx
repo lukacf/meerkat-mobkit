@@ -16,10 +16,10 @@
 //   { kind: "schema", id }  → SchemaEditor (visual, field-by-field)
 //   null                    → empty hint
 
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [] }) {
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null }) {
   return (
     <div className="agents-view">
-      <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} agentDefinitions={agentDefinitions} />
+      <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} agentDefinitions={agentDefinitions} agentView={agentView} />
       <div className="agents-view__main">
         <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} />
       </div>
@@ -27,17 +27,18 @@ function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, f
   );
 }
 
-function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions }) {
+function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions, agentView = null }) {
   const listState = window.MobKitFlowController.agentListState({
     members: studio.members,
     instances: studio.instances,
     schemas: studio.schemas,
     selection: agentSel,
+    agentView,
   });
   return (
     <aside className="agents-list">
       <div className="agents-list__head">
-        <span className="agents-list__title">AGENTS</span>
+        <span className="agents-list__title">{listState.agentsHeading}</span>
         <span className="agents-list__count">{listState.memberCount}</span>
       </div>
       <div className="agents-list__scroll">
@@ -63,7 +64,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions 
       </div>
 
       <div className="agents-list__head agents-list__head--sub">
-        <span className="agents-list__title">SCHEMAS</span>
+        <span className="agents-list__title">{listState.schemasHeading}</span>
         <span className="agents-list__count">{listState.schemaCount}</span>
       </div>
       <div className="agents-list__scroll">
@@ -91,7 +92,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions 
             studio.setSchemas(result.schemas);
             setAgentSel({ kind: "schema", id: result.schema.id });
           }}
-        >+ new schema</button>
+        >{listState.addSchemaLabel}</button>
       </div>
     </aside>
   );

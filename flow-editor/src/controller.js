@@ -517,10 +517,11 @@
     };
   }
 
-  function agentListState({ members = [], instances = [], schemas = [], selection = null } = {}) {
+  function agentListState({ members = [], instances = [], schemas = [], selection = null, agentView = null } = {}) {
     const sourceMembers = Array.isArray(members) ? members : [];
     const sourceInstances = Array.isArray(instances) ? instances : [];
     const sourceSchemas = Array.isArray(schemas) ? schemas : [];
+    const view = agentViewForState(agentView);
     const memberRows = sourceMembers.map((member) => {
       const placedCount = sourceInstances.filter((instance) => instance?.memberId === member.id).length;
       const selected = selection?.kind === "agent" && selection.id === member.id;
@@ -562,10 +563,35 @@
       };
     });
     return {
+      agentsHeading: view.agentsHeading,
+      schemasHeading: view.schemasHeading,
+      addSchemaLabel: view.addSchemaLabel,
       memberCount: memberRows.length,
       schemaCount: schemaRows.length,
       memberRows,
       schemaRows,
+    };
+  }
+
+  function agentViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_agent_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      agentsHeading: String(view.agents_heading || "").trim(),
+      schemasHeading: String(view.schemas_heading || "").trim(),
+      addSchemaLabel: String(view.add_schema_label || "").trim(),
+    };
+    return out.agentsHeading && out.schemasHeading && out.addSchemaLabel
+      ? out
+      : null;
+  }
+
+  function agentViewForState(agentView) {
+    const view = agentView && typeof agentView === "object" ? agentView : null;
+    return {
+      agentsHeading: String(view?.agentsHeading || ""),
+      schemasHeading: String(view?.schemasHeading || ""),
+      addSchemaLabel: String(view?.addSchemaLabel || ""),
     };
   }
 
@@ -5881,6 +5907,7 @@
       mobDefaults: mobDefaultsFromSchema(null),
       mobDefinition: null,
       sourceView: null,
+      agentView: null,
       validationSource: "",
       contractMeta: {
         loaded: false,
@@ -5907,6 +5934,7 @@
       mobDefaults: mobDefaultsFromSchema(schema),
       mobDefinition: schema?.mob_definition || null,
       sourceView: sourceViewFromSchema(schema),
+      agentView: agentViewFromSchema(schema),
       validationSource: schema?.validation_source || "",
       contractMeta: {
         loaded: true,

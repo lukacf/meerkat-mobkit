@@ -721,6 +721,11 @@ pub fn mobpack_schema_response() -> Value {
         "copy_label": "copy",
         "close_label": "×"
     });
+    let editor_agent_view = json!({
+        "agents_heading": "AGENTS",
+        "schemas_heading": "SCHEMAS",
+        "add_schema_label": "+ new schema"
+    });
     let mob_definition = json!({
         "authoritative_type": "meerkat_mob::MobDefinition",
         "defaults": {
@@ -827,6 +832,7 @@ pub fn mobpack_schema_response() -> Value {
         "graph_edge_kinds": GRAPH_EDGE_KINDS,
         "editor_graph_draft": editor_graph_draft,
         "editor_source_view": editor_source_view,
+        "editor_agent_view": editor_agent_view,
         "dispatch_modes": dispatch_mode_values(),
         "collection_policies": collection_policy_values(),
         "dependency_modes": dependency_mode_values()
@@ -15217,6 +15223,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_source_view"]["loading_text"],
             json!("rendering mob.toml from mobkit/mobpacks/export...")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["agents_heading"],
+            json!("AGENTS")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["schemas_heading"],
+            json!("SCHEMAS")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["add_schema_label"],
+            json!("+ new schema")
         );
     }
 

@@ -449,6 +449,11 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       copy_label: "copy",
       close_label: "×",
     },
+    editor_agent_view: {
+      agents_heading: "AGENTS",
+      schemas_heading: "SCHEMAS",
+      add_schema_label: "+ new schema",
+    },
   },
   models: [{ id: "openai/gpt-5.5", label: "GPT-5.5", vendor: "openai" }],
   tool_catalog: [{ id: "builtins", label: "builtins", desc: "Built-ins", kind: "runtime", source: "meerkat_mob::ToolConfig" }],
@@ -492,6 +497,11 @@ assert.deepEqual(hydratedCatalogs.sourceView, {
   loadingText: "rendering mob.toml from mobkit/mobpacks/export...",
   copyLabel: "copy",
   closeLabel: "×",
+});
+assert.deepEqual(hydratedCatalogs.agentView, {
+  agentsHeading: "AGENTS",
+  schemasHeading: "SCHEMAS",
+  addSchemaLabel: "+ new schema",
 });
 assert.equal(hydratedCatalogs.grid, catalogBoot.grid);
 assert.deepEqual(hydratedCatalogs.template, {
@@ -2304,7 +2314,11 @@ assert.deepEqual(controller.agentListState({
   instances: agentInstancesForProjection,
   schemas: agentSchemasForProjection,
   selection: { kind: "schema", id: "ReviewArtifact" },
+  agentView: hydratedCatalogs.agentView,
 }), {
+  agentsHeading: "AGENTS",
+  schemasHeading: "SCHEMAS",
+  addSchemaLabel: "+ new schema",
   memberCount: 2,
   schemaCount: 2,
   memberRows: [
@@ -2365,6 +2379,15 @@ assert.deepEqual(controller.agentListState({
       subLabel: "2 fields · used by 1",
     },
   ],
+});
+assert.deepEqual(controller.agentListState({}), {
+  agentsHeading: "",
+  schemasHeading: "",
+  addSchemaLabel: "",
+  memberCount: 0,
+  schemaCount: 0,
+  memberRows: [],
+  schemaRows: [],
 });
 assert.deepEqual(controller.agentSelectionState({
   selection: { kind: "agent", id: "m_reviewer" },

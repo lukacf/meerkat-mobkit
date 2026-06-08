@@ -859,6 +859,7 @@ function App() {
           toolCatalog={catalogs.toolCatalog}
           modelCatalog={catalogs.models}
           agentDefinitions={catalogs.agentDefinitions}
+          agentView={catalogs.agentView}
         />
       )}
 
