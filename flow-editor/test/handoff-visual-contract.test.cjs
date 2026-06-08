@@ -72,6 +72,7 @@ function allowedCssDelta(sign, line) {
       /skill-chip em/,
       /skill-chip\.is-invalid/,
       /node--source-file/,
+      /source-file__/,
       /bld-toml--graph/,
       /grid-template-columns/,
       /max-width: 120px/,
@@ -96,7 +97,7 @@ const unexpected = styleDiff.filter((line) => {
     if (line.includes("}")) allowedAddedBlock = false;
     return false;
   }
-  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|\.node--source-file|\.bld-toml--graph)/.test(line)) {
+  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|\.node--source-file|\.source-file__|\.bld-toml--graph)/.test(line)) {
     if (!line.includes("}")) allowedAddedBlock = true;
     return false;
   }

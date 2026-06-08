@@ -528,11 +528,32 @@ body {
 .node--term[data-kind="failed"]  .node__role { color: var(--crit, #c2410c); }
 .node--term[data-kind="human"]   .node__role { color: var(--accent); }
 .node--source-file {
+  width: 210px;
+  height: 58px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 14px;
+  padding: 0 28px;
+  background: var(--surface);
+  border-color: var(--hair);
   cursor: pointer;
 }
 .node--source-file:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
+}
+.source-file__glyph {
+  font-family: var(--font-mono);
+  font-size: 23px;
+  line-height: 1;
+  color: var(--muted);
+}
+.source-file__label {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  line-height: 1;
+  color: var(--ink);
 }
 
 /* ── Edges (svg) ────────────────────────────────────────────── */

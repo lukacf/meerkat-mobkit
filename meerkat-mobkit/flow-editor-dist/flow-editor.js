@@ -3849,7 +3849,7 @@ window.MOBKIT_BOOT = {
   function graphNodeCanvasState({ inst, members = [], density = "" } = {}) {
     const isCompact = density === "compact";
     if (inst?.isTerminal) {
-      const isSourceFile = /mob\.toml/i.test([inst.id, inst.label, inst.kind].filter(Boolean).join(" "));
+      const isSourceFile = !!inst.isSourceFile || /mob\.toml/i.test([inst.id, inst.label, inst.kind].filter(Boolean).join(" "));
       return {
         hidden: false,
         isTerminal: true,
@@ -3858,9 +3858,10 @@ window.MOBKIT_BOOT = {
         role: isSourceFile ? "button" : undefined,
         tabIndex: isSourceFile ? 0 : undefined,
         ariaLabel: isSourceFile ? "Open mob.toml read-only source editor" : undefined,
-        roleLabel: `terminal · ${inst.kind}`,
+        sourceGlyph: isSourceFile ? "{ }" : "",
+        roleLabel: isSourceFile ? "source file" : `terminal · ${inst.kind}`,
         title: inst.label,
-        subtitle: inst.kind,
+        subtitle: isSourceFile ? "" : inst.kind,
       };
     }
     const member = inst?.memberId
@@ -3882,6 +3883,31 @@ window.MOBKIT_BOOT = {
         className: "tag" + graphToolTagClass(tool),
       })),
       overflowLabel: tools.length > visibleTools.length ? `+${tools.length - visibleTools.length}` : "",
+    };
+  }
+
+  function graphSourceFileNode({ instances = [] } = {}) {
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    if (sourceInstances.some((instance) => instance?.isSourceFile || /mob\.toml/i.test([instance?.id, instance?.label, instance?.kind].filter(Boolean).join(" ")))) {
+      return null;
+    }
+    const positioned = sourceInstances
+      .filter((instance) => Number.isFinite(Number(instance?.col)) && Number.isFinite(Number(instance?.row)));
+    const minCol = positioned.length
+      ? Math.min(...positioned.map((instance) => Number(instance.col)))
+      : 0;
+    const minRow = positioned.length
+      ? Math.min(...positioned.map((instance) => Number(instance.row)))
+      : 0;
+    return {
+      id: "source_mob_toml",
+      isTerminal: true,
+      isSourceFile: true,
+      isGraphAdornment: true,
+      kind: "source",
+      label: "mob.toml",
+      col: minCol,
+      row: minRow - 1,
     };
   }
 
@@ -8051,6 +8077,7 @@ window.MOBKIT_BOOT = {
     graphTemplateInspectorState,
     graphInstanceControlState,
     graphToolTagClass,
+    graphSourceFileNode,
     graphNodeCanvasState,
     graphGateCanvasState,
     graphEdgeCanvasState,
@@ -8908,6 +8935,10 @@ function cellXYFor(g, col, row) {
 }
 function nodeBox(g, n) {
   const { x, y } = cellXYFor(g, n.col, n.row);
+  if (n.isSourceFile) {
+    const sw = 210, sh = 58;
+    return { x: x + (g.cellW - sw) / 2, y: y + (g.cellH - sh) / 2, w: sw, h: sh };
+  }
   if (n.isGate) {
     const gw = 156, gh = 56;
     return { x: x + (g.cellW - gw) / 2, y: y + (g.cellH - gh) / 2, w: gw, h: gh };
@@ -9188,7 +9219,9 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       selectEdge(edge.id);
     } }, /* @__PURE__ */ React.createElement("path", { d, className: "edge-hit" }), /* @__PURE__ */ React.createElement("path", { d, className: edgeState.lineClass, markerEnd: edgeState.markerEnd }), labelEl);
   });
-  const nodeEls = state.instances.map((inst) => {
+  const sourceFileNode = window.MobKitFlowController.graphSourceFileNode({ instances: state.instances });
+  const canvasInstances = sourceFileNode ? [sourceFileNode, ...state.instances] : state.instances;
+  const nodeEls = canvasInstances.map((inst) => {
     if (inst.isGate) {
       return /* @__PURE__ */ React.createElement(
         GateView,
@@ -9251,6 +9284,31 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
       event.stopPropagation();
       onOpenSourceFile?.(inst);
     };
+    if (nodeState.isSourceFile) {
+      return /* @__PURE__ */ React.createElement(
+        "div",
+        {
+          "data-inst-id": inst.id,
+          className: "node node--term node--source-file" + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : ""),
+          "data-kind": nodeState.dataKind,
+          role: nodeState.role,
+          tabIndex: nodeState.tabIndex,
+          "aria-label": nodeState.ariaLabel,
+          style: { left: b.x, top: b.y, width: b.w, height: b.h },
+          onMouseDown: (e) => {
+            e.stopPropagation();
+          },
+          onClick: openSourceFile,
+          onKeyDown: (e) => {
+            if (e.key !== "Enter" && e.key !== " ") return;
+            e.preventDefault();
+            openSourceFile(e);
+          }
+        },
+        /* @__PURE__ */ React.createElement("span", { className: "source-file__glyph" }, nodeState.sourceGlyph),
+        /* @__PURE__ */ React.createElement("span", { className: "source-file__label" }, nodeState.title)
+      );
+    }
     return /* @__PURE__ */ React.createElement(
       "div",
       {

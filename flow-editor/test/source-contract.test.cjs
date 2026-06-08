@@ -49,7 +49,7 @@ const roleWiringBlock = (app.match(/function RoleWiringEditor[\s\S]*?function Ad
 const advancedMobSettingsBlock = (app.match(/function AdvancedMobSettingsEditor[\s\S]*?ReactDOM\.createRoot/) || [""])[0];
 const importParamsFromFileBlock = (app.match(/async function importParamsFromFile[\s\S]*?function TopRail/) || [""])[0];
 const newFlowModalBlock = (app.match(/function NewFlowModal[\s\S]*?function ModeToggle/) || [""])[0];
-const graphEdgeCanvasBlock = (graph.match(/const edgeEls = state\.edges\.map[\s\S]*?const nodeEls = state\.instances\.map/) || [""])[0];
+const graphEdgeCanvasBlock = (graph.match(/const edgeEls = state\.edges\.map[\s\S]*?const sourceFileNode =/) || [""])[0];
 const graphNodeViewBlock = (graph.match(/function NodeView[\s\S]*?function GateView/) || [""])[0];
 const graphGateViewBlock = (graph.match(/function GateView[\s\S]*?function computeFit/) || [""])[0];
 
@@ -225,6 +225,7 @@ assert.match(inspectorTerminalBlock, /terminalState\.eyebrow/, "Graph terminal i
 assert.match(inspectorTerminalBlock, /terminalState\.labelValue/, "Graph terminal inspector must render terminal label value through the controller plane");
 assert.match(graphEdgeCanvasBlock, /MobKitFlowController\.graphEdgeCanvasState/, "Graph canvas must render edge class, label, glyph, color, and marker metadata through the controller plane");
 assert.match(graph, /MobKitFlowController\.graphNodeCanvasState/, "Graph canvas must render node member/tool/source metadata through the controller plane");
+assert.match(graph, /MobKitFlowController\.graphSourceFileNode/, "Graph canvas must ask the controller plane for the mob.toml source-file adornment");
 assert.match(graph, /MobKitFlowController\.graphGateCanvasState/, "Graph canvas must render gate glyph and sublabels through the controller plane");
 assert.match(controller, /function graphSelectionState/, "controller plane must own Graph Inspector selection projection");
 assert.match(controller, /function graphTemplateInspectorState/, "controller plane must own Graph template summary projection");
@@ -232,6 +233,7 @@ assert.match(controller, /function graphInstanceControlState/, "controller plane
 assert.match(controller, /function graphTerminalControlState/, "controller plane must own Graph terminal kind projection");
 assert.match(controller, /function graphEdgeCanvasState/, "controller plane must own Graph edge canvas projection");
 assert.match(controller, /function graphNodeCanvasState/, "controller plane must own Graph node canvas projection");
+assert.match(controller, /function graphSourceFileNode/, "controller plane must own Graph source-file adornment projection");
 assert.match(controller, /function graphGateCanvasState/, "controller plane must own Graph gate canvas projection");
 assert(!/const\s+kind\s*=\s*edge\.kind|terminalTarget|kind === ["'](?:cond|fanout)["']|edge\.label \|\| edge\.kind|markerEnd=\{[\s\S]*url\(#arr-red\)|url\(#arr-dim\)/.test(graphEdgeCanvasBlock), "Graph edge canvas must not assemble edge kind classes, labels, glyphs, colors, or markers locally");
 assert(!/memberById|schemaById|function classifyTool|member\.tools|member\.role|member\.model|member\.name|mob\\.toml|launchMode\?\.kind/.test(graphNodeViewBlock), "Graph node canvas must not assemble member, tool, launch, or source-file metadata locally");

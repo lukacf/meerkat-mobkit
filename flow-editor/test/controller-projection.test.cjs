@@ -4508,6 +4508,26 @@ const terminalSourceState = controller.graphNodeCanvasState({
 assert.equal(terminalSourceState.isSourceFile, true);
 assert.equal(terminalSourceState.role, "button");
 assert.equal(terminalSourceState.ariaLabel, "Open mob.toml read-only source editor");
+assert.equal(terminalSourceState.sourceGlyph, "{ }");
+assert.equal(terminalSourceState.roleLabel, "source file");
+assert.equal(terminalSourceState.title, "mob.toml");
+assert.equal(terminalSourceState.subtitle, "");
+const graphSourceFileNode = controller.graphSourceFileNode({
+  instances: graphProjectionInstances,
+});
+assert.deepEqual(graphSourceFileNode, {
+  id: "source_mob_toml",
+  isTerminal: true,
+  isSourceFile: true,
+  isGraphAdornment: true,
+  kind: "source",
+  label: "mob.toml",
+  col: 0,
+  row: -1,
+});
+assert.equal(controller.graphSourceFileNode({
+  instances: [{ id: "source_mob_toml", label: "mob.toml", isTerminal: true }],
+}), null);
 assert.deepEqual(controller.graphGateCanvasState({
   inst: { id: "join_1", gateKind: "join", collection: "quorum", quorum: { n: 2, m: 3 } },
   edges: [{ to: "join_1" }, { to: "join_1" }],

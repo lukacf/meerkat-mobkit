@@ -174,6 +174,10 @@ function cellXYFor(g, col, row) {
 }
 function nodeBox(g, n) {
   const { x, y } = cellXYFor(g, n.col, n.row);
+  if (n.isSourceFile) {
+    const sw = 210, sh = 58;
+    return { x: x + (g.cellW - sw) / 2, y: y + (g.cellH - sh) / 2, w: sw, h: sh };
+  }
   if (n.isGate) {
     // Gate nodes render smaller — a compact pill in the cell center.
     const gw = 156, gh = 56;
@@ -473,7 +477,9 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     );
   });
 
-  const nodeEls = state.instances.map(inst => {
+  const sourceFileNode = window.MobKitFlowController.graphSourceFileNode({ instances: state.instances });
+  const canvasInstances = sourceFileNode ? [sourceFileNode, ...state.instances] : state.instances;
+  const nodeEls = canvasInstances.map(inst => {
     if (inst.isGate) {
       return (
         <GateView key={inst.id}
@@ -554,6 +560,30 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
       event.stopPropagation();
       onOpenSourceFile?.(inst);
     };
+    if (nodeState.isSourceFile) {
+      return (
+        <div data-inst-id={inst.id}
+          className={"node node--term node--source-file" + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : "")}
+          data-kind={nodeState.dataKind}
+          role={nodeState.role}
+          tabIndex={nodeState.tabIndex}
+          aria-label={nodeState.ariaLabel}
+          style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
+          onMouseDown={(e) => {
+            e.stopPropagation();
+          }}
+          onClick={openSourceFile}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" && e.key !== " ") return;
+            e.preventDefault();
+            openSourceFile(e);
+          }}
+        >
+          <span className="source-file__glyph">{nodeState.sourceGlyph}</span>
+          <span className="source-file__label">{nodeState.title}</span>
+        </div>
+      );
+    }
     return (
       <div data-inst-id={inst.id}
         className={"node node--term" + (nodeState.isSourceFile ? " node--source-file" : "") + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : "")}

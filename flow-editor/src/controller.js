@@ -3808,7 +3808,7 @@
   function graphNodeCanvasState({ inst, members = [], density = "" } = {}) {
     const isCompact = density === "compact";
     if (inst?.isTerminal) {
-      const isSourceFile = /mob\.toml/i.test([inst.id, inst.label, inst.kind].filter(Boolean).join(" "));
+      const isSourceFile = !!inst.isSourceFile || /mob\.toml/i.test([inst.id, inst.label, inst.kind].filter(Boolean).join(" "));
       return {
         hidden: false,
         isTerminal: true,
@@ -3817,9 +3817,10 @@
         role: isSourceFile ? "button" : undefined,
         tabIndex: isSourceFile ? 0 : undefined,
         ariaLabel: isSourceFile ? "Open mob.toml read-only source editor" : undefined,
-        roleLabel: `terminal · ${inst.kind}`,
+        sourceGlyph: isSourceFile ? "{ }" : "",
+        roleLabel: isSourceFile ? "source file" : `terminal · ${inst.kind}`,
         title: inst.label,
-        subtitle: inst.kind,
+        subtitle: isSourceFile ? "" : inst.kind,
       };
     }
     const member = inst?.memberId
@@ -3841,6 +3842,31 @@
         className: "tag" + graphToolTagClass(tool),
       })),
       overflowLabel: tools.length > visibleTools.length ? `+${tools.length - visibleTools.length}` : "",
+    };
+  }
+
+  function graphSourceFileNode({ instances = [] } = {}) {
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    if (sourceInstances.some((instance) => instance?.isSourceFile || /mob\.toml/i.test([instance?.id, instance?.label, instance?.kind].filter(Boolean).join(" ")))) {
+      return null;
+    }
+    const positioned = sourceInstances
+      .filter((instance) => Number.isFinite(Number(instance?.col)) && Number.isFinite(Number(instance?.row)));
+    const minCol = positioned.length
+      ? Math.min(...positioned.map((instance) => Number(instance.col)))
+      : 0;
+    const minRow = positioned.length
+      ? Math.min(...positioned.map((instance) => Number(instance.row)))
+      : 0;
+    return {
+      id: "source_mob_toml",
+      isTerminal: true,
+      isSourceFile: true,
+      isGraphAdornment: true,
+      kind: "source",
+      label: "mob.toml",
+      col: minCol,
+      row: minRow - 1,
     };
   }
 
@@ -8010,6 +8036,7 @@
     graphTemplateInspectorState,
     graphInstanceControlState,
     graphToolTagClass,
+    graphSourceFileNode,
     graphNodeCanvasState,
     graphGateCanvasState,
     graphEdgeCanvasState,
