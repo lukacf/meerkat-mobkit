@@ -2293,6 +2293,22 @@ fn document_from_archive_bytes(bytes: &[u8]) -> Result<MobpackDocument, String> 
             document.mob_toml = Some(mob_toml.clone());
         }
         hydrate_path_skill_content_from_archive(&mut document, &files)?;
+        if let Some(mob_toml) = mob_toml.as_ref()
+            && archive_editor_projection_should_reproject(&document, mob_toml)
+        {
+            let definition = MobDefinition::from_toml(mob_toml)
+                .map_err(|err| format!("failed to parse mob.toml from mobpack archive: {err}"))?;
+            let fallback_name = document.name.trim().to_string();
+            let deploy = document.deploy.clone();
+            let mut projected = project_definition_to_editor_document(
+                &definition,
+                mob_toml,
+                (!fallback_name.is_empty()).then_some(fallback_name.as_str()),
+                deploy,
+            )?;
+            hydrate_path_skill_content_from_archive(&mut projected, &files)?;
+            return Ok(projected);
+        }
         return Ok(document);
     }
     let name = manifest_toml
@@ -2344,6 +2360,42 @@ fn document_from_value(value: &Value) -> Result<MobpackDocument, String> {
         document.mob_toml = Some(text.to_string());
     }
     Ok(document)
+}
+
+fn archive_editor_projection_should_reproject(
+    document: &MobpackDocument,
+    packed_mob_toml: &str,
+) -> bool {
+    match render_editor_document_mob_toml(document) {
+        Ok(rendered) if rendered.trim() != packed_mob_toml.trim() => return true,
+        Err(_) => return true,
+        _ => {}
+    }
+    let validation = validate_document(document);
+    validation
+        .diagnostics
+        .iter()
+        .any(|diagnostic| is_archive_editor_projection_drift_code(&diagnostic.code))
+}
+
+fn is_archive_editor_projection_drift_code(code: &str) -> bool {
+    code.starts_with("editor_profile_")
+        || code.starts_with("editor_flow_")
+        || code.starts_with("graph_")
+        || code.starts_with("stale_editor_")
+        || matches!(
+            code,
+            "flow_step_missing_graph_instance"
+                | "graph_instance_missing_from_flow"
+                | "missing_compiled_graph_gate"
+                | "missing_compiled_graph_frame"
+                | "missing_graph_member"
+                | "unknown_graph_member"
+                | "unknown_graph_edge_endpoint"
+                | "uncompiled_graph_gate"
+                | "uncompiled_graph_terminal"
+                | "uncompiled_graph_frame"
+        )
 }
 
 fn needs_editor_projection(document: &MobpackDocument) -> bool {
@@ -14398,6 +14450,58 @@ model = "gpt-5.5"
         let imported_document: MobpackDocument =
             serde_json::from_value(imported["document"].clone()).expect("document");
 
+        assert_eq!(
+            imported_document.mob_toml.as_deref(),
+            Some(packed_mob_toml.as_str())
+        );
+        assert!(imported["validation"]["ok"].as_bool().unwrap_or(false));
+    }
+
+    #[test]
+    fn archive_import_reprojects_stale_editor_json_from_packed_mob_toml() {
+        let mut document = document_with_real_launch_modes();
+        document.mob_toml = None;
+        let packed_mob_toml =
+            render_editor_document_mob_toml(&document).expect("render packed mob.toml");
+        document.members.as_array_mut().unwrap()[0]["model"] = json!("stale-model");
+        document.flow["steps"].as_array_mut().unwrap()[1]["instruction"] = json!("Stale plan");
+        let editor_json = serde_json::to_vec_pretty(&json!({
+            "schema_version": MOBPACK_SCHEMA_VERSION,
+            "media_type": MOBPACK_MEDIA_TYPE,
+            "document": document,
+        }))
+        .expect("editor json");
+
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = Builder::new(encoder);
+        append_archive_file(
+            &mut archive,
+            "manifest.toml",
+            b"surfaces = [\"cli\"]\n\n[mobpack]\nname = \"stale-editor-projection\"\n",
+        )
+        .expect("manifest");
+        append_archive_file(&mut archive, "mobkit/editor.json", &editor_json).expect("editor json");
+        append_archive_file(&mut archive, "mobkit/mob.toml", packed_mob_toml.as_bytes())
+            .expect("mob toml");
+        let encoder = archive.into_inner().expect("archive");
+        let bytes = encoder.finish().expect("gzip");
+
+        let imported = import_mobpack(&json!({
+            "content_base64": base64::engine::general_purpose::STANDARD.encode(bytes)
+        }))
+        .expect("import");
+        let imported_document: MobpackDocument =
+            serde_json::from_value(imported["document"].clone()).expect("document");
+        let members = imported_document.members.as_array().expect("members");
+        let planner = members
+            .iter()
+            .find(|member| member["role"] == "planner")
+            .expect("planner");
+        let flow_json = serde_json::to_string(&imported_document.flow).expect("flow json");
+
+        assert_eq!(planner["model"], json!("gpt-5.5"));
+        assert!(flow_json.contains("Plan"), "{flow_json}");
+        assert!(!flow_json.contains("Stale plan"), "{flow_json}");
         assert_eq!(
             imported_document.mob_toml.as_deref(),
             Some(packed_mob_toml.as_str())
