@@ -5960,17 +5960,7 @@
     if (document?.flow && typeof document.flow === "object" && Array.isArray(document.flow.steps)) {
       return document.flow;
     }
-    const name = String(document?.name || document?.mob_id || "untitled-mob").trim() || "untitled-mob";
-    return {
-      name,
-      steps: [{
-        id: "input_1",
-        type: "input",
-        task: "",
-        fields: "",
-        inputParams: [],
-      }],
-    };
+    return null;
   }
 
   function graphProjectionForDocument(document, members) {
@@ -5991,6 +5981,33 @@
     const members = Array.isArray(document.members) ? document.members : [];
     const schemas = Array.isArray(document.schemas) ? document.schemas : [];
     const flow = flowFromHydratedDocument(document);
+    if (!flow) {
+      return {
+        ok: false,
+        id: String(options.id || "f_imported"),
+        document,
+        members,
+        schemas,
+        flow: null,
+        skillRealms: mergeSkillRealms(document.skill_realms, options.contractSkillRealms || []),
+        graphProjection: null,
+        deploySettings: deploySettingsForUi(options.deployDefaults),
+        mobSettings: mobSettingsForUi(options.mobDefaults),
+        registryRow: null,
+        addToRegistry: false,
+        openEditor: false,
+        validation: null,
+        validationRows: [{
+          kind: "error",
+          glyph: "!",
+          head: "Imported mobpack is missing a MobKit editor flow",
+          sub: "mobkit/mobpacks/import did not return document.flow.steps",
+          meta: "missing_editor_flow",
+        }],
+        stage: "draft",
+        error: "missing_editor_flow",
+      };
+    }
     const skillRealms = mergeSkillRealms(document.skill_realms, options.contractSkillRealms || []);
     const graphProjection = graphProjectionForDocument({ ...document, flow }, members);
     const hasDeploySettings = document.deploy && typeof document.deploy === "object" && !Array.isArray(document.deploy);

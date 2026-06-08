@@ -657,6 +657,12 @@ function App() {
       mobDefaults: options.mobDefaults || catalogs.mobDefaults,
       contractSkillRealms: contractSkillRealms.current,
     });
+    if (hydration.ok === false) {
+      setValidationResults(hydration.validationRows || []);
+      setStage(hydration.stage || "draft");
+      setValidate(true);
+      return;
+    }
     const hydrationPersistence = window.MobKitFlowController.flowRegistryDocumentPersistence({
       currentFlowId: hydration.id,
       document: hydration.document,

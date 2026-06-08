@@ -6178,12 +6178,17 @@ const missingFlowHydrated = controller.hydrateMobpackDocumentState({
   deployDefaults: testDeploySettings(),
   mobDefaults: controller.mobDefaultsFromSchema(TEST_SCHEMA),
 });
-assert.equal(missingFlowHydrated.flow.name, "No Flow Import");
-assert.equal(missingFlowHydrated.flow.steps[0].type, "input");
+assert.equal(missingFlowHydrated.ok, false);
+assert.equal(missingFlowHydrated.error, "missing_editor_flow");
+assert.equal(missingFlowHydrated.flow, null);
+assert.equal(missingFlowHydrated.graphProjection, null);
+assert.equal(missingFlowHydrated.addToRegistry, false);
+assert.equal(missingFlowHydrated.openEditor, false);
 assert.deepEqual(missingFlowHydrated.members, []);
 assert.deepEqual(missingFlowHydrated.schemas, []);
 assert.equal(missingFlowHydrated.deploySettings.maxTotalTokens, 64);
 assert.equal(missingFlowHydrated.mobSettings.backendDefault, "session");
+assert.equal(missingFlowHydrated.validationRows[0].meta, "missing_editor_flow");
 
 const appendedRows = controller.flowRegistryAppendRowPatch(registryRows, importedRow);
 assert.equal(appendedRows.length, 3);

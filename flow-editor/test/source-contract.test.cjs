@@ -319,6 +319,9 @@ assert.match(controller, /function mergeSkillRealms/, "controller plane must own
 assert.match(controller, /function hydrateMobpackDocumentState/, "controller plane must own imported document hydration semantics");
 assert.match(controller, /function flowFromHydratedDocument/, "controller plane must own hydrated flow reset semantics");
 assert.match(controller, /function graphProjectionForDocument/, "controller plane must own hydrated graph projection semantics");
+assert.match(controller, /missing_editor_flow/, "controller hydration must reject MobKit documents that do not include document.flow.steps");
+assert(!/flowFromHydratedDocument[\s\S]{0,520}untitled-mob|flowFromHydratedDocument[\s\S]{0,700}id:\s*["']input_1["']/.test(controller), "hydration must not synthesize local input-only flows when MobKit import omits a real flow");
+assert.match(app, /if \(hydration\.ok === false\) \{[\s\S]*setValidationResults\(hydration\.validationRows \|\| \[\]\);[\s\S]*setStage\(hydration\.stage \|\| "draft"\);[\s\S]*setValidate\(true\);[\s\S]*return;/, "app shell must not mutate editor state when controller rejects imported document hydration");
 assert.match(controller, /validationRows:\s*diagnosticsToRows\(validation\)/, "controller hydration must project imported document validation rows");
 assert.match(app, /setValidationResults\(hydration\.validationRows\)/, "app shell must use controller-projected hydration validation rows");
 assert(!/validationRowsForDisplay/.test(app), "app shell must not own hydration validation-row projection");
