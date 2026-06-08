@@ -138,7 +138,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
   );
 }
 
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null }) {
+function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null }) {
   const members = studio?.members || [];
   const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [selLocal, setSelLocal] = React.useState(null);
@@ -151,6 +151,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const hostRef = React.useRef(null);
   const panRef = React.useRef(null);
   const isFlow = mode === "flow";
+  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   const canvasView = Math.abs(view.ty) > 1200
     ? { ...view, ty: 0 }
     : view;
@@ -225,9 +226,10 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     <div className={"builder" + (isFlow ? " builder--flow" : "")}>
       <div className="bld-stage" ref={hostRef} onMouseDown={onHostDown}>
         <div className="bld-canvas" style={{ transform: `translate(calc(-50% + ${canvasView.tx}px), ${canvasView.ty}px) scale(${canvasView.scale})` }}>
-          <div className="bld-start">START</div>
+          <div className="bld-start">{viewState.startLabel}</div>
           <Lane studio={studio} mode={mode} steps={flow.steps} laneRef={{ lane: "main" }} sel={sel}
             contract={contract}
+            basicView={basicView}
             setSel={(id) => { setSel(id); setPicker({ open: false }); }}
             openPicker={openPicker} />
         </div>
@@ -260,16 +262,16 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
             onClose={() => setPicker({ open: false })}
           />
         ) : selStep ? (
-          <StepInspector studio={studio} members={members} flow={flow} step={selStep} update={update} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} onInputParamReferenceChange={reconcileInputParamReferences} />
+          <StepInspector studio={studio} members={members} flow={flow} step={selStep} update={update} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} onInputParamReferenceChange={reconcileInputParamReferences} />
         ) : (
-          <EmptyPanel />
+          <EmptyPanel state={viewState} />
         )}
       </aside>
     </div>
   );
 }
 
-function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract }) {
+function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract, basicView = null }) {
   return (
     <div className="bld-lane">
       {steps.map((step, i) => (
@@ -277,12 +279,12 @@ function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract 
         <StepCard studio={studio} step={step} index={i} selected={sel === step.id} onSelect={() => setSel(step.id)} contract={contract} />
           {step.type === "branch" || step.type === "parallel" ? (
             <>
-              <Fork studio={studio} mode={mode} step={step} sel={sel} setSel={setSel} openPicker={openPicker} contract={contract} />
+              <Fork studio={studio} mode={mode} step={step} sel={sel} setSel={setSel} openPicker={openPicker} contract={contract} basicView={basicView} />
               <InsertBtn mode={mode} mid={i < steps.length - 1} onClick={() => openPicker({ ...laneRef, index: i + 1 })} />
             </>
           ) : step.type === "repeat" ? (
             <>
-              <RepeatBody studio={studio} mode={mode} step={step} sel={sel} setSel={setSel} openPicker={openPicker} contract={contract} />
+              <RepeatBody studio={studio} mode={mode} step={step} sel={sel} setSel={setSel} openPicker={openPicker} contract={contract} basicView={basicView} />
               <InsertBtn mode={mode} mid={i < steps.length - 1} onClick={() => openPicker({ ...laneRef, index: i + 1 })} />
             </>
           ) : (
@@ -295,7 +297,7 @@ function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract 
   );
 }
 
-function Fork({ studio, mode, step, sel, setSel, openPicker, contract }) {
+function Fork({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
   const forkState = window.MobKitFlowController.basicForkCanvasState({ step, contract });
   return (
     <div className={forkState.className}>
@@ -309,7 +311,7 @@ function Fork({ studio, mode, step, sel, setSel, openPicker, contract }) {
             <div className="bld-fork__drop" />
             {l.steps.length === 0
               ? <InsertBtn mode={mode} onClick={() => openPicker({ lane: "branch", parentId: step.id, branchId: l.id, index: 0 })} />
-              : <Lane studio={studio} mode={mode} steps={l.steps} laneRef={{ lane: "branch", parentId: step.id, branchId: l.id }} sel={sel} setSel={setSel} openPicker={openPicker} contract={contract} />}
+              : <Lane studio={studio} mode={mode} steps={l.steps} laneRef={{ lane: "branch", parentId: step.id, branchId: l.id }} sel={sel} setSel={setSel} openPicker={openPicker} contract={contract} basicView={basicView} />}
             {forkState.isParallel && <div className="bld-fork__drop" />}
           </div>
         ))}
@@ -329,8 +331,9 @@ function Fork({ studio, mode, step, sel, setSel, openPicker, contract }) {
   );
 }
 
-function RepeatBody({ studio, mode, step, sel, setSel, openPicker, contract }) {
+function RepeatBody({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
   const repeatState = window.MobKitFlowController.basicRepeatCanvasState({ step, members: studio?.members || [], contract });
+  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   return (
     <div className="bld-repeat">
       <div className="bld-fork__bar" />
@@ -340,12 +343,12 @@ function RepeatBody({ studio, mode, step, sel, setSel, openPicker, contract }) {
         </div>
         <div className="bld-loop__frame">
           <div className="bld-loop__head">
-            <span className="bld-loop__badge">LOOP</span>
+            <span className="bld-loop__badge">{viewState.loopBadge}</span>
             <span className="bld-loop__meta">while <strong>not</strong> ({repeatState.conditionLabel}) · {repeatState.maxIterationsLabel}</span>
           </div>
           {step.steps.length === 0
             ? <InsertBtn mode={mode} onClick={() => openPicker({ lane: "branch", parentId: step.id, branchId: "body", index: 0 })} />
-            : <Lane studio={studio} mode={mode} steps={step.steps} laneRef={{ lane: "branch", parentId: step.id, branchId: "body" }} sel={sel} setSel={setSel} openPicker={openPicker} contract={contract} />}
+            : <Lane studio={studio} mode={mode} steps={step.steps} laneRef={{ lane: "branch", parentId: step.id, branchId: "body" }} sel={sel} setSel={setSel} openPicker={openPicker} contract={contract} basicView={basicView} />}
           <div className="bld-loop__back">{repeatState.loopBackLabel}</div>
         </div>
       </div>
@@ -446,7 +449,8 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose }) {
 }
 
 // ── Inspector ──
-function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, onInputParamReferenceChange }) {
+function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, basicView = null, onInputParamReferenceChange }) {
+  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   if (step.type === "input") {
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract);
     const params = inputState.params;
@@ -503,7 +507,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
             )}
           </div>
         </div>
-        <PanelTips items={inputState.tips} />
+        <PanelTips title={viewState.tipsTitle} items={inputState.tips} />
       </div>
     );
   }
@@ -621,7 +625,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
         {repeatState.selectedIterationInput?.reason && <div className="bld-hint" style={{ color: "var(--warn)" }}>{repeatState.selectedIterationInput.reason}</div>}
 
         <Field label={repeatState.maxIterationsLabel}><input className="field__input" type="number" min="1" placeholder={repeatState.maxIterationsPlaceholder} value={step.maxIterations ?? ""} onChange={e => update(step.id, window.MobKitFlowController.flowStepMaxIterationsPatch(e.target.value))} /></Field>
-        <PanelTips items={repeatState.tips} />
+        <PanelTips title={viewState.tipsTitle} items={repeatState.tips} />
       </div>
     );
   }
@@ -809,11 +813,22 @@ function PanelHead({ icon, iconTint, title, sub, onClose, deleteMode }) {
 function Field({ label, children }) {
   return <div className="field" style={{ marginTop: 14 }}><label className="field__label">{label}</label>{children}</div>;
 }
-function PanelTips({ items }) {
-  return <div className="bld-tips"><div className="bld-tips__head">Tips</div><ul>{items.map((t, i) => <li key={i}>{t}</li>)}</ul></div>;
+function PanelTips({ title, items }) {
+  return <div className="bld-tips"><div className="bld-tips__head">{title}</div><ul>{items.map((t, i) => <li key={i}>{t}</li>)}</ul></div>;
 }
-function EmptyPanel() {
-  return <div className="bld-panel__inner bld-panel__empty"><div className="bld-panel__title">Build your mob flow</div><div className="bld-panel__sub">Pick a node to configure, or press <strong>+</strong> to add a member turn or flow primitive. The result is a <code>mob.toml</code> flow.</div></div>;
+function EmptyPanel({ state }) {
+  return (
+    <div className="bld-panel__inner bld-panel__empty">
+      <div className="bld-panel__title">{state.emptyPanelTitle}</div>
+      <div className="bld-panel__sub">
+        {state.emptyPanelSubtitleParts.map(part => {
+          if (part.kind === "code") return <code key={part.key}>{part.text}</code>;
+          if (part.kind === "strong") return <strong key={part.key}>{part.text}</strong>;
+          return <React.Fragment key={part.key}>{part.text}</React.Fragment>;
+        })}
+      </div>
+    </div>
+  );
 }
 
 // ── step model ──

@@ -454,6 +454,19 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       schemas_heading: "SCHEMAS",
       add_schema_label: "+ new schema",
     },
+    editor_basic_view: {
+      start_label: "START",
+      loop_badge: "LOOP",
+      tips_title: "Tips",
+      empty_panel_title: "Build your mob flow",
+      empty_panel_subtitle_parts: [
+        { kind: "text", text: "Pick a node to configure, or press " },
+        { kind: "strong", text: "+" },
+        { kind: "text", text: " to add a member turn or flow primitive. The result is a " },
+        { kind: "code", text: "mob.toml" },
+        { kind: "text", text: " flow." },
+      ],
+    },
   },
   models: [{ id: "openai/gpt-5.5", label: "GPT-5.5", vendor: "openai" }],
   tool_catalog: [{ id: "builtins", label: "builtins", desc: "Built-ins", kind: "runtime", source: "meerkat_mob::ToolConfig" }],
@@ -502,6 +515,27 @@ assert.deepEqual(hydratedCatalogs.agentView, {
   agentsHeading: "AGENTS",
   schemasHeading: "SCHEMAS",
   addSchemaLabel: "+ new schema",
+});
+assert.deepEqual(hydratedCatalogs.basicView, {
+  startLabel: "START",
+  loopBadge: "LOOP",
+  tipsTitle: "Tips",
+  emptyPanelTitle: "Build your mob flow",
+  emptyPanelSubtitleParts: [
+    { key: "text-0", kind: "text", text: "Pick a node to configure, or press " },
+    { key: "strong-1", kind: "strong", text: "+" },
+    { key: "text-2", kind: "text", text: " to add a member turn or flow primitive. The result is a " },
+    { key: "code-3", kind: "code", text: "mob.toml" },
+    { key: "text-4", kind: "text", text: " flow." },
+  ],
+});
+assert.deepEqual(controller.basicEditorViewState(hydratedCatalogs.basicView), hydratedCatalogs.basicView);
+assert.deepEqual(controller.basicEditorViewState(null), {
+  startLabel: "",
+  loopBadge: "",
+  tipsTitle: "",
+  emptyPanelTitle: "",
+  emptyPanelSubtitleParts: [],
 });
 assert.equal(hydratedCatalogs.grid, catalogBoot.grid);
 assert.deepEqual(hydratedCatalogs.template, {

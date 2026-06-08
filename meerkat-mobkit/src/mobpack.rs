@@ -726,6 +726,19 @@ pub fn mobpack_schema_response() -> Value {
         "schemas_heading": "SCHEMAS",
         "add_schema_label": "+ new schema"
     });
+    let editor_basic_view = json!({
+        "start_label": "START",
+        "loop_badge": "LOOP",
+        "tips_title": "Tips",
+        "empty_panel_title": "Build your mob flow",
+        "empty_panel_subtitle_parts": [
+            { "kind": "text", "text": "Pick a node to configure, or press " },
+            { "kind": "strong", "text": "+" },
+            { "kind": "text", "text": " to add a member turn or flow primitive. The result is a " },
+            { "kind": "code", "text": "mob.toml" },
+            { "kind": "text", "text": " flow." }
+        ]
+    });
     let mob_definition = json!({
         "authoritative_type": "meerkat_mob::MobDefinition",
         "defaults": {
@@ -833,6 +846,7 @@ pub fn mobpack_schema_response() -> Value {
         "editor_graph_draft": editor_graph_draft,
         "editor_source_view": editor_source_view,
         "editor_agent_view": editor_agent_view,
+        "editor_basic_view": editor_basic_view,
         "dispatch_modes": dispatch_mode_values(),
         "collection_policies": collection_policy_values(),
         "dependency_modes": dependency_mode_values()
@@ -15235,6 +15249,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_view"]["add_schema_label"],
             json!("+ new schema")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["start_label"],
+            json!("START")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["loop_badge"],
+            json!("LOOP")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["tips_title"],
+            json!("Tips")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["empty_panel_subtitle_parts"][3]["text"],
+            json!("mob.toml")
         );
     }
 

@@ -842,6 +842,7 @@ function App() {
           contract={contract}
           toolCatalog={catalogs.toolCatalog}
           sourceView={catalogs.sourceView}
+          basicView={catalogs.basicView}
         />
       )}
 

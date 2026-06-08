@@ -628,6 +628,51 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function basicViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_basic_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      startLabel: String(view.start_label || "").trim(),
+      loopBadge: String(view.loop_badge || "").trim(),
+      tipsTitle: String(view.tips_title || "").trim(),
+      emptyPanelTitle: String(view.empty_panel_title || "").trim(),
+      emptyPanelSubtitleParts: basicViewPartsFromSchema(view.empty_panel_subtitle_parts),
+    };
+    return out.startLabel && out.loopBadge && out.tipsTitle && out.emptyPanelTitle && out.emptyPanelSubtitleParts.length
+      ? out
+      : null;
+  }
+
+  function basicViewPartsFromSchema(parts) {
+    if (!Array.isArray(parts)) return [];
+    return parts
+      .map((part, index) => {
+        if (!part || typeof part !== "object") return null;
+        const kind = String(part.kind || "text").trim();
+        const text = String(part.text || "");
+        if (!text) return null;
+        return {
+          key: String(part.key || `${kind}-${index}`),
+          kind: kind === "code" || kind === "strong" ? kind : "text",
+          text,
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function basicEditorViewState(basicView) {
+    const view = basicView && typeof basicView === "object" ? basicView : null;
+    return {
+      startLabel: String(view?.startLabel || ""),
+      loopBadge: String(view?.loopBadge || ""),
+      tipsTitle: String(view?.tipsTitle || ""),
+      emptyPanelTitle: String(view?.emptyPanelTitle || ""),
+      emptyPanelSubtitleParts: Array.isArray(view?.emptyPanelSubtitleParts)
+        ? view.emptyPanelSubtitleParts
+        : [],
+    };
+  }
+
   function agentSelectionState({ selection = null, members = [], schemas = [] } = {}) {
     if (!selection) return { kind: "empty", member: null, schema: null, missing: false };
     if (selection.kind === "schema") {
@@ -5941,6 +5986,7 @@ window.MOBKIT_BOOT = {
       mobDefinition: null,
       sourceView: null,
       agentView: null,
+      basicView: null,
       validationSource: "",
       contractMeta: {
         loaded: false,
@@ -5968,6 +6014,7 @@ window.MOBKIT_BOOT = {
       mobDefinition: schema?.mob_definition || null,
       sourceView: sourceViewFromSchema(schema),
       agentView: agentViewFromSchema(schema),
+      basicView: basicViewFromSchema(schema),
       validationSource: schema?.validation_source || "",
       contractMeta: {
         loaded: true,
@@ -8223,6 +8270,7 @@ window.MOBKIT_BOOT = {
     agentEditorControlState,
     agentDefinitionOptions,
     agentDefinitionAddControlState,
+    basicEditorViewState,
     schemaEditorControlState,
     memberPromptSkeleton,
     memberNamePatch,
@@ -10506,7 +10554,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
   });
   return /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card" }, /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card__head" }, "Branch ", index + 1), !conditionState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, "Add an upstream member with an output schema before configuring this branch.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bld-cond" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.stepId || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionSourcePatch(options, e.target.value, { includeNamespace: true })) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 source \u2014"), conditionState.sourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.field || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, conditionState.fieldOptions)), disabled: !conditionState.fields.length }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.fieldPlaceholder), conditionState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: conditionState.operatorValue, onChange: (e) => onChange(window.MobKitFlowController.basicConditionOperatorPatch(e.target.value, contract)) }, conditionState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(CondValue, { field: conditionState.field, value: conditionState.cond.val, onChange: (v) => onChange(window.MobKitFlowController.basicConditionValuePatch(v)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-cond__preview" }, "when ", /* @__PURE__ */ React.createElement("code", null, conditionState.previewLabel))));
 }
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null }) {
+function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null }) {
   const members = studio?.members || [];
   const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [selLocal, setSelLocal] = React.useState(null);
@@ -10519,6 +10567,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const hostRef = React.useRef(null);
   const panRef = React.useRef(null);
   const isFlow = mode === "flow";
+  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   const canvasView = Math.abs(view.ty) > 1200 ? { ...view, ty: 0 } : view;
   const update = (id, patch) => setFlow((f) => window.MobKitFlowController.flowStepUpdatePatch(f, id, patch, { members }));
   const reconcileInputParamReferences = (oldName, newName) => {
@@ -10588,7 +10637,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       setPicker({ open: false });
     }
   };
-  return /* @__PURE__ */ React.createElement("div", { className: "builder" + (isFlow ? " builder--flow" : "") }, /* @__PURE__ */ React.createElement("div", { className: "bld-stage", ref: hostRef, onMouseDown: onHostDown }, /* @__PURE__ */ React.createElement("div", { className: "bld-canvas", style: { transform: `translate(calc(-50% + ${canvasView.tx}px), ${canvasView.ty}px) scale(${canvasView.scale})` } }, /* @__PURE__ */ React.createElement("div", { className: "bld-start" }, "START"), /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement("div", { className: "builder" + (isFlow ? " builder--flow" : "") }, /* @__PURE__ */ React.createElement("div", { className: "bld-stage", ref: hostRef, onMouseDown: onHostDown }, /* @__PURE__ */ React.createElement("div", { className: "bld-canvas", style: { transform: `translate(calc(-50% + ${canvasView.tx}px), ${canvasView.ty}px) scale(${canvasView.scale})` } }, /* @__PURE__ */ React.createElement("div", { className: "bld-start" }, viewState.startLabel), /* @__PURE__ */ React.createElement(
     Lane,
     {
       studio,
@@ -10597,6 +10646,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       laneRef: { lane: "main" },
       sel,
       contract,
+      basicView,
       setSel: (id) => {
         setSel(id);
         setPicker({ open: false });
@@ -10621,22 +10671,23 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       onPick: (pick) => insertAt(picker.at, pick),
       onClose: () => setPicker({ open: false })
     }
-  ) : selStep ? /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, step: selStep, update, onDelete: () => removeStep(selStep.id), contract, toolCatalog, onInputParamReferenceChange: reconcileInputParamReferences }) : /* @__PURE__ */ React.createElement(EmptyPanel, null)));
+  ) : selStep ? /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, step: selStep, update, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, onInputParamReferenceChange: reconcileInputParamReferences }) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
 }
-function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-lane" }, steps.map((step, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: step.id }, /* @__PURE__ */ React.createElement(StepCard, { studio, step, index: i, selected: sel === step.id, onSelect: () => setSel(step.id), contract }), step.type === "branch" || step.type === "parallel" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Fork, { studio, mode, step, sel, setSel, openPicker, contract }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : step.type === "repeat" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(RepeatBody, { studio, mode, step, sel, setSel, openPicker, contract }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, onClick: () => openPicker({ ...laneRef, index: i + 1 }) }))), steps.length === 0 && /* @__PURE__ */ React.createElement(InsertBtn, { mode, onClick: () => openPicker({ ...laneRef, index: 0 }) }));
+function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract, basicView = null }) {
+  return /* @__PURE__ */ React.createElement("div", { className: "bld-lane" }, steps.map((step, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: step.id }, /* @__PURE__ */ React.createElement(StepCard, { studio, step, index: i, selected: sel === step.id, onSelect: () => setSel(step.id), contract }), step.type === "branch" || step.type === "parallel" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Fork, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : step.type === "repeat" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(RepeatBody, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, onClick: () => openPicker({ ...laneRef, index: i + 1 }) }))), steps.length === 0 && /* @__PURE__ */ React.createElement(InsertBtn, { mode, onClick: () => openPicker({ ...laneRef, index: 0 }) }));
 }
-function Fork({ studio, mode, step, sel, setSel, openPicker, contract }) {
+function Fork({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
   const forkState = window.MobKitFlowController.basicForkCanvasState({ step, contract });
-  return /* @__PURE__ */ React.createElement("div", { className: forkState.className }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lanes" }, forkState.lanes.map((l) => /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lane", key: l.id }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__label" }, l.label), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), l.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: l.id, index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: l.steps, laneRef: { lane: "branch", parentId: step.id, branchId: l.id }, sel, setSel, openPicker, contract }), forkState.isParallel && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" })))), forkState.isParallel ? /* @__PURE__ */ React.createElement(React.Fragment, null, forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail bld-fork__rail--join" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-join" }, forkState.joinLabel)) : (
+  return /* @__PURE__ */ React.createElement("div", { className: forkState.className }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lanes" }, forkState.lanes.map((l) => /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lane", key: l.id }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__label" }, l.label), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), l.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: l.id, index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: l.steps, laneRef: { lane: "branch", parentId: step.id, branchId: l.id }, sel, setSel, openPicker, contract, basicView }), forkState.isParallel && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" })))), forkState.isParallel ? /* @__PURE__ */ React.createElement(React.Fragment, null, forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail bld-fork__rail--join" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-join" }, forkState.joinLabel)) : (
     // Branch paths reconverge to a single downstream column so the
     // following main-lane step connects cleanly (no diagonal jump).
     forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail bld-fork__rail--join" })
   ));
 }
-function RepeatBody({ studio, mode, step, sel, setSel, openPicker, contract }) {
+function RepeatBody({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
   const repeatState = window.MobKitFlowController.basicRepeatCanvasState({ step, members: studio?.members || [], contract });
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-repeat" }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__rail" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__rail-glyph" }, "\u21BB")), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__frame" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__head" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__badge" }, "LOOP"), /* @__PURE__ */ React.createElement("span", { className: "bld-loop__meta" }, "while ", /* @__PURE__ */ React.createElement("strong", null, "not"), " (", repeatState.conditionLabel, ") \xB7 ", repeatState.maxIterationsLabel)), step.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: "body", index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: step.steps, laneRef: { lane: "branch", parentId: step.id, branchId: "body" }, sel, setSel, openPicker, contract }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__back" }, repeatState.loopBackLabel))), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__exit" }, repeatState.exitLabel));
+  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
+  return /* @__PURE__ */ React.createElement("div", { className: "bld-repeat" }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__rail" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__rail-glyph" }, "\u21BB")), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__frame" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__head" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__badge" }, viewState.loopBadge), /* @__PURE__ */ React.createElement("span", { className: "bld-loop__meta" }, "while ", /* @__PURE__ */ React.createElement("strong", null, "not"), " (", repeatState.conditionLabel, ") \xB7 ", repeatState.maxIterationsLabel)), step.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: "body", index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: step.steps, laneRef: { lane: "branch", parentId: step.id, branchId: "body" }, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__back" }, repeatState.loopBackLabel))), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__exit" }, repeatState.exitLabel));
 }
 function StepCard({ studio, step, index, selected, onSelect, contract }) {
   const cardState = window.MobKitFlowController.basicStepCardState({ step, members: studio?.members || [], contract });
@@ -10670,7 +10721,8 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose }) {
   }
   return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-search" }, /* @__PURE__ */ React.createElement("span", { className: "bld-search__icon" }, pickerState.searchIcon), /* @__PURE__ */ React.createElement("input", { className: "bld-search__input", placeholder: pickerState.searchPlaceholder, value: q, onChange: (e) => setQ(e.target.value), autoFocus: true })), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.membersLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.iconTint }, row.icon), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub)))), !pickerState.hasConfiguredMembers && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { padding: "4px 8px" } }, pickerState.emptyMembersHint)), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.flowLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.primitiveRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.tint }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.label, row.isNew && /* @__PURE__ */ React.createElement("span", { className: "bld-opt__new" }, pickerState.newBadgeLabel)), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub))))));
 }
-function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, onInputParamReferenceChange }) {
+function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, basicView = null, onInputParamReferenceChange }) {
+  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   if (step.type === "input") {
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract);
     const params = inputState.params;
@@ -10703,7 +10755,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
         onDelete: () => deleteParam(param.id),
         contract
       }
-    )), params.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "schema-builder__empty" }, inputState.emptyParamsParts.map((part) => part.kind === "code" ? /* @__PURE__ */ React.createElement("code", { key: part.key }, part.text) : /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text))))), /* @__PURE__ */ React.createElement(PanelTips, { items: inputState.tips }));
+    )), params.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "schema-builder__empty" }, inputState.emptyParamsParts.map((part) => part.kind === "code" ? /* @__PURE__ */ React.createElement("code", { key: part.key }, part.text) : /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text))))), /* @__PURE__ */ React.createElement(PanelTips, { title: viewState.tipsTitle, items: inputState.tips }));
   }
   if (step.type === "branch" || step.type === "parallel") {
     const branchState = window.MobKitFlowController.basicBranchParallelControlState({
@@ -10737,7 +10789,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
       contract
     });
     const setCond = (patch) => update(step.id, window.MobKitFlowController.flowStepRepeatConditionPatch(step, patch));
-    return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: repeatState.panelIcon, iconTint: "member", title: repeatState.panelTitle, sub: repeatState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: repeatState.loopIdLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input field__input--mono", value: step.loopId || "", placeholder: repeatState.loopIdPlaceholder, onChange: (e) => update(step.id, window.MobKitFlowController.flowStepLoopIdPatch(e.target.value)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-section-label", style: { marginTop: 16 } }, repeatState.conditionTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, repeatState.conditionIntro), !repeatState.hasBodyMembers ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { marginTop: 10, color: "var(--warn)" } }, repeatState.emptyBodyHint) : /* @__PURE__ */ React.createElement("div", { className: "bld-cond" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.cond.stepId || "", onChange: (e) => setCond(window.MobKitFlowController.basicConditionSourcePatch(repeatState.bodyMembers, e.target.value)) }, /* @__PURE__ */ React.createElement("option", { value: "" }, repeatState.memberPlaceholderLabel), repeatState.bodyMemberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.cond.field || "", onChange: (e) => setCond(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, repeatState.fieldOptions)), disabled: !repeatState.condSchema }, /* @__PURE__ */ React.createElement("option", { value: "" }, repeatState.fieldPlaceholder), repeatState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: repeatState.operatorValue, onChange: (e) => setCond(window.MobKitFlowController.basicConditionOperatorPatch(e.target.value, contract)) }, repeatState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(CondValue, { field: repeatState.condField, value: repeatState.cond.val, onChange: (v) => setCond(window.MobKitFlowController.basicConditionValuePatch(v)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-cond__preview" }, repeatState.previewLabel, " ", /* @__PURE__ */ React.createElement("code", null, repeatState.repeatUntilExpression || repeatState.previewFallback)), /* @__PURE__ */ React.createElement(Field, { label: repeatState.iterationInputLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.iterationInputValue, onChange: (e) => update(step.id, window.MobKitFlowController.flowStepIterationInputPatch(e.target.value, contract)) }, repeatState.iterationInputOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), repeatState.selectedIterationInput?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, repeatState.selectedIterationInput.reason), /* @__PURE__ */ React.createElement(Field, { label: repeatState.maxIterationsLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", placeholder: repeatState.maxIterationsPlaceholder, value: step.maxIterations ?? "", onChange: (e) => update(step.id, window.MobKitFlowController.flowStepMaxIterationsPatch(e.target.value)) })), /* @__PURE__ */ React.createElement(PanelTips, { items: repeatState.tips }));
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: repeatState.panelIcon, iconTint: "member", title: repeatState.panelTitle, sub: repeatState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: repeatState.loopIdLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input field__input--mono", value: step.loopId || "", placeholder: repeatState.loopIdPlaceholder, onChange: (e) => update(step.id, window.MobKitFlowController.flowStepLoopIdPatch(e.target.value)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-section-label", style: { marginTop: 16 } }, repeatState.conditionTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, repeatState.conditionIntro), !repeatState.hasBodyMembers ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { marginTop: 10, color: "var(--warn)" } }, repeatState.emptyBodyHint) : /* @__PURE__ */ React.createElement("div", { className: "bld-cond" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.cond.stepId || "", onChange: (e) => setCond(window.MobKitFlowController.basicConditionSourcePatch(repeatState.bodyMembers, e.target.value)) }, /* @__PURE__ */ React.createElement("option", { value: "" }, repeatState.memberPlaceholderLabel), repeatState.bodyMemberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.cond.field || "", onChange: (e) => setCond(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, repeatState.fieldOptions)), disabled: !repeatState.condSchema }, /* @__PURE__ */ React.createElement("option", { value: "" }, repeatState.fieldPlaceholder), repeatState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: repeatState.operatorValue, onChange: (e) => setCond(window.MobKitFlowController.basicConditionOperatorPatch(e.target.value, contract)) }, repeatState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(CondValue, { field: repeatState.condField, value: repeatState.cond.val, onChange: (v) => setCond(window.MobKitFlowController.basicConditionValuePatch(v)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-cond__preview" }, repeatState.previewLabel, " ", /* @__PURE__ */ React.createElement("code", null, repeatState.repeatUntilExpression || repeatState.previewFallback)), /* @__PURE__ */ React.createElement(Field, { label: repeatState.iterationInputLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.iterationInputValue, onChange: (e) => update(step.id, window.MobKitFlowController.flowStepIterationInputPatch(e.target.value, contract)) }, repeatState.iterationInputOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), repeatState.selectedIterationInput?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, repeatState.selectedIterationInput.reason), /* @__PURE__ */ React.createElement(Field, { label: repeatState.maxIterationsLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", placeholder: repeatState.maxIterationsPlaceholder, value: step.maxIterations ?? "", onChange: (e) => update(step.id, window.MobKitFlowController.flowStepMaxIterationsPatch(e.target.value)) })), /* @__PURE__ */ React.createElement(PanelTips, { title: viewState.tipsTitle, items: repeatState.tips }));
   }
   const memberStepState = window.MobKitFlowController.basicMemberStepControlState({
     step,
@@ -10797,11 +10849,15 @@ function PanelHead({ icon, iconTint, title, sub, onClose, deleteMode }) {
 function Field({ label, children }) {
   return /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 14 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, label), children);
 }
-function PanelTips({ items }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-tips" }, /* @__PURE__ */ React.createElement("div", { className: "bld-tips__head" }, "Tips"), /* @__PURE__ */ React.createElement("ul", null, items.map((t, i) => /* @__PURE__ */ React.createElement("li", { key: i }, t))));
+function PanelTips({ title, items }) {
+  return /* @__PURE__ */ React.createElement("div", { className: "bld-tips" }, /* @__PURE__ */ React.createElement("div", { className: "bld-tips__head" }, title), /* @__PURE__ */ React.createElement("ul", null, items.map((t, i) => /* @__PURE__ */ React.createElement("li", { key: i }, t))));
 }
-function EmptyPanel() {
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner bld-panel__empty" }, /* @__PURE__ */ React.createElement("div", { className: "bld-panel__title" }, "Build your mob flow"), /* @__PURE__ */ React.createElement("div", { className: "bld-panel__sub" }, "Pick a node to configure, or press ", /* @__PURE__ */ React.createElement("strong", null, "+"), " to add a member turn or flow primitive. The result is a ", /* @__PURE__ */ React.createElement("code", null, "mob.toml"), " flow."));
+function EmptyPanel({ state }) {
+  return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner bld-panel__empty" }, /* @__PURE__ */ React.createElement("div", { className: "bld-panel__title" }, state.emptyPanelTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-panel__sub" }, state.emptyPanelSubtitleParts.map((part) => {
+    if (part.kind === "code") return /* @__PURE__ */ React.createElement("code", { key: part.key }, part.text);
+    if (part.kind === "strong") return /* @__PURE__ */ React.createElement("strong", { key: part.key }, part.text);
+    return /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text);
+  })));
 }
 function kickoffSlotEmpty(flow) {
   const first = flow.steps[0];
@@ -11629,7 +11685,8 @@ function App() {
       onCloseSource: clearSourceProjection,
       contract,
       toolCatalog: catalogs.toolCatalog,
-      sourceView: catalogs.sourceView
+      sourceView: catalogs.sourceView,
+      basicView: catalogs.basicView
     }
   ), view === "agents" && /* @__PURE__ */ React.createElement(
     AgentsView,

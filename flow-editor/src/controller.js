@@ -595,6 +595,51 @@
     };
   }
 
+  function basicViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_basic_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      startLabel: String(view.start_label || "").trim(),
+      loopBadge: String(view.loop_badge || "").trim(),
+      tipsTitle: String(view.tips_title || "").trim(),
+      emptyPanelTitle: String(view.empty_panel_title || "").trim(),
+      emptyPanelSubtitleParts: basicViewPartsFromSchema(view.empty_panel_subtitle_parts),
+    };
+    return out.startLabel && out.loopBadge && out.tipsTitle && out.emptyPanelTitle && out.emptyPanelSubtitleParts.length
+      ? out
+      : null;
+  }
+
+  function basicViewPartsFromSchema(parts) {
+    if (!Array.isArray(parts)) return [];
+    return parts
+      .map((part, index) => {
+        if (!part || typeof part !== "object") return null;
+        const kind = String(part.kind || "text").trim();
+        const text = String(part.text || "");
+        if (!text) return null;
+        return {
+          key: String(part.key || `${kind}-${index}`),
+          kind: kind === "code" || kind === "strong" ? kind : "text",
+          text,
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function basicEditorViewState(basicView) {
+    const view = basicView && typeof basicView === "object" ? basicView : null;
+    return {
+      startLabel: String(view?.startLabel || ""),
+      loopBadge: String(view?.loopBadge || ""),
+      tipsTitle: String(view?.tipsTitle || ""),
+      emptyPanelTitle: String(view?.emptyPanelTitle || ""),
+      emptyPanelSubtitleParts: Array.isArray(view?.emptyPanelSubtitleParts)
+        ? view.emptyPanelSubtitleParts
+        : [],
+    };
+  }
+
   function agentSelectionState({ selection = null, members = [], schemas = [] } = {}) {
     if (!selection) return { kind: "empty", member: null, schema: null, missing: false };
     if (selection.kind === "schema") {
@@ -5908,6 +5953,7 @@
       mobDefinition: null,
       sourceView: null,
       agentView: null,
+      basicView: null,
       validationSource: "",
       contractMeta: {
         loaded: false,
@@ -5935,6 +5981,7 @@
       mobDefinition: schema?.mob_definition || null,
       sourceView: sourceViewFromSchema(schema),
       agentView: agentViewFromSchema(schema),
+      basicView: basicViewFromSchema(schema),
       validationSource: schema?.validation_source || "",
       contractMeta: {
         loaded: true,
@@ -8190,6 +8237,7 @@
     agentEditorControlState,
     agentDefinitionOptions,
     agentDefinitionAddControlState,
+    basicEditorViewState,
     schemaEditorControlState,
     memberPromptSkeleton,
     memberNamePatch,

@@ -339,6 +339,11 @@ assert.match(builder, /MobKitFlowController\.flowStepInsertPatch/, "Basic editor
 assert.match(builder, /flowStepInsertPatch\(f,\s*laneRef,\s*newStep,\s*\{\s*members\s*\}\)/, "Basic flow step inserts must pass real MobKit members into controller validation");
 assert.match(builder, /flowStepTemplate\(pick,\s*contract,\s*\{\s*flow\s*\}\)/, "Basic flow step templates must receive the current flow for controller-owned ID collision handling");
 assert.match(builder, /MobKitFlowController\.flowStepDeletePatch/, "Basic editor must delete flow steps through the controller plane");
+assert.match(controller, /mob_definition\?\.editor_basic_view/, "controller plane must hydrate Basic editor chrome from MobKit schema");
+assert.match(app, /<BuilderView[\s\S]*basicView=\{catalogs\.basicView\}/, "app shell must inject schema-backed Basic editor view state");
+assert.match(builder, /MobKitFlowController\.basicEditorViewState\(basicView\)/, "Basic editor must render chrome through controller-projected Basic view state");
+assert.match(builder, /viewState\.startLabel[\s\S]*viewState\.loopBadge[\s\S]*viewState\.tipsTitle[\s\S]*state\.emptyPanelTitle[\s\S]*state\.emptyPanelSubtitleParts/, "Basic editor start, loop, tips, and empty-panel copy must render through controller state");
+assert(!/>START<|>LOOP<|>Tips<|Build your mob flow|Pick a node to configure|member turn or flow primitive/.test(builder), "Basic editor chrome copy must not be composed locally");
 assert.match(builder, /MobKitFlowController\.flowStepTaskPatch/, "Basic editor must update input task text through the controller plane");
 assert.match(builder, /MobKitFlowController\.flowStepInstructionPatch/, "Basic editor must update member instruction text through the controller plane");
 assert.match(builder, /MobKitFlowController\.flowStepQuorumPatch/, "Basic editor must update quorum through the controller plane");
