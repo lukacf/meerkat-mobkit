@@ -765,6 +765,10 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       agents_heading: "AGENTS",
       schemas_heading: "SCHEMAS",
       add_schema_label: "+ new schema",
+      add_agent_title: "Create an agent from a MobKit profile-member definition.",
+      add_agent_unavailable_title: "MobKit schema contract has not provided agent definitions yet.",
+      add_agent_unavailable_label: "agents unavailable",
+      add_agent_placeholder_label: "+ new agent...",
       empty_title: "AGENT LIBRARY",
       empty_lines: [
         "Select an agent or schema on the left.",
@@ -1154,6 +1158,10 @@ assert.deepEqual(hydratedCatalogs.agentView, {
   agentsHeading: "AGENTS",
   schemasHeading: "SCHEMAS",
   addSchemaLabel: "+ new schema",
+  addAgentTitle: "Create an agent from a MobKit profile-member definition.",
+  addAgentUnavailableTitle: "MobKit schema contract has not provided agent definitions yet.",
+  addAgentUnavailableLabel: "agents unavailable",
+  addAgentPlaceholderLabel: "+ new agent...",
   emptyTitle: "AGENT LIBRARY",
   emptyLines: [
     "Select an agent or schema on the left.",
@@ -3790,7 +3798,7 @@ assert.deepEqual(controller.agentDefinitionOptions([{
   ],
 });
 assert.deepEqual(controller.agentDefinitionOptions([]), { hasDefinitions: false, optionRows: [] });
-assert.deepEqual(controller.agentDefinitionAddControlState([]), {
+assert.deepEqual(controller.agentDefinitionAddControlState([], hydratedCatalogs.agentView), {
   hasDefinitions: false,
   optionRows: [],
   controlClass: "agents-list__add",
@@ -3804,7 +3812,7 @@ assert.deepEqual(controller.agentDefinitionAddControlState([{
   id: "reviewer",
   role: "reviewer",
   label: "Quality Reviewer",
-}]), {
+}], hydratedCatalogs.agentView), {
   hasDefinitions: true,
   optionRows: [{
     value: "reviewer",

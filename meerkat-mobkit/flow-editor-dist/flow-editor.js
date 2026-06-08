@@ -623,6 +623,10 @@ window.MOBKIT_BOOT = {
       agentsHeading: String(view.agents_heading || "").trim(),
       schemasHeading: String(view.schemas_heading || "").trim(),
       addSchemaLabel: String(view.add_schema_label || "").trim(),
+      addAgentTitle: String(view.add_agent_title || "").trim(),
+      addAgentUnavailableTitle: String(view.add_agent_unavailable_title || "").trim(),
+      addAgentUnavailableLabel: String(view.add_agent_unavailable_label || "").trim(),
+      addAgentPlaceholderLabel: String(view.add_agent_placeholder_label || "").trim(),
       emptyTitle: String(view.empty_title || "").trim(),
       emptyLines: Array.isArray(view.empty_lines)
         ? view.empty_lines.map((line) => String(line || "").trim()).filter(Boolean)
@@ -631,6 +635,8 @@ window.MOBKIT_BOOT = {
       missingAgentLabel: String(view.missing_agent_label || "").trim(),
     };
     return out.agentsHeading && out.schemasHeading && out.addSchemaLabel
+      && out.addAgentTitle && out.addAgentUnavailableTitle
+      && out.addAgentUnavailableLabel && out.addAgentPlaceholderLabel
       && out.emptyTitle && out.emptyLines.length && out.missingSchemaLabel && out.missingAgentLabel
       ? out
       : null;
@@ -642,6 +648,10 @@ window.MOBKIT_BOOT = {
       agentsHeading: String(view?.agentsHeading || ""),
       schemasHeading: String(view?.schemasHeading || ""),
       addSchemaLabel: String(view?.addSchemaLabel || ""),
+      addAgentTitle: String(view?.addAgentTitle || ""),
+      addAgentUnavailableTitle: String(view?.addAgentUnavailableTitle || ""),
+      addAgentUnavailableLabel: String(view?.addAgentUnavailableLabel || ""),
+      addAgentPlaceholderLabel: String(view?.addAgentPlaceholderLabel || ""),
       emptyTitle: String(view?.emptyTitle || ""),
       emptyLines: Array.isArray(view?.emptyLines) ? view.emptyLines : [],
       missingSchemaLabel: String(view?.missingSchemaLabel || ""),
@@ -1827,7 +1837,8 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function agentDefinitionAddControlState(agentDefinitions = []) {
+  function agentDefinitionAddControlState(agentDefinitions = [], agentView = null) {
+    const view = agentViewForState(agentView);
     const definitionState = agentDefinitionOptions(agentDefinitions);
     return {
       ...definitionState,
@@ -1836,10 +1847,10 @@ window.MOBKIT_BOOT = {
         : "agents-list__add",
       disabled: !definitionState.hasDefinitions,
       title: definitionState.hasDefinitions
-        ? "Create an agent from a MobKit profile-member definition."
-        : "MobKit schema contract has not provided agent definitions yet.",
-      unavailableLabel: "agents unavailable",
-      placeholderOption: { value: "", label: "+ new agent..." },
+        ? view.addAgentTitle
+        : view.addAgentUnavailableTitle,
+      unavailableLabel: view.addAgentUnavailableLabel,
+      placeholderOption: { value: "", label: view.addAgentPlaceholderLabel },
       value: "",
     };
   }
@@ -11065,7 +11076,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions,
       /* @__PURE__ */ React.createElement("div", { className: "agents-list__col" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "agents-list__sub" }, row.subLabel)),
       /* @__PURE__ */ React.createElement("span", { className: row.placedClass }, row.placedLabel)
     );
-  }), /* @__PURE__ */ React.createElement(AddAgentControl, { studio, setAgentSel, agentDefinitions })), /* @__PURE__ */ React.createElement("div", { className: "agents-list__head agents-list__head--sub" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__title" }, listState.schemasHeading), /* @__PURE__ */ React.createElement("span", { className: "agents-list__count" }, listState.schemaCount)), /* @__PURE__ */ React.createElement("div", { className: "agents-list__scroll" }, listState.schemaRows.map((row) => {
+  }), /* @__PURE__ */ React.createElement(AddAgentControl, { studio, setAgentSel, agentDefinitions, agentView })), /* @__PURE__ */ React.createElement("div", { className: "agents-list__head agents-list__head--sub" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__title" }, listState.schemasHeading), /* @__PURE__ */ React.createElement("span", { className: "agents-list__count" }, listState.schemaCount)), /* @__PURE__ */ React.createElement("div", { className: "agents-list__scroll" }, listState.schemaRows.map((row) => {
     return /* @__PURE__ */ React.createElement(
       "button",
       {
@@ -11091,8 +11102,8 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions,
     listState.addSchemaLabel
   )));
 }
-function AddAgentControl({ studio, setAgentSel, agentDefinitions = [] }) {
-  const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions);
+function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], agentView = null }) {
+  const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
   const createFromDefinition = (definitionId) => {
     const result = window.MobKitFlowController.agentDefinitionAddByIdPatch(agentDefinitions, definitionId, {
       members: studio.members,

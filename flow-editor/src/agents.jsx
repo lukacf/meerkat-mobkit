@@ -60,7 +60,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions,
             </button>
           );
         })}
-        <AddAgentControl studio={studio} setAgentSel={setAgentSel} agentDefinitions={agentDefinitions} />
+        <AddAgentControl studio={studio} setAgentSel={setAgentSel} agentDefinitions={agentDefinitions} agentView={agentView} />
       </div>
 
       <div className="agents-list__head agents-list__head--sub">
@@ -98,8 +98,8 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions,
   );
 }
 
-function AddAgentControl({ studio, setAgentSel, agentDefinitions = [] }) {
-  const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions);
+function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], agentView = null }) {
+  const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
   const createFromDefinition = (definitionId) => {
     const result = window.MobKitFlowController.agentDefinitionAddByIdPatch(agentDefinitions, definitionId, {
       members: studio.members,

@@ -820,6 +820,10 @@ pub fn mobpack_schema_response() -> Value {
         "agents_heading": "AGENTS",
         "schemas_heading": "SCHEMAS",
         "add_schema_label": "+ new schema",
+        "add_agent_title": "Create an agent from a MobKit profile-member definition.",
+        "add_agent_unavailable_title": "MobKit schema contract has not provided agent definitions yet.",
+        "add_agent_unavailable_label": "agents unavailable",
+        "add_agent_placeholder_label": "+ new agent...",
         "empty_title": "AGENT LIBRARY",
         "empty_lines": [
             "Select an agent or schema on the left.",
@@ -15947,6 +15951,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_launch_view"]["fixed_budget_default_value"],
             json!(4096)
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["add_agent_placeholder_label"],
+            json!("+ new agent...")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["add_agent_unavailable_label"],
+            json!("agents unavailable")
         );
         assert_eq!(
             mob_definition["editor_schema_view"]["eyebrow"],

@@ -590,6 +590,10 @@
       agentsHeading: String(view.agents_heading || "").trim(),
       schemasHeading: String(view.schemas_heading || "").trim(),
       addSchemaLabel: String(view.add_schema_label || "").trim(),
+      addAgentTitle: String(view.add_agent_title || "").trim(),
+      addAgentUnavailableTitle: String(view.add_agent_unavailable_title || "").trim(),
+      addAgentUnavailableLabel: String(view.add_agent_unavailable_label || "").trim(),
+      addAgentPlaceholderLabel: String(view.add_agent_placeholder_label || "").trim(),
       emptyTitle: String(view.empty_title || "").trim(),
       emptyLines: Array.isArray(view.empty_lines)
         ? view.empty_lines.map((line) => String(line || "").trim()).filter(Boolean)
@@ -598,6 +602,8 @@
       missingAgentLabel: String(view.missing_agent_label || "").trim(),
     };
     return out.agentsHeading && out.schemasHeading && out.addSchemaLabel
+      && out.addAgentTitle && out.addAgentUnavailableTitle
+      && out.addAgentUnavailableLabel && out.addAgentPlaceholderLabel
       && out.emptyTitle && out.emptyLines.length && out.missingSchemaLabel && out.missingAgentLabel
       ? out
       : null;
@@ -609,6 +615,10 @@
       agentsHeading: String(view?.agentsHeading || ""),
       schemasHeading: String(view?.schemasHeading || ""),
       addSchemaLabel: String(view?.addSchemaLabel || ""),
+      addAgentTitle: String(view?.addAgentTitle || ""),
+      addAgentUnavailableTitle: String(view?.addAgentUnavailableTitle || ""),
+      addAgentUnavailableLabel: String(view?.addAgentUnavailableLabel || ""),
+      addAgentPlaceholderLabel: String(view?.addAgentPlaceholderLabel || ""),
       emptyTitle: String(view?.emptyTitle || ""),
       emptyLines: Array.isArray(view?.emptyLines) ? view.emptyLines : [],
       missingSchemaLabel: String(view?.missingSchemaLabel || ""),
@@ -1794,7 +1804,8 @@
     };
   }
 
-  function agentDefinitionAddControlState(agentDefinitions = []) {
+  function agentDefinitionAddControlState(agentDefinitions = [], agentView = null) {
+    const view = agentViewForState(agentView);
     const definitionState = agentDefinitionOptions(agentDefinitions);
     return {
       ...definitionState,
@@ -1803,10 +1814,10 @@
         : "agents-list__add",
       disabled: !definitionState.hasDefinitions,
       title: definitionState.hasDefinitions
-        ? "Create an agent from a MobKit profile-member definition."
-        : "MobKit schema contract has not provided agent definitions yet.",
-      unavailableLabel: "agents unavailable",
-      placeholderOption: { value: "", label: "+ new agent..." },
+        ? view.addAgentTitle
+        : view.addAgentUnavailableTitle,
+      unavailableLabel: view.addAgentUnavailableLabel,
+      placeholderOption: { value: "", label: view.addAgentPlaceholderLabel },
       value: "",
     };
   }

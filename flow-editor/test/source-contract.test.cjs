@@ -981,6 +981,10 @@ assert.match(agentsMainBlock, /selectionState\.emptyState\.title[\s\S]*selection
 assert.match(controller, /function schemaEditorControlState/, "controller plane must own schema detail usage projection");
 assert.match(controller, /fieldsTitle: `\$\{view\.fieldsTitlePrefix\} · \$\{fields\.length\}`/, "controller plane must render Schema Editor field-count title from MobKit view contract");
 assert.match(controller, /function agentDefinitionAddByIdPatch/, "controller plane must own agent definition id resolution");
+assert.match(controller, /addAgentPlaceholderLabel:\s*String\(view\.add_agent_placeholder_label/, "controller plane must hydrate Agent add-control labels from MobKit schema");
+assert.match(controller, /agentDefinitionAddControlState\(agentDefinitions = \[\], agentView = null\)/, "Agent add-control projection must accept schema-backed agent view state");
+assert.match(controller, /placeholderOption:\s*\{ value:\s*"", label:\s*view\.addAgentPlaceholderLabel \}/, "Agent add-control placeholder must render through schema-backed view state");
+assert.match(agents, /agentDefinitionAddControlState\(agentDefinitions, agentView\)/, "Agent Editor add-control must pass schema-backed agent view state into the controller projection");
 assert(!/const currentTools|toolCatalog\.find\(x => x\.id === tid\)|toolCatalog\.filter\(t => !currentTools\.includes\(t\.id\)\)/.test(agents), "Agent Editor must not assemble tool access rows or addable tool options locally");
 assert(!/meta\?\.desc|meta\?\.label|\+ add tool…|Configured tool source|choose from MobKit tool catalog|Authority is calculated from this allowlist|<option key=\{row\.id\} value=\{row\.id\}>/.test(agentEditorBlock), "Agent Editor must not compose tool row descriptions, option labels, or tool-control copy locally");
 assert(!/useMemo|new Map\(|skillIndex|selectedOutsideRealm\s*=|unavailableSelected\s*=|realms\.find\(r => r\.default\)|realm\?\.skills/.test(agentsSkillAccessBlock), "Agent Editor must not assemble skill realm indexes, selected chips, or unavailable skill refs locally");
