@@ -837,4 +837,3 @@ function findStep(steps, id) {
 }
 
 window.BuilderView = BuilderView;
-window.blankAuthoringFlow = blankAuthoringFlow;

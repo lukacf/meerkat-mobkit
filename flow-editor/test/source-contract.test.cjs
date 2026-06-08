@@ -64,6 +64,7 @@ for (const [name, source] of [
 
 assert.match(data, /window\.MOBKIT_BOOT\s*=/, "boot file should expose static layout metadata only");
 assert(!/\b(MEMBERS|INSTANCES|TOOL_CATALOG|AGENT_DEFINITIONS|SKILL_REALMS|MODELS|SCHEMAS|DEPLOY_DEFAULTS|CONTRACT_META)\b/.test(data), "boot data file must not define live MobKit catalogs");
+assert(!/TEMPLATE_META|template:\s*TEMPLATE_META|untitled-mob|mob\.toml/.test(data), "boot data file must not define local template summary metadata");
 assert.match(app, /const STARTER_FLOWS = \[\];/, "flow registry must hydrate samples from MobKit schema, not local seed flows");
 assert.equal(packageJson.scripts?.["test:visual-contract"], "node test/handoff-visual-contract.test.cjs", "package scripts must expose the handoff visual fidelity contract directly");
 
@@ -71,8 +72,8 @@ assert(!/\bconst\s+PRESETS\b/.test(builder), "builder must not expose local pres
 assert(!/window\.PRESETS\b/.test(builder), "builder must not export local preset flows");
 assert(!/presetFlow\b/.test(builder), "builder must not expose preset-flow constructors; only blank authoring bootstrap is local");
 assert(!/function\s+(?:freshFlow|blankAuthoringFlow)\b|name:\s*["']untitled-mob["'][\s\S]{0,120}inputParams:\s*\[\]/.test(builder), "Basic editor must not carry dead local prototype mobpack seeds");
+assert(!/window\.blankAuthoringFlow\s*=/.test(builder), "Basic editor must not export removed local blank authoring constructors");
 assert(!/presetFlow\b/.test(app), "app must not boot from local preset flows");
-assert.match(builder, /window\.blankAuthoringFlow\s*=/, "builder may expose only a blank authoring bootstrap");
 assert(!/window\.PRESETS\b/.test(app), "app must load sample flows from MobKit schema, not window.PRESETS");
 assert(!/j_graph_/.test(app), "graph editor must not create standalone join gates; joins must belong to MobKit branch/parallel shapes");
 assert(!/label:\s*gateKind === "join"/.test(app), "graph editor must not keep visual-only join fallback nodes");
@@ -89,6 +90,7 @@ assert.match(app, /<AgentsView[\s\S]*agentDefinitions=\{catalogs\.agentDefinitio
 assert.match(app, /<GraphEditor[\s\S]*grid=\{catalogs\.grid\}/, "app shell must inject layout data into Graph editor");
 assert.match(app, /<GraphEditor[\s\S]*contract=\{contract\}/, "app shell must inject the MobKit graph contract into Graph editor");
 assert.match(app, /<Inspector[\s\S]*templateSeed=\{catalogs\.template\}/, "app shell must inject MobKit summary seed into Inspector");
+assert.match(controller, /template:\s*graphTemplateSeedFromBlankMobpack\(blankMobpack\)/, "Graph template inspector seed must hydrate from the MobKit blank mobpack template");
 assert.match(app, /<Tweaks[\s\S]*modelCatalog=\{catalogs\.models\}/, "deploy settings UI must receive MobKit model catalog via props");
 assert.match(app, /setDeploySettings\(nextCatalogs\.deployDefaults\)/, "app shell must hydrate deploy defaults from MobKit schema");
 assert.match(app, /setMobSettings\(nextCatalogs\.mobDefaults\)/, "app shell must hydrate mob settings defaults from MobKit schema");

@@ -421,7 +421,7 @@ const emptyCatalogs = controller.emptyMobKitCatalogs(catalogBoot);
 assert.equal(emptyCatalogs.contractMeta.loaded, false);
 assert.equal(emptyCatalogs.grid, catalogBoot.grid);
 assert.equal(emptyCatalogs.cellXY, catalogBoot.cellXY);
-assert.equal(emptyCatalogs.template, catalogBoot.template);
+assert.equal(emptyCatalogs.template, null);
 assert.deepEqual(controller.schemaSkillRealms({ skill_realms: "starter" }), []);
 
 const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
@@ -450,6 +450,20 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
     profileBinding: "inline",
     runtimeMode: "turn_driven",
   }],
+  blank_mobpack: {
+    id: "blank",
+    name: "Blank",
+    version: "mobpack/v1",
+    stage: "valid",
+    trigger: "label · small-fix",
+    source: "mobkit/blank-mobpack",
+    document: {
+      name: "Blank",
+      mob_id: "blank",
+      flow: { name: "Blank", steps: [{ id: "work", type: "member", role: "m_worker" }] },
+      members: [{ id: "m_worker", role: "worker" }],
+    },
+  },
 }, catalogBoot);
 assert.equal(hydratedCatalogs.contractMeta.loaded, true);
 assert.equal(hydratedCatalogs.contractMeta.schemaVersion, "mobpack/v1");
@@ -460,6 +474,12 @@ assert.deepEqual(hydratedCatalogs.toolCatalog.map((tool) => tool.id), ["builtins
 assert.deepEqual(hydratedCatalogs.skillRealms.map((realm) => realm.id), ["mobkit/sample-mobpacks"]);
 assert.deepEqual(hydratedCatalogs.agentDefinitions.map((definition) => definition.id), ["sample_reviewer"]);
 assert.equal(hydratedCatalogs.grid, catalogBoot.grid);
+assert.deepEqual(hydratedCatalogs.template, {
+  name: "Blank",
+  repo: "mobkit/blank-mobpack",
+  version: "mobpack/v1",
+  triggers: { labels: ["label · small-fix"], default: false },
+});
 
 assert.deepEqual(controller.mergeSkillRealms([
   { id: "document", default: true, skills: [{ id: "mob.workpad", source: "inline" }, { id: "mob.review", source: "inline" }] },
@@ -4606,6 +4626,11 @@ assert.deepEqual(controller.graphTemplateInspectorState({
   ["edges", 1],
   ["frames", 1],
 ]);
+const emptyTemplateInspector = controller.graphTemplateInspectorState({ studio: {} });
+assert.equal(emptyTemplateInspector.name, "");
+assert.equal(emptyTemplateInspector.repo, "");
+assert.equal(emptyTemplateInspector.version, "");
+assert.deepEqual(emptyTemplateInspector.triggers.labels, []);
 const instanceControlState = controller.graphInstanceControlState({
   inst: graphProjectionInstances[1],
   instances: graphProjectionInstances,

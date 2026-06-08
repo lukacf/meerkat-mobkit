@@ -20,15 +20,7 @@ function cellXY(col, row) {
   };
 }
 
-const TEMPLATE_META = {
-  name: "untitled-mob",
-  repo: "mob.toml",
-  version: "draft",
-  triggers: { labels: [], default: false },
-};
-
 window.MOBKIT_BOOT = {
   GRID,
   cellXY,
-  template: TEMPLATE_META,
 };

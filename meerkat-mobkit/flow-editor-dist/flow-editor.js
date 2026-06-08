@@ -23,17 +23,9 @@ function cellXY(col, row) {
   };
 }
 
-const TEMPLATE_META = {
-  name: "untitled-mob",
-  repo: "mob.toml",
-  version: "draft",
-  triggers: { labels: [], default: false },
-};
-
 window.MOBKIT_BOOT = {
   GRID,
   cellXY,
-  template: TEMPLATE_META,
 };
 
 
@@ -3772,17 +3764,18 @@ window.MOBKIT_BOOT = {
   }
 
   function graphTemplateInspectorState({ studio = {}, template = null, templateSeed = null } = {}) {
-    const seed = templateSeed || { name: "untitled-mob", repo: "mob.toml", version: "draft", triggers: { labels: [], default: false } };
+    const seed = templateSeed && typeof templateSeed === "object" ? templateSeed : {};
     const members = Array.isArray(studio.members) ? studio.members : [];
     const instances = Array.isArray(studio.instances) ? studio.instances : [];
     const edges = Array.isArray(studio.edges) ? studio.edges : [];
     const frames = Array.isArray(studio.frames) ? studio.frames : [];
-    const labels = [template?.trigger || (Array.isArray(seed.triggers?.labels) ? seed.triggers.labels.join(", ") : "")];
+    const triggerLabel = template?.trigger || (Array.isArray(seed.triggers?.labels) ? seed.triggers.labels.join(", ") : "");
+    const labels = triggerLabel ? [triggerLabel] : [];
     const placedMembers = new Set(instances.filter((instance) => instance?.memberId).map((instance) => instance.memberId)).size;
     return {
-      name: template?.name || seed.name,
-      repo: template?.repo || seed.repo,
-      version: template?.version || seed.version,
+      name: template?.name || seed.name || "",
+      repo: template?.repo || seed.repo || "",
+      version: template?.version || seed.version || "",
       triggers: {
         labels,
         default: !!template?.defaultTrigger,
@@ -5925,18 +5918,19 @@ window.MOBKIT_BOOT = {
       },
       grid: boot.grid || null,
       cellXY: boot.cellXY || null,
-      template: boot.template || null,
+      template: null,
     };
   }
 
   function mobKitCatalogsFromSchema(schema, boot = {}) {
     const agentDefinitions = agentDefinitionsFromSchema(schema);
+    const blankMobpack = blankMobpackFromSchema(schema);
     return {
       models: modelCatalogFromSchema(schema),
       toolCatalog: toolCatalogFromSchema(schema),
       agentDefinitions,
       skillRealms: schemaSkillRealms(schema),
-      blankMobpack: blankMobpackFromSchema(schema),
+      blankMobpack,
       deployDefaults: deployDefaultsFromSchema(schema),
       mobDefaults: mobDefaultsFromSchema(schema),
       mobDefinition: schema?.mob_definition || null,
@@ -5949,7 +5943,7 @@ window.MOBKIT_BOOT = {
       },
       grid: boot.grid || null,
       cellXY: boot.cellXY || null,
-      template: boot.template || null,
+      template: graphTemplateSeedFromBlankMobpack(blankMobpack),
     };
   }
 
@@ -7411,6 +7405,24 @@ window.MOBKIT_BOOT = {
       source,
       document: blank.document,
       validation: blank.validation || null,
+    };
+  }
+
+  function graphTemplateSeedFromBlankMobpack(blankMobpack) {
+    if (!blankMobpack || typeof blankMobpack !== "object") return null;
+    const name = String(blankMobpack.name || "").trim();
+    const repo = String(blankMobpack.source || "").trim();
+    const version = String(blankMobpack.version || "").trim();
+    const trigger = String(blankMobpack.trigger || "").trim();
+    if (!name || !repo || !version) return null;
+    return {
+      name,
+      repo,
+      version,
+      triggers: {
+        labels: trigger ? [trigger] : [],
+        default: false,
+      },
     };
   }
 
@@ -10729,7 +10741,6 @@ function findStep(steps, id) {
   return null;
 }
 window.BuilderView = BuilderView;
-window.blankAuthoringFlow = blankAuthoringFlow;
 
 }
 
