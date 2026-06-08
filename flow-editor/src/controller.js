@@ -610,6 +610,59 @@
     };
   }
 
+  function schemaViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_schema_view;
+    if (!view || typeof view !== "object") return null;
+    const headers = view.header_labels && typeof view.header_labels === "object" ? view.header_labels : {};
+    const out = {
+      eyebrow: String(view.eyebrow || "").trim(),
+      descriptionTitle: String(view.description_title || "").trim(),
+      descriptionPlaceholder: String(view.description_placeholder || "").trim(),
+      fieldsTitlePrefix: String(view.fields_title_prefix || "").trim(),
+      addFieldLabel: String(view.add_field_label || "").trim(),
+      headerLabels: {
+        name: String(headers.name || "").trim(),
+        type: String(headers.type || "").trim(),
+        required: String(headers.required || "").trim(),
+        description: String(headers.description || "").trim(),
+        action: String(headers.action || "").trim(),
+      },
+      emptyFieldsHint: String(view.empty_fields_hint || "").trim(),
+      usedByPrefix: String(view.used_by_prefix || "").trim(),
+      emptyUsedByHint: String(view.empty_used_by_hint || "").trim(),
+      deleteLabel: String(view.delete_label || "").trim(),
+      deleteBlockedTitle: String(view.delete_blocked_title || "").trim(),
+    };
+    return out.eyebrow && out.descriptionTitle && out.fieldsTitlePrefix && out.addFieldLabel
+      && out.headerLabels.name && out.headerLabels.type && out.headerLabels.required && out.headerLabels.description
+      && out.emptyFieldsHint && out.usedByPrefix && out.emptyUsedByHint && out.deleteLabel && out.deleteBlockedTitle
+      ? out
+      : null;
+  }
+
+  function schemaViewForState(schemaView) {
+    const view = schemaView && typeof schemaView === "object" ? schemaView : null;
+    return {
+      eyebrow: String(view?.eyebrow || ""),
+      descriptionTitle: String(view?.descriptionTitle || ""),
+      descriptionPlaceholder: String(view?.descriptionPlaceholder || ""),
+      fieldsTitlePrefix: String(view?.fieldsTitlePrefix || ""),
+      addFieldLabel: String(view?.addFieldLabel || ""),
+      headerLabels: {
+        name: String(view?.headerLabels?.name || ""),
+        type: String(view?.headerLabels?.type || ""),
+        required: String(view?.headerLabels?.required || ""),
+        description: String(view?.headerLabels?.description || ""),
+        action: String(view?.headerLabels?.action || ""),
+      },
+      emptyFieldsHint: String(view?.emptyFieldsHint || ""),
+      usedByPrefix: String(view?.usedByPrefix || ""),
+      emptyUsedByHint: String(view?.emptyUsedByHint || ""),
+      deleteLabel: String(view?.deleteLabel || ""),
+      deleteBlockedTitle: String(view?.deleteBlockedTitle || ""),
+    };
+  }
+
   function basicViewFromSchema(schema) {
     const view = schema?.mob_definition?.editor_basic_view;
     if (!view || typeof view !== "object") return null;
@@ -882,7 +935,8 @@
     };
   }
 
-  function schemaEditorControlState({ schema, members = [] } = {}) {
+  function schemaEditorControlState({ schema, members = [], schemaView = null } = {}) {
+    const view = schemaViewForState(schemaView);
     const fields = Array.isArray(schema?.fields) ? schema.fields : [];
     const usedBy = (Array.isArray(members) ? members : [])
       .filter((member) => member?.schema === schema?.id)
@@ -899,28 +953,22 @@
       field,
     }));
     return {
-      eyebrow: "OUTPUT SCHEMA",
-      descriptionTitle: "DESCRIPTION",
-      descriptionPlaceholder: "What is this artifact and when is it emitted?",
-      fieldsTitle: `FIELDS · ${fields.length}`,
-      addFieldLabel: "+ field",
-      headerLabels: {
-        name: "NAME",
-        type: "TYPE",
-        required: "REQ",
-        description: "DESCRIPTION",
-        action: "",
-      },
+      eyebrow: view.eyebrow,
+      descriptionTitle: view.descriptionTitle,
+      descriptionPlaceholder: view.descriptionPlaceholder,
+      fieldsTitle: `${view.fieldsTitlePrefix} · ${fields.length}`,
+      addFieldLabel: view.addFieldLabel,
+      headerLabels: view.headerLabels,
       fieldRows,
-      emptyFieldsHint: "No fields yet. Click + field to start.",
+      emptyFieldsHint: view.emptyFieldsHint,
       usedBy,
       usedCount: usedBy.length,
       usageLabel: `used by ${usedBy.length} agent${usedBy.length === 1 ? "" : "s"}`,
-      usedByTitle: `USED BY · ${usedBy.length}`,
-      emptyUsedByHint: "Not yet referenced by any agent.",
-      deleteLabel: "DELETE",
+      usedByTitle: `${view.usedByPrefix} · ${usedBy.length}`,
+      emptyUsedByHint: view.emptyUsedByHint,
+      deleteLabel: view.deleteLabel,
       canDelete: usedBy.length === 0,
-      deleteTitle: usedBy.length > 0 ? "Unassign from agents first" : "",
+      deleteTitle: usedBy.length > 0 ? view.deleteBlockedTitle : "",
     };
   }
 
@@ -6114,6 +6162,7 @@
       mobDefinition: null,
       sourceView: null,
       agentView: null,
+      schemaView: null,
       basicView: null,
       graphView: null,
       graphTemplateView: null,
@@ -6144,6 +6193,7 @@
       mobDefinition: schema?.mob_definition || null,
       sourceView: sourceViewFromSchema(schema),
       agentView: agentViewFromSchema(schema),
+      schemaView: schemaViewFromSchema(schema),
       basicView: basicViewFromSchema(schema),
       graphView: graphViewFromSchema(schema),
       graphTemplateView: graphTemplateViewFromSchema(schema),

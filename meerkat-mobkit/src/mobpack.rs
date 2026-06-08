@@ -739,6 +739,25 @@ pub fn mobpack_schema_response() -> Value {
         "missing_schema_label": "Schema not found.",
         "missing_agent_label": "Agent not found."
     });
+    let editor_schema_view = json!({
+        "eyebrow": "OUTPUT SCHEMA",
+        "description_title": "DESCRIPTION",
+        "description_placeholder": "What is this artifact and when is it emitted?",
+        "fields_title_prefix": "FIELDS",
+        "add_field_label": "+ field",
+        "header_labels": {
+            "name": "NAME",
+            "type": "TYPE",
+            "required": "REQ",
+            "description": "DESCRIPTION",
+            "action": ""
+        },
+        "empty_fields_hint": "No fields yet. Click + field to start.",
+        "used_by_prefix": "USED BY",
+        "empty_used_by_hint": "Not yet referenced by any agent.",
+        "delete_label": "DELETE",
+        "delete_blocked_title": "Unassign from agents first"
+    });
     let editor_basic_view = json!({
         "start_label": "START",
         "loop_badge": "LOOP",
@@ -841,6 +860,7 @@ pub fn mobpack_schema_response() -> Value {
             }
         },
         "editor_schema_field_types": editor_schema_field_type_values(),
+        "editor_schema_view": editor_schema_view,
         "editor_schema_draft": {
             "document_path": "document.schemas[]",
             "archive_path": "schemas/<schema-id>.json",
@@ -15314,6 +15334,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_view"]["missing_agent_label"],
             json!("Agent not found.")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_view"]["eyebrow"],
+            json!("OUTPUT SCHEMA")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_view"]["fields_title_prefix"],
+            json!("FIELDS")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_view"]["header_labels"]["required"],
+            json!("REQ")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_view"]["delete_blocked_title"],
+            json!("Unassign from agents first")
         );
         assert_eq!(
             mob_definition["editor_basic_view"]["start_label"],

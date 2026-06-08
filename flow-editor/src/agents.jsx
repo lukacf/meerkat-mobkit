@@ -16,12 +16,12 @@
 //   { kind: "schema", id }  → SchemaEditor (visual, field-by-field)
 //   null                    → empty hint
 
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null }) {
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null, schemaView = null }) {
   return (
     <div className="agents-view">
       <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} agentDefinitions={agentDefinitions} agentView={agentView} />
       <div className="agents-view__main">
-        <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} />
+        <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} schemaView={schemaView} />
       </div>
     </div>
   );
@@ -140,7 +140,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [] }) {
   );
 }
 
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null }) {
+function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
     selection: agentSel,
     members: studio.members,
@@ -159,7 +159,7 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
   }
   if (selectionState.kind === "schema") {
     if (!selectionState.schema) return <div className="agents-empty">{selectionState.missingSchemaLabel}</div>;
-    return <SchemaEditor studio={studio} schema={selectionState.schema} setAgentSel={setAgentSel} contract={contract} flow={flow} setFlow={setFlow} />;
+    return <SchemaEditor studio={studio} schema={selectionState.schema} setAgentSel={setAgentSel} contract={contract} flow={flow} setFlow={setFlow} schemaView={schemaView} />;
   }
   if (!selectionState.member) return <div className="agents-empty">{selectionState.missingAgentLabel}</div>;
   return <AgentEditor studio={studio} member={selectionState.member} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} />;
@@ -475,11 +475,12 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
 }
 
 // ── Schema editor (visual, field-by-field) ──────────────────────────
-function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow }) {
+function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null }) {
   const change = (patch) => studio.updateSchema(schema.id, patch);
   const schemaState = window.MobKitFlowController.schemaEditorControlState({
     schema,
     members: studio.members,
+    schemaView,
   });
 
   const reconcileFieldReferences = (oldName, newName) => {

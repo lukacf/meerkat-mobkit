@@ -643,6 +643,59 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function schemaViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_schema_view;
+    if (!view || typeof view !== "object") return null;
+    const headers = view.header_labels && typeof view.header_labels === "object" ? view.header_labels : {};
+    const out = {
+      eyebrow: String(view.eyebrow || "").trim(),
+      descriptionTitle: String(view.description_title || "").trim(),
+      descriptionPlaceholder: String(view.description_placeholder || "").trim(),
+      fieldsTitlePrefix: String(view.fields_title_prefix || "").trim(),
+      addFieldLabel: String(view.add_field_label || "").trim(),
+      headerLabels: {
+        name: String(headers.name || "").trim(),
+        type: String(headers.type || "").trim(),
+        required: String(headers.required || "").trim(),
+        description: String(headers.description || "").trim(),
+        action: String(headers.action || "").trim(),
+      },
+      emptyFieldsHint: String(view.empty_fields_hint || "").trim(),
+      usedByPrefix: String(view.used_by_prefix || "").trim(),
+      emptyUsedByHint: String(view.empty_used_by_hint || "").trim(),
+      deleteLabel: String(view.delete_label || "").trim(),
+      deleteBlockedTitle: String(view.delete_blocked_title || "").trim(),
+    };
+    return out.eyebrow && out.descriptionTitle && out.fieldsTitlePrefix && out.addFieldLabel
+      && out.headerLabels.name && out.headerLabels.type && out.headerLabels.required && out.headerLabels.description
+      && out.emptyFieldsHint && out.usedByPrefix && out.emptyUsedByHint && out.deleteLabel && out.deleteBlockedTitle
+      ? out
+      : null;
+  }
+
+  function schemaViewForState(schemaView) {
+    const view = schemaView && typeof schemaView === "object" ? schemaView : null;
+    return {
+      eyebrow: String(view?.eyebrow || ""),
+      descriptionTitle: String(view?.descriptionTitle || ""),
+      descriptionPlaceholder: String(view?.descriptionPlaceholder || ""),
+      fieldsTitlePrefix: String(view?.fieldsTitlePrefix || ""),
+      addFieldLabel: String(view?.addFieldLabel || ""),
+      headerLabels: {
+        name: String(view?.headerLabels?.name || ""),
+        type: String(view?.headerLabels?.type || ""),
+        required: String(view?.headerLabels?.required || ""),
+        description: String(view?.headerLabels?.description || ""),
+        action: String(view?.headerLabels?.action || ""),
+      },
+      emptyFieldsHint: String(view?.emptyFieldsHint || ""),
+      usedByPrefix: String(view?.usedByPrefix || ""),
+      emptyUsedByHint: String(view?.emptyUsedByHint || ""),
+      deleteLabel: String(view?.deleteLabel || ""),
+      deleteBlockedTitle: String(view?.deleteBlockedTitle || ""),
+    };
+  }
+
   function basicViewFromSchema(schema) {
     const view = schema?.mob_definition?.editor_basic_view;
     if (!view || typeof view !== "object") return null;
@@ -915,7 +968,8 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function schemaEditorControlState({ schema, members = [] } = {}) {
+  function schemaEditorControlState({ schema, members = [], schemaView = null } = {}) {
+    const view = schemaViewForState(schemaView);
     const fields = Array.isArray(schema?.fields) ? schema.fields : [];
     const usedBy = (Array.isArray(members) ? members : [])
       .filter((member) => member?.schema === schema?.id)
@@ -932,28 +986,22 @@ window.MOBKIT_BOOT = {
       field,
     }));
     return {
-      eyebrow: "OUTPUT SCHEMA",
-      descriptionTitle: "DESCRIPTION",
-      descriptionPlaceholder: "What is this artifact and when is it emitted?",
-      fieldsTitle: `FIELDS · ${fields.length}`,
-      addFieldLabel: "+ field",
-      headerLabels: {
-        name: "NAME",
-        type: "TYPE",
-        required: "REQ",
-        description: "DESCRIPTION",
-        action: "",
-      },
+      eyebrow: view.eyebrow,
+      descriptionTitle: view.descriptionTitle,
+      descriptionPlaceholder: view.descriptionPlaceholder,
+      fieldsTitle: `${view.fieldsTitlePrefix} · ${fields.length}`,
+      addFieldLabel: view.addFieldLabel,
+      headerLabels: view.headerLabels,
       fieldRows,
-      emptyFieldsHint: "No fields yet. Click + field to start.",
+      emptyFieldsHint: view.emptyFieldsHint,
       usedBy,
       usedCount: usedBy.length,
       usageLabel: `used by ${usedBy.length} agent${usedBy.length === 1 ? "" : "s"}`,
-      usedByTitle: `USED BY · ${usedBy.length}`,
-      emptyUsedByHint: "Not yet referenced by any agent.",
-      deleteLabel: "DELETE",
+      usedByTitle: `${view.usedByPrefix} · ${usedBy.length}`,
+      emptyUsedByHint: view.emptyUsedByHint,
+      deleteLabel: view.deleteLabel,
       canDelete: usedBy.length === 0,
-      deleteTitle: usedBy.length > 0 ? "Unassign from agents first" : "",
+      deleteTitle: usedBy.length > 0 ? view.deleteBlockedTitle : "",
     };
   }
 
@@ -6147,6 +6195,7 @@ window.MOBKIT_BOOT = {
       mobDefinition: null,
       sourceView: null,
       agentView: null,
+      schemaView: null,
       basicView: null,
       graphView: null,
       graphTemplateView: null,
@@ -6177,6 +6226,7 @@ window.MOBKIT_BOOT = {
       mobDefinition: schema?.mob_definition || null,
       sourceView: sourceViewFromSchema(schema),
       agentView: agentViewFromSchema(schema),
+      schemaView: schemaViewFromSchema(schema),
       basicView: basicViewFromSchema(schema),
       graphView: graphViewFromSchema(schema),
       graphTemplateView: graphTemplateViewFromSchema(schema),
@@ -10089,8 +10139,8 @@ window.InlineSourceEditor = InlineSourceEditor;
 /* agents.jsx */
 
 {
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, agentDefinitions, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView })));
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null, schemaView = null }) {
+  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, agentDefinitions, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView, schemaView })));
 }
 function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions, agentView = null }) {
   const listState = window.MobKitFlowController.agentListState({
@@ -10179,7 +10229,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [] }) {
     definitionState.optionRows.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))
   );
 }
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null }) {
+function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
     selection: agentSel,
     members: studio.members,
@@ -10191,7 +10241,7 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
   }
   if (selectionState.kind === "schema") {
     if (!selectionState.schema) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingSchemaLabel);
-    return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow });
+    return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow, schemaView });
   }
   if (!selectionState.member) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingAgentLabel);
   return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog });
@@ -10359,11 +10409,12 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     editorState.schemaOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value || "none", value: option.value }, option.label))
   ), editorState.hasOutputSchema ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("ul", { className: "schema-fields schema-fields--preview" }, editorState.schemaPreviewRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => setAgentSel(editorState.editSchemaSelection) }, editorState.editSchemaLabel)) : /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, editorState.emptySchemaHint)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement(SkillAccess, { studio, member }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.usageTitle), editorState.placedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.emptyUsageHint), editorState.usageRows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.id, className: "usage-row usage-row--ro" }, /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.cellLabel), /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.laneLabel))))))));
 }
-function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow }) {
+function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null }) {
   const change = (patch) => studio.updateSchema(schema.id, patch);
   const schemaState = window.MobKitFlowController.schemaEditorControlState({
     schema,
-    members: studio.members
+    members: studio.members,
+    schemaView
   });
   const reconcileFieldReferences = (oldName, newName) => {
     if (!window.MobKitFlowController?.reconcileSchemaFieldReferences) return;
@@ -11888,7 +11939,8 @@ function App() {
       toolCatalog: catalogs.toolCatalog,
       modelCatalog: catalogs.models,
       agentDefinitions: catalogs.agentDefinitions,
-      agentView: catalogs.agentView
+      agentView: catalogs.agentView,
+      schemaView: catalogs.schemaView
     }
   ), creating && /* @__PURE__ */ React.createElement(
     NewFlowModal,

@@ -834,6 +834,11 @@ assert.match(agents, /MobKitFlowController\.schemaDefinitionAddPatch/, "Agent Ed
 assert.match(controller, /function schemaDefinitionAddPatch/, "controller plane must own schema draft creation");
 assert.match(agents, /MobKitFlowController\.schemaFieldAddPatch/, "Agent Editor must add schema fields through the controller plane");
 assert.match(controller, /mob_definition\?\.editor_schema_draft/, "schema draft creation must hydrate from the MobKit editor_schema_draft contract");
+assert.match(controller, /function schemaViewFromSchema/, "controller plane must hydrate Schema Editor view contract from MobKit schema");
+assert.match(controller, /mob_definition\?\.editor_schema_view/, "Schema Editor view copy must come from MobKit editor_schema_view");
+assert.match(app, /<AgentsView[\s\S]*schemaView=\{catalogs\.schemaView\}/, "app shell must inject MobKit Schema Editor view state");
+assert.match(agentsMainBlock, /schemaView(?:\s*=\s*null)?[\s\S]*<SchemaEditor[\s\S]*schemaView=\{schemaView\}/, "Agent main pane must pass schema-backed Schema Editor view state");
+assert.match(schemaEditorBlock, /schemaEditorControlState\(\{[\s\S]*schemaView/, "Schema detail pane must pass schema-backed view state into controller projection");
 assert(!/`Artifact|["']field_one["']|["']new_field["']/.test(controller), "controller must not own local schema id or field-name draft defaults");
 assert.match(agents, /MobKitFlowController\.schemaFieldUpdatePatch/, "Agent Editor must update schema fields through the controller plane");
 assert.match(agents, /MobKitFlowController\.schemaFieldDeleteCascadePatch/, "Agent Editor must delete schema fields through the controller cascade plane");
@@ -915,7 +920,7 @@ assert.match(agentsListBlock, /listState\.agentsHeading[\s\S]*listState\.schemas
 assert.match(agentsMainBlock, /agentView(?:\s*=\s*null)?[\s\S]*MobKitFlowController\.agentSelectionState\(\{[\s\S]*agentView/, "Agent main pane must pass schema-backed view state into controller selection projection");
 assert.match(agentsMainBlock, /selectionState\.emptyState\.title[\s\S]*selectionState\.emptyState\.lines\.map[\s\S]*selectionState\.missingSchemaLabel[\s\S]*selectionState\.missingAgentLabel/, "Agent main empty and missing states must render through controller state");
 assert.match(controller, /function schemaEditorControlState/, "controller plane must own schema detail usage projection");
-assert.match(controller, /fieldsTitle: `FIELDS · \$\{fields\.length\}`/, "controller plane must own Schema Editor field-count title");
+assert.match(controller, /fieldsTitle: `\$\{view\.fieldsTitlePrefix\} · \$\{fields\.length\}`/, "controller plane must render Schema Editor field-count title from MobKit view contract");
 assert.match(controller, /function agentDefinitionAddByIdPatch/, "controller plane must own agent definition id resolution");
 assert(!/const currentTools|toolCatalog\.find\(x => x\.id === tid\)|toolCatalog\.filter\(t => !currentTools\.includes\(t\.id\)\)/.test(agents), "Agent Editor must not assemble tool access rows or addable tool options locally");
 assert(!/meta\?\.desc|meta\?\.label|\+ add tool…|Configured tool source|choose from MobKit tool catalog|Authority is calculated from this allowlist|<option key=\{row\.id\} value=\{row\.id\}>/.test(agentEditorBlock), "Agent Editor must not compose tool row descriptions, option labels, or tool-control copy locally");
