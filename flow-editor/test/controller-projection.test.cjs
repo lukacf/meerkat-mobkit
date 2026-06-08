@@ -1907,6 +1907,7 @@ assert.throws(
     source: "mobkit/mobpack-profile-member",
     id: "partial",
     role: "partial",
+    name: "Partial",
   }, []),
   /profileBinding contract|runtimeMode contract/,
 );
@@ -1921,6 +1922,42 @@ assert.throws(
     runtimeMode: "turn_driven",
   }, []),
   /model contract/,
+);
+assert.throws(
+  () => controller.memberFromAgentDefinition({
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/mobpack-profile-member",
+    role: "missing_id",
+    name: "Missing Id",
+    model: "gpt-5.5",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+  }, []),
+  /id contract/,
+);
+assert.throws(
+  () => controller.memberFromAgentDefinition({
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/mobpack-profile-member",
+    id: "missing_role",
+    name: "Missing Role",
+    model: "gpt-5.5",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+  }, []),
+  /role contract/,
+);
+assert.throws(
+  () => controller.memberFromAgentDefinition({
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/mobpack-profile-member",
+    id: "missing_name",
+    role: "missing_name",
+    model: "gpt-5.5",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+  }, []),
+  /name contract/,
 );
 
 const agentContract = {

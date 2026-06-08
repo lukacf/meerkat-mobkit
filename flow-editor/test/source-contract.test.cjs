@@ -767,6 +767,8 @@ assert(!/runtimeMode:\s*(?:String\([^)]*["']turn_driven|source\.runtimeMode\s*\|
 assert.match(controller, /agentDefinitionsFromSchema[\s\S]*\.filter\(\(template\) => String\(template\.model \|\| ""\)\.trim\(\)\)/, "Agent definitions must hydrate only real model-backed MobKit profiles");
 assert.match(controller, /missing its model contract/, "controller plane must reject API-backed agent definitions without a model");
 assert(!/memberFromAgentDefinition[\s\S]{0,900}model:\s*source\.model \|\| ""/.test(controller), "Agent definition member creation must not repair missing models into empty strings");
+assert.match(controller, /missing its id contract[\s\S]*missing its role contract[\s\S]*missing its name contract/, "controller plane must reject API-backed agent definitions without schema-provided identity");
+assert(!/memberFromAgentDefinition[\s\S]{0,1200}slug\(source\.role \|\| source\.name \|\| ["']member["']|memberFromAgentDefinition[\s\S]{0,1200}uniqueMemberName\(source\.name \|\| source\.label \|\| baseRole/.test(controller), "Agent definition member creation must not repair missing role/name into generic members");
 assert(!/member\.profileBinding\s*\|\|\s*\(member\.realmProfile \? ["']realm_profile["'] : ["']inline["']\)/.test(agents), "Agent Editor must not display missing profileBinding as inline");
 assert(!/const\s+defaultRuntimeMode[\s\S]{0,120}member\.runtimeMode\s*\|\|\s*defaultRuntimeMode/.test(agents), "Agent Editor must not display missing runtimeMode as turn_driven");
 assert.match(controller, /missing profile binding/, "controller plane must expose missing profile binding explicitly");

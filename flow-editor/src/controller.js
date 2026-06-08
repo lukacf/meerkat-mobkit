@@ -7693,6 +7693,17 @@
     if (!String(source.source || source.sourceMobpack || "").trim()) {
       throw new Error("MobKit agent definition is missing its source contract.");
     }
+    if (!String(source.id || "").trim()) {
+      throw new Error("MobKit agent definition is missing its id contract.");
+    }
+    const role = String(source.role || "").trim();
+    if (!role) {
+      throw new Error("MobKit agent definition is missing its role contract.");
+    }
+    const displayName = String(source.name || source.label || "").trim();
+    if (!displayName) {
+      throw new Error("MobKit agent definition is missing its name contract.");
+    }
     if (!String(source.profileBinding || "").trim()) {
       throw new Error("MobKit agent definition is missing its profileBinding contract.");
     }
@@ -7703,16 +7714,16 @@
     if (!model) {
       throw new Error("MobKit agent definition is missing its model contract.");
     }
-    const baseRole = slug(source.role || source.name || "member", "member").replace(/-/g, "_");
+    const baseRole = slug(role, "member").replace(/-/g, "_");
     let id = `m_${baseRole}`;
     let index = 2;
     const used = new Set((existingMembers || []).map((member) => member.id));
     while (used.has(id)) id = `m_${baseRole}_${index++}`;
-    const name = uniqueMemberName(source.name || source.label || baseRole, existingMembers);
+    const name = uniqueMemberName(displayName, existingMembers);
     return {
       id,
       name,
-      role: source.role || baseRole,
+      role,
       model,
       schema: source.schema || "",
       skills: Array.isArray(source.skills) ? [...source.skills] : [],
