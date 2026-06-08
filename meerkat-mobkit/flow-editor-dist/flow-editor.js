@@ -1198,6 +1198,72 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function viewStringMapFromSchema(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(
+      Object.entries(value)
+        .map(([key, label]) => [String(key || "").trim(), String(label || "").trim()])
+        .filter(([key, label]) => key && label),
+    );
+  }
+
+  function launchViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_launch_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      launchTitle: String(view.launch_title || "").trim(),
+      graphLaunchTitle: String(view.graph_launch_title || "").trim(),
+      resumeSessionLabel: String(view.resume_session_label || "").trim(),
+      resumeSessionPlaceholder: String(view.resume_session_placeholder || "").trim(),
+      forkSourceLabel: String(view.fork_source_label || "").trim(),
+      forkContextLabel: String(view.fork_context_label || "").trim(),
+      graphForkContextLabel: String(view.graph_fork_context_label || "").trim(),
+      budgetPolicyLabel: String(view.budget_policy_label || "").trim(),
+      fixedBudgetLabel: String(view.fixed_budget_label || "").trim(),
+      fixedBudgetDefaultValue: Number(view.fixed_budget_default_value),
+      unsupportedLabelSeparator: String(view.unsupported_label_separator || ""),
+      unsupportedReasonPrefix: String(view.unsupported_reason_prefix || ""),
+      unsupportedReasonSuffix: String(view.unsupported_reason_suffix || ""),
+      launchModesContractLabel: String(view.launch_modes_contract_label || "").trim(),
+      forkContextsContractLabel: String(view.fork_contexts_contract_label || "").trim(),
+      budgetSplitPoliciesContractLabel: String(view.budget_split_policies_contract_label || "").trim(),
+      launchModeLabels: viewStringMapFromSchema(view.launch_mode_labels),
+      forkContextLabels: viewStringMapFromSchema(view.fork_context_labels),
+      budgetSplitPolicyLabels: viewStringMapFromSchema(view.budget_split_policy_labels),
+    };
+    const stringsOk = Object.entries(out).every(([key, value]) => {
+      if (typeof value === "number") return Number.isFinite(value) && value > 0;
+      if (value && typeof value === "object") return Object.keys(value).length > 0;
+      return !!value;
+    });
+    return stringsOk ? out : null;
+  }
+
+  function launchViewForState(launchView) {
+    const view = launchView && typeof launchView === "object" ? launchView : null;
+    return {
+      launchTitle: String(view?.launchTitle || ""),
+      graphLaunchTitle: String(view?.graphLaunchTitle || ""),
+      resumeSessionLabel: String(view?.resumeSessionLabel || ""),
+      resumeSessionPlaceholder: String(view?.resumeSessionPlaceholder || ""),
+      forkSourceLabel: String(view?.forkSourceLabel || ""),
+      forkContextLabel: String(view?.forkContextLabel || ""),
+      graphForkContextLabel: String(view?.graphForkContextLabel || ""),
+      budgetPolicyLabel: String(view?.budgetPolicyLabel || ""),
+      fixedBudgetLabel: String(view?.fixedBudgetLabel || ""),
+      fixedBudgetDefaultValue: Number(view?.fixedBudgetDefaultValue || 0),
+      unsupportedLabelSeparator: String(view?.unsupportedLabelSeparator || ""),
+      unsupportedReasonPrefix: String(view?.unsupportedReasonPrefix || ""),
+      unsupportedReasonSuffix: String(view?.unsupportedReasonSuffix || ""),
+      launchModesContractLabel: String(view?.launchModesContractLabel || ""),
+      forkContextsContractLabel: String(view?.forkContextsContractLabel || ""),
+      budgetSplitPoliciesContractLabel: String(view?.budgetSplitPoliciesContractLabel || ""),
+      launchModeLabels: view?.launchModeLabels && typeof view.launchModeLabels === "object" ? view.launchModeLabels : {},
+      forkContextLabels: view?.forkContextLabels && typeof view.forkContextLabels === "object" ? view.forkContextLabels : {},
+      budgetSplitPolicyLabels: view?.budgetSplitPolicyLabels && typeof view.budgetSplitPolicyLabels === "object" ? view.budgetSplitPolicyLabels : {},
+    };
+  }
+
   function graphTemplateViewFromSchema(schema) {
     const view = schema?.mob_definition?.editor_graph_template_view;
     if (!view || typeof view !== "object") return null;
@@ -4142,12 +4208,12 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function basicMemberStepControlState({ step, flow, members = [], contract, basicView = null } = {}) {
+  function basicMemberStepControlState({ step, flow, members = [], contract, basicView = null, launchView = null } = {}) {
     const view = basicEditorViewState(basicView);
     const sourceMembers = Array.isArray(members) ? members : [];
     const memberById = new Map(sourceMembers.map((member) => [member.id, member]));
     const member = step?.role ? memberById.get(step.role) || null : null;
-    const launchState = launchModeControlState(step, contract);
+    const launchState = launchModeControlState(step, contract, launchView);
     const launchSources = collectFlowMemberSteps(flow?.steps || [])
       .filter((candidate) => candidate.id !== step?.id && candidate.role);
     const launchSourceOptions = launchSources.map((source) => {
@@ -6038,7 +6104,8 @@ window.MOBKIT_BOOT = {
     return { kind, ...budgetPatch };
   }
 
-  function launchModeControlState(source, contract) {
+  function launchModeControlState(source, contract, launchView = null) {
+    const view = launchViewForState(launchView);
     const authoredLaunchMode = source && typeof source === "object"
       ? (source.launchMode ?? source.launch_mode)
       : null;
@@ -6055,22 +6122,22 @@ window.MOBKIT_BOOT = {
       || normalizeBudgetSplitPolicy(defaultBudgetSplitKind ? { kind: defaultBudgetSplitKind } : null)
       || { kind: "" };
     const budgetLaunchPatch = authoredBudgetSplitPolicy ? { budgetSplitPolicy: authoredBudgetSplitPolicy } : {};
-    const launchOptions = launchModeOptions(contract, launchKind);
-    const budgetOptions = budgetSplitPolicyOptions(contract, budgetSplitPolicy.kind);
+    const launchOptions = launchModeOptions(contract, launchKind, view);
+    const budgetOptions = budgetSplitPolicyOptions(contract, budgetSplitPolicy.kind, view);
     const defaultForkContext = contractDefaultValue(contract, "fork_context");
     const forkContextValue = normalizeForkContext(launchMode.context || defaultForkContext);
-    const forkOptions = forkContextOptions(contract, forkContextValue);
-    const fixedLimitValue = budgetSplitPolicy.limit || 4096;
+    const forkOptions = forkContextOptions(contract, forkContextValue, view);
+    const fixedLimitValue = budgetSplitPolicy.limit || view.fixedBudgetDefaultValue;
     return {
-      launchTitle: "Launch mode",
-      graphLaunchTitle: "LAUNCH MODE · this position",
-      resumeSessionLabel: "Bridge session",
-      resumeSessionPlaceholder: "session id",
-      forkSourceLabel: "Fork from",
-      forkContextLabel: "Fork context",
-      graphForkContextLabel: "Context",
-      budgetPolicyLabel: "Budget split policy",
-      fixedBudgetLabel: "Fixed token budget",
+      launchTitle: view.launchTitle,
+      graphLaunchTitle: view.graphLaunchTitle,
+      resumeSessionLabel: view.resumeSessionLabel,
+      resumeSessionPlaceholder: view.resumeSessionPlaceholder,
+      forkSourceLabel: view.forkSourceLabel,
+      forkContextLabel: view.forkContextLabel,
+      graphForkContextLabel: view.graphForkContextLabel,
+      budgetPolicyLabel: view.budgetPolicyLabel,
+      fixedBudgetLabel: view.fixedBudgetLabel,
       fixedBudgetValue: fixedLimitValue,
       launchMode,
       launchKind,
@@ -6214,7 +6281,16 @@ window.MOBKIT_BOOT = {
     return contexts.includes(normalized);
   }
 
-  function launchModeOptions(contract, currentKind) {
+  function launchOptionLabel(labels, value, view, contractLabel) {
+    return labels?.[value] || `${value}${view.unsupportedLabelSeparator}${contractLabel}`;
+  }
+
+  function launchUnsupportedReason(view, contractLabel) {
+    return `${view.unsupportedReasonPrefix}${contractLabel}${view.unsupportedReasonSuffix}`;
+  }
+
+  function launchModeOptions(contract, currentKind, launchView = null) {
+    const view = launchViewForState(launchView);
     const contractModes = Array.isArray(contract?.mob_definition?.launch_modes) && contract.mob_definition.launch_modes.length
       ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind)
       : [];
@@ -6222,18 +6298,13 @@ window.MOBKIT_BOOT = {
     const currentSource = currentKind || contractDefaultValue(contract, "launch_mode");
     const current = currentSource ? canonicalLaunchModeKind(currentSource) : "";
     if (current && !modes.includes(current)) modes.push(current);
-    const labels = {
-      Fresh: "Fresh — empty context",
-      Resume: "Resume — existing bridge session",
-      Fork: "Fork — copy context from another step",
-    };
     return modes.map((mode) => {
       const supported = contractModes.includes(mode);
       return {
         value: mode,
-        label: labels[mode] || `${mode} — not in MobKit launch_modes`,
+        label: launchOptionLabel(view.launchModeLabels, mode, view, view.launchModesContractLabel),
         disabled: !supported,
-        reason: supported ? "" : "Unsupported by the MobKit launch_modes contract.",
+        reason: supported ? "" : launchUnsupportedReason(view, view.launchModesContractLabel),
       };
     });
   }
@@ -6377,7 +6448,8 @@ window.MOBKIT_BOOT = {
     return policies.includes(canonicalKind);
   }
 
-  function budgetSplitPolicyOptions(contract, currentKind) {
+  function budgetSplitPolicyOptions(contract, currentKind, launchView = null) {
+    const view = launchViewForState(launchView);
     const contractPolicies = Array.isArray(contract?.mob_definition?.budget_split_policies) && contract.mob_definition.budget_split_policies.length
       ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind)
       : [];
@@ -6385,19 +6457,13 @@ window.MOBKIT_BOOT = {
     const currentSource = currentKind || contractDefaultValue(contract, "budget_split_policy");
     const current = currentSource ? canonicalBudgetSplitPolicyKind(currentSource) : "";
     if (current && !policies.includes(current)) policies.push(current);
-    const labels = {
-      Equal: "Equal — split remaining budget evenly",
-      Proportional: "Proportional — MobKit proportional split",
-      Remaining: "Remaining — grant all remaining budget",
-      Fixed: "Fixed — token cap for this spawn",
-    };
     return policies.map((policy) => {
       const supported = contractPolicies.includes(policy);
       return {
         value: policy,
-        label: labels[policy] || `${policy} — not in MobKit budget_split_policies`,
+        label: launchOptionLabel(view.budgetSplitPolicyLabels, policy, view, view.budgetSplitPoliciesContractLabel),
         disabled: !supported,
-        reason: supported ? "" : "Unsupported by the MobKit budget_split_policies contract.",
+        reason: supported ? "" : launchUnsupportedReason(view, view.budgetSplitPoliciesContractLabel),
       };
     });
   }
@@ -6660,6 +6726,7 @@ window.MOBKIT_BOOT = {
       agentAccessView: null,
       deployView: null,
       settingsView: null,
+      launchView: null,
       schemaView: null,
       basicView: null,
       graphView: null,
@@ -6695,6 +6762,7 @@ window.MOBKIT_BOOT = {
       agentAccessView: agentAccessViewFromSchema(schema),
       deployView: deployViewFromSchema(schema),
       settingsView: settingsViewFromSchema(schema),
+      launchView: launchViewFromSchema(schema),
       schemaView: schemaViewFromSchema(schema),
       basicView: basicViewFromSchema(schema),
       graphView: graphViewFromSchema(schema),
@@ -7078,19 +7146,24 @@ window.MOBKIT_BOOT = {
     );
   }
 
-  function forkContextOptions(contract, currentContext) {
+  function forkContextOptions(contract, currentContext, launchView = null) {
+    const view = launchViewForState(launchView);
+    const contractValues = Array.isArray(contract?.mob_definition?.fork_contexts)
+      ? contract.mob_definition.fork_contexts.map((value) => normalizeForkContext(value)).filter(Boolean)
+      : [];
+    const options = contractValues.length ? [...contractValues] : [];
     const currentSource = currentContext || contractDefaultValue(contract, "fork_context");
     const current = currentSource ? normalizeForkContext(currentSource) : "";
-    return simpleContractOptions(
-      contract?.mob_definition?.fork_contexts,
-      current,
-      {
-        full_history: "full_history — entire transcript",
-        last_messages: "last_messages — last N messages",
-        FullHistory: "FullHistory — legacy alias for full_history",
-      },
-      "mob_definition.fork_contexts"
-    );
+    if (current && !options.includes(current)) options.push(current);
+    return options.map((value) => {
+      const supported = contractValues.includes(value);
+      return {
+        value,
+        label: launchOptionLabel(view.forkContextLabels, value, view, view.forkContextsContractLabel),
+        disabled: !supported,
+        reason: supported ? "" : launchUnsupportedReason(view, view.forkContextsContractLabel),
+      };
+    });
   }
 
   function graphGateKindOptions(contract, currentKind) {
@@ -10330,7 +10403,7 @@ window.GraphEditor = GraphEditor;
 /* inspector.jsx */
 
 {
-function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, flow, contract }) {
+function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, launchView: launchView2 = null, flow, contract }) {
   const selectionState = window.MobKitFlowController.graphSelectionState({
     selection,
     instances: studio.instances,
@@ -10430,7 +10503,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
       clearSelection();
     } }, terminalState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: terminalState.labelValue, onChange: (e) => studio.updateInstance(inst.id, window.MobKitFlowController.graphInstanceLabelPatch(e.target.value)) })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: terminalState.terminalKind, onChange: (e) => studio.updateInstance(inst.id, window.MobKitFlowController.graphTerminalKindPatch(e.target.value, contract)) }, terminalState.terminalKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), terminalState.selectedTerminalKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, terminalState.selectedTerminalKind.reason))));
   }
-  const launchState = window.MobKitFlowController.launchModeControlState(inst, contract);
+  const launchState = window.MobKitFlowController.launchModeControlState(inst, contract, launchView);
   return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, instanceState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, instanceState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, instanceState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
     studio.deleteInstance(inst.id);
     clearSelection();
@@ -11248,7 +11321,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
   });
   return /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card" }, /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card__head" }, "Branch ", index + 1), !conditionState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, "Add an upstream member with an output schema before configuring this branch.") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bld-cond" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.stepId || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionSourcePatch(options, e.target.value, { includeNamespace: true })) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 source \u2014"), conditionState.sourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.field || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, conditionState.fieldOptions)), disabled: !conditionState.fields.length }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.fieldPlaceholder), conditionState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: conditionState.operatorValue, onChange: (e) => onChange(window.MobKitFlowController.basicConditionOperatorPatch(e.target.value, contract)) }, conditionState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(CondValue, { field: conditionState.field, value: conditionState.cond.val, onChange: (v) => onChange(window.MobKitFlowController.basicConditionValuePatch(v)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-cond__preview" }, "when ", /* @__PURE__ */ React.createElement("code", null, conditionState.previewLabel))));
 }
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null }) {
+function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null }) {
   const members = studio?.members || [];
   const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [selLocal, setSelLocal] = React.useState(null);
@@ -11365,7 +11438,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       onPick: (pick) => insertAt(picker.at, pick),
       onClose: () => setPicker({ open: false })
     }
-  ) : selStep ? /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, step: selStep, update, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, onInputParamReferenceChange: reconcileInputParamReferences }) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
+  ) : selStep ? /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, step: selStep, update, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, launchView, onInputParamReferenceChange: reconcileInputParamReferences }) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
 }
 function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract, basicView = null }) {
   return /* @__PURE__ */ React.createElement("div", { className: "bld-lane" }, steps.map((step, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: step.id }, /* @__PURE__ */ React.createElement(StepCard, { studio, step, index: i, selected: sel === step.id, onSelect: () => setSel(step.id), contract }), step.type === "branch" || step.type === "parallel" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Fork, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : step.type === "repeat" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(RepeatBody, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, onClick: () => openPicker({ ...laneRef, index: i + 1 }) }))), steps.length === 0 && /* @__PURE__ */ React.createElement(InsertBtn, { mode, onClick: () => openPicker({ ...laneRef, index: 0 }) }));
@@ -11415,7 +11488,7 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose }) {
   }
   return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-search" }, /* @__PURE__ */ React.createElement("span", { className: "bld-search__icon" }, pickerState.searchIcon), /* @__PURE__ */ React.createElement("input", { className: "bld-search__input", placeholder: pickerState.searchPlaceholder, value: q, onChange: (e) => setQ(e.target.value), autoFocus: true })), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.membersLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.iconTint }, row.icon), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub)))), !pickerState.hasConfiguredMembers && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { padding: "4px 8px" } }, pickerState.emptyMembersHint)), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.flowLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.primitiveRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.tint }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.label, row.isNew && /* @__PURE__ */ React.createElement("span", { className: "bld-opt__new" }, pickerState.newBadgeLabel)), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub))))));
 }
-function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, basicView = null, onInputParamReferenceChange }) {
+function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, onInputParamReferenceChange }) {
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   if (step.type === "input") {
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract);
@@ -11490,7 +11563,8 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
     flow,
     members,
     contract,
-    basicView
+    basicView,
+    launchView
   });
   const m = memberStepState.member;
   const launchState = memberStepState.launchState;
@@ -12362,6 +12436,7 @@ function App() {
       template: currentFlow,
       templateSeed: catalogs.template,
       templateView: catalogs.graphTemplateView,
+      launchView: catalogs.launchView,
       contract,
       deploySettings,
       selectMember: (id) => {
@@ -12388,7 +12463,8 @@ function App() {
       contract,
       toolCatalog: catalogs.toolCatalog,
       sourceView: catalogs.sourceView,
-      basicView: catalogs.basicView
+      basicView: catalogs.basicView,
+      launchView: catalogs.launchView
     }
   ), view === "agents" && /* @__PURE__ */ React.createElement(
     AgentsView,

@@ -9,7 +9,7 @@
 // AddNodeMenu lets the user place existing real members. Flow controls are
 // projected from the Basic Editor's deployable flow model.
 
-function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, flow, contract }) {
+function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, launchView = null, flow, contract }) {
   const selectionState = window.MobKitFlowController.graphSelectionState({
     selection,
     instances: studio.instances,
@@ -285,7 +285,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
     );
   }
 
-  const launchState = window.MobKitFlowController.launchModeControlState(inst, contract);
+  const launchState = window.MobKitFlowController.launchModeControlState(inst, contract, launchView);
 
   return (
     <>

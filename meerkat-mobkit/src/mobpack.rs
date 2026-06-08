@@ -940,6 +940,40 @@ pub fn mobpack_schema_response() -> Value {
         { "value": "bottom", "label": "Bottom" },
         { "value": "modal", "label": "Modal" }
     ]);
+    let editor_launch_view = json!({
+        "launch_title": "Launch mode",
+        "graph_launch_title": "LAUNCH MODE · this position",
+        "resume_session_label": "Bridge session",
+        "resume_session_placeholder": "session id",
+        "fork_source_label": "Fork from",
+        "fork_context_label": "Fork context",
+        "graph_fork_context_label": "Context",
+        "budget_policy_label": "Budget split policy",
+        "fixed_budget_label": "Fixed token budget",
+        "fixed_budget_default_value": 4096,
+        "unsupported_label_separator": " — not in MobKit ",
+        "unsupported_reason_prefix": "Unsupported by the MobKit ",
+        "unsupported_reason_suffix": " contract.",
+        "launch_modes_contract_label": "launch_modes",
+        "fork_contexts_contract_label": "mob_definition.fork_contexts",
+        "budget_split_policies_contract_label": "budget_split_policies",
+        "launch_mode_labels": {
+            "Fresh": "Fresh — empty context",
+            "Resume": "Resume — existing bridge session",
+            "Fork": "Fork — copy context from another step"
+        },
+        "fork_context_labels": {
+            "full_history": "full_history — entire transcript",
+            "last_messages": "last_messages — last N messages",
+            "FullHistory": "FullHistory — legacy alias for full_history"
+        },
+        "budget_split_policy_labels": {
+            "Equal": "Equal — split remaining budget evenly",
+            "Proportional": "Proportional — MobKit proportional split",
+            "Remaining": "Remaining — grant all remaining budget",
+            "Fixed": "Fixed — token cap for this spawn"
+        }
+    });
     let mut editor_basic_view = json!({
         "start_label": "START",
         "loop_badge": "LOOP",
@@ -1132,6 +1166,7 @@ pub fn mobpack_schema_response() -> Value {
     mob_definition["editor_agent_access_view"] = editor_agent_access_view;
     mob_definition["editor_deploy_view"] = editor_deploy_view;
     mob_definition["editor_settings_view"] = editor_settings_view;
+    mob_definition["editor_launch_view"] = editor_launch_view;
     json!({
         "schema_version": MOBPACK_SCHEMA_VERSION,
         "media_type": MOBPACK_MEDIA_TYPE,
@@ -15622,6 +15657,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_settings_view"]["advanced_object_required_error"],
             json!("object required")
+        );
+        assert_eq!(
+            mob_definition["editor_launch_view"]["launch_title"],
+            json!("Launch mode")
+        );
+        assert_eq!(
+            mob_definition["editor_launch_view"]["launch_mode_labels"]["Fork"],
+            json!("Fork — copy context from another step")
+        );
+        assert_eq!(
+            mob_definition["editor_launch_view"]["fixed_budget_default_value"],
+            json!(4096)
         );
         assert_eq!(
             mob_definition["editor_schema_view"]["eyebrow"],

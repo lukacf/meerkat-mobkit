@@ -259,6 +259,61 @@ const TEST_SETTINGS_VIEW = {
   inspectorLayoutLabel: "Layout",
   inspectorLayoutOptions: [{ value: "right", label: "Right" }, { value: "bottom", label: "Bottom" }, { value: "modal", label: "Modal" }],
 };
+const TEST_LAUNCH_VIEW_SCHEMA = {
+  launch_title: "Launch mode",
+  graph_launch_title: "LAUNCH MODE · this position",
+  resume_session_label: "Bridge session",
+  resume_session_placeholder: "session id",
+  fork_source_label: "Fork from",
+  fork_context_label: "Fork context",
+  graph_fork_context_label: "Context",
+  budget_policy_label: "Budget split policy",
+  fixed_budget_label: "Fixed token budget",
+  fixed_budget_default_value: 4096,
+  unsupported_label_separator: " — not in MobKit ",
+  unsupported_reason_prefix: "Unsupported by the MobKit ",
+  unsupported_reason_suffix: " contract.",
+  launch_modes_contract_label: "launch_modes",
+  fork_contexts_contract_label: "mob_definition.fork_contexts",
+  budget_split_policies_contract_label: "budget_split_policies",
+  launch_mode_labels: {
+    Fresh: "Fresh — empty context",
+    Resume: "Resume — existing bridge session",
+    Fork: "Fork — copy context from another step",
+  },
+  fork_context_labels: {
+    full_history: "full_history — entire transcript",
+    last_messages: "last_messages — last N messages",
+    FullHistory: "FullHistory — legacy alias for full_history",
+  },
+  budget_split_policy_labels: {
+    Equal: "Equal — split remaining budget evenly",
+    Proportional: "Proportional — MobKit proportional split",
+    Remaining: "Remaining — grant all remaining budget",
+    Fixed: "Fixed — token cap for this spawn",
+  },
+};
+const TEST_LAUNCH_VIEW = {
+  launchTitle: "Launch mode",
+  graphLaunchTitle: "LAUNCH MODE · this position",
+  resumeSessionLabel: "Bridge session",
+  resumeSessionPlaceholder: "session id",
+  forkSourceLabel: "Fork from",
+  forkContextLabel: "Fork context",
+  graphForkContextLabel: "Context",
+  budgetPolicyLabel: "Budget split policy",
+  fixedBudgetLabel: "Fixed token budget",
+  fixedBudgetDefaultValue: 4096,
+  unsupportedLabelSeparator: " — not in MobKit ",
+  unsupportedReasonPrefix: "Unsupported by the MobKit ",
+  unsupportedReasonSuffix: " contract.",
+  launchModesContractLabel: "launch_modes",
+  forkContextsContractLabel: "mob_definition.fork_contexts",
+  budgetSplitPoliciesContractLabel: "budget_split_policies",
+  launchModeLabels: TEST_LAUNCH_VIEW_SCHEMA.launch_mode_labels,
+  forkContextLabels: TEST_LAUNCH_VIEW_SCHEMA.fork_context_labels,
+  budgetSplitPolicyLabels: TEST_LAUNCH_VIEW_SCHEMA.budget_split_policy_labels,
+};
 const TEST_SCHEMA = {
   deploy_settings: {
     command: "rkat mob deploy",
@@ -285,6 +340,7 @@ const TEST_SCHEMA = {
     editor_deploy_view: TEST_DEPLOY_VIEW_SCHEMA,
     editor_agent_access_view: TEST_AGENT_ACCESS_VIEW_SCHEMA,
     editor_settings_view: TEST_SETTINGS_VIEW_SCHEMA,
+    editor_launch_view: TEST_LAUNCH_VIEW_SCHEMA,
     mob_settings: {
       defaults: {
         orchestrator: "",
@@ -757,6 +813,7 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
     editor_agent_access_view: TEST_AGENT_ACCESS_VIEW_SCHEMA,
     editor_deploy_view: TEST_DEPLOY_VIEW_SCHEMA,
     editor_settings_view: TEST_SETTINGS_VIEW_SCHEMA,
+    editor_launch_view: TEST_LAUNCH_VIEW_SCHEMA,
     editor_schema_view: {
       eyebrow: "OUTPUT SCHEMA",
       description_title: "DESCRIPTION",
@@ -1043,6 +1100,7 @@ assert.deepEqual(controller.basicEditorViewState(null), {
   toolScopeBlockCatalogPlaceholder: "",
   toolScopeAddProfilePlaceholder: "",
 });
+assert.deepEqual(hydratedCatalogs.launchView, TEST_LAUNCH_VIEW);
 assert.deepEqual(hydratedCatalogs.graphView, {
   zoomOutTitle: "Zoom out",
   fitTitle: "Fit to view",
@@ -5969,7 +6027,7 @@ const launchControlContract = {
     fork_contexts: ["full_history", "last_messages"],
   },
 };
-const blankLaunchState = controller.launchModeControlState({}, launchControlContract);
+const blankLaunchState = controller.launchModeControlState({}, launchControlContract, TEST_LAUNCH_VIEW);
 assert.equal(blankLaunchState.launchTitle, "Launch mode");
 assert.equal(blankLaunchState.graphLaunchTitle, "LAUNCH MODE · this position");
 assert.equal(blankLaunchState.resumeSessionLabel, "Bridge session");
@@ -5986,7 +6044,7 @@ assert.equal(blankLaunchState.budgetSplitPolicy.kind, "Equal");
 assert.equal(blankLaunchState.forkContextValue, "full_history");
 assert.equal(controller.launchModeControlState({
   launchMode: { kind: "Fresh", budgetSplitPolicy: { kind: "Fixed", limit: 2048 } },
-}, launchControlContract).fixedBudgetValue, 2048);
+}, launchControlContract, TEST_LAUNCH_VIEW).fixedBudgetValue, 2048);
 assert.deepEqual(controller.launchModeKindPatch({}, "Fork", launchControlContract, {
   firstForkSourceId: "plan_step",
 }), { launchMode: { kind: "Fork", from: "plan_step", context: "full_history" } });
@@ -6098,6 +6156,7 @@ const memberStepControlState = controller.basicMemberStepControlState({
   ],
   contract: memberStepControlContract,
   basicView: hydratedCatalogs.basicView,
+  launchView: hydratedCatalogs.launchView,
 });
 assert.equal(memberStepControlState.member.name, "Writer");
 assert.equal(memberStepControlState.panelTitle, "Writer");

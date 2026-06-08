@@ -821,6 +821,7 @@ function App() {
               template={currentFlow}
               templateSeed={catalogs.template}
               templateView={catalogs.graphTemplateView}
+              launchView={catalogs.launchView}
               contract={contract}
               deploySettings={deploySettings}
               selectMember={(id) => { setView("agents"); setAgentSel({ kind: "agent", id }); }}
@@ -848,6 +849,7 @@ function App() {
           toolCatalog={catalogs.toolCatalog}
           sourceView={catalogs.sourceView}
           basicView={catalogs.basicView}
+          launchView={catalogs.launchView}
         />
       )}
 

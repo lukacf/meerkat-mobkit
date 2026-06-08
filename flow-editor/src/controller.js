@@ -1165,6 +1165,72 @@
     };
   }
 
+  function viewStringMapFromSchema(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(
+      Object.entries(value)
+        .map(([key, label]) => [String(key || "").trim(), String(label || "").trim()])
+        .filter(([key, label]) => key && label),
+    );
+  }
+
+  function launchViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_launch_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      launchTitle: String(view.launch_title || "").trim(),
+      graphLaunchTitle: String(view.graph_launch_title || "").trim(),
+      resumeSessionLabel: String(view.resume_session_label || "").trim(),
+      resumeSessionPlaceholder: String(view.resume_session_placeholder || "").trim(),
+      forkSourceLabel: String(view.fork_source_label || "").trim(),
+      forkContextLabel: String(view.fork_context_label || "").trim(),
+      graphForkContextLabel: String(view.graph_fork_context_label || "").trim(),
+      budgetPolicyLabel: String(view.budget_policy_label || "").trim(),
+      fixedBudgetLabel: String(view.fixed_budget_label || "").trim(),
+      fixedBudgetDefaultValue: Number(view.fixed_budget_default_value),
+      unsupportedLabelSeparator: String(view.unsupported_label_separator || ""),
+      unsupportedReasonPrefix: String(view.unsupported_reason_prefix || ""),
+      unsupportedReasonSuffix: String(view.unsupported_reason_suffix || ""),
+      launchModesContractLabel: String(view.launch_modes_contract_label || "").trim(),
+      forkContextsContractLabel: String(view.fork_contexts_contract_label || "").trim(),
+      budgetSplitPoliciesContractLabel: String(view.budget_split_policies_contract_label || "").trim(),
+      launchModeLabels: viewStringMapFromSchema(view.launch_mode_labels),
+      forkContextLabels: viewStringMapFromSchema(view.fork_context_labels),
+      budgetSplitPolicyLabels: viewStringMapFromSchema(view.budget_split_policy_labels),
+    };
+    const stringsOk = Object.entries(out).every(([key, value]) => {
+      if (typeof value === "number") return Number.isFinite(value) && value > 0;
+      if (value && typeof value === "object") return Object.keys(value).length > 0;
+      return !!value;
+    });
+    return stringsOk ? out : null;
+  }
+
+  function launchViewForState(launchView) {
+    const view = launchView && typeof launchView === "object" ? launchView : null;
+    return {
+      launchTitle: String(view?.launchTitle || ""),
+      graphLaunchTitle: String(view?.graphLaunchTitle || ""),
+      resumeSessionLabel: String(view?.resumeSessionLabel || ""),
+      resumeSessionPlaceholder: String(view?.resumeSessionPlaceholder || ""),
+      forkSourceLabel: String(view?.forkSourceLabel || ""),
+      forkContextLabel: String(view?.forkContextLabel || ""),
+      graphForkContextLabel: String(view?.graphForkContextLabel || ""),
+      budgetPolicyLabel: String(view?.budgetPolicyLabel || ""),
+      fixedBudgetLabel: String(view?.fixedBudgetLabel || ""),
+      fixedBudgetDefaultValue: Number(view?.fixedBudgetDefaultValue || 0),
+      unsupportedLabelSeparator: String(view?.unsupportedLabelSeparator || ""),
+      unsupportedReasonPrefix: String(view?.unsupportedReasonPrefix || ""),
+      unsupportedReasonSuffix: String(view?.unsupportedReasonSuffix || ""),
+      launchModesContractLabel: String(view?.launchModesContractLabel || ""),
+      forkContextsContractLabel: String(view?.forkContextsContractLabel || ""),
+      budgetSplitPoliciesContractLabel: String(view?.budgetSplitPoliciesContractLabel || ""),
+      launchModeLabels: view?.launchModeLabels && typeof view.launchModeLabels === "object" ? view.launchModeLabels : {},
+      forkContextLabels: view?.forkContextLabels && typeof view.forkContextLabels === "object" ? view.forkContextLabels : {},
+      budgetSplitPolicyLabels: view?.budgetSplitPolicyLabels && typeof view.budgetSplitPolicyLabels === "object" ? view.budgetSplitPolicyLabels : {},
+    };
+  }
+
   function graphTemplateViewFromSchema(schema) {
     const view = schema?.mob_definition?.editor_graph_template_view;
     if (!view || typeof view !== "object") return null;
@@ -4109,12 +4175,12 @@
     };
   }
 
-  function basicMemberStepControlState({ step, flow, members = [], contract, basicView = null } = {}) {
+  function basicMemberStepControlState({ step, flow, members = [], contract, basicView = null, launchView = null } = {}) {
     const view = basicEditorViewState(basicView);
     const sourceMembers = Array.isArray(members) ? members : [];
     const memberById = new Map(sourceMembers.map((member) => [member.id, member]));
     const member = step?.role ? memberById.get(step.role) || null : null;
-    const launchState = launchModeControlState(step, contract);
+    const launchState = launchModeControlState(step, contract, launchView);
     const launchSources = collectFlowMemberSteps(flow?.steps || [])
       .filter((candidate) => candidate.id !== step?.id && candidate.role);
     const launchSourceOptions = launchSources.map((source) => {
@@ -6005,7 +6071,8 @@
     return { kind, ...budgetPatch };
   }
 
-  function launchModeControlState(source, contract) {
+  function launchModeControlState(source, contract, launchView = null) {
+    const view = launchViewForState(launchView);
     const authoredLaunchMode = source && typeof source === "object"
       ? (source.launchMode ?? source.launch_mode)
       : null;
@@ -6022,22 +6089,22 @@
       || normalizeBudgetSplitPolicy(defaultBudgetSplitKind ? { kind: defaultBudgetSplitKind } : null)
       || { kind: "" };
     const budgetLaunchPatch = authoredBudgetSplitPolicy ? { budgetSplitPolicy: authoredBudgetSplitPolicy } : {};
-    const launchOptions = launchModeOptions(contract, launchKind);
-    const budgetOptions = budgetSplitPolicyOptions(contract, budgetSplitPolicy.kind);
+    const launchOptions = launchModeOptions(contract, launchKind, view);
+    const budgetOptions = budgetSplitPolicyOptions(contract, budgetSplitPolicy.kind, view);
     const defaultForkContext = contractDefaultValue(contract, "fork_context");
     const forkContextValue = normalizeForkContext(launchMode.context || defaultForkContext);
-    const forkOptions = forkContextOptions(contract, forkContextValue);
-    const fixedLimitValue = budgetSplitPolicy.limit || 4096;
+    const forkOptions = forkContextOptions(contract, forkContextValue, view);
+    const fixedLimitValue = budgetSplitPolicy.limit || view.fixedBudgetDefaultValue;
     return {
-      launchTitle: "Launch mode",
-      graphLaunchTitle: "LAUNCH MODE · this position",
-      resumeSessionLabel: "Bridge session",
-      resumeSessionPlaceholder: "session id",
-      forkSourceLabel: "Fork from",
-      forkContextLabel: "Fork context",
-      graphForkContextLabel: "Context",
-      budgetPolicyLabel: "Budget split policy",
-      fixedBudgetLabel: "Fixed token budget",
+      launchTitle: view.launchTitle,
+      graphLaunchTitle: view.graphLaunchTitle,
+      resumeSessionLabel: view.resumeSessionLabel,
+      resumeSessionPlaceholder: view.resumeSessionPlaceholder,
+      forkSourceLabel: view.forkSourceLabel,
+      forkContextLabel: view.forkContextLabel,
+      graphForkContextLabel: view.graphForkContextLabel,
+      budgetPolicyLabel: view.budgetPolicyLabel,
+      fixedBudgetLabel: view.fixedBudgetLabel,
       fixedBudgetValue: fixedLimitValue,
       launchMode,
       launchKind,
@@ -6181,7 +6248,16 @@
     return contexts.includes(normalized);
   }
 
-  function launchModeOptions(contract, currentKind) {
+  function launchOptionLabel(labels, value, view, contractLabel) {
+    return labels?.[value] || `${value}${view.unsupportedLabelSeparator}${contractLabel}`;
+  }
+
+  function launchUnsupportedReason(view, contractLabel) {
+    return `${view.unsupportedReasonPrefix}${contractLabel}${view.unsupportedReasonSuffix}`;
+  }
+
+  function launchModeOptions(contract, currentKind, launchView = null) {
+    const view = launchViewForState(launchView);
     const contractModes = Array.isArray(contract?.mob_definition?.launch_modes) && contract.mob_definition.launch_modes.length
       ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind)
       : [];
@@ -6189,18 +6265,13 @@
     const currentSource = currentKind || contractDefaultValue(contract, "launch_mode");
     const current = currentSource ? canonicalLaunchModeKind(currentSource) : "";
     if (current && !modes.includes(current)) modes.push(current);
-    const labels = {
-      Fresh: "Fresh — empty context",
-      Resume: "Resume — existing bridge session",
-      Fork: "Fork — copy context from another step",
-    };
     return modes.map((mode) => {
       const supported = contractModes.includes(mode);
       return {
         value: mode,
-        label: labels[mode] || `${mode} — not in MobKit launch_modes`,
+        label: launchOptionLabel(view.launchModeLabels, mode, view, view.launchModesContractLabel),
         disabled: !supported,
-        reason: supported ? "" : "Unsupported by the MobKit launch_modes contract.",
+        reason: supported ? "" : launchUnsupportedReason(view, view.launchModesContractLabel),
       };
     });
   }
@@ -6344,7 +6415,8 @@
     return policies.includes(canonicalKind);
   }
 
-  function budgetSplitPolicyOptions(contract, currentKind) {
+  function budgetSplitPolicyOptions(contract, currentKind, launchView = null) {
+    const view = launchViewForState(launchView);
     const contractPolicies = Array.isArray(contract?.mob_definition?.budget_split_policies) && contract.mob_definition.budget_split_policies.length
       ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind)
       : [];
@@ -6352,19 +6424,13 @@
     const currentSource = currentKind || contractDefaultValue(contract, "budget_split_policy");
     const current = currentSource ? canonicalBudgetSplitPolicyKind(currentSource) : "";
     if (current && !policies.includes(current)) policies.push(current);
-    const labels = {
-      Equal: "Equal — split remaining budget evenly",
-      Proportional: "Proportional — MobKit proportional split",
-      Remaining: "Remaining — grant all remaining budget",
-      Fixed: "Fixed — token cap for this spawn",
-    };
     return policies.map((policy) => {
       const supported = contractPolicies.includes(policy);
       return {
         value: policy,
-        label: labels[policy] || `${policy} — not in MobKit budget_split_policies`,
+        label: launchOptionLabel(view.budgetSplitPolicyLabels, policy, view, view.budgetSplitPoliciesContractLabel),
         disabled: !supported,
-        reason: supported ? "" : "Unsupported by the MobKit budget_split_policies contract.",
+        reason: supported ? "" : launchUnsupportedReason(view, view.budgetSplitPoliciesContractLabel),
       };
     });
   }
@@ -6627,6 +6693,7 @@
       agentAccessView: null,
       deployView: null,
       settingsView: null,
+      launchView: null,
       schemaView: null,
       basicView: null,
       graphView: null,
@@ -6662,6 +6729,7 @@
       agentAccessView: agentAccessViewFromSchema(schema),
       deployView: deployViewFromSchema(schema),
       settingsView: settingsViewFromSchema(schema),
+      launchView: launchViewFromSchema(schema),
       schemaView: schemaViewFromSchema(schema),
       basicView: basicViewFromSchema(schema),
       graphView: graphViewFromSchema(schema),
@@ -7045,19 +7113,24 @@
     );
   }
 
-  function forkContextOptions(contract, currentContext) {
+  function forkContextOptions(contract, currentContext, launchView = null) {
+    const view = launchViewForState(launchView);
+    const contractValues = Array.isArray(contract?.mob_definition?.fork_contexts)
+      ? contract.mob_definition.fork_contexts.map((value) => normalizeForkContext(value)).filter(Boolean)
+      : [];
+    const options = contractValues.length ? [...contractValues] : [];
     const currentSource = currentContext || contractDefaultValue(contract, "fork_context");
     const current = currentSource ? normalizeForkContext(currentSource) : "";
-    return simpleContractOptions(
-      contract?.mob_definition?.fork_contexts,
-      current,
-      {
-        full_history: "full_history — entire transcript",
-        last_messages: "last_messages — last N messages",
-        FullHistory: "FullHistory — legacy alias for full_history",
-      },
-      "mob_definition.fork_contexts"
-    );
+    if (current && !options.includes(current)) options.push(current);
+    return options.map((value) => {
+      const supported = contractValues.includes(value);
+      return {
+        value,
+        label: launchOptionLabel(view.forkContextLabels, value, view, view.forkContextsContractLabel),
+        disabled: !supported,
+        reason: supported ? "" : launchUnsupportedReason(view, view.forkContextsContractLabel),
+      };
+    });
   }
 
   function graphGateKindOptions(contract, currentKind) {

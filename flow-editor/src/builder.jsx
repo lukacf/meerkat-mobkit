@@ -138,7 +138,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
   );
 }
 
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null }) {
+function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null }) {
   const members = studio?.members || [];
   const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [selLocal, setSelLocal] = React.useState(null);
@@ -262,7 +262,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
             onClose={() => setPicker({ open: false })}
           />
         ) : selStep ? (
-          <StepInspector studio={studio} members={members} flow={flow} step={selStep} update={update} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} onInputParamReferenceChange={reconcileInputParamReferences} />
+          <StepInspector studio={studio} members={members} flow={flow} step={selStep} update={update} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} launchView={launchView} onInputParamReferenceChange={reconcileInputParamReferences} />
         ) : (
           <EmptyPanel state={viewState} />
         )}
@@ -449,7 +449,7 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose }) {
 }
 
 // ── Inspector ──
-function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, basicView = null, onInputParamReferenceChange }) {
+function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, onInputParamReferenceChange }) {
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   if (step.type === "input") {
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract);
@@ -637,6 +637,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
     members,
     contract,
     basicView,
+    launchView,
   });
   const m = memberStepState.member;
   const launchState = memberStepState.launchState;

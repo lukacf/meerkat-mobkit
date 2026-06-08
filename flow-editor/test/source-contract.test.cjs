@@ -757,8 +757,12 @@ assert(!/budget_split_policy:\s*launchMode\s*\?\s*mobKitBudgetSplitPolicy\(launc
 assert(!/budget_split_policy:\s*null/.test(controller), "launch budget export must omit absent budget_split_policy instead of emitting null");
 assert(!/policy\?\.(?:kind|type)[\s\S]{0,80}["']Equal["']/.test(controller), "budget split normalization must not default absent policy to Equal");
 assert.match(controller, /function launchModeControlState/, "controller plane must own shared launch-control display state");
+assert.match(controller, /mob_definition\?\.editor_launch_view/, "controller plane must hydrate launch-control chrome from MobKit schema");
+assert.match(app, /<BuilderView[\s\S]*launchView=\{catalogs\.launchView\}/, "app shell must inject schema-backed launch view into Basic editor");
+assert.match(app, /<Inspector[\s\S]*launchView=\{catalogs\.launchView\}/, "app shell must inject schema-backed launch view into Graph inspector");
 assert.match(builder, /MobKitFlowController\.basicMemberStepControlState/, "Basic editor launch controls must read shared member-step controller state");
 assert.match(inspector, /MobKitFlowController\.launchModeControlState/, "Graph inspector launch controls must read shared controller launch state");
+assert.match(inspector, /launchModeControlState\(inst,\s*contract,\s*launchView\)/, "Graph inspector launch controls must pass schema-backed launch view into controller projection");
 assert.match(builder, /launchState\.launchTitle/, "Basic editor launch label must render through shared controller state");
 assert.match(inspector, /launchState\.graphLaunchTitle/, "Graph inspector launch label must render through shared controller state");
 assert.match(builder + "\n" + inspector, /launchState\.fixedBudgetValue/, "Basic/Graph launch fixed-budget value must render through shared controller state");
@@ -778,8 +782,10 @@ assert.match(builderMemberStepControlBlock, /memberStepState\.allowedToolsLabel/
 assert.match(builderMemberStepControlBlock, /memberStepState\.schemaHint\.parts\.map/, "Basic member-step schema/tool hint must render projected parts through controller state");
 assert.match(controller, /function launchModeControlState/, "controller plane must own shared launch-control display state");
 assert.match(controller, /function launchModeKindPatch[\s\S]*budgetLaunchPatch/, "controller plane must preserve authored launch budget policy while changing launch kind");
+assert.match(builderMemberStepControlBlock, /basicMemberStepControlState\(\{[\s\S]*launchView/, "Basic member-step controls must pass schema-backed launch view into controller projection");
 assert(!/const\s+defaultLaunchMode|const\s+authoredBudgetSplitPolicy|const\s+budgetLaunchPatch|const\s+defaultBudgetSplitKind|const\s+defaultForkContext/.test(builder + "\n" + inspector), "Basic/Graph UI must not assemble launch defaults or budget-preservation patches directly");
 assert(!/label=["'](?:Launch mode|Bridge session|Fork from|Fork context|Fixed token budget)["']|>LAUNCH MODE · this position<\/div>|>Context<\/label>|>Budget split policy<\/label>|placeholder=["']session id["']|budgetSplitPolicy\.limit \|\| 4096/.test(builder + "\n" + inspector), "Basic/Graph UI must not compose launch-control labels, placeholders, or fixed-budget display defaults locally");
+assert(!/launchTitle:\s*["']Launch mode["']|graphLaunchTitle:\s*["']LAUNCH MODE|resumeSessionLabel:\s*["']Bridge session["']|Unsupported by the MobKit launch_modes contract|Fixed token budget|Fixed — token cap for this spawn/.test(controller), "controller must not keep launch-control labels, option labels, or unsupported reason copy as local literals");
 assert(!/label=["'](?:Member \(profile\)|message — instruction for this turn|Dispatch mode|Collection policy|Quorum|Timeout \(ms\)|Output format|Allowed tools|Blocked tools|depends_on mode)["']|emptyLabel=["'](?:Runtime profile default|No step-level blocks)["']|placeholder=["'](?:e\.g\. Run the focused tests and report failures\.|required|runtime default)["']|>— select member —<\/option>/.test(builderMemberStepControlBlock), "Basic member-step UI must not compose member-step labels, placeholders, or tool-scope empty text locally");
 assert(!/Emits|tools:\s*\{|schemaHint\.schema|schemaHint\.toolSummary/.test(builderMemberStepControlBlock), "Basic member-step UI must not compose schema/tool hint copy locally");
 assert(!/const\s+default(?:Dispatch|Collection)[\s\S]{0,180}const\s+(?:dispatchValue|collection)\s*=/.test(inspector), "Graph inspector gate controls must not display fork/join schema defaults as selected authored state");
