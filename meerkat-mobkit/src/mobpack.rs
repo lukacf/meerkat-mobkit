@@ -721,7 +721,7 @@ pub fn mobpack_schema_response() -> Value {
         "copy_label": "copy",
         "close_label": "×"
     });
-    let editor_graph_view = json!({
+    let mut editor_graph_view = json!({
         "zoom_out_title": "Zoom out",
         "fit_title": "Fit to view",
         "zoom_in_title": "Zoom in",
@@ -754,28 +754,63 @@ pub fn mobpack_schema_response() -> Value {
                 "label": "Join gate",
                 "meta": "fan_in barrier"
             }
-        ],
-        "graph_gate_kind_labels": {
-            "branch": "branch — conditional split",
-            "fork": "fork — fan out in parallel",
-            "join": "join — wait for branches"
-        },
-        "graph_terminal_kind_labels": {
-            "success": "success — done",
-            "failed": "failed — blocked",
-            "human": "human — needs human"
-        },
-        "graph_frame_kind_labels": {
-            "Branch": "Branch — conditional flow frame",
-            "Parallel": "Parallel — concurrent flow frame",
-            "RepeatUntil": "RepeatUntil — bounded loop frame"
-        },
-        "graph_edge_kind_labels": {
-            "next": "next — sequential handoff",
-            "fanout": "fanout — parallel sibling",
-            "cond": "cond — guarded branch"
-        }
+        ]
     });
+    editor_graph_view["graph_gate_kind_labels"] = json!({
+        "branch": "branch — conditional split",
+        "fork": "fork — fan out in parallel",
+        "join": "join — wait for branches"
+    });
+    editor_graph_view["graph_terminal_kind_labels"] = json!({
+        "success": "success — done",
+        "failed": "failed — blocked",
+        "human": "human — needs human"
+    });
+    editor_graph_view["graph_frame_kind_labels"] = json!({
+        "Branch": "Branch — conditional flow frame",
+        "Parallel": "Parallel — concurrent flow frame",
+        "RepeatUntil": "RepeatUntil — bounded loop frame"
+    });
+    editor_graph_view["graph_edge_kind_labels"] = json!({
+        "next": "next — sequential handoff",
+        "fanout": "fanout — parallel sibling",
+        "cond": "cond — guarded branch"
+    });
+    editor_graph_view["inspector_delete_label"] = json!("DELETE");
+    editor_graph_view["inspector_label_title"] = json!("LABEL");
+    editor_graph_view["inspector_kind_title"] = json!("KIND");
+    editor_graph_view["inspector_runtime_default_label"] = json!("runtime default");
+    editor_graph_view["gate_collection_title"] = json!("COLLECTION POLICY");
+    editor_graph_view["gate_join_member_label"] = json!("Join member");
+    editor_graph_view["gate_join_member_placeholder"] = json!("— select member —");
+    editor_graph_view["gate_join_member_hint"] =
+        json!("MobKit uses this real profile to resolve non-all fan-in.");
+    editor_graph_view["gate_dispatch_title"] = json!("DISPATCH MODE");
+    editor_graph_view["gate_dispatch_hint"] =
+        json!("Exports as the MobKit parallel flow dispatch mode.");
+    editor_graph_view["gate_conditions_title"] = json!("CONDITIONS");
+    editor_graph_view["gate_empty_branch_hint"] =
+        json!("add outgoing edges, then configure each as a typed condition or fallback");
+    editor_graph_view["gate_wiring_title"] = json!("WIRING");
+    editor_graph_view["gate_incoming_label"] = json!("incoming");
+    editor_graph_view["gate_outgoing_label"] = json!("outgoing");
+    editor_graph_view["branch_condition_mode_condition_label"] = json!("condition");
+    editor_graph_view["branch_condition_mode_fallback_label"] = json!("fallback");
+    editor_graph_view["branch_condition_target_prefix"] = json!("→");
+    editor_graph_view["branch_condition_field_placeholder"] = json!("— field —");
+    editor_graph_view["branch_condition_no_options_hint"] =
+        json!("add input params or an upstream schema field for this condition");
+    editor_graph_view["edge_condition_title"] = json!("CONDITION");
+    editor_graph_view["edge_no_condition_options_hint"] =
+        json!("Add an upstream agent with an output schema before configuring this edge.");
+    editor_graph_view["edge_owner_placeholder"] = json!("— member —");
+    editor_graph_view["edge_from_title"] = json!("FROM");
+    editor_graph_view["edge_to_title"] = json!("TO");
+    editor_graph_view["edge_row_instance_label"] = json!("instance");
+    editor_graph_view["edge_row_member_label"] = json!("member");
+    editor_graph_view["edge_row_schema_label"] = json!("schema");
+    editor_graph_view["edge_row_missing_value"] = json!("—");
+    editor_graph_view["edge_terminal_member_value"] = json!("(terminal)");
     let editor_agent_view = json!({
         "agents_heading": "AGENTS",
         "schemas_heading": "SCHEMAS",
@@ -15746,6 +15781,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_view"]["graph_edge_kind_labels"]["cond"],
             json!("cond — guarded branch")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["gate_dispatch_hint"],
+            json!("Exports as the MobKit parallel flow dispatch mode.")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["edge_terminal_member_value"],
+            json!("(terminal)")
         );
         assert_eq!(
             mob_definition["editor_agent_view"]["agents_heading"],

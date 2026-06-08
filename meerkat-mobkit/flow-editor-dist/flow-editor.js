@@ -1506,6 +1506,36 @@ window.MOBKIT_BOOT = {
       terminalKindLabels: viewStringMapFromSchema(view.graph_terminal_kind_labels),
       frameKindLabels: viewStringMapFromSchema(view.graph_frame_kind_labels),
       edgeKindLabels: viewStringMapFromSchema(view.graph_edge_kind_labels),
+      inspectorDeleteLabel: String(view.inspector_delete_label || "").trim(),
+      inspectorLabelTitle: String(view.inspector_label_title || "").trim(),
+      inspectorKindTitle: String(view.inspector_kind_title || "").trim(),
+      inspectorRuntimeDefaultLabel: String(view.inspector_runtime_default_label || "").trim(),
+      gateCollectionTitle: String(view.gate_collection_title || "").trim(),
+      gateJoinMemberLabel: String(view.gate_join_member_label || "").trim(),
+      gateJoinMemberPlaceholder: String(view.gate_join_member_placeholder || "").trim(),
+      gateJoinMemberHint: String(view.gate_join_member_hint || "").trim(),
+      gateDispatchTitle: String(view.gate_dispatch_title || "").trim(),
+      gateDispatchHint: String(view.gate_dispatch_hint || "").trim(),
+      gateConditionsTitle: String(view.gate_conditions_title || "").trim(),
+      gateEmptyBranchHint: String(view.gate_empty_branch_hint || "").trim(),
+      gateWiringTitle: String(view.gate_wiring_title || "").trim(),
+      gateIncomingLabel: String(view.gate_incoming_label || "").trim(),
+      gateOutgoingLabel: String(view.gate_outgoing_label || "").trim(),
+      branchConditionModeConditionLabel: String(view.branch_condition_mode_condition_label || "").trim(),
+      branchConditionModeFallbackLabel: String(view.branch_condition_mode_fallback_label || "").trim(),
+      branchConditionTargetPrefix: String(view.branch_condition_target_prefix || "").trim(),
+      branchConditionFieldPlaceholder: String(view.branch_condition_field_placeholder || "").trim(),
+      branchConditionNoOptionsHint: String(view.branch_condition_no_options_hint || "").trim(),
+      edgeConditionTitle: String(view.edge_condition_title || "").trim(),
+      edgeNoConditionOptionsHint: String(view.edge_no_condition_options_hint || "").trim(),
+      edgeOwnerPlaceholder: String(view.edge_owner_placeholder || "").trim(),
+      edgeFromTitle: String(view.edge_from_title || "").trim(),
+      edgeToTitle: String(view.edge_to_title || "").trim(),
+      edgeRowInstanceLabel: String(view.edge_row_instance_label || "").trim(),
+      edgeRowMemberLabel: String(view.edge_row_member_label || "").trim(),
+      edgeRowSchemaLabel: String(view.edge_row_schema_label || "").trim(),
+      edgeRowMissingValue: String(view.edge_row_missing_value || "").trim(),
+      edgeTerminalMemberValue: String(view.edge_terminal_member_value || "").trim(),
     };
     return out.zoomOutTitle && out.fitTitle && out.zoomInTitle && out.portDragTitle
       && out.addNodeSearchIcon && out.addNodeSearchPlaceholder && out.addNodeCloseLabel
@@ -1516,6 +1546,18 @@ window.MOBKIT_BOOT = {
       && Object.keys(out.terminalKindLabels).length
       && Object.keys(out.frameKindLabels).length
       && Object.keys(out.edgeKindLabels).length
+      && out.inspectorDeleteLabel && out.inspectorLabelTitle && out.inspectorKindTitle
+      && out.inspectorRuntimeDefaultLabel && out.gateCollectionTitle
+      && out.gateJoinMemberLabel && out.gateJoinMemberPlaceholder && out.gateJoinMemberHint
+      && out.gateDispatchTitle && out.gateDispatchHint && out.gateConditionsTitle
+      && out.gateEmptyBranchHint && out.gateWiringTitle && out.gateIncomingLabel
+      && out.gateOutgoingLabel && out.branchConditionModeConditionLabel
+      && out.branchConditionModeFallbackLabel && out.branchConditionTargetPrefix
+      && out.branchConditionFieldPlaceholder && out.branchConditionNoOptionsHint
+      && out.edgeConditionTitle && out.edgeNoConditionOptionsHint && out.edgeOwnerPlaceholder
+      && out.edgeFromTitle && out.edgeToTitle && out.edgeRowInstanceLabel
+      && out.edgeRowMemberLabel && out.edgeRowSchemaLabel && out.edgeRowMissingValue
+      && out.edgeTerminalMemberValue
       ? out
       : null;
   }
@@ -1556,6 +1598,36 @@ window.MOBKIT_BOOT = {
       terminalKindLabels: view?.terminalKindLabels && typeof view.terminalKindLabels === "object" ? view.terminalKindLabels : {},
       frameKindLabels: view?.frameKindLabels && typeof view.frameKindLabels === "object" ? view.frameKindLabels : {},
       edgeKindLabels: view?.edgeKindLabels && typeof view.edgeKindLabels === "object" ? view.edgeKindLabels : {},
+      inspectorDeleteLabel: String(view?.inspectorDeleteLabel || ""),
+      inspectorLabelTitle: String(view?.inspectorLabelTitle || ""),
+      inspectorKindTitle: String(view?.inspectorKindTitle || ""),
+      inspectorRuntimeDefaultLabel: String(view?.inspectorRuntimeDefaultLabel || ""),
+      gateCollectionTitle: String(view?.gateCollectionTitle || ""),
+      gateJoinMemberLabel: String(view?.gateJoinMemberLabel || ""),
+      gateJoinMemberPlaceholder: String(view?.gateJoinMemberPlaceholder || ""),
+      gateJoinMemberHint: String(view?.gateJoinMemberHint || ""),
+      gateDispatchTitle: String(view?.gateDispatchTitle || ""),
+      gateDispatchHint: String(view?.gateDispatchHint || ""),
+      gateConditionsTitle: String(view?.gateConditionsTitle || ""),
+      gateEmptyBranchHint: String(view?.gateEmptyBranchHint || ""),
+      gateWiringTitle: String(view?.gateWiringTitle || ""),
+      gateIncomingLabel: String(view?.gateIncomingLabel || ""),
+      gateOutgoingLabel: String(view?.gateOutgoingLabel || ""),
+      branchConditionModeConditionLabel: String(view?.branchConditionModeConditionLabel || ""),
+      branchConditionModeFallbackLabel: String(view?.branchConditionModeFallbackLabel || ""),
+      branchConditionTargetPrefix: String(view?.branchConditionTargetPrefix || ""),
+      branchConditionFieldPlaceholder: String(view?.branchConditionFieldPlaceholder || ""),
+      branchConditionNoOptionsHint: String(view?.branchConditionNoOptionsHint || ""),
+      edgeConditionTitle: String(view?.edgeConditionTitle || ""),
+      edgeNoConditionOptionsHint: String(view?.edgeNoConditionOptionsHint || ""),
+      edgeOwnerPlaceholder: String(view?.edgeOwnerPlaceholder || ""),
+      edgeFromTitle: String(view?.edgeFromTitle || ""),
+      edgeToTitle: String(view?.edgeToTitle || ""),
+      edgeRowInstanceLabel: String(view?.edgeRowInstanceLabel || ""),
+      edgeRowMemberLabel: String(view?.edgeRowMemberLabel || ""),
+      edgeRowSchemaLabel: String(view?.edgeRowSchemaLabel || ""),
+      edgeRowMissingValue: String(view?.edgeRowMissingValue || ""),
+      edgeTerminalMemberValue: String(view?.edgeTerminalMemberValue || ""),
     };
   }
 
@@ -5008,6 +5080,7 @@ window.MOBKIT_BOOT = {
   }
 
   function graphGateControlState(inst, { edges, members, contract, graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
     const incoming = (edges || []).filter((edge) => edge.to === inst?.id);
     const outgoing = (edges || []).filter((edge) => edge.from === inst?.id);
     const defaultGateKind = contractDefaultValue(contract, "graph_gate_kind");
@@ -5015,12 +5088,12 @@ window.MOBKIT_BOOT = {
     const gateKindOptions = graphGateKindOptions(contract, gateKind, graphView);
     const collection = String(inst?.collection || (inst?.quorum?.n ? "quorum" : "")).trim();
     const collectionOptions = [
-      { value: "", label: "runtime default", disabled: false, reason: "" },
+      { value: "", label: view.inspectorRuntimeDefaultLabel, disabled: false, reason: "" },
       ...collectionPolicyOptions(contract, collection),
     ];
     const dispatch = String(inst?.dispatch || inst?.dispatchMode || "").trim();
     const dispatchOptions = [
-      { value: "", label: "runtime default", disabled: false, reason: "" },
+      { value: "", label: view.inspectorRuntimeDefaultLabel, disabled: false, reason: "" },
       ...dispatchModeOptions(contract, dispatch),
     ];
     const col = Number(inst?.col ?? 0);
@@ -5031,30 +5104,30 @@ window.MOBKIT_BOOT = {
       eyebrow: `GATE · ${gateKind}`,
       title: String(inst?.label || ""),
       idLine: `${inst?.id || ""} · cell (${col + 1},${row + 1})`,
-      deleteLabel: "DELETE",
-      labelTitle: "LABEL",
-      kindTitle: "KIND",
+      deleteLabel: view.inspectorDeleteLabel,
+      labelTitle: view.inspectorLabelTitle,
+      kindTitle: view.inspectorKindTitle,
       gateKind,
       gateKindOptions,
       selectedGateKind: gateKindOptions.find((option) => option.value === gateKind),
-      collectionTitle: "COLLECTION POLICY",
+      collectionTitle: view.gateCollectionTitle,
       collection,
       collectionOptions,
       selectedCollection: collectionOptions.find((option) => option.value === collection),
       quorumIncomingLabel: `of ${incoming.length} incoming`,
-      joinMemberLabel: "Join member",
-      joinMemberPlaceholderOption: { value: "", label: "— select member —" },
-      joinMemberHint: "MobKit uses this real profile to resolve non-all fan-in.",
-      dispatchTitle: "DISPATCH MODE",
+      joinMemberLabel: view.gateJoinMemberLabel,
+      joinMemberPlaceholderOption: { value: "", label: view.gateJoinMemberPlaceholder },
+      joinMemberHint: view.gateJoinMemberHint,
+      dispatchTitle: view.gateDispatchTitle,
       dispatch,
       dispatchOptions,
       selectedDispatch: dispatchOptions.find((option) => option.value === dispatch),
-      dispatchHint: "Exports as the MobKit parallel flow dispatch mode.",
-      conditionsTitle: "CONDITIONS",
-      emptyBranchHint: "add outgoing edges, then configure each as a typed condition or fallback",
-      wiringTitle: "WIRING",
-      incomingLabel: "incoming",
-      outgoingLabel: "outgoing",
+      dispatchHint: view.gateDispatchHint,
+      conditionsTitle: view.gateConditionsTitle,
+      emptyBranchHint: view.gateEmptyBranchHint,
+      wiringTitle: view.gateWiringTitle,
+      incomingLabel: view.gateIncomingLabel,
+      outgoingLabel: view.gateOutgoingLabel,
       firstMemberId: (members || []).find((member) => member?.id)?.id || "",
       memberOptions: (Array.isArray(members) ? members : [])
         .filter((member) => member?.id)
@@ -5068,7 +5141,8 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function graphBranchConditionRows({ inst, edges = [], instances = [], members = [], schemas = [], flow, contract } = {}) {
+  function graphBranchConditionRows({ inst, edges = [], instances = [], members = [], schemas = [], flow, contract, graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
     const sourceEdges = Array.isArray(edges) ? edges : [];
     const sourceInstances = Array.isArray(instances) ? instances : [];
     const sourceMembers = Array.isArray(members) ? members : [];
@@ -5100,10 +5174,10 @@ window.MOBKIT_BOOT = {
           conditionEdgeKind: conditionKind,
           modeValue: isCondition ? conditionKind : "fallback",
           modeOptions: [
-            ...(conditionKind ? [{ value: conditionKind, label: "condition" }] : []),
-            { value: "fallback", label: "fallback" },
+            ...(conditionKind ? [{ value: conditionKind, label: view.branchConditionModeConditionLabel }] : []),
+            { value: "fallback", label: view.branchConditionModeFallbackLabel },
           ],
-          targetPrefix: "→",
+          targetPrefix: view.branchConditionTargetPrefix,
           target,
           targetLabel: target?.isTerminal
             ? target.label
@@ -5124,18 +5198,19 @@ window.MOBKIT_BOOT = {
             field,
           })),
           fieldValue: condRef.field || "",
-          fieldPlaceholderOption: { value: "", label: "— field —" },
+          fieldPlaceholderOption: { value: "", label: view.branchConditionFieldPlaceholder },
           condField,
           defaultOperator,
           operatorValue,
           operatorOptions: conditionOperatorOptions(contract, operatorValue),
           hasConditionOptions: conditionOptions.length > 0,
-          noConditionOptionsHint: "add input params or an upstream schema field for this condition",
+          noConditionOptionsHint: view.branchConditionNoOptionsHint,
         };
       });
   }
 
   function graphTerminalControlState(inst, contract, graphView = null) {
+    const view = graphCanvasViewState(graphView);
     const defaultTerminalKind = contractDefaultValue(contract, "graph_terminal_kind");
     const terminalKind = String(inst?.kind || defaultTerminalKind || "").trim();
     const terminalKindOptions = graphTerminalKindOptions(contract, terminalKind, graphView);
@@ -5147,10 +5222,10 @@ window.MOBKIT_BOOT = {
       eyebrow: `TERMINAL · ${terminalKind}`,
       title: labelValue,
       idLine: `${id} · cell (${col},${row})`,
-      deleteLabel: "DELETE",
-      labelTitle: "LABEL",
+      deleteLabel: view.inspectorDeleteLabel,
+      labelTitle: view.inspectorLabelTitle,
       labelValue,
-      kindTitle: "KIND",
+      kindTitle: view.inspectorKindTitle,
       terminalKind,
       terminalKindOptions,
       selectedTerminalKind: terminalKindOptions.find((option) => option.value === terminalKind) || null,
@@ -5158,6 +5233,7 @@ window.MOBKIT_BOOT = {
   }
 
   function graphEdgeInspectorState({ edge, instances = [], members = [], schemas = [], flow, contract, graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
     const sourceInstances = Array.isArray(instances) ? instances : [];
     const sourceMembers = Array.isArray(members) ? members : [];
     const instanceById = new Map(sourceInstances.map((candidate) => [candidate.id, candidate]));
@@ -5191,25 +5267,25 @@ window.MOBKIT_BOOT = {
       fromMember,
       toMember,
       eyebrow: `EDGE · ${edgeKind}`,
-      title: `${fromMember?.name || fromInstance?.label || "—"} → ${toMember?.name || toInstance?.label || "—"}`,
+      title: `${fromMember?.name || fromInstance?.label || view.edgeRowMissingValue} → ${toMember?.name || toInstance?.label || view.edgeRowMissingValue}`,
       idLine: String(edge?.id || ""),
-      deleteLabel: "DELETE",
-      kindTitle: "KIND",
-      labelTitle: "LABEL",
-      conditionTitle: "CONDITION",
-      noConditionOptionsHint: "Add an upstream agent with an output schema before configuring this edge.",
-      ownerPlaceholderOption: { value: "", label: "— member —" },
-      fromTitle: "FROM",
-      toTitle: "TO",
+      deleteLabel: view.inspectorDeleteLabel,
+      kindTitle: view.inspectorKindTitle,
+      labelTitle: view.inspectorLabelTitle,
+      conditionTitle: view.edgeConditionTitle,
+      noConditionOptionsHint: view.edgeNoConditionOptionsHint,
+      ownerPlaceholderOption: { value: "", label: view.edgeOwnerPlaceholder },
+      fromTitle: view.edgeFromTitle,
+      toTitle: view.edgeToTitle,
       fromRows: [
-        { key: "instance", label: "instance", value: fromInstance?.id || "" },
-        { key: "member", label: "member", value: fromMember?.name || "—" },
-        { key: "schema", label: "schema", value: fromMember?.schema || "—" },
+        { key: "instance", label: view.edgeRowInstanceLabel, value: fromInstance?.id || "" },
+        { key: "member", label: view.edgeRowMemberLabel, value: fromMember?.name || view.edgeRowMissingValue },
+        { key: "schema", label: view.edgeRowSchemaLabel, value: fromMember?.schema || view.edgeRowMissingValue },
       ],
       toRows: [
-        { key: "instance", label: "instance", value: toInstance?.id || "" },
-        { key: "member", label: "member", value: toMember?.name || (toInstance?.isTerminal ? "(terminal)" : "—") },
-        { key: "schema", label: "schema", value: toMember?.schema || "—" },
+        { key: "instance", label: view.edgeRowInstanceLabel, value: toInstance?.id || "" },
+        { key: "member", label: view.edgeRowMemberLabel, value: toMember?.name || (toInstance?.isTerminal ? view.edgeTerminalMemberValue : view.edgeRowMissingValue) },
+        { key: "schema", label: view.edgeRowSchemaLabel, value: toMember?.schema || view.edgeRowMissingValue },
       ],
       condRef,
       conditionOptions,
@@ -10671,7 +10747,8 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
     members: studio.members,
     schemas: studio.schemas,
     flow,
-    contract
+    contract,
+    graphView
   }) : [];
   return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, gateState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, gateState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, gateState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
     studio.deleteInstance(inst.id);

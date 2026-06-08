@@ -93,6 +93,7 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
       schemas: studio.schemas,
       flow,
       contract,
+      graphView,
     })
     : [];
 

@@ -99,6 +99,7 @@ assert.match(controller, /mob_definition\?\.editor_graph_view/, "controller plan
 assert.match(app, /<AddNodeMenu[\s\S]*graphView=\{catalogs\.graphView\}/, "app shell must inject schema-backed Graph add-node menu view state");
 assert.match(controller, /gatePaletteRows:\s*graphGatePaletteRowsFromSchema\(view\.gate_palette_rows\)/, "controller plane must hydrate Graph gate palette rows from MobKit schema");
 assert.match(controller, /gateKindLabels:\s*viewStringMapFromSchema\(view\.graph_gate_kind_labels\)/, "controller plane must hydrate Graph option labels from MobKit schema");
+assert.match(controller, /inspectorDeleteLabel:\s*String\(view\.inspector_delete_label/, "controller plane must hydrate Graph inspector chrome from MobKit schema");
 assert.match(graphEditorBlock, /graphView(?:\s*=\s*null)?[\s\S]*MobKitFlowController\.graphCanvasViewState\(graphView\)/, "Graph editor must render canvas affordance titles through controller-projected view state");
 assert.match(graphEditorBlock, /(?=[\s\S]*canvasView\.zoomOutTitle)(?=[\s\S]*canvasView\.fitTitle)(?=[\s\S]*canvasView\.zoomInTitle)(?=[\s\S]*canvasView\.portDragTitle)/, "Graph editor must use controller-projected zoom and port titles");
 assert(!/title=["'](?:Zoom out|Fit to view|Zoom in|Drag to a member to connect)["']/.test(graph), "Graph editor JSX must not compose canvas affordance titles locally");
@@ -280,6 +281,7 @@ assert.match(controller, /function graphGateControlState/, "controller plane mus
 assert.match(controller, /joinMemberPlaceholderOption/, "controller plane must own Graph gate join-member placeholder state");
 assert.match(controller, /noConditionOptionsHint/, "controller plane must own Graph condition empty-state copy");
 assert.match(inspectorGateBlock, /MobKitFlowController\.graphBranchConditionRows/, "Graph branch inspector must render condition rows through the controller plane");
+assert.match(inspectorGateBlock, /graphBranchConditionRows\(\{[\s\S]*graphView/, "Graph branch condition rows must pass schema-backed Graph view into controller projection");
 assert.match(controller, /function graphBranchConditionRows/, "controller plane must own Graph branch condition row projection");
 assert.match(controller, /function graphBranchConditionModePatch/, "controller plane must own Graph branch condition/fallback mode patch semantics");
 assert.match(inspector, /MobKitFlowController\.graphGateKindPatch/, "Graph Inspector must update gate kind through the controller plane");
@@ -809,8 +811,8 @@ assert(!/launchTitle:\s*["']Launch mode["']|graphLaunchTitle:\s*["']LAUNCH MODE|
 assert(!/label=["'](?:Member \(profile\)|message — instruction for this turn|Dispatch mode|Collection policy|Quorum|Timeout \(ms\)|Output format|Allowed tools|Blocked tools|depends_on mode)["']|emptyLabel=["'](?:Runtime profile default|No step-level blocks)["']|placeholder=["'](?:e\.g\. Run the focused tests and report failures\.|required|runtime default)["']|>— select member —<\/option>/.test(builderMemberStepControlBlock), "Basic member-step UI must not compose member-step labels, placeholders, or tool-scope empty text locally");
 assert(!/Emits|tools:\s*\{|schemaHint\.schema|schemaHint\.toolSummary/.test(builderMemberStepControlBlock), "Basic member-step UI must not compose schema/tool hint copy locally");
 assert(!/const\s+default(?:Dispatch|Collection)[\s\S]{0,180}const\s+(?:dispatchValue|collection)\s*=/.test(inspector), "Graph inspector gate controls must not display fork/join schema defaults as selected authored state");
-assert.match(controller, /function graphGateControlState[\s\S]*\{ value:\s*["']["'],\s*label:\s*["']runtime default["'][\s\S]*collectionPolicyOptions/, "Graph gate controller state must expose a blank runtime-default collection state");
-assert.match(controller, /function graphGateControlState[\s\S]*\{ value:\s*["']["'],\s*label:\s*["']runtime default["'][\s\S]*dispatchModeOptions/, "Graph gate controller state must expose a blank runtime-default dispatch state");
+assert.match(controller, /function graphGateControlState[\s\S]*\{ value:\s*["']["'],\s*label:\s*view\.inspectorRuntimeDefaultLabel[\s\S]*collectionPolicyOptions/, "Graph gate controller state must expose a schema-backed blank runtime-default collection state");
+assert.match(controller, /function graphGateControlState[\s\S]*\{ value:\s*["']["'],\s*label:\s*view\.inspectorRuntimeDefaultLabel[\s\S]*dispatchModeOptions/, "Graph gate controller state must expose a schema-backed blank runtime-default dispatch state");
 assert(!/function\s+memberStepFromInstance[\s\S]{0,900}(dispatchMode:\s*normalizeDispatchMode\(|collection:\s*normalizeCollectionMode\(|dependsMode:\s*["']all["'])/.test(controller), "Graph-to-Basic member projection must omit absent dispatch/collection/dependency metadata instead of emitting local defaults");
 assert(!/function\s+flowStepForGraphGroup[\s\S]{0,1500}dependsMode:\s*["']all["']/.test(controller), "Graph grouped branch/parallel projection must not invent dependsMode=all");
 assert(!/function\s+graphSegmentsToFlowSteps[\s\S]{0,4000}dependsMode:\s*["']all["']/.test(controller), "Graph structured branch/parallel projection must not invent dependsMode=all");
