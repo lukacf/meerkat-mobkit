@@ -10344,15 +10344,6 @@ window.AgentsView = AgentsView;
 /* builder.jsx */
 
 {
-let _bid = 1;
-const bid = (p) => p + "_" + (_bid++).toString(36);
-function freshFlow() {
-  _bid = 1;
-  return { name: "untitled-mob", steps: [{ id: bid("s"), type: "input", task: "", fields: "", inputParams: [] }] };
-}
-function blankAuthoringFlow() {
-  return freshFlow();
-}
 function CondValue({ field, value, onChange }) {
   const control = window.MobKitFlowController.conditionValueControl(field, value);
   if (control.kind === "enum") {

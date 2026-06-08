@@ -18,19 +18,6 @@
 // The vertical START → step → step layout mirrors how a FrameSpec reads
 // top-to-bottom along its depends_on chain.
 
-let _bid = 1;
-const bid = (p) => p + "_" + (_bid++).toString(36);
-
-function freshFlow() {
-  _bid = 1;
-  return { name: "untitled-mob", steps: [{ id: bid("s"), type: "input", task: "", fields: "", inputParams: [] }] };
-}
-
-// Blank only: real reusable examples come from MobKit sample mobpacks.
-function blankAuthoringFlow() {
-  return freshFlow();
-}
-
 function CondValue({ field, value, onChange }) {
   const control = window.MobKitFlowController.conditionValueControl(field, value);
   if (control.kind === "enum") {

@@ -70,6 +70,7 @@ assert.equal(packageJson.scripts?.["test:visual-contract"], "node test/handoff-v
 assert(!/\bconst\s+PRESETS\b/.test(builder), "builder must not expose local preset flows");
 assert(!/window\.PRESETS\b/.test(builder), "builder must not export local preset flows");
 assert(!/presetFlow\b/.test(builder), "builder must not expose preset-flow constructors; only blank authoring bootstrap is local");
+assert(!/function\s+(?:freshFlow|blankAuthoringFlow)\b|name:\s*["']untitled-mob["'][\s\S]{0,120}inputParams:\s*\[\]/.test(builder), "Basic editor must not carry dead local prototype mobpack seeds");
 assert(!/presetFlow\b/.test(app), "app must not boot from local preset flows");
 assert.match(builder, /window\.blankAuthoringFlow\s*=/, "builder may expose only a blank authoring bootstrap");
 assert(!/window\.PRESETS\b/.test(app), "app must load sample flows from MobKit schema, not window.PRESETS");
