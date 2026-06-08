@@ -187,19 +187,20 @@ function GateInspector({ studio, flow, inst, clearSelection, contract }) {
               return (
                 <div key={e.id} className="branch-cond-row">
                   <div className="row row--gap">
-                    <select className="field__select" value={e.kind === "cond" ? "cond" : "fallback"} onChange={ev => {
-                      if (ev.target.value === "fallback") {
-                        const patch = window.MobKitFlowController.graphEdgeFallbackPatch(e, contract);
-                        if (patch) studio.updateEdge(e.id, patch);
-                      } else {
-                        setCondOwner(row.firstOwnerId);
-                      }
+                    <select className="field__select" value={row.modeValue} onChange={ev => {
+                      const patch = window.MobKitFlowController.graphBranchConditionModePatch(e, ev.target.value, {
+                        conditionOptions: row.conditionOptions,
+                        firstOwnerId: row.firstOwnerId,
+                        defaultOperator: row.defaultOperator,
+                        contract,
+                      });
+                      if (patch) studio.updateEdge(e.id, patch);
                     }}>
                       {row.modeOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
                     <span className="kv__hint">{row.targetPrefix} {row.targetLabel}</span>
                   </div>
-                  {e.kind === "cond" && (
+                  {row.isCondition && (
                     !row.hasConditionOptions ? (
                       <div className="kv__hint" style={{ color: "var(--warn)" }}>{row.noConditionOptionsHint}</div>
                     ) : (
@@ -451,14 +452,17 @@ function EdgeInspector({ studio, flow, edge, clearSelection, contract }) {
     defaultOperator: edgeState.defaultOperator,
     conditionPatch: edgeState.conditionPatch,
     forceLabel: true,
+    contract,
   }));
   const setCondOwner = (instanceId) => change(window.MobKitFlowController.graphEdgeConditionOwnerPatch(edge, edgeState.conditionOptions, instanceId, {
     defaultOperator: edgeState.defaultOperator,
     forceLabel: true,
+    contract,
   }));
   const setCondField = (field) => change(window.MobKitFlowController.graphEdgeConditionFieldPatch(edge, edgeState.conditionOptions, field, {
     defaultOperator: edgeState.defaultOperator,
     forceLabel: true,
+    contract,
   }));
   return (
     <>
@@ -486,7 +490,7 @@ function EdgeInspector({ studio, flow, edge, clearSelection, contract }) {
           <div className="section__title">{edgeState.labelTitle}</div>
           <input className="field__input" value={edge.label || ""} onChange={e => change(window.MobKitFlowController.graphEdgeLabelPatch(e.target.value))} />
         </div>
-        {edge.kind === "cond" && (
+        {edgeState.isCondition && (
           <div className="section">
             <div className="section__title">{edgeState.conditionTitle}</div>
             {!edgeState.hasConditionOptions ? (

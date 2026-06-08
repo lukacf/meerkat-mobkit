@@ -235,9 +235,12 @@ assert.match(inspectorGateBlock, /gateState\.joinMemberLabel/, "Graph gate join-
 assert.match(inspectorGateBlock, /gateState\.joinMemberPlaceholderOption/, "Graph gate join-member placeholder must come from controller state");
 assert.match(inspectorGateBlock, /gateState\.emptyBranchHint/, "Graph gate branch empty-state copy must come from controller state");
 assert.match(inspectorGateBlock, /row\.modeOptions\.map/, "Graph gate branch mode labels must come from controller-projected rows");
+assert.match(inspectorGateBlock, /MobKitFlowController\.graphBranchConditionModePatch/, "Graph gate branch mode changes must go through the controller plane");
+assert.match(inspectorGateBlock, /row\.isCondition/, "Graph gate branch inspector must use controller-projected condition visibility");
 assert.match(inspectorGateBlock, /row\.noConditionOptionsHint/, "Graph gate branch condition warning copy must come from controller-projected rows");
 assert.match(inspectorEdgeBlock, /edgeState\.eyebrow/, "Graph edge inspector must render header through controller state");
 assert.match(inspectorEdgeBlock, /edgeState\.conditionTitle/, "Graph edge condition title must come from controller state");
+assert.match(inspectorEdgeBlock, /edgeState\.isCondition/, "Graph edge inspector must use controller-projected condition visibility");
 assert.match(inspectorEdgeBlock, /edgeState\.noConditionOptionsHint/, "Graph edge missing-condition warning must come from controller state");
 assert.match(inspectorEdgeBlock, /edgeState\.ownerPlaceholderOption/, "Graph edge condition owner placeholder must come from controller state");
 assert.match(inspectorTerminalBlock, /terminalState\.eyebrow/, "Graph terminal inspector must render terminal header through the controller plane");
@@ -267,6 +270,7 @@ assert.match(controller, /joinMemberPlaceholderOption/, "controller plane must o
 assert.match(controller, /noConditionOptionsHint/, "controller plane must own Graph condition empty-state copy");
 assert.match(inspectorGateBlock, /MobKitFlowController\.graphBranchConditionRows/, "Graph branch inspector must render condition rows through the controller plane");
 assert.match(controller, /function graphBranchConditionRows/, "controller plane must own Graph branch condition row projection");
+assert.match(controller, /function graphBranchConditionModePatch/, "controller plane must own Graph branch condition/fallback mode patch semantics");
 assert.match(inspector, /MobKitFlowController\.graphGateKindPatch/, "Graph Inspector must update gate kind through the controller plane");
 assert.match(controller, /function graphGateKindPatch/, "controller plane must own gate-kind patch semantics");
 assert.match(inspector, /graphGateKindPatch\(e\.target\.value,\s*contract\)/, "Graph gate-kind edits must pass the MobKit contract into controller validation");
@@ -289,6 +293,7 @@ assert.match(inspector, /MobKitFlowController\.graphForkDispatchPatch/, "Graph I
 assert.match(inspector, /graphForkDispatchPatch\(inst, e\.target\.value, contract\)/, "Graph fork dispatch edits must pass the MobKit contract into controller validation");
 assert(!/studio\.members\.map\(member => <option/.test(inspectorGateBlock), "Graph gate inspector must not assemble controller-member option rows locally");
 assert(!/graphConditionRefForEdge\(|graphConditionOptions\(|conditionOperatorOptions\(|contractDefaultValue\(contract,\s*["']condition_operator["']\)|studio\.instances\.find\(i => i\.id === e\.to\)|studio\.memberById\(target\?\.memberId\)|condOptions\.find|fields\.find/.test(inspectorGateBlock), "Graph branch inspector must not assemble condition owner, field, operator, or target rows locally");
+assert(!/e\.kind\s*={2,3}\s*["']cond["']|edge\.kind\s*={2,3}\s*["']cond["']|MobKitFlowController\.graphEdgeFallbackPatch/.test(inspectorGateBlock + "\n" + inspectorEdgeBlock), "Graph inspectors must not branch on raw condition edge kind or call fallback patch helpers directly");
 assert(!/>GATE ·|>EDGE ·|>LABEL<\/div>|>KIND<\/div>|>COLLECTION POLICY<\/div>|>DISPATCH MODE<\/div>|>CONDITIONS<\/div>|>WIRING<\/div>|>CONDITION<\/div>|>FROM<\/div>|>TO<\/div>|>DELETE<\/button>|Join member|— select member —|MobKit uses this real profile|Exports as the MobKit parallel flow dispatch mode|add outgoing edges|add input params or an upstream schema field|Add an upstream agent with an output schema|— member —|— field —|<option value="cond">condition<\/option>|<option value="fallback">fallback<\/option>/.test(inspectorGateBlock + "\n" + inspectorEdgeBlock), "Graph gate/edge inspector must not compose authoring labels, placeholders, or empty-state copy locally");
 assert(!/const otherInstances|studio\.instances\.filter\(i => !i\.isTerminal|studio\.memberById\(o\.memberId\)|studio\.schemas \|\| \[\]|find\(s => s\.id === member\.schema\)/.test(inspectorInstanceBlock), "Graph instance inspector must not assemble fork-source or member-output schema projections locally");
 assert.match(inspectorInstanceBlock, /instanceState\.outputFieldRows/, "Graph instance inspector must render member-output rows through the controller plane");
@@ -552,7 +557,7 @@ assert.match(controller, /function graphEdgeConditionValuePatch/, "controller pl
 assert(!/setCond\(\s*\{\s*(?:op|val):|graphEdgeConditionPatch\([^)]*,\s*\{\s*(?:op|val):/.test(inspectorGateBlock + "\n" + inspectorEdgeBlock), "Graph condition controls must not assemble operator/value patches locally");
 assert.match(inspector, /MobKitFlowController\.graphEdgeKindPatch/, "Graph inspector must patch edge kind transitions through the controller plane");
 assert.match(controller, /function graphEdgeKindPatch/, "controller plane must own Graph edge kind transition semantics");
-assert.match(inspector, /MobKitFlowController\.graphEdgeFallbackPatch/, "Graph inspector must patch branch fallback edges through the controller plane");
+assert.match(inspector, /MobKitFlowController\.graphBranchConditionModePatch/, "Graph inspector must patch branch condition/fallback transitions through the controller plane");
 assert.match(controller, /function graphEdgeFallbackPatch/, "controller plane must own Graph fallback edge transition semantics");
 assert.match(controller, /mob_definition\?\.editor_graph_draft/, "Graph draft labels and lane names must hydrate from the MobKit editor_graph_draft contract");
 assert(!/graphEdgeFallbackPatch[\s\S]{0,180}label:\s*["']fallback["']/.test(controller), "Graph fallback edge transition must not own the fallback label locally");

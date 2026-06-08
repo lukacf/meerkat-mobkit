@@ -5093,6 +5093,8 @@ assert.equal(branchConditionRows.length, 2);
 assert.deepEqual({
   id: branchConditionRows[0].edge.id,
   modeValue: branchConditionRows[0].modeValue,
+  isCondition: branchConditionRows[0].isCondition,
+  conditionEdgeKind: branchConditionRows[0].conditionEdgeKind,
   targetLabel: branchConditionRows[0].targetLabel,
   ownerValue: branchConditionRows[0].ownerValue,
   fieldValue: branchConditionRows[0].fieldValue,
@@ -5101,6 +5103,8 @@ assert.deepEqual({
 }, {
   id: "e_cond",
   modeValue: "cond",
+  isCondition: true,
+  conditionEdgeKind: "cond",
   targetLabel: "Reviewer",
   ownerValue: "n_writer",
   fieldValue: "body",
@@ -5118,6 +5122,67 @@ assert.deepEqual(branchConditionRows[0].fieldPlaceholderOption, { value: "", lab
 assert.equal(branchConditionRows[0].noConditionOptionsHint, "add input params or an upstream schema field for this condition");
 assert.deepEqual(branchConditionRows[1].targetLabel, "Done");
 assert.equal(branchConditionRows[1].modeValue, "fallback");
+assert.equal(branchConditionRows[1].isCondition, false);
+assert.deepEqual(controller.graphBranchConditionModePatch(branchConditionRows[1].edge, "cond", {
+  conditionOptions: branchConditionRows[1].conditionOptions,
+  firstOwnerId: branchConditionRows[1].firstOwnerId,
+  defaultOperator: branchConditionRows[1].defaultOperator,
+  contract: graphShapeContract,
+}), {
+  kind: "cond",
+  cond: { var: "steps.n_writer.body", op: "==", val: "" },
+  label: "steps.n_writer.body == \"\"",
+});
+assert.deepEqual(controller.graphBranchConditionModePatch(branchConditionRows[0].edge, "fallback", {
+  contract: graphShapeContract,
+}), {
+  kind: "next",
+  label: "fallback",
+  cond: null,
+});
+const customGraphConditionContract = {
+  mob_definition: {
+    defaults: {
+      graph_edge_kind: "straight",
+      graph_condition_edge_kind: "when",
+      condition_operator: "==",
+    },
+    graph_edge_kinds: ["straight", "when"],
+    condition_operators: ["=="],
+    editor_graph_draft: testEditorGraphDraft,
+  },
+};
+const customBranchConditionRows = controller.graphBranchConditionRows({
+  inst: { id: "branch_1", isGate: true, gateKind: "branch", col: 0, row: 0 },
+  edges: [{ id: "e_when", from: "branch_1", to: "n_review", kind: "when", cond: { var: "steps.n_writer.body", op: "==", val: "ok" } }],
+  instances: [
+    { id: "branch_1", isGate: true, gateKind: "branch", col: 0, row: 0 },
+    { id: "n_writer", memberId: "m_writer", col: 0, row: 1 },
+    { id: "n_review", memberId: "m_review", col: 1, row: 0 },
+  ],
+  members: graphProjectionMembers,
+  schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
+  contract: customGraphConditionContract,
+});
+assert.equal(customBranchConditionRows[0].modeValue, "when");
+assert.equal(customBranchConditionRows[0].isCondition, true);
+assert.deepEqual(customBranchConditionRows[0].modeOptions, [
+  { value: "when", label: "condition" },
+  { value: "fallback", label: "fallback" },
+]);
+assert.deepEqual(controller.graphBranchConditionModePatch(customBranchConditionRows[0].edge, "fallback", {
+  contract: customGraphConditionContract,
+}), { kind: "straight", label: "fallback", cond: null });
+assert.deepEqual(controller.graphBranchConditionModePatch({ id: "e_straight", from: "branch_1", to: "n_review", kind: "straight" }, "when", {
+  conditionOptions: customBranchConditionRows[0].conditionOptions,
+  firstOwnerId: customBranchConditionRows[0].firstOwnerId,
+  defaultOperator: customBranchConditionRows[0].defaultOperator,
+  contract: customGraphConditionContract,
+}), {
+  kind: "when",
+  cond: { var: "steps.n_writer.body", op: "==", val: "" },
+  label: "steps.n_writer.body == \"\"",
+});
 const edgeInspectorState = controller.graphEdgeInspectorState({
   edge: {
     id: "e_cond",
@@ -5143,6 +5208,8 @@ assert.deepEqual(edgeInspectorState.ownerPlaceholderOption, { value: "", label: 
 assert.equal(edgeInspectorState.fromTitle, "FROM");
 assert.equal(edgeInspectorState.toTitle, "TO");
 assert.equal(edgeInspectorState.edgeKind, "cond");
+assert.equal(edgeInspectorState.isCondition, true);
+assert.equal(edgeInspectorState.conditionEdgeKind, "cond");
 assert.equal(edgeInspectorState.defaultOperator, "==");
 assert.equal(edgeInspectorState.operatorValue, "==");
 assert.equal(edgeInspectorState.ownerValue, "n_writer");
@@ -5169,12 +5236,23 @@ const defaultEdgeInspectorState = controller.graphEdgeInspectorState({
 });
 assert.equal(defaultEdgeInspectorState.title, "Writer → —");
 assert.equal(defaultEdgeInspectorState.edgeKind, "next");
+assert.equal(defaultEdgeInspectorState.isCondition, false);
 assert.equal(defaultEdgeInspectorState.selectedEdgeKind.value, "next");
 assert.deepEqual(defaultEdgeInspectorState.toRows.map((row) => [row.label, row.value]), [
   ["instance", "n_done"],
   ["member", "(terminal)"],
   ["schema", "—"],
 ]);
+const customEdgeInspectorState = controller.graphEdgeInspectorState({
+  edge: { id: "e_when", from: "n_writer", to: "n_review", kind: "when", cond: { var: "steps.n_writer.body", op: "==", val: "ok" } },
+  instances: graphProjectionInstances,
+  members: graphProjectionMembers,
+  schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
+  contract: customGraphConditionContract,
+});
+assert.equal(customEdgeInspectorState.edgeKind, "when");
+assert.equal(customEdgeInspectorState.isCondition, true);
+assert.equal(customEdgeInspectorState.conditionEdgeKind, "when");
 assert.deepEqual(controller.graphGateKindPatch(" fork ", graphShapeContract), {
   gateKind: "fork",
 });

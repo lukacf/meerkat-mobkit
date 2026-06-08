@@ -3784,6 +3784,10 @@
       : { var: "" };
   }
 
+  function graphConditionEdgeKindForPatch(options = {}) {
+    return String(options.conditionKind || contractDefaultValue(options.contract, "graph_condition_edge_kind") || "cond").trim();
+  }
+
   function graphEdgeConditionOwnerPatch(edge, conditionOptions = [], instanceId, options = {}) {
     const rows = Array.isArray(conditionOptions) ? conditionOptions : [];
     const id = String(instanceId || "").trim();
@@ -3799,7 +3803,7 @@
       defaultOperator: options.defaultOperator,
       forceLabel: options.forceLabel,
     });
-    return options.includeKind ? { kind: "cond", ...patch } : patch;
+    return options.includeKind ? { kind: graphConditionEdgeKindForPatch(options), ...patch } : patch;
   }
 
   function graphEdgeConditionFieldPatch(edge, conditionOptions = [], field, options = {}) {
@@ -3817,12 +3821,13 @@
       defaultOperator: options.defaultOperator,
       forceLabel: options.forceLabel,
     });
-    return options.includeKind ? { kind: "cond", ...patch } : patch;
+    return options.includeKind ? { kind: graphConditionEdgeKindForPatch(options), ...patch } : patch;
   }
 
   function graphEdgeKindPatch(edge, nextKind, options = {}) {
     const kind = String(nextKind || "").trim();
-    if (kind !== "cond") {
+    const conditionKind = graphConditionEdgeKindForPatch(options);
+    if (kind !== conditionKind) {
       const previous = normalizedEdgeCondition(edge);
       const previousText = previous?.path ? conditionTextForPath(previous.path, previous) : "";
       const currentLabel = String(edge?.label || "");
@@ -3833,7 +3838,7 @@
       };
     }
     return {
-      kind: "cond",
+      kind: conditionKind,
       ...graphEdgeConditionPatch(edge, options.conditionPatch || {}, {
         defaultOperator: options.defaultOperator,
         forceLabel: options.forceLabel,
@@ -3846,6 +3851,20 @@
     const draft = editorGraphDraftContract(contract);
     if (!kind || !draft) return null;
     return { kind, label: draft.fallbackEdgeLabel, cond: null };
+  }
+
+  function graphBranchConditionModePatch(edge, mode, options = {}) {
+    const value = String(mode || "").trim();
+    if (value === "fallback") return graphEdgeFallbackPatch(edge, options.contract);
+    const conditionKind = graphConditionEdgeKindForPatch(options);
+    if (value !== conditionKind) return {};
+    return graphEdgeConditionOwnerPatch(edge, options.conditionOptions, options.firstOwnerId, {
+      defaultOperator: options.defaultOperator,
+      forceLabel: true,
+      includeKind: true,
+      contract: options.contract,
+      conditionKind,
+    });
   }
 
   function graphConnectionEdgeDraft({ from, to, edges, id, contract } = {}) {
@@ -4205,6 +4224,7 @@
     const instanceById = new Map(sourceInstances.map((candidate) => [candidate.id, candidate]));
     const memberById = new Map(sourceMembers.map((candidate) => [candidate.id, candidate]));
     const defaultOperator = contractDefaultValue(contract, "condition_operator");
+    const conditionKind = contractDefaultValue(contract, "graph_condition_edge_kind");
     return sourceEdges
       .filter((edge) => edge?.from === inst?.id)
       .map((edge) => {
@@ -4222,11 +4242,14 @@
         const fields = condOwner?.fields || conditionOptions[0]?.fields || [];
         const condField = fields.find((field) => field.name === condRef.field) || null;
         const operatorValue = edge?.cond?.op || defaultOperator;
+        const isCondition = !!conditionKind && edge?.kind === conditionKind;
         return {
           edge,
-          modeValue: edge?.kind === "cond" ? "cond" : "fallback",
+          isCondition,
+          conditionEdgeKind: conditionKind,
+          modeValue: isCondition ? conditionKind : "fallback",
           modeOptions: [
-            { value: "cond", label: "condition" },
+            ...(conditionKind ? [{ value: conditionKind, label: "condition" }] : []),
             { value: "fallback", label: "fallback" },
           ],
           targetPrefix: "→",
@@ -4306,8 +4329,10 @@
     const defaultOperator = contractDefaultValue(contract, "condition_operator");
     const operatorValue = edge?.cond?.op || defaultOperator;
     const defaultEdgeKind = contractDefaultValue(contract, "graph_edge_kind");
+    const conditionKind = contractDefaultValue(contract, "graph_condition_edge_kind");
     const edgeKind = String(edge?.kind || defaultEdgeKind || "").trim();
     const edgeKindOptions = graphEdgeKindOptions(contract, edgeKind);
+    const isCondition = !!conditionKind && edgeKind === conditionKind;
     return {
       edge,
       fromInstance,
@@ -4358,6 +4383,8 @@
       operatorOptions: conditionOperatorOptions(contract, operatorValue),
       defaultEdgeKind,
       edgeKind,
+      isCondition,
+      conditionEdgeKind: conditionKind,
       edgeKindOptions,
       selectedEdgeKind: edgeKindOptions.find((option) => option.value === edgeKind) || null,
       conditionPatch: graphFirstConditionPatch(edge, conditionOptions, { defaultOperator }),
@@ -8415,6 +8442,7 @@
     graphEdgeConditionOperatorPatch,
     graphEdgeConditionValuePatch,
     graphEdgeKindPatch,
+    graphBranchConditionModePatch,
     graphEdgeFallbackPatch,
     graphConnectionEdgeDraft,
     graphSelectionState,

@@ -3817,6 +3817,10 @@ window.MOBKIT_BOOT = {
       : { var: "" };
   }
 
+  function graphConditionEdgeKindForPatch(options = {}) {
+    return String(options.conditionKind || contractDefaultValue(options.contract, "graph_condition_edge_kind") || "cond").trim();
+  }
+
   function graphEdgeConditionOwnerPatch(edge, conditionOptions = [], instanceId, options = {}) {
     const rows = Array.isArray(conditionOptions) ? conditionOptions : [];
     const id = String(instanceId || "").trim();
@@ -3832,7 +3836,7 @@ window.MOBKIT_BOOT = {
       defaultOperator: options.defaultOperator,
       forceLabel: options.forceLabel,
     });
-    return options.includeKind ? { kind: "cond", ...patch } : patch;
+    return options.includeKind ? { kind: graphConditionEdgeKindForPatch(options), ...patch } : patch;
   }
 
   function graphEdgeConditionFieldPatch(edge, conditionOptions = [], field, options = {}) {
@@ -3850,12 +3854,13 @@ window.MOBKIT_BOOT = {
       defaultOperator: options.defaultOperator,
       forceLabel: options.forceLabel,
     });
-    return options.includeKind ? { kind: "cond", ...patch } : patch;
+    return options.includeKind ? { kind: graphConditionEdgeKindForPatch(options), ...patch } : patch;
   }
 
   function graphEdgeKindPatch(edge, nextKind, options = {}) {
     const kind = String(nextKind || "").trim();
-    if (kind !== "cond") {
+    const conditionKind = graphConditionEdgeKindForPatch(options);
+    if (kind !== conditionKind) {
       const previous = normalizedEdgeCondition(edge);
       const previousText = previous?.path ? conditionTextForPath(previous.path, previous) : "";
       const currentLabel = String(edge?.label || "");
@@ -3866,7 +3871,7 @@ window.MOBKIT_BOOT = {
       };
     }
     return {
-      kind: "cond",
+      kind: conditionKind,
       ...graphEdgeConditionPatch(edge, options.conditionPatch || {}, {
         defaultOperator: options.defaultOperator,
         forceLabel: options.forceLabel,
@@ -3879,6 +3884,20 @@ window.MOBKIT_BOOT = {
     const draft = editorGraphDraftContract(contract);
     if (!kind || !draft) return null;
     return { kind, label: draft.fallbackEdgeLabel, cond: null };
+  }
+
+  function graphBranchConditionModePatch(edge, mode, options = {}) {
+    const value = String(mode || "").trim();
+    if (value === "fallback") return graphEdgeFallbackPatch(edge, options.contract);
+    const conditionKind = graphConditionEdgeKindForPatch(options);
+    if (value !== conditionKind) return {};
+    return graphEdgeConditionOwnerPatch(edge, options.conditionOptions, options.firstOwnerId, {
+      defaultOperator: options.defaultOperator,
+      forceLabel: true,
+      includeKind: true,
+      contract: options.contract,
+      conditionKind,
+    });
   }
 
   function graphConnectionEdgeDraft({ from, to, edges, id, contract } = {}) {
@@ -4238,6 +4257,7 @@ window.MOBKIT_BOOT = {
     const instanceById = new Map(sourceInstances.map((candidate) => [candidate.id, candidate]));
     const memberById = new Map(sourceMembers.map((candidate) => [candidate.id, candidate]));
     const defaultOperator = contractDefaultValue(contract, "condition_operator");
+    const conditionKind = contractDefaultValue(contract, "graph_condition_edge_kind");
     return sourceEdges
       .filter((edge) => edge?.from === inst?.id)
       .map((edge) => {
@@ -4255,11 +4275,14 @@ window.MOBKIT_BOOT = {
         const fields = condOwner?.fields || conditionOptions[0]?.fields || [];
         const condField = fields.find((field) => field.name === condRef.field) || null;
         const operatorValue = edge?.cond?.op || defaultOperator;
+        const isCondition = !!conditionKind && edge?.kind === conditionKind;
         return {
           edge,
-          modeValue: edge?.kind === "cond" ? "cond" : "fallback",
+          isCondition,
+          conditionEdgeKind: conditionKind,
+          modeValue: isCondition ? conditionKind : "fallback",
           modeOptions: [
-            { value: "cond", label: "condition" },
+            ...(conditionKind ? [{ value: conditionKind, label: "condition" }] : []),
             { value: "fallback", label: "fallback" },
           ],
           targetPrefix: "→",
@@ -4339,8 +4362,10 @@ window.MOBKIT_BOOT = {
     const defaultOperator = contractDefaultValue(contract, "condition_operator");
     const operatorValue = edge?.cond?.op || defaultOperator;
     const defaultEdgeKind = contractDefaultValue(contract, "graph_edge_kind");
+    const conditionKind = contractDefaultValue(contract, "graph_condition_edge_kind");
     const edgeKind = String(edge?.kind || defaultEdgeKind || "").trim();
     const edgeKindOptions = graphEdgeKindOptions(contract, edgeKind);
+    const isCondition = !!conditionKind && edgeKind === conditionKind;
     return {
       edge,
       fromInstance,
@@ -4391,6 +4416,8 @@ window.MOBKIT_BOOT = {
       operatorOptions: conditionOperatorOptions(contract, operatorValue),
       defaultEdgeKind,
       edgeKind,
+      isCondition,
+      conditionEdgeKind: conditionKind,
       edgeKindOptions,
       selectedEdgeKind: edgeKindOptions.find((option) => option.value === edgeKind) || null,
       conditionPatch: graphFirstConditionPatch(edge, conditionOptions, { defaultOperator }),
@@ -8448,6 +8475,7 @@ window.MOBKIT_BOOT = {
     graphEdgeConditionOperatorPatch,
     graphEdgeConditionValuePatch,
     graphEdgeKindPatch,
+    graphBranchConditionModePatch,
     graphEdgeFallbackPatch,
     graphConnectionEdgeDraft,
     graphSelectionState,
@@ -9835,14 +9863,15 @@ function GateInspector({ studio, flow, inst, clearSelection, contract }) {
       forceLabel: true,
       includeKind: true
     }));
-    return /* @__PURE__ */ React.createElement("div", { key: e.id, className: "branch-cond-row" }, /* @__PURE__ */ React.createElement("div", { className: "row row--gap" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: e.kind === "cond" ? "cond" : "fallback", onChange: (ev) => {
-      if (ev.target.value === "fallback") {
-        const patch = window.MobKitFlowController.graphEdgeFallbackPatch(e, contract);
-        if (patch) studio.updateEdge(e.id, patch);
-      } else {
-        setCondOwner(row.firstOwnerId);
-      }
-    } }, row.modeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("span", { className: "kv__hint" }, row.targetPrefix, " ", row.targetLabel)), e.kind === "cond" && (!row.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, row.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "bld-cond", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.ownerValue, onChange: (ev) => setCondOwner(ev.target.value) }, row.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.fieldValue, onChange: (ev) => setCondField(ev.target.value) }, /* @__PURE__ */ React.createElement("option", { value: row.fieldPlaceholderOption.value }, row.fieldPlaceholderOption.label), row.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: row.operatorValue, onChange: (ev) => studio.updateEdge(e.id, window.MobKitFlowController.graphEdgeConditionOperatorPatch(e, ev.target.value, { defaultOperator: row.defaultOperator, contract })) }, row.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: row.condField, value: e.cond?.val, onChange: (val) => studio.updateEdge(e.id, window.MobKitFlowController.graphEdgeConditionValuePatch(e, val, { defaultOperator: row.defaultOperator })) }))));
+    return /* @__PURE__ */ React.createElement("div", { key: e.id, className: "branch-cond-row" }, /* @__PURE__ */ React.createElement("div", { className: "row row--gap" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.modeValue, onChange: (ev) => {
+      const patch = window.MobKitFlowController.graphBranchConditionModePatch(e, ev.target.value, {
+        conditionOptions: row.conditionOptions,
+        firstOwnerId: row.firstOwnerId,
+        defaultOperator: row.defaultOperator,
+        contract
+      });
+      if (patch) studio.updateEdge(e.id, patch);
+    } }, row.modeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("span", { className: "kv__hint" }, row.targetPrefix, " ", row.targetLabel)), row.isCondition && (!row.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, row.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "bld-cond", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.ownerValue, onChange: (ev) => setCondOwner(ev.target.value) }, row.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.fieldValue, onChange: (ev) => setCondField(ev.target.value) }, /* @__PURE__ */ React.createElement("option", { value: row.fieldPlaceholderOption.value }, row.fieldPlaceholderOption.label), row.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: row.operatorValue, onChange: (ev) => studio.updateEdge(e.id, window.MobKitFlowController.graphEdgeConditionOperatorPatch(e, ev.target.value, { defaultOperator: row.defaultOperator, contract })) }, row.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: row.condField, value: e.cond?.val, onChange: (val) => studio.updateEdge(e.id, window.MobKitFlowController.graphEdgeConditionValuePatch(e, val, { defaultOperator: row.defaultOperator })) }))));
   })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.wiringTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, /* @__PURE__ */ React.createElement("dt", null, gateState.incomingLabel), /* @__PURE__ */ React.createElement("dd", null, gateState.incomingCount), /* @__PURE__ */ React.createElement("dt", null, gateState.outgoingLabel), /* @__PURE__ */ React.createElement("dd", null, gateState.outgoingCount)))));
 }
 function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, contract }) {
@@ -9910,20 +9939,23 @@ function EdgeInspector({ studio, flow, edge, clearSelection, contract }) {
   const setEdgeKind = (kind) => change(window.MobKitFlowController.graphEdgeKindPatch(edge, kind, {
     defaultOperator: edgeState.defaultOperator,
     conditionPatch: edgeState.conditionPatch,
-    forceLabel: true
+    forceLabel: true,
+    contract
   }));
   const setCondOwner = (instanceId) => change(window.MobKitFlowController.graphEdgeConditionOwnerPatch(edge, edgeState.conditionOptions, instanceId, {
     defaultOperator: edgeState.defaultOperator,
-    forceLabel: true
+    forceLabel: true,
+    contract
   }));
   const setCondField = (field) => change(window.MobKitFlowController.graphEdgeConditionFieldPatch(edge, edgeState.conditionOptions, field, {
     defaultOperator: edgeState.defaultOperator,
-    forceLabel: true
+    forceLabel: true,
+    contract
   }));
   return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, edgeState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, edgeState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, edgeState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
     studio.deleteEdge(edge.id);
     clearSelection();
-  } }, edgeState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.edgeKind, onChange: (e) => setEdgeKind(e.target.value) }, edgeState.edgeKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), edgeState.selectedEdgeKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.selectedEdgeKind.reason)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: edge.label || "", onChange: (e) => change(window.MobKitFlowController.graphEdgeLabelPatch(e.target.value)) })), edge.kind === "cond" && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.conditionTitle), !edgeState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "cond-row" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.ownerValue, onChange: (e) => setCondOwner(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: edgeState.ownerPlaceholderOption.value }, edgeState.ownerPlaceholderOption.label), edgeState.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.fieldValue, disabled: !edgeState.condOwner, onChange: (e) => setCondField(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, edgeState.fieldPlaceholder), edgeState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", style: { width: 60 }, value: edgeState.operatorValue, onChange: (e) => change(window.MobKitFlowController.graphEdgeConditionOperatorPatch(edge, e.target.value, { defaultOperator: edgeState.defaultOperator, contract })) }, edgeState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: edgeState.condField, value: edge.cond?.val, onChange: (val) => change(window.MobKitFlowController.graphEdgeConditionValuePatch(edge, val, { defaultOperator: edgeState.defaultOperator })) }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.fromTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.fromRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.toTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.toRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))))));
+  } }, edgeState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.edgeKind, onChange: (e) => setEdgeKind(e.target.value) }, edgeState.edgeKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), edgeState.selectedEdgeKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.selectedEdgeKind.reason)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: edge.label || "", onChange: (e) => change(window.MobKitFlowController.graphEdgeLabelPatch(e.target.value)) })), edgeState.isCondition && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.conditionTitle), !edgeState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "cond-row" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.ownerValue, onChange: (e) => setCondOwner(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: edgeState.ownerPlaceholderOption.value }, edgeState.ownerPlaceholderOption.label), edgeState.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.fieldValue, disabled: !edgeState.condOwner, onChange: (e) => setCondField(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, edgeState.fieldPlaceholder), edgeState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", style: { width: 60 }, value: edgeState.operatorValue, onChange: (e) => change(window.MobKitFlowController.graphEdgeConditionOperatorPatch(edge, e.target.value, { defaultOperator: edgeState.defaultOperator, contract })) }, edgeState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: edgeState.condField, value: edge.cond?.val, onChange: (val) => change(window.MobKitFlowController.graphEdgeConditionValuePatch(edge, val, { defaultOperator: edgeState.defaultOperator })) }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.fromTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.fromRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.toTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.toRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))))));
 }
 function AddNodeMenu({ at, members, contract, onPick, onClose, onJumpToAgents }) {
   const [q, setQ] = React.useState("");
