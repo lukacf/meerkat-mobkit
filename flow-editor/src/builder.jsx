@@ -138,9 +138,9 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
   );
 }
 
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [] }) {
+function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null }) {
   const members = studio?.members || [];
-  const [flowLocal, setFlowLocal] = React.useState(freshFlow);
+  const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [selLocal, setSelLocal] = React.useState(null);
   const flow = flowProp || flowLocal;
   const setFlow = setFlowProp || setFlowLocal;
@@ -240,6 +240,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
           onClose={() => onCloseSource && onCloseSource()}
           state={sourceDocument}
           busy={sourceBusy}
+          sourceView={sourceView}
         />
 
         <div className="zoom-controls" onMouseDown={e => e.stopPropagation()}>

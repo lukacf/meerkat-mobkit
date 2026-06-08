@@ -97,8 +97,8 @@ function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, re
   );
 }
 
-function SourceCodePanel({ state, busy = false, compact = false }) {
-  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact });
+function SourceCodePanel({ state, busy = false, compact = false, sourceView = null }) {
+  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact, sourceView });
   if (editorState.showLoading) {
     return <pre className={editorState.bodyClass} role="textbox" aria-readonly="true">{editorState.loadingText}</pre>;
   }
@@ -112,9 +112,9 @@ function SourceCodePanel({ state, busy = false, compact = false }) {
   );
 }
 
-function SourceDrawer({ open, onClose, state }) {
+function SourceDrawer({ open, onClose, state, sourceView = null }) {
   if (!open) return null;
-  const editorState = window.MobKitFlowController.sourceEditorState(state);
+  const editorState = window.MobKitFlowController.sourceEditorState(state, { sourceView });
   return (
     <div className="source-drawer">
       <div className="source-drawer__head">
@@ -128,14 +128,14 @@ function SourceDrawer({ open, onClose, state }) {
           <button className="btn btn--ghost btn--sm" onClick={onClose}>{editorState.closeLabel}</button>
         </div>
       </div>
-      <SourceCodePanel state={state} />
+      <SourceCodePanel state={state} sourceView={sourceView} />
     </div>
   );
 }
 
-function InlineSourceEditor({ open, onClose, state, busy = false, surface = "basic" }) {
+function InlineSourceEditor({ open, onClose, state, busy = false, surface = "basic", sourceView = null }) {
   if (!open) return null;
-  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true });
+  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true, sourceView });
   return (
     <div className={"bld-toml bld-toml--" + surface} onMouseDown={e => e.stopPropagation()}>
       <div className="bld-toml__head">
@@ -149,7 +149,7 @@ function InlineSourceEditor({ open, onClose, state, busy = false, surface = "bas
           <button className="btn btn--ghost btn--sm" onClick={onClose}>{editorState.closeLabel}</button>
         </div>
       </div>
-      <SourceCodePanel state={state} busy={busy} compact />
+      <SourceCodePanel state={state} busy={busy} compact sourceView={sourceView} />
     </div>
   );
 }

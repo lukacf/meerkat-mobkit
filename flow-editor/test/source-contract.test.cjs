@@ -29,6 +29,7 @@ const builderRepeatBlock = (builderStepInspectorBlock.match(/if \(step\.type ===
 const builderMemberStepControlBlock = (builderStepInspectorBlock.match(/\/\/ member step[\s\S]*?function ToolScopeEditor/) || [""])[0];
 const builderCanvasBlock = (builder.match(/function Fork[\s\S]*?function StepInspector/) || [""])[0];
 const builderStepPickerBlock = (builder.match(/function StepPicker[\s\S]*?\/\/ ── Inspector/) || [""])[0];
+const sourceEditorBlock = (controller.match(/function sourceEditorState[\s\S]*?function sampleFlowsFromSchema/) || [""])[0];
 const agentsListBlock = (agents.match(/function AgentsList[\s\S]*?function AddAgentControl/) || [""])[0];
 const addAgentControlBlock = (agents.match(/function AddAgentControl[\s\S]*?function AgentsMain/) || [""])[0];
 const agentsMainBlock = (agents.match(/function AgentsMain[\s\S]*?\/\/ ── Agent editor/) || [""])[0];
@@ -73,7 +74,10 @@ assert(!/window\.PRESETS\b/.test(builder), "builder must not export local preset
 assert(!/presetFlow\b/.test(builder), "builder must not expose preset-flow constructors; only blank authoring bootstrap is local");
 assert(!/function\s+(?:freshFlow|blankAuthoringFlow)\b|name:\s*["']untitled-mob["'][\s\S]{0,120}inputParams:\s*\[\]/.test(builder), "Basic editor must not carry dead local prototype mobpack seeds");
 assert(!/window\.blankAuthoringFlow\s*=/.test(builder), "Basic editor must not export removed local blank authoring constructors");
+assert.match(builder, /MobKitFlowController\.emptyAuthoringFlowState\(\)/, "Basic editor fallback state must come from controller plane");
 assert(!/presetFlow\b/.test(app), "app must not boot from local preset flows");
+assert(!/window\.blankAuthoringFlow\(\)|\bfreshFlow\b/.test(app + "\n" + builder), "app and Basic editor must not reference removed local blank authoring globals");
+assert.match(app, /MobKitFlowController\.emptyAuthoringFlowState\(\)/, "app initial authoring state must come from controller plane");
 assert(!/window\.PRESETS\b/.test(app), "app must load sample flows from MobKit schema, not window.PRESETS");
 assert(!/j_graph_/.test(app), "graph editor must not create standalone join gates; joins must belong to MobKit branch/parallel shapes");
 assert(!/label:\s*gateKind === "join"/.test(app), "graph editor must not keep visual-only join fallback nodes");
@@ -588,7 +592,14 @@ assert(!/plan\?\.plan_trace|plan\?\.command|document\?\.deploy_command|plan\?\.p
 assert.match(controller, /mobkit\/mobpacks\/export did not return mob_toml/, "Source drawer must fail closed when MobKit export omits mob_toml");
 assert.match(controller, /function sourceDocumentFromExport/, "controller plane must own export result to source-document projection");
 assert.match(controller, /function sourceEditorState/, "controller plane must own source editor display projection");
-assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceEditorState\(state/, "source editor overlays must render controller-projected source state");
+assert.match(controller, /mob_definition\?\.editor_source_view/, "controller plane must hydrate source editor labels from MobKit schema");
+assert.match(controllerProjectionTest, /editor_source_view:\s*\{[\s\S]*drawer_eyebrow:\s*"SOURCE · mob\.toml"[\s\S]*loading_text:\s*"rendering mob\.toml from mobkit\/mobpacks\/export\.\.\."/,
+  "source editor label/loading copy must be test-covered as MobKit schema data");
+assert(!/SOURCE · mob\.toml|rendering mob\.toml from mobkit\/mobpacks\/export|copyLabel:\s*"copy"|closeLabel:\s*"×"/.test(sourceEditorBlock),
+  "source editor projection must not keep local label/loading defaults");
+assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceEditorState\(state, \{ busy, compact, sourceView \}\)/, "source code panel must render controller-projected source state with schema source view");
+assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceEditorState\(state, \{ sourceView \}\)/, "source drawer must render controller-projected source state with schema source view");
+assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceEditorState\(state, \{ busy, compact: true, sourceView \}\)/, "inline source editor must render controller-projected source state with schema source view");
 assert.match(src("overlays.jsx"), /editorState\.drawerEyebrow/, "source drawer header must render through controller state");
 assert.match(src("overlays.jsx"), /editorState\.inlineTitle/, "inline source title must render through controller state");
 assert.match(src("overlays.jsx"), /editorState\.copyLabel/, "source copy action label must render through controller state");
@@ -597,10 +608,11 @@ assert.match(app, /MobKitFlowController\.sourceDocumentFromExport\(document, res
 assert(!/const renderedDocument = \{ \.\.\.document, mob_toml: result\.mob_toml \}|filename:\s*result\.filename|media_type:\s*result\.media_type|source:\s*["']mobkit\/mobpacks\/export["']/.test(app), "app shell must not assemble export-backed source documents locally");
 assert(!/mob_toml:\s*result\.mob_toml\s*\|\||result\.mob_toml\s*\|\|\s*document\.mob_toml/.test(app), "Source drawer must not fall back to stale document.mob_toml; previewed TOML must come from mobkit/mobpacks/export");
 assert.match(app, /exportCurrentSourceDocument[\s\S]*MobKitFlowController\.exportDocument\(document\)/, "source-file views must render mob.toml through the MobKit export API");
-assert.match(app, /<BuilderView[\s\S]*onShowSource=\{\(\) => handleInlineSource\("basic"\)\}[\s\S]*sourceOpen=\{inlineSourceOpen && inlineSourceSurface === "basic"\}[\s\S]*sourceDocument=\{inlineSourceDocument\}/, "Basic editor mob.toml tile must open a Basic-scoped inline export-backed source editor");
-assert.match(builder, /<InlineSourceEditor[\s\S]*state=\{sourceDocument\}[\s\S]*busy=\{sourceBusy\}/, "Basic editor must render the real mob.toml content inline, not as a decorative tile");
+assert.match(app, /<BuilderView[\s\S]*onShowSource=\{\(\) => handleInlineSource\("basic"\)\}[\s\S]*sourceOpen=\{inlineSourceOpen && inlineSourceSurface === "basic"\}[\s\S]*sourceDocument=\{inlineSourceDocument\}[\s\S]*sourceView=\{catalogs\.sourceView\}/, "Basic editor mob.toml tile must open a Basic-scoped inline export-backed source editor");
+assert.match(builder, /<InlineSourceEditor[\s\S]*state=\{sourceDocument\}[\s\S]*busy=\{sourceBusy\}[\s\S]*sourceView=\{sourceView\}/, "Basic editor must render the real mob.toml content inline, not as a decorative tile");
 assert.match(app, /<GraphEditor[\s\S]*onOpenSourceFile=\{\(\) => handleInlineSource\("graph"\)\}/, "Graph source-file nodes must request a Graph-scoped export-backed inline editor");
-assert.match(app, /<InlineSourceEditor[\s\S]*open=\{inlineSourceOpen && inlineSourceSurface === "graph"\}[\s\S]*surface="graph"/, "Graph source editor must not leak the Basic editor source panel across modes");
+assert.match(app, /<InlineSourceEditor[\s\S]*open=\{inlineSourceOpen && inlineSourceSurface === "graph"\}[\s\S]*surface="graph"[\s\S]*sourceView=\{catalogs\.sourceView\}/, "Graph source editor must not leak the Basic editor source panel across modes");
+assert.match(app, /<SourceDrawer[\s\S]*state=\{sourceDocument\}[\s\S]*sourceView=\{catalogs\.sourceView\}/, "source drawer must render schema-backed source view labels");
 assert.match(graph, /onOpenSourceFile\?\.\(inst\)/, "Graph terminal source nodes must delegate source rendering to the app/control boundary");
 assert.match(graph, /role=\{nodeState\.role\}[\s\S]*aria-label=\{nodeState\.ariaLabel\}/, "Graph mob.toml terminal must behave as a controller-projected clickable file affordance");
 assert.match(controller, /isSourceFile[\s\S]*Open mob\.toml read-only source editor/, "controller plane must project Graph mob.toml terminal accessibility affordance");

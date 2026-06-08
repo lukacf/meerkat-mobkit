@@ -714,6 +714,13 @@ pub fn mobpack_schema_response() -> Value {
         "terminal_edge_label_prefix": "to ",
         "join_label_prefix": "join · "
     });
+    let editor_source_view = json!({
+        "drawer_eyebrow": "SOURCE · mob.toml",
+        "inline_title": "mob.toml",
+        "loading_text": "rendering mob.toml from mobkit/mobpacks/export...",
+        "copy_label": "copy",
+        "close_label": "×"
+    });
     let mob_definition = json!({
         "authoritative_type": "meerkat_mob::MobDefinition",
         "defaults": {
@@ -819,6 +826,7 @@ pub fn mobpack_schema_response() -> Value {
         "graph_frame_kinds": GRAPH_FRAME_KINDS,
         "graph_edge_kinds": GRAPH_EDGE_KINDS,
         "editor_graph_draft": editor_graph_draft,
+        "editor_source_view": editor_source_view,
         "dispatch_modes": dispatch_mode_values(),
         "collection_policies": collection_policy_values(),
         "dependency_modes": dependency_mode_values()
@@ -15197,6 +15205,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_draft"]["parallel_lane_labels"],
             json!(["lane 1", "lane 2"])
+        );
+        assert_eq!(
+            mob_definition["editor_source_view"]["drawer_eyebrow"],
+            json!("SOURCE · mob.toml")
+        );
+        assert_eq!(
+            mob_definition["editor_source_view"]["inline_title"],
+            json!("mob.toml")
+        );
+        assert_eq!(
+            mob_definition["editor_source_view"]["loading_text"],
+            json!("rendering mob.toml from mobkit/mobpacks/export...")
         );
     }
 

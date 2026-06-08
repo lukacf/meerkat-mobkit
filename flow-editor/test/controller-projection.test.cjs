@@ -5,6 +5,10 @@ global.window = {};
 require("../src/controller.js");
 
 const controller = global.window.MobKitFlowController;
+assert.deepEqual(controller.emptyAuthoringFlowState(), {
+  name: "",
+  steps: [],
+});
 const TEST_SCHEMA = {
   deploy_settings: {
     command: "rkat mob deploy",
@@ -436,7 +440,16 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       isolated: true,
     },
   },
-  mob_definition: { runtime_modes: ["turn_driven"] },
+  mob_definition: {
+    runtime_modes: ["turn_driven"],
+    editor_source_view: {
+      drawer_eyebrow: "SOURCE · mob.toml",
+      inline_title: "mob.toml",
+      loading_text: "rendering mob.toml from mobkit/mobpacks/export...",
+      copy_label: "copy",
+      close_label: "×",
+    },
+  },
   models: [{ id: "openai/gpt-5.5", label: "GPT-5.5", vendor: "openai" }],
   tool_catalog: [{ id: "builtins", label: "builtins", desc: "Built-ins", kind: "runtime", source: "meerkat_mob::ToolConfig" }],
   skill_realms: [{ id: "mobkit/sample-mobpacks", source: "mobkit/sample-mobpack", skills: [{ id: "mob.workpad" }] }],
@@ -473,6 +486,13 @@ assert.deepEqual(hydratedCatalogs.models.map((model) => model.id), ["openai/gpt-
 assert.deepEqual(hydratedCatalogs.toolCatalog.map((tool) => tool.id), ["builtins"]);
 assert.deepEqual(hydratedCatalogs.skillRealms.map((realm) => realm.id), ["mobkit/sample-mobpacks"]);
 assert.deepEqual(hydratedCatalogs.agentDefinitions.map((definition) => definition.id), ["sample_reviewer"]);
+assert.deepEqual(hydratedCatalogs.sourceView, {
+  drawerEyebrow: "SOURCE · mob.toml",
+  inlineTitle: "mob.toml",
+  loadingText: "rendering mob.toml from mobkit/mobpacks/export...",
+  copyLabel: "copy",
+  closeLabel: "×",
+});
 assert.equal(hydratedCatalogs.grid, catalogBoot.grid);
 assert.deepEqual(hydratedCatalogs.template, {
   name: "Blank",
@@ -3409,7 +3429,7 @@ assert.equal(sourceProjection.sourceDocument.source, "mobkit/mobpacks/export");
 assert.equal(sourceProjection.sourceDocument.validation.ok, true);
 assert.equal(sourceProjection.validationRows[0].head, "exported");
 assert.equal(sourceProjection.stage, "valid");
-assert.deepEqual(controller.sourceEditorState(sourceProjection.sourceDocument), {
+assert.deepEqual(controller.sourceEditorState(sourceProjection.sourceDocument, { sourceView: hydratedCatalogs.sourceView }), {
   source: "[mob]\nid = \"source_proof\"\n",
   drawerEyebrow: "SOURCE · mob.toml",
   inlineTitle: "mob.toml",
@@ -3422,7 +3442,7 @@ assert.deepEqual(controller.sourceEditorState(sourceProjection.sourceDocument), 
   closeLabel: "×",
   copyDisabled: false,
 });
-assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true }), {
+assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true, sourceView: hydratedCatalogs.sourceView }), {
   source: "",
   drawerEyebrow: "SOURCE · mob.toml",
   inlineTitle: "mob.toml",
@@ -3433,6 +3453,19 @@ assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true 
   loadingText: "rendering mob.toml from mobkit/mobpacks/export...",
   copyLabel: "copy",
   closeLabel: "×",
+  copyDisabled: true,
+});
+assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true }), {
+  source: "",
+  drawerEyebrow: "",
+  inlineTitle: "",
+  sourceLabel: "",
+  validationSource: "",
+  bodyClass: "bld-toml__body",
+  showLoading: true,
+  loadingText: "",
+  copyLabel: "",
+  closeLabel: "",
   copyDisabled: true,
 });
 assert.throws(

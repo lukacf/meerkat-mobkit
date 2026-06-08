@@ -1041,6 +1041,10 @@
     });
   }
 
+  function emptyAuthoringFlowState() {
+    return { name: "", steps: [] };
+  }
+
   function reconcileDeletedFlowStepReferences(flow, deletedId) {
     if (!flow || typeof flow !== "object") return flow;
     const target = String(deletedId || "").trim();
@@ -5876,6 +5880,7 @@
       deployDefaults: deployDefaultsFromSchema(null),
       mobDefaults: mobDefaultsFromSchema(null),
       mobDefinition: null,
+      sourceView: null,
       validationSource: "",
       contractMeta: {
         loaded: false,
@@ -5901,6 +5906,7 @@
       deployDefaults: deployDefaultsFromSchema(schema),
       mobDefaults: mobDefaultsFromSchema(schema),
       mobDefinition: schema?.mob_definition || null,
+      sourceView: sourceViewFromSchema(schema),
       validationSource: schema?.validation_source || "",
       contractMeta: {
         loaded: true,
@@ -7328,6 +7334,7 @@
 
   function sourceEditorState(sourceDocument, options = {}) {
     const source = sourceDocument?.mob_toml || "";
+    const view = sourceViewForState(sourceDocument, options.sourceView);
     const sourceLabel = [
       sourceDocument?.source || "",
       sourceDocument?.filename || "",
@@ -7337,16 +7344,44 @@
     const bodyClass = options.compact ? "bld-toml__body" : "source-drawer__body";
     return {
       source,
-      drawerEyebrow: "SOURCE · mob.toml",
-      inlineTitle: "mob.toml",
+      drawerEyebrow: view.drawerEyebrow,
+      inlineTitle: view.inlineTitle,
       sourceLabel,
       validationSource,
       bodyClass,
       showLoading: !!options.busy && !source,
-      loadingText: "rendering mob.toml from mobkit/mobpacks/export...",
-      copyLabel: "copy",
-      closeLabel: "×",
+      loadingText: view.loadingText,
+      copyLabel: view.copyLabel,
+      closeLabel: view.closeLabel,
       copyDisabled: !!options.busy || !source,
+    };
+  }
+
+  function sourceViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_source_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      drawerEyebrow: String(view.drawer_eyebrow || "").trim(),
+      inlineTitle: String(view.inline_title || "").trim(),
+      loadingText: String(view.loading_text || "").trim(),
+      copyLabel: String(view.copy_label || "").trim(),
+      closeLabel: String(view.close_label || "").trim(),
+    };
+    return out.drawerEyebrow && out.inlineTitle && out.loadingText && out.copyLabel && out.closeLabel
+      ? out
+      : null;
+  }
+
+  function sourceViewForState(sourceDocument, sourceView) {
+    const view = sourceView && typeof sourceView === "object"
+      ? sourceView
+      : sourceDocument?.sourceView;
+    return {
+      drawerEyebrow: String(view?.drawerEyebrow || ""),
+      inlineTitle: String(view?.inlineTitle || ""),
+      loadingText: String(view?.loadingText || ""),
+      copyLabel: String(view?.copyLabel || ""),
+      closeLabel: String(view?.closeLabel || ""),
     };
   }
 
@@ -8254,6 +8289,7 @@
     studioHistorySnapshotPatch,
     studioUndoPatch,
     studioRedoPatch,
+    emptyAuthoringFlowState,
     flowStepUpdatePatch,
     flowStepInsertPatch,
     flowStepDeletePatch,

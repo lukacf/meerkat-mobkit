@@ -19,7 +19,7 @@ function App() {
   const [stage, setStage] = React.useState("draft");
   // Shared mob-flow step-tree — the single source of truth for both the
   // Build (editor) and Flow (diagram) views.
-  const [flow, setFlow] = React.useState(() => window.blankAuthoringFlow());
+  const [flow, setFlow] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [stepSel, setStepSel] = React.useState(null);
   // Editor sub-mode: "basic" (vertical builder) | "advanced" (grid graph).
   const [editorMode, setEditorMode] = React.useState("basic");
@@ -799,6 +799,7 @@ function App() {
               state={inlineSourceDocument}
               busy={inlineSourceBusy}
               surface="graph"
+              sourceView={catalogs.sourceView}
           />
           <AddNodeMenu
             at={addAt}
@@ -840,6 +841,7 @@ function App() {
           onCloseSource={clearSourceProjection}
           contract={contract}
           toolCatalog={catalogs.toolCatalog}
+          sourceView={catalogs.sourceView}
         />
       )}
 
@@ -892,7 +894,7 @@ function App() {
 
       <DrySim open={drySim} onClose={() => setDrySim(false)} onActiveStep={setActiveStepId} runKey={drySimKey} document={drySimDocument} plan={drySimPlan} />
       <ValidateSheet open={validate} onClose={() => setValidate(false)} onPublish={handlePublish} onDeployPlan={handleDeployPlan} onDeployRun={handleDeployRun} results={validationResults} stage={stage} />
-      <SourceDrawer open={sourceOpen} onClose={clearSourceProjection} state={sourceDocument} />
+      <SourceDrawer open={sourceOpen} onClose={clearSourceProjection} state={sourceDocument} sourceView={catalogs.sourceView} />
       <Tweaks
         t={t}
         setTweak={setTweak}
