@@ -474,6 +474,12 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
         { kind: "text", text: " flow." },
       ],
     },
+    editor_graph_view: {
+      zoom_out_title: "Zoom out",
+      fit_title: "Fit to view",
+      zoom_in_title: "Zoom in",
+      port_drag_title: "Drag to a member to connect",
+    },
     editor_graph_template_view: {
       template_eyebrow: "TEMPLATE",
       summary_title: "SUMMARY",
@@ -578,6 +584,19 @@ assert.deepEqual(controller.basicEditorViewState(null), {
   tipsTitle: "",
   emptyPanelTitle: "",
   emptyPanelSubtitleParts: [],
+});
+assert.deepEqual(hydratedCatalogs.graphView, {
+  zoomOutTitle: "Zoom out",
+  fitTitle: "Fit to view",
+  zoomInTitle: "Zoom in",
+  portDragTitle: "Drag to a member to connect",
+});
+assert.deepEqual(controller.graphCanvasViewState(hydratedCatalogs.graphView), hydratedCatalogs.graphView);
+assert.deepEqual(controller.graphCanvasViewState(null), {
+  zoomOutTitle: "",
+  fitTitle: "",
+  zoomInTitle: "",
+  portDragTitle: "",
 });
 assert.deepEqual(hydratedCatalogs.graphTemplateView, {
   templateEyebrow: "TEMPLATE",

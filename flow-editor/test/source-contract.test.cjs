@@ -30,6 +30,7 @@ const builderMemberStepControlBlock = (builderStepInspectorBlock.match(/\/\/ mem
 const builderCanvasBlock = (builder.match(/function Fork[\s\S]*?function StepInspector/) || [""])[0];
 const builderStepPickerBlock = (builder.match(/function StepPicker[\s\S]*?\/\/ ── Inspector/) || [""])[0];
 const sourceEditorBlock = (controller.match(/function sourceEditorState[\s\S]*?function sampleFlowsFromSchema/) || [""])[0];
+const graphEditorBlock = (graph.match(/function GraphEditor[\s\S]*?function NodeView/) || [""])[0];
 const agentsListBlock = (agents.match(/function AgentsList[\s\S]*?function AddAgentControl/) || [""])[0];
 const addAgentControlBlock = (agents.match(/function AddAgentControl[\s\S]*?function AgentsMain/) || [""])[0];
 const agentsMainBlock = (agents.match(/function AgentsMain[\s\S]*?\/\/ ── Agent editor/) || [""])[0];
@@ -93,6 +94,11 @@ assert.match(app, /<BuilderView[\s\S]*toolCatalog=\{catalogs\.toolCatalog\}/, "a
 assert.match(app, /<AgentsView[\s\S]*agentDefinitions=\{catalogs\.agentDefinitions\}/, "app shell must inject MobKit agent definitions into Agent editor");
 assert.match(app, /<GraphEditor[\s\S]*grid=\{catalogs\.grid\}/, "app shell must inject layout data into Graph editor");
 assert.match(app, /<GraphEditor[\s\S]*contract=\{contract\}/, "app shell must inject the MobKit graph contract into Graph editor");
+assert.match(app, /<GraphEditor[\s\S]*graphView=\{catalogs\.graphView\}/, "app shell must inject schema-backed Graph canvas view state");
+assert.match(controller, /mob_definition\?\.editor_graph_view/, "controller plane must hydrate Graph canvas chrome from MobKit schema");
+assert.match(graphEditorBlock, /graphView(?:\s*=\s*null)?[\s\S]*MobKitFlowController\.graphCanvasViewState\(graphView\)/, "Graph editor must render canvas affordance titles through controller-projected view state");
+assert.match(graphEditorBlock, /(?=[\s\S]*canvasView\.zoomOutTitle)(?=[\s\S]*canvasView\.fitTitle)(?=[\s\S]*canvasView\.zoomInTitle)(?=[\s\S]*canvasView\.portDragTitle)/, "Graph editor must use controller-projected zoom and port titles");
+assert(!/title=["'](?:Zoom out|Fit to view|Zoom in|Drag to a member to connect)["']/.test(graph), "Graph editor JSX must not compose canvas affordance titles locally");
 assert.match(app, /<Inspector[\s\S]*templateSeed=\{catalogs\.template\}/, "app shell must inject MobKit summary seed into Inspector");
 assert.match(controller, /template:\s*graphTemplateSeedFromBlankMobpack\(blankMobpack\)/, "Graph template inspector seed must hydrate from the MobKit blank mobpack template");
 assert.match(app, /<Tweaks[\s\S]*modelCatalog=\{catalogs\.models\}/, "deploy settings UI must receive MobKit model catalog via props");

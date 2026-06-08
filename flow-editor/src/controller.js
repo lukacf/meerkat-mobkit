@@ -701,6 +701,30 @@
     };
   }
 
+  function graphViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_graph_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      zoomOutTitle: String(view.zoom_out_title || "").trim(),
+      fitTitle: String(view.fit_title || "").trim(),
+      zoomInTitle: String(view.zoom_in_title || "").trim(),
+      portDragTitle: String(view.port_drag_title || "").trim(),
+    };
+    return out.zoomOutTitle && out.fitTitle && out.zoomInTitle && out.portDragTitle
+      ? out
+      : null;
+  }
+
+  function graphCanvasViewState(graphView) {
+    const view = graphView && typeof graphView === "object" ? graphView : null;
+    return {
+      zoomOutTitle: String(view?.zoomOutTitle || ""),
+      fitTitle: String(view?.fitTitle || ""),
+      zoomInTitle: String(view?.zoomInTitle || ""),
+      portDragTitle: String(view?.portDragTitle || ""),
+    };
+  }
+
   function agentSelectionState({ selection = null, members = [], schemas = [], agentView = null } = {}) {
     const view = agentViewForState(agentView);
     const emptyState = {
@@ -6039,6 +6063,7 @@
       sourceView: null,
       agentView: null,
       basicView: null,
+      graphView: null,
       graphTemplateView: null,
       validationSource: "",
       contractMeta: {
@@ -6068,6 +6093,7 @@
       sourceView: sourceViewFromSchema(schema),
       agentView: agentViewFromSchema(schema),
       basicView: basicViewFromSchema(schema),
+      graphView: graphViewFromSchema(schema),
       graphTemplateView: graphTemplateViewFromSchema(schema),
       validationSource: schema?.validation_source || "",
       contractMeta: {
@@ -8525,6 +8551,7 @@
     mobKitCatalogsFromSchema,
     schemaSkillRealms,
     mergeSkillRealms,
+    graphCanvasViewState,
     runtimeModeOptions,
     diagnosticsToRows,
     deployResultToRows,

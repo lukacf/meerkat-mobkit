@@ -734,6 +734,30 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function graphViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_graph_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      zoomOutTitle: String(view.zoom_out_title || "").trim(),
+      fitTitle: String(view.fit_title || "").trim(),
+      zoomInTitle: String(view.zoom_in_title || "").trim(),
+      portDragTitle: String(view.port_drag_title || "").trim(),
+    };
+    return out.zoomOutTitle && out.fitTitle && out.zoomInTitle && out.portDragTitle
+      ? out
+      : null;
+  }
+
+  function graphCanvasViewState(graphView) {
+    const view = graphView && typeof graphView === "object" ? graphView : null;
+    return {
+      zoomOutTitle: String(view?.zoomOutTitle || ""),
+      fitTitle: String(view?.fitTitle || ""),
+      zoomInTitle: String(view?.zoomInTitle || ""),
+      portDragTitle: String(view?.portDragTitle || ""),
+    };
+  }
+
   function agentSelectionState({ selection = null, members = [], schemas = [], agentView = null } = {}) {
     const view = agentViewForState(agentView);
     const emptyState = {
@@ -6072,6 +6096,7 @@ window.MOBKIT_BOOT = {
       sourceView: null,
       agentView: null,
       basicView: null,
+      graphView: null,
       graphTemplateView: null,
       validationSource: "",
       contractMeta: {
@@ -6101,6 +6126,7 @@ window.MOBKIT_BOOT = {
       sourceView: sourceViewFromSchema(schema),
       agentView: agentViewFromSchema(schema),
       basicView: basicViewFromSchema(schema),
+      graphView: graphViewFromSchema(schema),
       graphTemplateView: graphTemplateViewFromSchema(schema),
       validationSource: schema?.validation_source || "",
       contractMeta: {
@@ -8558,6 +8584,7 @@ window.MOBKIT_BOOT = {
     mobKitCatalogsFromSchema,
     schemaSkillRealms,
     mergeSkillRealms,
+    graphCanvasViewState,
     runtimeModeOptions,
     diagnosticsToRows,
     deployResultToRows,
@@ -9329,12 +9356,13 @@ function occMap(insts) {
   for (const i of insts) m.set(i.col + ":" + i.row, i);
   return m;
 }
-function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract }) {
+function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null }) {
   const hostRef = React.useRef(null);
   const [drag, setDrag] = React.useState(null);
   const [conn, setConn] = React.useState(null);
   const [hoverInId, setHoverInId] = React.useState(null);
   const [hoverCell, setHoverCell] = React.useState(null);
+  const canvasView = window.MobKitFlowController.graphCanvasViewState(graphView);
   const [view, setView] = React.useState({ scale: 1, tx: 0, ty: 0 });
   const viewRef = React.useRef(view);
   React.useEffect(() => {
@@ -9586,6 +9614,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
           hoverIn: hoverInId === inst.id,
           onMouseDown: onNodeDown,
           onPortDown,
+          portDragTitle: canvasView.portDragTitle,
           state
         }
       );
@@ -9604,6 +9633,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         hoverIn: hoverInId === inst.id,
         onMouseDown: onNodeDown,
         onPortDown,
+        portDragTitle: canvasView.portDragTitle,
         onOpenSourceFile
       }
     );
@@ -9619,16 +9649,16 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       }
     },
     /* @__PURE__ */ React.createElement("div", { className: "canvas", style: { width: totalW, height: totalH, transform: `translate(${fit.tx}px, ${fit.ty}px) scale(${fit.scale})`, transformOrigin: "0 0" } }, colHeads, rowHeads, frameEls, cells, /* @__PURE__ */ React.createElement("svg", { className: "edges-svg", width: totalW, height: totalH }, /* @__PURE__ */ React.createElement("defs", null, /* @__PURE__ */ React.createElement("marker", { id: "arr", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--ink)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-red", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--danger)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-acc", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--accent)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-dim", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--subtle)" }))), edgeEls, conn && /* @__PURE__ */ React.createElement("path", { d: edgePath(conn.from, conn.to), className: "edge-line is-ghost", markerEnd: "url(#arr-acc)" })), nodeEls),
-    /* @__PURE__ */ React.createElement("div", { className: "zoom-controls", onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", title: "Zoom out", onClick: () => {
+    /* @__PURE__ */ React.createElement("div", { className: "zoom-controls", onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", title: canvasView.zoomOutTitle, onClick: () => {
       const r = hostRef.current.getBoundingClientRect();
       zoomAt(1 / 1.2, r.left + r.width / 2, r.top + r.height / 2);
-    } }, "\u2212"), /* @__PURE__ */ React.createElement("button", { className: "zoom-btn zoom-btn--pct", title: "Fit to view", onClick: fitToBounds }, Math.round(view.scale * 100), "%"), /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", title: "Zoom in", onClick: () => {
+    } }, "\u2212"), /* @__PURE__ */ React.createElement("button", { className: "zoom-btn zoom-btn--pct", title: canvasView.fitTitle, onClick: fitToBounds }, Math.round(view.scale * 100), "%"), /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", title: canvasView.zoomInTitle, onClick: () => {
       const r = hostRef.current.getBoundingClientRect();
       zoomAt(1.2, r.left + r.width / 2, r.top + r.height / 2);
     } }, "+"))
   );
 }
-function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, onOpenSourceFile }) {
+function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, onOpenSourceFile }) {
   const b = nodeBox(g, inst);
   if (nodeState.isTerminal) {
     const openSourceFile = (event) => {
@@ -9698,13 +9728,13 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
       style: { left: b.x, top: b.y, width: b.w, height: b.h },
       onMouseDown: (e) => onMouseDown(e, inst)
     },
-    /* @__PURE__ */ React.createElement("div", { className: "port port-out", onMouseDown: (e) => onPortDown(e, inst), title: "Drag to a member to connect" }),
+    /* @__PURE__ */ React.createElement("div", { className: "port port-out", onMouseDown: (e) => onPortDown(e, inst), title: portDragTitle }),
     /* @__PURE__ */ React.createElement("div", { className: "node__head" }, /* @__PURE__ */ React.createElement("span", { className: "node__role" }, nodeState.roleLabel), /* @__PURE__ */ React.createElement("span", { className: "node__idx" }, nodeState.launchLabel)),
     /* @__PURE__ */ React.createElement("div", { className: "node__body" }, /* @__PURE__ */ React.createElement("div", { className: "node__name" }, nodeState.title), /* @__PURE__ */ React.createElement("div", { className: "node__model" }, nodeState.subtitle)),
     !nodeState.isCompact && /* @__PURE__ */ React.createElement("div", { className: "node__tools" }, nodeState.toolRows.map((row) => /* @__PURE__ */ React.createElement("span", { key: row.id, className: row.className }, row.id)), nodeState.overflowLabel && /* @__PURE__ */ React.createElement("span", { className: "tag" }, nodeState.overflowLabel))
   );
 }
-function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, state }) {
+function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, state }) {
   const b = nodeBox(g, inst);
   const gateState = window.MobKitFlowController.graphGateCanvasState({ inst, edges: state.edges });
   return /* @__PURE__ */ React.createElement(
@@ -9715,7 +9745,7 @@ function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortD
       style: { left: b.x, top: b.y, width: b.w, height: b.h },
       onMouseDown: (e) => onMouseDown(e, inst)
     },
-    /* @__PURE__ */ React.createElement("div", { className: "port port-out", onMouseDown: (e) => onPortDown(e, inst), title: "Drag to a member to connect" }),
+    /* @__PURE__ */ React.createElement("div", { className: "port port-out", onMouseDown: (e) => onPortDown(e, inst), title: portDragTitle }),
     /* @__PURE__ */ React.createElement("span", { className: "gate__glyph" }, gateState.glyph),
     /* @__PURE__ */ React.createElement("span", { className: "gate__label" }, gateState.sublabel)
   );
@@ -11718,7 +11748,8 @@ function App() {
       onOpenSourceFile: () => handleInlineSource("graph"),
       memberFocus: null,
       grid: catalogs.grid,
-      contract
+      contract,
+      graphView: catalogs.graphView
     }
   ), /* @__PURE__ */ React.createElement(
     InlineSourceEditor,

@@ -212,12 +212,13 @@ function occMap(insts) {
   return m;
 }
 
-function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract }) {
+function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null }) {
   const hostRef = React.useRef(null);
   const [drag, setDrag] = React.useState(null);
   const [conn, setConn] = React.useState(null);
   const [hoverInId, setHoverInId] = React.useState(null);
   const [hoverCell, setHoverCell] = React.useState(null);
+  const canvasView = window.MobKitFlowController.graphCanvasViewState(graphView);
 
   // ── View transform (pan + zoom) ──
   const [view, setView] = React.useState({ scale: 1, tx: 0, ty: 0 });
@@ -488,6 +489,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
           hoverIn={hoverInId === inst.id}
           onMouseDown={onNodeDown}
           onPortDown={onPortDown}
+          portDragTitle={canvasView.portDragTitle}
           state={state}
         />
       );
@@ -504,6 +506,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         hoverIn={hoverInId === inst.id}
         onMouseDown={onNodeDown}
         onPortDown={onPortDown}
+        portDragTitle={canvasView.portDragTitle}
         onOpenSourceFile={onOpenSourceFile}
       />
     );
@@ -534,14 +537,14 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
 
       {/* Zoom controls — fixed in the corner, outside the scaled canvas. */}
       <div className="zoom-controls" onMouseDown={e => e.stopPropagation()}>
-        <button className="zoom-btn" title="Zoom out" onClick={() => {
+        <button className="zoom-btn" title={canvasView.zoomOutTitle} onClick={() => {
           const r = hostRef.current.getBoundingClientRect();
           zoomAt(1 / 1.2, r.left + r.width / 2, r.top + r.height / 2);
         }}>−</button>
-        <button className="zoom-btn zoom-btn--pct" title="Fit to view" onClick={fitToBounds}>
+        <button className="zoom-btn zoom-btn--pct" title={canvasView.fitTitle} onClick={fitToBounds}>
           {Math.round(view.scale * 100)}%
         </button>
-        <button className="zoom-btn" title="Zoom in" onClick={() => {
+        <button className="zoom-btn" title={canvasView.zoomInTitle} onClick={() => {
           const r = hostRef.current.getBoundingClientRect();
           zoomAt(1.2, r.left + r.width / 2, r.top + r.height / 2);
         }}>+</button>
@@ -550,7 +553,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   );
 }
 
-function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, onOpenSourceFile }) {
+function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, onOpenSourceFile }) {
   const b = nodeBox(g, inst);
 
   if (nodeState.isTerminal) {
@@ -622,7 +625,7 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
       style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
       onMouseDown={(e) => onMouseDown(e, inst)}
     >
-      <div className="port port-out" onMouseDown={(e) => onPortDown(e, inst)} title="Drag to a member to connect" />
+      <div className="port port-out" onMouseDown={(e) => onPortDown(e, inst)} title={portDragTitle} />
       <div className="node__head">
         <span className="node__role">{nodeState.roleLabel}</span>
         <span className="node__idx">{nodeState.launchLabel}</span>
@@ -641,7 +644,7 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
   );
 }
 
-function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, state }) {
+function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, state }) {
   const b = nodeBox(g, inst);
   const gateState = window.MobKitFlowController.graphGateCanvasState({ inst, edges: state.edges });
 
@@ -651,7 +654,7 @@ function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortD
       style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
       onMouseDown={(e) => onMouseDown(e, inst)}
     >
-      <div className="port port-out" onMouseDown={(e) => onPortDown(e, inst)} title="Drag to a member to connect" />
+      <div className="port port-out" onMouseDown={(e) => onPortDown(e, inst)} title={portDragTitle} />
       <span className="gate__glyph">{gateState.glyph}</span>
       <span className="gate__label">{gateState.sublabel}</span>
     </div>

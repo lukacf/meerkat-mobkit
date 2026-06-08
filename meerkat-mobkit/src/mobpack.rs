@@ -721,6 +721,12 @@ pub fn mobpack_schema_response() -> Value {
         "copy_label": "copy",
         "close_label": "×"
     });
+    let editor_graph_view = json!({
+        "zoom_out_title": "Zoom out",
+        "fit_title": "Fit to view",
+        "zoom_in_title": "Zoom in",
+        "port_drag_title": "Drag to a member to connect"
+    });
     let editor_agent_view = json!({
         "agents_heading": "AGENTS",
         "schemas_heading": "SCHEMAS",
@@ -881,6 +887,7 @@ pub fn mobpack_schema_response() -> Value {
         "graph_frame_kinds": GRAPH_FRAME_KINDS,
         "graph_edge_kinds": GRAPH_EDGE_KINDS,
         "editor_graph_draft": editor_graph_draft,
+        "editor_graph_view": editor_graph_view,
         "editor_source_view": editor_source_view,
         "editor_agent_view": editor_agent_view,
         "editor_basic_view": editor_basic_view,
@@ -15275,6 +15282,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_source_view"]["loading_text"],
             json!("rendering mob.toml from mobkit/mobpacks/export...")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["fit_title"],
+            json!("Fit to view")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["port_drag_title"],
+            json!("Drag to a member to connect")
         );
         assert_eq!(
             mob_definition["editor_agent_view"]["agents_heading"],

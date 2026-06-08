@@ -792,6 +792,7 @@ function App() {
             memberFocus={null}
             grid={catalogs.grid}
             contract={contract}
+            graphView={catalogs.graphView}
           />
             <InlineSourceEditor
               open={inlineSourceOpen && inlineSourceSurface === "graph"}
