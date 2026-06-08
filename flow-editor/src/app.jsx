@@ -816,6 +816,7 @@ function App() {
               flow={flow}
               template={currentFlow}
               templateSeed={catalogs.template}
+              templateView={catalogs.graphTemplateView}
               contract={contract}
               deploySettings={deploySettings}
               selectMember={(id) => { setView("agents"); setAgentSel({ kind: "agent", id }); }}

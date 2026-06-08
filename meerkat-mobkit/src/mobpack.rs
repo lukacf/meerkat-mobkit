@@ -739,6 +739,36 @@ pub fn mobpack_schema_response() -> Value {
             { "kind": "text", "text": " flow." }
         ]
     });
+    let editor_graph_template_view = json!({
+        "template_eyebrow": "TEMPLATE",
+        "summary_title": "SUMMARY",
+        "triggers_title": "TRIGGERS",
+        "trigger_labels_label": "labels",
+        "trigger_default_label": "default",
+        "default_yes_label": "yes",
+        "default_no_label": "no",
+        "quick_start_title": "QUICK START",
+        "quick_start_rows": [
+            [
+                { "kind": "text", "text": "Click a " },
+                { "kind": "strong", "text": "library member" },
+                { "kind": "text", "text": " on the left to edit it." }
+            ],
+            [
+                { "kind": "text", "text": "Click an " },
+                { "kind": "strong", "text": "empty grid cell" },
+                { "kind": "text", "text": " to place a member." }
+            ],
+            [
+                { "kind": "text", "text": "Drag a node's " },
+                { "kind": "strong", "text": "right port" },
+                { "kind": "text", "text": " to wire it to another." }
+            ],
+            [
+                { "kind": "text", "text": "⌫ deletes the selected instance or edge." }
+            ]
+        ]
+    });
     let mob_definition = json!({
         "authoritative_type": "meerkat_mob::MobDefinition",
         "defaults": {
@@ -847,6 +877,7 @@ pub fn mobpack_schema_response() -> Value {
         "editor_source_view": editor_source_view,
         "editor_agent_view": editor_agent_view,
         "editor_basic_view": editor_basic_view,
+        "editor_graph_template_view": editor_graph_template_view,
         "dispatch_modes": dispatch_mode_values(),
         "collection_policies": collection_policy_values(),
         "dependency_modes": dependency_mode_values()
@@ -15265,6 +15296,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_basic_view"]["empty_panel_subtitle_parts"][3]["text"],
             json!("mob.toml")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_template_view"]["template_eyebrow"],
+            json!("TEMPLATE")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_template_view"]["quick_start_title"],
+            json!("QUICK START")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_template_view"]["quick_start_rows"][0][1]["text"],
+            json!("library member")
         );
     }
 

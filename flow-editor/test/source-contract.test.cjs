@@ -216,6 +216,11 @@ assert(!/contractDefaultValue\(contract,\s*["']graph_fanout_edge_kind["']\)\s*\|
 assert(!/contractDefaultValue\(contract,\s*["']graph_condition_edge_kind["']\)\s*\|\|\s*["']cond["']/.test(controller), "controller graph edge drafts must not invent a local condition edge kind");
 assert.match(inspectorRootBlock, /MobKitFlowController\.graphSelectionState/, "Graph Inspector root must resolve selected instances and edges through the controller plane");
 assert.match(inspectorTemplateBlock, /MobKitFlowController\.graphTemplateInspectorState/, "Graph template inspector must render summary rows through the controller plane");
+assert.match(controller, /mob_definition\?\.editor_graph_template_view/, "controller plane must hydrate Graph template inspector chrome from MobKit schema");
+assert.match(app, /<Inspector[\s\S]*templateView=\{catalogs\.graphTemplateView\}/, "app shell must inject schema-backed Graph template inspector view state");
+assert.match(inspectorTemplateBlock, /templateView[\s\S]*graphTemplateInspectorState\(\{ studio, template, templateSeed, templateView \}\)/, "Graph template inspector must pass schema-backed view state into controller projection");
+assert.match(inspectorTemplateBlock, /templateState\.templateEyebrow[\s\S]*templateState\.summaryTitle[\s\S]*templateState\.triggersTitle[\s\S]*templateState\.triggerRows\.map[\s\S]*templateState\.quickStartTitle[\s\S]*templateState\.quickStartRows\.map/, "Graph template inspector headings, trigger rows, and quick-start rows must render through controller state");
+assert(!/>TEMPLATE<|>SUMMARY<|>TRIGGERS<|>QUICK START<|>labels<|>default<|library member|empty grid cell|right port|selected instance or edge/.test(inspectorTemplateBlock), "Graph template inspector must not compose template headings, trigger labels, or quick-start copy locally");
 assert.match(inspectorInstanceBlock, /MobKitFlowController\.graphInstanceControlState/, "Graph instance inspector must render member, schema, and fork-source state through the controller plane");
 assert.match(inspectorInstanceBlock, /MobKitFlowController\.graphTerminalControlState/, "Graph terminal inspector must render terminal kind state through the controller plane");
 assert.match(inspectorGateBlock, /gateState\.eyebrow/, "Graph gate inspector must render header through controller state");

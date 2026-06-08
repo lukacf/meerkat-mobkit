@@ -640,6 +640,52 @@
     };
   }
 
+  function graphTemplateViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_graph_template_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      templateEyebrow: String(view.template_eyebrow || "").trim(),
+      summaryTitle: String(view.summary_title || "").trim(),
+      triggersTitle: String(view.triggers_title || "").trim(),
+      triggerLabelsLabel: String(view.trigger_labels_label || "").trim(),
+      triggerDefaultLabel: String(view.trigger_default_label || "").trim(),
+      defaultYesLabel: String(view.default_yes_label || "").trim(),
+      defaultNoLabel: String(view.default_no_label || "").trim(),
+      quickStartTitle: String(view.quick_start_title || "").trim(),
+      quickStartRows: graphTemplateQuickStartRowsFromSchema(view.quick_start_rows),
+    };
+    return out.templateEyebrow && out.summaryTitle && out.triggersTitle && out.triggerLabelsLabel
+      && out.triggerDefaultLabel && out.defaultYesLabel && out.defaultNoLabel
+      && out.quickStartTitle && out.quickStartRows.length
+      ? out
+      : null;
+  }
+
+  function graphTemplateQuickStartRowsFromSchema(rows) {
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .map((row, rowIndex) => ({
+        key: `quick-start-${rowIndex}`,
+        parts: basicViewPartsFromSchema(row),
+      }))
+      .filter((row) => row.parts.length);
+  }
+
+  function graphTemplateViewForState(templateView) {
+    const view = templateView && typeof templateView === "object" ? templateView : null;
+    return {
+      templateEyebrow: String(view?.templateEyebrow || ""),
+      summaryTitle: String(view?.summaryTitle || ""),
+      triggersTitle: String(view?.triggersTitle || ""),
+      triggerLabelsLabel: String(view?.triggerLabelsLabel || ""),
+      triggerDefaultLabel: String(view?.triggerDefaultLabel || ""),
+      defaultYesLabel: String(view?.defaultYesLabel || ""),
+      defaultNoLabel: String(view?.defaultNoLabel || ""),
+      quickStartTitle: String(view?.quickStartTitle || ""),
+      quickStartRows: Array.isArray(view?.quickStartRows) ? view.quickStartRows : [],
+    };
+  }
+
   function agentSelectionState({ selection = null, members = [], schemas = [] } = {}) {
     if (!selection) return { kind: "empty", member: null, schema: null, missing: false };
     if (selection.kind === "schema") {
@@ -3805,8 +3851,9 @@
     return { kind: "", instance: null, edge: null, missing: false };
   }
 
-  function graphTemplateInspectorState({ studio = {}, template = null, templateSeed = null } = {}) {
+  function graphTemplateInspectorState({ studio = {}, template = null, templateSeed = null, templateView = null } = {}) {
     const seed = templateSeed && typeof templateSeed === "object" ? templateSeed : {};
+    const view = graphTemplateViewForState(templateView);
     const members = Array.isArray(studio.members) ? studio.members : [];
     const instances = Array.isArray(studio.instances) ? studio.instances : [];
     const edges = Array.isArray(studio.edges) ? studio.edges : [];
@@ -3818,10 +3865,23 @@
       name: template?.name || seed.name || "",
       repo: template?.repo || seed.repo || "",
       version: template?.version || seed.version || "",
+      templateEyebrow: view.templateEyebrow,
+      summaryTitle: view.summaryTitle,
+      triggersTitle: view.triggersTitle,
+      quickStartTitle: view.quickStartTitle,
+      quickStartRows: view.quickStartRows,
       triggers: {
         labels,
         default: !!template?.defaultTrigger,
       },
+      triggerRows: [
+        { key: "labels", label: view.triggerLabelsLabel, value: labels.join(", ") },
+        {
+          key: "default",
+          label: view.triggerDefaultLabel,
+          value: template?.defaultTrigger ? view.defaultYesLabel : view.defaultNoLabel,
+        },
+      ],
       summaryRows: [
         { key: "members", label: "members", value: `${placedMembers} placed / ${members.length} in library` },
         { key: "instances", label: "instances", value: instances.filter((instance) => !instance?.isTerminal).length },
@@ -5954,6 +6014,7 @@
       sourceView: null,
       agentView: null,
       basicView: null,
+      graphTemplateView: null,
       validationSource: "",
       contractMeta: {
         loaded: false,
@@ -5982,6 +6043,7 @@
       sourceView: sourceViewFromSchema(schema),
       agentView: agentViewFromSchema(schema),
       basicView: basicViewFromSchema(schema),
+      graphTemplateView: graphTemplateViewFromSchema(schema),
       validationSource: schema?.validation_source || "",
       contractMeta: {
         loaded: true,

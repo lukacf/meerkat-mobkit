@@ -673,6 +673,52 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function graphTemplateViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_graph_template_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      templateEyebrow: String(view.template_eyebrow || "").trim(),
+      summaryTitle: String(view.summary_title || "").trim(),
+      triggersTitle: String(view.triggers_title || "").trim(),
+      triggerLabelsLabel: String(view.trigger_labels_label || "").trim(),
+      triggerDefaultLabel: String(view.trigger_default_label || "").trim(),
+      defaultYesLabel: String(view.default_yes_label || "").trim(),
+      defaultNoLabel: String(view.default_no_label || "").trim(),
+      quickStartTitle: String(view.quick_start_title || "").trim(),
+      quickStartRows: graphTemplateQuickStartRowsFromSchema(view.quick_start_rows),
+    };
+    return out.templateEyebrow && out.summaryTitle && out.triggersTitle && out.triggerLabelsLabel
+      && out.triggerDefaultLabel && out.defaultYesLabel && out.defaultNoLabel
+      && out.quickStartTitle && out.quickStartRows.length
+      ? out
+      : null;
+  }
+
+  function graphTemplateQuickStartRowsFromSchema(rows) {
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .map((row, rowIndex) => ({
+        key: `quick-start-${rowIndex}`,
+        parts: basicViewPartsFromSchema(row),
+      }))
+      .filter((row) => row.parts.length);
+  }
+
+  function graphTemplateViewForState(templateView) {
+    const view = templateView && typeof templateView === "object" ? templateView : null;
+    return {
+      templateEyebrow: String(view?.templateEyebrow || ""),
+      summaryTitle: String(view?.summaryTitle || ""),
+      triggersTitle: String(view?.triggersTitle || ""),
+      triggerLabelsLabel: String(view?.triggerLabelsLabel || ""),
+      triggerDefaultLabel: String(view?.triggerDefaultLabel || ""),
+      defaultYesLabel: String(view?.defaultYesLabel || ""),
+      defaultNoLabel: String(view?.defaultNoLabel || ""),
+      quickStartTitle: String(view?.quickStartTitle || ""),
+      quickStartRows: Array.isArray(view?.quickStartRows) ? view.quickStartRows : [],
+    };
+  }
+
   function agentSelectionState({ selection = null, members = [], schemas = [] } = {}) {
     if (!selection) return { kind: "empty", member: null, schema: null, missing: false };
     if (selection.kind === "schema") {
@@ -3838,8 +3884,9 @@ window.MOBKIT_BOOT = {
     return { kind: "", instance: null, edge: null, missing: false };
   }
 
-  function graphTemplateInspectorState({ studio = {}, template = null, templateSeed = null } = {}) {
+  function graphTemplateInspectorState({ studio = {}, template = null, templateSeed = null, templateView = null } = {}) {
     const seed = templateSeed && typeof templateSeed === "object" ? templateSeed : {};
+    const view = graphTemplateViewForState(templateView);
     const members = Array.isArray(studio.members) ? studio.members : [];
     const instances = Array.isArray(studio.instances) ? studio.instances : [];
     const edges = Array.isArray(studio.edges) ? studio.edges : [];
@@ -3851,10 +3898,23 @@ window.MOBKIT_BOOT = {
       name: template?.name || seed.name || "",
       repo: template?.repo || seed.repo || "",
       version: template?.version || seed.version || "",
+      templateEyebrow: view.templateEyebrow,
+      summaryTitle: view.summaryTitle,
+      triggersTitle: view.triggersTitle,
+      quickStartTitle: view.quickStartTitle,
+      quickStartRows: view.quickStartRows,
       triggers: {
         labels,
         default: !!template?.defaultTrigger,
       },
+      triggerRows: [
+        { key: "labels", label: view.triggerLabelsLabel, value: labels.join(", ") },
+        {
+          key: "default",
+          label: view.triggerDefaultLabel,
+          value: template?.defaultTrigger ? view.defaultYesLabel : view.defaultNoLabel,
+        },
+      ],
       summaryRows: [
         { key: "members", label: "members", value: `${placedMembers} placed / ${members.length} in library` },
         { key: "instances", label: "instances", value: instances.filter((instance) => !instance?.isTerminal).length },
@@ -5987,6 +6047,7 @@ window.MOBKIT_BOOT = {
       sourceView: null,
       agentView: null,
       basicView: null,
+      graphTemplateView: null,
       validationSource: "",
       contractMeta: {
         loaded: false,
@@ -6015,6 +6076,7 @@ window.MOBKIT_BOOT = {
       sourceView: sourceViewFromSchema(schema),
       agentView: agentViewFromSchema(schema),
       basicView: basicViewFromSchema(schema),
+      graphTemplateView: graphTemplateViewFromSchema(schema),
       validationSource: schema?.validation_source || "",
       contractMeta: {
         loaded: true,
@@ -9647,25 +9709,29 @@ window.GraphEditor = GraphEditor;
 /* inspector.jsx */
 
 {
-function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, flow, contract }) {
+function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, flow, contract }) {
   const selectionState = window.MobKitFlowController.graphSelectionState({
     selection,
     instances: studio.instances,
     edges: studio.edges
   });
   if (selectionState.kind === "instance") {
-    if (!selectionState.instance) return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed });
+    if (!selectionState.instance) return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
     return /* @__PURE__ */ React.createElement(InstanceInspector, { studio, flow, inst: selectionState.instance, selectMember, clearSelection, contract });
   }
   if (selectionState.kind === "edge") {
-    if (!selectionState.edge) return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed });
+    if (!selectionState.edge) return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
     return /* @__PURE__ */ React.createElement(EdgeInspector, { studio, flow, edge: selectionState.edge, clearSelection, contract });
   }
-  return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed });
+  return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
 }
-function TemplateInspector({ studio, template, templateSeed }) {
-  const templateState = window.MobKitFlowController.graphTemplateInspectorState({ studio, template, templateSeed });
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, "TEMPLATE"), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, templateState.name), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, templateState.repo, " \xB7 ", templateState.version)), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, "SUMMARY"), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, templateState.summaryRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, "TRIGGERS"), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, /* @__PURE__ */ React.createElement("dt", null, "labels"), /* @__PURE__ */ React.createElement("dd", null, templateState.triggers.labels.join(", ")), /* @__PURE__ */ React.createElement("dt", null, "default"), /* @__PURE__ */ React.createElement("dd", null, templateState.triggers.default ? "yes" : "no"))), /* @__PURE__ */ React.createElement("div", { className: "section section--hint" }, /* @__PURE__ */ React.createElement("div", { className: "hint__title" }, "QUICK START"), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, "Click a ", /* @__PURE__ */ React.createElement("strong", null, "library member"), " on the left to edit it."), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, "Click an ", /* @__PURE__ */ React.createElement("strong", null, "empty grid cell"), " to place a member."), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, "Drag a node's ", /* @__PURE__ */ React.createElement("strong", null, "right port"), " to wire it to another."), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, "\u232B deletes the selected instance or edge."))));
+function TemplateInspector({ studio, template, templateSeed, templateView }) {
+  const templateState = window.MobKitFlowController.graphTemplateInspectorState({ studio, template, templateSeed, templateView });
+  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, templateState.templateEyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, templateState.name), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, templateState.repo, " \xB7 ", templateState.version)), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, templateState.summaryTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, templateState.summaryRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, templateState.triggersTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, templateState.triggerRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section section--hint" }, /* @__PURE__ */ React.createElement("div", { className: "hint__title" }, templateState.quickStartTitle), templateState.quickStartRows.map((row) => /* @__PURE__ */ React.createElement("div", { className: "hint__line", key: row.key }, row.parts.map((part) => {
+    if (part.kind === "strong") return /* @__PURE__ */ React.createElement("strong", { key: part.key }, part.text);
+    if (part.kind === "code") return /* @__PURE__ */ React.createElement("code", { key: part.key }, part.text);
+    return /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text);
+  }))))));
 }
 function GateInspector({ studio, flow, inst, clearSelection, contract }) {
   const change = (patch) => studio.updateInstance(inst.id, patch);
@@ -11660,6 +11726,7 @@ function App() {
       flow,
       template: currentFlow,
       templateSeed: catalogs.template,
+      templateView: catalogs.graphTemplateView,
       contract,
       deploySettings,
       selectMember: (id) => {

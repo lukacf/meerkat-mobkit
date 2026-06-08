@@ -9,36 +9,36 @@
 // AddNodeMenu lets the user place existing real members. Flow controls are
 // projected from the Basic Editor's deployable flow model.
 
-function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, flow, contract }) {
+function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, flow, contract }) {
   const selectionState = window.MobKitFlowController.graphSelectionState({
     selection,
     instances: studio.instances,
     edges: studio.edges,
   });
   if (selectionState.kind === "instance") {
-    if (!selectionState.instance) return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} />;
+    if (!selectionState.instance) return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
     return <InstanceInspector studio={studio} flow={flow} inst={selectionState.instance} selectMember={selectMember} clearSelection={clearSelection} contract={contract} />;
   }
   if (selectionState.kind === "edge") {
-    if (!selectionState.edge) return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} />;
+    if (!selectionState.edge) return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
     return <EdgeInspector studio={studio} flow={flow} edge={selectionState.edge} clearSelection={clearSelection} contract={contract} />;
   }
-  return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} />;
+  return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
 }
 
 // ── Template (no selection) ──────────────────────────────────────
-function TemplateInspector({ studio, template, templateSeed }) {
-  const templateState = window.MobKitFlowController.graphTemplateInspectorState({ studio, template, templateSeed });
+function TemplateInspector({ studio, template, templateSeed, templateView }) {
+  const templateState = window.MobKitFlowController.graphTemplateInspectorState({ studio, template, templateSeed, templateView });
   return (
     <>
       <div className="inspector__head">
-        <div className="inspector__eyebrow">TEMPLATE</div>
+        <div className="inspector__eyebrow">{templateState.templateEyebrow}</div>
         <div className="inspector__title">{templateState.name}</div>
         <div className="inspector__id">{templateState.repo} · {templateState.version}</div>
       </div>
       <div className="inspector__body">
         <div className="section">
-          <div className="section__title">SUMMARY</div>
+          <div className="section__title">{templateState.summaryTitle}</div>
           <dl className="kv">
             {templateState.summaryRows.map(row => (
               <React.Fragment key={row.key}>
@@ -48,18 +48,26 @@ function TemplateInspector({ studio, template, templateSeed }) {
           </dl>
         </div>
         <div className="section">
-          <div className="section__title">TRIGGERS</div>
+          <div className="section__title">{templateState.triggersTitle}</div>
           <dl className="kv">
-            <dt>labels</dt><dd>{templateState.triggers.labels.join(", ")}</dd>
-            <dt>default</dt><dd>{templateState.triggers.default ? "yes" : "no"}</dd>
+            {templateState.triggerRows.map(row => (
+              <React.Fragment key={row.key}>
+                <dt>{row.label}</dt><dd>{row.value}</dd>
+              </React.Fragment>
+            ))}
           </dl>
         </div>
         <div className="section section--hint">
-          <div className="hint__title">QUICK START</div>
-          <div className="hint__line">Click a <strong>library member</strong> on the left to edit it.</div>
-          <div className="hint__line">Click an <strong>empty grid cell</strong> to place a member.</div>
-          <div className="hint__line">Drag a node's <strong>right port</strong> to wire it to another.</div>
-          <div className="hint__line">⌫ deletes the selected instance or edge.</div>
+          <div className="hint__title">{templateState.quickStartTitle}</div>
+          {templateState.quickStartRows.map(row => (
+            <div className="hint__line" key={row.key}>
+              {row.parts.map(part => {
+                if (part.kind === "strong") return <strong key={part.key}>{part.text}</strong>;
+                if (part.kind === "code") return <code key={part.key}>{part.text}</code>;
+                return <React.Fragment key={part.key}>{part.text}</React.Fragment>;
+              })}
+            </div>
+          ))}
         </div>
       </div>
     </>

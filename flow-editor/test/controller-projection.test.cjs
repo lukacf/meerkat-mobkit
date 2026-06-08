@@ -467,6 +467,34 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
         { kind: "text", text: " flow." },
       ],
     },
+    editor_graph_template_view: {
+      template_eyebrow: "TEMPLATE",
+      summary_title: "SUMMARY",
+      triggers_title: "TRIGGERS",
+      trigger_labels_label: "labels",
+      trigger_default_label: "default",
+      default_yes_label: "yes",
+      default_no_label: "no",
+      quick_start_title: "QUICK START",
+      quick_start_rows: [
+        [
+          { kind: "text", text: "Click a " },
+          { kind: "strong", text: "library member" },
+          { kind: "text", text: " on the left to edit it." },
+        ],
+        [
+          { kind: "text", text: "Click an " },
+          { kind: "strong", text: "empty grid cell" },
+          { kind: "text", text: " to place a member." },
+        ],
+        [
+          { kind: "text", text: "Drag a node's " },
+          { kind: "strong", text: "right port" },
+          { kind: "text", text: " to wire it to another." },
+        ],
+        [{ kind: "text", text: "⌫ deletes the selected instance or edge." }],
+      ],
+    },
   },
   models: [{ id: "openai/gpt-5.5", label: "GPT-5.5", vendor: "openai" }],
   tool_catalog: [{ id: "builtins", label: "builtins", desc: "Built-ins", kind: "runtime", source: "meerkat_mob::ToolConfig" }],
@@ -536,6 +564,46 @@ assert.deepEqual(controller.basicEditorViewState(null), {
   tipsTitle: "",
   emptyPanelTitle: "",
   emptyPanelSubtitleParts: [],
+});
+assert.deepEqual(hydratedCatalogs.graphTemplateView, {
+  templateEyebrow: "TEMPLATE",
+  summaryTitle: "SUMMARY",
+  triggersTitle: "TRIGGERS",
+  triggerLabelsLabel: "labels",
+  triggerDefaultLabel: "default",
+  defaultYesLabel: "yes",
+  defaultNoLabel: "no",
+  quickStartTitle: "QUICK START",
+  quickStartRows: [
+    {
+      key: "quick-start-0",
+      parts: [
+        { key: "text-0", kind: "text", text: "Click a " },
+        { key: "strong-1", kind: "strong", text: "library member" },
+        { key: "text-2", kind: "text", text: " on the left to edit it." },
+      ],
+    },
+    {
+      key: "quick-start-1",
+      parts: [
+        { key: "text-0", kind: "text", text: "Click an " },
+        { key: "strong-1", kind: "strong", text: "empty grid cell" },
+        { key: "text-2", kind: "text", text: " to place a member." },
+      ],
+    },
+    {
+      key: "quick-start-2",
+      parts: [
+        { key: "text-0", kind: "text", text: "Drag a node's " },
+        { key: "strong-1", kind: "strong", text: "right port" },
+        { key: "text-2", kind: "text", text: " to wire it to another." },
+      ],
+    },
+    {
+      key: "quick-start-3",
+      parts: [{ key: "text-0", kind: "text", text: "⌫ deletes the selected instance or edge." }],
+    },
+  ],
 });
 assert.equal(hydratedCatalogs.grid, catalogBoot.grid);
 assert.deepEqual(hydratedCatalogs.template, {
@@ -4709,6 +4777,7 @@ assert.deepEqual(controller.graphTemplateInspectorState({
     frames: [{ id: "fr1" }],
   },
   template: { name: "Docs Mob", repo: "mob.toml", version: "0.1.0", trigger: "docs", defaultTrigger: true },
+  templateView: hydratedCatalogs.graphTemplateView,
 }).summaryRows.map((row) => [row.key, row.value]), [
   ["members", "2 placed / 2 in library"],
   ["instances", 2],
@@ -4716,11 +4785,32 @@ assert.deepEqual(controller.graphTemplateInspectorState({
   ["edges", 1],
   ["frames", 1],
 ]);
+const populatedTemplateInspector = controller.graphTemplateInspectorState({
+  studio: {
+    members: graphProjectionMembers,
+    instances: graphProjectionInstances,
+    edges: graphProjectionEdges,
+    frames: [{ id: "fr1" }],
+  },
+  template: { name: "Docs Mob", repo: "mob.toml", version: "0.1.0", trigger: "docs", defaultTrigger: true },
+  templateView: hydratedCatalogs.graphTemplateView,
+});
+assert.equal(populatedTemplateInspector.templateEyebrow, "TEMPLATE");
+assert.equal(populatedTemplateInspector.summaryTitle, "SUMMARY");
+assert.equal(populatedTemplateInspector.triggersTitle, "TRIGGERS");
+assert.deepEqual(populatedTemplateInspector.triggerRows, [
+  { key: "labels", label: "labels", value: "docs" },
+  { key: "default", label: "default", value: "yes" },
+]);
+assert.equal(populatedTemplateInspector.quickStartTitle, "QUICK START");
+assert.equal(populatedTemplateInspector.quickStartRows[0].parts[1].text, "library member");
 const emptyTemplateInspector = controller.graphTemplateInspectorState({ studio: {} });
 assert.equal(emptyTemplateInspector.name, "");
 assert.equal(emptyTemplateInspector.repo, "");
 assert.equal(emptyTemplateInspector.version, "");
 assert.deepEqual(emptyTemplateInspector.triggers.labels, []);
+assert.equal(emptyTemplateInspector.templateEyebrow, "");
+assert.deepEqual(emptyTemplateInspector.quickStartRows, []);
 const instanceControlState = controller.graphInstanceControlState({
   inst: graphProjectionInstances[1],
   instances: graphProjectionInstances,
