@@ -57,6 +57,61 @@ use subscribe_methods::{SubscribeParamsError, parse_subscribe_request};
 pub const JSONRPC_VERSION: &str = "2.0";
 pub const MOBKIT_CONTRACT_VERSION: &str = "0.4.0";
 pub const MAX_SCHEDULES_PER_REQUEST: usize = 256;
+pub(crate) const MOBPACK_AUTHORING_METHODS: &[&str] = &[
+    "mobkit/mobpacks/schema",
+    "mobkit/mobpacks/validate",
+    "mobkit/mobpacks/export",
+    "mobkit/mobpacks/import",
+    "mobkit/mobpacks/deploy_command",
+    "mobkit/mobpacks/deploy",
+];
+
+pub(crate) fn mobpack_authoring_capabilities() -> Value {
+    serde_json::json!({
+        "domain": "mobpack_authoring",
+        "runtime_mutation": false,
+        "deploy_command": "rkat mob deploy",
+        "methods": MOBPACK_AUTHORING_METHODS,
+    })
+}
+
+pub(crate) fn handle_mobpack_authoring_rpc(
+    method: &str,
+    params: &Value,
+    response_id: Value,
+) -> Option<JsonRpcResponse> {
+    let result = match method {
+        "mobkit/mobpacks/schema" => Ok(crate::mobpack::mobpack_schema_response()),
+        "mobkit/mobpacks/validate" => crate::mobpack::validate_mobpack(params)
+            .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
+        "mobkit/mobpacks/export" => crate::mobpack::export_mobpack(params)
+            .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
+        "mobkit/mobpacks/import" => crate::mobpack::import_mobpack(params),
+        "mobkit/mobpacks/deploy_command" => crate::mobpack::deploy_command_preview(params)
+            .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
+        "mobkit/mobpacks/deploy" => crate::mobpack::deploy_mobpack(params)
+            .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
+        _ => return None,
+    };
+    Some(match result {
+        Ok(result) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(result),
+            error: None,
+        },
+        Err(message) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message,
+                data: None,
+            }),
+        },
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RpcCapabilitiesError {
@@ -243,53 +298,62 @@ pub fn handle_mobkit_rpc_json(
             })),
             error: None,
         },
-        "mobkit/capabilities" => JsonRpcResponse {
-            jsonrpc: JSONRPC_VERSION.to_string(),
-            id: response_id,
-            result: Some(serde_json::json!({
-                "contract_version": MOBKIT_CONTRACT_VERSION,
-                "methods": [
-                    "mobkit/status",
-                    "mobkit/capabilities",
-                    "mobkit/reconcile",
-                    "mobkit/spawn_member",
-                    "mobkit/scheduling/evaluate",
-                    "mobkit/scheduling/dispatch",
-                    "mobkit/routing/resolve",
-                    "mobkit/routing/routes/list",
-                    "mobkit/routing/routes/add",
-                    "mobkit/routing/routes/delete",
-                    "mobkit/delivery/send",
-                    "mobkit/delivery/history",
-                    "mobkit/events/subscribe",
-                    "mobkit/memory/stores",
-                    "mobkit/memory/index",
-                    "mobkit/memory/query",
-                    "mobkit/session_store/bigquery",
-                    "mobkit/gating/evaluate",
-                    "mobkit/gating/pending",
-                    "mobkit/gating/decide",
-                    "mobkit/gating/audit",
-                    "mobkit/call_tool",
-                    "mobkit/models/catalog"
-                ],
-                "loaded_modules": runtime.loaded_modules(),
-                "runtime_capabilities": {
-                    "can_spawn_members": false,
-                    "can_send_messages": false,
-                    "can_wire_members": false,
-                    "can_retire_members": false,
-                    "available_spawn_modes": ["module"],
-                }
-            })),
-            error: None,
-        },
+        "mobkit/capabilities" => {
+            let mut methods = vec![
+                "mobkit/status",
+                "mobkit/capabilities",
+                "mobkit/reconcile",
+                "mobkit/spawn_member",
+                "mobkit/scheduling/evaluate",
+                "mobkit/scheduling/dispatch",
+                "mobkit/routing/resolve",
+                "mobkit/routing/routes/list",
+                "mobkit/routing/routes/add",
+                "mobkit/routing/routes/delete",
+                "mobkit/delivery/send",
+                "mobkit/delivery/history",
+                "mobkit/events/subscribe",
+                "mobkit/memory/stores",
+                "mobkit/memory/index",
+                "mobkit/memory/query",
+                "mobkit/session_store/bigquery",
+                "mobkit/gating/evaluate",
+                "mobkit/gating/pending",
+                "mobkit/gating/decide",
+                "mobkit/gating/audit",
+                "mobkit/call_tool",
+                "mobkit/models/catalog",
+            ];
+            methods.extend_from_slice(MOBPACK_AUTHORING_METHODS);
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(serde_json::json!({
+                    "contract_version": MOBKIT_CONTRACT_VERSION,
+                    "methods": methods,
+                    "loaded_modules": runtime.loaded_modules(),
+                    "runtime_capabilities": {
+                        "can_spawn_members": false,
+                        "can_send_messages": false,
+                        "can_wire_members": false,
+                        "can_retire_members": false,
+                        "available_spawn_modes": ["module"],
+                    },
+                    "authoring_capabilities": mobpack_authoring_capabilities(),
+                })),
+                error: None,
+            }
+        }
         "mobkit/models/catalog" => JsonRpcResponse {
             jsonrpc: JSONRPC_VERSION.to_string(),
             id: response_id,
             result: Some(build_models_catalog_result()),
             error: None,
         },
+        method if MOBPACK_AUTHORING_METHODS.contains(&method) => {
+            handle_mobpack_authoring_rpc(method, &request.params, response_id)
+                .expect("known mobpack authoring method")
+        }
         "mobkit/reconcile" => {
             let modules = match params::required_string_array(&request.params, "modules") {
                 Ok(m) => m,
@@ -1108,6 +1172,7 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/run_labels/get",
                 "mobkit/run_labels/delete",
             ];
+            methods.extend_from_slice(MOBPACK_AUTHORING_METHODS);
             if identity_ctx.is_some() {
                 methods.extend_from_slice(&[
                     "mobkit/send",
@@ -1151,7 +1216,8 @@ async fn handle_unified_rpc_json_inner(
                         "can_wire_members": true,
                         "can_retire_members": true,
                         "available_spawn_modes": ["module", "profile"],
-                    }
+                    },
+                    "authoring_capabilities": mobpack_authoring_capabilities(),
                 })),
                 error: None,
             }
@@ -1877,6 +1943,10 @@ async fn handle_unified_rpc_json_inner(
             result: Some(build_models_catalog_result()),
             error: None,
         },
+        method if MOBPACK_AUTHORING_METHODS.contains(&method) => {
+            handle_mobpack_authoring_rpc(method, &request.params, response_id)
+                .expect("known mobpack authoring method")
+        }
         "mobkit/blob/get" => {
             mob_methods::handle_blob_get(runtime, response_id, &request.params).await
         }
@@ -4049,6 +4119,188 @@ comms = true
                     default_llm_client: Some(Arc::new(TestClient::default())),
                 }),
         )
+    }
+
+    #[tokio::test]
+    async fn unified_capabilities_separate_mobpack_authoring_from_runtime_controls()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = UnifiedRuntime::builder()
+            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+            .module_config(MobKitConfig {
+                modules: Vec::new(),
+                discovery: DiscoverySpec {
+                    namespace: "rpc-authoring-capabilities-test".to_string(),
+                    modules: Vec::new(),
+                },
+                pre_spawn: Vec::new(),
+            })
+            .timeout(Duration::from_secs(1))
+            .build()
+            .await?;
+
+        let response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "mobkit/capabilities",
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                None,
+            )
+            .await,
+        )?;
+
+        assert!(response["error"].is_null(), "{response:#?}");
+        let methods = response["result"]["methods"]
+            .as_array()
+            .expect("methods array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        for method in super::MOBPACK_AUTHORING_METHODS {
+            assert!(
+                methods.contains(method),
+                "missing authoring method {method}"
+            );
+        }
+        assert_eq!(
+            response["result"]["authoring_capabilities"]["domain"],
+            json!("mobpack_authoring")
+        );
+        assert_eq!(
+            response["result"]["authoring_capabilities"]["runtime_mutation"],
+            json!(false)
+        );
+        assert_eq!(
+            response["result"]["authoring_capabilities"]["methods"]
+                .as_array()
+                .expect("authoring methods")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>(),
+            super::MOBPACK_AUTHORING_METHODS
+        );
+        assert_eq!(
+            response["result"]["authoring_capabilities"]["deploy_command"],
+            json!("rkat mob deploy")
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unified_rpc_dispatches_mobpack_authoring_methods()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = UnifiedRuntime::builder()
+            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+            .module_config(MobKitConfig {
+                modules: Vec::new(),
+                discovery: DiscoverySpec {
+                    namespace: "rpc-authoring-dispatch-test".to_string(),
+                    modules: Vec::new(),
+                },
+                pre_spawn: Vec::new(),
+            })
+            .timeout(Duration::from_secs(1))
+            .build()
+            .await?;
+
+        let response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "mobkit/mobpacks/schema",
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                None,
+            )
+            .await,
+        )?;
+
+        assert!(response["error"].is_null(), "{response:#?}");
+        assert_eq!(
+            response["result"]["media_type"],
+            json!("application/vnd.meerkat.mobpack")
+        );
+        assert_eq!(
+            response["result"]["commands"]["deploy_rpc"],
+            json!("mobkit/mobpacks/deploy")
+        );
+        assert!(response["result"]["sample_mobpacks"].is_array());
+        assert!(response["result"]["agent_definitions"].is_array());
+
+        Ok(())
+    }
+
+    #[test]
+    fn module_rpc_dispatches_mobpack_authoring_methods()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let config = MobKitConfig {
+            modules: Vec::new(),
+            discovery: DiscoverySpec {
+                namespace: "module-rpc-authoring-dispatch-test".to_string(),
+                modules: Vec::new(),
+            },
+            pre_spawn: Vec::new(),
+        };
+        let mut runtime = crate::start_mobkit_runtime(config, Vec::new(), Duration::from_secs(1))?;
+
+        let capabilities: Value = serde_json::from_str(&super::handle_mobkit_rpc_json(
+            &mut runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "mobkit/capabilities",
+            })
+            .to_string(),
+            Duration::from_secs(1),
+        ))?;
+        let methods = capabilities["result"]["methods"]
+            .as_array()
+            .expect("methods array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        for method in super::MOBPACK_AUTHORING_METHODS {
+            assert!(
+                methods.contains(method),
+                "missing authoring method {method}"
+            );
+        }
+        assert_eq!(
+            capabilities["result"]["authoring_capabilities"]["runtime_mutation"],
+            json!(false)
+        );
+
+        let schema: Value = serde_json::from_str(&super::handle_mobkit_rpc_json(
+            &mut runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "mobkit/mobpacks/schema",
+            })
+            .to_string(),
+            Duration::from_secs(1),
+        ))?;
+        assert!(schema["error"].is_null(), "{schema:#?}");
+        assert_eq!(
+            schema["result"]["commands"]["deploy_rpc"],
+            json!("mobkit/mobpacks/deploy")
+        );
+        assert!(schema["result"]["agent_definitions"].is_array());
+
+        let _ = runtime.shutdown();
+        Ok(())
     }
 
     #[test]

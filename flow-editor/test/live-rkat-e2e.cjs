@@ -1,0 +1,1367 @@
+#!/usr/bin/env node
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+
+global.window = {};
+global.document = { querySelector: () => null };
+global.Blob = class Blob {};
+global.URL.createObjectURL = global.URL.createObjectURL || (() => "blob:mobkit-live-test");
+global.URL.revokeObjectURL = global.URL.revokeObjectURL || (() => {});
+require("../src/controller.js");
+
+const rpcUrl = process.env.MOBKIT_FLOW_EDITOR_RPC_URL || "http://127.0.0.1:4191/flow-editor/rpc";
+const sampleId = process.env.MOBKIT_FLOW_EDITOR_SAMPLE_ID || "sample_docs_only";
+const runDeploy = process.argv.includes("--deploy") || process.env.MOBKIT_FLOW_EDITOR_RUN_DEPLOY === "1";
+const controller = global.window.MobKitFlowController;
+let contractSchema = null;
+const testDeploySettings = () => controller.deployDefaultsFromSchema(contractSchema);
+const testMobSettings = () => controller.mobDefaultsFromSchema(contractSchema);
+
+async function rpc(method, params) {
+  const response = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: Math.floor(Math.random() * 1e9),
+      method,
+      params: params || {},
+    }),
+  });
+  if (!response.ok) throw new Error(`${method} HTTP ${response.status}`);
+  const payload = await response.json();
+  if (payload.error) throw new Error(`${method}: ${payload.error.message}`);
+  return payload.result;
+}
+
+async function assertAuthoringCapabilities() {
+  const capabilities = await rpc("mobkit/capabilities", {});
+  const authoring = capabilities.authoring_capabilities || {};
+  const expectedMethods = [
+    "mobkit/mobpacks/schema",
+    "mobkit/mobpacks/validate",
+    "mobkit/mobpacks/export",
+    "mobkit/mobpacks/import",
+    "mobkit/mobpacks/deploy_command",
+    "mobkit/mobpacks/deploy",
+  ];
+  if (authoring.domain !== "mobpack_authoring") {
+    throw new Error(`flow editor capabilities expose wrong authoring domain: ${JSON.stringify(authoring)}`);
+  }
+  if (authoring.runtime_mutation !== false) {
+    throw new Error(`flow editor authoring capabilities must not mutate runtime: ${JSON.stringify(authoring)}`);
+  }
+  if (authoring.deploy_command !== "rkat mob deploy") {
+    throw new Error(`flow editor deploy command must be rkat mob deploy: ${JSON.stringify(authoring)}`);
+  }
+  for (const method of expectedMethods) {
+    if (!array(authoring.methods, "authoring.methods").includes(method)) {
+      throw new Error(`flow editor authoring capabilities missing ${method}: ${JSON.stringify(authoring.methods)}`);
+    }
+    if (!array(capabilities.methods, "capabilities.methods").includes(method)) {
+      throw new Error(`flow editor methods missing ${method}: ${JSON.stringify(capabilities.methods)}`);
+    }
+  }
+  const allowedStandaloneMethods = new Set(["mobkit/capabilities", ...expectedMethods]);
+  for (const method of array(capabilities.methods, "capabilities.methods")) {
+    if (!allowedStandaloneMethods.has(method)) {
+      throw new Error(`standalone flow editor exposed non-authoring RPC method ${method}`);
+    }
+  }
+  return {
+    domain: authoring.domain,
+    deployCommand: authoring.deploy_command,
+    methods: authoring.methods,
+  };
+}
+
+function run(command, args) {
+  const result = spawnSync(command, args, { encoding: "utf8" });
+  const output = [result.stdout, result.stderr].filter(Boolean).join("").trim();
+  if (result.status !== 0) {
+    throw new Error(`${command} ${args.join(" ")} failed with ${result.status}\n${output}`);
+  }
+  return output;
+}
+
+function array(value, label) {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value;
+}
+
+function assertRoundTrip(imported, sourceDocument) {
+  const document = imported?.document;
+  if (!document || typeof document !== "object") throw new Error("imported mobpack did not return document");
+  if (imported.validation?.ok !== true) {
+    throw new Error(`imported mobpack validation failed: ${JSON.stringify(imported.validation?.diagnostics)}`);
+  }
+
+  const members = array(document.members, "imported document.members");
+  const flowSteps = array(document.flow?.steps, "imported document.flow.steps");
+  const instances = array(document.instances, "imported document.instances");
+  const edges = array(document.edges, "imported document.edges");
+  const frames = array(document.frames, "imported document.frames");
+  const launchModes = array(document.launch_modes, "imported document.launch_modes");
+
+  if (members.length === 0) throw new Error("imported document has no real member definitions");
+  if (!flowSteps.some((step) => step.type === "member")) throw new Error("imported flow has no member turns");
+  if (!instances.some((instance) => instance.memberId && !instance.isGate)) throw new Error("imported graph has no member instances");
+  if (edges.length === 0) throw new Error("imported graph has no edges");
+  if (launchModes.length === 0) throw new Error("imported document has no launch modes");
+
+  const sourceSchemaIds = new Set(array(sourceDocument.schemas || [], "source document.schemas").map((schema) => schema.id).filter(Boolean));
+  const importedSchemaIds = new Set(array(document.schemas || [], "imported document.schemas").map((schema) => schema.id).filter(Boolean));
+  for (const schemaId of sourceSchemaIds) {
+    if (!importedSchemaIds.has(schemaId)) throw new Error(`imported document dropped schema ${schemaId}`);
+  }
+
+  const sourceFrameKinds = new Set(array(sourceDocument.frames || [], "source document.frames").map((frame) => frame.kind).filter(Boolean));
+  if (sourceFrameKinds.size > 0 && frames.length === 0) throw new Error("imported document dropped flow frames");
+
+  return {
+    mob_id: document.mob_id,
+    members: members.length,
+    flowSteps: flowSteps.length,
+    instances: instances.length,
+    edges: edges.length,
+    frames: frames.length,
+    schemas: importedSchemaIds.size,
+    launchModes: launchModes.length,
+  };
+}
+
+function assertDeployPlanTrace(result, label) {
+  const trace = array(result.plan_trace, `${label}.plan_trace`);
+  const heads = trace.map((row) => String(row?.head || ""));
+  for (const prefix of ["MOBPACK ·", "PROFILE ·", "FLOW ·", "STEP ·", "VALIDATION ·"]) {
+    if (!heads.some((head) => head.startsWith(prefix))) {
+      throw new Error(`${label} deploy plan_trace missing ${prefix} row: ${JSON.stringify(trace)}`);
+    }
+  }
+  const firstBody = String(trace[0]?.body || "");
+  if (!firstBody.includes("source: mobkit/mob.toml") || !firstBody.includes("command: rkat mob deploy")) {
+    throw new Error(`${label} deploy plan_trace did not describe the MobKit deploy source/command: ${JSON.stringify(trace[0])}`);
+  }
+  if (!trace.some((row) => String(row?.body || "").includes("skills:") && String(row?.body || "").includes("tools:"))) {
+    throw new Error(`${label} deploy plan_trace did not include profile tools/skills from the parsed MobKit definition: ${JSON.stringify(trace)}`);
+  }
+  return {
+    rows: trace.length,
+    heads: heads.slice(0, 5),
+  };
+}
+
+function buildGraphBranchShapeDocument() {
+  const members = [
+    {
+      id: "m_writer",
+      name: "writer",
+      role: "writer",
+      model: "gpt-5.5",
+      systemPrompt: "Write the selected work item.",
+      tools: ["builtins", "comms"],
+      skills: [],
+      profileBinding: "inline",
+      runtimeMode: "turn_driven",
+    },
+    {
+      id: "m_reviewer",
+      name: "reviewer",
+      role: "reviewer",
+      model: "gpt-5.5",
+      systemPrompt: "Review the fallback work item.",
+      tools: ["builtins", "comms"],
+      skills: [],
+      profileBinding: "inline",
+      runtimeMode: "turn_driven",
+    },
+  ];
+  const previousFlow = {
+    name: "graph-branch-shape",
+    steps: [{
+      id: "input_1",
+      type: "input",
+      task: "Route the graph branch.",
+      fields: "",
+      inputParams: [{
+        id: "p_route",
+        name: "route",
+        type: "enum",
+        required: true,
+        description: "Graph branch route.",
+        enumValues: ["a", "fallback"],
+      }],
+    }, {
+      id: "branch_writer",
+      type: "member",
+      role: "m_writer",
+      instruction: "Write the route A branch output.",
+    }, {
+      id: "branch_reviewer",
+      type: "member",
+      role: "m_reviewer",
+      instruction: "Review the fallback branch output.",
+    }],
+  };
+  const instances = [
+    { id: "g_branch_route", isGate: true, gateKind: "branch", label: "branch", col: 0, row: 0 },
+    { id: "branch_writer", memberId: "m_writer", col: 1, row: 0, lane: "route = a", launchMode: { kind: "Fresh" } },
+    { id: "branch_reviewer", memberId: "m_reviewer", col: 1, row: 1, lane: "fallback", launchMode: { kind: "Fresh" } },
+    { id: "j_branch_route", isGate: true, gateKind: "join", label: "join · branch paths", collection: "all", col: 2, row: 0 },
+  ];
+  const edges = [
+    { id: "e_gate_writer", from: "g_branch_route", to: "branch_writer", kind: "cond", label: "route == \"a\"", cond: { var: "params.route", op: "==", val: "a" } },
+    { id: "e_gate_reviewer", from: "g_branch_route", to: "branch_reviewer", kind: "next", label: "fallback" },
+    { id: "e_writer_join", from: "branch_writer", to: "j_branch_route", kind: "next", label: "" },
+    { id: "e_reviewer_join", from: "branch_reviewer", to: "j_branch_route", kind: "next", label: "" },
+  ];
+  const flow = controller.graphToFlow({
+    previousFlow,
+    members,
+    instances,
+    edges,
+  });
+  const branch = flow.steps.find((step) => step.type === "branch");
+  if (!branch) throw new Error("graph branch shape did not compile to a branch step");
+  if (branch.branches.length !== 1) throw new Error(`expected one conditional branch, got ${branch.branches.length}`);
+  if (branch.fallback.length !== 1) throw new Error(`expected one fallback step, got ${branch.fallback.length}`);
+  return controller.buildDocument({
+    flow,
+    studio: {
+      members,
+      schemas: [],
+      instances,
+      edges,
+      frames: [],
+      skillRealms: [],
+      mobSettings: testMobSettings(),
+    },
+    currentFlow: { name: "graph-branch-shape" },
+    deploySettings: testDeploySettings(),
+  });
+}
+
+async function validateGraphBranchShape(dir) {
+  const document = buildGraphBranchShapeDocument();
+  const validation = await rpc("mobkit/mobpacks/validate", { document });
+  if (!validation.ok) {
+    throw new Error(`graph branch shape failed MobKit validation: ${JSON.stringify(validation.diagnostics)}`);
+  }
+  const exported = await rpc("mobkit/mobpacks/export", {
+    document,
+    filename: "graph-branch-shape.mobpack",
+  });
+  if (!exported.validation?.ok) {
+    throw new Error(`graph branch shape export failed validation: ${JSON.stringify(exported.validation?.diagnostics)}`);
+  }
+  const packPath = path.join(dir, exported.filename || "graph-branch-shape.mobpack");
+  fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
+  const validate = run("rkat", ["mob", "validate", packPath]);
+  const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
+  const branch = imported.document?.flow?.steps?.find((step) => step.type === "branch");
+  if (!branch) throw new Error("imported graph branch shape dropped branch step");
+  if (!branch.branches?.[0]?.cond || branch.branches[0].cond.field !== "route") {
+    throw new Error(`imported graph branch shape dropped route condition: ${JSON.stringify(branch.branches?.[0])}`);
+  }
+  if (!Array.isArray(branch.fallback) || branch.fallback.length !== 1) {
+    throw new Error(`imported graph branch shape dropped fallback: ${JSON.stringify(branch.fallback)}`);
+  }
+  return {
+    validate,
+    branchCount: branch.branches.length,
+    fallbackCount: branch.fallback.length,
+    frameKinds: (imported.document.frames || []).map((frame) => frame.kind),
+    edgeKinds: (imported.document.edges || []).map((edge) => edge.kind),
+  };
+}
+
+function buildGraphParallelShapeDocument() {
+  const members = [
+    {
+      id: "m_writer",
+      name: "writer",
+      role: "writer",
+      model: "gpt-5.5",
+      systemPrompt: "Write one side of the parallel result.",
+      tools: ["builtins", "comms"],
+      skills: [],
+      profileBinding: "inline",
+      runtimeMode: "turn_driven",
+    },
+    {
+      id: "m_reviewer",
+      name: "reviewer",
+      role: "reviewer",
+      model: "gpt-5.5",
+      systemPrompt: "Review the other side of the parallel result.",
+      tools: ["builtins", "comms"],
+      skills: [],
+      profileBinding: "inline",
+      runtimeMode: "turn_driven",
+    },
+  ];
+  const previousFlow = {
+    name: "graph-parallel-shape",
+    steps: [{
+      id: "input_1",
+      type: "input",
+      task: "Run the graph parallel lanes.",
+      fields: "",
+      inputParams: [],
+    }, {
+      id: "parallel_writer",
+      type: "member",
+      role: "m_writer",
+      instruction: "Write the first parallel lane result.",
+    }, {
+      id: "parallel_reviewer",
+      type: "member",
+      role: "m_reviewer",
+      instruction: "Review the second parallel lane result.",
+    }],
+  };
+  const instances = [
+    { id: "g_parallel_work", isGate: true, gateKind: "fork", label: "fan_out", dispatch: "fan_out", col: 0, row: 0 },
+    { id: "parallel_writer", memberId: "m_writer", col: 1, row: 0, lane: "lane 1", launchMode: { kind: "Fresh" } },
+    { id: "parallel_reviewer", memberId: "m_reviewer", col: 1, row: 1, lane: "lane 2", launchMode: { kind: "Fresh" } },
+    { id: "j_parallel_work", isGate: true, gateKind: "join", label: "join · all", collection: "all", col: 2, row: 0 },
+  ];
+  const edges = [
+    { id: "e_gate_writer", from: "g_parallel_work", to: "parallel_writer", kind: "fanout", label: "" },
+    { id: "e_gate_reviewer", from: "g_parallel_work", to: "parallel_reviewer", kind: "fanout", label: "" },
+    { id: "e_writer_join", from: "parallel_writer", to: "j_parallel_work", kind: "next", label: "" },
+    { id: "e_reviewer_join", from: "parallel_reviewer", to: "j_parallel_work", kind: "next", label: "" },
+  ];
+  const flow = controller.graphToFlow({
+    previousFlow,
+    members,
+    instances,
+    edges,
+  });
+  const parallel = flow.steps.find((step) => step.type === "parallel");
+  if (!parallel) throw new Error("graph parallel shape did not compile to a parallel step");
+  if (parallel.branches.length !== 2) throw new Error(`expected two parallel branches, got ${parallel.branches.length}`);
+  if (parallel.dispatch !== "fan_out") throw new Error(`expected fan_out dispatch, got ${parallel.dispatch}`);
+  if (parallel.collection !== "all") throw new Error(`expected all collection, got ${parallel.collection}`);
+  return controller.buildDocument({
+    flow,
+    studio: {
+      members,
+      schemas: [],
+      instances,
+      edges,
+      frames: [],
+      skillRealms: [],
+      mobSettings: testMobSettings(),
+    },
+    currentFlow: { name: "graph-parallel-shape" },
+    deploySettings: testDeploySettings(),
+  });
+}
+
+async function validateGraphParallelShape(dir) {
+  const document = buildGraphParallelShapeDocument();
+  const validation = await rpc("mobkit/mobpacks/validate", { document });
+  if (!validation.ok) {
+    throw new Error(`graph parallel shape failed MobKit validation: ${JSON.stringify(validation.diagnostics)}`);
+  }
+  const exported = await rpc("mobkit/mobpacks/export", {
+    document,
+    filename: "graph-parallel-shape.mobpack",
+  });
+  if (!exported.validation?.ok) {
+    throw new Error(`graph parallel shape export failed validation: ${JSON.stringify(exported.validation?.diagnostics)}`);
+  }
+  const packPath = path.join(dir, exported.filename || "graph-parallel-shape.mobpack");
+  fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
+  const validate = run("rkat", ["mob", "validate", packPath]);
+  const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
+  const parallel = imported.document?.flow?.steps?.find((step) => step.type === "parallel");
+  if (!parallel) throw new Error("imported graph parallel shape dropped parallel step");
+  if (parallel.branches?.length !== 2) {
+    throw new Error(`imported graph parallel shape dropped branches: ${JSON.stringify(parallel.branches)}`);
+  }
+  if (parallel.dispatch !== "fan_out" || parallel.collection !== "all") {
+    throw new Error(`imported graph parallel shape changed dispatch/collection: ${JSON.stringify(parallel)}`);
+  }
+  return {
+    validate,
+    branchCount: parallel.branches.length,
+    dispatch: parallel.dispatch,
+    collection: parallel.collection,
+    frameKinds: (imported.document.frames || []).map((frame) => frame.kind),
+    edgeKinds: (imported.document.edges || []).map((edge) => edge.kind),
+  };
+}
+
+function buildGraphLoopShapeDocument() {
+  const members = [
+    {
+      id: "m_coder",
+      name: "coder",
+      role: "coder",
+      model: "gpt-5.5",
+      systemPrompt: "Implement the current iteration.",
+      tools: ["builtins", "comms"],
+      skills: [],
+      profileBinding: "inline",
+      runtimeMode: "turn_driven",
+    },
+    {
+      id: "m_reviewer",
+      name: "reviewer",
+      role: "reviewer",
+      model: "gpt-5.5",
+      systemPrompt: "Review the iteration and emit a verdict.",
+      tools: ["builtins", "comms"],
+      skills: [],
+      schema: "ReviewArtifact",
+      profileBinding: "inline",
+      runtimeMode: "turn_driven",
+    },
+  ];
+  const schemas = [{
+    id: "ReviewArtifact",
+    description: "Review output for graph loop proof.",
+    fields: [{
+      id: "f_verdict",
+      name: "verdict",
+      type: "enum",
+      required: true,
+      description: "Whether the loop can exit.",
+      enumValues: ["green", "red"],
+    }],
+  }];
+  const previousFlow = {
+    name: "graph-loop-shape",
+    steps: [{
+      id: "input_1",
+      type: "input",
+      task: "Run the graph loop until review is green.",
+      fields: "",
+      inputParams: [],
+    }, {
+      id: "quality_loop",
+      type: "repeat",
+      loopId: "quality_loop",
+      maxIterations: 4,
+      iterationInput: "carry",
+      cond: { stepId: "loop_reviewer", field: "verdict", op: "==", val: "green" },
+      steps: [{
+        id: "loop_coder",
+        type: "member",
+        role: "m_coder",
+        instruction: "Implement the next loop iteration.",
+      }, {
+        id: "loop_reviewer",
+        type: "member",
+        role: "m_reviewer",
+        instruction: "Review the loop iteration and emit the verdict.",
+      }],
+    }],
+  };
+  const instances = [
+    { id: "loop_coder", memberId: "m_coder", col: 0, row: 0, lane: "implement", launchMode: { kind: "Fresh" } },
+    { id: "loop_reviewer", memberId: "m_reviewer", col: 1, row: 0, lane: "review", launchMode: { kind: "Fresh" } },
+  ];
+  const edges = [
+    { id: "e_coder_reviewer", from: "loop_coder", to: "loop_reviewer", kind: "next", label: "" },
+    { id: "e_reviewer_coder", from: "loop_reviewer", to: "loop_coder", kind: "cond", label: "until green", cond: { var: "steps.loop_reviewer.verdict", op: "==", val: "green" } },
+  ];
+  const flow = controller.graphToFlow({
+    previousFlow,
+    members,
+    instances,
+    edges,
+  });
+  const repeat = flow.steps.find((step) => step.type === "repeat");
+  if (!repeat) throw new Error("graph loop shape did not compile to a repeat step");
+  if (repeat.steps.length !== 2) throw new Error(`expected two repeat body steps, got ${repeat.steps.length}`);
+  if (repeat.maxIterations !== 4 || repeat.iterationInput !== "carry") {
+    throw new Error(`graph loop shape did not preserve authored repeat metadata: ${JSON.stringify(repeat)}`);
+  }
+  if (repeat.cond?.stepId !== "loop_reviewer" || repeat.cond?.field !== "verdict") {
+    throw new Error(`graph loop shape changed repeat condition: ${JSON.stringify(repeat.cond)}`);
+  }
+  return controller.buildDocument({
+    flow,
+    studio: {
+      members,
+      schemas,
+      instances,
+      edges,
+      frames: [],
+      skillRealms: [],
+      mobSettings: testMobSettings(),
+    },
+    currentFlow: { name: "graph-loop-shape" },
+    deploySettings: testDeploySettings(),
+  });
+}
+
+async function validateGraphLoopShape(dir) {
+  const document = buildGraphLoopShapeDocument();
+  const validation = await rpc("mobkit/mobpacks/validate", { document });
+  if (!validation.ok) {
+    throw new Error(`graph loop shape failed MobKit validation: ${JSON.stringify(validation.diagnostics)}`);
+  }
+  const exported = await rpc("mobkit/mobpacks/export", {
+    document,
+    filename: "graph-loop-shape.mobpack",
+  });
+  if (!exported.validation?.ok) {
+    throw new Error(`graph loop shape export failed validation: ${JSON.stringify(exported.validation?.diagnostics)}`);
+  }
+  const packPath = path.join(dir, exported.filename || "graph-loop-shape.mobpack");
+  fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
+  const validate = run("rkat", ["mob", "validate", packPath]);
+  const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
+  const repeat = imported.document?.flow?.steps?.find((step) => step.type === "repeat");
+  if (!repeat) throw new Error("imported graph loop shape dropped repeat step");
+  if (repeat.cond?.field !== "verdict" || repeat.cond?.val !== "green") {
+    throw new Error(`imported graph loop shape changed repeat condition: ${JSON.stringify(repeat.cond)}`);
+  }
+  return {
+    validate,
+    bodyCount: repeat.steps.length,
+    condition: repeat.cond,
+    frameKinds: (imported.document.frames || []).map((frame) => frame.kind),
+    edgeKinds: (imported.document.edges || []).map((edge) => edge.kind),
+    schemas: (imported.document.schemas || []).map((schema) => schema.id),
+  };
+}
+
+function buildEditedAgentDefinitionDocument() {
+  const members = [{
+    id: "m_quality_agent",
+    name: "quality_agent",
+    role: "quality_agent",
+    model: "gpt-5.5",
+    systemPrompt: "Inspect the requested change and emit a structured quality verdict.",
+    tools: ["builtins", "shell", "comms"],
+    skills: ["mob.editor.quality"],
+    schema: "QualityVerdict",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+    backend: "session",
+    maxInlinePeerNotifications: 4,
+    providerParams: { thinking_budget: 4096, top_k: 20 },
+  }];
+  const schemas = [{
+    id: "QualityVerdict",
+    description: "Structured verdict emitted by the edited quality agent.",
+    fields: [
+      {
+        id: "f_verdict",
+        name: "verdict",
+        type: "enum",
+        required: true,
+        description: "Whether the change is accepted.",
+        enumValues: ["green", "red"],
+      },
+      {
+        id: "f_findings",
+        name: "findings",
+        type: "string[]",
+        required: true,
+        description: "Blocking findings or an empty list.",
+      },
+    ],
+  }];
+  const skillRealms = [{
+    id: "mobkit/editor-inline",
+    label: "This mobpack",
+    source: "editor",
+    default: true,
+    skills: [{
+      id: "mob.editor.quality",
+      label: "mob.editor.quality",
+      source: "inline",
+      content: "Inspect behavior, tools, and schema evidence before returning a quality verdict.",
+      desc: "Inline quality review skill stored in this mobpack.",
+    }],
+  }];
+  const flow = {
+    name: "edited-agent-definition",
+    steps: [
+      {
+        id: "input_1",
+        type: "input",
+        task: "Inspect the edited agent definition.",
+        fields: "",
+        inputParams: [],
+      },
+      {
+        id: "quality_turn",
+        type: "member",
+        role: "m_quality_agent",
+        instruction: "Run the quality agent and emit a QualityVerdict.",
+        launchMode: { kind: "Fresh" },
+        allowedTools: ["builtins", "shell"],
+        blockedTools: ["comms"],
+        outputFormat: "json",
+      },
+    ],
+  };
+  return controller.buildDocument({
+    flow,
+    studio: {
+      members,
+      schemas,
+      instances: [],
+      edges: [],
+      frames: [],
+      skillRealms,
+      mobSettings: testMobSettings(),
+    },
+    currentFlow: { name: "edited-agent-definition" },
+    deploySettings: testDeploySettings(),
+  });
+}
+
+async function validateEditedAgentDefinition(dir) {
+  const document = buildEditedAgentDefinitionDocument();
+  const validation = await rpc("mobkit/mobpacks/validate", { document });
+  if (!validation.ok) {
+    throw new Error(`edited agent definition failed MobKit validation: ${JSON.stringify(validation.diagnostics)}`);
+  }
+  const exported = await rpc("mobkit/mobpacks/export", {
+    document,
+    filename: "edited-agent-definition.mobpack",
+  });
+  if (!exported.validation?.ok) {
+    throw new Error(`edited agent definition export failed validation: ${JSON.stringify(exported.validation?.diagnostics)}`);
+  }
+  const mobToml = exported.mob_toml || "";
+  for (const required of [
+    "[profiles.quality_agent]",
+    "skills = [\"mob.editor.quality\"]",
+    "[profiles.quality_agent.tools]",
+    "builtins = true",
+    "shell = true",
+    "comms = true",
+    "[profiles.quality_agent.output_schema]",
+    "[skills.\"mob.editor.quality\"]",
+    "source = \"inline\"",
+  ]) {
+    if (!mobToml.includes(required)) {
+      throw new Error(`edited agent mob.toml missing ${required}\n${mobToml}`);
+    }
+  }
+  const packPath = path.join(dir, exported.filename || "edited-agent-definition.mobpack");
+  fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
+  const validate = run("rkat", ["mob", "validate", packPath]);
+  const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
+  const member = imported.document?.members?.find((candidate) => candidate.id === "m_quality_agent");
+  if (!member) throw new Error("imported edited agent definition dropped quality agent member");
+  if (!["builtins", "shell", "comms"].every((tool) => member.tools?.includes(tool))) {
+    throw new Error(`imported edited agent definition dropped tool refs: ${JSON.stringify(member.tools)}`);
+  }
+  if (!member.skills?.includes("mob.editor.quality")) {
+    throw new Error(`imported edited agent definition dropped inline skill ref: ${JSON.stringify(member.skills)}`);
+  }
+  if (member.schema !== "QualityVerdict") {
+    throw new Error(`imported edited agent definition changed schema: ${JSON.stringify(member.schema)}`);
+  }
+  const importedSkill = (imported.document.skill_realms || [])
+    .flatMap((realm) => realm.skills || [])
+    .find((skill) => skill.id === "mob.editor.quality");
+  if (!importedSkill || importedSkill.source !== "inline" || !importedSkill.content?.includes("quality verdict")) {
+    throw new Error(`imported edited agent definition dropped inline skill body: ${JSON.stringify(importedSkill)}`);
+  }
+  const flowStep = imported.document?.flow?.steps?.find((step) => step.id === "quality_turn");
+  if (!flowStep || flowStep.allowedTools?.length !== 2 || flowStep.blockedTools?.[0] !== "comms") {
+    throw new Error(`imported edited agent definition changed step tool limits: ${JSON.stringify(flowStep)}`);
+  }
+  return {
+    validate,
+    member: {
+      model: member.model,
+      tools: member.tools,
+      skills: member.skills,
+      schema: member.schema,
+      runtimeMode: member.runtimeMode,
+      backend: member.backend,
+      maxInlinePeerNotifications: member.maxInlinePeerNotifications,
+      providerParams: member.providerParams,
+    },
+    schemaIds: (imported.document.schemas || []).map((schema) => schema.id),
+    skillIds: (imported.document.skill_realms || []).flatMap((realm) => (realm.skills || []).map((skill) => skill.id)),
+  };
+}
+
+function buildFilesystemSkillDocument(skillPath) {
+  const members = [{
+    id: "m_platform_agent",
+    name: "platform_agent",
+    role: "platform_agent",
+    model: "gpt-5.5",
+    systemPrompt: "Use the selected MobKit platform skill to answer from the real contract.",
+    tools: ["builtins", "comms"],
+    skills: ["mob.platform"],
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+  }];
+  const skillRealms = [{
+    id: "local/filesystem",
+    label: "Local filesystem",
+    source: "filesystem",
+    skills: [{
+      id: "mob.platform",
+      label: "MobKit Platform",
+      source: "path",
+      origin: "filesystem",
+      path: skillPath,
+      desc: "Filesystem skill packed into the deployable mobpack.",
+    }],
+  }];
+  const flow = {
+    name: "filesystem-skill-definition",
+    steps: [
+      {
+        id: "input_1",
+        type: "input",
+        task: "Run the filesystem skill proof.",
+        fields: "",
+        inputParams: [],
+      },
+      {
+        id: "platform_turn",
+        type: "member",
+        role: "m_platform_agent",
+        instruction: "Use the MobKit platform skill and cite the packed contract.",
+        launchMode: { kind: "Fresh" },
+      },
+    ],
+  };
+  return controller.buildDocument({
+    flow,
+    studio: {
+      members,
+      schemas: [],
+      instances: [],
+      edges: [],
+      frames: [],
+      skillRealms,
+      mobSettings: testMobSettings(),
+    },
+    currentFlow: { name: "filesystem-skill-definition" },
+    deploySettings: testDeploySettings(),
+  });
+}
+
+async function validateFilesystemSkillPacking(dir) {
+  const skillPath = path.join(dir, "SKILL.md");
+  const skillContent = "Use the real MobKit platform contract from this packed filesystem skill.";
+  fs.writeFileSync(skillPath, skillContent);
+
+  const document = buildFilesystemSkillDocument(skillPath);
+  const validation = await rpc("mobkit/mobpacks/validate", { document });
+  if (!validation.ok) {
+    throw new Error(`filesystem skill definition failed MobKit validation: ${JSON.stringify(validation.diagnostics)}`);
+  }
+  const exported = await rpc("mobkit/mobpacks/export", {
+    document,
+    filename: "filesystem-skill-definition.mobpack",
+  });
+  if (!exported.validation?.ok) {
+    throw new Error(`filesystem skill export failed validation: ${JSON.stringify(exported.validation?.diagnostics)}`);
+  }
+  const mobToml = exported.mob_toml || "";
+  for (const required of [
+    "[skills.\"mob.platform\"]",
+    "source = \"path\"",
+    "path = \"skills/mob-platform.md\"",
+  ]) {
+    if (!mobToml.includes(required)) {
+      throw new Error(`filesystem skill mob.toml missing ${required}\n${mobToml}`);
+    }
+  }
+  if (mobToml.includes(skillPath) || mobToml.includes(dir)) {
+    throw new Error(`filesystem skill export leaked authoring path into mob.toml\n${mobToml}`);
+  }
+
+  const packPath = path.join(dir, exported.filename || "filesystem-skill-definition.mobpack");
+  fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
+  const archiveList = run("tar", ["-tzf", packPath]);
+  if (!archiveList.split(/\r?\n/).includes("skills/mob-platform.md")) {
+    throw new Error(`filesystem skill archive missing packed skill file:\n${archiveList}`);
+  }
+  const archivedSkill = run("tar", ["-xOf", packPath, "skills/mob-platform.md"]);
+  if (archivedSkill !== skillContent) {
+    throw new Error(`filesystem skill archive content changed: ${JSON.stringify(archivedSkill)}`);
+  }
+
+  const validate = run("rkat", ["mob", "validate", packPath]);
+  fs.unlinkSync(skillPath);
+  const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
+  const importedValidation = await rpc("mobkit/mobpacks/validate", { document: imported.document });
+  if (!importedValidation.ok) {
+    throw new Error(`imported packed filesystem skill failed validation after original file removal: ${JSON.stringify(importedValidation.diagnostics)}`);
+  }
+  const importedSkill = (imported.document?.skill_realms || [])
+    .flatMap((realm) => realm.skills || [])
+    .find((skill) => skill.id === "mob.platform");
+  if (!importedSkill || importedSkill.source !== "path" || importedSkill.content !== skillContent) {
+    throw new Error(`imported filesystem skill dropped packed content: ${JSON.stringify(importedSkill)}`);
+  }
+  const importedMember = imported.document?.members?.find((member) => member.id === "m_platform_agent");
+  if (!importedMember?.skills?.includes("mob.platform")) {
+    throw new Error(`imported filesystem skill dropped member skill ref: ${JSON.stringify(importedMember)}`);
+  }
+  return {
+    validate,
+    archivePath: "skills/mob-platform.md",
+    source: importedSkill.source,
+    hasPackedContent: importedSkill.content === skillContent,
+    memberSkills: importedMember.skills,
+  };
+}
+
+function buildUnifiedProjectionDocument(schema) {
+  const definitions = controller.agentDefinitionsFromSchema(schema);
+  const coderDefinition = definitions.find((definition) => definition.id === "coder") || definitions[0];
+  const reviewerDefinition = definitions.find((definition) => definition.id === "reviewer") || definitions[1] || definitions[0];
+  if (!coderDefinition || !reviewerDefinition) {
+    throw new Error("unified projection proof needs MobKit agent definitions from schema");
+  }
+  const model = schema.models?.[0]?.id || coderDefinition.model || reviewerDefinition.model || "gpt-5.5";
+  const toolIds = (schema.tool_catalog || schema.tool_config || []).map((tool) => tool.id).filter(Boolean);
+  for (const required of ["builtins", "shell", "comms", "mob"]) {
+    if (!toolIds.includes(required)) throw new Error(`unified projection proof missing real tool ${required}`);
+  }
+
+  const coder = {
+    ...controller.memberFromAgentDefinition(coderDefinition, []),
+    id: "m_unified_coder",
+    name: "Unified Coder",
+    role: "unified_coder",
+    model,
+    systemPrompt: "Implement the graph-selected path using only the agent-edited MobKit profile definition.",
+    tools: ["builtins", "shell", "mob"],
+    skills: ["mob.workpad", "mob.editor.unified"],
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+    backend: "session",
+    maxInlinePeerNotifications: 2,
+    providerParams: { thinking_budget: 2048 },
+  };
+  const reviewer = {
+    ...controller.memberFromAgentDefinition(reviewerDefinition, [coder]),
+    id: "m_unified_reviewer",
+    name: "Unified Reviewer",
+    role: "unified_reviewer",
+    model,
+    systemPrompt: "Review the fallback path and emit the unified verdict schema.",
+    tools: ["builtins", "comms", "mob"],
+    skills: ["mob.review", "mob.editor.unified"],
+    schema: "UnifiedVerdict",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+    backend: "session",
+    maxInlinePeerNotifications: 1,
+  };
+  const schemas = [{
+    id: "UnifiedVerdict",
+    description: "Agent-editor schema used by the synchronized projection proof.",
+    fields: [
+      {
+        id: "f_verdict",
+        name: "verdict",
+        type: "enum",
+        required: true,
+        description: "Whether the branch output is accepted.",
+        enumValues: ["green", "red"],
+      },
+      {
+        id: "f_notes",
+        name: "notes",
+        type: "string",
+        required: false,
+        description: "Reviewer notes.",
+      },
+    ],
+  }];
+  const sampleSkillRealm = (schema.skill_realms || [])
+    .find((realm) => realm.id === "mobkit/sample-mobpacks" || (realm.skills || []).some((skill) => skill.id === "mob.workpad"));
+  const sampleSkills = (sampleSkillRealm?.skills || [])
+    .filter((skill) => ["mob.workpad", "mob.review"].includes(skill.id));
+  if (sampleSkills.length < 2) {
+    throw new Error("unified projection proof needs real MobKit sample mobpack skills from skill_realms");
+  }
+  if (!sampleSkillRealm?.source) {
+    throw new Error(`unified projection proof needs MobKit sample skill realm source metadata: ${JSON.stringify(sampleSkillRealm)}`);
+  }
+  const skillRealms = [
+    {
+      id: "mobkit/sample-mobpacks",
+      label: "mobkit/sample-mobpacks",
+      source: sampleSkillRealm.source,
+      skills: sampleSkills,
+    },
+    {
+      id: "mobkit/editor-inline",
+      label: "This mobpack",
+      source: "editor",
+      skills: [{
+        id: "mob.editor.unified",
+        label: "mob.editor.unified",
+        source: "inline",
+        content: "Keep Basic, Graph, and Agent editor projections synchronized against the same deployable mobpack.",
+      }],
+    },
+  ];
+
+  const previousFlow = {
+    name: "unified-projection-proof",
+    steps: [{
+      id: "input_1",
+      type: "input",
+      task: "Route the synchronized editor projection.",
+      fields: "",
+      inputParams: [{
+        id: "p_route",
+        name: "route",
+        type: "enum",
+        required: true,
+        description: "Which graph branch should run.",
+        enumValues: ["code", "review"],
+      }],
+    }, {
+      id: "unified_code_turn",
+      type: "member",
+      role: coder.id,
+      instruction: "Run the unified coder path and emit text output.",
+    }, {
+      id: "unified_review_turn",
+      type: "member",
+      role: reviewer.id,
+      instruction: "Review the fallback path and emit the unified verdict schema.",
+    }],
+  };
+  const instances = [
+    { id: "g_branch_unified", isGate: true, gateKind: "branch", label: "branch", col: 0, row: 0 },
+    {
+      id: "unified_code_turn",
+      memberId: coder.id,
+      col: 1,
+      row: 0,
+      lane: "route = code",
+      launchMode: { kind: "Fresh" },
+      allowedTools: ["builtins", "shell"],
+      blockedTools: ["mob"],
+      outputFormat: "text",
+    },
+    {
+      id: "unified_review_turn",
+      memberId: reviewer.id,
+      col: 1,
+      row: 1,
+      lane: "fallback",
+      launchMode: { kind: "Fresh" },
+      allowedTools: ["builtins", "comms"],
+      outputFormat: "json",
+    },
+    { id: "j_branch_unified", isGate: true, gateKind: "join", label: "join · branch paths", collection: "all", col: 2, row: 0 },
+  ];
+  const edges = [
+    { id: "e_unified_code", from: "g_branch_unified", to: "unified_code_turn", kind: "cond", label: "route == \"code\"", cond: { var: "params.route", op: "==", val: "code" } },
+    { id: "e_unified_review", from: "g_branch_unified", to: "unified_review_turn", kind: "next", label: "fallback" },
+    { id: "e_unified_code_join", from: "unified_code_turn", to: "j_branch_unified", kind: "next", label: "" },
+    { id: "e_unified_review_join", from: "unified_review_turn", to: "j_branch_unified", kind: "next", label: "" },
+  ];
+  const flow = controller.graphToFlow({
+    previousFlow,
+    members: [coder, reviewer],
+    instances,
+    edges,
+  });
+  const branch = flow.steps.find((step) => step.type === "branch");
+  if (!branch || branch.branches?.length !== 1 || branch.fallback?.length !== 1) {
+    throw new Error(`unified projection graph did not compile to a Basic branch: ${JSON.stringify(flow.steps)}`);
+  }
+
+  return controller.buildDocument({
+    flow,
+    studio: {
+      members: [coder, reviewer],
+      schemas,
+      instances,
+      edges,
+      frames: [],
+      skillRealms,
+      mobSettings: testMobSettings(),
+    },
+    currentFlow: { name: "unified-projection-proof" },
+    deploySettings: testDeploySettings(),
+  });
+}
+
+async function validateUnifiedEditorProjection(dir, schema) {
+  const document = buildUnifiedProjectionDocument(schema);
+  const validation = await rpc("mobkit/mobpacks/validate", { document });
+  if (!validation.ok) {
+    throw new Error(`unified editor projection failed MobKit validation: ${JSON.stringify(validation.diagnostics)}`);
+  }
+  const exported = await rpc("mobkit/mobpacks/export", {
+    document,
+    filename: "unified-editor-projection.mobpack",
+  });
+  if (!exported.validation?.ok) {
+    throw new Error(`unified editor projection export failed validation: ${JSON.stringify(exported.validation?.diagnostics)}`);
+  }
+  const mobToml = exported.mob_toml || "";
+  for (const required of [
+    "[profiles.unified_coder]",
+    "[profiles.unified_reviewer]",
+    "skills = [\"mob.workpad\", \"mob.editor.unified\"]",
+    "skills = [\"mob.review\", \"mob.editor.unified\"]",
+    "[profiles.unified_reviewer.output_schema]",
+    "[skills.\"mob.editor.unified\"]",
+    "[flows.main.root.nodes.node_01_unified_coder]",
+    "branch = \"branch_unified\"",
+  ]) {
+    if (!mobToml.includes(required)) {
+      throw new Error(`unified editor mob.toml missing ${required}\n${mobToml}`);
+    }
+  }
+  const packPath = path.join(dir, exported.filename || "unified-editor-projection.mobpack");
+  fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
+  const validate = run("rkat", ["mob", "validate", packPath]);
+  const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
+  const importedValidation = await rpc("mobkit/mobpacks/validate", { document: imported.document });
+  if (!importedValidation.ok) {
+    throw new Error(`imported unified editor projection failed validation: ${JSON.stringify(importedValidation.diagnostics)}`);
+  }
+  const branch = imported.document?.flow?.steps?.find((step) => step.type === "branch");
+  if (!branch || branch.branches?.[0]?.steps?.[0]?.role !== "m_unified_coder" || branch.fallback?.[0]?.role !== "m_unified_reviewer") {
+    throw new Error(`imported unified editor projection lost graph/basic branch sync: ${JSON.stringify(branch)}`);
+  }
+  const coder = imported.document?.members?.find((member) => member.id === "m_unified_coder");
+  const reviewer = imported.document?.members?.find((member) => member.id === "m_unified_reviewer");
+  if (!coder || !reviewer) throw new Error("imported unified editor projection lost edited members");
+  if (!coder.tools?.includes("shell") || !coder.skills?.includes("mob.editor.unified") || coder.providerParams?.thinking_budget !== 2048) {
+    throw new Error(`imported unified coder lost agent-editor fields: ${JSON.stringify(coder)}`);
+  }
+  if (reviewer.schema !== "UnifiedVerdict" || !reviewer.skills?.includes("mob.review")) {
+    throw new Error(`imported unified reviewer lost schema/skills: ${JSON.stringify(reviewer)}`);
+  }
+  const frameKinds = (imported.document.frames || []).map((frame) => frame.kind);
+  if (!frameKinds.includes("Branch")) {
+    throw new Error(`imported unified editor projection lost Branch frame: ${JSON.stringify(imported.document.frames)}`);
+  }
+  return {
+    validate,
+    members: [coder.id, reviewer.id],
+    branch: {
+      branches: branch.branches.length,
+      fallback: branch.fallback.length,
+      cond: branch.branches[0].cond,
+    },
+    frameKinds,
+    schemaIds: (imported.document.schemas || []).map((candidate) => candidate.id),
+    skillIds: (imported.document.skill_realms || []).flatMap((realm) => (realm.skills || []).map((skill) => skill.id)),
+  };
+}
+
+function buildRealmProfileDefinitionDocument() {
+  const members = [{
+    id: "m_realm_quality",
+    name: "realm_quality",
+    role: "realm_quality",
+    profileBinding: "realm_profile",
+    realmProfile: "quality-reviewer-v2",
+    model: "",
+    systemPrompt: "Realm profile reference: quality-reviewer-v2",
+    tools: [],
+    skills: [],
+    runtimeMode: "turn_driven",
+  }];
+  const flow = {
+    name: "realm-profile-definition",
+    steps: [
+      {
+        id: "input_1",
+        type: "input",
+        task: "Run the realm profile definition.",
+        fields: "",
+        inputParams: [],
+      },
+      {
+        id: "realm_turn",
+        type: "member",
+        role: "m_realm_quality",
+        instruction: "Run the realm-backed quality reviewer.",
+        launchMode: { kind: "Fresh" },
+      },
+    ],
+  };
+  return controller.buildDocument({
+    flow,
+    studio: {
+      members,
+      schemas: [],
+      instances: [],
+      edges: [],
+      frames: [],
+      skillRealms: [],
+      mobSettings: testMobSettings(),
+    },
+    currentFlow: { name: "realm-profile-definition" },
+    deploySettings: testDeploySettings(),
+  });
+}
+
+async function rejectRealmProfileDefinition() {
+  const document = buildRealmProfileDefinitionDocument();
+  const validation = await rpc("mobkit/mobpacks/validate", { document });
+  const diagnostic = validation.diagnostics?.find((candidate) => candidate.code === "unsupported_realm_profile_pack_binding");
+  if (validation.ok || !diagnostic) {
+    throw new Error(`realm profile definition should fail before export: ${JSON.stringify(validation)}`);
+  }
+  return {
+    ok: validation.ok,
+    code: diagnostic.code,
+    path: diagnostic.path,
+  };
+}
+
+async function validateBlankMobpackTemplate(dir, schema) {
+  const blankTemplate = controller.blankMobpackFromSchema(schema);
+  if (!blankTemplate?.document) {
+    throw new Error(`schema did not provide a blank mobpack template: ${JSON.stringify(schema.blank_mobpack)}`);
+  }
+  if (blankTemplate.validation?.ok !== true) {
+    throw new Error(`blank mobpack template is not API-valid: ${JSON.stringify(blankTemplate.validation)}`);
+  }
+  const draft = controller.createFlowDraftFromSpec({
+    id: "f_blank_live",
+    spec: {
+      name: "Blank Live Proof",
+      trigger: "label · blank-live-proof",
+      template: "blank",
+    },
+    templates: controller.sampleFlowsFromSchema(schema),
+    blankTemplate,
+    deploySettings: testDeploySettings(),
+    mobSettings: testMobSettings(),
+  });
+  if (!draft?.document || draft.row?.source !== "mobkit/blank-mobpack") {
+    throw new Error(`blank draft did not clone the MobKit blank template: ${JSON.stringify(draft)}`);
+  }
+  const validation = await rpc("mobkit/mobpacks/validate", { document: draft.document });
+  if (!validation.ok) {
+    throw new Error(`created blank draft failed validation: ${JSON.stringify(validation.diagnostics)}`);
+  }
+  const exported = await rpc("mobkit/mobpacks/export", {
+    document: draft.document,
+    filename: "blank-live-proof.mobpack",
+  });
+  if (!exported.validation?.ok) {
+    throw new Error(`created blank draft export failed validation: ${JSON.stringify(exported.validation?.diagnostics)}`);
+  }
+  const packPath = path.join(dir, exported.filename || "blank-live-proof.mobpack");
+  fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
+  const rkatValidate = run("rkat", ["mob", "validate", packPath]);
+  const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
+  const member = imported.document?.members?.find((candidate) => candidate.id === "m_worker");
+  if (!member || member.profileBinding !== "inline" || member.runtimeMode !== "turn_driven") {
+    throw new Error(`imported blank draft lost real worker profile definition: ${JSON.stringify(imported.document?.members)}`);
+  }
+  if (!imported.document?.flow?.steps?.some((step) => step.type === "member")) {
+    throw new Error(`imported blank draft lost member turn: ${JSON.stringify(imported.document?.flow)}`);
+  }
+  return {
+    validate: rkatValidate,
+    source: draft.row.source,
+    member: member.id,
+    flowSteps: imported.document.flow.steps.length,
+  };
+}
+
+async function validateCustomDeploySettings(dir) {
+  const document = buildEditedAgentDefinitionDocument();
+  document.name = "custom-deploy-settings";
+  document.mob_id = "custom_deploy_settings";
+  document.deploy = controller.normalizeDeploySettings({
+    ...testDeploySettings(),
+    surface: "cli",
+    trustPolicy: "strict",
+    model: "gpt-5.5",
+    maxDuration: "45s",
+    maxToolCalls: 3,
+    maxTotalTokens: 128,
+    isolated: false,
+    realm: "editor-proof-realm",
+    instance: "editor-proof-instance",
+    realmBackend: "sqlite",
+    contextRoot: path.join(dir, "context root"),
+    stateRoot: path.join(dir, "state-root"),
+    userConfigRoot: path.join(dir, "config-root"),
+    prompt: "Custom deploy proof prompt.",
+  });
+  const packPath = path.join(dir, "custom-deploy-settings.mobpack");
+  const preview = await rpc("mobkit/mobpacks/deploy_command", {
+    deploy: document.deploy,
+    pack_path: packPath,
+    prompt: "Custom deploy proof prompt.",
+  });
+  const result = await rpc("mobkit/mobpacks/deploy", {
+    document,
+    execute: false,
+    pack_path: packPath,
+  });
+  if (!result.validation?.ok) {
+    throw new Error(`custom deploy settings failed validation: ${JSON.stringify(result.validation?.diagnostics)}`);
+  }
+  if (result.executed) throw new Error("custom deploy settings proof unexpectedly executed deploy");
+  const argv = result.argv || [];
+  if (preview.command !== result.command || JSON.stringify(preview.argv || []) !== JSON.stringify(argv)) {
+    throw new Error(`deploy command preview drifted from deploy plan\npreview=${JSON.stringify(preview)}\nresult=${JSON.stringify({ command: result.command, argv })}`);
+  }
+  if (preview.source !== "meerkat_mobkit::mobpack::deploy_argv") {
+    throw new Error(`deploy command preview did not report MobKit deploy_argv source: ${JSON.stringify(preview)}`);
+  }
+  const expectedPairs = [
+    ["--model", "gpt-5.5"],
+    ["--max-total-tokens", "128"],
+    ["--max-duration", "45s"],
+    ["--max-tool-calls", "3"],
+    ["--trust-policy", "strict"],
+    ["--surface", "cli"],
+    ["--realm", "editor-proof-realm"],
+    ["--instance", "editor-proof-instance"],
+    ["--realm-backend", "sqlite"],
+    ["--context-root", path.join(dir, "context root")],
+    ["--state-root", path.join(dir, "state-root")],
+    ["--user-config-root", path.join(dir, "config-root")],
+  ];
+  for (const [flag, value] of expectedPairs) {
+    const index = argv.indexOf(flag);
+    if (index < 0 || argv[index + 1] !== value) {
+      throw new Error(`custom deploy argv missing ${flag} ${value}: ${JSON.stringify(argv)}`);
+    }
+  }
+  if (argv.includes("--isolated")) {
+    throw new Error(`custom deploy argv should not include --isolated when realm is set: ${JSON.stringify(argv)}`);
+  }
+  if (argv.at(-1) !== "Custom deploy proof prompt.") {
+    throw new Error(`custom deploy argv dropped prompt: ${JSON.stringify(argv)}`);
+  }
+  if (!array(result.display_rows, "deploy.display_rows").some((row) => row.kind === "warn" && row.head === "Deploy plan ready" && row.sub.includes("rkat mob deploy"))) {
+    throw new Error(`MobKit deploy response did not provide API-backed display rows: ${JSON.stringify(result.display_rows)}`);
+  }
+  const planTrace = assertDeployPlanTrace(result, "customDeploySettings");
+  const validate = run("rkat", ["mob", "validate", result.pack_path]);
+  return {
+    validate,
+    command: result.command,
+    previewCommand: preview.command,
+    argv,
+    executed: result.executed,
+    packPath: result.pack_path,
+    planTrace,
+  };
+}
+
+(async () => {
+  run("rkat", ["mob", "--help"]);
+
+  const authoringCapabilities = await assertAuthoringCapabilities();
+  const schema = await rpc("mobkit/mobpacks/schema", {});
+  contractSchema = schema;
+  const mobDefaults = schema.mob_definition?.mob_settings?.defaults;
+  if (mobDefaults?.backendDefault !== "session" || mobDefaults?.advanced?.topology !== null) {
+    throw new Error(`flow editor schema did not expose MobKit mob setting defaults: ${JSON.stringify(mobDefaults)}`);
+  }
+  const realmProfileRestriction = schema.mob_definition?.profile_binding_restrictions?.realm_profile;
+  if (realmProfileRestriction?.deployable !== false || !String(realmProfileRestriction?.reason || "").includes("rkat mob validate")) {
+    throw new Error(`flow editor schema did not expose rkat-backed realm_profile restriction: ${JSON.stringify(realmProfileRestriction)}`);
+  }
+  const samples = schema.sample_mobpacks || [];
+  const sample = samples.find((candidate) => candidate.id === sampleId) || samples[0];
+  if (!sample?.document) throw new Error("flow editor schema did not return any sample mobpack documents");
+
+  const validation = await rpc("mobkit/mobpacks/validate", { document: sample.document });
+  if (!validation.ok) {
+    throw new Error(`MobKit validation rejected ${sample.id}: ${JSON.stringify(validation.diagnostics)}`);
+  }
+  if (!array(validation.display_rows, "validation.display_rows").some((row) => row.kind === "ok" && row.head === "MobKit mobpack validates" && row.meta === "rkat mob validate")) {
+    throw new Error(`MobKit validation response did not provide API-backed display rows: ${JSON.stringify(validation.display_rows)}`);
+  }
+
+  const exported = await rpc("mobkit/mobpacks/export", {
+    document: sample.document,
+    filename: `${sample.id || "flow-editor-e2e"}.mobpack`,
+  });
+  if (!exported.validation?.ok) {
+    throw new Error(`export validation rejected ${sample.id}: ${JSON.stringify(exported.validation?.diagnostics)}`);
+  }
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mobkit-flow-editor-e2e."));
+  const packPath = path.join(dir, exported.filename || `${sample.id || "flow-editor-e2e"}.mobpack`);
+  fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
+  fs.writeFileSync(path.join(dir, "mob.toml"), exported.mob_toml || "");
+
+  const inspect = run("rkat", ["mob", "inspect", packPath]);
+  const validate = run("rkat", ["mob", "validate", packPath]);
+  const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
+  const roundTrip = assertRoundTrip(imported, sample.document);
+  const importedValidation = await rpc("mobkit/mobpacks/validate", { document: imported.document });
+  if (!importedValidation.ok) {
+    throw new Error(`round-tripped document failed validation: ${JSON.stringify(importedValidation.diagnostics)}`);
+  }
+
+  const result = {
+    rpcUrl,
+    authoringCapabilities,
+    sample: sample.id,
+    packPath,
+    inspect,
+    validate,
+    roundTrip,
+    graphBranchShape: await validateGraphBranchShape(dir),
+    graphParallelShape: await validateGraphParallelShape(dir),
+    graphLoopShape: await validateGraphLoopShape(dir),
+    editedAgentDefinition: await validateEditedAgentDefinition(dir),
+    filesystemSkillPacking: await validateFilesystemSkillPacking(dir),
+    unifiedEditorProjection: await validateUnifiedEditorProjection(dir, schema),
+    realmProfileDefinition: await rejectRealmProfileDefinition(),
+    blankMobpackTemplate: await validateBlankMobpackTemplate(dir, schema),
+    customDeploySettings: await validateCustomDeploySettings(dir),
+    deploy: null,
+  };
+
+  if (runDeploy) {
+    result.deploy = run("rkat", [
+      "mob",
+      "deploy",
+      "--isolated",
+      "--realm-backend",
+      "jsonl",
+      "--max-duration",
+      "30s",
+      "--max-tool-calls",
+      "0",
+      "--max-total-tokens",
+      "64",
+      "--trust-policy",
+      "permissive",
+      "--surface",
+      "cli",
+      packPath,
+      "Reply with exactly OK.",
+    ]);
+    if (!/^deployed\tmob=/.test(result.deploy) || !result.deploy.includes("warning\tunsigned pack accepted in permissive mode")) {
+      throw new Error(`rkat mob deploy output did not match deploy success contract:\n${result.deploy}`);
+    }
+  }
+
+  console.log(JSON.stringify(result, null, 2));
+})().catch((error) => {
+  console.error(error.stack || error.message);
+  process.exit(1);
+});

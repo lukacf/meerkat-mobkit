@@ -1,0 +1,6075 @@
+const assert = require("node:assert/strict");
+
+global.window = {};
+
+require("../src/controller.js");
+
+const controller = global.window.MobKitFlowController;
+const TEST_SCHEMA = {
+  deploy_settings: {
+    command: "rkat mob deploy",
+    surfaces: ["cli"],
+    defaults: {
+      command: "rkat mob deploy",
+      surface: "cli",
+      trust_policy: "permissive",
+      model: "",
+      max_duration: "30s",
+      max_tool_calls: 0,
+      max_total_tokens: 64,
+      isolated: true,
+      realm: "",
+      instance: "",
+      realm_backend: "jsonl",
+      context_root: "",
+      state_root: "",
+      user_config_root: "",
+      prompt: "Reply with exactly OK.",
+    },
+  },
+  mob_definition: {
+    mob_settings: {
+      defaults: {
+        orchestrator: "",
+        autoWireOrchestrator: false,
+        roleWiring: [],
+        backendDefault: "session",
+        externalAddressBase: "",
+        advanced: {
+          topology: null,
+          supervisor: null,
+          limits: null,
+          spawnPolicy: null,
+          eventRouter: null,
+        },
+      },
+    },
+  },
+};
+const testDeploySettings = () => controller.deployDefaultsFromSchema(TEST_SCHEMA);
+
+assert.deepEqual(controller.deployDefaultsFromSchema(null), {
+  command: "",
+  surface: "",
+  trustPolicy: "",
+  model: "",
+  maxDuration: "",
+  maxToolCalls: null,
+  maxTotalTokens: null,
+  isolated: false,
+  realm: "",
+  instance: "",
+  realmBackend: "",
+  contextRoot: "",
+  stateRoot: "",
+  userConfigRoot: "",
+  prompt: "",
+});
+assert.equal(controller.normalizeDeploySettings(controller.deployDefaultsFromSchema(null)).command, "");
+assert.equal(controller.mobDefaultsFromSchema(null).backendDefault, "");
+assert.equal(controller.normalizeBudgetSplitPolicy(null), null);
+assert.equal(controller.normalizeBudgetSplitPolicy(undefined), null);
+assert.deepEqual(controller.topRailState({
+  contract: null,
+  deploySettings: controller.deployDefaultsFromSchema(null),
+  stage: "draft",
+  view: "flows",
+  theme: "light",
+}), {
+  inEditor: false,
+  brandLabel: "MobKit · Flow Editor",
+  flowsTabLabel: "FLOWS",
+  agentsTabLabel: "AGENTS",
+  mobStatusTitle: "Active mob configuration",
+  mobFileLabel: "mob.toml",
+  contractState: "loading",
+  deployPrefixLabel: "deploy:",
+  deployCommand: "",
+  deploySurface: "",
+  flowsCrumbLabel: "flows",
+  crumbSeparator: "/",
+  planTraceLabel: "PLAN TRACE",
+  importLabel: "IMPORT",
+  validateLabel: "VALIDATE",
+  publishLabel: "PUBLISH",
+  deployPlanLabel: "DEPLOY PLAN",
+  deployLabel: "DEPLOY",
+  deployActionsDisabled: true,
+  themeToggleTitle: "Switch to dark mode",
+  themeToggleLabel: "☀ light",
+  basicModeTitle: "Basic Editor",
+  basicModeLabel: "Basic",
+  graphModeTitle: "Graph Editor",
+  graphModeLabel: "Graph",
+});
+assert.deepEqual(controller.topRailState({
+  contract: TEST_SCHEMA,
+  deploySettings: testDeploySettings(),
+  stage: "valid",
+  view: "editor",
+  theme: "dark",
+}), {
+  inEditor: true,
+  brandLabel: "MobKit · Flow Editor",
+  flowsTabLabel: "FLOWS",
+  agentsTabLabel: "AGENTS",
+  mobStatusTitle: "Active mob configuration",
+  mobFileLabel: "mob.toml",
+  contractState: "api ready",
+  deployPrefixLabel: "deploy:",
+  deployCommand: "rkat mob deploy",
+  deploySurface: "cli",
+  flowsCrumbLabel: "flows",
+  crumbSeparator: "/",
+  planTraceLabel: "PLAN TRACE",
+  importLabel: "IMPORT",
+  validateLabel: "VALIDATE",
+  publishLabel: "PUBLISH",
+  deployPlanLabel: "DEPLOY PLAN",
+  deployLabel: "DEPLOY",
+  deployActionsDisabled: false,
+  themeToggleTitle: "Switch to light mode",
+  themeToggleLabel: "☾ dark",
+  basicModeTitle: "Basic Editor",
+  basicModeLabel: "Basic",
+  graphModeTitle: "Graph Editor",
+  graphModeLabel: "Graph",
+});
+assert.equal(controller.topRailState({
+  contract: { error: "schema unavailable", deploy_settings: { command: "rkat mob deploy", surfaces: ["cli"] } },
+  deploySettings: { surface: "" },
+  stage: "published",
+  view: "editor",
+}).contractState, "api error");
+
+assert.equal(controller.buildBlankDocument, undefined, "blank mobpack documents must come from MobKit schema, not a local builder");
+
+const schemaBlankMobpack = controller.blankMobpackFromSchema({
+  blank_mobpack: {
+    id: "blank",
+    name: "Blank",
+    source: "mobkit/blank-mobpack",
+    trigger: "label · small-fix",
+    version: "0.1.0",
+    stage: "valid",
+    document: {
+      schema_version: "0.1.0",
+      mob_id: "blank_mob",
+      name: "blank-mob",
+      flow: { name: "blank-mob", steps: [{ id: "work", type: "member", role: "m_worker" }] },
+    },
+    validation: { ok: true },
+  },
+});
+assert.equal(schemaBlankMobpack.id, "blank");
+assert.equal(schemaBlankMobpack.source, "mobkit/blank-mobpack");
+
+assert.deepEqual(controller.newFlowTemplateOptions([
+  { id: "docs", name: "Docs", trigger: "label · docs", validation: { ok: true } },
+  { id: "needs_source", name: "Needs Source", source: "mobkit://samples/needs-source", validation: { ok: false } },
+  { id: "", name: "Missing Id", validation: { ok: true } },
+  { id: "missing_name", name: "", validation: { ok: true } },
+], { canCreateBlank: false, blankTemplate: schemaBlankMobpack }), [
+  {
+    id: "blank",
+    label: "Blank",
+    sub: "label · small-fix",
+    tier: "valid",
+    disabled: true,
+  },
+  {
+    id: "docs",
+    label: "Docs",
+    sub: "label · docs",
+    tier: "valid",
+    disabled: false,
+  },
+  {
+    id: "needs_source",
+    label: "Needs Source",
+    sub: "mobkit://samples/needs-source",
+    tier: "draft",
+    disabled: false,
+  },
+]);
+assert.equal(controller.newFlowTemplateOptions([], { canCreateBlank: true })[0].disabled, true);
+assert.equal(controller.newFlowTemplateOptions([], { canCreateBlank: true, blankTemplate: schemaBlankMobpack })[0].disabled, false);
+assert.deepEqual(controller.newFlowModalState({
+  step: 2,
+  name: "New Mob",
+  trigger: "label · docs",
+  template: "docs",
+}, controller.newFlowTemplateOptions([
+  { id: "docs", name: "Docs", trigger: "label · docs", validation: { ok: true } },
+], { canCreateBlank: false, blankTemplate: schemaBlankMobpack })), {
+  step: 2,
+  eyebrow: "NEW FLOW · STEP 2 OF 2",
+  closeLabel: "×",
+  nameLabel: "Name",
+  namePlaceholder: "docs-only",
+  triggerLabel: "Trigger",
+  triggerPlaceholder: "label · docs",
+  startFromLabel: "Start from",
+  backLabel: "← BACK",
+  nextLabel: "NEXT →",
+  createLabel: "CREATE",
+  name: "New Mob",
+  trigger: "label · docs",
+  template: "docs",
+  options: [
+    {
+      id: "blank",
+      label: "Blank",
+      sub: "label · small-fix",
+      tier: "valid",
+      disabled: true,
+      className: "template-card",
+    },
+    {
+      id: "docs",
+      label: "Docs",
+      sub: "label · docs",
+      tier: "valid",
+      disabled: false,
+      className: "template-card is-selected",
+    },
+  ],
+  createDisabled: false,
+  nextDisabled: false,
+});
+assert.equal(controller.newFlowModalState({ step: 1, name: "   ", template: "blank" }, [
+  { id: "blank", disabled: true },
+]).nextDisabled, true);
+assert.equal(controller.newFlowModalState({ step: 2, name: "Draft", template: "blank" }, [
+  { id: "blank", disabled: true },
+]).createDisabled, true);
+assert.deepEqual(controller.flowRegistryViewState([
+  { id: "f_existing", name: "Existing", trigger: "label · docs", version: "0.1", stage: "valid" },
+  { id: "f_draft", name: "Draft", trigger: "", version: "", stage: "" },
+], "f_existing", { canCreate: false }), {
+  eyebrow: "FLOWS",
+  title: "2 flows",
+  createLabel: "+ NEW FLOW",
+  createDisabled: true,
+  createTitle: "Waiting for MobKit schema",
+  columns: [
+    { key: "name", label: "NAME" },
+    { key: "trigger", label: "TRIGGER" },
+    { key: "version", label: "VERSION" },
+    { key: "stage", label: "STAGE" },
+  ],
+  rows: [
+    {
+      id: "f_existing",
+      className: "flows-list__row is-current",
+      name: "Existing",
+      trigger: "label · docs",
+      version: "0.1",
+      stage: "valid",
+    },
+    {
+      id: "f_draft",
+      className: "flows-list__row",
+      name: "Draft",
+      trigger: "",
+      version: "",
+      stage: "draft",
+    },
+  ],
+});
+assert.deepEqual(controller.flowRegistryViewState([{ id: "only", name: "One" }], "", { canCreate: true }), {
+  eyebrow: "FLOWS",
+  title: "1 flow",
+  createLabel: "+ NEW FLOW",
+  createDisabled: false,
+  createTitle: "Create a MobKit mobpack",
+  columns: [
+    { key: "name", label: "NAME" },
+    { key: "trigger", label: "TRIGGER" },
+    { key: "version", label: "VERSION" },
+    { key: "stage", label: "STAGE" },
+  ],
+  rows: [{
+    id: "only",
+    className: "flows-list__row",
+    name: "One",
+    trigger: "",
+    version: "",
+    stage: "draft",
+  }],
+});
+
+const templateDraft = controller.createFlowDraftFromSpec({
+  id: "f_template",
+  spec: { name: "Renamed Template", trigger: "label · docs", template: "sample_docs" },
+  templates: [{
+    id: "sample_docs",
+    name: "Docs Sample",
+    source: "mobkit://samples/docs",
+    document: {
+      name: "Docs Sample",
+      mob_id: "docs_sample",
+      schema_version: "1.0",
+      flow: { name: "Docs Sample", steps: [{ id: "input_1", type: "input", task: "", fields: "", inputParams: [] }] },
+      members: [{ id: "writer", name: "Writer", role: "writer", profileBinding: "inline", runtimeMode: "turn_driven" }],
+      mob_toml: "[stale]",
+    },
+  }],
+  deploySettings: testDeploySettings(),
+  mobSettings: controller.mobDefaultsFromSchema(TEST_SCHEMA),
+});
+assert.equal(templateDraft.id, "f_template");
+assert.equal(templateDraft.document.name, "Renamed Template");
+assert.equal(templateDraft.document.mob_id, "renamed_template");
+assert.equal(templateDraft.document.flow.name, "Renamed Template");
+assert.equal(templateDraft.document.mob_toml, undefined);
+assert.equal(templateDraft.row.id, "f_template");
+assert.equal(templateDraft.row.name, "Renamed Template");
+assert.equal(templateDraft.row.stage, "draft");
+assert.equal(templateDraft.row.trigger, "label · docs");
+assert.equal(templateDraft.row.source, "mobkit://samples/docs");
+assert.equal(templateDraft.row.document, templateDraft.document);
+
+const blankDraft = controller.createFlowDraftFromSpec({
+  id: "f_blank",
+  spec: { name: "Blank Created", trigger: "label · blank", template: "blank" },
+  templates: [],
+  blankTemplate: schemaBlankMobpack,
+  deploySettings: testDeploySettings(),
+  mobSettings: controller.mobDefaultsFromSchema(TEST_SCHEMA),
+});
+assert.equal(blankDraft.document.name, "Blank Created");
+assert.equal(blankDraft.document.mob_id, "blank_created");
+assert.equal(blankDraft.document.flow.name, "Blank Created");
+assert.equal(blankDraft.document.flow.steps[0].type, "member");
+assert.equal(blankDraft.row.name, "Blank Created");
+assert.equal(blankDraft.row.trigger, "label · blank");
+assert.equal(blankDraft.row.source, "mobkit/blank-mobpack");
+
+const generatedBlankDraft = controller.createFlowDraftFromSpec({
+  spec: { name: "Blank Created", trigger: "label · generated", template: "blank" },
+  templates: [],
+  existingRows: [{ id: "f_blank_created" }],
+  blankTemplate: schemaBlankMobpack,
+  deploySettings: testDeploySettings(),
+  mobSettings: controller.mobDefaultsFromSchema(TEST_SCHEMA),
+});
+assert.equal(controller.flowDraftIdFromSpec({ name: "Blank Created" }, [{ id: "f_blank_created" }]), "f_blank_created_2");
+assert.equal(generatedBlankDraft.id, "f_blank_created_2");
+assert.equal(generatedBlankDraft.row.id, "f_blank_created_2");
+assert.equal(generatedBlankDraft.row.trigger, "label · generated");
+
+assert.equal(controller.createFlowDraftFromSpec({
+  id: "f_blank_missing",
+  spec: { name: "Blank Missing", template: "blank" },
+  templates: [],
+}), null);
+assert.equal(controller.createFlowDraftFromSpec({ id: "", spec: {} }), null);
+
+assert.deepEqual(controller.modelCatalogFromSchema({
+  models: [
+    { id: "missing-label", vendor: "openai" },
+    { id: "missing-vendor", label: "Missing Vendor" },
+    { id: "openai/gpt-5.5", label: "GPT-5.5", vendor: "openai", profile: { temperature: 0 } },
+  ],
+}), [{
+  id: "openai/gpt-5.5",
+  label: "GPT-5.5",
+  vendor: "openai",
+  profile: { temperature: 0 },
+}]);
+
+assert.deepEqual(controller.toolCatalogFromSchema({
+  tool_config: [{
+    id: "compat-only",
+    label: "Compatibility Only",
+    desc: "Must not hydrate from compatibility aliases.",
+    kind: "runtime",
+    source: "meerkat_mob::ToolConfig",
+  }],
+}), []);
+
+assert.deepEqual(controller.toolCatalogFromSchema({
+  tool_catalog: [
+    { id: "missing-desc", label: "Missing Desc", kind: "runtime", source: "meerkat_mob::ToolConfig" },
+    { id: "missing-source", label: "Missing Source", desc: "No source", kind: "runtime" },
+    { id: "builtins", label: "builtins", desc: "Built-ins", kind: "runtime", source: "meerkat_mob::ToolConfig" },
+  ],
+}), [{
+  id: "builtins",
+  label: "builtins",
+  desc: "Built-ins",
+  kind: "runtime",
+  source: "meerkat_mob::ToolConfig",
+  raw: { id: "builtins", label: "builtins", desc: "Built-ins", kind: "runtime", source: "meerkat_mob::ToolConfig" },
+}]);
+
+const catalogBoot = { grid: { cellW: 10 }, cellXY: () => ({ x: 0, y: 0 }), template: { col: 1 } };
+const emptyCatalogs = controller.emptyMobKitCatalogs(catalogBoot);
+assert.equal(emptyCatalogs.contractMeta.loaded, false);
+assert.equal(emptyCatalogs.grid, catalogBoot.grid);
+assert.equal(emptyCatalogs.cellXY, catalogBoot.cellXY);
+assert.equal(emptyCatalogs.template, catalogBoot.template);
+assert.deepEqual(controller.schemaSkillRealms({ skill_realms: "starter" }), []);
+
+const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
+  schema_version: "mobpack/v1",
+  media_type: "application/vnd.mobkit.mobpack+json",
+  validation_source: "mobkit/mobpacks/schema",
+  deploy_settings: {
+    defaults: {
+      command: "rkat mob deploy",
+      surface: "cli",
+      trust_policy: "permissive",
+      isolated: true,
+    },
+  },
+  mob_definition: { runtime_modes: ["turn_driven"] },
+  models: [{ id: "openai/gpt-5.5", label: "GPT-5.5", vendor: "openai" }],
+  tool_catalog: [{ id: "builtins", label: "builtins", desc: "Built-ins", kind: "runtime", source: "meerkat_mob::ToolConfig" }],
+  skill_realms: [{ id: "mobkit/sample-mobpacks", source: "mobkit/sample-mobpack", skills: [{ id: "mob.workpad" }] }],
+  agent_definitions: [{
+    id: "sample_reviewer",
+    name: "Reviewer",
+    role: "reviewer",
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/sample-mobpack",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+  }],
+}, catalogBoot);
+assert.equal(hydratedCatalogs.contractMeta.loaded, true);
+assert.equal(hydratedCatalogs.contractMeta.schemaVersion, "mobpack/v1");
+assert.equal(hydratedCatalogs.deployDefaults.command, "rkat mob deploy");
+assert.equal(hydratedCatalogs.mobDefinition.runtime_modes[0], "turn_driven");
+assert.deepEqual(hydratedCatalogs.models.map((model) => model.id), ["openai/gpt-5.5"]);
+assert.deepEqual(hydratedCatalogs.toolCatalog.map((tool) => tool.id), ["builtins"]);
+assert.deepEqual(hydratedCatalogs.skillRealms.map((realm) => realm.id), ["mobkit/sample-mobpacks"]);
+assert.deepEqual(hydratedCatalogs.agentDefinitions.map((definition) => definition.id), ["sample_reviewer"]);
+assert.equal(hydratedCatalogs.grid, catalogBoot.grid);
+
+assert.deepEqual(controller.mergeSkillRealms([
+  { id: "document", default: true, skills: [{ id: "mob.workpad", source: "inline" }, { id: "mob.review", source: "inline" }] },
+], [
+  { id: "document", default: true, skills: [{ id: "mob.workpad", source: "catalog" }, { id: "mob.tests", source: "path" }] },
+  { id: "contract", default: true, skills: [{ id: "mob.review", source: "catalog" }, { id: "mob.docs", source: "inline" }] },
+]), [
+  { id: "document", default: true, skills: [{ id: "mob.workpad", source: "inline" }, { id: "mob.review", source: "inline" }, { id: "mob.tests", source: "path" }] },
+  { id: "contract", default: false, skills: [{ id: "mob.docs", source: "inline" }] },
+]);
+
+assert.deepEqual(controller.memberToolAccessPatch(
+  { tools: ["builtins"] },
+  "shell",
+  hydratedCatalogs.toolCatalog,
+), {
+  ok: false,
+  id: "",
+  error: "Use a MobKit-listed runtime tool or configured MCP/Rust source.",
+  patch: null,
+});
+assert.deepEqual(controller.memberToolAccessPatch(
+  { tools: ["builtins"] },
+  "builtins",
+  hydratedCatalogs.toolCatalog,
+), { ok: true, id: "builtins", alreadySelected: true, patch: null });
+assert.deepEqual(controller.memberToolAccessPatch(
+  { tools: [] },
+  "builtins",
+  hydratedCatalogs.toolCatalog,
+), { ok: true, id: "builtins", alreadySelected: false, patch: { tools: ["builtins"] } });
+assert.deepEqual(controller.memberToolAccessState(
+  { tools: ["builtins", "missing"] },
+  [
+    { id: "builtins", label: "Built-ins", desc: "Built-in runtime tools" },
+    { id: "shell", label: "Shell", desc: "Shell tool" },
+  ],
+), {
+  selectedTools: ["builtins", "missing"],
+  title: "TOOL ACCESS",
+  hint: "Authority is calculated from this allowlist. Reviewed once here.",
+  rows: [
+    {
+      id: "builtins",
+      name: "builtins",
+      description: "Built-in runtime tools",
+      meta: { id: "builtins", label: "Built-ins", desc: "Built-in runtime tools" },
+      className: "tool-row",
+      removeLabel: "×",
+    },
+    {
+      id: "missing",
+      name: "missing",
+      description: "—",
+      meta: null,
+      className: "tool-row",
+      removeLabel: "×",
+    },
+  ],
+  addableRows: [{
+    id: "shell",
+    value: "shell",
+    label: "Shell",
+    description: "Shell tool",
+    optionLabel: "Shell — Shell tool",
+    meta: { id: "shell", label: "Shell", desc: "Shell tool" },
+  }],
+  addSelectValue: "",
+  addSelectPlaceholder: "+ add tool…",
+  sourceLabel: "Configured tool source",
+  sourcePlaceholder: "choose from MobKit tool catalog",
+  addButtonLabel: "ADD",
+});
+assert.deepEqual(controller.memberToolRemovePatch(
+  { tools: ["builtins", "shell", "shell"] },
+  "shell",
+), { ok: true, id: "shell", patch: { tools: ["builtins"] } });
+const toolCascadeResult = controller.memberToolRemoveCascadePatch({
+  memberId: "m_tool",
+  members: [{ id: "m_tool", tools: ["builtins", "shell"] }],
+  flow: {
+    name: "tool-cascade-proof",
+    steps: [
+      {
+        id: "tool_step",
+        type: "member",
+        role: "m_tool",
+        allowedTools: ["builtins", "shell"],
+        blockedTools: ["shell"],
+      },
+    ],
+  },
+  instances: [
+    { id: "tool_inst", memberId: "m_tool", allowedTools: ["builtins", "shell"], blockedTools: ["shell"] },
+  ],
+}, "shell");
+assert.equal(toolCascadeResult.ok, true);
+assert.deepEqual(toolCascadeResult.members[0].tools, ["builtins"]);
+assert.deepEqual(toolCascadeResult.flow.steps[0].allowedTools, ["builtins"]);
+assert.deepEqual(toolCascadeResult.flow.steps[0].blockedTools, []);
+assert.deepEqual(toolCascadeResult.instances[0].allowedTools, ["builtins"]);
+assert.deepEqual(toolCascadeResult.instances[0].blockedTools, []);
+const toolCascadeAddResult = controller.memberToolAccessCascadePatch({
+  memberId: "m_tool",
+  members: [{ id: "m_tool", tools: ["builtins"] }],
+  flow: {
+    name: "tool-add-cascade-proof",
+    steps: [{ id: "tool_step", type: "member", role: "m_tool", allowedTools: ["builtins"] }],
+  },
+  instances: [{ id: "tool_inst", memberId: "m_tool", allowedTools: ["builtins"] }],
+}, "shell", [{ id: "builtins" }, { id: "shell" }]);
+assert.equal(toolCascadeAddResult.ok, true);
+assert.deepEqual(toolCascadeAddResult.members[0].tools, ["builtins", "shell"]);
+assert.deepEqual(toolCascadeAddResult.flow.steps[0].allowedTools, ["builtins"]);
+assert.deepEqual(toolCascadeAddResult.instances[0].allowedTools, ["builtins"]);
+assert.deepEqual(controller.memberSkillAccessState({
+  member: { skills: ["mob.review", "mob.tests", "mob.missing"] },
+  realmId: "docs",
+  inlineOpen: true,
+  skillRealms: [
+    {
+      id: "main",
+      label: "Main",
+      default: true,
+      skills: [
+        { id: "mob.review", desc: "Review skill" },
+        { id: "mob.plan", source: "inline" },
+      ],
+    },
+    {
+      id: "docs",
+      label: "Docs",
+      skills: [
+        { id: "mob.tests", path: "skills/tests.md" },
+        { id: "mob.docs", source: "path" },
+      ],
+    },
+  ],
+}), {
+  sectionTitle: "SKILLS",
+  inlineToggleLabel: "CANCEL",
+  hint: "Selected skills are baked into the mobpack. Browse a realm to add more.",
+  inlineLabelPlaceholder: "mob.skill-name",
+  inlineContentRows: 4,
+  inlineContentPlaceholder: "Skill instructions stored as [skills.<id>] content",
+  inlineCreateHint: "Creates an inline skill definition in this mobpack.",
+  inlineAddLabel: "ADD SKILL",
+  inlineErrorFallback: "Could not create inline skill.",
+  noRealmsMessage: "MobKit did not provide skill realms for this document.",
+  realmLabel: "Realm",
+  hasRealms: true,
+  realmId: "docs",
+  realmOptions: [
+    { id: "main", label: "Main · default" },
+    { id: "docs", label: "Docs" },
+  ],
+  skillRows: [
+    {
+      id: "mob.tests",
+      selected: true,
+      className: "skill-row is-on",
+      checkLabel: "✓",
+      name: "mob.tests",
+      desc: "skills/tests.md",
+      skill: { id: "mob.tests", path: "skills/tests.md" },
+    },
+    {
+      id: "mob.docs",
+      selected: false,
+      className: "skill-row",
+      checkLabel: "",
+      name: "mob.docs",
+      desc: "path",
+      skill: { id: "mob.docs", source: "path" },
+    },
+  ],
+  selectedOutsideRealm: [{
+    id: "mob.review",
+    realmId: "main",
+    realmLabel: "Main",
+    className: "skill-chip",
+    title: "Main",
+    label: "mob.review",
+    detail: "Main",
+    removeLabel: "×",
+  }],
+  unavailableSelected: [{
+    id: "mob.missing",
+    className: "skill-chip is-invalid",
+    label: "mob.missing",
+    removeLabel: "×",
+  }],
+  unavailableHeading: "Unavailable in MobKit skill realms:",
+  outsideRealmHeading: "Selected from other realms:",
+});
+assert.deepEqual(controller.memberSkillAccessState({
+  member: { skills: ["mob.review"] },
+  realmId: "gone",
+  skillRealms: [{ id: "main", label: "Main", skills: [{ id: "mob.review" }] }],
+}).realmId, "main");
+assert.deepEqual(controller.stepToolScopeState({
+  member: { tools: ["builtins", "shell", "unknown"] },
+  selected: ["builtins", "missing", "builtins"],
+  mode: "member",
+  toolCatalog: [
+    { id: "builtins", label: "Built-ins", desc: "Built-in runtime tools" },
+    { id: "shell", label: "Shell", desc: "Shell tool" },
+    { id: "git", label: "Git", desc: "Git tool" },
+  ],
+}), {
+  selectedTools: ["builtins", "missing"],
+  addable: ["shell"],
+  addableRows: [{
+    id: "shell",
+    value: "shell",
+    label: "Shell",
+    description: "Shell tool",
+    optionLabel: "Shell — Shell tool",
+    meta: { id: "shell", label: "Shell", desc: "Shell tool" },
+  }],
+  rows: [
+    {
+      id: "builtins",
+      name: "builtins",
+      meta: { id: "builtins", label: "Built-ins", desc: "Built-in runtime tools" },
+      unavailable: false,
+      reason: "",
+      className: "tool-row",
+      description: "Built-in runtime tools",
+      removeLabel: "×",
+    },
+    {
+      id: "missing",
+      name: "missing",
+      meta: null,
+      unavailable: true,
+      reason: "not enabled on profile",
+      className: "tool-row tool-row--invalid",
+      description: "not enabled on profile",
+      removeLabel: "×",
+    },
+  ],
+  addSelectValue: "",
+  addSelectPlaceholder: "+ add profile tool...",
+  disabled: false,
+});
+assert.deepEqual(controller.stepToolScopeAddPatch(
+  ["builtins"],
+  "shell",
+  {
+    member: { tools: ["builtins", "shell"] },
+    mode: "member",
+    field: "allowedTools",
+    toolCatalog: [{ id: "builtins" }, { id: "shell" }, { id: "git" }],
+  },
+), { ok: true, id: "shell", patch: { allowedTools: ["builtins", "shell"] } });
+assert.deepEqual(controller.stepToolScopeAddPatch(
+  ["builtins"],
+  "git",
+  {
+    member: { tools: ["builtins", "shell"] },
+    mode: "member",
+    field: "allowedTools",
+    toolCatalog: [{ id: "builtins" }, { id: "shell" }, { id: "git" }],
+  },
+), { ok: false, id: "git", patch: null });
+assert.deepEqual(controller.stepToolScopeAddPatch(
+  [],
+  "git",
+  {
+    member: { tools: ["builtins"] },
+    mode: "catalog",
+    field: "blockedTools",
+    toolCatalog: [{ id: "builtins" }, { id: "shell" }, { id: "git" }],
+  },
+), { ok: true, id: "git", patch: { blockedTools: ["git"] } });
+assert.deepEqual(controller.stepToolScopeRemovePatch(
+  ["builtins", "shell", "shell"],
+  "shell",
+  { field: "allowedTools" },
+), { ok: true, id: "shell", patch: { allowedTools: ["builtins"] } });
+
+assert.deepEqual(controller.memberSkillTogglePatch(
+  { skills: ["mob.workpad"] },
+  "mob.review",
+  [{ id: "main", skills: [{ id: "mob.review" }] }],
+), { ok: true, id: "mob.review", selected: true, patch: { skills: ["mob.workpad", "mob.review"] } });
+assert.deepEqual(controller.memberSkillTogglePatch(
+  { skills: ["mob.workpad", "mob.review"] },
+  "mob.review",
+  [{ id: "main", skills: [{ id: "mob.review" }] }],
+), { ok: true, id: "mob.review", selected: false, patch: { skills: ["mob.workpad"] } });
+assert.deepEqual(controller.memberSkillTogglePatch(
+  { skills: ["mob.workpad"] },
+  "mob.fake",
+  [{ id: "main", skills: [{ id: "mob.review" }] }],
+), { ok: false, id: "mob.fake", patch: null });
+assert.deepEqual(controller.memberSkillTogglePatch(
+  { skills: ["mob.workpad", "mob.stale"] },
+  "mob.stale",
+  [{ id: "main", skills: [{ id: "mob.review" }] }],
+), { ok: true, id: "mob.stale", selected: false, patch: { skills: ["mob.workpad"] } });
+assert.deepEqual(controller.memberSkillRemovePatch(
+  { skills: ["mob.workpad", "mob.review", "mob.review"] },
+  "mob.review",
+), { ok: true, id: "mob.review", patch: { skills: ["mob.workpad"] } });
+assert.deepEqual(controller.memberSkillToggleCascadePatch({
+  memberId: "m_skill",
+  members: [{ id: "m_skill", skills: ["mob.workpad"] }],
+  skillRealms: [{ id: "main", skills: [{ id: "mob.review" }] }],
+}, "mob.fake"), {
+  ok: false,
+  id: "mob.fake",
+  patch: null,
+  members: [{ id: "m_skill", skills: ["mob.workpad"] }],
+  skillRealms: [{ id: "main", skills: [{ id: "mob.review" }] }],
+});
+const skillToggleCascade = controller.memberSkillToggleCascadePatch({
+  memberId: "m_skill",
+  members: [{ id: "m_skill", skills: ["mob.workpad"] }],
+  skillRealms: [{ id: "main", skills: [{ id: "mob.review" }] }],
+}, "mob.review");
+assert.equal(skillToggleCascade.ok, true);
+assert.deepEqual(skillToggleCascade.members[0].skills, ["mob.workpad", "mob.review"]);
+const staleSkillRemoveCascade = controller.memberSkillRemoveCascadePatch({
+  memberId: "m_skill",
+  members: [{ id: "m_skill", skills: ["mob.workpad", "mob.stale", "mob.stale"] }],
+  skillRealms: [{ id: "main", skills: [{ id: "mob.workpad" }] }],
+}, "mob.stale");
+assert.equal(staleSkillRemoveCascade.ok, true);
+assert.deepEqual(staleSkillRemoveCascade.members[0].skills, ["mob.workpad"]);
+const inlinePatch = controller.memberInlineSkillPatch(
+  { skills: ["mob.workpad"] },
+  [{ id: "mobkit/sample-mobpacks", skills: [{ id: "mob.workpad" }] }],
+  { label: "Quality Gate", content: "Review and emit the QualityVerdict schema." },
+);
+assert.equal(inlinePatch.id, "mob.quality.gate");
+assert.equal(inlinePatch.realmId, "mobkit/editor-inline");
+assert.deepEqual(inlinePatch.patch, { skills: ["mob.workpad", "mob.quality.gate"] });
+assert.equal(inlinePatch.skillRealms[0].id, "mobkit/editor-inline");
+assert.equal(inlinePatch.skillRealms[0].skills[0].source, "inline");
+assert.equal(inlinePatch.skillRealms[0].skills[0].content, "Review and emit the QualityVerdict schema.");
+const inlineCascade = controller.memberInlineSkillCascadePatch({
+  memberId: "m_skill",
+  members: [{ id: "m_skill", skills: ["mob.workpad"] }],
+  skillRealms: [{ id: "main", skills: [{ id: "mob.workpad" }] }],
+}, { label: "Quality Gate", content: "Review and emit the QualityVerdict schema." });
+assert.equal(inlineCascade.ok, true);
+assert.equal(inlineCascade.id, "mob.quality.gate");
+assert.deepEqual(inlineCascade.members[0].skills, ["mob.workpad", "mob.quality.gate"]);
+assert.equal(inlineCascade.skillRealms[0].id, "mobkit/editor-inline");
+assert.equal(inlineCascade.skillRealms[0].skills[0].source, "inline");
+assert.equal(inlineCascade.skillRealms[0].skills[0].content, "Review and emit the QualityVerdict schema.");
+
+const sampleRows = controller.sampleFlowsFromSchema({
+  sample_mobpacks: [
+    {
+      id: "missing_source",
+      name: "Missing source",
+      document: { mob_id: "missing_source" },
+    },
+    {
+      source: "mobkit/sample-mobpack",
+      document: { mob_id: "" },
+    },
+    {
+      id: "schema_source",
+      name: "Schema source",
+      source: "mobkit/sample-mobpack",
+      document: { mob_id: "schema_source", schema_version: "0.1" },
+      validation: { ok: true },
+    },
+    {
+      id: "schema_source_with_trigger",
+      name: "Schema source with trigger",
+      source: "mobkit/imported",
+      trigger: "imported/mob.toml",
+      document: { mob_id: "schema_source_with_trigger" },
+    },
+  ],
+});
+assert.deepEqual(sampleRows.map((row) => ({
+  id: row.id,
+  source: row.source,
+  trigger: row.trigger,
+  stage: row.stage,
+})), [
+  {
+    id: "schema_source",
+    source: "mobkit/sample-mobpack",
+    trigger: "mobkit/sample-mobpack",
+    stage: "valid",
+  },
+  {
+    id: "schema_source_with_trigger",
+    source: "mobkit/imported",
+    trigger: "imported/mob.toml",
+    stage: "draft",
+  },
+]);
+
+global.window.treeToGraph = () => {
+  throw new Error("controller exports must not call the UI graph renderer");
+};
+
+const members = [{
+  id: "m_reviewer",
+  name: "Reviewer",
+  role: "reviewer",
+  model: "openai/gpt-5",
+  tools: ["git", "shell"],
+  skills: ["mob.review"],
+  schema: "ReviewArtifact",
+}];
+
+const previousFlow = {
+  name: "main",
+  steps: [{
+    id: "input_1",
+    type: "input",
+    task: "Review the change.",
+    inputParams: [],
+  }],
+};
+
+const flow = controller.graphToFlow({
+  previousFlow,
+  members,
+  instances: [{
+    id: "review_step",
+    memberId: "m_reviewer",
+    col: 0,
+    row: 0,
+    launchMode: {
+      kind: "Resume",
+      sessionId: "session-123",
+      budgetSplitPolicy: { kind: "Fixed", limit: 2048 },
+    },
+    dispatchMode: "one_to_one",
+    collection: "quorum",
+    quorum: 1,
+    timeoutMs: 120000,
+    allowedTools: ["git"],
+    blockedTools: ["shell"],
+    outputFormat: "text",
+    dependsMode: "any",
+  }],
+  edges: [],
+});
+
+assert.equal(flow.steps.length, 2);
+assert.deepEqual(flow.steps[1], {
+  id: "review_step",
+  type: "member",
+  role: "m_reviewer",
+  instruction: "",
+  launchMode: {
+    kind: "Resume",
+    sessionId: "session-123",
+    budgetSplitPolicy: { kind: "Fixed", limit: 2048 },
+  },
+  dispatchMode: "one_to_one",
+  collection: "quorum",
+  quorum: 1,
+  timeoutMs: 120000,
+  allowedTools: ["git"],
+  blockedTools: ["shell"],
+  outputFormat: "text",
+  dependsMode: "any",
+});
+
+const flowWithPriorInstruction = controller.graphToFlow({
+  previousFlow: {
+    name: "main",
+    steps: [
+      previousFlow.steps[0],
+      {
+        id: "review_step",
+        type: "member",
+        role: "m_reviewer",
+        instruction: "Run Reviewer.",
+      },
+    ],
+  },
+  members,
+  instances: [{
+    id: "review_step",
+    memberId: "m_reviewer",
+    col: 0,
+    row: 0,
+  }],
+  edges: [],
+});
+assert.equal(flowWithPriorInstruction.steps[1].instruction, "Run Reviewer.");
+const flowWithoutPriorInput = controller.graphToFlow({
+  previousFlow: {
+    name: "no-input",
+    steps: [{ id: "input_1", type: "member", role: "m_reviewer" }],
+  },
+  members,
+  instances: [],
+  edges: [],
+});
+assert.deepEqual(flowWithoutPriorInput.steps, [{
+  id: "input_2",
+  type: "input",
+  task: "Run the mobpack flow.",
+  fields: "",
+  inputParams: [],
+}]);
+
+const document = controller.buildDocument({
+  flow,
+  studio: {
+    members,
+    schemas: [],
+    instances: [],
+    edges: [
+      { id: "stale_wrong_kind", from: "g_branch_route", to: "left", kind: "next", label: "stale" },
+      { id: "stale_extra", from: "left", to: "g_parallel_deleted", kind: "next", label: "stale" },
+    ],
+    frames: [],
+    skillRealms: [],
+  },
+  currentFlow: { name: "projection-proof" },
+  deploySettings: testDeploySettings(),
+});
+
+const prunedSkillDocument = controller.buildDocument({
+  flow,
+  studio: {
+    members,
+    schemas: [],
+    instances: [],
+    edges: [],
+    frames: [],
+    skillRealms: [{
+      id: "mobkit/sample-mobpacks",
+      label: "mobkit/sample-mobpacks",
+      source: "mobkit/sample-mobpack",
+      skills: [
+        { id: "mob.review", source: "inline", content: "Review the current work." },
+        { id: "mob.unused", source: "inline", content: "Unused catalog skill." },
+      ],
+    }, {
+      id: "filesystem",
+      label: "filesystem",
+      source: "filesystem",
+      skills: [{ id: "mob.filesystem.unused", source: "path", path: "/tmp/unused.md" }],
+    }],
+  },
+  currentFlow: { name: "skill-prune-proof" },
+  deploySettings: testDeploySettings(),
+});
+assert.deepEqual(prunedSkillDocument.skill_realms, [{
+  id: "mobkit/sample-mobpacks",
+  label: "mobkit/sample-mobpacks",
+  source: "mobkit/sample-mobpack",
+  skills: [
+    { id: "mob.review", source: "inline", content: "Review the current work." },
+  ],
+  default: false,
+}]);
+assert.deepEqual(controller.skillRealmsForDocument([{ id: "m", skills: [] }], prunedSkillDocument.skill_realms), []);
+
+assert.deepEqual(document.launch_modes, [{
+  step_id: "review_step",
+  member_id: "m_reviewer",
+  profile: "reviewer",
+  launch_mode: {
+    kind: "Resume",
+    sessionId: "session-123",
+    budgetSplitPolicy: { kind: "Fixed", limit: 2048 },
+  },
+  budget_split_policy: {
+    type: "fixed",
+    value: 2048,
+  },
+}]);
+
+const missingLaunchFlow = controller.graphToFlow({
+  previousFlow,
+  members,
+  instances: [{
+    id: "missing_launch_step",
+    memberId: "m_reviewer",
+    col: 0,
+    row: 0,
+  }],
+  edges: [],
+});
+assert.equal(missingLaunchFlow.steps[1].launchMode, null);
+assert(!("dispatchMode" in missingLaunchFlow.steps[1]));
+assert(!("collection" in missingLaunchFlow.steps[1]));
+assert(!("dependsMode" in missingLaunchFlow.steps[1]));
+assert(!("outputFormat" in missingLaunchFlow.steps[1]));
+
+const missingLaunchDocument = controller.buildDocument({
+  flow: missingLaunchFlow,
+  studio: {
+    members,
+    schemas: [],
+    instances: [],
+    edges: [],
+    frames: [],
+    skillRealms: [],
+  },
+  currentFlow: { name: "missing-launch-proof" },
+  deploySettings: testDeploySettings(),
+});
+assert.deepEqual(missingLaunchDocument.launch_modes, [{
+  step_id: "missing_launch_step",
+  member_id: "m_reviewer",
+  profile: "reviewer",
+  launch_mode: null,
+}]);
+
+const blankOptionalMetadataDocument = controller.buildDocument({
+  flow: {
+    name: "blank-optional-metadata",
+    steps: [{
+      id: "input_1",
+      type: "input",
+      task: "Review",
+      fields: "",
+      inputParams: [],
+    }, {
+      id: "review_blank_output",
+      type: "member",
+      role: "m_reviewer",
+      instruction: "Review.",
+      launchMode: { kind: "Fresh" },
+      dispatchMode: "",
+      collection: "",
+      dependsMode: "",
+      outputFormat: "",
+    }, {
+      id: "loop_blank_iteration",
+      type: "repeat",
+      loopId: "review_loop",
+      maxIterations: 2,
+      iterationInput: "",
+      cond: { stepId: "review_loop_step", field: "verdict", op: "==", val: "green" },
+      steps: [{
+        id: "review_loop_step",
+        type: "member",
+        role: "m_reviewer",
+        instruction: "Review loop.",
+        launchMode: { kind: "Fresh" },
+        dispatchMode: null,
+        collection: "",
+        dependsMode: "",
+        outputFormat: null,
+      }],
+    }],
+  },
+  studio: {
+    members,
+    schemas: [],
+    instances: [],
+    edges: [],
+    frames: [],
+    skillRealms: [],
+  },
+  currentFlow: { name: "blank-optional-metadata" },
+  deploySettings: testDeploySettings(),
+});
+const blankSteps = blankOptionalMetadataDocument.flow.steps;
+assert(!("dispatchMode" in blankSteps[1]));
+assert(!("collection" in blankSteps[1]));
+assert(!("dependsMode" in blankSteps[1]));
+assert(!("outputFormat" in blankSteps[1]));
+assert(!("iterationInput" in blankSteps[2]));
+assert(!("dispatchMode" in blankSteps[2].steps[0]));
+assert(!("collection" in blankSteps[2].steps[0]));
+assert(!("dependsMode" in blankSteps[2].steps[0]));
+assert(!("outputFormat" in blankSteps[2].steps[0]));
+const blankInstance = blankOptionalMetadataDocument.instances.find((inst) => inst.id === "review_blank_output");
+assert(!("dispatchMode" in blankInstance));
+assert(!("collection" in blankInstance));
+assert(!("dependsMode" in blankInstance));
+assert(!("outputFormat" in blankInstance));
+
+const explicitFreshNoBudgetFlow = controller.graphToFlow({
+  previousFlow,
+  members,
+  instances: [{
+    id: "fresh_no_budget_step",
+    memberId: "m_reviewer",
+    col: 0,
+    row: 0,
+    launchMode: { kind: "Fresh" },
+  }],
+  edges: [],
+});
+assert.deepEqual(explicitFreshNoBudgetFlow.steps[1].launchMode, { kind: "Fresh" });
+const explicitFreshNoBudgetDocument = controller.buildDocument({
+  flow: explicitFreshNoBudgetFlow,
+  studio: {
+    members,
+    schemas: [],
+    instances: [],
+    edges: [],
+    frames: [],
+    skillRealms: [],
+  },
+  currentFlow: { name: "fresh-no-budget-proof" },
+  deploySettings: testDeploySettings(),
+});
+assert.deepEqual(explicitFreshNoBudgetDocument.launch_modes[0], {
+  step_id: "fresh_no_budget_step",
+  member_id: "m_reviewer",
+  profile: "reviewer",
+  launch_mode: { kind: "Fresh" },
+});
+assert(!("budget_split_policy" in explicitFreshNoBudgetDocument.launch_modes[0]));
+
+const schemaSyncedFlow = controller.reconcileFlowMemberSchemas({
+  name: "main",
+  steps: [{
+    id: "review_step",
+    type: "member",
+    role: "m_reviewer",
+    schema: "ReviewArtifact",
+    expectedSchemaRef: "schemas/ReviewArtifact.json",
+  }],
+}, [{ ...members[0], schema: "RenamedVerdict" }]);
+assert.deepEqual(schemaSyncedFlow.steps[0], {
+  id: "review_step",
+  type: "member",
+  role: "m_reviewer",
+  schema: "RenamedVerdict",
+  expectedSchemaRef: "schemas/RenamedVerdict.json",
+});
+
+const customSchemaPathFlow = controller.reconcileFlowMemberSchemas({
+  name: "main",
+  steps: [{
+    id: "review_step",
+    type: "member",
+    role: "m_reviewer",
+    schema: "ReviewArtifact",
+    expectedSchemaRef: "schemas/custom/reviewer.json",
+  }],
+}, [{ ...members[0], schema: "RenamedVerdict" }]);
+assert.equal(customSchemaPathFlow.steps[0].schema, "RenamedVerdict");
+assert.equal(customSchemaPathFlow.steps[0].expectedSchemaRef, "schemas/custom/reviewer.json");
+
+const schemaRemovedFlow = controller.reconcileFlowMemberSchemas({
+  name: "main",
+  steps: [{
+    id: "review_step",
+    type: "member",
+    role: "m_reviewer",
+    schema: "ReviewArtifact",
+    expectedSchemaRef: "schemas/ReviewArtifact.json",
+    expected_schema_ref: "schemas/ReviewArtifact.json",
+  }],
+}, [{ ...members[0], schema: "" }]);
+assert(!("schema" in schemaRemovedFlow.steps[0]));
+assert(!("expectedSchemaRef" in schemaRemovedFlow.steps[0]));
+assert(!("expected_schema_ref" in schemaRemovedFlow.steps[0]));
+
+const schemaRename = controller.renameSchemaDefinition({
+  schemas: [
+    { id: "ReviewArtifact", fields: [] },
+    { id: "PlanArtifact", fields: [] },
+  ],
+  members: [
+    { id: "m_reviewer", schema: "ReviewArtifact" },
+    { id: "m_planner", schema: "PlanArtifact" },
+  ],
+}, "ReviewArtifact", "RenamedVerdict");
+assert.equal(schemaRename.renamed, true);
+assert.deepEqual(schemaRename.schemas.map((schema) => schema.id), ["RenamedVerdict", "PlanArtifact"]);
+assert.equal(schemaRename.members[0].schema, "RenamedVerdict");
+assert.equal(schemaRename.members[1].schema, "PlanArtifact");
+
+const duplicateSchemaRename = controller.renameSchemaDefinition({
+  schemas: [
+    { id: "ReviewArtifact", fields: [] },
+    { id: "PlanArtifact", fields: [] },
+  ],
+  members: [{ id: "m_reviewer", schema: "ReviewArtifact" }],
+}, "ReviewArtifact", "PlanArtifact");
+assert.equal(duplicateSchemaRename.renamed, false);
+assert.equal(duplicateSchemaRename.reason, "duplicate_schema_id");
+assert.equal(duplicateSchemaRename.members[0].schema, "ReviewArtifact");
+
+assert.deepEqual(controller.basicConditionFromText('params.route == "docs"'), {
+  namespace: "params",
+  stepId: "params",
+  field: "route",
+  op: "==",
+  val: "docs",
+});
+assert.deepEqual(controller.basicConditionFromText("steps.review.verdict > 3"), {
+  namespace: "steps",
+  stepId: "review",
+  field: "verdict",
+  op: ">",
+  val: "3",
+});
+assert.equal(controller.basicConditionText({
+  namespace: "params",
+  stepId: "params",
+  field: "route",
+  val: "docs",
+}, { defaultOperator: "==" }), 'params.route == "docs"');
+assert.equal(controller.basicConditionText({
+  stepId: "review",
+  field: "verdict",
+  op: "==",
+  val: "green",
+}), 'steps.review.verdict == "green"');
+assert.equal(controller.basicConditionLabel({
+  stepId: "review",
+  field: "score",
+  op: ">",
+  val: 3,
+}, [{ stepId: "review", label: "Reviewer" }]), "Reviewer.score > 3");
+assert.equal(controller.basicRepeatUntilExpression({
+  cond: { stepId: "review_loop", field: "verdict", op: "==", val: "green" },
+  steps: [{ id: "review_loop", type: "member", role: "m_reviewer" }],
+}, members, { defaultOperator: "==" }), 'Reviewer.verdict == "green"');
+assert.equal(controller.basicRepeatUntilExpression({
+  until: 'steps.review.verdict == "green"',
+  cond: { stepId: "missing", field: "verdict", op: "==", val: "green" },
+  steps: [{ id: "review_loop", type: "member", role: "m_reviewer" }],
+}, members, { defaultOperator: "==" }), 'steps.review.verdict == "green"');
+assert.equal(controller.basicRepeatUntilExpression({
+  cond: { stepId: "review_loop", field: "verdict", val: "green" },
+  steps: [{ id: "review_loop", type: "member", role: "m_reviewer" }],
+}, members, {}), "");
+const basicCanvasContract = {
+  mob_definition: {
+    defaults: {
+      collection_policy: "all",
+      condition_operator: "==",
+    },
+    collection_policies: ["all", "quorum"],
+    condition_operators: ["=="],
+  },
+};
+assert.deepEqual(controller.basicForkCanvasState({
+  step: {
+    id: "parallel_canvas",
+    type: "parallel",
+    branches: [
+      { id: "left", label: "Left", steps: [] },
+      { id: "right", label: "Right", steps: [{ id: "review_loop", type: "member", role: "m_reviewer" }] },
+    ],
+  },
+  contract: basicCanvasContract,
+}), {
+  isParallel: true,
+  className: "bld-fork bld-fork--parallel",
+  lanes: [
+    { id: "left", label: "Left", steps: [] },
+    { id: "right", label: "Right", steps: [{ id: "review_loop", type: "member", role: "m_reviewer" }] },
+  ],
+  showRail: true,
+  showJoin: true,
+  joinLabel: "⋈ join · all",
+});
+assert.deepEqual(controller.basicForkCanvasState({
+  step: {
+    id: "branch_canvas",
+    type: "branch",
+    branches: [{ id: "docs", label: "Docs", steps: [] }],
+    fallback: [{ id: "fallback_review", type: "member", role: "m_reviewer" }],
+  },
+  contract: basicCanvasContract,
+}).lanes.map((lane) => [lane.id, lane.label, lane.steps.length]), [
+  ["docs", "Docs", 0],
+  ["fallback", "Fallback", 1],
+]);
+assert.equal(controller.basicRepeatIterationLabel({
+  iterationInput: "review_loop",
+  steps: [{ id: "review_loop", type: "member", role: "m_reviewer" }],
+}, members), "unsupported: feeds Reviewer's output");
+assert.deepEqual(controller.basicRepeatCanvasState({
+  step: {
+    cond: { stepId: "review_loop", field: "verdict", op: "==", val: "green" },
+    maxIterations: 4,
+    iterationInput: "carry",
+    steps: [{ id: "review_loop", type: "member", role: "m_reviewer" }],
+  },
+  members,
+  contract: basicCanvasContract,
+}), {
+  repeatUntilExpression: 'Reviewer.verdict == "green"',
+  conditionLabel: 'Reviewer.verdict == "green"',
+  maxIterationsLabel: "max 4",
+  loopBackLabel: "↑ loop back · carries last output",
+  exitLabel: '↓ exit when Reviewer.verdict == "green"',
+});
+assert.deepEqual(controller.basicStepCardState({
+  step: { type: "parallel" },
+  members,
+  contract: basicCanvasContract,
+}), {
+  icon: "‖",
+  iconTint: "member",
+  title: "Parallel",
+  desc: "fan-out → join · all",
+  configured: true,
+  isFlowCard: true,
+});
+assert.deepEqual(controller.basicStepCardState({
+  step: { type: "member", role: "m_reviewer" },
+  members,
+  contract: basicCanvasContract,
+}), {
+  icon: "◆",
+  iconTint: "accent",
+  title: "Reviewer",
+  desc: "reviewer · openai/gpt-5",
+  configured: true,
+  isFlowCard: false,
+});
+assert.equal(controller.conditionValueLiteral("green"), '"green"');
+assert.equal(controller.conditionValueLiteral("42"), "42");
+assert.equal(controller.conditionValueLiteral("true"), "true");
+assert.deepEqual(controller.conditionValueControl({
+  type: "enum",
+  enumValues: ["green", 7],
+}, "green"), {
+  kind: "enum",
+  values: ["green", "7"],
+  value: "green",
+  optionRows: [
+    { value: "", label: "—" },
+    { value: "green", label: "green" },
+    { value: "7", label: "7" },
+  ],
+  placeholder: "",
+});
+assert.deepEqual(controller.conditionValueControl({ type: "boolean" }), {
+  kind: "boolean",
+  values: ["true", "false"],
+  value: "",
+  optionRows: [
+    { value: "", label: "—" },
+    { value: "true", label: "true" },
+    { value: "false", label: "false" },
+  ],
+  placeholder: "",
+});
+assert.equal(controller.conditionValueControl({ type: "bool" }, false).value, "false");
+assert.deepEqual(controller.conditionValueControl({ type: "string", enumValues: ["ignored"] }, "typed"), {
+  kind: "text",
+  values: [],
+  value: "typed",
+  optionRows: [],
+  placeholder: "value",
+});
+assert.deepEqual(controller.conditionValueControl(null), { kind: "text", values: [], value: "", optionRows: [], placeholder: "value" });
+
+const memberStepPrunedFlow = controller.reconcileFlowMemberSteps({
+  name: "member-prune-proof",
+  steps: [
+    { id: "keep_top", type: "member", role: "m_reviewer" },
+    { id: "drop_top", type: "member", role: "m_deleted" },
+    {
+      id: "repeat_keep",
+      type: "repeat",
+      steps: [
+        { id: "drop_repeat", type: "member", role: "m_deleted" },
+        { id: "keep_repeat", type: "member", role: "m_reviewer" },
+      ],
+    },
+    {
+      id: "branch_keep",
+      type: "branch",
+      branches: [
+        { id: "drop_branch", steps: [{ id: "drop_branch_step", type: "member", role: "m_deleted" }] },
+        { id: "keep_branch", steps: [{ id: "keep_branch_step", type: "member", role: "m_reviewer" }] },
+      ],
+      fallback: [{ id: "drop_fallback_step", type: "member", role: "m_deleted" }],
+    },
+    {
+      id: "parallel_drop",
+      type: "parallel",
+      branches: [
+        { id: "drop_parallel", steps: [{ id: "drop_parallel_step", type: "member", role: "m_deleted" }] },
+      ],
+    },
+  ],
+}, [members[0]]);
+assert.deepEqual(memberStepPrunedFlow.steps.map((step) => step.id), ["keep_top", "repeat_keep", "branch_keep"]);
+assert.deepEqual(memberStepPrunedFlow.steps[1].steps.map((step) => step.id), ["keep_repeat"]);
+assert.deepEqual(memberStepPrunedFlow.steps[2].branches.map((branch) => branch.id), ["keep_branch"]);
+assert.deepEqual(memberStepPrunedFlow.steps[2].fallback, []);
+
+const controlRoleFlow = controller.reconcileFlowControlRoles({
+  name: "control-role-proof",
+  steps: [{
+    id: "parallel_review",
+    type: "parallel",
+    controllerRole: "m_deleted",
+    controllerMemberId: "m_deleted",
+    controlRole: "m_deleted",
+    branches: [{
+      id: "br_review",
+      steps: [{
+        id: "branch_nested",
+        type: "branch",
+        controllerRole: "m_reviewer",
+        branches: [],
+        fallback: [],
+      }],
+    }],
+  }],
+}, [members[0]]);
+assert(!("controllerRole" in controlRoleFlow.steps[0]));
+assert(!("controllerMemberId" in controlRoleFlow.steps[0]));
+assert(!("controlRole" in controlRoleFlow.steps[0]));
+assert.equal(controlRoleFlow.steps[0].branches[0].steps[0].controllerRole, "m_reviewer");
+
+const graphControlInstances = controller.reconcileGraphControlRoles([
+  { id: "join_stale", isGate: true, gateKind: "join", controllerRole: "m_deleted", joinRole: "m_deleted" },
+  { id: "join_valid", isGate: true, gateKind: "join", controllerRole: "m_reviewer" },
+], [members[0]]);
+assert(!("controllerRole" in graphControlInstances[0]));
+assert(!("joinRole" in graphControlInstances[0]));
+assert.equal(graphControlInstances[1].controllerRole, "m_reviewer");
+
+const graphMemberSync = controller.reconcileGraphMemberInstances({
+  instances: [
+    { id: "gate_branch", isGate: true, gateKind: "branch" },
+    { id: "review_step", memberId: "m_reviewer" },
+    { id: "deleted_step", memberId: "m_deleted" },
+    { id: "source_file", isTerminal: true, kind: "success", label: "mob.toml" },
+  ],
+  edges: [
+    { id: "keep_gate_review", from: "gate_branch", to: "review_step", kind: "next" },
+    { id: "drop_deleted_out", from: "deleted_step", to: "review_step", kind: "next" },
+    { id: "drop_deleted_in", from: "review_step", to: "deleted_step", kind: "next" },
+    { id: "keep_source", from: "review_step", to: "source_file", kind: "next" },
+  ],
+}, [members[0]]);
+assert.deepEqual(graphMemberSync.instances.map((instance) => instance.id), ["gate_branch", "review_step", "source_file"]);
+assert.deepEqual(graphMemberSync.edges.map((edge) => edge.id), ["keep_gate_review", "keep_source"]);
+
+const launchSourceFlow = controller.reconcileFlowLaunchSources({
+  name: "launch-source-proof",
+  steps: [
+    { id: "plan", type: "member", role: "m_reviewer", launchMode: { kind: "Fresh" } },
+    {
+      id: "branch_launch",
+      type: "branch",
+      branches: [{
+        id: "br_launch",
+        steps: [{
+          id: "review_fork",
+          type: "member",
+          role: "m_reviewer",
+          launchMode: { kind: "Fork", from: "deleted_step", context: "full_history", budgetSplitPolicy: { kind: "Fixed", limit: 512 } },
+        }],
+      }],
+      fallback: [],
+    },
+  ],
+}, [members[0]]);
+assert.deepEqual(launchSourceFlow.steps[1].branches[0].steps[0].launchMode, {
+  kind: "Fresh",
+  budgetSplitPolicy: { kind: "Fixed", limit: 512 },
+});
+const validLaunchSourceFlow = controller.reconcileFlowLaunchSources({
+  name: "launch-source-valid-proof",
+  steps: [
+    { id: "plan", type: "member", role: "m_reviewer", launchMode: { kind: "Fresh" } },
+    { id: "review_fork", type: "member", role: "m_reviewer", launchMode: { kind: "Fork", from: "plan", context: "full_history" } },
+  ],
+}, [members[0]]);
+assert.equal(validLaunchSourceFlow.steps[1].launchMode.from, "plan");
+
+const graphLaunchInstances = controller.reconcileGraphLaunchSources([
+  { id: "plan", memberId: "m_reviewer", launchMode: { kind: "Fresh" } },
+  { id: "review_fork", memberId: "m_reviewer", launchMode: { kind: "Fork", from: "deleted_instance", context: "full_history" } },
+  { id: "review_member_fork", memberId: "m_reviewer", launchMode: { kind: "Fork", from: "m_reviewer", context: "full_history" } },
+], [members[0]]);
+assert.deepEqual(graphLaunchInstances[1].launchMode.kind, "Fresh");
+assert.equal(graphLaunchInstances[2].launchMode.from, "m_reviewer");
+
+const scopedToolMembers = [
+  { id: "m_tool", name: "Tool User", role: "tool_user", tools: ["builtins", "shell"] },
+];
+const scopedToolFlow = controller.reconcileFlowStepToolScopes({
+  name: "tool-scope-proof",
+  steps: [
+    { id: "input_1", type: "input", task: "", inputParams: [] },
+    {
+      id: "branch_1",
+      type: "branch",
+      branches: [{
+        id: "br_1",
+        label: "Branch",
+        steps: [{
+          id: "tool_step",
+          type: "member",
+          role: "m_tool",
+          allowedTools: ["builtins", "mob"],
+          blockedTools: ["shell", "memory"],
+        }],
+      }],
+      fallback: [],
+    },
+  ],
+}, scopedToolMembers);
+assert.deepEqual(scopedToolFlow.steps[1].branches[0].steps[0].allowedTools, ["builtins"]);
+assert.deepEqual(scopedToolFlow.steps[1].branches[0].steps[0].blockedTools, ["shell"]);
+
+const scopedToolInstances = controller.reconcileGraphStepToolScopes([
+  { id: "tool_inst", memberId: "m_tool", allowedTools: ["builtins", "mob"], blockedTools: ["shell", "memory"] },
+  { id: "gate", isGate: true, allowedTools: ["mob"], blockedTools: ["shell"] },
+], scopedToolMembers);
+assert.deepEqual(scopedToolInstances[0].allowedTools, ["builtins"]);
+assert.deepEqual(scopedToolInstances[0].blockedTools, ["shell"]);
+assert.deepEqual(scopedToolInstances[1].allowedTools, ["mob"]);
+
+const skillScopedMembers = [
+  { id: "m_skill", name: "Skill User", role: "skill_user", skills: ["mob.workpad", "mob.missing"] },
+];
+assert.equal(controller.reconcileMemberSkillRefs(skillScopedMembers, []), skillScopedMembers);
+assert.deepEqual(controller.reconcileMemberSkillRefs(skillScopedMembers, [], { strictEmpty: true })[0].skills, []);
+const reconciledSkillMembers = controller.reconcileMemberSkillRefs(skillScopedMembers, [{
+  id: "realm",
+  skills: [{ id: "mob.workpad" }, { id: "mob.review" }],
+}]);
+assert.deepEqual(reconciledSkillMembers[0].skills, ["mob.workpad"]);
+
+const pendingDeploySettings = { surface: "custom", model: "custom-model" };
+assert.equal(controller.reconcileDeploySettingsWithContract(pendingDeploySettings, null, []), pendingDeploySettings);
+assert.equal(controller.reconcileDeploySettingsWithContract({ model: "custom-model" }, null, []).model, "custom-model");
+assert.equal(controller.reconcileDeploySettingsWithContract({ model: "custom-model" }, null, [], { strictEmptyModels: true }).model, "");
+const reconciledDeploySettings = controller.reconcileDeploySettingsWithContract({
+  command: "legacy deploy command",
+  surface: "console",
+  trustPolicy: "loose",
+  realmBackend: "memory",
+  model: "missing-model",
+  prompt: "Run it.",
+}, {
+  deploy_settings: {
+    command: "rkat mob deploy",
+    surfaces: ["cli", "rpc"],
+    trust_policies: ["permissive", "strict"],
+    realm_backends: ["jsonl", "sqlite"],
+  },
+}, [{ id: "openai/gpt-5" }]);
+assert.equal(reconciledDeploySettings.command, "rkat mob deploy");
+assert.equal(reconciledDeploySettings.surface, "");
+assert.equal(reconciledDeploySettings.trustPolicy, "");
+assert.equal(reconciledDeploySettings.realmBackend, "");
+assert.equal(reconciledDeploySettings.model, "");
+
+const pendingContractMembers = [{ id: "m_custom", model: "custom-model", runtimeMode: "custom", tools: ["custom-tool"] }];
+assert.equal(controller.reconcileMembersWithContract(pendingContractMembers, null, {}, []), pendingContractMembers);
+const reconciledContractMembers = controller.reconcileMembersWithContract([
+  {
+    id: "m_bad",
+    profileBinding: "legacy_profile",
+    runtimeMode: "invalid_runtime",
+    backend: "sidecar",
+    model: "missing-model",
+    tools: ["builtins", "missing-tool"],
+  },
+  {
+    id: "m_host",
+    profileBinding: "inline",
+    runtimeMode: "autonomous_host",
+    backend: "session",
+    model: "openai/gpt-5",
+    tools: ["shell"],
+  },
+], {
+  mob_definition: {
+    defaults: { runtime_mode: "turn_driven" },
+    runtime_modes: ["turn_driven", "autonomous_host"],
+    profile_binding: ["inline"],
+    profile_backends: ["session", "external"],
+  },
+}, { surface: "cli" }, [{ id: "openai/gpt-5" }], [{ id: "builtins" }]);
+assert.equal(reconciledContractMembers[0].profileBinding, "");
+assert.equal(reconciledContractMembers[0].runtimeMode, "");
+assert.equal(reconciledContractMembers[0].backend, "");
+assert.equal(reconciledContractMembers[0].model, "");
+assert.deepEqual(reconciledContractMembers[0].tools, ["builtins"]);
+assert.equal(reconciledContractMembers[1].runtimeMode, "turn_driven");
+assert.deepEqual(reconciledContractMembers[1].tools, []);
+assert.equal(controller.reconcileMembersWithContract(pendingContractMembers, null, {}, [], [], { strictEmptyModels: true })[0].model, "");
+assert.deepEqual(controller.reconcileMembersWithContract(pendingContractMembers, null, {}, [], [], { strictEmptyTools: true })[0].tools, []);
+
+const pendingMobSettings = { backendDefault: "custom-backend" };
+assert.equal(controller.reconcileMobSettingsWithContract(pendingMobSettings, null), pendingMobSettings);
+assert.equal(controller.reconcileMobSettingsWithContract({
+  backendDefault: "sidecar",
+  externalAddressBase: "http://127.0.0.1:9000",
+}, {
+  mob_definition: { profile_backends: ["session", "external"] },
+}).backendDefault, "");
+
+const schemaReferenceFlow = {
+  name: "schema-reference-proof",
+  steps: [
+    { id: "input_1", type: "input" },
+    { id: "review_step", type: "member", role: "m_reviewer", schema: "ReviewArtifact" },
+    {
+      id: "branch_review",
+      type: "branch",
+      branches: [{
+        id: "br_green",
+        label: "Green",
+        condition: 'steps.review_step.verdict == "green"',
+        cond: { namespace: "steps", stepId: "review_step", field: "verdict", op: "==", val: "green" },
+        steps: [],
+      }],
+      fallback: [],
+    },
+    {
+      id: "loop_review",
+      type: "repeat",
+      until: 'steps.review_loop.verdict == "green"',
+      cond: { namespace: "steps", stepId: "review_loop", field: "verdict", op: "==", val: "green" },
+      steps: [{ id: "review_loop", type: "member", role: "m_reviewer", schema: "ReviewArtifact" }],
+    },
+  ],
+};
+const schemaReferenceEdges = [{
+  id: "e_branch_green",
+  from: "g_branch_review",
+  to: "review_step",
+  kind: "cond",
+  label: 'steps.review_step.verdict == "green"',
+  cond: { var: "steps.review_step.verdict", op: "==", val: "green" },
+}];
+const renamedReferences = controller.reconcileSchemaFieldReferences({
+  flow: schemaReferenceFlow,
+  edges: schemaReferenceEdges,
+  members,
+  instances: [{ id: "review_step", memberId: "m_reviewer" }, { id: "review_loop", memberId: "m_reviewer" }],
+  schemaId: "ReviewArtifact",
+  oldName: "verdict",
+  newName: "decision",
+});
+assert.equal(renamedReferences.flow.steps[2].branches[0].cond.field, "decision");
+assert.equal(renamedReferences.flow.steps[2].branches[0].condition, 'steps.review_step.decision == "green"');
+assert.equal(renamedReferences.flow.steps[3].cond.field, "decision");
+assert.equal(renamedReferences.flow.steps[3].until, 'steps.review_loop.decision == "green"');
+assert.equal(renamedReferences.edges[0].cond.var, "steps.review_step.decision");
+assert.equal(renamedReferences.edges[0].label, 'steps.review_step.decision == "green"');
+
+const deletedReferences = controller.reconcileSchemaFieldReferences({
+  flow: renamedReferences.flow,
+  edges: renamedReferences.edges,
+  members,
+  instances: [{ id: "review_step", memberId: "m_reviewer" }, { id: "review_loop", memberId: "m_reviewer" }],
+  schemaId: "ReviewArtifact",
+  oldName: "decision",
+  newName: "",
+});
+assert.deepEqual(deletedReferences.flow.steps[2].branches[0].cond, {});
+assert.equal(deletedReferences.flow.steps[2].branches[0].condition, "");
+assert.deepEqual(deletedReferences.flow.steps[3].cond, {});
+assert.equal(deletedReferences.flow.steps[3].until, "");
+assert.equal(deletedReferences.edges[0].cond, null);
+assert.equal(deletedReferences.edges[0].label, "");
+
+assert.equal(document.flow.steps[1].timeoutMs, 120000);
+assert.deepEqual(document.flow.steps[1].allowedTools, ["git"]);
+assert.deepEqual(document.flow.steps[1].blockedTools, ["shell"]);
+assert.equal(document.flow.steps[1].outputFormat, "text");
+
+const [agentDefinition] = controller.agentDefinitionsFromSchema({
+  agent_definitions: [{
+    id: "reviewer",
+    role: "reviewer",
+    name: "Reviewer",
+    model: "gpt-5.5",
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/mobpack-profile-member",
+    sourceMobpack: "sample_review_pr",
+    sourceDocumentPath: "document.members[]",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+    schema: "ReviewArtifact",
+    schemaDefinition: {
+      id: "ReviewArtifact",
+      description: "Review output",
+      fields: [{ id: "f1", name: "verdict", type: "enum", required: true, enumValues: ["green", "red"] }],
+    },
+  }],
+});
+
+assert.deepEqual(controller.agentDefinitionsFromSchema({
+  members: [{
+    id: "legacy-member",
+    role: "legacy",
+    name: "Legacy",
+    model: "gpt-5.5",
+  }],
+}), []);
+
+assert.deepEqual(controller.agentDefinitionsFromSchema({
+  agent_definitions: [{
+    id: "partial",
+    role: "partial",
+    name: "Partial",
+    model: "gpt-5.5",
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/mobpack-profile-member",
+    sourceMobpack: "sample_partial",
+    sourceDocumentPath: "document.members[]",
+  }],
+}), []);
+
+assert.equal(controller.memberPromptSkeleton({
+  name: "Reviewer",
+  role: "reviewer",
+  schema: "ReviewArtifact",
+  systemPrompt: "  Gate the implementation.\n\nEmit a verdict.  ",
+}), [
+  "You are Reviewer, a member of a Meerkat mob.",
+  "",
+  "## Mandate",
+  "Gate the implementation. Emit a verdict.",
+  "",
+  "## Operating rules",
+  "- Read the shared mob workpad and prior members' output before acting.",
+  "- Do exactly what this step requires — no more, no less.",
+  "- Emit a ReviewArtifact as your structured output.",
+  "- Hand off cleanly: state what you did and what the next member needs.",
+].join("\n"));
+assert.match(controller.memberPromptSkeleton({ role: "planner" }), /Act as the planner of the mob\./);
+assert.match(controller.memberPromptSkeleton({ name: "Coder" }), /Return a concise, well-structured result\./);
+assert.deepEqual(controller.memberNamePatch(" Quality Reviewer "), { name: " Quality Reviewer " });
+assert.deepEqual(controller.memberRealmProfilePatch(" qa_profile "), { realmProfile: "qa_profile" });
+assert.deepEqual(controller.memberSystemPromptPatch("  Review carefully.\n"), { systemPrompt: "  Review carefully.\n" });
+
+assert.deepEqual(controller.agentDefinitionsFromSchema({
+  agent_definitions: [{
+    id: "",
+    role: "missing_id",
+    name: "Missing id",
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/mobpack-profile-member",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+  }, {
+    id: "missing_role",
+    role: "",
+    name: "Missing role",
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/mobpack-profile-member",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+  }, {
+    id: "missing_name",
+    role: "missing_name",
+    name: "",
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/mobpack-profile-member",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+  }],
+}), []);
+
+assert.throws(
+  () => controller.memberFromAgentDefinition({ id: "partial", role: "partial" }, []),
+  /profile-member contract|source contract/,
+);
+assert.throws(
+  () => controller.memberFromAgentDefinition({
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/mobpack-profile-member",
+    id: "partial",
+    role: "partial",
+  }, []),
+  /profileBinding contract|runtimeMode contract/,
+);
+
+const agentContract = {
+  mob_definition: {
+    profile_binding: ["inline"],
+    profile_binding_restrictions: {
+      realm_profile: {
+        deployable: false,
+        label: "realm_profile — import-only; rkat mob validate forbids realm refs in packs",
+        reason: "rkat mob validate rejects mobpack profiles that use realm_profile references; export deployable packs with inline profiles.",
+      },
+    },
+    runtime_modes: ["turn_driven", "autonomous_host"],
+    profile_backends: ["session", "external"],
+  },
+};
+assert.deepEqual(
+  controller.profileBindingOptions(agentContract, "").map((option) => option.value),
+  ["inline"],
+);
+assert.deepEqual(
+  controller.profileBindingOptions(agentContract, "realm_profile").map((option) => [option.value, option.disabled, option.reason]),
+  [
+    ["inline", false, ""],
+    ["realm_profile", true, "rkat mob validate rejects mobpack profiles that use realm_profile references; export deployable packs with inline profiles."],
+  ],
+);
+assert.deepEqual(
+  controller.runtimeModeOptions(agentContract, { surface: "rpc" }, "").map((option) => option.value),
+  ["turn_driven", "autonomous_host"],
+);
+const tweaksState = controller.tweaksControlState({
+  flows: [
+    { id: "f_draft", name: "Draft Mob", stage: "", source: "", document: { mob_id: "draft" } },
+    { id: "f_empty", name: "No Document", stage: "valid" },
+    { id: "f_valid", name: "Valid Mob", stage: "valid", document: { mob_id: "valid" } },
+  ],
+  deploySettings: { surface: "cli", trustPolicy: "permissive", realmBackend: "sqlite" },
+  mobSettings: { backendDefault: "session" },
+  members: [{ id: "m_reviewer", role: "reviewer", name: "Reviewer" }],
+  modelCatalog: [{ id: "openai/gpt-5.5", label: "GPT-5.5", vendor: "OpenAI" }],
+  contract: {
+    deploy_settings: {
+      surfaces: ["cli", "rpc"],
+      trust_policies: ["permissive", "strict"],
+      realm_backends: ["sqlite"],
+    },
+    mob_definition: {
+      profile_backends: ["session", "external"],
+    },
+  },
+});
+assert.deepEqual(tweaksState.loadableFlowOptions, [
+  { value: "f_draft", label: "Draft Mob · draft" },
+  { value: "f_valid", label: "Valid Mob · valid" },
+]);
+assert.equal(tweaksState.panelTitle, "Tweaks");
+assert.equal(tweaksState.loadMobTitle, "Load mob");
+assert.equal(tweaksState.loadMobLabel, "Mobpack");
+assert.equal(tweaksState.canvasTitle, "Canvas");
+assert.equal(tweaksState.edgeStyleLabel, "Edges");
+assert.deepEqual(tweaksState.edgeStyleOptions, [
+  { value: "text", label: "Text" },
+  { value: "icons", label: "Icons" },
+  { value: "colored", label: "Color" },
+]);
+assert.equal(tweaksState.densityLabel, "Density");
+assert.deepEqual(tweaksState.densityOptions, [
+  { value: "compact", label: "Compact" },
+  { value: "comfortable", label: "Comfy" },
+]);
+assert.equal(tweaksState.themeTitle, "Theme");
+assert.equal(tweaksState.themeModeLabel, "Mode");
+assert.deepEqual(tweaksState.themeModeOptions, [
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+]);
+assert.equal(tweaksState.mobTitle, "Mob");
+assert.equal(tweaksState.orchestratorLabel, "Orchestrator");
+assert.equal(tweaksState.autoWireLabel, "Auto wire");
+assert.deepEqual(tweaksState.autoWireOptions, [
+  { value: "no", label: "No" },
+  { value: "yes", label: "Yes" },
+]);
+assert.equal(tweaksState.defaultBackendLabel, "Default backend");
+assert.equal(tweaksState.externalBaseLabel, "External base");
+assert.equal(tweaksState.externalBasePlaceholder, "http://127.0.0.1:9000");
+assert.equal(tweaksState.deployTitle, "Deploy");
+assert.equal(tweaksState.surfaceLabel, "Surface");
+assert.equal(tweaksState.trustLabel, "Trust");
+assert.equal(tweaksState.modelLabel, "Model");
+assert.equal(tweaksState.durationLabel, "Duration");
+assert.equal(tweaksState.durationPlaceholder, "30s");
+assert.equal(tweaksState.toolCallsLabel, "Tool calls");
+assert.equal(tweaksState.toolCallsMin, 0);
+assert.equal(tweaksState.toolCallsMax, 999);
+assert.equal(tweaksState.tokensLabel, "Tokens");
+assert.equal(tweaksState.tokensMin, 0);
+assert.equal(tweaksState.tokensMax, 200000);
+assert.equal(tweaksState.realmLabel, "Realm");
+assert.deepEqual(tweaksState.realmOptions, [
+  { value: "isolated", label: "Isolated" },
+  { value: "shared", label: "Shared" },
+]);
+assert.equal(tweaksState.realmIdLabel, "Realm ID");
+assert.equal(tweaksState.realmIdPlaceholder, "realm id");
+assert.equal(tweaksState.backendLabel, "Backend");
+assert.equal(tweaksState.promptLabel, "Prompt");
+assert.equal(tweaksState.promptPlaceholder, "Deploy prompt");
+assert.equal(tweaksState.commandLabel, "Command");
+assert.equal(tweaksState.commandFallback, "--");
+assert.equal(tweaksState.inspectorTitle, "Inspector");
+assert.equal(tweaksState.inspectorLayoutLabel, "Layout");
+assert.deepEqual(tweaksState.inspectorLayoutOptions, [
+  { value: "right", label: "Right" },
+  { value: "bottom", label: "Bottom" },
+  { value: "modal", label: "Modal" },
+]);
+assert.deepEqual(tweaksState.profileOptions, [
+  { value: "", label: "none" },
+  { value: "reviewer", label: "reviewer" },
+]);
+assert.deepEqual(tweaksState.profileChoices, [{ value: "reviewer", label: "reviewer" }]);
+assert.deepEqual(tweaksState.modelOptions, [
+  { value: "", label: "default" },
+  { value: "openai/gpt-5.5", label: "GPT-5.5 · OpenAI" },
+]);
+assert.deepEqual(tweaksState.surfaceOptions.map((option) => option.value), ["cli", "rpc"]);
+assert.deepEqual(tweaksState.trustOptions.map((option) => option.value), ["permissive", "strict"]);
+assert.deepEqual(tweaksState.realmBackendOptions.map((option) => option.value), ["sqlite"]);
+assert.deepEqual(tweaksState.mobBackendOptions.map((option) => option.value), ["session", "external"]);
+assert.deepEqual(controller.memberProfileBindingPatch({ role: "reviewer", name: "Reviewer" }, "realm_profile", agentContract), {});
+assert.deepEqual(controller.memberProfileBindingPatch({ realmProfile: "qa_profile" }, "inline", agentContract), {
+  profileBinding: "inline",
+  realmProfile: "",
+});
+assert.deepEqual(controller.memberRuntimeModePatch("turn_driven", agentContract, { surface: "cli" }), { runtimeMode: "turn_driven" });
+assert.deepEqual(controller.memberRuntimeModePatch("autonomous_host", agentContract, { surface: "cli" }), {});
+assert.deepEqual(controller.memberRuntimeModePatch("", agentContract, { surface: "cli" }), {});
+assert.deepEqual(controller.memberModelPatch(" openai/gpt-5 ", [{ id: "openai/gpt-5" }]), { model: "openai/gpt-5" });
+assert.deepEqual(controller.memberModelPatch("openai/ghost", [{ id: "openai/gpt-5" }]), {});
+assert.deepEqual(controller.memberModelPatch("", [{ id: "openai/gpt-5" }]), {});
+assert.deepEqual(controller.memberSchemaPatch(" ReviewArtifact ", [{ id: "ReviewArtifact" }]), { schema: "ReviewArtifact" });
+assert.deepEqual(controller.memberSchemaPatch("GhostArtifact", [{ id: "ReviewArtifact" }]), {});
+assert.deepEqual(controller.memberSchemaPatch("", [{ id: "ReviewArtifact" }]), { schema: "" });
+const memberSchemaCascade = controller.memberSchemaCascadePatch({
+  memberId: "m_reviewer",
+  members: [{ id: "m_reviewer", schema: "ReviewArtifact" }],
+  schemas: [
+    { id: "ReviewArtifact", fields: [{ id: "f1", name: "verdict", type: "enum" }] },
+    { id: "SummaryArtifact", fields: [{ id: "f2", name: "summary", type: "string" }] },
+  ],
+  flow: {
+    name: "member-schema-cascade",
+    steps: [
+      { id: "review_step", type: "member", role: "m_reviewer" },
+      {
+        id: "route",
+        type: "branch",
+        branches: [{
+          id: "br_green",
+          cond: { stepId: "review_step", field: "verdict", op: "==", val: "green" },
+          condition: "steps.review_step.verdict == \"green\"",
+          steps: [],
+        }],
+        fallback: [],
+      },
+    ],
+  },
+  edges: [{
+    id: "e_review_done",
+    from: "review_inst",
+    to: "done",
+    kind: "cond",
+    label: "steps.review_inst.verdict == \"green\"",
+    cond: { var: "steps.review_inst.verdict", op: "==", val: "green" },
+  }],
+  instances: [
+    { id: "review_inst", memberId: "m_reviewer" },
+    { id: "done", isTerminal: true },
+  ],
+}, "SummaryArtifact");
+assert.equal(memberSchemaCascade.ok, true);
+assert.deepEqual(memberSchemaCascade.patch, { schema: "SummaryArtifact" });
+assert.deepEqual(memberSchemaCascade.members, [{ id: "m_reviewer", schema: "SummaryArtifact" }]);
+assert.deepEqual(memberSchemaCascade.flow.steps[1].branches[0].cond, {});
+assert.equal(memberSchemaCascade.flow.steps[1].branches[0].condition, "");
+assert.deepEqual(memberSchemaCascade.edges[0].cond, null);
+assert.equal(memberSchemaCascade.edges[0].label, "");
+assert.deepEqual(controller.memberSchemaCascadePatch({
+  memberId: "m_reviewer",
+  members: [{ id: "m_reviewer", schema: "ReviewArtifact" }],
+  schemas: [{ id: "ReviewArtifact" }],
+}, "GhostArtifact"), {
+  ok: false,
+  error: "unknown schema",
+  members: [{ id: "m_reviewer", schema: "ReviewArtifact" }],
+  flow: undefined,
+  edges: undefined,
+  patch: null,
+});
+assert.deepEqual(controller.memberBackendPatch("external", agentContract), { backend: "external" });
+assert.deepEqual(controller.memberBackendPatch("daemon", agentContract), {});
+assert.deepEqual(controller.memberMaxInlinePeerNotificationsPatch("4"), { maxInlinePeerNotifications: 4 });
+assert.deepEqual(controller.memberMaxInlinePeerNotificationsPatch(""), { maxInlinePeerNotifications: null });
+assert.deepEqual(controller.memberMaxInlinePeerNotificationsPatch("-2"), { maxInlinePeerNotifications: null });
+assert.deepEqual(controller.memberProviderParamsEditorState({
+  providerParams: { thinking_budget: 4096, top_k: 20 },
+}), {
+  label: "Provider params",
+  text: '{\n  "thinking_budget": 4096,\n  "top_k": 20\n}',
+  placeholder: '{"thinking_budget":4096}',
+  rows: 4,
+  invalidJsonLabel: "invalid JSON",
+});
+assert.equal(controller.memberProviderParamsEditorState({ providerParams: null }).text, "");
+assert.deepEqual(controller.memberProviderParamsPatch('{"thinking_budget":4096}'), {
+  ok: true,
+  patch: { providerParams: { thinking_budget: 4096 } },
+  error: "",
+});
+assert.deepEqual(controller.memberProviderParamsPatch(""), {
+  ok: true,
+  patch: { providerParams: null },
+  error: "",
+});
+assert.equal(controller.memberProviderParamsPatch("[]").ok, false);
+assert.equal(controller.memberProviderParamsPatch("{").ok, false);
+
+assert.deepEqual(controller.schemaDefinitionsFromAgentDefinition(agentDefinition), [{
+  id: "ReviewArtifact",
+  description: "Review output",
+  fields: [{ id: "f1", name: "verdict", type: "enum", required: true, enumValues: ["green", "red"] }],
+}]);
+
+const staleAgentSchemas = [{
+  id: "ReviewArtifact",
+  description: "Old review output",
+  fields: [{ id: "old", name: "stale", type: "string", required: false }],
+}];
+const mergedAgentSchemas = controller.mergeAgentDefinitionSchemas(staleAgentSchemas, agentDefinition);
+assert.deepEqual(mergedAgentSchemas, [{
+  id: "ReviewArtifact",
+  description: "Review output",
+  fields: [{ id: "f1", name: "verdict", type: "enum", required: true, enumValues: ["green", "red"] }],
+}]);
+assert.notEqual(mergedAgentSchemas, staleAgentSchemas);
+assert.equal(controller.mergeAgentDefinitionSchemas(mergedAgentSchemas, agentDefinition), mergedAgentSchemas);
+
+const addedAgent = controller.agentDefinitionAddPatch(agentDefinition, {
+  members: [{ id: "m_reviewer", name: "Reviewer", role: "reviewer" }],
+  schemas: staleAgentSchemas,
+});
+assert.equal(addedAgent.member.id, "m_reviewer_2");
+assert.equal(addedAgent.members.length, 2);
+assert.equal(addedAgent.schemasChanged, true);
+assert.deepEqual(addedAgent.schemas, mergedAgentSchemas);
+const addedById = controller.agentDefinitionAddByIdPatch([agentDefinition], "reviewer", {
+  members: [],
+  schemas: [],
+});
+assert.equal(addedById.ok, true);
+assert.equal(addedById.member.id, "m_reviewer");
+assert.equal(controller.agentDefinitionAddByIdPatch([agentDefinition], "missing").ok, false);
+const agentMembersForProjection = [
+  { id: "m_planner", name: "Planner", role: "planner", model: "gpt-5.5", schema: "PlanArtifact" },
+  {
+    id: "m_reviewer",
+    name: "Reviewer",
+    role: "reviewer",
+    model: "gpt-5.5",
+    schema: "ReviewArtifact",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+    backend: "session",
+  },
+];
+const agentSchemasForProjection = [
+  { id: "PlanArtifact", fields: [{ id: "f1" }] },
+  { id: "ReviewArtifact", fields: [{ id: "f1" }, { id: "f2" }] },
+];
+const agentInstancesForProjection = [
+  { id: "n_review_1", memberId: "m_reviewer", col: 1, row: 2, lane: "main" },
+  { id: "n_review_2", memberId: "m_reviewer", col: 2, row: 3 },
+];
+assert.deepEqual(controller.agentListState({
+  members: agentMembersForProjection,
+  instances: agentInstancesForProjection,
+  schemas: agentSchemasForProjection,
+  selection: { kind: "schema", id: "ReviewArtifact" },
+}), {
+  memberCount: 2,
+  schemaCount: 2,
+  memberRows: [
+    {
+      id: "m_planner",
+      name: "Planner",
+      role: "planner",
+      model: "gpt-5.5",
+      member: agentMembersForProjection[0],
+      selected: false,
+      itemClass: "agents-list__item",
+      bulletRole: "planner",
+      subLabel: "planner · gpt-5.5",
+      placedCount: 0,
+      placedLabel: "unplaced",
+      isUnplaced: true,
+      placedClass: "agents-list__placed is-zero",
+    },
+    {
+      id: "m_reviewer",
+      name: "Reviewer",
+      role: "reviewer",
+      model: "gpt-5.5",
+      member: agentMembersForProjection[1],
+      selected: false,
+      itemClass: "agents-list__item",
+      bulletRole: "reviewer",
+      subLabel: "reviewer · gpt-5.5",
+      placedCount: 2,
+      placedLabel: "×2",
+      isUnplaced: false,
+      placedClass: "agents-list__placed",
+    },
+  ],
+  schemaRows: [
+    {
+      id: "PlanArtifact",
+      schema: agentSchemasForProjection[0],
+      selected: false,
+      itemClass: "agents-list__item",
+      bulletRole: "schema",
+      fieldCount: 1,
+      fieldLabel: "1 field",
+      usedCount: 1,
+      usageLabel: "used by 1",
+      subLabel: "1 field · used by 1",
+    },
+    {
+      id: "ReviewArtifact",
+      schema: agentSchemasForProjection[1],
+      selected: true,
+      itemClass: "agents-list__item is-selected",
+      bulletRole: "schema",
+      fieldCount: 2,
+      fieldLabel: "2 fields",
+      usedCount: 1,
+      usageLabel: "used by 1",
+      subLabel: "2 fields · used by 1",
+    },
+  ],
+});
+assert.deepEqual(controller.agentSelectionState({
+  selection: { kind: "agent", id: "m_reviewer" },
+  members: agentMembersForProjection,
+  schemas: agentSchemasForProjection,
+}).member, agentMembersForProjection[1]);
+assert.equal(controller.agentSelectionState({
+  selection: { kind: "schema", id: "Missing" },
+  members: agentMembersForProjection,
+  schemas: agentSchemasForProjection,
+}).missing, true);
+const agentEditorState = controller.agentEditorControlState({
+  member: agentMembersForProjection[1],
+  instances: agentInstancesForProjection,
+  schemas: agentSchemasForProjection,
+  modelCatalog: [{ id: "gpt-5.5", label: "GPT-5.5", vendor: "OpenAI" }],
+  deploySettings: { surface: "cli" },
+  contract: {
+    mob_definition: {
+      profile_binding: ["inline"],
+      profile_binding_restrictions: {
+        realm_profile: {
+          deployable: false,
+          label: "realm_profile — import-only; rkat mob validate forbids realm refs in packs",
+          reason: "rkat mob validate rejects mobpack profiles that use realm_profile references; export deployable packs with inline profiles.",
+        },
+      },
+      runtime_modes: ["turn_driven"],
+      profile_backends: ["session", "external"],
+    },
+  },
+});
+assert.equal(agentEditorState.placedAt.length, 2);
+assert.equal(agentEditorState.placedCount, 2);
+assert.equal(agentEditorState.idLine, "m_reviewer · used in 2 instances");
+assert.equal(agentEditorState.deleteLabel, "DELETE");
+assert.equal(agentEditorState.deleteNeedsConfirmation, true);
+assert.equal(agentEditorState.deleteConfirmMessage, "Delete agent \"Reviewer\"? It is placed in 2 cells - those nodes will be removed.");
+assert.equal(agentEditorState.usageTitle, "USED IN · 2");
+assert.equal(agentEditorState.emptyUsageHint, "Not yet placed in any cell. Switch to Topology to add.");
+assert.deepEqual(agentEditorState.usageRows.map((row) => [row.id, row.cellLabel, row.laneLabel]), [
+  ["n_review_1", "cell (2,3)", "main"],
+  ["n_review_2", "cell (3,4)", "—"],
+]);
+assert.equal(agentEditorState.identityTitle, "IDENTITY");
+assert.equal(agentEditorState.profileBindingLabel, "Profile binding");
+assert.equal(agentEditorState.realmProfileLabel, "Realm profile");
+assert.equal(agentEditorState.realmProfilePlaceholder, "realm profile id");
+assert.equal(agentEditorState.realmProfileImportHint, "rkat mob validate rejects mobpack profiles that use realm_profile references; export deployable packs with inline profiles.");
+assert.equal(agentEditorState.realmProfileTitle, "REALM PROFILE");
+assert.equal(agentEditorState.realmProfileReferenceLabel, "reviewer");
+assert.equal(agentEditorState.realmProfileReferenceHintBefore, "This imported member references");
+assert.equal(agentEditorState.realmProfileReferenceHintAfter, "from a target realm. rkat mob validate rejects mobpack profiles that use realm_profile references; export deployable packs with inline profiles.");
+assert.equal(agentEditorState.modelLabel, "Model");
+assert.equal(agentEditorState.runtimeModeLabel, "Runtime mode");
+assert.equal(agentEditorState.backendLabel, "Backend");
+assert.equal(agentEditorState.inlinePeerNotificationsLabel, "Inline peer notifications");
+assert.equal(agentEditorState.inlinePeerNotificationsPlaceholder, "runtime default");
+assert.equal(agentEditorState.systemPromptTitle, "SYSTEM PROMPT");
+assert.equal(agentEditorState.applySkeletonLabel, "APPLY SKELETON");
+assert.equal(agentEditorState.applySkeletonTitle, "Apply a MobKit profile prompt skeleton");
+assert.equal(agentEditorState.systemPromptPlaceholder, "Describe the member mandate. This text is exported as the profile peer_description.");
+assert.deepEqual(controller.agentEditorControlState({
+  member: { id: "m_unplaced", name: "Unplaced", role: "writer" },
+  instances: [],
+  schemas: [],
+}).deleteNeedsConfirmation, false);
+assert.equal(agentEditorState.schema.id, "ReviewArtifact");
+assert.equal(agentEditorState.outputSchemaTitle, "OUTPUT SCHEMA");
+assert.equal(agentEditorState.hasOutputSchema, true);
+assert.deepEqual(agentEditorState.schemaPreviewRows, [
+  { id: "f1", name: undefined, type: undefined, required: false, requiredLabel: "" },
+  { id: "f2", name: undefined, type: undefined, required: false, requiredLabel: "" },
+]);
+assert.equal(agentEditorState.editSchemaLabel, "Edit schema →");
+assert.deepEqual(agentEditorState.editSchemaSelection, { kind: "schema", id: "ReviewArtifact" });
+assert.equal(agentEditorState.emptySchemaHint, "No structured output. Agent returns free-form text.");
+assert.equal(agentEditorState.profileBinding, "inline");
+assert.equal(agentEditorState.runtimeMode, "turn_driven");
+assert.equal(agentEditorState.backendValue, "session");
+assert.deepEqual(agentEditorState.modelOptions.map((option) => option.label), ["GPT-5.5 · OpenAI"]);
+assert.deepEqual(controller.agentEditorControlState({
+  member: { id: "m_custom", model: "custom/model" },
+  modelCatalog: [],
+}).modelOptions, [{ value: "custom/model", label: "custom/model", model: null }]);
+assert.deepEqual(agentEditorState.schemaOptions.map((option) => [option.value, option.label]), [
+  ["", "— none —"],
+  ["PlanArtifact", "PlanArtifact"],
+  ["ReviewArtifact", "ReviewArtifact"],
+]);
+assert.deepEqual(controller.agentDefinitionOptions([{
+  id: "planner",
+  role: "planner",
+}, {
+  id: "reviewer",
+  role: "reviewer",
+  label: "Quality Reviewer",
+}, {
+  role: "missing-id",
+}]), {
+  hasDefinitions: true,
+  optionRows: [
+    {
+      value: "planner",
+      label: "planner",
+      definition: { id: "planner", role: "planner" },
+    },
+    {
+      value: "reviewer",
+      label: "Quality Reviewer",
+      definition: { id: "reviewer", role: "reviewer", label: "Quality Reviewer" },
+    },
+  ],
+});
+assert.deepEqual(controller.agentDefinitionOptions([]), { hasDefinitions: false, optionRows: [] });
+assert.deepEqual(controller.agentDefinitionAddControlState([]), {
+  hasDefinitions: false,
+  optionRows: [],
+  controlClass: "agents-list__add",
+  disabled: true,
+  title: "MobKit schema contract has not provided agent definitions yet.",
+  unavailableLabel: "agents unavailable",
+  placeholderOption: { value: "", label: "+ new agent..." },
+  value: "",
+});
+assert.deepEqual(controller.agentDefinitionAddControlState([{
+  id: "reviewer",
+  role: "reviewer",
+  label: "Quality Reviewer",
+}]), {
+  hasDefinitions: true,
+  optionRows: [{
+    value: "reviewer",
+    label: "Quality Reviewer",
+    definition: { id: "reviewer", role: "reviewer", label: "Quality Reviewer" },
+  }],
+  controlClass: "agents-list__add agents-list__add--select",
+  disabled: false,
+  title: "Create an agent from a MobKit profile-member definition.",
+  unavailableLabel: "agents unavailable",
+  placeholderOption: { value: "", label: "+ new agent..." },
+  value: "",
+});
+assert.deepEqual(controller.schemaEditorControlState({
+  schema: agentSchemasForProjection[1],
+  members: agentMembersForProjection,
+}), {
+  eyebrow: "OUTPUT SCHEMA",
+  descriptionTitle: "DESCRIPTION",
+  descriptionPlaceholder: "What is this artifact and when is it emitted?",
+  fieldsTitle: "FIELDS · 2",
+  addFieldLabel: "+ field",
+  headerLabels: {
+    name: "NAME",
+    type: "TYPE",
+    required: "REQ",
+    description: "DESCRIPTION",
+    action: "",
+  },
+  fieldRows: [
+    { id: "f1", field: agentSchemasForProjection[1].fields[0] },
+    { id: "f2", field: agentSchemasForProjection[1].fields[1] },
+  ],
+  emptyFieldsHint: "No fields yet. Click + field to start.",
+  usedBy: [{
+    id: "m_reviewer",
+    name: "Reviewer",
+    role: "reviewer",
+    model: "gpt-5.5",
+    selection: { kind: "agent", id: "m_reviewer" },
+    member: agentMembersForProjection[1],
+  }],
+  usedCount: 1,
+  usageLabel: "used by 1 agent",
+  usedByTitle: "USED BY · 1",
+  emptyUsedByHint: "Not yet referenced by any agent.",
+  deleteLabel: "DELETE",
+  canDelete: false,
+  deleteTitle: "Unassign from agents first",
+});
+
+const schemaDraftContract = {
+  mob_definition: {
+    defaults: { schema_field_type: "enum" },
+    editor_schema_field_types: ["enum", "string"],
+  },
+};
+assert.deepEqual(controller.schemaDefinitionAddPatch([{ id: "Artifact1" }], schemaDraftContract), {
+  schema: {
+    id: "Artifact2",
+    description: "",
+    fields: [{ id: "f1", name: "field_one", type: "enum", required: true, description: "", enumValues: [] }],
+  },
+  schemas: [
+    { id: "Artifact1" },
+    { id: "Artifact2", description: "", fields: [{ id: "f1", name: "field_one", type: "enum", required: true, description: "", enumValues: [] }] },
+  ],
+});
+assert.deepEqual(controller.schemaDescriptionPatch(" Review output.\n"), { description: " Review output.\n" });
+assert.equal(controller.uniqueSchemaFieldName([
+  { id: "f1", name: "field" },
+  { id: "f2", name: "field_2" },
+], "9 field!"), "_9_field");
+assert.deepEqual(controller.schemaFieldAddPatch({
+  fields: [{ id: "f1", name: "new_field", type: "string" }],
+}, schemaDraftContract), {
+  field: { id: "f2", name: "new_field_2", type: "enum", required: false, description: "", enumValues: [] },
+  patch: { fields: [
+    { id: "f1", name: "new_field", type: "string" },
+    { id: "f2", name: "new_field_2", type: "enum", required: false, description: "", enumValues: [] },
+  ] },
+});
+assert.deepEqual(controller.schemaFieldUpdatePatch({
+  fields: [{ id: "f1", name: "old", type: "string" }],
+}, "f1", { name: "new" }, schemaDraftContract), {
+  fields: [{ id: "f1", name: "new", type: "string" }],
+});
+assert.deepEqual(controller.schemaFieldUpdatePatch({
+  fields: [
+    { id: "f1", name: "old", type: "string" },
+    { id: "f2", name: "new", type: "string" },
+  ],
+}, "f1", { name: "new" }, schemaDraftContract), {
+  fields: [
+    { id: "f1", name: "new_2", type: "string" },
+    { id: "f2", name: "new", type: "string" },
+  ],
+});
+assert.deepEqual(controller.schemaFieldUpdatePatch({
+  fields: [{ id: "f1", name: "old", type: "string" }],
+}, "f1", { name: "" }, schemaDraftContract), {
+  fields: [{ id: "f1", name: "field", type: "string" }],
+});
+assert.deepEqual(controller.schemaFieldUpdatePatch({
+  fields: [{ id: "f1", name: "old", type: "string", enumValues: [] }],
+}, "f1", { type: "object" }, schemaDraftContract), {
+  fields: [{ id: "f1", name: "old", type: "string", enumValues: [] }],
+});
+assert.deepEqual(controller.schemaFieldUpdatePatch({
+  fields: [{ id: "f1", name: "old", type: "string", enumValues: [] }],
+}, "f1", { type: "enum" }, schemaDraftContract), {
+  fields: [{ id: "f1", name: "old", type: "enum", enumValues: ["value"] }],
+});
+assert.deepEqual(controller.schemaFieldDeletePatch({
+  fields: [{ id: "f1", name: "old" }, { id: "f2", name: "keep" }],
+}, "f1"), {
+  removed: { id: "f1", name: "old" },
+  patch: { fields: [{ id: "f2", name: "keep" }] },
+});
+const deletedSchemaFieldCascade = controller.schemaFieldDeleteCascadePatch({
+  schema: {
+    id: "ReviewArtifact",
+    fields: [{ id: "f1", name: "verdict" }, { id: "f2", name: "summary" }],
+  },
+  schemas: [
+    { id: "ReviewArtifact", fields: [{ id: "f1", name: "verdict" }, { id: "f2", name: "summary" }] },
+  ],
+  members: [{ id: "m_reviewer", schema: "ReviewArtifact" }],
+  flow: {
+    name: "field-delete-cascade",
+    steps: [
+      { id: "review_step", type: "member", role: "m_reviewer" },
+      {
+        id: "route",
+        type: "branch",
+        branches: [{
+          id: "br_green",
+          cond: { stepId: "review_step", field: "verdict", op: "==", val: "green" },
+          condition: "steps.review_step.verdict == \"green\"",
+          steps: [],
+        }],
+        fallback: [],
+      },
+    ],
+  },
+  edges: [{
+    id: "e_review_done",
+    from: "review_inst",
+    to: "done",
+    kind: "cond",
+    label: "steps.review_inst.verdict == \"green\"",
+    cond: { var: "steps.review_inst.verdict", op: "==", val: "green" },
+  }],
+  instances: [
+    { id: "review_inst", memberId: "m_reviewer" },
+    { id: "done", isTerminal: true },
+  ],
+}, "f1");
+assert.deepEqual(deletedSchemaFieldCascade.removed, { id: "f1", name: "verdict" });
+assert.deepEqual(deletedSchemaFieldCascade.schema.fields, [{ id: "f2", name: "summary" }]);
+assert.deepEqual(deletedSchemaFieldCascade.schemas[0].fields, [{ id: "f2", name: "summary" }]);
+assert.deepEqual(deletedSchemaFieldCascade.flow.steps[1].branches[0].cond, {});
+assert.equal(deletedSchemaFieldCascade.flow.steps[1].branches[0].condition, "");
+assert.deepEqual(deletedSchemaFieldCascade.edges[0].cond, null);
+assert.equal(deletedSchemaFieldCascade.edges[0].label, "");
+
+assert.deepEqual(controller.studioAddMemberPatch({
+  members: [{ id: "m_old" }],
+}, { id: "m_new" }), {
+  ok: false,
+  error: "member must include id and role/name",
+  members: [{ id: "m_old" }],
+  member: null,
+});
+assert.deepEqual(controller.studioAddMemberPatch({
+  members: [{ id: "m_old" }],
+}, {
+  id: "m_new",
+  name: "New",
+  role: "new",
+  model: "gpt-5.5",
+  profileBinding: "inline",
+  runtimeMode: "turn_driven",
+  tools: [],
+  skills: [],
+}), {
+  ok: true,
+  error: "",
+  members: [
+    { id: "m_old" },
+    {
+      id: "m_new",
+      name: "New",
+      role: "new",
+      model: "gpt-5.5",
+      profileBinding: "inline",
+      runtimeMode: "turn_driven",
+      tools: [],
+      skills: [],
+    },
+  ],
+  member: {
+    id: "m_new",
+    name: "New",
+    role: "new",
+    model: "gpt-5.5",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+    tools: [],
+    skills: [],
+  },
+});
+assert.deepEqual(controller.studioAddMemberPatch({
+  members: [{ id: "m_old" }],
+}, {
+  id: "m_old",
+  name: "Duplicate",
+  role: "duplicate",
+  model: "gpt-5.5",
+  profileBinding: "inline",
+  runtimeMode: "turn_driven",
+}), {
+  ok: false,
+  error: "member id already exists",
+  members: [{ id: "m_old" }],
+  member: null,
+});
+assert.deepEqual(controller.studioUpdateMemberPatch({
+  members: [{ id: "m_old", name: "Old" }],
+}, "m_old", { name: "New" }), {
+  ok: true,
+  error: "",
+  members: [{ id: "m_old", name: "New" }],
+  member: { id: "m_old", name: "New" },
+});
+assert.deepEqual(controller.studioUpdateMemberPatch({
+  members: [{ id: "m_old", name: "Old" }],
+}, "m_old", { id: "m_new" }), {
+  ok: false,
+  error: "member id changes must use projection reconciliation",
+  members: [{ id: "m_old", name: "Old" }],
+});
+assert.deepEqual(controller.studioUpdateMemberPatch({
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
+}, "m_real", { model: "" }), {
+  ok: false,
+  error: "inline member updates must keep a model",
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
+});
+assert.deepEqual(controller.studioUpdateMemberPatch({
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
+}, "m_real", { profileBinding: "realm_profile" }), {
+  ok: false,
+  error: "member updates must keep deployable inline profileBinding",
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
+});
+assert.deepEqual(controller.studioUpdateMemberPatch({
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
+}, "m_real", { runtimeMode: "daemon" }), {
+  ok: false,
+  error: "member updates must use a MobKit runtime_mode value",
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
+});
+assert.equal(controller.studioUpdateMemberPatch({
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
+}, "m_real", { runtimeMode: "autonomous_host" }).ok, true);
+assert.deepEqual(controller.studioUpdateMemberPatch({
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven", tools: [] }],
+}, "m_real", { tools: "shell" }), {
+  ok: false,
+  error: "member tools must be an array of non-empty strings",
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven", tools: [] }],
+});
+assert.deepEqual(controller.studioUpdateMemberPatch({
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven", skills: [] }],
+}, "m_real", { skills: ["mob.review", ""] }), {
+  ok: false,
+  error: "member skills must be an array of non-empty strings",
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven", skills: [] }],
+});
+assert.deepEqual(controller.studioUpdateMemberPatch({
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven", providerParams: null }],
+}, "m_real", { providerParams: ["bad"] }), {
+  ok: false,
+  error: "member providerParams must be a JSON object",
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven", providerParams: null }],
+});
+assert.deepEqual(controller.studioUpdateMemberPatch({
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven", maxInlinePeerNotifications: null }],
+}, "m_real", { maxInlinePeerNotifications: "many" }), {
+  ok: false,
+  error: "member maxInlinePeerNotifications must be an integer >= -1 or blank",
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven", maxInlinePeerNotifications: null }],
+});
+assert.equal(controller.studioUpdateMemberPatch({
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven", tools: [], skills: [], providerParams: null, maxInlinePeerNotifications: null }],
+}, "m_real", { tools: ["shell"], skills: ["mob.review"], providerParams: { thinking_budget: 2048 }, maxInlinePeerNotifications: -1 }).ok, true);
+assert.deepEqual(controller.studioDeleteMemberPatch({
+  members: [{ id: "m_keep" }, { id: "m_drop" }],
+  instances: [
+    { id: "i_keep", memberId: "m_keep" },
+    { id: "i_drop", memberId: "m_drop" },
+    { id: "done", isTerminal: true },
+  ],
+  edges: [
+    { id: "e_keep", from: "i_keep", to: "done" },
+    { id: "e_drop_out", from: "i_drop", to: "done" },
+    { id: "e_drop_in", from: "i_keep", to: "i_drop" },
+  ],
+}, "m_drop"), {
+  members: [{ id: "m_keep" }],
+  instances: [
+    { id: "i_keep", memberId: "m_keep" },
+    { id: "done", isTerminal: true },
+  ],
+  edges: [{ id: "e_keep", from: "i_keep", to: "done" }],
+});
+const memberDeleteCascade = controller.memberDeleteCascadePatch({
+  memberId: "m_drop",
+  members: [
+    { id: "m_keep", name: "Keep", role: "keep", tools: ["shell"], schema: "SummaryArtifact" },
+    { id: "m_drop", name: "Drop", role: "drop", tools: ["git"], schema: "ReviewArtifact" },
+  ],
+  flow: {
+    name: "delete-cascade-proof",
+    steps: [
+      { id: "keep_step", type: "member", role: "m_keep", allowedTools: ["shell"] },
+      { id: "drop_step", type: "member", role: "m_drop", allowedTools: ["git"] },
+      {
+        id: "parallel_step",
+        type: "parallel",
+        controllerRole: "m_drop",
+        branches: [{
+          id: "fork_branch",
+          steps: [{ id: "fork_keep", type: "member", role: "m_keep", launchMode: { kind: "Fork", from: "drop_step" } }],
+        }],
+      },
+    ],
+  },
+  instances: [
+    { id: "i_keep", memberId: "m_keep", allowedTools: ["shell"] },
+    { id: "i_drop", memberId: "m_drop", allowedTools: ["git"] },
+    { id: "join", isGate: true, gateKind: "join", controllerRole: "m_drop" },
+    { id: "fork_keep", memberId: "m_keep", launchMode: { kind: "Fork", from: "i_drop" } },
+  ],
+  edges: [
+    { id: "keep_join", from: "i_keep", to: "join" },
+    { id: "drop_join", from: "i_drop", to: "join" },
+    { id: "join_fork", from: "join", to: "fork_keep" },
+  ],
+  mobSettings: {
+    orchestrator: "drop",
+    roleWiring: [{ a: "keep", b: "drop" }],
+    backendDefault: "session",
+  },
+});
+assert.equal(memberDeleteCascade.ok, true);
+assert.deepEqual(memberDeleteCascade.members.map((member) => member.id), ["m_keep"]);
+assert.deepEqual(memberDeleteCascade.flow.steps.map((step) => step.id), ["keep_step", "parallel_step"]);
+assert(!("controllerRole" in memberDeleteCascade.flow.steps[1]));
+assert.deepEqual(memberDeleteCascade.flow.steps[1].branches[0].steps[0].launchMode, { kind: "Fresh" });
+assert.deepEqual(memberDeleteCascade.instances.map((instance) => instance.id), ["i_keep", "join", "fork_keep"]);
+assert(!("controllerRole" in memberDeleteCascade.instances[1]));
+assert.deepEqual(memberDeleteCascade.instances[2].launchMode, { kind: "Fresh" });
+assert.deepEqual(memberDeleteCascade.edges.map((edge) => edge.id), ["keep_join", "join_fork"]);
+assert.equal(memberDeleteCascade.mobSettings.orchestrator, "");
+assert.deepEqual(memberDeleteCascade.mobSettings.roleWiring, []);
+assert.equal(controller.memberDeleteCascadePatch({ memberId: "missing", members: [{ id: "m_keep" }] }).ok, false);
+assert.deepEqual(controller.studioAddInstancePatch({
+  instances: [{ id: "a", memberId: "m_existing" }],
+  members: [{ id: "m_existing" }, { id: "m_new" }],
+}, { id: "b", memberId: "m_new" }), {
+  ok: true,
+  error: "",
+  instances: [{ id: "a", memberId: "m_existing" }, { id: "b", memberId: "m_new" }],
+  instance: { id: "b", memberId: "m_new" },
+});
+assert.deepEqual(controller.studioAddInstancePatch({
+  instances: [{ id: "a", memberId: "m_existing" }],
+  members: [{ id: "m_existing" }],
+}, { id: "b", memberId: "m_missing" }), {
+  ok: false,
+  error: "member graph node must reference an existing member",
+  instances: [{ id: "a", memberId: "m_existing" }],
+  instance: null,
+});
+assert.deepEqual(controller.studioAddInstancePatch({
+  instances: [{ id: "a", memberId: "m_existing" }],
+  members: [{ id: "m_existing" }],
+}, { id: "a", isTerminal: true }), {
+  ok: false,
+  error: "graph node id already exists",
+  instances: [{ id: "a", memberId: "m_existing" }],
+  instance: null,
+});
+assert.deepEqual(controller.studioAddInstancePatch({
+  instances: [{ id: "a", memberId: "m_existing" }],
+  members: [{ id: "m_existing" }],
+}, { id: "done", isTerminal: true }), {
+  ok: true,
+  error: "",
+  instances: [{ id: "a", memberId: "m_existing" }, { id: "done", isTerminal: true }],
+  instance: { id: "done", isTerminal: true },
+});
+assert.deepEqual(controller.studioAppendInstancesPatch({
+  instances: [{ id: "a", memberId: "m_a" }],
+  members: [{ id: "m_a" }, { id: "m_b" }],
+}, [{ id: "b", memberId: "m_b" }, { id: "ghost", memberId: "m_missing" }, { id: "done", isTerminal: true }]), {
+  instances: [
+    { id: "a", memberId: "m_a" },
+    { id: "b", memberId: "m_b" },
+    { id: "done", isTerminal: true },
+  ],
+});
+assert.deepEqual(controller.studioUpdateInstancePatch({
+  instances: [{ id: "a", memberId: "m_a", col: 1 }],
+  members: [{ id: "m_a" }],
+}, "a", { col: 2 }), {
+  ok: true,
+  error: "",
+  instances: [{ id: "a", memberId: "m_a", col: 2 }],
+  instance: { id: "a", memberId: "m_a", col: 2 },
+});
+assert.deepEqual(controller.studioUpdateInstancePatch({
+  instances: [{ id: "a", memberId: "m_a", col: 1 }, { id: "b", isTerminal: true }],
+  members: [{ id: "m_a" }],
+}, "a", { memberId: "m_missing" }), {
+  ok: false,
+  error: "member graph node must reference an existing member",
+  instances: [{ id: "a", memberId: "m_a", col: 1 }, { id: "b", isTerminal: true }],
+});
+assert.deepEqual(controller.studioUpdateInstancePatch({
+  instances: [{ id: "a", memberId: "m_a", col: 1 }, { id: "b", isTerminal: true }],
+  members: [{ id: "m_a" }],
+}, "a", { id: "b" }), {
+  ok: false,
+  error: "graph node id already exists",
+  instances: [{ id: "a", memberId: "m_a", col: 1 }, { id: "b", isTerminal: true }],
+});
+assert.deepEqual(controller.studioMoveInstancePatch({
+  instances: [
+    { id: "a", col: 0, row: 0 },
+    { id: "b", col: 2, row: 2 },
+  ],
+}, "a", { col: 2, row: 2 }, { col: 0, row: 0 }), {
+  instances: [
+    { id: "a", col: 2, row: 2 },
+    { id: "b", col: 0, row: 0 },
+  ],
+});
+assert.deepEqual(controller.studioMoveInstancePatch({
+  instances: [{ id: "a", col: 0, row: 0 }],
+}, "missing", { col: 1, row: 1 }, { col: 0, row: 0 }), {
+  instances: [{ id: "a", col: 0, row: 0 }],
+});
+assert.deepEqual(controller.studioDeleteInstancePatch({
+  instances: [{ id: "a" }, { id: "b" }, { id: "c" }],
+  edges: [{ id: "ab", from: "a", to: "b" }, { id: "ca", from: "c", to: "a" }, { id: "bc", from: "b", to: "c" }],
+}, "a"), {
+  instances: [{ id: "b" }, { id: "c" }],
+  edges: [{ id: "bc", from: "b", to: "c" }],
+});
+assert.deepEqual(controller.studioDeleteInstancePatch({
+  instances: [
+    { id: "source", memberId: "m_source" },
+    { id: "review", memberId: "m_review", launchMode: { kind: "Fork", from: "source", context: "full_history", budgetSplitPolicy: { kind: "Fixed", limit: 512 } } },
+    { id: "done", isTerminal: true },
+  ],
+  edges: [
+    { id: "review_done", from: "review", to: "done", kind: "cond", label: 'steps.source.verdict == "green"', cond: { var: "steps.source.verdict", op: "==", val: "green" } },
+    { id: "source_done", from: "source", to: "done", kind: "next" },
+  ],
+}, "source"), {
+  instances: [
+    { id: "review", memberId: "m_review", launchMode: { kind: "Fresh", budgetSplitPolicy: { kind: "Fixed", limit: 512 } } },
+    { id: "done", isTerminal: true },
+  ],
+  edges: [
+    { id: "review_done", from: "review", to: "done", kind: "cond", label: "", cond: null },
+  ],
+});
+assert.deepEqual(controller.studioAddEdgePatch({
+  edges: [{ id: "ab" }],
+  instances: [{ id: "b" }, { id: "c" }],
+}, { id: "bc" }), {
+  ok: false,
+  error: "edge must include id, from, and to",
+  edges: [{ id: "ab" }],
+  edge: null,
+});
+assert.deepEqual(controller.studioAddEdgePatch({
+  edges: [{ id: "ab", from: "a", to: "b" }],
+  instances: [{ id: "a" }, { id: "b" }, { id: "c" }],
+}, { id: "bc", from: "b", to: "c" }), {
+  ok: true,
+  error: "",
+  edges: [{ id: "ab", from: "a", to: "b" }, { id: "bc", from: "b", to: "c" }],
+  edge: { id: "bc", from: "b", to: "c" },
+});
+assert.deepEqual(controller.studioAddEdgePatch({
+  edges: [{ id: "ab", from: "a", to: "b" }],
+  instances: [{ id: "a" }, { id: "b" }],
+}, { id: "ghost", from: "a", to: "missing" }), {
+  ok: false,
+  error: "edge endpoints must reference existing graph nodes",
+  edges: [{ id: "ab", from: "a", to: "b" }],
+  edge: null,
+});
+assert.deepEqual(controller.studioAddEdgePatch({
+  edges: [{ id: "ab", from: "a", to: "b" }],
+  instances: [{ id: "a" }, { id: "b" }],
+}, { id: "dupe", from: "a", to: "b" }), {
+  ok: false,
+  error: "edge already exists",
+  edges: [{ id: "ab", from: "a", to: "b" }],
+  edge: null,
+});
+assert.deepEqual(controller.studioAppendEdgesPatch({
+  edges: [{ id: "ab", from: "a", to: "b" }],
+  instances: [{ id: "a" }, { id: "b" }, { id: "c" }],
+}, [{ id: "bc", from: "b", to: "c" }, { id: "ghost", from: "c", to: "missing" }]), {
+  edges: [{ id: "ab", from: "a", to: "b" }, { id: "bc", from: "b", to: "c" }],
+});
+assert.deepEqual(controller.studioUpdateEdgePatch({
+  edges: [{ id: "ab", label: "" }],
+  instances: [{ id: "a" }, { id: "b" }],
+}, "ab", { label: "next" }), {
+  ok: false,
+  error: "edge must include id, from, and to",
+  edges: [{ id: "ab", label: "" }],
+});
+assert.deepEqual(controller.studioUpdateEdgePatch({
+  edges: [{ id: "ab", from: "a", to: "b", label: "" }],
+  instances: [{ id: "a" }, { id: "b" }],
+}, "ab", { label: "next" }), {
+  ok: true,
+  error: "",
+  edges: [{ id: "ab", from: "a", to: "b", label: "next" }],
+  edge: { id: "ab", from: "a", to: "b", label: "next" },
+});
+assert.deepEqual(controller.studioUpdateEdgePatch({
+  edges: [
+    { id: "ab", from: "a", to: "b" },
+    { id: "bc", from: "b", to: "c" },
+  ],
+  instances: [{ id: "a" }, { id: "b" }, { id: "c" }],
+}, "ab", { from: "b", to: "c" }), {
+  ok: false,
+  error: "edge already exists",
+  edges: [
+    { id: "ab", from: "a", to: "b" },
+    { id: "bc", from: "b", to: "c" },
+  ],
+});
+assert.deepEqual(controller.studioDeleteEdgePatch({
+  edges: [{ id: "keep" }, { id: "drop" }],
+}, "drop"), {
+  edges: [{ id: "keep" }],
+});
+assert.deepEqual(controller.studioAddSchemaPatch({
+  schemas: [{ id: "PlanArtifact" }],
+}, { id: "ReviewArtifact" }), {
+  ok: true,
+  error: "",
+  schemas: [{ id: "PlanArtifact" }, { id: "ReviewArtifact" }],
+  schema: { id: "ReviewArtifact" },
+});
+assert.deepEqual(controller.studioAddSchemaPatch({
+  schemas: [{ id: "PlanArtifact" }],
+}, { id: "PlanArtifact" }), {
+  ok: false,
+  error: "schema id already exists",
+  schemas: [{ id: "PlanArtifact" }],
+  schema: null,
+});
+assert.deepEqual(controller.studioUpdateSchemaPatch({
+  schemas: [{ id: "ReviewArtifact", description: "" }],
+}, "ReviewArtifact", { description: "Review output" }), {
+  ok: true,
+  error: "",
+  schemas: [{ id: "ReviewArtifact", description: "Review output" }],
+  schema: { id: "ReviewArtifact", description: "Review output" },
+});
+assert.deepEqual(controller.studioUpdateSchemaPatch({
+  schemas: [{ id: "ReviewArtifact", description: "" }, { id: "PlanArtifact", description: "" }],
+}, "ReviewArtifact", { id: "PlanArtifact" }), {
+  ok: false,
+  error: "schema id changes must use renameSchemaDefinition",
+  schemas: [{ id: "ReviewArtifact", description: "" }, { id: "PlanArtifact", description: "" }],
+});
+assert.deepEqual(controller.studioDeleteSchemaPatch({
+  schemas: [{ id: "ReviewArtifact" }, { id: "PlanArtifact" }],
+  members: [
+    { id: "m_review", schema: "ReviewArtifact" },
+    { id: "m_plan", schema: "PlanArtifact" },
+  ],
+}, "ReviewArtifact"), {
+  schemas: [{ id: "PlanArtifact" }],
+  members: [
+    { id: "m_review", schema: "" },
+    { id: "m_plan", schema: "PlanArtifact" },
+  ],
+});
+const schemaDeleteCascade = controller.studioDeleteSchemaPatch({
+  schemas: [
+    { id: "ReviewArtifact", fields: [{ id: "f1", name: "verdict", type: "enum" }] },
+    { id: "PlanArtifact", fields: [{ id: "f2", name: "summary", type: "string" }] },
+  ],
+  members: [
+    { id: "m_review", schema: "ReviewArtifact" },
+    { id: "m_plan", schema: "PlanArtifact" },
+  ],
+  flow: {
+    name: "delete-schema-cascade",
+    steps: [
+      { id: "review_step", type: "member", role: "m_review" },
+      {
+        id: "route",
+        type: "branch",
+        branches: [{
+          id: "br_green",
+          cond: { stepId: "review_step", field: "verdict", op: "==", val: "green" },
+          condition: "steps.review_step.verdict == \"green\"",
+          steps: [],
+        }],
+        fallback: [],
+      },
+    ],
+  },
+  edges: [{
+    id: "e_review_done",
+    from: "review_inst",
+    to: "done",
+    kind: "cond",
+    label: "steps.review_inst.verdict == \"green\"",
+    cond: { var: "steps.review_inst.verdict", op: "==", val: "green" },
+  }],
+  instances: [
+    { id: "review_inst", memberId: "m_review", col: 0, row: 0 },
+    { id: "done", isTerminal: true, col: 1, row: 0 },
+  ],
+}, "ReviewArtifact");
+assert.deepEqual(schemaDeleteCascade.schemas, [
+  { id: "PlanArtifact", fields: [{ id: "f2", name: "summary", type: "string" }] },
+]);
+assert.deepEqual(schemaDeleteCascade.members, [
+  { id: "m_review", schema: "" },
+  { id: "m_plan", schema: "PlanArtifact" },
+]);
+assert.deepEqual(schemaDeleteCascade.flow.steps[1].branches[0].cond, {});
+assert.equal(schemaDeleteCascade.flow.steps[1].branches[0].condition, "");
+assert.deepEqual(schemaDeleteCascade.edges[0].cond, null);
+assert.equal(schemaDeleteCascade.edges[0].label, "");
+
+assert.deepEqual(controller.diagnosticsToRows({
+  ok: true,
+  display_rows: [{
+    kind: "ok",
+    glyph: "✓",
+    head: "server row",
+    sub: "MobKit source",
+    meta: "rkat mob validate",
+  }],
+  diagnostics: [{
+    severity: "error",
+    code: "client_fallback_must_not_win",
+    message: "This diagnostic should not be converted when API rows exist.",
+  }],
+}), [{
+  kind: "ok",
+  glyph: "✓",
+  head: "server row",
+  sub: "MobKit source",
+  meta: "rkat mob validate",
+}]);
+
+assert.deepEqual(controller.diagnosticsToRows(null), []);
+assert.deepEqual(controller.diagnosticsToRows({}), []);
+assert.deepEqual(controller.diagnosticsToRows({
+  ok: false,
+  diagnostics: [],
+  validation_source: "meerkat_mob::SpecValidator",
+}), []);
+
+assert.deepEqual(controller.deployResultToRows({
+  display_rows: [{
+    kind: "warn",
+    glyph: "△",
+    head: "server deploy row",
+    sub: "rkat mob deploy",
+    meta: "/tmp/example.mobpack",
+  }],
+  validation: { ok: false, diagnostics: [] },
+}), [{
+  kind: "warn",
+  glyph: "△",
+  head: "server deploy row",
+  sub: "rkat mob deploy",
+  meta: "/tmp/example.mobpack",
+}]);
+
+assert.deepEqual(controller.deployResultToRows({
+  command: "rkat mob deploy /tmp/example.mobpack prompt",
+  validation: { ok: true, diagnostics: [] },
+}), []);
+
+const validationOutcome = controller.validationOutcome({ mob_id: "validate_me" }, {
+  ok: true,
+  display_rows: [{ kind: "ok", glyph: "✓", head: "valid", sub: "", meta: "validate" }],
+});
+assert.equal(validationOutcome.stage, "valid");
+assert.equal(validationOutcome.validation.ok, true);
+assert.equal(validationOutcome.validationRows[0].head, "valid");
+
+const invalidOutcome = controller.validationOutcome({ mob_id: "validate_me" }, {
+  ok: false,
+  display_rows: [{ kind: "crit", glyph: "!", head: "invalid", sub: "", meta: "validate" }],
+});
+assert.equal(invalidOutcome.stage, "draft");
+assert.equal(invalidOutcome.validationRows[0].kind, "crit");
+
+const publishOutcome = controller.exportOutcome({ mob_id: "publish_me" }, {
+  validation: {
+    ok: true,
+    display_rows: [{ kind: "ok", glyph: "✓", head: "exported", sub: "", meta: "export" }],
+  },
+});
+assert.equal(publishOutcome.stage, "published");
+assert.equal(publishOutcome.validationRows[0].head, "exported");
+
+const rejectedPublishOutcome = controller.exportOutcome({ mob_id: "publish_me" }, {
+  validation: {
+    ok: false,
+    display_rows: [{ kind: "crit", glyph: "!", head: "rejected", sub: "", meta: "export" }],
+  },
+});
+assert.equal(rejectedPublishOutcome.stage, "draft");
+
+const deployPlanOutcome = controller.deployOutcome({ mob_id: "deploy_me" }, {
+  display_rows: [{ kind: "ok", glyph: "✓", head: "planned", sub: "", meta: "deploy" }],
+  validation: {
+    ok: true,
+  },
+}, { execute: false });
+assert.equal(deployPlanOutcome.stage, "valid");
+assert.equal(deployPlanOutcome.validationRows[0].head, "planned");
+
+assert.deepEqual(controller.deployPlanTraceState({ mob_id: "deploy_me" }, {
+  command: "rkat mob deploy /tmp/deploy.mobpack prompt",
+  pack_path: "/tmp/deploy.mobpack",
+  plan_trace: [
+    { node: "step_1", head: "MOBPACK · deploy_me", body: "ready" },
+    { node: "step_2", head: "VALIDATION · ACCEPTED", body: "ok" },
+  ],
+}), {
+  steps: [
+    { node: "step_1", head: "MOBPACK · deploy_me", body: "ready" },
+    { node: "step_2", head: "VALIDATION · ACCEPTED", body: "ok" },
+  ],
+  eyebrow: "DEPLOY PLAN",
+  title: "deploy_me",
+  subtitle: "rkat mob deploy /tmp/deploy.mobpack prompt",
+  packLabel: "/tmp/deploy.mobpack",
+  firstLabel: "first",
+  closeLabel: "×",
+  stepLabel: "step",
+  previousLabel: "‹",
+  nextLabel: "›",
+});
+assert.deepEqual(controller.deployPlanTraceState({ name: "fallback mob" }, {}), {
+  steps: [{
+    node: null,
+    head: "DEPLOY TRACE UNAVAILABLE",
+    body: "mobkit/mobpacks/deploy did not return plan_trace.",
+  }],
+  eyebrow: "DEPLOY PLAN",
+  title: "fallback mob",
+  subtitle: "",
+  packLabel: "",
+  firstLabel: "first",
+  closeLabel: "×",
+  stepLabel: "step",
+  previousLabel: "‹",
+  nextLabel: "›",
+});
+
+const failedRunOutcome = controller.deployOutcome({ mob_id: "deploy_me" }, {
+  success: false,
+  display_rows: [{ kind: "crit", glyph: "!", head: "run failed", sub: "", meta: "deploy" }],
+  validation: {
+    ok: true,
+  },
+}, { execute: true });
+assert.equal(failedRunOutcome.stage, "draft");
+assert.equal(failedRunOutcome.validation.ok, true);
+
+const deployPlanError = controller.deployErrorOutcome(new Error("planner offline"), { execute: false });
+assert.equal(deployPlanError.stage, "draft");
+assert.deepEqual(deployPlanError.validationRows[0], {
+  kind: "crit",
+  glyph: "!",
+  head: "Deploy plan failed",
+  sub: "planner offline",
+  meta: "mobkit/mobpacks/deploy",
+});
+
+const deployRunError = controller.deployErrorOutcome(new Error("runner offline"), { execute: true });
+assert.equal(deployRunError.validationRows[0].head, "Deploy failed");
+assert.equal(deployRunError.validationRows[0].meta, "mobkit/mobpacks/deploy");
+
+assert.deepEqual(controller.validationSheetState([
+  { kind: "ok", head: "mob" },
+  { kind: "warn", head: "signature" },
+  { kind: "crit", head: "missing profile" },
+  { kind: "", head: "unclassified" },
+]), {
+  rows: [
+    { kind: "ok", head: "mob" },
+    { kind: "warn", head: "signature" },
+    { kind: "crit", head: "missing profile" },
+    { kind: "", head: "unclassified" },
+  ],
+  counts: { ok: 1, warn: 2, crit: 1 },
+  eyebrow: "VALIDATE · MobKit",
+  title: "1 passed · 2 warnings · 1 blocking",
+  publishLabel: "PUBLISH",
+  deployPlanLabel: "DEPLOY PLAN",
+  deployLabel: "DEPLOY",
+  closeLabel: "×",
+  actionsDisabled: true,
+});
+assert.equal(controller.validationSheetState([{ kind: "ok" }, { kind: "warn" }]).actionsDisabled, false);
+assert.equal(controller.validationSheetState([{ kind: "ok" }], { stage: "draft" }).actionsDisabled, true);
+assert.equal(controller.validationSheetState([{ kind: "ok" }], { stage: "valid" }).actionsDisabled, false);
+assert.equal(controller.validationSheetState([{ kind: "crit" }], { stage: "valid" }).actionsDisabled, true);
+
+assert.deepEqual(controller.sourceErrorOutcome(new Error("missing toml")).validationRows[0], {
+  kind: "crit",
+  glyph: "!",
+  head: "Source render failed",
+  sub: "missing toml",
+  meta: "mobkit/mobpacks/export",
+});
+assert.equal(controller.validationErrorOutcome(new Error("rpc down")).validationRows[0].head, "MobKit API unavailable");
+assert.equal(controller.validationErrorOutcome(new Error("rpc down")).validationRows[0].meta, "/flow-editor/rpc");
+assert.equal(controller.exportErrorOutcome(new Error("pack failed")).validationRows[0].head, "Export failed");
+assert.equal(controller.exportErrorOutcome(new Error("pack failed")).validationRows[0].meta, "/flow-editor/rpc");
+assert.deepEqual(controller.importErrorOutcome(new Error("bad archive"), { filename: "bad.mobpack" }).validationRows[0], {
+  kind: "crit",
+  glyph: "!",
+  head: "Import failed",
+  sub: "bad archive",
+  meta: "bad.mobpack",
+});
+
+const sourceProjection = controller.sourceDocumentFromExport({
+  name: "Source Proof",
+  mob_id: "source_proof",
+  mob_toml: "[stale]",
+}, {
+  mob_toml: "[mob]\nid = \"source_proof\"\n",
+  filename: "source-proof.mobpack",
+  media_type: "application/vnd.mobkit.mobpack",
+  validation: {
+    ok: true,
+    display_rows: [{
+      kind: "ok",
+      glyph: "✓",
+      head: "exported",
+      sub: "mob.toml",
+      meta: "mobkit/mobpacks/export",
+    }],
+  },
+});
+assert.equal(sourceProjection.document.name, "Source Proof");
+assert.equal(sourceProjection.document.mob_toml, "[mob]\nid = \"source_proof\"\n");
+assert.equal(sourceProjection.sourceDocument.filename, "source-proof.mobpack");
+assert.equal(sourceProjection.sourceDocument.media_type, "application/vnd.mobkit.mobpack");
+assert.equal(sourceProjection.sourceDocument.source, "mobkit/mobpacks/export");
+assert.equal(sourceProjection.sourceDocument.validation.ok, true);
+assert.equal(sourceProjection.validationRows[0].head, "exported");
+assert.equal(sourceProjection.stage, "valid");
+assert.deepEqual(controller.sourceEditorState(sourceProjection.sourceDocument), {
+  source: "[mob]\nid = \"source_proof\"\n",
+  drawerEyebrow: "SOURCE · mob.toml",
+  inlineTitle: "mob.toml",
+  sourceLabel: "mobkit/mobpacks/export · source-proof.mobpack · application/vnd.mobkit.mobpack",
+  validationSource: "",
+  bodyClass: "source-drawer__body",
+  showLoading: false,
+  loadingText: "rendering mob.toml from mobkit/mobpacks/export...",
+  copyLabel: "copy",
+  closeLabel: "×",
+  copyDisabled: false,
+});
+assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true }), {
+  source: "",
+  drawerEyebrow: "SOURCE · mob.toml",
+  inlineTitle: "mob.toml",
+  sourceLabel: "",
+  validationSource: "",
+  bodyClass: "bld-toml__body",
+  showLoading: true,
+  loadingText: "rendering mob.toml from mobkit/mobpacks/export...",
+  copyLabel: "copy",
+  closeLabel: "×",
+  copyDisabled: true,
+});
+assert.throws(
+  () => controller.sourceDocumentFromExport({ name: "No TOML" }, { mob_toml: "" }),
+  /mobkit\/mobpacks\/export did not return mob_toml/,
+);
+
+assert.deepEqual(controller.importParamsFromDecodedFile({
+  filename: "mob.toml",
+  mediaType: "text/toml",
+  text: "[mob]\nid = \"docs\"\n",
+}), {
+  source_name: "mob.toml",
+  source_media_type: "text/toml",
+  mob_toml: "[mob]\nid = \"docs\"\n",
+});
+
+assert.deepEqual(controller.importParamsFromDecodedFile({
+  filename: "editor.json",
+  mediaType: "application/json",
+  text: "{\"document\":{\"mob_id\":\"docs\"},\"source_name\":\"stale.json\"}",
+}), {
+  source_name: "editor.json",
+  source_media_type: "application/json",
+  document: { mob_id: "docs" },
+});
+
+assert.deepEqual(controller.importParamsFromDecodedFile({
+  filename: "editor.json",
+  mediaType: "application/json",
+  kind: "json",
+  parsedJson: {
+    source_name: "stale.json",
+    source_media_type: "stale/type",
+    document: { mob_id: "docs" },
+  },
+}), {
+  source_name: "editor.json",
+  source_media_type: "application/json",
+  document: { mob_id: "docs" },
+});
+
+assert.deepEqual(controller.importParamsFromDecodedFile({
+  filename: "array.json",
+  mediaType: "application/json",
+  kind: "json",
+  parsedJson: [{ mob_id: "invalid-array" }],
+}), {
+  source_name: "array.json",
+  source_media_type: "application/json",
+  document: [{ mob_id: "invalid-array" }],
+});
+
+assert.deepEqual(controller.importParamsFromDecodedFile({
+  filename: "docs.mobpack",
+  mediaType: "application/vnd.mobkit.mobpack",
+  kind: "binary",
+  contentBase64: "YWJj",
+}), {
+  source_name: "docs.mobpack",
+  source_media_type: "application/vnd.mobkit.mobpack",
+  content_base64: "YWJj",
+});
+
+assert.throws(
+  () => controller.importParamsFromDecodedFile({
+    filename: "broken.json",
+    mediaType: "application/json",
+    text: "{nope",
+  }),
+  /broken\.json is not valid JSON/,
+);
+
+assert.deepEqual(controller.mobDefaultsFromSchema({
+  mob_definition: {
+    mob_settings: {
+      defaults: {
+        orchestrator: "planner",
+        autoWireOrchestrator: true,
+        roleWiring: [{ a: "planner", b: "coder" }],
+        backendDefault: "external",
+        externalAddressBase: "http://127.0.0.1:9000",
+        advanced: {
+          topology: { kind: "mesh" },
+          supervisor: { profile: "planner" },
+          limits: { max_members: 4 },
+          spawnPolicy: { mode: "manual" },
+          eventRouter: { mode: "direct" },
+        },
+      },
+    },
+  },
+}), {
+  orchestrator: "planner",
+  autoWireOrchestrator: true,
+  roleWiring: [{ a: "planner", b: "coder" }],
+  backendDefault: "external",
+  externalAddressBase: "http://127.0.0.1:9000",
+  advanced: {
+    topology: { kind: "mesh" },
+    supervisor: { profile: "planner" },
+    limits: { max_members: 4 },
+    spawnPolicy: { mode: "manual" },
+    eventRouter: { mode: "direct" },
+  },
+});
+
+const previousProfileMembers = [
+  { id: "m_planner", name: "Planner", role: "planner" },
+  { id: "m_reviewer", name: "Reviewer", role: "reviewer" },
+];
+const renamedProfileMembers = [
+  { id: "m_planner", name: "Planner", role: "planner" },
+  { id: "m_reviewer", name: "Lead Reviewer", role: "reviewer" },
+];
+const renamedMobSettings = controller.reconcileMobSettingsProfiles({
+  orchestrator: "reviewer",
+  roleWiring: [{ a: "planner", b: "reviewer" }],
+  backendDefault: "session",
+}, previousProfileMembers, renamedProfileMembers);
+assert.equal(renamedMobSettings.orchestrator, "lead_reviewer");
+assert.deepEqual(renamedMobSettings.roleWiring, [{ a: "planner", b: "lead_reviewer" }]);
+
+const deletedProfileMobSettings = controller.reconcileMobSettingsProfiles({
+  orchestrator: "lead_reviewer",
+  roleWiring: [{ a: "planner", b: "lead_reviewer" }],
+  backendDefault: "session",
+}, renamedProfileMembers, [{ id: "m_planner", name: "Planner", role: "planner" }]);
+assert.equal(deletedProfileMobSettings.orchestrator, "");
+assert.deepEqual(deletedProfileMobSettings.roleWiring, []);
+
+const graphMembers = [
+  { id: "m_left", name: "Left", role: "left", model: "gpt-5.5", tools: ["builtins"], skills: [] },
+  { id: "m_right", name: "Right", role: "right", model: "gpt-5.5", tools: ["builtins"], skills: [] },
+  { id: "m_review", name: "Review", role: "review", model: "gpt-5.5", tools: ["builtins"], skills: [], schema: "ReviewArtifact" },
+];
+
+const branchFlow = controller.graphToFlow({
+  previousFlow: {
+    name: "main",
+    steps: [{
+      id: "input_1",
+      type: "input",
+      task: "Route.",
+      inputParams: [{ id: "p1", name: "kind", type: "string", required: true }],
+    }],
+  },
+  members: graphMembers,
+  instances: [
+    { id: "g_branch_route", isGate: true, gateKind: "branch", col: 0, row: 0 },
+    { id: "left", memberId: "m_left", col: 1, row: 0 },
+    { id: "right", memberId: "m_right", col: 1, row: 1 },
+    { id: "j_branch_route", isGate: true, gateKind: "join", col: 2, row: 0 },
+  ],
+  edges: [
+    { id: "e1", from: "g_branch_route", to: "left", kind: "cond", label: "docs", cond: { source: "params.kind", op: "==", value: "docs" } },
+    { id: "e2", from: "g_branch_route", to: "right", kind: "cond", label: "code", cond: { namespace: "params", stepId: "params", field: "kind", op: "==", val: "code" } },
+    { id: "e3", from: "left", to: "j_branch_route", kind: "next", label: "" },
+    { id: "e4", from: "right", to: "j_branch_route", kind: "next", label: "" },
+  ],
+});
+
+const branchStep = branchFlow.steps[1];
+assert.equal(branchStep.type, "branch");
+assert.deepEqual(branchStep.branches.map((branch) => branch.cond), [
+  { namespace: "params", stepId: "params", field: "kind", op: "==", val: "docs" },
+  { namespace: "params", stepId: "params", field: "kind", op: "==", val: "code" },
+]);
+
+const branchDocument = controller.buildDocument({
+  flow: branchFlow,
+  studio: {
+    members: graphMembers,
+    schemas: [],
+    instances: [
+      { id: "g_branch_route", isGate: true, gateKind: "branch", col: 0, row: 0 },
+      { id: "left", memberId: "m_left", col: 1, row: 0 },
+      { id: "right", memberId: "m_right", col: 1, row: 1 },
+      { id: "j_branch_route", isGate: true, gateKind: "join", col: 2, row: 0 },
+    ],
+    edges: [
+      { id: "e1", from: "g_branch_route", to: "left", kind: "cond", label: "docs", cond: { source: "params.kind", op: "==", value: "docs" } },
+      { id: "e2", from: "g_branch_route", to: "right", kind: "cond", label: "code", cond: { namespace: "params", stepId: "params", field: "kind", op: "==", val: "code" } },
+      { id: "e3", from: "left", to: "j_branch_route", kind: "next", label: "" },
+      { id: "e4", from: "right", to: "j_branch_route", kind: "next", label: "" },
+    ],
+    frames: [],
+    skillRealms: [],
+  },
+  currentFlow: { name: "branch-projection-proof" },
+  deploySettings: testDeploySettings(),
+});
+
+assert.deepEqual(branchDocument.edges.slice(0, 2).map((edge) => edge.cond), [
+  { var: "params.kind", op: "==", val: "docs" },
+  { var: "params.kind", op: "==", val: "code" },
+]);
+assert(branchDocument.frames.some((frame) => frame.id === "frame_branch_route" && frame.kind === "Branch"));
+
+const basicConditionOptionMembers = [
+  { id: "m_plan", name: "Planner", schema: "PlanArtifact" },
+  { id: "m_review", name: "Reviewer", schema: "ReviewArtifact" },
+  { id: "m_future", name: "Future", schema: "FutureArtifact" },
+];
+const basicConditionOptionFlow = {
+  name: "basic-condition-options-proof",
+  steps: [
+    {
+      id: "input_1",
+      type: "input",
+      task: "Route.",
+      inputParams: [{ id: "p1", name: "route", type: "enum", enumValues: ["docs", "code"], required: true }],
+    },
+    { id: "plan_step", type: "member", role: "m_plan" },
+    {
+      id: "branch_1",
+      type: "branch",
+      branches: [{
+        id: "br_a",
+        label: "A",
+        steps: [
+          { id: "review_step", type: "member", role: "m_review" },
+          {
+            id: "nested_branch",
+            type: "branch",
+            branches: [{ id: "nested_a", label: "Nested A", steps: [] }],
+            fallback: [],
+          },
+        ],
+      }],
+      fallback: [{ id: "future_step", type: "member", role: "m_future" }],
+    },
+  ],
+};
+assert.deepEqual(controller.basicConditionOptions(
+  basicConditionOptionFlow,
+  "branch_1",
+  basicConditionOptionMembers,
+).map((option) => ({
+  stepId: option.stepId,
+  namespace: option.namespace,
+  label: option.label,
+  member: option.member?.id || "",
+  fields: (option.fields || []).map((field) => field.name),
+})), [
+  { stepId: "params", namespace: "params", label: "Input params", member: "", fields: ["route"] },
+  { stepId: "plan_step", namespace: "steps", label: "Planner", member: "m_plan", fields: [] },
+]);
+assert.deepEqual(controller.basicConditionOptions(
+  basicConditionOptionFlow,
+  "nested_branch",
+  basicConditionOptionMembers,
+).map((option) => ({
+  stepId: option.stepId,
+  namespace: option.namespace,
+  member: option.member?.id || "",
+})), [
+  { stepId: "params", namespace: "params", member: "" },
+  { stepId: "plan_step", namespace: "steps", member: "m_plan" },
+  { stepId: "review_step", namespace: "steps", member: "m_review" },
+]);
+assert.deepEqual(controller.basicConditionOptions(
+  basicConditionOptionFlow,
+  "future_step",
+  basicConditionOptionMembers,
+).map((option) => option.member?.id).filter(Boolean), ["m_plan"]);
+
+const paramReferenceFlow = {
+  name: "param-reference-proof",
+  steps: [
+    {
+      id: "input_1",
+      type: "input",
+      task: "Route.",
+      inputParams: [{ id: "p1", name: "kind", type: "string", required: true }],
+    },
+    {
+      id: "branch_1",
+      type: "branch",
+      branches: [
+        {
+          id: "br_docs",
+          label: "Docs",
+          cond: { namespace: "params", stepId: "params", field: "kind", op: "==", val: "docs" },
+          condition: "params.kind == \"docs\"",
+          steps: [],
+        },
+        {
+          id: "br_code",
+          label: "Code",
+          condition: "params.kind == \"code\"",
+          steps: [],
+        },
+      ],
+      fallback: [],
+    },
+  ],
+};
+const paramReferenceEdges = [
+  { id: "e_param_1", from: "g_branch", to: "left", kind: "cond", label: "params.kind == \"docs\"", cond: { var: "params.kind", op: "==", val: "docs" } },
+  { id: "e_param_2", from: "g_branch", to: "right", kind: "cond", label: "code", cond: { namespace: "params", stepId: "params", field: "kind", op: "==", val: "code" } },
+];
+const renamedParamReferences = controller.reconcileInputParamReferences({
+  flow: paramReferenceFlow,
+  edges: paramReferenceEdges,
+  oldName: "kind",
+  newName: "category",
+});
+assert.equal(renamedParamReferences.flow.steps[1].branches[0].cond.field, "category");
+assert.equal(renamedParamReferences.flow.steps[1].branches[0].condition, "params.category == \"docs\"");
+assert.equal(renamedParamReferences.flow.steps[1].branches[1].condition, "params.category == \"code\"");
+assert.deepEqual(renamedParamReferences.edges.map(edge => edge.cond), [
+  { var: "params.category", op: "==", val: "docs" },
+  { var: "params.category", op: "==", val: "code" },
+]);
+assert.equal(renamedParamReferences.edges[0].label, "params.category == \"docs\"");
+assert.equal(renamedParamReferences.edges[1].label, "code");
+
+const deletedParamReferences = controller.reconcileInputParamReferences({
+  flow: renamedParamReferences.flow,
+  edges: renamedParamReferences.edges,
+  oldName: "category",
+  newName: "",
+});
+assert.deepEqual(deletedParamReferences.flow.steps[1].branches[0].cond, {});
+assert.equal(deletedParamReferences.flow.steps[1].branches[0].condition, "");
+assert.equal(deletedParamReferences.flow.steps[1].branches[1].condition, "");
+assert.deepEqual(deletedParamReferences.edges.map(edge => edge.cond), [null, null]);
+assert.deepEqual(deletedParamReferences.edges.map(edge => edge.label), ["", ""]);
+
+const generatedConditionEdge = {
+  id: "e_generated_condition",
+  from: "review",
+  to: "finish",
+  kind: "cond",
+  label: "",
+  cond: { var: "steps.review.verdict", op: "==", val: "green" },
+};
+const generatedConditionPatch = controller.graphEdgeConditionPatch(generatedConditionEdge, { val: "red" });
+assert.deepEqual(generatedConditionPatch.cond, { var: "steps.review.verdict", op: "==", val: "red" });
+assert.equal(generatedConditionPatch.label, "steps.review.verdict == \"red\"");
+
+const missingOperatorConditionPatch = controller.graphEdgeConditionPatch({
+  id: "e_missing_operator",
+  from: "review",
+  to: "finish",
+  kind: "cond",
+  label: "",
+  cond: { var: "steps.review.verdict", val: "green" },
+}, { val: "red" });
+assert.deepEqual(missingOperatorConditionPatch.cond, { var: "steps.review.verdict", op: "", val: "red" });
+assert.equal(missingOperatorConditionPatch.label, "");
+
+const schemaDefaultConditionPatch = controller.graphEdgeConditionPatch({
+  id: "e_schema_default_operator",
+  from: "review",
+  to: "finish",
+  kind: "cond",
+  label: "",
+  cond: { var: "steps.review.verdict", val: "green" },
+}, { val: "red" }, { defaultOperator: "==" });
+assert.deepEqual(schemaDefaultConditionPatch.cond, { var: "steps.review.verdict", op: "==", val: "red" });
+assert.equal(schemaDefaultConditionPatch.label, "steps.review.verdict == \"red\"");
+
+const customConditionEdge = {
+  ...generatedConditionEdge,
+  label: "needs reviewer",
+};
+const customConditionPatch = controller.graphEdgeConditionPatch(customConditionEdge, { op: ">" });
+assert.deepEqual(customConditionPatch.cond, { var: "steps.review.verdict", op: ">", val: "green" });
+assert.equal(customConditionPatch.label, "needs reviewer");
+
+const graphConditionOperatorContract = {
+  mob_definition: {
+    defaults: { condition_operator: "==" },
+    condition_operators: ["==", "!="],
+  },
+};
+const namedOperatorConditionPatch = controller.graphEdgeConditionOperatorPatch(generatedConditionEdge, "!=", {
+  contract: graphConditionOperatorContract,
+});
+assert.deepEqual(namedOperatorConditionPatch.cond, { var: "steps.review.verdict", op: "!=", val: "green" });
+assert.equal(namedOperatorConditionPatch.label, 'steps.review.verdict != "green"');
+assert.deepEqual(controller.graphEdgeConditionOperatorPatch(generatedConditionEdge, "contains_everything", {
+  contract: graphConditionOperatorContract,
+}), {});
+
+const namedValueConditionPatch = controller.graphEdgeConditionValuePatch(generatedConditionEdge, "amber");
+assert.deepEqual(namedValueConditionPatch.cond, { var: "steps.review.verdict", op: "==", val: "amber" });
+assert.equal(namedValueConditionPatch.label, 'steps.review.verdict == "amber"');
+
+const retargetedConditionPatch = controller.graphEdgeConditionPatch(customConditionEdge, {
+  var: "params.route",
+  op: "==",
+  val: "docs",
+}, { forceLabel: true });
+assert.deepEqual(retargetedConditionPatch.cond, { var: "params.route", op: "==", val: "docs" });
+assert.equal(retargetedConditionPatch.label, "params.route == \"docs\"");
+assert.deepEqual(controller.parseGraphConditionVar("steps.review.verdict"), {
+  instanceId: "review",
+  field: "verdict",
+  namespace: "steps",
+});
+assert.deepEqual(controller.parseGraphConditionVar("params.route"), {
+  instanceId: "params",
+  field: "route",
+  namespace: "params",
+});
+assert.deepEqual(controller.graphConditionRefForEdge({
+  cond: { source: "params.route", op: "==", value: "docs" },
+}), { instanceId: "params", field: "route", namespace: "params" });
+const graphConditionOptionRows = controller.graphConditionOptions({
+  instances: [
+    { id: "planner", memberId: "m_planner", col: 0, row: 0 },
+    { id: "review", memberId: "m_reviewer", col: 1, row: 0 },
+    { id: "target", memberId: "m_coder", col: 2, row: 0 },
+    { id: "future", memberId: "m_reviewer", col: 4, row: 0 },
+    { id: "g_branch", isGate: true, col: 1, row: 1 },
+  ],
+  members: [
+    { id: "m_planner", name: "Planner", schema: "PlanArtifact" },
+    { id: "m_reviewer", name: "Reviewer", schema: "ReviewArtifact" },
+    { id: "m_coder", name: "Coder", schema: "" },
+  ],
+  schemas: [
+    { id: "PlanArtifact", fields: [{ id: "f_plan", name: "plan", type: "string" }] },
+    { id: "ReviewArtifact", fields: [{ id: "f_verdict", name: "verdict", type: "enum", enumValues: ["green", "red"] }] },
+  ],
+  edge: { from: "review", to: "target", cond: { var: "params.route", op: "==", val: "docs" } },
+  flow: { steps: [{ type: "input", fields: "route: enum(code,docs)" }] },
+});
+assert.deepEqual(graphConditionOptionRows.map((option) => ({
+  id: option.inst.id,
+  member: option.member.name,
+  fields: option.fields.map((field) => field.name),
+  isParams: !!option.isParams,
+})), [
+  { id: "params", member: "Input params", fields: ["route"], isParams: true },
+  { id: "planner", member: "Planner", fields: ["plan"], isParams: false },
+  { id: "review", member: "Reviewer", fields: ["verdict"], isParams: false },
+]);
+assert.deepEqual(controller.graphFirstConditionPatch(
+  { cond: { var: "steps.review.verdict", op: "==", val: "green" } },
+  graphConditionOptionRows,
+  { defaultOperator: "==" },
+), { var: "steps.review.verdict", op: "==", val: "green" });
+assert.deepEqual(controller.graphFirstConditionPatch(
+  { cond: null },
+  graphConditionOptionRows,
+  { defaultOperator: "==" },
+), { var: "params.route", op: "==", val: "" });
+assert.deepEqual(controller.graphEdgeConditionOwnerPatch(
+  { kind: "next", label: "", cond: null },
+  graphConditionOptionRows,
+  "review",
+  { defaultOperator: "==", forceLabel: true, includeKind: true },
+), {
+  kind: "cond",
+  cond: { var: "steps.review.verdict", op: "==", val: "" },
+  label: "steps.review.verdict == \"\"",
+});
+assert.deepEqual(controller.graphEdgeConditionOwnerPatch(
+  { kind: "cond", label: "params.route == \"docs\"", cond: { var: "params.route", op: "==", val: "docs" } },
+  graphConditionOptionRows,
+  "planner",
+  { defaultOperator: "==", forceLabel: true },
+), {
+  cond: { var: "steps.planner.plan", op: "==", val: "docs" },
+  label: "steps.planner.plan == \"docs\"",
+});
+assert.deepEqual(controller.graphEdgeConditionOwnerPatch(
+  { kind: "cond", label: "params.route == \"docs\"", cond: { var: "params.route", op: "==", val: "docs" } },
+  graphConditionOptionRows,
+  "ghost_owner",
+  { defaultOperator: "==", forceLabel: true },
+), {});
+assert.deepEqual(controller.graphEdgeConditionFieldPatch(
+  { kind: "cond", label: "steps.review.verdict == \"green\"", cond: { var: "steps.review.verdict", op: "==", val: "green" } },
+  graphConditionOptionRows,
+  "verdict",
+  { defaultOperator: "==", forceLabel: true },
+), {
+  cond: { var: "steps.review.verdict", op: "==", val: "green" },
+  label: "steps.review.verdict == \"green\"",
+});
+assert.deepEqual(controller.graphEdgeConditionFieldPatch(
+  { kind: "cond", label: "steps.review.verdict == \"green\"", cond: { var: "steps.review.verdict", op: "==", val: "green" } },
+  graphConditionOptionRows,
+  "ghost_field",
+  { defaultOperator: "==", forceLabel: true },
+), {});
+assert.deepEqual(controller.graphEdgeConditionFieldPatch(
+  { kind: "cond", label: "params.route == \"docs\"", cond: { var: "params.route", op: "==", val: "docs" } },
+  graphConditionOptionRows,
+  "",
+  { defaultOperator: "==", forceLabel: true },
+), {
+  cond: { var: "", op: "==", val: "docs" },
+  label: "",
+});
+assert.deepEqual(controller.graphConditionOptions({
+  instances: [{ id: "review", memberId: "m_reviewer", col: 0, row: 0 }],
+  members: [{ id: "m_reviewer", name: "Reviewer", schema: "ReviewArtifact" }],
+  schemas: [{ id: "ReviewArtifact", fields: [{ id: "f_verdict", name: "verdict", type: "enum" }] }],
+  edge: { from: "review", to: "review", cond: { var: "params.missing", op: "==", val: "x" } },
+  flow: { steps: [{ type: "input", inputParams: [] }] },
+}).map((option) => ({ id: option.inst.id, fields: option.fields.map((field) => field.name), isParams: !!option.isParams })), [
+  { id: "params", fields: ["missing"], isParams: true },
+]);
+
+const generatedConditionKindPatch = controller.graphEdgeKindPatch({
+  ...generatedConditionEdge,
+  label: "steps.review.verdict == \"green\"",
+}, "next");
+assert.deepEqual(generatedConditionKindPatch, { kind: "next", cond: null, label: "" });
+
+const customConditionKindPatch = controller.graphEdgeKindPatch(customConditionEdge, "fanout");
+assert.deepEqual(customConditionKindPatch, { kind: "fanout", cond: null, label: "needs reviewer" });
+
+const conditionKindPatch = controller.graphEdgeKindPatch({
+  id: "e_next",
+  from: "input",
+  to: "writer",
+  kind: "next",
+  label: "",
+  cond: null,
+}, "cond", {
+  defaultOperator: "==",
+  conditionPatch: { var: "params.route", val: "docs" },
+  forceLabel: true,
+});
+assert.deepEqual(conditionKindPatch, {
+  kind: "cond",
+  cond: { var: "params.route", op: "==", val: "docs" },
+  label: "params.route == \"docs\"",
+});
+assert.deepEqual(controller.graphEdgeFallbackPatch({
+  id: "e_cond",
+  kind: "cond",
+  label: "params.route == \"docs\"",
+  cond: { var: "params.route", op: "==", val: "docs" },
+}, {
+  mob_definition: {
+    defaults: { graph_edge_kind: "next" },
+    graph_edge_kinds: ["next", "cond"],
+  },
+}), {
+  kind: "next",
+  label: "fallback",
+  cond: null,
+});
+assert.deepEqual(controller.graphEdgeFallbackPatch({
+  id: "e_cond",
+  kind: "when",
+  label: "params.route == \"docs\"",
+  cond: { var: "params.route", op: "==", val: "docs" },
+}, {
+  mob_definition: {
+    defaults: { graph_edge_kind: "straight" },
+    graph_edge_kinds: ["straight", "when"],
+  },
+}), {
+  kind: "straight",
+  label: "fallback",
+  cond: null,
+});
+assert.equal(controller.graphEdgeFallbackPatch({ kind: "cond" }, {
+  mob_definition: { graph_edge_kinds: ["next", "cond"] },
+}), null);
+
+const schemaAvailabilityFlow = {
+  name: "schema-availability-proof",
+  steps: [
+    { id: "input_1", type: "input", task: "Review.", inputParams: [] },
+    { id: "review_step", type: "member", role: "m_review", schema: "ReviewArtifact" },
+    {
+      id: "branch_on_review",
+      type: "branch",
+      branches: [{
+        id: "br_green",
+        label: "Green",
+        cond: { namespace: "steps", stepId: "review_step", field: "verdict", op: "==", val: "green" },
+        condition: "steps.review_step.verdict == \"green\"",
+        steps: [],
+      }],
+      fallback: [],
+    },
+  ],
+};
+const schemaAvailabilityEdges = [
+  { id: "e_schema_1", from: "review_inst", to: "next", kind: "cond", label: "steps.review_inst.verdict == \"green\"", cond: { var: "steps.review_inst.verdict", op: "==", val: "green" } },
+];
+const schemaAvailabilityMembers = [
+  { id: "m_review", name: "Review", role: "review", schema: "ReviewArtifact" },
+];
+const schemaAvailabilityInstances = [
+  { id: "review_inst", memberId: "m_review", col: 0, row: 0 },
+];
+const availableConditions = controller.reconcileConditionFieldAvailability({
+  flow: schemaAvailabilityFlow,
+  edges: schemaAvailabilityEdges,
+  members: schemaAvailabilityMembers,
+  instances: schemaAvailabilityInstances,
+  schemas: [{ id: "ReviewArtifact", fields: [{ id: "f1", name: "verdict", type: "enum" }] }],
+});
+assert.equal(availableConditions.flow, schemaAvailabilityFlow);
+assert.equal(availableConditions.edges, schemaAvailabilityEdges);
+
+const unavailableConditions = controller.reconcileConditionFieldAvailability({
+  flow: schemaAvailabilityFlow,
+  edges: schemaAvailabilityEdges,
+  members: schemaAvailabilityMembers,
+  instances: schemaAvailabilityInstances,
+  schemas: [{ id: "ReviewArtifact", fields: [{ id: "f2", name: "summary", type: "string" }] }],
+});
+assert.deepEqual(unavailableConditions.flow.steps[2].branches[0].cond, {});
+assert.equal(unavailableConditions.flow.steps[2].branches[0].condition, "");
+assert.deepEqual(unavailableConditions.edges[0].cond, null);
+assert.equal(unavailableConditions.edges[0].label, "");
+
+const branchDocumentWithStaleFrame = controller.buildDocument({
+  flow: branchFlow,
+  studio: {
+    members: graphMembers,
+    schemas: [],
+    instances: [
+      { id: "g_branch_route", isGate: true, gateKind: "fork", dispatch: "fan_out", col: 7, row: 3 },
+      { id: "left", memberId: "m_left", col: 1, row: 0 },
+      { id: "right", memberId: "m_right", col: 1, row: 1 },
+      { id: "j_branch_route", isGate: true, gateKind: "join", col: 2, row: 0 },
+      { id: "g_parallel_deleted", isGate: true, gateKind: "fork", col: 4, row: 4 },
+    ],
+    edges: [],
+    frames: [
+      { id: "frame_branch_route", kind: "Parallel", colStart: 9, colEnd: 12, label: "custom layout frame" },
+      { id: "frame_deleted_parallel", kind: "Parallel", colStart: 4, colEnd: 6, label: "stale" },
+    ],
+    skillRealms: [],
+  },
+  currentFlow: { name: "branch-frame-filter-proof" },
+  deploySettings: testDeploySettings(),
+});
+
+assert.deepEqual(branchDocumentWithStaleFrame.frames.map((frame) => frame.id), ["frame_branch_route"]);
+assert.equal(branchDocumentWithStaleFrame.frames[0].kind, "Branch");
+assert.equal(branchDocumentWithStaleFrame.frames[0].label, "BRANCH · 2 paths");
+assert.equal(branchDocumentWithStaleFrame.frames[0].colStart, 9);
+assert.deepEqual(branchDocumentWithStaleFrame.instances.map((instance) => instance.id), ["g_branch_route", "left", "right", "j_branch_route"]);
+const exportedBranchGate = branchDocumentWithStaleFrame.instances.find((instance) => instance.id === "g_branch_route");
+assert.equal(exportedBranchGate.gateKind, "branch");
+assert.equal(exportedBranchGate.col, 7);
+assert.equal(exportedBranchGate.row, 3);
+assert.deepEqual(
+  branchDocumentWithStaleFrame.edges.map((edge) => [edge.from, edge.to, edge.kind]),
+  [
+    ["g_branch_route", "left", "cond"],
+    ["g_branch_route", "right", "cond"],
+    ["left", "j_branch_route", "next"],
+    ["right", "j_branch_route", "next"],
+  ],
+);
+
+const parallelFlow = controller.graphToFlow({
+  previousFlow,
+  members: graphMembers,
+  instances: [
+    { id: "g_parallel_review", isGate: true, gateKind: "fork", dispatch: "fan_out", dependsMode: "any", col: 0, row: 0 },
+    { id: "left", memberId: "m_left", col: 1, row: 0 },
+    { id: "right", memberId: "m_right", col: 1, row: 1 },
+    { id: "j_parallel_review", isGate: true, gateKind: "join", collection: "quorum", quorum: { mode: "NofM", n: 1, m: 2 }, col: 2, row: 0 },
+  ],
+  edges: [
+    { id: "e1", from: "g_parallel_review", to: "left", kind: "fanout", label: "" },
+    { id: "e2", from: "g_parallel_review", to: "right", kind: "fanout", label: "" },
+    { id: "e3", from: "left", to: "j_parallel_review", kind: "next", label: "" },
+    { id: "e4", from: "right", to: "j_parallel_review", kind: "next", label: "" },
+  ],
+});
+
+const parallelStep = parallelFlow.steps[1];
+assert.equal(parallelStep.type, "parallel");
+assert.equal(parallelStep.dispatch, "fan_out");
+assert.equal(parallelStep.collection, "quorum");
+assert.equal(parallelStep.dependsMode, "any");
+assert.equal(parallelStep.quorum, 1);
+assert.deepEqual(parallelStep.branches.map((branch) => branch.steps[0].role), ["m_left", "m_right"]);
+
+const incompleteParallelFlow = controller.graphToFlow({
+  previousFlow,
+  members: graphMembers,
+  instances: [
+    { id: "g_parallel_review", isGate: true, gateKind: "fork", col: 0, row: 0 },
+    { id: "left", memberId: "m_left", col: 1, row: 0 },
+    { id: "right", memberId: "m_right", col: 1, row: 1 },
+    { id: "j_parallel_review", isGate: true, gateKind: "join", col: 2, row: 0 },
+  ],
+  edges: [
+    { id: "e1", from: "g_parallel_review", to: "left", kind: "fanout", label: "" },
+    { id: "e2", from: "g_parallel_review", to: "right", kind: "fanout", label: "" },
+    { id: "e3", from: "left", to: "j_parallel_review", kind: "next", label: "" },
+    { id: "e4", from: "right", to: "j_parallel_review", kind: "next", label: "" },
+  ],
+});
+
+assert.equal(incompleteParallelFlow.steps[1].type, "parallel");
+assert.equal(incompleteParallelFlow.steps[1].dispatch, "");
+assert.equal(incompleteParallelFlow.steps[1].collection, "");
+assert(!("dependsMode" in incompleteParallelFlow.steps[1]));
+
+const incompleteParallelProjection = controller.graphProjectionForFlow(incompleteParallelFlow, graphMembers);
+const incompleteParallelFork = incompleteParallelProjection.instances.find((instance) => instance.id === "g_parallel_review");
+const incompleteParallelJoin = incompleteParallelProjection.instances.find((instance) => instance.id === "j_parallel_review");
+assert.equal(incompleteParallelFork.dispatch, "");
+assert.equal(incompleteParallelFork.label, "");
+assert.equal(incompleteParallelJoin.collection, "");
+assert.equal(incompleteParallelJoin.label, "join · missing collection");
+assert.equal(incompleteParallelProjection.frames[0].label, "PARALLEL · missing dispatch · join missing collection");
+
+const incompleteParallelDocument = controller.buildDocument({
+  flow: incompleteParallelFlow,
+  studio: {
+    members: graphMembers,
+    schemas: [],
+    instances: [],
+    edges: [],
+    frames: [],
+    skillRealms: [],
+  },
+  currentFlow: { name: "missing-parallel-metadata-proof" },
+  deploySettings: testDeploySettings(),
+});
+const incompleteDocumentFork = incompleteParallelDocument.instances.find((instance) => instance.id === "g_parallel_review");
+const incompleteDocumentJoin = incompleteParallelDocument.instances.find((instance) => instance.id === "j_parallel_review");
+assert.equal(incompleteDocumentFork.dispatch, "");
+assert.equal(incompleteDocumentFork.label, "");
+assert.equal(incompleteDocumentJoin.collection, "");
+assert.equal(incompleteParallelDocument.frames[0].label, "PARALLEL · missing dispatch · join missing collection");
+
+const repeatFlow = controller.graphToFlow({
+  previousFlow,
+  members: graphMembers,
+  instances: [
+    { id: "review", memberId: "m_review", col: 0, row: 0 },
+  ],
+  edges: [
+    { id: "e1", from: "review", to: "review", kind: "cond", label: "until green", cond: { path: "steps.review.verdict", op: "==", value: "green" } },
+  ],
+});
+
+const repeatStep = repeatFlow.steps[1];
+assert.equal(repeatStep.type, "repeat");
+assert.deepEqual(repeatStep.cond, { stepId: "review", field: "verdict", op: "==", val: "green" });
+assert.equal(repeatStep.steps[0].role, "m_review");
+assert.equal(repeatStep.loopId, "");
+assert.equal(repeatStep.maxIterations, null);
+assert.equal(repeatStep.iterationInput, "");
+const incompleteRepeatProjection = controller.graphProjectionForFlow(repeatFlow, graphMembers);
+assert.equal(incompleteRepeatProjection.frames[0].label, "REPEAT-UNTIL · missing max_iterations");
+assert.notEqual(incompleteRepeatProjection.frames[0].label, "REPEAT-UNTIL · max 3");
+
+const authoredRepeatFlow = controller.graphToFlow({
+  previousFlow: {
+    name: "main",
+    steps: [
+      previousFlow.steps[0],
+      {
+        id: "loop_review",
+        type: "repeat",
+        loopId: "quality_loop",
+        maxIterations: 4,
+        iterationInput: "carry",
+        steps: [{ id: "review", type: "member", role: "m_review", instruction: "Review the loop output." }],
+      },
+    ],
+  },
+  members: graphMembers,
+  instances: [
+    { id: "review", memberId: "m_review", col: 0, row: 0 },
+  ],
+  edges: [
+    { id: "e1", from: "review", to: "review", kind: "cond", label: "until green", cond: { path: "steps.review.verdict", op: "==", value: "green" } },
+  ],
+});
+assert.equal(authoredRepeatFlow.steps[1].id, "loop_review");
+assert.equal(authoredRepeatFlow.steps[1].loopId, "quality_loop");
+assert.equal(authoredRepeatFlow.steps[1].maxIterations, 4);
+assert.equal(authoredRepeatFlow.steps[1].iterationInput, "carry");
+assert.equal(authoredRepeatFlow.steps[1].steps[0].instruction, "Review the loop output.");
+const authoredRepeatProjection = controller.graphProjectionForFlow(authoredRepeatFlow, graphMembers);
+assert.equal(authoredRepeatProjection.frames[0].label, "REPEAT-UNTIL · max 4");
+
+const repeatWithoutCondition = controller.graphToFlow({
+  previousFlow,
+  members: graphMembers,
+  instances: [
+    { id: "review", memberId: "m_review", col: 0, row: 0 },
+  ],
+  edges: [
+    { id: "e1", from: "review", to: "review", kind: "cond", label: "", cond: {} },
+  ],
+});
+
+assert.equal(repeatWithoutCondition.steps[1].type, "repeat");
+assert.equal(repeatWithoutCondition.steps[1].cond, null);
+
+const repeatDocument = controller.buildDocument({
+  flow: repeatFlow,
+  studio: {
+    members: graphMembers,
+    schemas: [],
+    instances: [{ id: "review", memberId: "m_review", col: 0, row: 0 }],
+    edges: [{ id: "e1", from: "review", to: "review", kind: "cond", label: "until green", cond: { path: "steps.review.verdict", op: "==", value: "green" } }],
+    frames: [],
+    skillRealms: [],
+  },
+  currentFlow: { name: "repeat-projection-proof" },
+  deploySettings: testDeploySettings(),
+});
+
+assert(repeatDocument.frames.some((frame) => frame.id === `frame_${repeatStep.id}` && frame.kind === "RepeatUntil"));
+
+const incompleteGraphBranchFlow = controller.graphToFlow({
+  previousFlow,
+  members: graphMembers,
+  instances: [
+    { id: "g_branch_route", isGate: true, gateKind: "branch", col: 0, row: 0 },
+    { id: "left", memberId: "m_left", col: 1, row: 0 },
+    { id: "right", memberId: "m_right", col: 1, row: 1 },
+  ],
+  edges: [
+    { id: "e1", from: "g_branch_route", to: "left", kind: "cond", label: "docs", cond: { source: "params.kind", op: "==" } },
+    { id: "e2", from: "g_branch_route", to: "right", kind: "next", label: "fallback" },
+  ],
+});
+
+assert.equal(incompleteGraphBranchFlow.steps[1].type, "branch");
+assert.equal(incompleteGraphBranchFlow.steps[1].branches[0].condition, "");
+assert.equal(incompleteGraphBranchFlow.steps[1].branches[0].cond, null);
+
+const missingOperatorGraphBranchFlow = controller.graphToFlow({
+  members: graphMembers.slice(0, 2),
+  previousFlow,
+  instances: [
+    { id: "g_branch_route", isGate: true, gateKind: "branch", col: 0, row: 0 },
+    { id: "left", memberId: "m_left", col: 1, row: 0 },
+    { id: "right", memberId: "m_right", col: 1, row: 1 },
+  ],
+  edges: [
+    { id: "e1", from: "g_branch_route", to: "left", kind: "cond", label: "", cond: { source: "params.kind", val: "docs" } },
+    { id: "e2", from: "g_branch_route", to: "right", kind: "next", label: "fallback" },
+  ],
+});
+
+assert.equal(missingOperatorGraphBranchFlow.steps[1].type, "branch");
+assert.equal(missingOperatorGraphBranchFlow.steps[1].branches[0].condition, "");
+assert.equal(missingOperatorGraphBranchFlow.steps[1].branches[0].cond, null);
+
+assert.deepEqual(
+  controller.toolCatalogFromSchema({
+    tool_catalog: [{ id: "mob", label: "Mob tools", kind: "runtime", field: "mob", desc: "real mob tools", source: "meerkat_mob::ToolConfig" }],
+    tool_config: [{ id: "stale", label: "stale" }],
+  }).map((tool) => [tool.id, tool.kind, tool.raw.field]),
+  [["mob", "runtime", "mob"]],
+);
+
+assert.deepEqual(
+  controller.toolCatalogFromSchema({
+    tool_config: [{ id: "shell", label: "Shell", kind: "runtime", field: "shell", desc: "real shell tool", source: "meerkat_mob::ToolConfig" }],
+  }).map((tool) => [tool.id, tool.kind, tool.raw.field]),
+  [],
+);
+
+assert.deepEqual(
+  controller.graphControlNodes({
+    mob_definition: {
+      graph_gate_kinds: ["branch", "fork", "join"],
+      graph_palette_gate_kinds: ["branch", "fork"],
+    },
+  }).map((node) => node.gateKind),
+  ["branch", "fork"],
+);
+const addNodeMenuState = controller.graphAddNodeMenuState({
+  members: [
+    { id: "m_planner", role: "planner", name: "Planner", model: "gpt-5.5" },
+    { id: "m_reviewer", role: "reviewer", name: "Reviewer", model: "gpt-5.5" },
+  ],
+  contract: {
+    mob_definition: {
+      graph_gate_kinds: ["branch", "fork", "join"],
+      graph_palette_gate_kinds: ["branch", "fork"],
+    },
+  },
+  query: "fork",
+});
+assert.equal(addNodeMenuState.searchIcon, "⌕");
+assert.equal(addNodeMenuState.searchPlaceholder, "Add a node…");
+assert.equal(addNodeMenuState.closeLabel, "✕");
+assert.equal(addNodeMenuState.closeTitle, "Close");
+assert.equal(addNodeMenuState.agentsLabel, "Agents");
+assert.equal(addNodeMenuState.controlsLabel, "Flow controls");
+assert.equal(addNodeMenuState.jumpLabel, "+ New agent in Agents →");
+assert.deepEqual(addNodeMenuState.memberRows, []);
+assert.deepEqual(addNodeMenuState.controlRows.map((row) => [row.id, row.gateKind, row.label, row.pick.kind, row.pick.gateKind]), [
+  ["fork", "fork", "Parallel fork", "gate", "fork"],
+]);
+assert.equal(addNodeMenuState.hasMembers, false);
+assert.equal(addNodeMenuState.hasControls, true);
+assert.equal(addNodeMenuState.isEmpty, false);
+const emptyAddNodeMenuState = controller.graphAddNodeMenuState({
+  members: [{ id: "m_planner", role: "planner", name: "Planner", model: "gpt-5.5" }],
+  contract: { mob_definition: { graph_gate_kinds: ["branch"], graph_palette_gate_kinds: ["branch"] } },
+  query: "zzz",
+});
+assert.equal(emptyAddNodeMenuState.emptyLabel, "No matches for “zzz”");
+assert.equal(emptyAddNodeMenuState.isEmpty, true);
+
+const basicPickerKickoffState = controller.basicStepPickerState({ isKickoff: true });
+assert.equal(basicPickerKickoffState.mode, "kickoff");
+assert.equal(basicPickerKickoffState.title, "Input");
+assert.match(basicPickerKickoffState.kickoffHint, /mob's ingress/);
+
+const basicPickerState = controller.basicStepPickerState({
+  members: [
+    { id: "m_planner", role: "planner", name: "Planner", model: "gpt-5.5", schema: "PlanArtifact" },
+    { id: "m_reviewer", role: "reviewer", name: "Reviewer", model: "gpt-5.5" },
+  ],
+  contract: { mob_definition: { editor_flow_step_types: ["repeat", "branch", "parallel"] } },
+  query: "parallel",
+});
+assert.equal(basicPickerState.mode, "picker");
+assert.equal(basicPickerState.title, "Add step");
+assert.equal(basicPickerState.searchIcon, "⌕");
+assert.equal(basicPickerState.searchPlaceholder, "Search members & primitives…");
+assert.equal(basicPickerState.membersLabel, "Mob members");
+assert.equal(basicPickerState.flowLabel, "Flow");
+assert.equal(basicPickerState.newBadgeLabel, "NEW");
+assert.deepEqual(basicPickerState.memberRows, []);
+assert.deepEqual(basicPickerState.primitiveRows.map((row) => [row.id, row.label, row.pick.kind]), [
+  ["parallel", "Parallel", "parallel"],
+]);
+assert.equal(basicPickerState.hasConfiguredMembers, true);
+
+const emptyBasicPickerState = controller.basicStepPickerState({
+  members: [],
+  contract: { mob_definition: { editor_flow_step_types: ["branch"] } },
+});
+assert.equal(emptyBasicPickerState.emptyMembersHint, "No members yet — define some in the Agents tab.");
+assert.equal(emptyBasicPickerState.hasConfiguredMembers, false);
+assert.deepEqual(emptyBasicPickerState.memberRows, []);
+assert.deepEqual(emptyBasicPickerState.primitiveRows.map((row) => [row.id, row.glyph, row.tint]), [
+  ["branch", "⑂", "member"],
+]);
+
+const graphShapeContract = {
+  mob_definition: {
+    defaults: {
+      launch_mode: "fresh",
+      dispatch_mode: "fan_out",
+      collection_policy: "all",
+      dependency_mode: "all",
+      condition_operator: "==",
+      schema_field_type: "string",
+      branch_param_type: "enum",
+      runtime_mode: "turn_driven",
+      graph_terminal_kind: "success",
+      graph_edge_kind: "next",
+      graph_condition_edge_kind: "cond",
+      graph_fanout_edge_kind: "fanout",
+    },
+    graph_gate_kinds: ["branch", "fork", "join"],
+    graph_palette_gate_kinds: ["branch", "fork"],
+    graph_terminal_kinds: ["success", "failed", "human"],
+    graph_edge_kinds: ["next", "fanout", "cond"],
+    editor_flow_step_types: ["repeat", "branch", "parallel"],
+    launch_modes: ["fresh", "resume", "fork"],
+    runtime_modes: ["autonomous_host", "turn_driven"],
+    dispatch_modes: ["fan_out", "one_to_one", "fan_in"],
+    collection_policies: ["all", "any", "quorum"],
+    dependency_modes: ["all", "any"],
+    condition_operators: ["==", ">", "<"],
+    editor_schema_field_types: ["string", "enum"],
+  },
+};
+
+assert.equal(controller.contractDefaultValue({ mob_definition: {} }, "launch_mode"), "");
+assert.equal(controller.contractDefaultValue(graphShapeContract, "launch_mode"), "Fresh");
+assert.equal(controller.contractDefaultValue(graphShapeContract, "dispatch_mode"), "fan_out");
+assert.equal(controller.contractDefaultValue(graphShapeContract, "collection_policy"), "all");
+assert.equal(controller.contractDefaultValue(graphShapeContract, "dependency_mode"), "all");
+assert.equal(controller.contractDefaultValue(graphShapeContract, "condition_operator"), "==");
+assert.equal(controller.contractDefaultValue(graphShapeContract, "schema_field_type"), "string");
+assert.equal(controller.contractDefaultValue(graphShapeContract, "branch_param_type"), "enum");
+assert.equal(controller.contractDefaultValue(graphShapeContract, "graph_condition_edge_kind"), "cond");
+assert.equal(controller.contractDefaultValue(graphShapeContract, "graph_fanout_edge_kind"), "fanout");
+assert.equal(controller.contractDefaultValue(graphShapeContract, "graph_terminal_kind"), "success");
+assert.equal(controller.contractDefaultValue(graphShapeContract, "runtime_mode"), "turn_driven");
+
+assert.deepEqual(controller.graphConnectionEdgeDraft({
+  id: "edge_next",
+  from: { id: "plan", col: 0, row: 0 },
+  to: { id: "code", col: 1, row: 0 },
+  edges: [],
+  contract: graphShapeContract,
+}), { id: "edge_next", from: "plan", to: "code", kind: "next", label: "" });
+assert.deepEqual(controller.graphConnectionEdgeDraft({
+  id: "edge_terminal",
+  from: { id: "review", col: 2, row: 0 },
+  to: { id: "done", label: "Done", isTerminal: true, col: 3, row: 0 },
+  edges: [],
+  contract: graphShapeContract,
+}), { id: "edge_terminal", from: "review", to: "done", kind: "next", label: "to done" });
+assert.deepEqual(controller.graphConnectionEdgeDraft({
+  id: "edge_fanout",
+  from: { id: "fork", isGate: true, gateKind: "fork", col: 0, row: 0 },
+  to: { id: "lane", col: 1, row: 0 },
+  edges: [],
+  contract: graphShapeContract,
+}), { id: "edge_fanout", from: "fork", to: "lane", kind: "fanout", label: "" });
+assert.deepEqual(controller.graphConnectionEdgeDraft({
+  id: "edge_parallel",
+  from: { id: "writer", col: 1, row: 0 },
+  to: { id: "reviewer", col: 1, row: 1 },
+  edges: [],
+  contract: graphShapeContract,
+}), { id: "edge_parallel", from: "writer", to: "reviewer", kind: "fanout", label: "parallel" });
+assert.deepEqual(controller.graphConnectionEdgeDraft({
+  id: "edge_rework",
+  from: { id: "reviewer", col: 2, row: 0 },
+  to: { id: "writer", col: 1, row: 0 },
+  edges: [],
+  contract: graphShapeContract,
+}), { id: "edge_rework", from: "reviewer", to: "writer", kind: "cond", label: "rework" });
+assert.equal(controller.graphConnectionEdgeDraft({
+  from: { id: "plan", col: 0, row: 0 },
+  to: { id: "code", col: 1, row: 0 },
+  edges: [{ from: "plan", to: "code" }],
+  contract: graphShapeContract,
+}), null);
+assert.equal(controller.graphConnectionEdgeDraft({
+  from: { id: "plan", col: 0, row: 0 },
+  to: { id: "code", col: 1, row: 0 },
+  edges: [],
+  contract: { mob_definition: { graph_edge_kinds: ["next"] } },
+}), null);
+assert.equal(controller.graphConnectionEdgeDraft({
+  from: { id: "fork", isGate: true, gateKind: "fork", col: 0, row: 0 },
+  to: { id: "lane", col: 1, row: 0 },
+  edges: [],
+  contract: { mob_definition: { defaults: { graph_edge_kind: "next" }, graph_edge_kinds: ["next"] } },
+}), null);
+assert.equal(controller.graphConnectionEdgeDraft({
+  from: { id: "reviewer", col: 2, row: 0 },
+  to: { id: "writer", col: 1, row: 0 },
+  edges: [],
+  contract: { mob_definition: { defaults: { graph_edge_kind: "next" }, graph_edge_kinds: ["next"] } },
+}), null);
+assert.deepEqual(controller.graphConnectionEdgeDraft({
+  id: "edge_schema_names",
+  from: { id: "router", col: 2, row: 0 },
+  to: { id: "worker", col: 1, row: 0 },
+  edges: [],
+  contract: {
+    mob_definition: {
+      defaults: {
+        graph_edge_kind: "straight",
+        graph_condition_edge_kind: "when",
+        graph_fanout_edge_kind: "fan",
+      },
+      graph_edge_kinds: ["straight", "when", "fan"],
+    },
+  },
+}), { id: "edge_schema_names", from: "router", to: "worker", kind: "when", label: "rework" });
+assert.deepEqual(controller.graphConnectionEdgeDraft({
+  from: { id: "plan.node", col: 0, row: 0 },
+  to: { id: "code node", col: 1, row: 0 },
+  edges: [],
+  contract: graphShapeContract,
+}), { id: "e_plannode_code_node", from: "plan.node", to: "code node", kind: "next", label: "" });
+assert.deepEqual(controller.graphConnectionEdgeDraft({
+  from: { id: "plan.node", col: 0, row: 0 },
+  to: { id: "code node", col: 1, row: 0 },
+  edges: [{ id: "e_plannode_code_node", from: "other", to: "target" }],
+  contract: graphShapeContract,
+}), { id: "e_plannode_code_node_2", from: "plan.node", to: "code node", kind: "next", label: "" });
+
+const gateState = controller.graphGateControlState({
+  id: "join_1",
+  gateKind: "join",
+  quorum: { n: 2, m: 3 },
+}, {
+  edges: [
+    { from: "a", to: "join_1" },
+    { from: "b", to: "join_1" },
+    { from: "join_1", to: "c" },
+  ],
+  members: [{ id: "m_joiner" }],
+  contract: graphShapeContract,
+});
+assert.equal(gateState.gateKind, "join");
+assert.equal(gateState.eyebrow, "GATE · join");
+assert.equal(gateState.title, "");
+assert.equal(gateState.idLine, "join_1 · cell (1,1)");
+assert.equal(gateState.deleteLabel, "DELETE");
+assert.equal(gateState.labelTitle, "LABEL");
+assert.equal(gateState.kindTitle, "KIND");
+assert.equal(gateState.collectionTitle, "COLLECTION POLICY");
+assert.equal(gateState.quorumIncomingLabel, "of 2 incoming");
+assert.equal(gateState.joinMemberLabel, "Join member");
+assert.deepEqual(gateState.joinMemberPlaceholderOption, { value: "", label: "— select member —" });
+assert.equal(gateState.joinMemberHint, "MobKit uses this real profile to resolve non-all fan-in.");
+assert.equal(gateState.dispatchTitle, "DISPATCH MODE");
+assert.equal(gateState.dispatchHint, "Exports as the MobKit parallel flow dispatch mode.");
+assert.equal(gateState.conditionsTitle, "CONDITIONS");
+assert.equal(gateState.emptyBranchHint, "add outgoing edges, then configure each as a typed condition or fallback");
+assert.equal(gateState.wiringTitle, "WIRING");
+assert.equal(gateState.incomingLabel, "incoming");
+assert.equal(gateState.outgoingLabel, "outgoing");
+assert.equal(gateState.collection, "quorum");
+assert.equal(gateState.incoming.length, 2);
+assert.equal(gateState.outgoing.length, 1);
+assert.equal(gateState.firstMemberId, "m_joiner");
+assert.equal(gateState.incomingCount, 2);
+assert.equal(gateState.outgoingCount, 1);
+assert.deepEqual(gateState.memberOptions, [{
+  value: "m_joiner",
+  label: "m_joiner · profile",
+  member: { id: "m_joiner" },
+}]);
+const graphProjectionMembers = [
+  { id: "m_writer", name: "Writer", role: "writer", schema: "Draft", tools: ["builtins", "shell", "git", "comms"] },
+  { id: "m_review", name: "Reviewer", role: "reviewer", schema: "", tools: [] },
+];
+const graphProjectionInstances = [
+  { id: "n_writer", memberId: "m_writer", col: 0, row: 0 },
+  { id: "n_review", memberId: "m_review", col: 1, row: 0 },
+  { id: "n_done", isTerminal: true, col: 2, row: 0 },
+];
+const graphProjectionEdges = [{ id: "e1", from: "n_writer", to: "n_review" }];
+assert.deepEqual(controller.graphSelectionState({
+  selection: { kind: "instance", id: "n_writer" },
+  instances: graphProjectionInstances,
+  edges: graphProjectionEdges,
+}).instance, graphProjectionInstances[0]);
+assert.equal(controller.graphSelectionState({
+  selection: { kind: "edge", id: "missing" },
+  instances: graphProjectionInstances,
+  edges: graphProjectionEdges,
+}).missing, true);
+assert.deepEqual(controller.graphTemplateInspectorState({
+  studio: {
+    members: graphProjectionMembers,
+    instances: graphProjectionInstances,
+    edges: graphProjectionEdges,
+    frames: [{ id: "fr1" }],
+  },
+  template: { name: "Docs Mob", repo: "mob.toml", version: "0.1.0", trigger: "docs", defaultTrigger: true },
+}).summaryRows.map((row) => [row.key, row.value]), [
+  ["members", "2 placed / 2 in library"],
+  ["instances", 2],
+  ["terminals", 1],
+  ["edges", 1],
+  ["frames", 1],
+]);
+const instanceControlState = controller.graphInstanceControlState({
+  inst: graphProjectionInstances[1],
+  instances: graphProjectionInstances,
+  members: graphProjectionMembers,
+  schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
+});
+assert.equal(instanceControlState.member.id, "m_review");
+assert.equal(instanceControlState.memberId, "m_review");
+assert.equal(instanceControlState.eyebrow, "INSTANCE");
+assert.equal(instanceControlState.title, "Reviewer");
+assert.equal(instanceControlState.idLine, "n_review · cell (2,1)");
+assert.equal(instanceControlState.deleteLabel, "DELETE");
+assert.equal(instanceControlState.memberTitle, "Reviewer");
+assert.equal(instanceControlState.memberRoleLabel, "MEMBER · reviewer");
+assert.equal(instanceControlState.editMemberLabel, "EDIT MEMBER →");
+assert.equal(instanceControlState.memberName, "Reviewer");
+assert.deepEqual(instanceControlState.memberSummaryRows, [
+  { key: "model", label: "model", value: "—" },
+  { key: "schema", label: "schema", value: "—" },
+  { key: "tools", label: "tools", value: "0" },
+]);
+assert.equal(instanceControlState.memberHint, "Editing the member updates every instance that uses it.");
+assert.equal(instanceControlState.positionTitle, "POSITION");
+assert.deepEqual(instanceControlState.positionRows, [
+  { key: "stage", label: "stage (col)", value: 2 },
+  { key: "slot", label: "slot (row)", value: 1 },
+]);
+assert.deepEqual(instanceControlState.forkSourceOptions.map((option) => [option.value, option.label]), [
+  ["n_writer", "Writer · n_writer"],
+]);
+assert.equal(instanceControlState.firstForkSourceId, "n_writer");
+const writerInstanceState = controller.graphInstanceControlState({
+  inst: graphProjectionInstances[0],
+  instances: graphProjectionInstances,
+  members: graphProjectionMembers,
+  schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
+});
+assert.equal(writerInstanceState.memberToolSummary, "4 · builtins, shell, git…");
+assert.equal(writerInstanceState.memberSchemaLabel, "Draft");
+assert.deepEqual(writerInstanceState.memberSummaryRows, [
+  { key: "model", label: "model", value: "—" },
+  { key: "schema", label: "schema", value: "Draft" },
+  { key: "tools", label: "tools", value: "4 · builtins, shell, git…" },
+]);
+assert.equal(writerInstanceState.outputSchema.id, "Draft");
+assert.deepEqual(writerInstanceState.outputFields, [{ id: "f1", name: "body", type: "string", required: true }]);
+assert.equal(writerInstanceState.outputTitle, "MEMBER OUTPUT · Draft");
+assert.deepEqual(writerInstanceState.outputFieldRows, [{ id: "f1", name: "body", type: "string", required: true, requiredLabel: "req" }]);
+assert.equal(writerInstanceState.outputHint, "Defined on the member.");
+assert.equal(writerInstanceState.outputOpenMemberLabel, "Open member →");
+assert.deepEqual(controller.graphNodeCanvasState({
+  inst: { id: "n_writer", memberId: "m_writer", launchMode: { kind: "Fork" } },
+  members: graphProjectionMembers,
+  density: "comfortable",
+}), {
+  hidden: false,
+  isTerminal: false,
+  isCompact: false,
+  roleLabel: "writer",
+  launchLabel: "fork",
+  title: "Writer",
+  subtitle: undefined,
+  toolRows: [
+    { id: "builtins", className: "tag" },
+    { id: "shell", className: "tag is-shell" },
+    { id: "git", className: "tag is-shell" },
+    { id: "comms", className: "tag" },
+  ],
+  overflowLabel: "",
+});
+assert.deepEqual(controller.graphNodeCanvasState({
+  inst: { id: "n_writer", memberId: "m_writer" },
+  members: graphProjectionMembers,
+  density: "compact",
+}).toolRows.map((row) => row.id), ["builtins", "shell", "git"]);
+assert.equal(controller.graphNodeCanvasState({
+  inst: { id: "n_missing", memberId: "m_missing" },
+  members: graphProjectionMembers,
+}).hidden, true);
+const terminalSourceState = controller.graphNodeCanvasState({
+  inst: { id: "source_mob_toml", label: "mob.toml", kind: "success", isTerminal: true },
+});
+assert.equal(terminalSourceState.isSourceFile, true);
+assert.equal(terminalSourceState.role, "button");
+assert.equal(terminalSourceState.ariaLabel, "Open mob.toml read-only source editor");
+assert.deepEqual(controller.graphGateCanvasState({
+  inst: { id: "join_1", gateKind: "join", collection: "quorum", quorum: { n: 2, m: 3 } },
+  edges: [{ to: "join_1" }, { to: "join_1" }],
+}), { glyph: "⋈", sublabel: "barrier · 2/2", gateKind: "join" });
+assert.deepEqual(controller.graphGateCanvasState({
+  inst: { id: "fork_1", gateKind: "fork", label: "forker" },
+  edges: [],
+}), { glyph: "‖", sublabel: "forker", gateKind: "fork" });
+assert.deepEqual(controller.graphEdgeCanvasState({
+  edge: { id: "e_cond", kind: "cond", label: "review" },
+  to: { id: "n_review" },
+  active: true,
+  selected: false,
+  edgeStyle: "icons",
+}), {
+  kind: "cond",
+  mode: "icons",
+  labelText: "review",
+  labelWidth: 48,
+  iconGlyph: "?",
+  labelFill: "var(--danger)",
+  iconLabelClass: "edge-label is-cond",
+  textLabelClass: "edge-label is-cond is-active",
+  lineClass: "edge-line is-cond is-active",
+  markerEnd: "url(#arr-acc)",
+});
+assert.deepEqual(controller.graphEdgeCanvasState({
+  edge: { id: "e_fan", kind: "fanout", label: "" },
+  to: { id: "n_done", isTerminal: true },
+  edgeStyle: "colored",
+}).markerEnd, "url(#arr-acc)");
+assert.deepEqual(controller.graphEdgeCanvasState({
+  edge: { id: "e_term", kind: "next", label: "done" },
+  to: { id: "n_done", isTerminal: true },
+}), {
+  kind: "next",
+  mode: "text",
+  labelText: "done",
+  labelWidth: 36,
+  iconGlyph: "■",
+  labelFill: "var(--muted)",
+  iconLabelClass: "edge-label",
+  textLabelClass: "edge-label",
+  lineClass: "edge-line is-term",
+  markerEnd: "url(#arr-dim)",
+});
+const terminalControlState = controller.graphTerminalControlState({
+  id: "n_done",
+  isTerminal: true,
+  label: "Done",
+  col: 3,
+  row: 1,
+}, graphShapeContract);
+assert.equal(terminalControlState.eyebrow, "TERMINAL · success");
+assert.equal(terminalControlState.title, "Done");
+assert.equal(terminalControlState.idLine, "n_done · cell (4,2)");
+assert.equal(terminalControlState.deleteLabel, "DELETE");
+assert.equal(terminalControlState.labelTitle, "LABEL");
+assert.equal(terminalControlState.labelValue, "Done");
+assert.equal(terminalControlState.kindTitle, "KIND");
+assert.equal(terminalControlState.terminalKind, "success");
+assert.equal(terminalControlState.selectedTerminalKind.label, "success — done");
+assert.deepEqual(terminalControlState.terminalKindOptions.map((option) => [option.value, option.label, option.disabled]), [
+  ["success", "success — done", false],
+  ["failed", "failed — blocked", false],
+  ["human", "human — needs human", false],
+]);
+const unsupportedTerminalControlState = controller.graphTerminalControlState({
+  id: "n_done",
+  isTerminal: true,
+  kind: "archived",
+}, graphShapeContract);
+assert.equal(unsupportedTerminalControlState.terminalKind, "archived");
+assert.equal(unsupportedTerminalControlState.selectedTerminalKind.disabled, true);
+assert.match(unsupportedTerminalControlState.selectedTerminalKind.reason, /mob_definition\.graph_terminal_kinds/);
+const branchConditionRows = controller.graphBranchConditionRows({
+  inst: { id: "branch_1", isGate: true, gateKind: "branch", col: 0, row: 0 },
+  edges: [
+    {
+      id: "e_cond",
+      from: "branch_1",
+      to: "n_review",
+      kind: "cond",
+      cond: { var: "steps.n_writer.body", op: "==", val: "ok" },
+    },
+    { id: "e_fallback", from: "branch_1", to: "n_done", kind: "next" },
+  ],
+  instances: [
+    { id: "branch_1", isGate: true, gateKind: "branch", col: 0, row: 0 },
+    { id: "n_writer", memberId: "m_writer", col: 0, row: 1 },
+    { id: "n_review", memberId: "m_review", col: 1, row: 0 },
+    { id: "n_done", isTerminal: true, label: "Done", col: 2, row: 0 },
+  ],
+  members: graphProjectionMembers,
+  schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
+  contract: graphShapeContract,
+});
+assert.equal(branchConditionRows.length, 2);
+assert.deepEqual({
+  id: branchConditionRows[0].edge.id,
+  modeValue: branchConditionRows[0].modeValue,
+  targetLabel: branchConditionRows[0].targetLabel,
+  ownerValue: branchConditionRows[0].ownerValue,
+  fieldValue: branchConditionRows[0].fieldValue,
+  operatorValue: branchConditionRows[0].operatorValue,
+  hasConditionOptions: branchConditionRows[0].hasConditionOptions,
+}, {
+  id: "e_cond",
+  modeValue: "cond",
+  targetLabel: "Reviewer",
+  ownerValue: "n_writer",
+  fieldValue: "body",
+  operatorValue: "==",
+  hasConditionOptions: true,
+});
+assert.deepEqual(branchConditionRows[0].ownerOptions.map((option) => [option.value, option.label]), [["n_writer", "Writer"]]);
+assert.deepEqual(branchConditionRows[0].fieldOptions.map((option) => [option.value, option.label]), [["body", "body · string"]]);
+assert.deepEqual(branchConditionRows[0].modeOptions, [
+  { value: "cond", label: "condition" },
+  { value: "fallback", label: "fallback" },
+]);
+assert.equal(branchConditionRows[0].targetPrefix, "→");
+assert.deepEqual(branchConditionRows[0].fieldPlaceholderOption, { value: "", label: "— field —" });
+assert.equal(branchConditionRows[0].noConditionOptionsHint, "add input params or an upstream schema field for this condition");
+assert.deepEqual(branchConditionRows[1].targetLabel, "Done");
+assert.equal(branchConditionRows[1].modeValue, "fallback");
+const edgeInspectorState = controller.graphEdgeInspectorState({
+  edge: {
+    id: "e_cond",
+    from: "n_writer",
+    to: "n_review",
+    kind: "cond",
+    cond: { var: "steps.n_writer.body", op: "==", val: "ok" },
+  },
+  instances: graphProjectionInstances,
+  members: graphProjectionMembers,
+  schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
+  contract: graphShapeContract,
+});
+assert.equal(edgeInspectorState.title, "Writer → Reviewer");
+assert.equal(edgeInspectorState.eyebrow, "EDGE · cond");
+assert.equal(edgeInspectorState.idLine, "e_cond");
+assert.equal(edgeInspectorState.deleteLabel, "DELETE");
+assert.equal(edgeInspectorState.kindTitle, "KIND");
+assert.equal(edgeInspectorState.labelTitle, "LABEL");
+assert.equal(edgeInspectorState.conditionTitle, "CONDITION");
+assert.equal(edgeInspectorState.noConditionOptionsHint, "Add an upstream agent with an output schema before configuring this edge.");
+assert.deepEqual(edgeInspectorState.ownerPlaceholderOption, { value: "", label: "— member —" });
+assert.equal(edgeInspectorState.fromTitle, "FROM");
+assert.equal(edgeInspectorState.toTitle, "TO");
+assert.equal(edgeInspectorState.edgeKind, "cond");
+assert.equal(edgeInspectorState.defaultOperator, "==");
+assert.equal(edgeInspectorState.operatorValue, "==");
+assert.equal(edgeInspectorState.ownerValue, "n_writer");
+assert.equal(edgeInspectorState.fieldValue, "body");
+assert.deepEqual(edgeInspectorState.ownerOptions.map((option) => [option.value, option.label]), [["n_writer", "Writer"]]);
+assert.deepEqual(edgeInspectorState.fieldOptions.map((option) => [option.value, option.label]), [["body", "body · string"]]);
+assert.deepEqual(edgeInspectorState.fromRows.map((row) => [row.label, row.value]), [
+  ["instance", "n_writer"],
+  ["member", "Writer"],
+  ["schema", "Draft"],
+]);
+assert.deepEqual(edgeInspectorState.toRows.map((row) => [row.label, row.value]), [
+  ["instance", "n_review"],
+  ["member", "Reviewer"],
+  ["schema", "—"],
+]);
+assert.deepEqual(edgeInspectorState.conditionPatch, { var: "steps.n_writer.body", op: "==", val: "ok" });
+const defaultEdgeInspectorState = controller.graphEdgeInspectorState({
+  edge: { id: "e_next", from: "n_writer", to: "n_done" },
+  instances: graphProjectionInstances,
+  members: graphProjectionMembers,
+  schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
+  contract: graphShapeContract,
+});
+assert.equal(defaultEdgeInspectorState.title, "Writer → —");
+assert.equal(defaultEdgeInspectorState.edgeKind, "next");
+assert.equal(defaultEdgeInspectorState.selectedEdgeKind.value, "next");
+assert.deepEqual(defaultEdgeInspectorState.toRows.map((row) => [row.label, row.value]), [
+  ["instance", "n_done"],
+  ["member", "(terminal)"],
+  ["schema", "—"],
+]);
+assert.deepEqual(controller.graphGateKindPatch(" fork ", graphShapeContract), {
+  gateKind: "fork",
+});
+assert.deepEqual(controller.graphGateKindPatch(" unsupported_gate ", graphShapeContract), {});
+assert.deepEqual(controller.graphInstanceLabelPatch(" join label\n"), {
+  label: " join label\n",
+});
+assert.deepEqual(controller.graphEdgeLabelPatch(" fallback path "), {
+  label: " fallback path ",
+});
+assert.deepEqual(controller.graphTerminalKindPatch(" success ", graphShapeContract), {
+  kind: "success",
+});
+assert.deepEqual(controller.graphTerminalKindPatch(" waiting_room ", graphShapeContract), {});
+assert.deepEqual(controller.graphJoinCollectionPatch({}, "quorum", {
+  incomingCount: 2,
+  firstMemberId: "m_joiner",
+  contract: graphShapeContract,
+}), {
+  collection: "quorum",
+  label: "join · quorum",
+  quorum: { n: 2, m: 2 },
+  controllerRole: "m_joiner",
+});
+assert.deepEqual(controller.graphJoinCollectionPatch({
+  quorum: { n: 1 },
+  controllerRole: "m_existing",
+}, "any", {
+  incomingCount: 3,
+  firstMemberId: "m_joiner",
+  contract: graphShapeContract,
+}), {
+  collection: "any",
+  label: "join · any",
+  quorum: null,
+  controllerRole: "m_existing",
+});
+assert.deepEqual(controller.graphJoinCollectionPatch({ controllerRole: "m_existing" }, "all", {
+  incomingCount: 3,
+  firstMemberId: "m_joiner",
+  contract: graphShapeContract,
+}), {
+  collection: "all",
+  label: "join · all",
+  quorum: null,
+  controllerRole: "",
+});
+assert.deepEqual(controller.graphJoinCollectionPatch({ controllerRole: "m_existing" }, "lottery", {
+  incomingCount: 3,
+  firstMemberId: "m_joiner",
+  contract: graphShapeContract,
+}), {});
+assert.deepEqual(controller.graphJoinQuorumPatch({ quorum: { n: 2, m: 5 } }, "4", 3), {
+  quorum: { n: 4, m: 3 },
+});
+assert.deepEqual(controller.graphJoinControllerRolePatch(" m_joiner ", [{ id: "m_joiner" }]), {
+  controllerRole: "m_joiner",
+});
+assert.deepEqual(controller.graphJoinControllerRolePatch("", [{ id: "m_joiner" }]), {
+  controllerRole: "",
+});
+assert.deepEqual(controller.graphJoinControllerRolePatch("m_deleted", [{ id: "m_joiner" }]), {});
+assert.deepEqual(controller.graphForkDispatchPatch({}, "fan_out", graphShapeContract), {
+  dispatch: "fan_out",
+  label: "fan_out",
+});
+assert.deepEqual(controller.graphForkDispatchPatch({}, "broadcast_everywhere", graphShapeContract), {});
+
+const launchControlContract = {
+  mob_definition: {
+    ...graphShapeContract.mob_definition,
+    defaults: {
+      ...graphShapeContract.mob_definition.defaults,
+      budget_split_policy: "equal",
+      fork_context: "full_history",
+    },
+    budget_split_policies: ["equal", "fixed"],
+    fork_contexts: ["full_history", "last_messages"],
+  },
+};
+const blankLaunchState = controller.launchModeControlState({}, launchControlContract);
+assert.equal(blankLaunchState.launchTitle, "Launch mode");
+assert.equal(blankLaunchState.graphLaunchTitle, "LAUNCH MODE · this position");
+assert.equal(blankLaunchState.resumeSessionLabel, "Bridge session");
+assert.equal(blankLaunchState.resumeSessionPlaceholder, "session id");
+assert.equal(blankLaunchState.forkSourceLabel, "Fork from");
+assert.equal(blankLaunchState.forkContextLabel, "Fork context");
+assert.equal(blankLaunchState.graphForkContextLabel, "Context");
+assert.equal(blankLaunchState.budgetPolicyLabel, "Budget split policy");
+assert.equal(blankLaunchState.fixedBudgetLabel, "Fixed token budget");
+assert.equal(blankLaunchState.fixedBudgetValue, 4096);
+assert.equal(blankLaunchState.launchKind, "Fresh");
+assert.deepEqual(blankLaunchState.launchMode, { kind: "Fresh" });
+assert.equal(blankLaunchState.budgetSplitPolicy.kind, "Equal");
+assert.equal(blankLaunchState.forkContextValue, "full_history");
+assert.equal(controller.launchModeControlState({
+  launchMode: { kind: "Fresh", budgetSplitPolicy: { kind: "Fixed", limit: 2048 } },
+}, launchControlContract).fixedBudgetValue, 2048);
+assert.deepEqual(controller.launchModeKindPatch({}, "Fork", launchControlContract, {
+  firstForkSourceId: "plan_step",
+}), { launchMode: { kind: "Fork", from: "plan_step", context: "full_history" } });
+assert.deepEqual(controller.launchModeKindPatch({
+  launchMode: { kind: "Fresh", budgetSplitPolicy: { kind: "Fixed", limit: 2048 } },
+}, "Fork", launchControlContract, {
+  firstForkSourceId: "plan_step",
+}), { launchMode: { kind: "Fork", budgetSplitPolicy: { kind: "Fixed", limit: 2048 }, from: "plan_step", context: "full_history" } });
+assert.deepEqual(controller.launchModeKindPatch({
+  launchMode: { kind: "Fresh" },
+}, "Teleport", launchControlContract), {});
+assert.deepEqual(controller.launchModeSessionPatch({
+  launchMode: { kind: "Resume", sessionId: "old" },
+}, "new", launchControlContract), { launchMode: { kind: "Resume", sessionId: "new" } });
+assert.deepEqual(controller.launchModeForkSourcePatch({
+  launchMode: { kind: "Fork", from: "old_step", context: "last_messages" },
+}, "plan_step", launchControlContract, {
+  sourceOptions: [{ value: "plan_step" }, { value: "review_step" }],
+}), { launchMode: { kind: "Fork", from: "plan_step", context: "last_messages" } });
+assert.deepEqual(controller.launchModeForkSourcePatch({
+  launchMode: { kind: "Fork", from: "old_step", context: "last_messages" },
+}, "", launchControlContract, {
+  sourceOptions: [{ value: "plan_step" }],
+}), { launchMode: { kind: "Fork", from: "", context: "last_messages" } });
+assert.deepEqual(controller.launchModeForkSourcePatch({
+  launchMode: { kind: "Fork", from: "old_step", context: "last_messages" },
+}, "phantom_step", launchControlContract, {
+  sourceOptions: [{ value: "plan_step" }],
+}), {});
+assert.deepEqual(controller.launchModeForkContextPatch({
+  launchMode: { kind: "Fork", from: "plan_step", context: "LastMessages" },
+}, "FullHistory", launchControlContract), { launchMode: { kind: "Fork", from: "plan_step", context: "full_history" } });
+assert.deepEqual(controller.launchModeForkContextPatch({
+  launchMode: { kind: "Fork", from: "plan_step", context: "last_messages" },
+}, "entire_universe", launchControlContract), {});
+assert.deepEqual(controller.launchBudgetKindPatch({
+  launchMode: { kind: "Fork", from: "plan_step", context: "full_history" },
+}, "fixed", launchControlContract), {
+  launchMode: {
+    kind: "Fork",
+    from: "plan_step",
+    context: "full_history",
+    budgetSplitPolicy: { kind: "Fixed", limit: 4096 },
+  },
+});
+assert.deepEqual(controller.launchBudgetFixedLimitPatch({
+  launchMode: { kind: "Fork", from: "plan_step", context: "full_history" },
+}, 1024, launchControlContract), {
+  launchMode: {
+    kind: "Fork",
+    from: "plan_step",
+    context: "full_history",
+    budgetSplitPolicy: { kind: "Fixed", limit: 1024 },
+  },
+});
+assert.deepEqual(controller.launchBudgetFixedLimitPatch({
+  launchMode: { kind: "Fresh" },
+}, "3072", launchControlContract), {
+  launchMode: {
+    kind: "Fresh",
+    budgetSplitPolicy: { kind: "Fixed", limit: 3072 },
+  },
+});
+assert.deepEqual(controller.launchBudgetKindPatch({
+  launchMode: { kind: "Fresh", budgetSplitPolicy: { kind: "Fixed", limit: 1024 } },
+}, "lottery", launchControlContract), {});
+assert.deepEqual(controller.launchBudgetFixedLimitPatch({
+  launchMode: { kind: "Fresh" },
+}, 1024, {
+  mob_definition: {
+    ...launchControlContract.mob_definition,
+    budget_split_policies: ["equal"],
+  },
+}), {});
+const memberStepControlContract = {
+  mob_definition: {
+    ...launchControlContract.mob_definition,
+    step_output_formats: ["json", "text"],
+  },
+};
+const writeStep = {
+  id: "write",
+  type: "member",
+  role: "m_writer",
+  launchMode: { kind: "Fork" },
+  dispatchMode: "fan_out",
+  collection: "quorum",
+  dependsMode: "any",
+  outputFormat: "xml",
+};
+const memberStepControlState = controller.basicMemberStepControlState({
+  step: writeStep,
+  flow: {
+    steps: [
+      { id: "plan", type: "member", role: "m_planner" },
+      {
+        id: "branch",
+        type: "branch",
+        branches: [{ id: "br1", steps: [{ id: "review", type: "member", role: "m_review" }] }],
+        fallback: [],
+      },
+      writeStep,
+    ],
+  },
+  members: [
+    { id: "m_planner", name: "Planner", role: "planner", model: "gpt-5.5" },
+    { id: "m_review", name: "Reviewer", role: "reviewer", model: "gpt-5.5" },
+    { id: "m_writer", name: "Writer", role: "writer", model: "gpt-5.5", schema: "Draft", tools: ["shell", "git"] },
+  ],
+  contract: memberStepControlContract,
+});
+assert.equal(memberStepControlState.member.name, "Writer");
+assert.equal(memberStepControlState.panelTitle, "Writer");
+assert.equal(memberStepControlState.panelSub, "writer · gpt-5.5");
+assert.equal(memberStepControlState.memberFieldLabel, "Member (profile)");
+assert.equal(memberStepControlState.memberPlaceholderLabel, "— select member —");
+assert.equal(memberStepControlState.launchState.launchKind, "Fork");
+assert.equal(memberStepControlState.firstLaunchSourceId, "plan");
+assert.deepEqual(memberStepControlState.launchSourceOptions.map((option) => [option.value, option.label]), [
+  ["plan", "Planner · plan"],
+  ["review", "Reviewer · review"],
+]);
+assert.deepEqual(memberStepControlState.memberOptions.map((option) => [option.value, option.label]), [
+  ["m_planner", "Planner · planner"],
+  ["m_review", "Reviewer · reviewer"],
+  ["m_writer", "Writer · writer"],
+]);
+assert.equal(memberStepControlState.instructionLabel, "message — instruction for this turn");
+assert.equal(memberStepControlState.instructionPlaceholder, "e.g. Run the focused tests and report failures.");
+assert.equal(memberStepControlState.dispatchLabel, "Dispatch mode");
+assert.equal(memberStepControlState.dispatchValue, "fan_out");
+assert.equal(memberStepControlState.collectionLabel, "Collection policy");
+assert.equal(memberStepControlState.collectionValue, "quorum");
+assert.equal(memberStepControlState.showQuorum, true);
+assert.equal(memberStepControlState.quorumLabel, "Quorum");
+assert.equal(memberStepControlState.quorumPlaceholder, "required");
+assert.equal(memberStepControlState.timeoutLabel, "Timeout (ms)");
+assert.equal(memberStepControlState.timeoutPlaceholder, "runtime default");
+assert.equal(memberStepControlState.dependencyLabel, "depends_on mode");
+assert.equal(memberStepControlState.dependencyValue, "any");
+assert.equal(memberStepControlState.outputFormatLabel, "Output format");
+assert.equal(memberStepControlState.outputValue, "xml");
+assert.equal(memberStepControlState.allowedToolsLabel, "Allowed tools");
+assert.equal(memberStepControlState.allowedToolsEmptyLabel, "Runtime profile default");
+assert.equal(memberStepControlState.blockedToolsLabel, "Blocked tools");
+assert.equal(memberStepControlState.blockedToolsEmptyLabel, "No step-level blocks");
+assert.deepEqual(memberStepControlState.outputOptions.map((option) => [option.value, option.label, option.disabled]), [
+  ["", "runtime default", false],
+  ["json", "json — parse terminal output as JSON", false],
+  ["text", "text — preserve terminal text", false],
+  ["xml", "xml", true],
+]);
+assert.match(memberStepControlState.selectedOutput.reason, /step_output_formats/);
+assert.deepEqual(memberStepControlState.schemaHint, {
+  schema: "Draft",
+  tools: ["shell", "git"],
+  toolSummary: "shell, git",
+  parts: [
+    { key: "prefix", text: "Emits " },
+    { key: "schema", text: "Draft", kind: "code" },
+    { key: "tools", text: " · tools: shell, git" },
+  ],
+});
+
+assert.deepEqual(controller.parseLegacyInputFields("route: enum(code|docs), retries: int\nnotes: string"), [
+  { id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["code", "docs"] },
+  { id: "p2", name: "retries", type: "int", required: true, description: "", enumValues: [] },
+  { id: "p3", name: "notes", type: "string", required: true, description: "", enumValues: [] },
+]);
+assert.equal(controller.uniqueInputParamName([
+  { id: "p1", name: "route" },
+  { id: "p2", name: "route_2" },
+], "route"), "route_3");
+assert.equal(controller.uniqueInputParamName([{ id: "p1", name: "route" }], "9 route!", "p1"), "_9_route");
+assert.equal(controller.inputParamSummary([
+  { name: "route", type: "enum", required: true },
+  { name: "notes", type: "", required: false },
+], graphShapeContract), "route: enum, notes: string?");
+assert.deepEqual(controller.inputParamOptions({
+  steps: [{ type: "input", fields: "route: enum(code,docs)" }],
+}), [{
+  stepId: "params",
+  namespace: "params",
+  label: "Input params",
+  fields: [{ id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["code", "docs"] }],
+}]);
+const inputControlState = controller.basicInputControlState({
+  id: "input_1",
+  type: "input",
+  task: "Fix it.",
+  inputParams: [
+    { id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["code", "docs"] },
+  ],
+}, graphShapeContract);
+assert.equal(inputControlState.panelIcon, "▤");
+assert.equal(inputControlState.panelTitle, "Input");
+assert.equal(inputControlState.panelSub, "The task this mob is run with — its ingress");
+assert.equal(inputControlState.taskLabel, "Task");
+assert.equal(inputControlState.taskPlaceholder, "e.g. Fix the issue described below.");
+assert.equal(inputControlState.paramsTitle, "INPUT PARAMS · 1");
+assert.equal(inputControlState.addParamLabel, "+ param");
+assert.deepEqual(inputControlState.headerRows.map((row) => [row.key, row.label, row.className]), [
+  ["name", "NAME", "sb-col sb-col--name"],
+  ["type", "TYPE", "sb-col sb-col--type"],
+  ["required", "REQ", "sb-col sb-col--req"],
+  ["description", "DESCRIPTION", "sb-col sb-col--desc"],
+  ["actions", "", "sb-col sb-col--act"],
+]);
+assert.deepEqual(inputControlState.emptyParamsParts, [
+  { key: "prefix", text: "No params yet. Add one before branching on " },
+  { key: "ref", text: "params.*", kind: "code" },
+  { key: "suffix", text: "." },
+]);
+assert.deepEqual(inputControlState.tips, [
+  "Run with: rkat mob deploy <pack> \"<task>\" — or run_flow(input).",
+  "Typed fields become the input schema the run is validated against.",
+  "Event sources & schedules live outside the mobpack (e.g. fugue).",
+]);
+assert.equal(inputControlState.params[0].name, "route");
+assert.deepEqual(controller.inputParamUpdatePatch([
+  { id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["code"] },
+], "p1", { required: false }, graphShapeContract), {
+  inputParams: [{ id: "p1", name: "route", type: "enum", required: false, description: "", enumValues: ["code"] }],
+  fields: "route: enum?",
+});
+assert.deepEqual(controller.inputParamUpdatePatch([
+  { id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["code"] },
+  { id: "p2", name: "route_2", type: "string", required: true, description: "", enumValues: [] },
+], "p1", { name: "route_2" }, graphShapeContract), {
+  inputParams: [
+    { id: "p1", name: "route_2_2", type: "enum", required: true, description: "", enumValues: ["code"] },
+    { id: "p2", name: "route_2", type: "string", required: true, description: "", enumValues: [] },
+  ],
+  fields: "route_2_2: enum, route_2: string",
+});
+assert.deepEqual(controller.inputParamUpdatePatch([
+  { id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["code"] },
+], "p1", { name: "" }, graphShapeContract), {
+  inputParams: [{ id: "p1", name: "param", type: "enum", required: true, description: "", enumValues: ["code"] }],
+  fields: "param: enum",
+});
+assert.deepEqual(controller.inputParamUpdatePatch([
+  { id: "p1", name: "route", type: "string", required: true, description: "", enumValues: [] },
+], "p1", { type: "object" }, graphShapeContract), {
+  inputParams: [{ id: "p1", name: "route", type: "string", required: true, description: "", enumValues: [] }],
+  fields: "route: string",
+});
+assert.deepEqual(controller.inputParamUpdatePatch([
+  { id: "p1", name: "route", type: "string", required: true, description: "", enumValues: [] },
+], "p1", { type: "enum" }, graphShapeContract), {
+  inputParams: [{ id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["value"] }],
+  fields: "route: enum",
+});
+assert.deepEqual(controller.inputParamRenamePatch([
+  { id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: [] },
+  { id: "p2", name: "route_2", type: "string", required: true, description: "", enumValues: [] },
+], "p1", "route_2", graphShapeContract), {
+  name: "route_2_2",
+  patch: {
+    inputParams: [
+      { id: "p1", name: "route_2_2", type: "enum", required: true, description: "", enumValues: [] },
+      { id: "p2", name: "route_2", type: "string", required: true, description: "", enumValues: [] },
+    ],
+    fields: "route_2_2: enum, route_2: string",
+  },
+});
+assert.deepEqual(controller.inputParamDeletePatch([
+  { id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: [] },
+  { id: "p2", name: "notes", type: "string", required: false, description: "", enumValues: [] },
+], "p1", graphShapeContract), {
+  removed: { id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: [] },
+  patch: {
+    inputParams: [{ id: "p2", name: "notes", type: "string", required: false, description: "", enumValues: [] }],
+    fields: "notes: string?",
+  },
+});
+assert.deepEqual(controller.inputParamAddPatch([
+  { id: "p1", name: "param", type: "string", required: true, description: "", enumValues: [] },
+], graphShapeContract), {
+  param: { id: "p2", name: "param_2", type: "string", required: true, description: "", enumValues: [] },
+  patch: {
+    inputParams: [
+      { id: "p1", name: "param", type: "string", required: true, description: "", enumValues: [] },
+      { id: "p2", name: "param_2", type: "string", required: true, description: "", enumValues: [] },
+    ],
+    fields: "param: string, param_2: string",
+  },
+});
+
+const treeFlow = {
+  name: "tree",
+  steps: [
+    { id: "input", type: "input" },
+    {
+      id: "branch",
+      type: "branch",
+      branches: [
+        { id: "br1", steps: [{ id: "left", type: "member", role: "m_left" }] },
+        { id: "br2", steps: [] },
+      ],
+      fallback: [{ id: "fallback_step", type: "member", role: "m_fallback" }],
+    },
+    {
+      id: "loop",
+      type: "repeat",
+      steps: [{ id: "loop_step", type: "member", role: "m_loop" }],
+    },
+  ],
+};
+assert.equal(controller.flowStepUpdatePatch(treeFlow, "loop_step", {
+  instruction: "Run loop body",
+}).steps[2].steps[0].instruction, "Run loop body");
+assert.deepEqual(controller.flowStepUpdatePatch(treeFlow, "loop_step", {
+  id: "left",
+}, { members: [{ id: "m_loop" }] }), treeFlow);
+assert.deepEqual(controller.flowStepUpdatePatch(treeFlow, "loop_step", {
+  role: "m_missing",
+}, { members: [{ id: "m_loop" }] }), treeFlow);
+assert.deepEqual(controller.flowStepInsertPatch(treeFlow, {
+  lane: "branch",
+  parentId: "branch",
+  branchId: "br2",
+}, { id: "right", type: "member", role: "m_right" }).steps[1].branches[1].steps, [
+  { id: "right", type: "member", role: "m_right" },
+]);
+assert.deepEqual(controller.flowStepInsertPatch(treeFlow, {
+  lane: "branch",
+  parentId: "branch",
+  branchId: "br2",
+}, { id: "left", type: "member", role: "m_right" }, { members: [{ id: "m_right" }] }), treeFlow);
+assert.deepEqual(controller.flowStepInsertPatch(treeFlow, {
+  lane: "branch",
+  parentId: "branch",
+  branchId: "br2",
+}, { id: "right", type: "member", role: "m_missing" }, { members: [{ id: "m_right" }] }), treeFlow);
+assert.deepEqual(controller.flowStepInsertPatch(treeFlow, {
+  lane: "branch",
+  parentId: "branch",
+  branchId: "fallback",
+}, { id: "new_fallback", type: "member", role: "m_new" }).steps[1].fallback.map((step) => step.id), [
+  "fallback_step",
+  "new_fallback",
+]);
+assert.deepEqual(controller.flowStepInsertPatch(treeFlow, {
+  lane: "branch",
+  parentId: "loop",
+  branchId: "body",
+  index: 0,
+}, { id: "pre_loop", type: "member", role: "m_pre" }).steps[2].steps.map((step) => step.id), [
+  "pre_loop",
+  "loop_step",
+]);
+assert.deepEqual(controller.flowStepInsertPatch(treeFlow, {
+  lane: "main",
+  index: 1,
+}, { id: "main_member", type: "member", role: "m_main" }).steps.map((step) => step.id), [
+  "input",
+  "main_member",
+  "branch",
+  "loop",
+]);
+assert.deepEqual(controller.flowStepDeletePatch(treeFlow, "left").steps[1].branches[0].steps, []);
+assert.deepEqual(controller.flowStepDeletePatch(treeFlow, "fallback_step").steps[1].fallback, []);
+assert.deepEqual(controller.flowStepDeletePatch(treeFlow, "loop_step").steps[2].steps, []);
+const deletedRefFlow = controller.flowStepDeletePatch({
+  name: "delete-refs",
+  steps: [
+    { id: "source", type: "member", role: "m_source" },
+    {
+      id: "router",
+      type: "branch",
+      branches: [{
+        id: "br1",
+        cond: { namespace: "steps", stepId: "source", field: "verdict", op: "==", val: "green" },
+        condition: 'steps.source.verdict == "green"',
+        steps: [{ id: "review", type: "member", role: "m_review", launchMode: { kind: "Fork", from: "source", context: "full_history", budgetSplitPolicy: { kind: "Fixed", limit: 512 } } }],
+      }],
+      fallback: [],
+    },
+    {
+      id: "loop",
+      type: "repeat",
+      cond: { namespace: "steps", stepId: "source", field: "verdict", op: "==", val: "green" },
+      until: 'steps.source.verdict == "green"',
+      steps: [{ id: "loop_review", type: "member", role: "m_review" }],
+    },
+  ],
+}, "source");
+assert.deepEqual(deletedRefFlow.steps.map((step) => step.id), ["router", "loop"]);
+assert.deepEqual(deletedRefFlow.steps[0].branches[0].cond, {});
+assert.equal(deletedRefFlow.steps[0].branches[0].condition, "");
+assert.deepEqual(deletedRefFlow.steps[0].branches[0].steps[0].launchMode, {
+  kind: "Fresh",
+  budgetSplitPolicy: { kind: "Fixed", limit: 512 },
+});
+assert.deepEqual(deletedRefFlow.steps[1].cond, {});
+assert.equal(deletedRefFlow.steps[1].until, "");
+
+assert.deepEqual(controller.flowStepTaskPatch("Fix the bug.\n"), { task: "Fix the bug.\n" });
+assert.deepEqual(controller.flowStepInstructionPatch("Run tests.\n"), { instruction: "Run tests.\n" });
+assert.deepEqual(controller.flowStepQuorumPatch("3"), { quorum: 3 });
+assert.deepEqual(controller.flowStepQuorumPatch(""), { quorum: null });
+assert.deepEqual(controller.flowStepQuorumPatch("0"), { quorum: null });
+assert.deepEqual(controller.flowStepTimeoutPatch("120000"), { timeoutMs: 120000 });
+assert.deepEqual(controller.flowStepTimeoutPatch(""), { timeoutMs: null });
+assert.deepEqual(controller.flowStepTimeoutPatch("-1"), { timeoutMs: null });
+assert.deepEqual(controller.flowStepMaxIterationsPatch("5"), { maxIterations: 5 });
+assert.deepEqual(controller.flowStepMaxIterationsPatch(""), { maxIterations: null });
+assert.deepEqual(controller.flowStepMaxIterationsPatch("1.5"), { maxIterations: null });
+assert.deepEqual(controller.flowStepLoopIdPatch(" quality_loop "), { loopId: "quality_loop" });
+assert.deepEqual(controller.flowStepLoopIdPatch(""), { loopId: "" });
+assert.deepEqual(controller.flowStepRepeatConditionPatch({
+  cond: { stepId: "reviewer", field: "verdict", op: "==", val: "red" },
+}, { field: "status", val: "green" }), {
+  cond: { stepId: "reviewer", field: "status", op: "==", val: "green" },
+});
+assert.deepEqual(controller.flowStepRepeatConditionPatch({}, { stepId: "reviewer", field: "" }), {
+  cond: { stepId: "reviewer", field: "" },
+});
+assert.deepEqual(controller.basicConditionSourcePatch([
+  { stepId: "params", namespace: "params" },
+  { stepId: "reviewer", namespace: "steps" },
+], "params", { includeNamespace: true }), {
+  namespace: "params",
+  stepId: "params",
+  field: "",
+});
+assert.deepEqual(controller.basicConditionSourcePatch([
+  { stepId: "reviewer" },
+], "reviewer"), {
+  stepId: "reviewer",
+  field: "",
+});
+assert.deepEqual(controller.basicConditionSourcePatch([
+  { stepId: "reviewer" },
+], "ghost_step"), {});
+assert.deepEqual(controller.basicConditionFieldPatch(" verdict ", [{
+  value: "verdict",
+  field: { name: "verdict" },
+}]), { field: "verdict" });
+assert.deepEqual(controller.basicConditionFieldPatch("ghost", [{
+  value: "verdict",
+  field: { name: "verdict" },
+}]), {});
+assert.deepEqual(controller.basicConditionOperatorPatch(" == ", graphShapeContract), { op: "==" });
+assert.deepEqual(controller.basicConditionOperatorPatch("contains_everything", graphShapeContract), {});
+assert.deepEqual(controller.basicConditionValuePatch("green"), { val: "green" });
+const iterationInputContract = {
+  mob_definition: {
+    defaults: { repeat_iteration_input: "carry" },
+    repeat_iteration_inputs: ["carry"],
+  },
+};
+assert.deepEqual(controller.flowStepIterationInputPatch(" carry ", iterationInputContract), { iterationInput: "carry" });
+assert.deepEqual(controller.flowStepIterationInputPatch("", iterationInputContract), { iterationInput: "" });
+assert.deepEqual(controller.flowStepIterationInputPatch("previous", iterationInputContract), {});
+assert.deepEqual(controller.flowStepControllerRolePatch(" m_reviewer ", members), { controllerRole: "m_reviewer" });
+assert.deepEqual(controller.flowStepControllerRolePatch("", members), { controllerRole: "" });
+assert.deepEqual(controller.flowStepControllerRolePatch("m_deleted", members), {});
+assert.deepEqual(controller.flowStepMemberRolePatch(" m_reviewer ", members), { role: "m_reviewer" });
+assert.deepEqual(controller.flowStepMemberRolePatch("m_coder", members), {});
+assert.deepEqual(controller.flowStepDispatchModePatch(" one_to_one ", memberStepControlContract), { dispatchMode: "one_to_one" });
+assert.deepEqual(controller.flowStepDispatchModePatch(" broadcast ", memberStepControlContract), {});
+assert.deepEqual(controller.flowStepDispatchModePatch("", memberStepControlContract), { dispatchMode: "" });
+assert.deepEqual(controller.flowStepParallelDispatchPatch(" fan_out ", memberStepControlContract), { dispatch: "fan_out" });
+assert.deepEqual(controller.flowStepParallelDispatchPatch(" broadcast ", memberStepControlContract), {});
+assert.deepEqual(controller.flowStepCollectionPatch(" quorum ", memberStepControlContract), { collection: "quorum" });
+assert.deepEqual(controller.flowStepCollectionPatch(" lottery ", memberStepControlContract), {});
+assert.deepEqual(controller.flowStepDependencyModePatch(" any ", memberStepControlContract), { dependsMode: "any" });
+assert.deepEqual(controller.flowStepDependencyModePatch(" maybe ", memberStepControlContract), {});
+assert.deepEqual(controller.flowStepOutputFormatPatch(" json ", memberStepControlContract), { outputFormat: "json" });
+assert.deepEqual(controller.flowStepOutputFormatPatch(" xml ", memberStepControlContract), {});
+assert.deepEqual(controller.flowStepOutputFormatPatch("", memberStepControlContract), { outputFormat: "" });
+assert.deepEqual(controller.flowStepAllowedToolsPatch([" shell ", "", "git", "shell"], {
+  member: { tools: ["shell", "builtins", "unknown"] },
+  toolCatalog: [{ id: "shell" }, { id: "builtins" }, { id: "memory" }],
+}), { allowedTools: ["shell"] });
+assert.deepEqual(controller.flowStepAllowedToolsPatch(["shell"], {
+  member: { tools: ["shell"] },
+  toolCatalog: [],
+}), { allowedTools: [] });
+assert.deepEqual(controller.flowStepBlockedToolsPatch([" memory ", null, "shell", "phantom", "shell"], {
+  toolCatalog: [{ id: "memory" }, { id: "shell" }],
+}), { blockedTools: ["memory", "shell"] });
+
+assert.deepEqual(controller.basicBranchConditionPatch({
+  type: "branch",
+  branches: [{ id: "br1", condition: "", steps: [] }],
+}, "br1", {
+  namespace: "params",
+  stepId: "params",
+  field: "route",
+  op: "==",
+  val: "green",
+}, graphShapeContract), {
+  branches: [{
+    id: "br1",
+    condition: 'params.route == "green"',
+    cond: { namespace: "params", stepId: "params", field: "route", op: "==", val: "green" },
+    steps: [],
+  }],
+});
+assert.deepEqual(controller.basicBranchConditionPatch({
+  type: "branch",
+  branches: [{ id: "br1", condition: 'params.route == "red"', steps: [] }],
+}, "br1", { field: "status" }, graphShapeContract).branches[0].cond, {
+  namespace: "params",
+  stepId: "params",
+  field: "status",
+  op: "==",
+  val: "red",
+});
+const branchConditionControlState = controller.basicBranchConditionControlState({
+  branch: { id: "br1", cond: { namespace: "params", stepId: "params", field: "route", op: "==", val: "docs" } },
+  options: [
+    {
+      stepId: "params",
+      namespace: "params",
+      label: "Input params",
+      fields: [{ id: "p_route", name: "route", type: "enum" }],
+    },
+    {
+      stepId: "review_step",
+      namespace: "steps",
+      member: { id: "m_review", name: "Reviewer", schema: "ReviewArtifact" },
+    },
+  ],
+  schemas: [{ id: "ReviewArtifact", fields: [{ id: "f_verdict", name: "verdict", type: "enum" }] }],
+  contract: graphShapeContract,
+});
+assert.equal(branchConditionControlState.cond.stepId, "params");
+assert.equal(branchConditionControlState.selected.label, "Input params");
+assert.equal(branchConditionControlState.field.name, "route");
+assert.equal(branchConditionControlState.operatorValue, "==");
+assert.equal(branchConditionControlState.previewLabel, 'Input params.route == "docs"');
+assert.deepEqual(branchConditionControlState.sourceOptions.map((option) => [option.value, option.label]), [
+  ["params", "Input params"],
+  ["review_step", "Reviewer"],
+]);
+assert.deepEqual(branchConditionControlState.fieldOptions.map((option) => [option.value, option.label]), [
+  ["route", "route · enum"],
+]);
+const schemaBranchConditionControlState = controller.basicBranchConditionControlState({
+  branch: { id: "br1", cond: { namespace: "steps", stepId: "review_step", field: "verdict", op: "!=", val: "red" } },
+  options: [{
+    stepId: "review_step",
+    namespace: "steps",
+    member: { id: "m_review", name: "Reviewer", schema: "ReviewArtifact" },
+  }],
+  schemas: [{ id: "ReviewArtifact", fields: [{ id: "f_verdict", name: "verdict", type: "enum" }] }],
+  contract: graphShapeContract,
+});
+assert.equal(schemaBranchConditionControlState.field.name, "verdict");
+assert.equal(schemaBranchConditionControlState.operatorValue, "!=");
+assert.equal(schemaBranchConditionControlState.operatorOptions.find((option) => option.value === "!=").disabled, true);
+assert.match(schemaBranchConditionControlState.operatorOptions.find((option) => option.value === "!=").reason, /condition_operators/);
+assert.equal(schemaBranchConditionControlState.previewLabel, 'Reviewer.verdict != "red"');
+const branchParallelControlFlow = {
+  steps: [
+    {
+      id: "input_1",
+      type: "input",
+      inputParams: [{ id: "p_route", name: "route", type: "enum" }],
+    },
+    { id: "review_step", type: "member", role: "m_reviewer" },
+    {
+      id: "parallel_1",
+      type: "parallel",
+      controllerRole: "m_reviewer",
+      collection: "quorum",
+      dependsMode: "custom_dependency",
+      branches: [{ id: "br1", steps: [] }],
+    },
+  ],
+};
+const branchParallelControlState = controller.basicBranchParallelControlState({
+  step: branchParallelControlFlow.steps[2],
+  flow: branchParallelControlFlow,
+  members: [
+    ...members,
+    { id: "m_writer", name: "Writer", role: "writer", schema: "DraftArtifact" },
+  ],
+  contract: graphShapeContract,
+});
+assert.equal(branchParallelControlState.isParallel, true);
+assert.equal(branchParallelControlState.panelTitle, "Parallel");
+assert.equal(branchParallelControlState.controllerLabel, "Join member");
+assert.equal(branchParallelControlState.controllerPlaceholderLabel, "— direct MobKit lanes —");
+assert.equal(branchParallelControlState.controllerRole, "m_reviewer");
+assert.deepEqual(branchParallelControlState.memberOptions.map((option) => [option.value, option.label]), [
+  ["m_reviewer", "Reviewer · reviewer"],
+  ["m_writer", "Writer · writer"],
+]);
+assert.equal(branchParallelControlState.branchConditionTitle, "Branch conditions");
+assert.equal(branchParallelControlState.fallbackTitle, "Fallback");
+assert.equal(branchParallelControlState.dispatchLabel, "Dispatch mode");
+assert.equal(branchParallelControlState.dispatchValue, "fan_out");
+assert.equal(branchParallelControlState.collectionLabel, "Collection policy (fan_in)");
+assert.equal(branchParallelControlState.collectionValue, "quorum");
+assert.equal(branchParallelControlState.showQuorum, true);
+assert.equal(branchParallelControlState.quorumLabel, "Quorum (N)");
+assert.equal(branchParallelControlState.quorumPlaceholder, "required");
+assert.equal(branchParallelControlState.dependencyLabel, "depends_on mode");
+assert.equal(branchParallelControlState.dependencyValue, "custom_dependency");
+assert.equal(branchParallelControlState.selectedDependency.disabled, true);
+assert.match(branchParallelControlState.selectedDependency.reason, /dependency_modes/);
+const basicBranchControlState = controller.basicBranchParallelControlState({
+  step: { id: "branch_1", type: "branch", branches: [{ id: "br1", condition: "", steps: [] }] },
+  flow: {
+    steps: [
+      branchParallelControlFlow.steps[0],
+      branchParallelControlFlow.steps[1],
+      { id: "branch_1", type: "branch", branches: [] },
+    ],
+  },
+  members,
+  contract: graphShapeContract,
+});
+assert.equal(basicBranchControlState.isParallel, false);
+assert.equal(basicBranchControlState.panelTitle, "Branch");
+assert.equal(basicBranchControlState.controllerLabel, "Route member");
+assert.equal(basicBranchControlState.controllerPlaceholderLabel, "— direct MobKit lanes —");
+assert.equal(basicBranchControlState.addBranchLabel, "+ Add branch");
+assert.equal(basicBranchControlState.branchConditionTitle, "Branch conditions");
+assert.equal(basicBranchControlState.fallbackTitle, "Fallback");
+assert.deepEqual(basicBranchControlState.conditionOptions.map((option) => [option.stepId, option.label || option.member?.name]), [
+  ["params", "Input params"],
+  ["review_step", "Reviewer"],
+]);
+const repeatControlContract = {
+  mob_definition: {
+    ...graphShapeContract.mob_definition,
+    defaults: {
+      ...graphShapeContract.mob_definition.defaults,
+      repeat_iteration_input: "carry",
+    },
+    repeat_iteration_inputs: ["carry"],
+  },
+};
+const repeatControlState = controller.basicRepeatControlState({
+  step: {
+    id: "repeat_1",
+    type: "repeat",
+    cond: { stepId: "loop_review", field: "verdict", op: "==", val: "green" },
+    iterationInput: "carry",
+    steps: [{ id: "loop_review", type: "member", role: "m_review" }],
+  },
+  members: [{ id: "m_review", name: "Reviewer", schema: "ReviewArtifact" }],
+  schemas: [{ id: "ReviewArtifact", fields: [{ id: "f_verdict", name: "verdict", type: "enum" }] }],
+  contract: repeatControlContract,
+});
+assert.equal(repeatControlState.hasBodyMembers, true);
+assert.equal(repeatControlState.panelIcon, "↻");
+assert.equal(repeatControlState.panelTitle, "Repeat until");
+assert.equal(repeatControlState.panelSub, "Loop the body, then evaluate the condition after each iteration");
+assert.equal(repeatControlState.loopIdLabel, "loop_id");
+assert.equal(repeatControlState.loopIdPlaceholder, "quality_loop");
+assert.equal(repeatControlState.conditionTitle, "Until condition");
+assert.equal(repeatControlState.conditionIntro, "Evaluated on a body member's structured output after each pass. The loop exits when it holds.");
+assert.equal(repeatControlState.emptyBodyHint, "Add a member step inside the loop first — the condition reads its output schema.");
+assert.equal(repeatControlState.memberPlaceholderLabel, "— member —");
+assert.equal(repeatControlState.previewLabel, "until");
+assert.equal(repeatControlState.previewFallback, "…");
+assert.equal(repeatControlState.iterationInputLabel, "Iteration input — what each pass receives");
+assert.equal(repeatControlState.maxIterationsLabel, "max_iterations");
+assert.equal(repeatControlState.maxIterationsPlaceholder, "required");
+assert.deepEqual(repeatControlState.tips, [
+  "The body is its own FrameSpec — add member steps inside the loop.",
+  "The condition reads a member's typed output (e.g. reviewer.verdict == green).",
+  "max_iterations bounds the loop so it always terminates.",
+]);
+assert.deepEqual(repeatControlState.bodyMemberOptions.map((option) => [option.value, option.label]), [
+  ["loop_review", "Reviewer"],
+]);
+assert.deepEqual(repeatControlState.fieldOptions.map((option) => [option.value, option.label]), [
+  ["verdict", "verdict · enum"],
+]);
+assert.equal(repeatControlState.condField.name, "verdict");
+assert.equal(repeatControlState.operatorValue, "==");
+assert.equal(repeatControlState.repeatUntilExpression, 'Reviewer.verdict == "green"');
+assert.deepEqual(repeatControlState.iterationInputOptions.map((option) => [option.value, option.label, option.disabled]), [
+  ["", "runtime default", false],
+  ["carry", "Carry — last body step's output feeds the next pass", false],
+]);
+assert.equal(repeatControlState.selectedIterationInput.value, "carry");
+const missingRepeatControlState = controller.basicRepeatControlState({
+  step: { id: "repeat_2", type: "repeat", cond: { stepId: "missing", field: "verdict", op: "==", val: "green" }, iterationInput: "previous" },
+  members: [{ id: "m_review", name: "Reviewer", schema: "ReviewArtifact" }],
+  schemas: [{ id: "ReviewArtifact", fields: [{ id: "f_verdict", name: "verdict", type: "enum" }] }],
+  contract: repeatControlContract,
+});
+assert.equal(missingRepeatControlState.hasBodyMembers, false);
+assert.equal(missingRepeatControlState.fieldPlaceholder, "(no schema)");
+assert.equal(missingRepeatControlState.selectedIterationInput.disabled, true);
+assert.match(missingRepeatControlState.selectedIterationInput.reason, /repeat_iteration_inputs/);
+{
+  const patch = controller.basicBranchAddPatch({ type: "branch", branches: [{ id: "br1", label: "Branch 1", condition: "", steps: [] }] });
+  assert.equal(patch.branches.length, 2);
+  assert.equal(patch.branches[1].id, "br_1");
+  assert.equal(patch.branches[1].label, "Branch 2");
+  assert.equal(patch.branches[1].condition, "");
+  assert.deepEqual(patch.branches[1].steps, []);
+}
+{
+  const patch = controller.basicBranchAddPatch({ type: "parallel", branches: [{ id: "br1", label: "Branch 1", steps: [] }] });
+  assert.equal(patch.branches.length, 2);
+  assert.equal(patch.branches[1].id, "br_1");
+  assert.equal(patch.branches[1].label, "Branch 2");
+  assert.equal(Object.prototype.hasOwnProperty.call(patch.branches[1], "condition"), false);
+  assert.deepEqual(patch.branches[1].steps, []);
+}
+{
+  const flow = {
+    steps: [{
+      id: "router",
+      type: "branch",
+      branches: [
+        { id: "br_1", steps: [] },
+        { id: "br_2", steps: [] },
+      ],
+      fallback: [],
+    }],
+  };
+  const patch = controller.basicBranchAddPatch(flow.steps[0], { flow });
+  assert.equal(patch.branches[2].id, "br_3");
+}
+{
+  const flow = {
+    steps: [{
+      id: "fanout",
+      type: "parallel",
+      branches: [
+        { id: "br_1", steps: [] },
+        { id: "br_2", steps: [] },
+      ],
+    }],
+  };
+  const patch = controller.basicBranchAddPatch(flow.steps[0], { flow });
+  assert.equal(patch.branches[2].id, "br_3");
+  assert.equal(Object.prototype.hasOwnProperty.call(patch.branches[2], "condition"), false);
+}
+
+assert.equal(controller.contractDefaultValue({
+  mob_definition: {
+    defaults: { dispatch_mode: "fan_out" },
+    dispatch_modes: ["one_to_one"],
+  },
+}, "dispatch_mode"), "");
+
+assert.equal(controller.graphControlShape({
+  gateKind: "branch",
+  at: { col: 0, row: 0 },
+  members: graphMembers.slice(0, 2),
+  instances: [],
+  flow: previousFlow,
+  contract: {
+    mob_definition: {
+      graph_gate_kinds: ["branch", "fork", "join"],
+      graph_palette_gate_kinds: ["branch", "fork"],
+    },
+  },
+}), null);
+
+assert.equal(controller.graphControlShape({
+  gateKind: "branch",
+  at: { col: 0, row: 0 },
+  members: graphMembers.slice(0, 2),
+  instances: [],
+  flow: previousFlow,
+  contract: {
+    mob_definition: {
+      graph_gate_kinds: ["branch", "fork", "join"],
+      graph_palette_gate_kinds: ["branch", "fork"],
+      graph_edge_kinds: ["next", "fanout", "cond"],
+      editor_flow_step_types: ["repeat", "branch", "parallel"],
+      launch_modes: ["fresh", "resume", "fork"],
+      dispatch_modes: ["fan_out", "one_to_one", "fan_in"],
+      collection_policies: ["all", "any", "quorum"],
+      dependency_modes: ["all", "any"],
+      condition_operators: ["==", ">", "<"],
+      editor_schema_field_types: ["string", "enum"],
+    },
+  },
+}), null);
+
+const branchShape = controller.graphControlShape({
+  gateKind: "branch",
+  at: { col: 0, row: 0 },
+  members: graphMembers.slice(0, 2),
+  instances: [],
+  flow: previousFlow,
+  contract: graphShapeContract,
+});
+assert(branchShape);
+assert.equal(branchShape.instances[0].gateKind, "branch");
+assert.equal(branchShape.instances[1].launchMode.kind, "Fresh");
+assert.equal(branchShape.instances[3].collection, "all");
+assert.equal(branchShape.edges[0].kind, "cond");
+assert.equal(branchShape.edges[0].label, "");
+assert.equal(branchShape.edges[0].cond, null);
+assert.equal(branchShape.flow, previousFlow);
+assert.deepEqual(branchShape.flow.steps[0].inputParams, []);
+
+const branchShapeAfterCollision = controller.graphControlShape({
+  gateKind: "branch",
+  at: { col: 0, row: 0 },
+  members: graphMembers.slice(0, 2),
+  instances: [
+    { id: "g_branch_1", isGate: true },
+    { id: "g_branch_1_a", memberId: "m_left" },
+    { id: "g_branch_1_b", memberId: "m_right" },
+    { id: "j_branch_1", isGate: true },
+  ],
+  edges: [{ id: "e_g_branch_1_g_branch_1_a", from: "g_branch_1", to: "g_branch_1_a" }],
+  flow: previousFlow,
+  contract: graphShapeContract,
+});
+assert(branchShapeAfterCollision);
+assert.deepEqual(branchShapeAfterCollision.instances.map((instance) => instance.id), [
+  "g_branch_2",
+  "g_branch_2_a",
+  "g_branch_2_b",
+  "j_branch_2",
+]);
+assert.deepEqual(branchShapeAfterCollision.edges.map((edge) => edge.id), [
+  "e_g_branch_2_g_branch_2_a",
+  "e_g_branch_2_g_branch_2_b",
+  "e_g_branch_2_a_j_branch_2",
+  "e_g_branch_2_b_j_branch_2",
+]);
+
+const forkShape = controller.graphControlShape({
+  gateKind: "fork",
+  at: { col: 0, row: 0 },
+  members: graphMembers.slice(0, 2),
+  instances: [],
+  flow: previousFlow,
+  contract: graphShapeContract,
+});
+assert(forkShape);
+assert.equal(forkShape.instances[0].dispatch, "fan_out");
+assert.equal(forkShape.instances[3].collection, "all");
+assert.deepEqual(forkShape.edges.map((edge) => edge.kind), ["fanout", "fanout", "next", "next"]);
+
+assert.equal(controller.graphMemberInstanceShape({
+  memberId: "m_left",
+  at: { col: 2, row: 3 },
+  contract: { mob_definition: {} },
+}), null);
+
+const memberInstanceShape = controller.graphMemberInstanceShape({
+  memberId: "m_left",
+  at: { col: 2, row: 3 },
+  instances: [{ id: "i_m_left" }],
+  contract: graphShapeContract,
+});
+assert.equal(memberInstanceShape.id, "i_m_left_2");
+assert.equal(memberInstanceShape.memberId, "m_left");
+assert.deepEqual(memberInstanceShape.launchMode, { kind: "Fresh" });
+assert.equal(memberInstanceShape.col, 2);
+assert.equal(memberInstanceShape.row, 3);
+
+assert.equal(controller.flowStepTemplate({ kind: "parallel" }, {
+  mob_definition: {
+    editor_flow_step_types: ["parallel"],
+  },
+}), null);
+
+const parallelTemplate = controller.flowStepTemplate({ kind: "parallel" }, graphShapeContract);
+assert(parallelTemplate.id.startsWith("s_"));
+assert.equal(parallelTemplate.type, "parallel");
+assert.equal(parallelTemplate.dispatch, "fan_out");
+assert.equal(parallelTemplate.collection, "all");
+assert.equal(parallelTemplate.dependsMode, "all");
+assert.equal(parallelTemplate.branches.length, 2);
+
+const memberTemplate = controller.flowStepTemplate({ kind: "member", id: "m_left" }, graphShapeContract);
+assert(memberTemplate.id.startsWith("s_"));
+assert.equal(memberTemplate.type, "member");
+assert.equal(memberTemplate.role, "m_left");
+assert.equal(memberTemplate.dependsMode, "all");
+
+const collisionFlowTemplate = controller.flowStepTemplate({ kind: "parallel" }, graphShapeContract, {
+  flow: {
+    steps: [
+      { id: "s_1", type: "member", role: "m_left" },
+      {
+        id: "s_2",
+        type: "branch",
+        branches: [
+          { id: "br_1", steps: [] },
+          { id: "br_2", steps: [] },
+        ],
+        fallback: [],
+      },
+    ],
+  },
+});
+assert.equal(collisionFlowTemplate.id, "s_3");
+assert.deepEqual(collisionFlowTemplate.branches.map((branch) => branch.id), ["br_3", "br_4"]);
+assert.deepEqual(controller.flowStepInsertPatch({
+  name: "collision-proof",
+  steps: [
+    { id: "s_1", type: "member", role: "m_left" },
+    { id: "s_2", type: "member", role: "m_right" },
+  ],
+}, { lane: "main", index: 2 }, controller.flowStepTemplate({ kind: "member", id: "m_left" }, graphShapeContract, {
+  flow: {
+    steps: [
+      { id: "s_1", type: "member", role: "m_left" },
+      { id: "s_2", type: "member", role: "m_right" },
+    ],
+  },
+}), { members: graphMembers }).steps.map((step) => step.id), ["s_1", "s_2", "s_3"]);
+
+const registryRows = [
+  { id: "f_existing", name: "Existing", version: "old", stage: "valid", validation: { ok: true } },
+  { id: "f_other", name: "Other", version: "old", stage: "valid", validation: { ok: true } },
+];
+const draftRows = controller.flowRegistryMarkDraftPatch(registryRows, "f_existing");
+assert.notEqual(draftRows, registryRows);
+assert.equal(draftRows[0].stage, "draft");
+assert.equal(draftRows[0].validation, null);
+assert.equal(draftRows[1], registryRows[1]);
+
+const registryDocument = {
+  name: "Planner Coder Reviewer",
+  mob_id: "planner_coder_reviewer",
+  schema_version: "1.0",
+  flow: { name: "Mob Flow" },
+};
+const selectionRows = [
+  { id: "f_existing", name: "Existing", version: "old", stage: "valid", validation: { ok: true }, document: registryDocument },
+  { id: "f_draft", name: "Draft", version: "draft", stage: "draft" },
+];
+const documentSelection = controller.flowRegistrySelectionState(selectionRows, "f_existing");
+assert.equal(documentSelection.found, true);
+assert.equal(documentSelection.hasDocument, true);
+assert.equal(documentSelection.row, selectionRows[0]);
+assert.deepEqual(documentSelection.hydration.result, {
+  document: registryDocument,
+  validation: { ok: true },
+});
+assert.deepEqual(documentSelection.hydration.options, {
+  id: "f_existing",
+  flowRow: selectionRows[0],
+  addToRegistry: false,
+});
+assert.equal(documentSelection.fallback, null);
+
+const fallbackSelection = controller.flowRegistrySelectionState(selectionRows, "f_draft");
+assert.equal(fallbackSelection.found, true);
+assert.equal(fallbackSelection.hasDocument, false);
+assert.equal(fallbackSelection.hydration, null);
+assert.deepEqual(fallbackSelection.fallback, {
+  currentFlowId: "f_draft",
+  stage: "draft",
+  view: "editor",
+});
+
+const missingSelection = controller.flowRegistrySelectionState(selectionRows, "missing");
+assert.equal(missingSelection.found, false);
+assert.equal(missingSelection.row, null);
+assert.equal(missingSelection.hydration, null);
+assert.equal(missingSelection.fallback, null);
+
+const rememberedRows = controller.flowRegistryRememberDocumentPatch(registryRows, {
+  currentFlowId: "f_existing",
+  document: registryDocument,
+  validation: { ok: false },
+  stage: "draft",
+});
+assert.equal(rememberedRows[0].name, "Planner Coder Reviewer");
+assert.equal(rememberedRows[0].version, "1.0");
+assert.equal(rememberedRows[0].document, registryDocument);
+assert.deepEqual(rememberedRows[0].validation, { ok: false });
+
+const emptyPersistence = controller.flowRegistryDocumentPersistence({
+  currentFlowId: "",
+  document: registryDocument,
+});
+assert.equal(emptyPersistence.ok, false);
+assert.equal(emptyPersistence.changed, false);
+assert.equal(emptyPersistence.rowPatch, null);
+
+const draftPersistence = controller.flowRegistryDocumentPersistence({
+  currentFlowId: "f_existing",
+  document: registryDocument,
+  stage: "published",
+  validation: null,
+});
+assert.equal(draftPersistence.ok, true);
+assert.equal(draftPersistence.changed, true);
+assert.equal(draftPersistence.signature, `f_existing\n${JSON.stringify(registryDocument)}`);
+assert.equal(draftPersistence.rowPatch.stage, "draft");
+assert.equal(draftPersistence.rowPatch.currentFlowId, "f_existing");
+assert.equal(draftPersistence.rowPatch.document, registryDocument);
+assert.equal(draftPersistence.rowPatch.validation, null);
+
+const validatedPersistence = controller.flowRegistryDocumentPersistence({
+  currentFlowId: "f_existing",
+  document: registryDocument,
+  stage: "published",
+  validation: { ok: true },
+});
+assert.equal(validatedPersistence.rowPatch.stage, "published");
+assert.deepEqual(validatedPersistence.rowPatch.validation, { ok: true });
+
+const unchangedPersistence = controller.flowRegistryDocumentPersistence({
+  currentFlowId: "f_existing",
+  document: registryDocument,
+  previousSignature: draftPersistence.signature,
+  skipIfUnchanged: true,
+});
+assert.equal(unchangedPersistence.ok, true);
+assert.equal(unchangedPersistence.changed, false);
+assert.equal(unchangedPersistence.signature, draftPersistence.signature);
+assert.equal(unchangedPersistence.rowPatch, null);
+
+const importedRow = controller.flowRegistryRowFromDocument({
+  id: "f_imported",
+  document: registryDocument,
+  validation: { ok: true },
+  sourceLabel: "upload.mobpack",
+  source: "file:///tmp/upload.mobpack",
+  fallbackVersion: "imported",
+});
+assert.equal(importedRow.name, "Planner Coder Reviewer");
+assert.equal(importedRow.version, "1.0");
+assert.equal(importedRow.stage, "valid");
+assert.equal(importedRow.trigger, "upload.mobpack");
+assert.equal(importedRow.source, "file:///tmp/upload.mobpack");
+
+const storedGraphDocument = {
+  name: "Stored Graph Import",
+  mob_id: "stored_graph_import",
+  schema_version: "1.0",
+  members: [{ id: "reviewer", name: "Reviewer", role: "reviewer", profileBinding: "inline", runtimeMode: "turn_driven" }],
+  schemas: [{ id: "Verdict", fields: [] }],
+  flow: { name: "Stored Graph Import", steps: [{ id: "step_1", type: "member", role: "reviewer", task: "Review", instruction: "Review." }] },
+  instances: [{ id: "kept_node", memberId: "reviewer", col: 4, row: 2 }],
+  edges: [{ id: "kept_edge", from: "kept_node", to: "done", kind: "next" }],
+  frames: [{ id: "kept_frame", kind: "Manual", col: 4, row: 2 }],
+  skill_realms: [{ id: "imported", default: true, skills: [{ id: "mob.imported", label: "Imported", content: "Do imported work." }] }],
+};
+const hydratedStored = controller.hydrateMobpackDocumentState({
+  document: storedGraphDocument,
+  validation: {
+    ok: true,
+    display_rows: [{
+      kind: "ok",
+      glyph: "✓",
+      head: "Imported mobpack validated",
+      sub: "mob.toml",
+      meta: "import.ok",
+    }],
+  },
+  source_label: "upload.mobpack",
+  source: "file:///tmp/stored.mobpack",
+}, {
+  id: "f_stored",
+  deployDefaults: testDeploySettings(),
+  mobDefaults: controller.mobDefaultsFromSchema(TEST_SCHEMA),
+  contractSkillRealms: [{ id: "contract", skills: [{ id: "mob.contract", label: "Contract", content: "Contract skill." }] }],
+});
+assert.equal(hydratedStored.id, "f_stored");
+assert.equal(hydratedStored.stage, "valid");
+assert.equal(hydratedStored.flow.name, "Stored Graph Import");
+assert.deepEqual(hydratedStored.members, storedGraphDocument.members);
+assert.deepEqual(hydratedStored.schemas, storedGraphDocument.schemas);
+assert.deepEqual(hydratedStored.graphProjection.instances, storedGraphDocument.instances);
+assert.deepEqual(hydratedStored.graphProjection.edges, storedGraphDocument.edges);
+assert.deepEqual(hydratedStored.graphProjection.frames, storedGraphDocument.frames);
+assert.deepEqual(hydratedStored.skillRealms.map(realm => realm.id), ["imported", "contract"]);
+assert.equal(hydratedStored.deploySettings.command, "rkat mob deploy");
+assert.equal(hydratedStored.mobSettings.backendDefault, "session");
+assert.equal(hydratedStored.registryRow.name, "Stored Graph Import");
+assert.equal(hydratedStored.registryRow.source, "file:///tmp/stored.mobpack");
+assert.equal(hydratedStored.validationRows[0].head, "Imported mobpack validated");
+assert.equal(hydratedStored.validationRows[0].meta, "import.ok");
+
+const flowOnlyHydrated = controller.hydrateMobpackDocumentState({
+  document: {
+    name: "Flow Only Import",
+    mob_id: "flow_only_import",
+    members: storedGraphDocument.members,
+    flow: storedGraphDocument.flow,
+  },
+}, {
+  addToRegistry: false,
+  openEditor: false,
+});
+assert.equal(flowOnlyHydrated.addToRegistry, false);
+assert.equal(flowOnlyHydrated.openEditor, false);
+assert.equal(flowOnlyHydrated.graphProjection.instances[0].id, "step_1");
+assert.equal(flowOnlyHydrated.graphProjection.instances[0].memberId, "reviewer");
+assert.deepEqual(flowOnlyHydrated.graphProjection.frames, []);
+assert.deepEqual(flowOnlyHydrated.validationRows, []);
+
+const missingFlowHydrated = controller.hydrateMobpackDocumentState({
+  document: { name: "No Flow Import", mob_id: "no_flow_import" },
+}, {
+  deployDefaults: testDeploySettings(),
+  mobDefaults: controller.mobDefaultsFromSchema(TEST_SCHEMA),
+});
+assert.equal(missingFlowHydrated.flow.name, "No Flow Import");
+assert.equal(missingFlowHydrated.flow.steps[0].type, "input");
+assert.deepEqual(missingFlowHydrated.members, []);
+assert.deepEqual(missingFlowHydrated.schemas, []);
+assert.equal(missingFlowHydrated.deploySettings.maxTotalTokens, 64);
+assert.equal(missingFlowHydrated.mobSettings.backendDefault, "session");
+
+const appendedRows = controller.flowRegistryAppendRowPatch(registryRows, importedRow);
+assert.equal(appendedRows.length, 3);
+assert.equal(appendedRows[2], importedRow);
+
+const replacedRows = controller.flowRegistryUpsertRowPatch(registryRows, { ...importedRow, id: "f_existing", name: "Replacement" });
+assert.equal(replacedRows.length, 2);
+assert.equal(replacedRows[0].name, "Replacement");
+assert.equal(replacedRows[1], registryRows[1]);
+
+const patchedDeploy = controller.deploySettingsPatch({
+  surface: "cli",
+  trustPolicy: "permissive",
+  maxToolCalls: 2,
+}, {
+  trustPolicy: "strict",
+  maxTotalTokens: 128,
+  prompt: "Run the mob.",
+});
+assert.equal(patchedDeploy.surface, "cli");
+assert.equal(patchedDeploy.trustPolicy, "strict");
+assert.equal(patchedDeploy.maxToolCalls, 2);
+assert.equal(patchedDeploy.maxTotalTokens, 128);
+assert.equal(patchedDeploy.prompt, "Run the mob.");
+const settingsContract = {
+  deploy_settings: {
+    command: "rkat mob deploy",
+    surfaces: ["cli"],
+    trust_policies: ["permissive"],
+    realm_backends: ["jsonl"],
+  },
+  mob_definition: {
+    profile_backends: ["session", "external"],
+  },
+};
+const catalogedDeploy = controller.deploySettingsPatch({
+  command: "rkat mob deploy",
+  surface: "cli",
+  trustPolicy: "permissive",
+  realmBackend: "jsonl",
+  model: "openai/gpt-5.5",
+}, {
+  command: "invalid deploy command",
+  surface: "rpc",
+  trustPolicy: "strict",
+  realmBackend: "sqlite",
+  model: "openai/ghost",
+  prompt: "Still valid.",
+}, {
+  contract: settingsContract,
+  modelCatalog: [{ id: "openai/gpt-5.5" }],
+});
+assert.equal(catalogedDeploy.command, "rkat mob deploy");
+assert.equal(catalogedDeploy.surface, "cli");
+assert.equal(catalogedDeploy.trustPolicy, "permissive");
+assert.equal(catalogedDeploy.realmBackend, "jsonl");
+assert.equal(catalogedDeploy.model, "openai/gpt-5.5");
+assert.equal(catalogedDeploy.prompt, "Still valid.");
+const validCatalogedDeploy = controller.deploySettingsPatch(catalogedDeploy, {
+  model: "",
+  realmBackend: "jsonl",
+}, {
+  contract: settingsContract,
+  modelCatalog: [{ id: "openai/gpt-5.5" }],
+});
+assert.equal(validCatalogedDeploy.model, "");
+assert.equal(validCatalogedDeploy.realmBackend, "jsonl");
+
+const patchedMob = controller.mobSettingsPatch({
+  orchestrator: "planner",
+  roleWiring: [{ a: "planner", b: "coder" }],
+}, {
+  backendDefault: "external",
+  roleWiring: [{ a: "reviewer", b: "planner" }, { a: "", b: "ignored" }],
+  topology: { kind: "mesh" },
+  arbitraryToml: { leaks: true },
+});
+assert.equal(patchedMob.orchestrator, "planner");
+assert.equal(patchedMob.backendDefault, "external");
+assert.deepEqual(patchedMob.roleWiring, [{ a: "reviewer", b: "planner" }]);
+assert.equal(patchedMob.topology, undefined);
+assert.equal(patchedMob.arbitraryToml, undefined);
+const catalogedMob = controller.mobSettingsPatch({
+  backendDefault: "session",
+  orchestrator: "planner",
+}, {
+  backendDefault: "daemon",
+  externalAddressBase: "http://127.0.0.1:9000",
+}, {
+  contract: settingsContract,
+});
+assert.equal(catalogedMob.backendDefault, "session");
+assert.equal(catalogedMob.externalAddressBase, "http://127.0.0.1:9000");
+assert.equal(controller.mobSettingsPatch(catalogedMob, { backendDefault: "" }, { contract: settingsContract }).backendDefault, "");
+
+const roleRules = [{ a: "planner", b: "coder" }, { a: "coder", b: "reviewer" }];
+assert.deepEqual(
+  controller.mobRoleWiringEditorState([{ a: " planner ", b: "coder" }, { a: "", b: "ignored" }], [{ value: "planner", label: "Planner" }, { value: "coder", label: "Coder" }]),
+  {
+    label: "Role wiring",
+    countLabel: "1",
+    addLabel: "+ rule",
+    addDisabled: false,
+    options: [{ value: "planner", label: "Planner" }, { value: "coder", label: "Coder" }],
+    wiring: [{ a: "planner", b: "coder" }],
+  },
+);
+assert.equal(controller.mobRoleWiringEditorState([], []).addDisabled, true);
+const roleOptions = [{ value: "planner" }, { value: "coder" }, { value: "reviewer" }];
+assert.deepEqual(
+  controller.mobRoleWiringUpdatePatch(roleRules, 1, { b: "planner" }, roleOptions),
+  [{ a: "planner", b: "coder" }, { a: "coder", b: "planner" }],
+);
+assert.deepEqual(
+  controller.mobRoleWiringUpdatePatch(roleRules, 1, { b: "ghost_profile" }, roleOptions),
+  [{ a: "planner", b: "coder" }],
+);
+assert.deepEqual(
+  controller.mobRoleWiringDeletePatch(roleRules, 0),
+  [{ a: "coder", b: "reviewer" }],
+);
+assert.deepEqual(
+  controller.mobRoleWiringAddPatch(roleRules, [{ value: "reviewer" }, { value: "planner" }]),
+  [{ a: "planner", b: "coder" }, { a: "coder", b: "reviewer" }, { a: "reviewer", b: "planner" }],
+);
+
+assert.deepEqual(controller.advancedMobSettingsEditorState({ limits: { max_members: 3 } }), {
+  label: "Advanced",
+  text: '{\n  "limits": {\n    "max_members": 3\n  }\n}',
+});
+const advancedOk = controller.advancedMobSettingsDraftPatch('{"limits":{"max_members":3},"spawnPolicy":{"mode":"manual"}}');
+assert.equal(advancedOk.ok, true);
+assert.deepEqual(advancedOk.value, {
+  topology: null,
+  supervisor: null,
+  limits: { max_members: 3 },
+  spawnPolicy: { mode: "manual" },
+  eventRouter: null,
+});
+assert.equal(controller.advancedMobSettingsDraftPatch("[]").error, "object required");
+assert.equal(controller.advancedMobSettingsDraftPatch("{").ok, false);
+
+const enumField = { type: "string", enumValues: [] };
+assert.deepEqual(controller.schemaLikeFieldTypePatch(enumField, "enum", graphShapeContract), { type: "enum", enumValues: ["value"] });
+assert.deepEqual(controller.schemaLikeFieldTypePatch({ type: "enum", enumValues: ["green"] }, "string", graphShapeContract), { type: "string", enumValues: [] });
+assert.deepEqual(controller.schemaLikeFieldTypePatch({ type: "string", enumValues: [] }, "object", graphShapeContract), {});
+const schemaTypeControlState = controller.schemaLikeFieldTypeControlState({}, graphShapeContract);
+assert.equal(schemaTypeControlState.type, "string");
+assert.equal(schemaTypeControlState.selectedType.label, "string");
+assert.deepEqual(schemaTypeControlState.typeOptions.map((option) => [option.value, option.label, option.disabled]), [
+  ["string", "string", false],
+  ["enum", "enum — fixed choices", false],
+]);
+const unsupportedSchemaTypeControlState = controller.schemaLikeFieldTypeControlState({ type: "object" }, graphShapeContract);
+assert.equal(unsupportedSchemaTypeControlState.type, "object");
+assert.equal(unsupportedSchemaTypeControlState.selectedType.disabled, true);
+assert.match(unsupportedSchemaTypeControlState.selectedType.reason, /mob_definition\.editor_schema_field_types/);
+const schemaFieldRowState = controller.schemaFieldRowControlState({ type: "enum", enumValues: ["green"] }, graphShapeContract);
+assert.equal(schemaFieldRowState.namePlaceholder, "field_name");
+assert.equal(schemaFieldRowState.descriptionPlaceholder, "—");
+assert.equal(schemaFieldRowState.removeTitle, "Remove field");
+assert.equal(schemaFieldRowState.enumLabel, "VALUES");
+assert.equal(schemaFieldRowState.enumAddLabel, "+ value");
+assert.equal(schemaFieldRowState.enumAddValue, "value");
+assert.deepEqual(schemaFieldRowState.enumValues, ["green"]);
+assert.equal(schemaFieldRowState.typeState.type, "enum");
+const inputParamFieldState = controller.inputParamFieldControlState({ type: "enum", enumValues: ["green"] }, graphShapeContract);
+assert.equal(inputParamFieldState.namePlaceholder, "param_name");
+assert.equal(inputParamFieldState.descriptionPlaceholder, "—");
+assert.equal(inputParamFieldState.removeTitle, "Remove param");
+assert.equal(inputParamFieldState.enumLabel, "VALUES");
+assert.equal(inputParamFieldState.enumAddLabel, "+ value");
+assert.equal(inputParamFieldState.enumAddValue, "value");
+assert.deepEqual(inputParamFieldState.enumValues, ["green"]);
+assert.equal(inputParamFieldState.typeState.type, "enum");
+assert.deepEqual(controller.enumValueDraftPatch({ enumValues: ["green"] }, 0, ""), { enumValues: [""] });
+assert.deepEqual(controller.enumValueCommitPatch({ enumValues: ["green", "red"] }, 1, "green"), { enumValues: ["green", "green_2"] });
+assert.deepEqual(controller.enumValueDeletePatch({ enumValues: ["green", "red"] }, 0), { enumValues: ["red"] });
+assert.deepEqual(controller.enumValueAddPatch({ enumValues: ["value"] }, "value"), { enumValues: ["value", "value_2"] });
+
+const studioStateA = {
+  members: [{ id: "m1" }],
+  instances: [{ id: "i1" }],
+  edges: [],
+  frames: [],
+  schemas: [],
+  skillRealms: [{ id: "realm" }],
+};
+const studioStateB = {
+  members: [{ id: "m2" }],
+  instances: [{ id: "i2" }],
+  edges: [{ id: "e1" }],
+  frames: [{ id: "f1" }],
+  schemas: [{ id: "s1" }],
+  skillRealms: [],
+};
+const snapPatch = controller.studioHistorySnapshotPatch({
+  history: Array.from({ length: 31 }, (_, index) => ({ members: [{ id: `m${index}` }] })),
+  future: [studioStateB],
+  state: studioStateA,
+});
+assert.equal(snapPatch.history.length, 31);
+assert.equal(snapPatch.history[snapPatch.history.length - 1].members[0].id, "m1");
+assert.deepEqual(snapPatch.future, []);
+
+const undoPatch = controller.studioUndoPatch({ history: [studioStateA], future: [], state: studioStateB });
+assert.deepEqual(undoPatch.state.members, [{ id: "m1" }]);
+assert.equal(undoPatch.history.length, 0);
+assert.deepEqual(undoPatch.future[0].members, [{ id: "m2" }]);
+assert.equal(controller.studioUndoPatch({ history: [], future: [], state: studioStateB }), null);
+
+const redoPatch = controller.studioRedoPatch({ history: [], future: [studioStateB], state: studioStateA });
+assert.deepEqual(redoPatch.state.members, [{ id: "m2" }]);
+assert.deepEqual(redoPatch.history[0].members, [{ id: "m1" }]);
+assert.equal(redoPatch.future.length, 0);
+assert.equal(controller.studioRedoPatch({ history: [], future: [], state: studioStateA }), null);
+
+console.log("controller projection metadata ok");

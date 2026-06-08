@@ -14,8 +14,10 @@ pub mod decisions;
 pub mod governance;
 pub mod http_auth;
 pub mod http_console;
+pub mod http_flow_editor;
 pub mod http_sse;
 pub mod mob_handle_runtime;
+pub mod mobpack;
 pub mod mocks;
 pub mod process;
 pub mod protocol;
@@ -83,6 +85,12 @@ pub use http_console::{
     console_frontend_router, console_json_handler, console_json_router,
     console_json_router_with_aggregator, console_json_router_with_runtime,
 };
+pub use http_flow_editor::{
+    flow_editor_frontend_app_css_handler, flow_editor_frontend_app_js_handler,
+    flow_editor_frontend_index_handler, flow_editor_frontend_router,
+    flow_editor_frontend_vendor_js_handler, flow_editor_router, flow_editor_rpc_handler,
+    flow_editor_rpc_router,
+};
 pub use http_sse::{
     AgentEventSubscribeFn, MobEventSubscribeFn, agent_event_sse, agent_events_sse_router,
     mob_events_sse_router, mob_structural_events_sse_router,
@@ -91,6 +99,11 @@ pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,
     MobRuntimeError, RealMobRuntime, SessionCreatedContext, SessionHook, member_entry_to_json,
     send_message_on_mob,
+};
+pub use mobpack::{
+    MOBPACK_MEDIA_TYPE, MOBPACK_SCHEMA_VERSION, MobpackDeployCommandResult, MobpackDiagnostic,
+    MobpackDocument, MobpackExportResult, MobpackValidationResult, deploy_command_preview,
+    export_mobpack, import_mobpack, mobpack_schema_response, validate_mobpack,
 };
 pub use mocks::{MockModuleProcess, MockProcessError};
 pub use process::{ProcessBoundaryError, run_process_json_line};

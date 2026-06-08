@@ -8433,7 +8433,7 @@ comms = true
             None,
             None,
             None,
-            Some(identity_runtime),
+            Some(identity_runtime.clone()),
             None,
             None,
             rpc_request("mobkit/capabilities"),
@@ -8457,9 +8457,68 @@ comms = true
                 "identity runtime capabilities should advertise {method}: {methods:#?}"
             );
         }
+        for method in crate::rpc::MOBPACK_AUTHORING_METHODS {
+            assert!(
+                !methods.iter().any(|candidate| candidate == method),
+                "console runtime capabilities must not advertise flow-editor method {method}: {methods:#?}"
+            );
+        }
+
+        let mobpack_response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime),
+            None,
+            None,
+            rpc_request("mobkit/mobpacks/schema"),
+            true,
+        ))
+        .await;
+        assert_eq!(
+            mobpack_response["error"]["code"],
+            json!(-32601),
+            "console runtime RPC must not handle flow-editor authoring methods: {mobpack_response:#?}"
+        );
 
         let _ = runtime.handle().stop().await;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn console_aggregator_rpc_does_not_expose_flow_editor_authoring_methods() {
+        let response = Box::pin(handle_console_aggregator_rpc(
+            None,
+            rpc_request("mobkit/capabilities"),
+            true,
+        ))
+        .await;
+
+        assert_eq!(response["error"], Value::Null, "{response:#?}");
+        let methods = response["result"]["methods"]
+            .as_array()
+            .expect("capabilities methods should be an array");
+        for method in crate::rpc::MOBPACK_AUTHORING_METHODS {
+            assert!(
+                !methods.iter().any(|candidate| candidate == method),
+                "console aggregator capabilities must not advertise flow-editor method {method}: {methods:#?}"
+            );
+        }
+
+        let mobpack_response = Box::pin(handle_console_aggregator_rpc(
+            None,
+            rpc_request("mobkit/mobpacks/schema"),
+            true,
+        ))
+        .await;
+        assert_eq!(
+            mobpack_response["error"]["code"],
+            json!(-32601),
+            "console aggregator RPC must not handle flow-editor authoring methods: {mobpack_response:#?}"
+        );
     }
 
     #[tokio::test]

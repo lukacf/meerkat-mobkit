@@ -12,6 +12,7 @@ use crate::console_aggregator::{
 use crate::http_console::{
     console_frontend_router, console_json_router_with_runtime_events_and_policy,
 };
+use crate::http_flow_editor::flow_editor_router;
 use crate::http_sse::{
     agent_events_sse_router, mob_events_sse_router, mob_structural_events_sse_router,
 };
@@ -87,6 +88,7 @@ impl UnifiedRuntime {
         Router::new()
             .route("/healthz", get(|| async { "ok" }))
             .merge(self.build_console_frontend_router())
+            .merge(flow_editor_router())
             .merge(self.build_console_json_router_with_policy(decisions, visibility_policy))
             .merge(agent_events_sse_router(
                 Arc::new(move |agent_id| {
