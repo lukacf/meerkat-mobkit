@@ -798,6 +798,10 @@ pub fn mobpack_schema_response() -> Value {
     editor_graph_view["branch_condition_mode_fallback_label"] = json!("fallback");
     editor_graph_view["branch_condition_target_prefix"] = json!("→");
     editor_graph_view["branch_input_param_source_label"] = json!("Input params");
+    editor_graph_view["source_file_label"] = json!("mob.toml");
+    editor_graph_view["source_file_aria_label"] = json!("Open mob.toml read-only source editor");
+    editor_graph_view["source_file_glyph"] = json!("{ }");
+    editor_graph_view["source_file_role_label"] = json!("source file");
     editor_graph_view["branch_condition_field_placeholder"] = json!("— field —");
     editor_graph_view["branch_condition_no_options_hint"] =
         json!("add input params or an upstream schema field for this condition");
@@ -15811,6 +15815,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_view"]["branch_input_param_source_label"],
             json!("Input params")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["source_file_label"],
+            json!("mob.toml")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["source_file_aria_label"],
+            json!("Open mob.toml read-only source editor")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["source_file_glyph"],
+            json!("{ }")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["source_file_role_label"],
+            json!("source file")
         );
         assert_eq!(
             mob_definition["editor_graph_view"]["gate_dispatch_hint"],

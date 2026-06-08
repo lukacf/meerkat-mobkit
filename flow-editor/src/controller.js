@@ -1533,6 +1533,10 @@
       branchConditionModeFallbackLabel: String(view.branch_condition_mode_fallback_label || "").trim(),
       branchConditionTargetPrefix: String(view.branch_condition_target_prefix || "").trim(),
       graphInputParamSourceLabel: String(view.branch_input_param_source_label || "").trim(),
+      sourceFileLabel: String(view.source_file_label || "").trim(),
+      sourceFileAriaLabel: String(view.source_file_aria_label || "").trim(),
+      sourceFileGlyph: String(view.source_file_glyph || "").trim(),
+      sourceFileRoleLabel: String(view.source_file_role_label || "").trim(),
       branchConditionFieldPlaceholder: String(view.branch_condition_field_placeholder || "").trim(),
       branchConditionNoOptionsHint: String(view.branch_condition_no_options_hint || "").trim(),
       edgeConditionTitle: String(view.edge_condition_title || "").trim(),
@@ -1562,7 +1566,9 @@
       && out.gateEmptyBranchHint && out.gateWiringTitle && out.gateIncomingLabel
       && out.gateOutgoingLabel && out.branchConditionModeConditionLabel
       && out.branchConditionModeFallbackLabel && out.branchConditionTargetPrefix
-      && out.graphInputParamSourceLabel && out.branchConditionFieldPlaceholder && out.branchConditionNoOptionsHint
+      && out.graphInputParamSourceLabel && out.sourceFileLabel
+      && out.sourceFileAriaLabel && out.sourceFileGlyph && out.sourceFileRoleLabel
+      && out.branchConditionFieldPlaceholder && out.branchConditionNoOptionsHint
       && out.edgeConditionTitle && out.edgeNoConditionOptionsHint && out.edgeOwnerPlaceholder
       && out.edgeFromTitle && out.edgeToTitle && out.edgeRowInstanceLabel
       && out.edgeRowMemberLabel && out.edgeRowSchemaLabel && out.edgeRowMissingValue
@@ -1626,6 +1632,10 @@
       branchConditionModeFallbackLabel: String(view?.branchConditionModeFallbackLabel || ""),
       branchConditionTargetPrefix: String(view?.branchConditionTargetPrefix || ""),
       graphInputParamSourceLabel: String(view?.graphInputParamSourceLabel || ""),
+      sourceFileLabel: String(view?.sourceFileLabel || ""),
+      sourceFileAriaLabel: String(view?.sourceFileAriaLabel || ""),
+      sourceFileGlyph: String(view?.sourceFileGlyph || ""),
+      sourceFileRoleLabel: String(view?.sourceFileRoleLabel || ""),
       branchConditionFieldPlaceholder: String(view?.branchConditionFieldPlaceholder || ""),
       branchConditionNoOptionsHint: String(view?.branchConditionNoOptionsHint || ""),
       edgeConditionTitle: String(view?.edgeConditionTitle || ""),
@@ -4973,7 +4983,8 @@
     return "";
   }
 
-  function graphNodeCanvasState({ inst, members = [], density = "" } = {}) {
+  function graphNodeCanvasState({ inst, members = [], density = "", graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
     const isCompact = density === "compact";
     if (inst?.isTerminal) {
       const isSourceFile = !!inst.isSourceFile || /mob\.toml/i.test([inst.id, inst.label, inst.kind].filter(Boolean).join(" "));
@@ -4984,9 +4995,9 @@
         dataKind: inst.kind,
         role: isSourceFile ? "button" : undefined,
         tabIndex: isSourceFile ? 0 : undefined,
-        ariaLabel: isSourceFile ? "Open mob.toml read-only source editor" : undefined,
-        sourceGlyph: isSourceFile ? "{ }" : "",
-        roleLabel: isSourceFile ? "source file" : `terminal · ${inst.kind}`,
+        ariaLabel: isSourceFile ? view.sourceFileAriaLabel : undefined,
+        sourceGlyph: isSourceFile ? view.sourceFileGlyph : "",
+        roleLabel: isSourceFile ? view.sourceFileRoleLabel : `terminal · ${inst.kind}`,
         title: inst.label,
         subtitle: isSourceFile ? "" : inst.kind,
       };
@@ -5013,7 +5024,8 @@
     };
   }
 
-  function graphSourceFileNode({ instances = [] } = {}) {
+  function graphSourceFileNode({ instances = [], graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
     const sourceInstances = Array.isArray(instances) ? instances : [];
     if (sourceInstances.some((instance) => instance?.isSourceFile || /mob\.toml/i.test([instance?.id, instance?.label, instance?.kind].filter(Boolean).join(" ")))) {
       return null;
@@ -5032,15 +5044,15 @@
       isSourceFile: true,
       isGraphAdornment: true,
       kind: "source",
-      label: "mob.toml",
+      label: view.sourceFileLabel,
       col: minCol,
       row: minRow - 1,
     };
   }
 
-  function graphCanvasInstances({ instances = [] } = {}) {
+  function graphCanvasInstances({ instances = [], graphView = null } = {}) {
     const sourceInstances = Array.isArray(instances) ? instances : [];
-    const sourceFileNode = graphSourceFileNode({ instances: sourceInstances });
+    const sourceFileNode = graphSourceFileNode({ instances: sourceInstances, graphView });
     return sourceFileNode ? [sourceFileNode, ...sourceInstances] : sourceInstances;
   }
 

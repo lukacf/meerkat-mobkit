@@ -1061,6 +1061,10 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       branch_condition_mode_fallback_label: "fallback",
       branch_condition_target_prefix: "→",
       branch_input_param_source_label: "Input params",
+      source_file_label: "mob.toml",
+      source_file_aria_label: "Open mob.toml read-only source editor",
+      source_file_glyph: "{ }",
+      source_file_role_label: "source file",
       branch_condition_field_placeholder: "— field —",
       branch_condition_no_options_hint: "add input params or an upstream schema field for this condition",
       edge_condition_title: "CONDITION",
@@ -1580,6 +1584,10 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   branchConditionModeFallbackLabel: "fallback",
   branchConditionTargetPrefix: "→",
   graphInputParamSourceLabel: "Input params",
+  sourceFileLabel: "mob.toml",
+  sourceFileAriaLabel: "Open mob.toml read-only source editor",
+  sourceFileGlyph: "{ }",
+  sourceFileRoleLabel: "source file",
   branchConditionFieldPlaceholder: "— field —",
   branchConditionNoOptionsHint: "add input params or an upstream schema field for this condition",
   edgeConditionTitle: "CONDITION",
@@ -1632,6 +1640,10 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   branchConditionModeFallbackLabel: "",
   branchConditionTargetPrefix: "",
   graphInputParamSourceLabel: "",
+  sourceFileLabel: "",
+  sourceFileAriaLabel: "",
+  sourceFileGlyph: "",
+  sourceFileRoleLabel: "",
   branchConditionFieldPlaceholder: "",
   branchConditionNoOptionsHint: "",
   edgeConditionTitle: "",
@@ -6201,6 +6213,7 @@ assert.equal(controller.graphNodeCanvasState({
 }).hidden, true);
 const terminalSourceState = controller.graphNodeCanvasState({
   inst: { id: "source_mob_toml", label: "mob.toml", kind: "success", isTerminal: true },
+  graphView: hydratedCatalogs.graphView,
 });
 assert.equal(terminalSourceState.isSourceFile, true);
 assert.equal(terminalSourceState.role, "button");
@@ -6211,6 +6224,7 @@ assert.equal(terminalSourceState.title, "mob.toml");
 assert.equal(terminalSourceState.subtitle, "");
 const graphSourceFileNode = controller.graphSourceFileNode({
   instances: graphProjectionInstances,
+  graphView: hydratedCatalogs.graphView,
 });
 assert.deepEqual(graphSourceFileNode, {
   id: "source_mob_toml",

@@ -479,7 +479,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     );
   });
 
-  const canvasInstances = window.MobKitFlowController.graphCanvasInstances({ instances: state.instances });
+  const canvasInstances = window.MobKitFlowController.graphCanvasInstances({ instances: state.instances, graphView: canvasView });
   const nodeEls = canvasInstances.map(inst => {
     if (inst.isGate) {
       return (
@@ -499,7 +499,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       <NodeView key={inst.id}
         g={g}
         inst={inst}
-        nodeState={window.MobKitFlowController.graphNodeCanvasState({ inst, members: state.members, density })}
+        nodeState={window.MobKitFlowController.graphNodeCanvasState({ inst, members: state.members, density, graphView: canvasView })}
         selected={selection.kind === "instance" && selection.id === inst.id}
         memberHighlight={memberFocus && inst.memberId === memberFocus}
         memberDim={!!memberFocus && inst.memberId !== memberFocus && !inst.isTerminal}

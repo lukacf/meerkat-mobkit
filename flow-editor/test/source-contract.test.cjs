@@ -683,7 +683,10 @@ assert.match(app, /<InlineSourceEditor[\s\S]*open=\{inlineSourceOpen && inlineSo
 assert.match(app, /<SourceDrawer[\s\S]*state=\{sourceDocument\}[\s\S]*sourceView=\{catalogs\.sourceView\}/, "source drawer must render schema-backed source view labels");
 assert.match(graph, /onOpenSourceFile\?\.\(inst\)/, "Graph terminal source nodes must delegate source rendering to the app/control boundary");
 assert.match(graph, /role=\{nodeState\.role\}[\s\S]*aria-label=\{nodeState\.ariaLabel\}/, "Graph mob.toml terminal must behave as a controller-projected clickable file affordance");
-assert.match(controller, /isSourceFile[\s\S]*Open mob\.toml read-only source editor/, "controller plane must project Graph mob.toml terminal accessibility affordance");
+assert.match(controller, /sourceFileAriaLabel:\s*String\(view\.source_file_aria_label/, "controller plane must hydrate Graph mob.toml terminal accessibility affordance from MobKit schema");
+assert.match(controller, /graphNodeCanvasState\(\{[\s\S]*graphView = null[\s\S]*ariaLabel:\s*isSourceFile \? view\.sourceFileAriaLabel/, "controller plane must project Graph mob.toml terminal accessibility through graph view state");
+assert.match(graph, /graphCanvasInstances\(\{ instances: state\.instances, graphView: canvasView \}\)/, "Graph source-file node labels must render through schema-backed canvas view state");
+assert.match(graph, /graphNodeCanvasState\(\{ inst, members: state\.members, density, graphView: canvasView \}\)/, "Graph mob.toml terminal display must render through schema-backed canvas view state");
 assert.match(graph, /onKeyDown=\{\(e\) => \{[\s\S]*e\.key !== "Enter" && e\.key !== " "[\s\S]*openSourceFile\(e\)/, "Graph mob.toml terminal must open from keyboard activation as well as click");
 assert.match(src("overlays.jsx"), /role="textbox"[\s\S]*aria-readonly="true"/, "inline/source TOML surfaces must be read-only editor views");
 assert.match(app, /const clearSourceProjection = React\.useCallback\(\(\) => \{[\s\S]*setSourceOpen\(false\)[\s\S]*setSourceDocument\(null\)[\s\S]*setInlineSourceOpen\(false\)[\s\S]*setInlineSourceSurface\(null\)[\s\S]*setInlineSourceDocument\(null\)[\s\S]*setInlineSourceBusy\(false\)/, "source projections must be explicitly clearable");
