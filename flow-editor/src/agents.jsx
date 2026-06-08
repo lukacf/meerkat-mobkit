@@ -16,12 +16,12 @@
 //   { kind: "schema", id }  → SchemaEditor (visual, field-by-field)
 //   null                    → empty hint
 
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null, agentDetailView = null, schemaView = null }) {
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   return (
     <div className="agents-view">
       <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} agentDefinitions={agentDefinitions} agentView={agentView} />
       <div className="agents-view__main">
-        <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} agentDetailView={agentDetailView} schemaView={schemaView} />
+        <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} agentDetailView={agentDetailView} agentAccessView={agentAccessView} schemaView={schemaView} />
       </div>
     </div>
   );
@@ -140,7 +140,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [] }) {
   );
 }
 
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null, agentDetailView = null, schemaView = null }) {
+function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
     selection: agentSel,
     members: studio.members,
@@ -162,15 +162,15 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
     return <SchemaEditor studio={studio} schema={selectionState.schema} setAgentSel={setAgentSel} contract={contract} flow={flow} setFlow={setFlow} schemaView={schemaView} />;
   }
   if (!selectionState.member) return <div className="agents-empty">{selectionState.missingAgentLabel}</div>;
-  return <AgentEditor studio={studio} member={selectionState.member} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentDetailView={agentDetailView} />;
+  return <AgentEditor studio={studio} member={selectionState.member} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentDetailView={agentDetailView} agentAccessView={agentAccessView} />;
 }
 
 // ── Agent editor ────────────────────────────────────────────────────
-function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDetailView = null }) {
+function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDetailView = null, agentAccessView = null }) {
   const change = (patch) => studio.updateMember(member.id, patch);
   const [toolDraft, setToolDraft] = React.useState("");
   const [toolDraftError, setToolDraftError] = React.useState("");
-  const toolAccessState = window.MobKitFlowController.memberToolAccessState(member, toolCatalog);
+  const toolAccessState = window.MobKitFlowController.memberToolAccessState(member, toolCatalog, agentAccessView);
   const editorState = window.MobKitFlowController.agentEditorControlState({
     member,
     instances: studio.instances,
@@ -186,7 +186,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       members: studio.members,
       flow,
       instances: studio.instances,
-    }, raw, toolCatalog);
+    }, raw, toolCatalog, agentAccessView);
     if (!result.ok) {
       setToolDraftError(result.error || "");
       return;
@@ -449,7 +449,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
             </div>
 
             <div className="section">
-              <SkillAccess studio={studio} member={member} />
+              <SkillAccess studio={studio} member={member} agentAccessView={agentAccessView} />
             </div>
               </>
             )}
@@ -750,15 +750,15 @@ function ProviderParamsEditor({ member, change }) {
 }
 
 // ── Skill access (realm picker + per-skill toggles, baked into the pack) ──
-function SkillAccess({ studio, member }) {
+function SkillAccess({ studio, member, agentAccessView = null }) {
   const realms = studio.skillRealms || [];
-  const initialSkillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms });
+  const initialSkillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, accessView: agentAccessView });
   const [realmId, setRealmId] = React.useState(initialSkillState.realmId);
   const [inlineOpen, setInlineOpen] = React.useState(false);
   const [inlineLabel, setInlineLabel] = React.useState("");
   const [inlineContent, setInlineContent] = React.useState("");
   const [inlineError, setInlineError] = React.useState("");
-  const skillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, realmId, inlineOpen });
+  const skillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, realmId, inlineOpen, accessView: agentAccessView });
   React.useEffect(() => {
     if (skillState.realmId !== realmId) setRealmId(skillState.realmId);
   }, [skillState.realmId, realmId]);
@@ -792,7 +792,7 @@ function SkillAccess({ studio, member }) {
       }, {
         label: inlineLabel,
         content: inlineContent,
-      });
+      }, agentAccessView);
       if (!applySkillCascade(result)) return;
       setRealmId(result.realmId);
       setInlineLabel("");

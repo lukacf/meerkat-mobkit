@@ -795,6 +795,38 @@ pub fn mobpack_schema_response() -> Value {
         "edit_schema_label": "Edit schema →",
         "empty_schema_hint": "No structured output. Agent returns free-form text."
     });
+    let editor_agent_access_view = json!({
+        "tool_invalid_error": "Use a MobKit-listed runtime tool or configured MCP/Rust source.",
+        "tool_title": "TOOL ACCESS",
+        "tool_hint": "Authority is calculated from this allowlist. Reviewed once here.",
+        "tool_missing_description": "—",
+        "tool_remove_label": "×",
+        "tool_add_select_placeholder": "+ add tool…",
+        "tool_source_label": "Configured tool source",
+        "tool_source_placeholder": "choose from MobKit tool catalog",
+        "tool_add_button_label": "ADD",
+        "inline_skill_realm_id": "mobkit/editor-inline",
+        "inline_skill_realm_label": "This mobpack",
+        "inline_skill_default_description": "Inline MobKit skill stored in this mobpack.",
+        "skill_default_description": "MobKit skill",
+        "skill_selected_check_label": "✓",
+        "skill_remove_label": "×",
+        "skill_section_title": "SKILLS",
+        "skill_inline_cancel_label": "CANCEL",
+        "skill_inline_open_label": "+ INLINE",
+        "skill_hint": "Selected skills are baked into the mobpack. Browse a realm to add more.",
+        "skill_inline_label_placeholder": "mob.skill-name",
+        "skill_inline_content_rows": 4,
+        "skill_inline_content_placeholder": "Skill instructions stored as [skills.<id>] content",
+        "skill_inline_create_hint": "Creates an inline skill definition in this mobpack.",
+        "skill_inline_add_label": "ADD SKILL",
+        "skill_inline_error_fallback": "Could not create inline skill.",
+        "skill_no_realms_message": "MobKit did not provide skill realms for this document.",
+        "skill_realm_label": "Realm",
+        "skill_default_realm_suffix": " · default",
+        "skill_unavailable_heading": "Unavailable in MobKit skill realms:",
+        "skill_outside_realm_heading": "Selected from other realms:"
+    });
     let editor_deploy_view = json!({
         "brand_label": "MobKit · Flow Editor",
         "flows_tab_label": "FLOWS",
@@ -993,6 +1025,7 @@ pub fn mobpack_schema_response() -> Value {
         "dependency_modes": dependency_mode_values()
     });
     mob_definition["editor_agent_detail_view"] = editor_agent_detail_view;
+    mob_definition["editor_agent_access_view"] = editor_agent_access_view;
     mob_definition["editor_deploy_view"] = editor_deploy_view;
     json!({
         "schema_version": MOBPACK_SCHEMA_VERSION,
@@ -15428,6 +15461,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["empty_schema_hint"],
             json!("No structured output. Agent returns free-form text.")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_access_view"]["tool_title"],
+            json!("TOOL ACCESS")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_access_view"]["tool_invalid_error"],
+            json!("Use a MobKit-listed runtime tool or configured MCP/Rust source.")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_access_view"]["inline_skill_realm_id"],
+            json!("mobkit/editor-inline")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_access_view"]["skill_inline_add_label"],
+            json!("ADD SKILL")
         );
         assert_eq!(
             mob_definition["editor_deploy_view"]["brand_label"],

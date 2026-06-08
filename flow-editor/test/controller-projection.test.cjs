@@ -87,6 +87,70 @@ const TEST_DEPLOY_VIEW = {
   planPreviousLabel: "‹",
   planNextLabel: "›",
 };
+const TEST_AGENT_ACCESS_VIEW_SCHEMA = {
+  tool_invalid_error: "Use a MobKit-listed runtime tool or configured MCP/Rust source.",
+  tool_title: "TOOL ACCESS",
+  tool_hint: "Authority is calculated from this allowlist. Reviewed once here.",
+  tool_missing_description: "—",
+  tool_remove_label: "×",
+  tool_add_select_placeholder: "+ add tool…",
+  tool_source_label: "Configured tool source",
+  tool_source_placeholder: "choose from MobKit tool catalog",
+  tool_add_button_label: "ADD",
+  inline_skill_realm_id: "mobkit/editor-inline",
+  inline_skill_realm_label: "This mobpack",
+  inline_skill_default_description: "Inline MobKit skill stored in this mobpack.",
+  skill_default_description: "MobKit skill",
+  skill_selected_check_label: "✓",
+  skill_remove_label: "×",
+  skill_section_title: "SKILLS",
+  skill_inline_cancel_label: "CANCEL",
+  skill_inline_open_label: "+ INLINE",
+  skill_hint: "Selected skills are baked into the mobpack. Browse a realm to add more.",
+  skill_inline_label_placeholder: "mob.skill-name",
+  skill_inline_content_rows: 4,
+  skill_inline_content_placeholder: "Skill instructions stored as [skills.<id>] content",
+  skill_inline_create_hint: "Creates an inline skill definition in this mobpack.",
+  skill_inline_add_label: "ADD SKILL",
+  skill_inline_error_fallback: "Could not create inline skill.",
+  skill_no_realms_message: "MobKit did not provide skill realms for this document.",
+  skill_realm_label: "Realm",
+  skill_default_realm_suffix: " · default",
+  skill_unavailable_heading: "Unavailable in MobKit skill realms:",
+  skill_outside_realm_heading: "Selected from other realms:",
+};
+const TEST_AGENT_ACCESS_VIEW = {
+  toolInvalidError: "Use a MobKit-listed runtime tool or configured MCP/Rust source.",
+  toolTitle: "TOOL ACCESS",
+  toolHint: "Authority is calculated from this allowlist. Reviewed once here.",
+  toolMissingDescription: "—",
+  toolRemoveLabel: "×",
+  toolAddSelectPlaceholder: "+ add tool…",
+  toolSourceLabel: "Configured tool source",
+  toolSourcePlaceholder: "choose from MobKit tool catalog",
+  toolAddButtonLabel: "ADD",
+  inlineSkillRealmId: "mobkit/editor-inline",
+  inlineSkillRealmLabel: "This mobpack",
+  inlineSkillDefaultDescription: "Inline MobKit skill stored in this mobpack.",
+  skillDefaultDescription: "MobKit skill",
+  skillSelectedCheckLabel: "✓",
+  skillRemoveLabel: "×",
+  skillSectionTitle: "SKILLS",
+  skillInlineCancelLabel: "CANCEL",
+  skillInlineOpenLabel: "+ INLINE",
+  skillHint: "Selected skills are baked into the mobpack. Browse a realm to add more.",
+  skillInlineLabelPlaceholder: "mob.skill-name",
+  skillInlineContentRows: 4,
+  skillInlineContentPlaceholder: "Skill instructions stored as [skills.<id>] content",
+  skillInlineCreateHint: "Creates an inline skill definition in this mobpack.",
+  skillInlineAddLabel: "ADD SKILL",
+  skillInlineErrorFallback: "Could not create inline skill.",
+  skillNoRealmsMessage: "MobKit did not provide skill realms for this document.",
+  skillRealmLabel: "Realm",
+  skillDefaultRealmSuffix: " · default",
+  skillUnavailableHeading: "Unavailable in MobKit skill realms:",
+  skillOutsideRealmHeading: "Selected from other realms:",
+};
 const TEST_SCHEMA = {
   deploy_settings: {
     command: "rkat mob deploy",
@@ -111,6 +175,7 @@ const TEST_SCHEMA = {
   },
   mob_definition: {
     editor_deploy_view: TEST_DEPLOY_VIEW_SCHEMA,
+    editor_agent_access_view: TEST_AGENT_ACCESS_VIEW_SCHEMA,
     mob_settings: {
       defaults: {
         orchestrator: "",
@@ -580,6 +645,7 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       edit_schema_label: "Edit schema →",
       empty_schema_hint: "No structured output. Agent returns free-form text.",
     },
+    editor_agent_access_view: TEST_AGENT_ACCESS_VIEW_SCHEMA,
     editor_deploy_view: TEST_DEPLOY_VIEW_SCHEMA,
     editor_schema_view: {
       eyebrow: "OUTPUT SCHEMA",
@@ -740,6 +806,7 @@ assert.deepEqual(hydratedCatalogs.agentDetailView, {
   editSchemaLabel: "Edit schema →",
   emptySchemaHint: "No structured output. Agent returns free-form text.",
 });
+assert.deepEqual(hydratedCatalogs.agentAccessView, TEST_AGENT_ACCESS_VIEW);
 assert.deepEqual(hydratedCatalogs.deployView, TEST_DEPLOY_VIEW);
 assert.deepEqual(hydratedCatalogs.schemaView, {
   eyebrow: "OUTPUT SCHEMA",
@@ -856,6 +923,7 @@ assert.deepEqual(controller.memberToolAccessPatch(
   { tools: ["builtins"] },
   "shell",
   hydratedCatalogs.toolCatalog,
+  hydratedCatalogs.agentAccessView,
 ), {
   ok: false,
   id: "",
@@ -866,11 +934,13 @@ assert.deepEqual(controller.memberToolAccessPatch(
   { tools: ["builtins"] },
   "builtins",
   hydratedCatalogs.toolCatalog,
+  hydratedCatalogs.agentAccessView,
 ), { ok: true, id: "builtins", alreadySelected: true, patch: null });
 assert.deepEqual(controller.memberToolAccessPatch(
   { tools: [] },
   "builtins",
   hydratedCatalogs.toolCatalog,
+  hydratedCatalogs.agentAccessView,
 ), { ok: true, id: "builtins", alreadySelected: false, patch: { tools: ["builtins"] } });
 assert.deepEqual(controller.memberToolAccessState(
   { tools: ["builtins", "missing"] },
@@ -878,6 +948,7 @@ assert.deepEqual(controller.memberToolAccessState(
     { id: "builtins", label: "Built-ins", desc: "Built-in runtime tools" },
     { id: "shell", label: "Shell", desc: "Shell tool" },
   ],
+  hydratedCatalogs.agentAccessView,
 ), {
   selectedTools: ["builtins", "missing"],
   title: "TOOL ACCESS",
@@ -951,7 +1022,7 @@ const toolCascadeAddResult = controller.memberToolAccessCascadePatch({
     steps: [{ id: "tool_step", type: "member", role: "m_tool", allowedTools: ["builtins"] }],
   },
   instances: [{ id: "tool_inst", memberId: "m_tool", allowedTools: ["builtins"] }],
-}, "shell", [{ id: "builtins" }, { id: "shell" }]);
+}, "shell", [{ id: "builtins" }, { id: "shell" }], hydratedCatalogs.agentAccessView);
 assert.equal(toolCascadeAddResult.ok, true);
 assert.deepEqual(toolCascadeAddResult.members[0].tools, ["builtins", "shell"]);
 assert.deepEqual(toolCascadeAddResult.flow.steps[0].allowedTools, ["builtins"]);
@@ -979,6 +1050,7 @@ assert.deepEqual(controller.memberSkillAccessState({
       ],
     },
   ],
+  accessView: hydratedCatalogs.agentAccessView,
 }), {
   sectionTitle: "SKILLS",
   inlineToggleLabel: "CANCEL",
@@ -1176,6 +1248,7 @@ const inlinePatch = controller.memberInlineSkillPatch(
   { skills: ["mob.workpad"] },
   [{ id: "mobkit/sample-mobpacks", skills: [{ id: "mob.workpad" }] }],
   { label: "Quality Gate", content: "Review and emit the QualityVerdict schema." },
+  hydratedCatalogs.agentAccessView,
 );
 assert.equal(inlinePatch.id, "mob.quality.gate");
 assert.equal(inlinePatch.realmId, "mobkit/editor-inline");
@@ -1183,11 +1256,12 @@ assert.deepEqual(inlinePatch.patch, { skills: ["mob.workpad", "mob.quality.gate"
 assert.equal(inlinePatch.skillRealms[0].id, "mobkit/editor-inline");
 assert.equal(inlinePatch.skillRealms[0].skills[0].source, "inline");
 assert.equal(inlinePatch.skillRealms[0].skills[0].content, "Review and emit the QualityVerdict schema.");
+assert.equal(inlinePatch.skillRealms[0].skills[0].desc, "Inline MobKit skill stored in this mobpack.");
 const inlineCascade = controller.memberInlineSkillCascadePatch({
   memberId: "m_skill",
   members: [{ id: "m_skill", skills: ["mob.workpad"] }],
   skillRealms: [{ id: "main", skills: [{ id: "mob.workpad" }] }],
-}, { label: "Quality Gate", content: "Review and emit the QualityVerdict schema." });
+}, { label: "Quality Gate", content: "Review and emit the QualityVerdict schema." }, hydratedCatalogs.agentAccessView);
 assert.equal(inlineCascade.ok, true);
 assert.equal(inlineCascade.id, "mob.quality.gate");
 assert.deepEqual(inlineCascade.members[0].skills, ["mob.workpad", "mob.quality.gate"]);
@@ -1199,6 +1273,7 @@ assert.throws(
     { skills: [] },
     [],
     { content: "Do the work." },
+    hydratedCatalogs.agentAccessView,
   ),
   /id or label is required/,
 );
@@ -1207,6 +1282,7 @@ assert.throws(
     { skills: [] },
     [],
     { label: "!!!", content: "Do the work." },
+    hydratedCatalogs.agentAccessView,
   ),
   /letters or numbers/,
 );

@@ -867,6 +867,7 @@ function App() {
           agentDefinitions={catalogs.agentDefinitions}
           agentView={catalogs.agentView}
           agentDetailView={catalogs.agentDetailView}
+          agentAccessView={catalogs.agentAccessView}
           schemaView={catalogs.schemaView}
         />
       )}

@@ -155,7 +155,8 @@ window.MOBKIT_BOOT = {
     return ids;
   }
 
-  function addInlineSkillToRealms(realms, spec = {}) {
+  function addInlineSkillToRealms(realms, spec = {}, accessView = null) {
+    const view = agentAccessViewForState(accessView);
     const nextRealms = JSON.parse(JSON.stringify(realms || []));
     const label = String(spec.label || spec.id || "").trim();
     if (!label) throw new Error("Inline skill id or label is required.");
@@ -171,11 +172,11 @@ window.MOBKIT_BOOT = {
     let id = baseId;
     let index = 2;
     while (used.has(id)) id = `${baseId}.${index++}`;
-    let realm = nextRealms.find((candidate) => candidate?.id === "mobkit/editor-inline");
+    let realm = nextRealms.find((candidate) => candidate?.id === view.inlineSkillRealmId);
     if (!realm) {
       realm = {
-        id: "mobkit/editor-inline",
-        label: "This mobpack",
+        id: view.inlineSkillRealmId,
+        label: view.inlineSkillRealmLabel,
         source: "editor",
         default: nextRealms.length === 0,
         skills: [],
@@ -188,18 +189,19 @@ window.MOBKIT_BOOT = {
       label,
       source: "inline",
       content,
-      desc: spec.desc || "Inline MobKit skill stored in this mobpack.",
+      desc: spec.desc || view.inlineSkillDefaultDescription,
     });
     return { id, skillRealms: nextRealms };
   }
 
-  function memberToolAccessPatch(member, raw, toolCatalog) {
+  function memberToolAccessPatch(member, raw, toolCatalog, accessView = null) {
+    const view = agentAccessViewForState(accessView);
     const id = normalizeToolRef(raw, toolCatalog);
     if (!id) {
       return {
         ok: false,
         id: "",
-        error: raw ? "Use a MobKit-listed runtime tool or configured MCP/Rust source." : "",
+        error: raw ? view.toolInvalidError : "",
         patch: null,
       };
     }
@@ -217,11 +219,11 @@ window.MOBKIT_BOOT = {
     return { ok: true, id, patch: { tools: tools.filter((candidate) => candidate !== id) } };
   }
 
-  function memberToolAccessCascadePatch({ memberId, members, flow, instances } = {}, raw, toolCatalog) {
+  function memberToolAccessCascadePatch({ memberId, members, flow, instances } = {}, raw, toolCatalog, accessView = null) {
     const list = Array.isArray(members) ? members : [];
     const member = list.find((candidate) => candidate?.id === memberId) || null;
     if (!member) return { ok: false, error: "member not found", id: "", patch: null, members: list, flow, instances };
-    const access = memberToolAccessPatch(member, raw, toolCatalog);
+    const access = memberToolAccessPatch(member, raw, toolCatalog, accessView);
     if (!access.ok) return { ...access, members: list, flow, instances };
     if (!access.patch) return { ...access, members: list, member, flow, instances };
     const updated = studioUpdateMemberPatch({ members: list }, member.id, access.patch);
@@ -256,7 +258,8 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function memberToolAccessState(member, toolCatalog = []) {
+  function memberToolAccessState(member, toolCatalog = [], accessView = null) {
+    const view = agentAccessViewForState(accessView);
     const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
     const metaById = new Map(catalog.map((tool) => [String(tool.id), tool]));
     const selectedTools = normalizeStringList(member?.tools);
@@ -266,10 +269,10 @@ window.MOBKIT_BOOT = {
       return {
         id,
         name: id,
-        description: meta?.desc || "—",
+        description: meta?.desc || view.toolMissingDescription,
         meta,
         className: "tool-row",
-        removeLabel: "×",
+        removeLabel: view.toolRemoveLabel,
       };
     };
     const addableRow = (tool) => {
@@ -287,17 +290,17 @@ window.MOBKIT_BOOT = {
     };
     return {
       selectedTools,
-      title: "TOOL ACCESS",
-      hint: "Authority is calculated from this allowlist. Reviewed once here.",
+      title: view.toolTitle,
+      hint: view.toolHint,
       rows: selectedTools.map(toolRow),
       addableRows: catalog
         .filter((tool) => !selectedSet.has(String(tool.id)))
         .map(addableRow),
       addSelectValue: "",
-      addSelectPlaceholder: "+ add tool…",
-      sourceLabel: "Configured tool source",
-      sourcePlaceholder: "choose from MobKit tool catalog",
-      addButtonLabel: "ADD",
+      addSelectPlaceholder: view.toolAddSelectPlaceholder,
+      sourceLabel: view.toolSourceLabel,
+      sourcePlaceholder: view.toolSourcePlaceholder,
+      addButtonLabel: view.toolAddButtonLabel,
     };
   }
 
@@ -420,12 +423,13 @@ window.MOBKIT_BOOT = {
     return { ok: true, id, patch: { skills: skills.filter((candidate) => candidate !== id) } };
   }
 
-  function memberInlineSkillPatch(member, realms, spec = {}) {
-    const result = addInlineSkillToRealms(realms, spec);
+  function memberInlineSkillPatch(member, realms, spec = {}, accessView = null) {
+    const view = agentAccessViewForState(accessView);
+    const result = addInlineSkillToRealms(realms, spec, accessView);
     const skills = normalizeStringList(member?.skills);
     return {
       ...result,
-      realmId: "mobkit/editor-inline",
+      realmId: view.inlineSkillRealmId,
       patch: { skills: skills.includes(result.id) ? skills : [...skills, result.id] },
     };
   }
@@ -456,11 +460,11 @@ window.MOBKIT_BOOT = {
     return { ...result, members: updated.members, member: updated.member, skillRealms };
   }
 
-  function memberInlineSkillCascadePatch({ memberId, members, skillRealms } = {}, spec = {}) {
+  function memberInlineSkillCascadePatch({ memberId, members, skillRealms } = {}, spec = {}, accessView = null) {
     const list = Array.isArray(members) ? members : [];
     const member = list.find((candidate) => candidate?.id === memberId) || null;
     if (!member) return { ok: false, error: "member not found", id: "", patch: null, members: list, skillRealms };
-    const result = memberInlineSkillPatch(member, skillRealms, spec);
+    const result = memberInlineSkillPatch(member, skillRealms, spec, accessView);
     const updated = studioUpdateMemberPatch({ members: list }, member.id, result.patch || {});
     if (!updated.ok) {
       return { ...result, ok: false, error: updated.error || "", members: list, skillRealms };
@@ -474,7 +478,8 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function memberSkillAccessState({ member, skillRealms, realmId = "", inlineOpen = false } = {}) {
+  function memberSkillAccessState({ member, skillRealms, realmId = "", inlineOpen = false, accessView = null } = {}) {
+    const view = agentAccessViewForState(accessView);
     const realms = Array.isArray(skillRealms) ? skillRealms.filter((realm) => realm?.id) : [];
     const defaultRealm = realms.find((realm) => realm.default) || realms[0] || null;
     const selectedRealm = realms.find((realm) => realm.id === realmId) || defaultRealm;
@@ -497,9 +502,9 @@ window.MOBKIT_BOOT = {
           id,
           selected,
           className: `skill-row${selected ? " is-on" : ""}`,
-          checkLabel: selected ? "✓" : "",
+          checkLabel: selected ? view.skillSelectedCheckLabel : "",
           name: id,
-          desc: skill.desc || skill.path || skill.source || "MobKit skill",
+          desc: skill.desc || skill.path || skill.source || view.skillDefaultDescription,
           skill,
         };
       });
@@ -514,7 +519,7 @@ window.MOBKIT_BOOT = {
         title: skill.realm?.label || skill.realm?.id || "",
         label: skill.id,
         detail: skill.realm?.label || skill.realm?.id || "",
-        removeLabel: "×",
+        removeLabel: view.skillRemoveLabel,
       }));
     const unavailableSelected = selectedSkillIds
       .filter((id) => !byId.has(id))
@@ -522,31 +527,31 @@ window.MOBKIT_BOOT = {
         id,
         className: "skill-chip is-invalid",
         label: id,
-        removeLabel: "×",
+        removeLabel: view.skillRemoveLabel,
       }));
     return {
-      sectionTitle: "SKILLS",
-      inlineToggleLabel: inlineOpen ? "CANCEL" : "+ INLINE",
-      hint: "Selected skills are baked into the mobpack. Browse a realm to add more.",
-      inlineLabelPlaceholder: "mob.skill-name",
-      inlineContentRows: 4,
-      inlineContentPlaceholder: "Skill instructions stored as [skills.<id>] content",
-      inlineCreateHint: "Creates an inline skill definition in this mobpack.",
-      inlineAddLabel: "ADD SKILL",
-      inlineErrorFallback: "Could not create inline skill.",
-      noRealmsMessage: "MobKit did not provide skill realms for this document.",
-      realmLabel: "Realm",
+      sectionTitle: view.skillSectionTitle,
+      inlineToggleLabel: inlineOpen ? view.skillInlineCancelLabel : view.skillInlineOpenLabel,
+      hint: view.skillHint,
+      inlineLabelPlaceholder: view.skillInlineLabelPlaceholder,
+      inlineContentRows: view.skillInlineContentRows,
+      inlineContentPlaceholder: view.skillInlineContentPlaceholder,
+      inlineCreateHint: view.skillInlineCreateHint,
+      inlineAddLabel: view.skillInlineAddLabel,
+      inlineErrorFallback: view.skillInlineErrorFallback,
+      noRealmsMessage: view.skillNoRealmsMessage,
+      realmLabel: view.skillRealmLabel,
       hasRealms: realms.length > 0,
       realmId: selectedRealm?.id || "",
       realmOptions: realms.map((realm) => ({
         id: realm.id,
-        label: `${realm.label || realm.id}${realm.default ? " · default" : ""}`,
+        label: `${realm.label || realm.id}${realm.default ? view.skillDefaultRealmSuffix : ""}`,
       })),
       skillRows,
       selectedOutsideRealm,
       unavailableSelected,
-      unavailableHeading: "Unavailable in MobKit skill realms:",
-      outsideRealmHeading: "Selected from other realms:",
+      unavailableHeading: view.skillUnavailableHeading,
+      outsideRealmHeading: view.skillOutsideRealmHeading,
     };
   }
 
@@ -788,6 +793,82 @@ window.MOBKIT_BOOT = {
       schemaRequiredLabel: String(view?.schemaRequiredLabel || ""),
       editSchemaLabel: String(view?.editSchemaLabel || ""),
       emptySchemaHint: String(view?.emptySchemaHint || ""),
+    };
+  }
+
+  function agentAccessViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_agent_access_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      toolInvalidError: String(view.tool_invalid_error || "").trim(),
+      toolTitle: String(view.tool_title || "").trim(),
+      toolHint: String(view.tool_hint || "").trim(),
+      toolMissingDescription: String(view.tool_missing_description || "").trim(),
+      toolRemoveLabel: String(view.tool_remove_label || "").trim(),
+      toolAddSelectPlaceholder: String(view.tool_add_select_placeholder || "").trim(),
+      toolSourceLabel: String(view.tool_source_label || "").trim(),
+      toolSourcePlaceholder: String(view.tool_source_placeholder || "").trim(),
+      toolAddButtonLabel: String(view.tool_add_button_label || "").trim(),
+      inlineSkillRealmId: String(view.inline_skill_realm_id || "").trim(),
+      inlineSkillRealmLabel: String(view.inline_skill_realm_label || "").trim(),
+      inlineSkillDefaultDescription: String(view.inline_skill_default_description || "").trim(),
+      skillDefaultDescription: String(view.skill_default_description || "").trim(),
+      skillSelectedCheckLabel: String(view.skill_selected_check_label || "").trim(),
+      skillRemoveLabel: String(view.skill_remove_label || "").trim(),
+      skillSectionTitle: String(view.skill_section_title || "").trim(),
+      skillInlineCancelLabel: String(view.skill_inline_cancel_label || "").trim(),
+      skillInlineOpenLabel: String(view.skill_inline_open_label || "").trim(),
+      skillHint: String(view.skill_hint || "").trim(),
+      skillInlineLabelPlaceholder: String(view.skill_inline_label_placeholder || "").trim(),
+      skillInlineContentRows: Number(view.skill_inline_content_rows || 0),
+      skillInlineContentPlaceholder: String(view.skill_inline_content_placeholder || "").trim(),
+      skillInlineCreateHint: String(view.skill_inline_create_hint || "").trim(),
+      skillInlineAddLabel: String(view.skill_inline_add_label || "").trim(),
+      skillInlineErrorFallback: String(view.skill_inline_error_fallback || "").trim(),
+      skillNoRealmsMessage: String(view.skill_no_realms_message || "").trim(),
+      skillRealmLabel: String(view.skill_realm_label || "").trim(),
+      skillDefaultRealmSuffix: String(view.skill_default_realm_suffix || ""),
+      skillUnavailableHeading: String(view.skill_unavailable_heading || "").trim(),
+      skillOutsideRealmHeading: String(view.skill_outside_realm_heading || "").trim(),
+    };
+    return Object.entries(out).every(([key, value]) => key === "skillInlineContentRows" ? Number.isFinite(value) && value > 0 : !!value)
+      ? out
+      : null;
+  }
+
+  function agentAccessViewForState(agentAccessView) {
+    const view = agentAccessView && typeof agentAccessView === "object" ? agentAccessView : null;
+    return {
+      toolInvalidError: String(view?.toolInvalidError || ""),
+      toolTitle: String(view?.toolTitle || ""),
+      toolHint: String(view?.toolHint || ""),
+      toolMissingDescription: String(view?.toolMissingDescription || ""),
+      toolRemoveLabel: String(view?.toolRemoveLabel || ""),
+      toolAddSelectPlaceholder: String(view?.toolAddSelectPlaceholder || ""),
+      toolSourceLabel: String(view?.toolSourceLabel || ""),
+      toolSourcePlaceholder: String(view?.toolSourcePlaceholder || ""),
+      toolAddButtonLabel: String(view?.toolAddButtonLabel || ""),
+      inlineSkillRealmId: String(view?.inlineSkillRealmId || ""),
+      inlineSkillRealmLabel: String(view?.inlineSkillRealmLabel || ""),
+      inlineSkillDefaultDescription: String(view?.inlineSkillDefaultDescription || ""),
+      skillDefaultDescription: String(view?.skillDefaultDescription || ""),
+      skillSelectedCheckLabel: String(view?.skillSelectedCheckLabel || ""),
+      skillRemoveLabel: String(view?.skillRemoveLabel || ""),
+      skillSectionTitle: String(view?.skillSectionTitle || ""),
+      skillInlineCancelLabel: String(view?.skillInlineCancelLabel || ""),
+      skillInlineOpenLabel: String(view?.skillInlineOpenLabel || ""),
+      skillHint: String(view?.skillHint || ""),
+      skillInlineLabelPlaceholder: String(view?.skillInlineLabelPlaceholder || ""),
+      skillInlineContentRows: Number(view?.skillInlineContentRows || 0),
+      skillInlineContentPlaceholder: String(view?.skillInlineContentPlaceholder || ""),
+      skillInlineCreateHint: String(view?.skillInlineCreateHint || ""),
+      skillInlineAddLabel: String(view?.skillInlineAddLabel || ""),
+      skillInlineErrorFallback: String(view?.skillInlineErrorFallback || ""),
+      skillNoRealmsMessage: String(view?.skillNoRealmsMessage || ""),
+      skillRealmLabel: String(view?.skillRealmLabel || ""),
+      skillDefaultRealmSuffix: String(view?.skillDefaultRealmSuffix || ""),
+      skillUnavailableHeading: String(view?.skillUnavailableHeading || ""),
+      skillOutsideRealmHeading: String(view?.skillOutsideRealmHeading || ""),
     };
   }
 
@@ -6382,6 +6463,7 @@ window.MOBKIT_BOOT = {
       sourceView: null,
       agentView: null,
       agentDetailView: null,
+      agentAccessView: null,
       deployView: null,
       schemaView: null,
       basicView: null,
@@ -6415,6 +6497,7 @@ window.MOBKIT_BOOT = {
       sourceView: sourceViewFromSchema(schema),
       agentView: agentViewFromSchema(schema),
       agentDetailView: agentDetailViewFromSchema(schema),
+      agentAccessView: agentAccessViewFromSchema(schema),
       deployView: deployViewFromSchema(schema),
       schemaView: schemaViewFromSchema(schema),
       basicView: basicViewFromSchema(schema),
@@ -10332,8 +10415,8 @@ window.InlineSourceEditor = InlineSourceEditor;
 /* agents.jsx */
 
 {
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null, agentDetailView = null, schemaView = null }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, agentDefinitions, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView, agentDetailView, schemaView })));
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, agentDefinitions, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView, agentDetailView, agentAccessView, schemaView })));
 }
 function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions, agentView = null }) {
   const listState = window.MobKitFlowController.agentListState({
@@ -10422,7 +10505,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [] }) {
     definitionState.optionRows.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))
   );
 }
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null, agentDetailView = null, schemaView = null }) {
+function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
     selection: agentSel,
     members: studio.members,
@@ -10437,13 +10520,13 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
     return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow, schemaView });
   }
   if (!selectionState.member) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingAgentLabel);
-  return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentDetailView });
+  return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentDetailView, agentAccessView });
 }
-function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDetailView = null }) {
+function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDetailView = null, agentAccessView = null }) {
   const change = (patch) => studio.updateMember(member.id, patch);
   const [toolDraft, setToolDraft] = React.useState("");
   const [toolDraftError, setToolDraftError] = React.useState("");
-  const toolAccessState = window.MobKitFlowController.memberToolAccessState(member, toolCatalog);
+  const toolAccessState = window.MobKitFlowController.memberToolAccessState(member, toolCatalog, agentAccessView);
   const editorState = window.MobKitFlowController.agentEditorControlState({
     member,
     instances: studio.instances,
@@ -10459,7 +10542,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       members: studio.members,
       flow,
       instances: studio.instances
-    }, raw, toolCatalog);
+    }, raw, toolCatalog, agentAccessView);
     if (!result.ok) {
       setToolDraftError(result.error || "");
       return;
@@ -10601,7 +10684,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       onChange: (e) => changeSchema(e.target.value)
     },
     editorState.schemaOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value || "none", value: option.value }, option.label))
-  ), editorState.hasOutputSchema ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("ul", { className: "schema-fields schema-fields--preview" }, editorState.schemaPreviewRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => setAgentSel(editorState.editSchemaSelection) }, editorState.editSchemaLabel)) : /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, editorState.emptySchemaHint)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement(SkillAccess, { studio, member }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.usageTitle), editorState.placedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.emptyUsageHint), editorState.usageRows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.id, className: "usage-row usage-row--ro" }, /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.cellLabel), /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.laneLabel))))))));
+  ), editorState.hasOutputSchema ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("ul", { className: "schema-fields schema-fields--preview" }, editorState.schemaPreviewRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => setAgentSel(editorState.editSchemaSelection) }, editorState.editSchemaLabel)) : /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, editorState.emptySchemaHint)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement(SkillAccess, { studio, member, agentAccessView }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.usageTitle), editorState.placedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.emptyUsageHint), editorState.usageRows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.id, className: "usage-row usage-row--ro" }, /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.cellLabel), /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.laneLabel))))))));
 }
 function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null }) {
   const change = (patch) => studio.updateSchema(schema.id, patch);
@@ -10824,15 +10907,15 @@ function ProviderParamsEditor({ member, change }) {
     }
   ), error && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, error));
 }
-function SkillAccess({ studio, member }) {
+function SkillAccess({ studio, member, agentAccessView = null }) {
   const realms = studio.skillRealms || [];
-  const initialSkillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms });
+  const initialSkillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, accessView: agentAccessView });
   const [realmId, setRealmId] = React.useState(initialSkillState.realmId);
   const [inlineOpen, setInlineOpen] = React.useState(false);
   const [inlineLabel, setInlineLabel] = React.useState("");
   const [inlineContent, setInlineContent] = React.useState("");
   const [inlineError, setInlineError] = React.useState("");
-  const skillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, realmId, inlineOpen });
+  const skillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, realmId, inlineOpen, accessView: agentAccessView });
   React.useEffect(() => {
     if (skillState.realmId !== realmId) setRealmId(skillState.realmId);
   }, [skillState.realmId, realmId]);
@@ -10866,7 +10949,7 @@ function SkillAccess({ studio, member }) {
       }, {
         label: inlineLabel,
         content: inlineContent
-      });
+      }, agentAccessView);
       if (!applySkillCascade(result)) return;
       setRealmId(result.realmId);
       setInlineLabel("");
@@ -12135,6 +12218,7 @@ function App() {
       agentDefinitions: catalogs.agentDefinitions,
       agentView: catalogs.agentView,
       agentDetailView: catalogs.agentDetailView,
+      agentAccessView: catalogs.agentAccessView,
       schemaView: catalogs.schemaView
     }
   ), creating && /* @__PURE__ */ React.createElement(
