@@ -259,6 +259,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
             members={members}
             isKickoff={picker.at?.lane === "main" && picker.at?.index === 0 && kickoffSlotEmpty(flow)}
             contract={contract}
+            basicView={basicView}
             onPick={(pick) => insertAt(picker.at, pick)}
             onClose={() => setPicker({ open: false })}
           />
@@ -273,33 +274,35 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
 }
 
 function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract, basicView = null }) {
+  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   return (
     <div className="bld-lane">
       {steps.map((step, i) => (
         <React.Fragment key={step.id}>
-        <StepCard studio={studio} step={step} index={i} selected={sel === step.id} onSelect={() => setSel(step.id)} contract={contract} />
+        <StepCard studio={studio} step={step} index={i} selected={sel === step.id} onSelect={() => setSel(step.id)} contract={contract} basicView={basicView} />
           {step.type === "branch" || step.type === "parallel" ? (
             <>
               <Fork studio={studio} mode={mode} step={step} sel={sel} setSel={setSel} openPicker={openPicker} contract={contract} basicView={basicView} />
-              <InsertBtn mode={mode} mid={i < steps.length - 1} onClick={() => openPicker({ ...laneRef, index: i + 1 })} />
+              <InsertBtn mode={mode} mid={i < steps.length - 1} title={viewState.addStepTitle} onClick={() => openPicker({ ...laneRef, index: i + 1 })} />
             </>
           ) : step.type === "repeat" ? (
             <>
               <RepeatBody studio={studio} mode={mode} step={step} sel={sel} setSel={setSel} openPicker={openPicker} contract={contract} basicView={basicView} />
-              <InsertBtn mode={mode} mid={i < steps.length - 1} onClick={() => openPicker({ ...laneRef, index: i + 1 })} />
+              <InsertBtn mode={mode} mid={i < steps.length - 1} title={viewState.addStepTitle} onClick={() => openPicker({ ...laneRef, index: i + 1 })} />
             </>
           ) : (
-            <InsertBtn mode={mode} mid={i < steps.length - 1} onClick={() => openPicker({ ...laneRef, index: i + 1 })} />
+            <InsertBtn mode={mode} mid={i < steps.length - 1} title={viewState.addStepTitle} onClick={() => openPicker({ ...laneRef, index: i + 1 })} />
           )}
         </React.Fragment>
       ))}
-      {steps.length === 0 && <InsertBtn mode={mode} onClick={() => openPicker({ ...laneRef, index: 0 })} />}
+      {steps.length === 0 && <InsertBtn mode={mode} title={viewState.addStepTitle} onClick={() => openPicker({ ...laneRef, index: 0 })} />}
     </div>
   );
 }
 
 function Fork({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
   const forkState = window.MobKitFlowController.basicForkCanvasState({ step, contract });
+  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   return (
     <div className={forkState.className}>
       <div className="bld-fork__bar" />
@@ -311,7 +314,7 @@ function Fork({ studio, mode, step, sel, setSel, openPicker, contract, basicView
             <div className="bld-fork__label">{l.label}</div>
             <div className="bld-fork__drop" />
             {l.steps.length === 0
-              ? <InsertBtn mode={mode} onClick={() => openPicker({ lane: "branch", parentId: step.id, branchId: l.id, index: 0 })} />
+              ? <InsertBtn mode={mode} title={viewState.addStepTitle} onClick={() => openPicker({ lane: "branch", parentId: step.id, branchId: l.id, index: 0 })} />
               : <Lane studio={studio} mode={mode} steps={l.steps} laneRef={{ lane: "branch", parentId: step.id, branchId: l.id }} sel={sel} setSel={setSel} openPicker={openPicker} contract={contract} basicView={basicView} />}
             {forkState.isParallel && <div className="bld-fork__drop" />}
           </div>
@@ -348,7 +351,7 @@ function RepeatBody({ studio, mode, step, sel, setSel, openPicker, contract, bas
             <span className="bld-loop__meta">{repeatState.whileLabel} <strong>{repeatState.notLabel}</strong> ({repeatState.conditionLabel}) · {repeatState.maxIterationsLabel}</span>
           </div>
           {step.steps.length === 0
-            ? <InsertBtn mode={mode} onClick={() => openPicker({ lane: "branch", parentId: step.id, branchId: "body", index: 0 })} />
+            ? <InsertBtn mode={mode} title={viewState.addStepTitle} onClick={() => openPicker({ lane: "branch", parentId: step.id, branchId: "body", index: 0 })} />
             : <Lane studio={studio} mode={mode} steps={step.steps} laneRef={{ lane: "branch", parentId: step.id, branchId: "body" }} sel={sel} setSel={setSel} openPicker={openPicker} contract={contract} basicView={basicView} />}
           <div className="bld-loop__back">{repeatState.loopBackLabel}</div>
         </div>
@@ -358,8 +361,8 @@ function RepeatBody({ studio, mode, step, sel, setSel, openPicker, contract, bas
   );
 }
 
-function StepCard({ studio, step, index, selected, onSelect, contract }) {
-  const cardState = window.MobKitFlowController.basicStepCardState({ step, members: studio?.members || [], contract });
+function StepCard({ studio, step, index, selected, onSelect, contract, basicView = null }) {
+  const cardState = window.MobKitFlowController.basicStepCardState({ step, members: studio?.members || [], contract, basicView });
 
   return (
     <div
@@ -380,7 +383,7 @@ function StepCard({ studio, step, index, selected, onSelect, contract }) {
   );
 }
 
-function InsertBtn({ onClick, mid, mode }) {
+function InsertBtn({ onClick, mid, mode, title = "" }) {
   if (mode === "flow") {
     return (
       <div className={"bld-insert bld-insert--conn" + (mid ? " bld-insert--mid" : "")}>
@@ -393,16 +396,16 @@ function InsertBtn({ onClick, mid, mode }) {
   return (
     <div className={"bld-insert" + (mid ? " bld-insert--mid" : "")}>
       <div className="bld-insert__line" />
-      <button className="bld-insert__btn" onMouseDown={(e) => { e.stopPropagation(); onClick(); }} title="Add step">+</button>
+      <button className="bld-insert__btn" onMouseDown={(e) => { e.stopPropagation(); onClick(); }} title={title}>+</button>
       {mid && <div className="bld-insert__line" />}
     </div>
   );
 }
 
 // ── Picker ──
-function StepPicker({ members, isKickoff, contract, onPick, onClose }) {
+function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView = null }) {
   const [q, setQ] = React.useState("");
-  const pickerState = window.MobKitFlowController.basicStepPickerState({ members, contract, query: q, isKickoff });
+  const pickerState = window.MobKitFlowController.basicStepPickerState({ members, contract, query: q, isKickoff, basicView });
   if (pickerState.mode === "kickoff") {
     return (
       <div className="bld-panel__inner">

@@ -931,6 +931,52 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       repeat_iteration_reuse_unsupported_label: "unsupported: re-use input task",
       repeat_iteration_feeds_unsupported_prefix: "unsupported: feeds ",
       repeat_iteration_unsupported_prefix: "unsupported: ",
+      add_step_title: "Add step",
+      input_step_card_title: "Input",
+      input_step_card_desc_fallback: "the task this mob is run with",
+      branch_step_card_title: "Branch",
+      branch_step_card_desc: "Mob picks the first matching path",
+      parallel_step_card_title: "Parallel",
+      parallel_step_card_desc_prefix: "fan-out → join · ",
+      parallel_step_card_collection_fallback: "—",
+      repeat_step_card_title: "Repeat until",
+      repeat_step_card_desc_prefix: "until ",
+      repeat_step_card_desc_fallback: "loop body until condition",
+      member_step_card_title_fallback: "Select member",
+      picker_kickoff_title: "Input",
+      picker_kickoff_sub: "Every mob run starts from a single task input",
+      picker_kickoff_hint: "This node is the mob's ingress — the task it's deployed/run with. Select it on the canvas to edit the task and any typed input fields.",
+      picker_title: "Add step",
+      picker_sub: "A flow node — a member turn or a flow primitive",
+      picker_search_icon: "⌕",
+      picker_search_placeholder: "Search members & primitives…",
+      picker_members_label: "Mob members",
+      picker_flow_label: "Flow",
+      picker_empty_members_hint: "No members yet — define some in the Agents tab.",
+      picker_new_badge_label: "NEW",
+      flow_primitive_rows: [
+        {
+          id: "repeat",
+          glyph: "↻",
+          tint: "member",
+          label: "Repeat until",
+          sub: "Loop a body of steps until a condition holds (max_iterations)",
+        },
+        {
+          id: "branch",
+          glyph: "⑂",
+          tint: "member",
+          label: "Branch",
+          sub: "Pick one downstream path by condition (first match wins)",
+        },
+        {
+          id: "parallel",
+          glyph: "‖",
+          tint: "member",
+          label: "Parallel",
+          sub: "fan_out to several members, then fan_in with a collection policy",
+        },
+      ],
     },
     editor_graph_view: {
       zoom_out_title: "Zoom out",
@@ -1179,6 +1225,55 @@ assert.deepEqual(hydratedCatalogs.basicView, {
   repeatIterationReuseUnsupportedLabel: "unsupported: re-use input task",
   repeatIterationFeedsUnsupportedPrefix: "unsupported: feeds ",
   repeatIterationUnsupportedPrefix: "unsupported: ",
+  addStepTitle: "Add step",
+  inputStepCardTitle: "Input",
+  inputStepCardDescFallback: "the task this mob is run with",
+  branchStepCardTitle: "Branch",
+  branchStepCardDesc: "Mob picks the first matching path",
+  parallelStepCardTitle: "Parallel",
+  parallelStepCardDescPrefix: "fan-out → join · ",
+  parallelStepCardCollectionFallback: "—",
+  repeatStepCardTitle: "Repeat until",
+  repeatStepCardDescPrefix: "until ",
+  repeatStepCardDescFallback: "loop body until condition",
+  memberStepCardTitleFallback: "Select member",
+  pickerKickoffTitle: "Input",
+  pickerKickoffSub: "Every mob run starts from a single task input",
+  pickerKickoffHint: "This node is the mob's ingress — the task it's deployed/run with. Select it on the canvas to edit the task and any typed input fields.",
+  pickerTitle: "Add step",
+  pickerSub: "A flow node — a member turn or a flow primitive",
+  pickerSearchIcon: "⌕",
+  pickerSearchPlaceholder: "Search members & primitives…",
+  pickerMembersLabel: "Mob members",
+  pickerFlowLabel: "Flow",
+  pickerEmptyMembersHint: "No members yet — define some in the Agents tab.",
+  pickerNewBadgeLabel: "NEW",
+  flowPrimitiveRows: [
+    {
+      id: "repeat",
+      glyph: "↻",
+      tint: "member",
+      label: "Repeat until",
+      sub: "Loop a body of steps until a condition holds (max_iterations)",
+      isNew: false,
+    },
+    {
+      id: "branch",
+      glyph: "⑂",
+      tint: "member",
+      label: "Branch",
+      sub: "Pick one downstream path by condition (first match wins)",
+      isNew: false,
+    },
+    {
+      id: "parallel",
+      glyph: "‖",
+      tint: "member",
+      label: "Parallel",
+      sub: "fan_out to several members, then fan_in with a collection policy",
+      isNew: false,
+    },
+  ],
 });
 assert.deepEqual(controller.basicEditorViewState(hydratedCatalogs.basicView), hydratedCatalogs.basicView);
 assert.deepEqual(controller.basicEditorViewState(null), {
@@ -1269,6 +1364,30 @@ assert.deepEqual(controller.basicEditorViewState(null), {
   repeatIterationReuseUnsupportedLabel: "",
   repeatIterationFeedsUnsupportedPrefix: "",
   repeatIterationUnsupportedPrefix: "",
+  addStepTitle: "",
+  inputStepCardTitle: "",
+  inputStepCardDescFallback: "",
+  branchStepCardTitle: "",
+  branchStepCardDesc: "",
+  parallelStepCardTitle: "",
+  parallelStepCardDescPrefix: "",
+  parallelStepCardCollectionFallback: "",
+  repeatStepCardTitle: "",
+  repeatStepCardDescPrefix: "",
+  repeatStepCardDescFallback: "",
+  memberStepCardTitleFallback: "",
+  pickerKickoffTitle: "",
+  pickerKickoffSub: "",
+  pickerKickoffHint: "",
+  pickerTitle: "",
+  pickerSub: "",
+  pickerSearchIcon: "",
+  pickerSearchPlaceholder: "",
+  pickerMembersLabel: "",
+  pickerFlowLabel: "",
+  pickerEmptyMembersHint: "",
+  pickerNewBadgeLabel: "",
+  flowPrimitiveRows: [],
 });
 assert.deepEqual(hydratedCatalogs.launchView, TEST_LAUNCH_VIEW);
 assert.deepEqual(hydratedCatalogs.graphView, {
@@ -2315,6 +2434,7 @@ assert.deepEqual(controller.basicStepCardState({
   step: { type: "parallel" },
   members,
   contract: basicCanvasContract,
+  basicView: hydratedCatalogs.basicView,
 }), {
   icon: "‖",
   iconTint: "member",
@@ -2327,6 +2447,7 @@ assert.deepEqual(controller.basicStepCardState({
   step: { type: "member", role: "m_reviewer" },
   members,
   contract: basicCanvasContract,
+  basicView: hydratedCatalogs.basicView,
 }), {
   icon: "◆",
   iconTint: "accent",
@@ -5349,7 +5470,10 @@ const emptyAddNodeMenuState = controller.graphAddNodeMenuState({
 assert.equal(emptyAddNodeMenuState.emptyLabel, "No matches for “zzz”");
 assert.equal(emptyAddNodeMenuState.isEmpty, true);
 
-const basicPickerKickoffState = controller.basicStepPickerState({ isKickoff: true });
+const basicPickerKickoffState = controller.basicStepPickerState({
+  isKickoff: true,
+  basicView: hydratedCatalogs.basicView,
+});
 assert.equal(basicPickerKickoffState.mode, "kickoff");
 assert.equal(basicPickerKickoffState.title, "Input");
 assert.match(basicPickerKickoffState.kickoffHint, /mob's ingress/);
@@ -5361,6 +5485,7 @@ const basicPickerState = controller.basicStepPickerState({
   ],
   contract: { mob_definition: { editor_flow_step_types: ["repeat", "branch", "parallel"] } },
   query: "parallel",
+  basicView: hydratedCatalogs.basicView,
 });
 assert.equal(basicPickerState.mode, "picker");
 assert.equal(basicPickerState.title, "Add step");
@@ -5378,6 +5503,7 @@ assert.equal(basicPickerState.hasConfiguredMembers, true);
 const emptyBasicPickerState = controller.basicStepPickerState({
   members: [],
   contract: { mob_definition: { editor_flow_step_types: ["branch"] } },
+  basicView: hydratedCatalogs.basicView,
 });
 assert.equal(emptyBasicPickerState.emptyMembersHint, "No members yet — define some in the Agents tab.");
 assert.equal(emptyBasicPickerState.hasConfiguredMembers, false);

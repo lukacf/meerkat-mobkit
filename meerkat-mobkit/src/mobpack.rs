@@ -1087,6 +1087,56 @@ pub fn mobpack_schema_response() -> Value {
         json!("unsupported: re-use input task");
     editor_basic_view["repeat_iteration_feeds_unsupported_prefix"] = json!("unsupported: feeds ");
     editor_basic_view["repeat_iteration_unsupported_prefix"] = json!("unsupported: ");
+    editor_basic_view["add_step_title"] = json!("Add step");
+    editor_basic_view["input_step_card_title"] = json!("Input");
+    editor_basic_view["input_step_card_desc_fallback"] = json!("the task this mob is run with");
+    editor_basic_view["branch_step_card_title"] = json!("Branch");
+    editor_basic_view["branch_step_card_desc"] = json!("Mob picks the first matching path");
+    editor_basic_view["parallel_step_card_title"] = json!("Parallel");
+    editor_basic_view["parallel_step_card_desc_prefix"] = json!("fan-out → join · ");
+    editor_basic_view["parallel_step_card_collection_fallback"] = json!("—");
+    editor_basic_view["repeat_step_card_title"] = json!("Repeat until");
+    editor_basic_view["repeat_step_card_desc_prefix"] = json!("until ");
+    editor_basic_view["repeat_step_card_desc_fallback"] = json!("loop body until condition");
+    editor_basic_view["member_step_card_title_fallback"] = json!("Select member");
+    editor_basic_view["picker_kickoff_title"] = json!("Input");
+    editor_basic_view["picker_kickoff_sub"] =
+        json!("Every mob run starts from a single task input");
+    editor_basic_view["picker_kickoff_hint"] = json!(
+        "This node is the mob's ingress — the task it's deployed/run with. Select it on the canvas to edit the task and any typed input fields."
+    );
+    editor_basic_view["picker_title"] = json!("Add step");
+    editor_basic_view["picker_sub"] = json!("A flow node — a member turn or a flow primitive");
+    editor_basic_view["picker_search_icon"] = json!("⌕");
+    editor_basic_view["picker_search_placeholder"] = json!("Search members & primitives…");
+    editor_basic_view["picker_members_label"] = json!("Mob members");
+    editor_basic_view["picker_flow_label"] = json!("Flow");
+    editor_basic_view["picker_empty_members_hint"] =
+        json!("No members yet — define some in the Agents tab.");
+    editor_basic_view["picker_new_badge_label"] = json!("NEW");
+    editor_basic_view["flow_primitive_rows"] = json!([
+        {
+            "id": "repeat",
+            "glyph": "↻",
+            "tint": "member",
+            "label": "Repeat until",
+            "sub": "Loop a body of steps until a condition holds (max_iterations)"
+        },
+        {
+            "id": "branch",
+            "glyph": "⑂",
+            "tint": "member",
+            "label": "Branch",
+            "sub": "Pick one downstream path by condition (first match wins)"
+        },
+        {
+            "id": "parallel",
+            "glyph": "‖",
+            "tint": "member",
+            "label": "Parallel",
+            "sub": "fan_out to several members, then fan_in with a collection policy"
+        }
+    ]);
     let editor_graph_template_view = json!({
         "template_eyebrow": "TEMPLATE",
         "summary_title": "SUMMARY",
@@ -15795,6 +15845,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_basic_view"]["repeat_canvas_loop_back_prefix"],
             json!("↑ loop back · ")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["picker_search_placeholder"],
+            json!("Search members & primitives…")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["parallel_step_card_desc_prefix"],
+            json!("fan-out → join · ")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["flow_primitive_rows"][2]["id"],
+            json!("parallel")
         );
         assert_eq!(
             mob_definition["editor_graph_template_view"]["template_eyebrow"],

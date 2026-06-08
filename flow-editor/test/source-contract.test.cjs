@@ -204,6 +204,7 @@ assert.match(controller, /function reconcileGraphStepToolScopes/, "controller pl
 assert.match(graph, /MobKitFlowController\.graphConnectionEdgeDraft/, "Graph editor must ask the controller plane to construct semantic edge drafts");
 assert.match(controller, /function graphConnectionEdgeDraft/, "controller plane must own semantic edge creation for graph connections");
 assert.match(builderStepPickerBlock, /MobKitFlowController\.basicStepPickerState/, "Basic add-step picker must render controller-projected palette rows");
+assert.match(builderStepPickerBlock, /basicStepPickerState\(\{[\s\S]*basicView/, "Basic add-step picker must pass schema-backed Basic view into controller projection");
 assert.match(builderStepPickerBlock, /pickerState\.memberRows\.map/, "Basic add-step member rows must come from controller state");
 assert.match(builderStepPickerBlock, /pickerState\.primitiveRows\.map/, "Basic add-step primitive rows must come from controller state");
 assert.match(builderStepPickerBlock, /pickerState\.kickoffHint/, "Basic add-step kickoff copy must come from controller state");
@@ -373,6 +374,8 @@ assert.match(controller, /branchConditionEmptyHint:\s*String\(view\.branch_condi
 assert.match(controller, /parallelCollectionLabel:\s*String\(view\.parallel_collection_label/, "controller plane must hydrate Basic parallel control labels from MobKit schema");
 assert.match(controller, /repeatPanelTitle:\s*String\(view\.repeat_panel_title/, "controller plane must hydrate Basic repeat panel labels from MobKit schema");
 assert.match(controller, /repeatCanvasLoopBackPrefix:\s*String\(view\.repeat_canvas_loop_back_prefix/, "controller plane must hydrate Basic repeat canvas labels from MobKit schema");
+assert.match(controller, /pickerSearchPlaceholder:\s*String\(view\.picker_search_placeholder/, "controller plane must hydrate Basic picker labels from MobKit schema");
+assert.match(controller, /flowPrimitiveRows:\s*basicFlowPrimitiveRowsFromSchema\(view\.flow_primitive_rows\)/, "controller plane must hydrate Basic primitive palette rows from MobKit schema");
 assert.match(builderMemberStepControlBlock, /basicMemberStepControlState\(\{[\s\S]*basicView/, "Basic member-step controls must pass schema-backed Basic view into controller projection");
 assert.match(builder, /stepToolScopeState\(\{[\s\S]*basicView/, "Basic tool-scope controls must pass schema-backed Basic view into controller projection");
 assert(!/>START<|>LOOP<|>Tips<|Build your mob flow|Pick a node to configure|member turn or flow primitive/.test(builder), "Basic editor chrome copy must not be composed locally");
@@ -515,6 +518,7 @@ assert.match(builderCanvasBlock, /MobKitFlowController\.basicForkCanvasState/, "
 assert.match(builderCanvasBlock, /MobKitFlowController\.basicRepeatCanvasState/, "Basic repeat canvas must render loop labels through the controller plane");
 assert.match(builderCanvasBlock, /basicRepeatCanvasState\(\{[\s\S]*basicView/, "Basic repeat canvas must pass schema-backed Basic view into controller projection");
 assert.match(builderCanvasBlock, /MobKitFlowController\.basicStepCardState/, "Basic step cards must render card labels through the controller plane");
+assert.match(builderCanvasBlock, /basicStepCardState\(\{[\s\S]*basicView/, "Basic step cards must pass schema-backed Basic view into controller projection");
 assert.match(controller, /function basicForkCanvasState/, "controller plane must own Basic fork canvas projection");
 assert.match(controller, /function basicRepeatCanvasState/, "controller plane must own Basic repeat canvas projection");
 assert.match(controller, /function basicStepCardState/, "controller plane must own Basic step-card projection");

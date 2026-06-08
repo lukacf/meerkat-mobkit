@@ -1157,6 +1157,30 @@
       repeatIterationReuseUnsupportedLabel: String(view.repeat_iteration_reuse_unsupported_label || "").trim(),
       repeatIterationFeedsUnsupportedPrefix: String(view.repeat_iteration_feeds_unsupported_prefix || ""),
       repeatIterationUnsupportedPrefix: String(view.repeat_iteration_unsupported_prefix || ""),
+      addStepTitle: String(view.add_step_title || "").trim(),
+      inputStepCardTitle: String(view.input_step_card_title || "").trim(),
+      inputStepCardDescFallback: String(view.input_step_card_desc_fallback || "").trim(),
+      branchStepCardTitle: String(view.branch_step_card_title || "").trim(),
+      branchStepCardDesc: String(view.branch_step_card_desc || "").trim(),
+      parallelStepCardTitle: String(view.parallel_step_card_title || "").trim(),
+      parallelStepCardDescPrefix: String(view.parallel_step_card_desc_prefix || ""),
+      parallelStepCardCollectionFallback: String(view.parallel_step_card_collection_fallback || "").trim(),
+      repeatStepCardTitle: String(view.repeat_step_card_title || "").trim(),
+      repeatStepCardDescPrefix: String(view.repeat_step_card_desc_prefix || ""),
+      repeatStepCardDescFallback: String(view.repeat_step_card_desc_fallback || "").trim(),
+      memberStepCardTitleFallback: String(view.member_step_card_title_fallback || "").trim(),
+      pickerKickoffTitle: String(view.picker_kickoff_title || "").trim(),
+      pickerKickoffSub: String(view.picker_kickoff_sub || "").trim(),
+      pickerKickoffHint: String(view.picker_kickoff_hint || "").trim(),
+      pickerTitle: String(view.picker_title || "").trim(),
+      pickerSub: String(view.picker_sub || "").trim(),
+      pickerSearchIcon: String(view.picker_search_icon || "").trim(),
+      pickerSearchPlaceholder: String(view.picker_search_placeholder || "").trim(),
+      pickerMembersLabel: String(view.picker_members_label || "").trim(),
+      pickerFlowLabel: String(view.picker_flow_label || "").trim(),
+      pickerEmptyMembersHint: String(view.picker_empty_members_hint || "").trim(),
+      pickerNewBadgeLabel: String(view.picker_new_badge_label || "").trim(),
+      flowPrimitiveRows: basicFlowPrimitiveRowsFromSchema(view.flow_primitive_rows),
     };
     return Object.entries(out).every(([key, value]) => Array.isArray(value) ? value.length : !!value)
       ? out
@@ -1176,6 +1200,22 @@
           kind: kind === "code" || kind === "strong" ? kind : "text",
           text,
         };
+      })
+      .filter(Boolean);
+  }
+
+  function basicFlowPrimitiveRowsFromSchema(rows) {
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .map((row) => {
+        if (!row || typeof row !== "object") return null;
+        const id = String(row.id || "").trim();
+        const glyph = String(row.glyph || "").trim();
+        const tint = String(row.tint || "").trim();
+        const label = String(row.label || "").trim();
+        const sub = String(row.sub || "").trim();
+        if (!id || !glyph || !tint || !label || !sub) return null;
+        return { id, glyph, tint, label, sub, isNew: Boolean(row.is_new) };
       })
       .filter(Boolean);
   }
@@ -1272,6 +1312,30 @@
       repeatIterationReuseUnsupportedLabel: String(view?.repeatIterationReuseUnsupportedLabel || ""),
       repeatIterationFeedsUnsupportedPrefix: String(view?.repeatIterationFeedsUnsupportedPrefix || ""),
       repeatIterationUnsupportedPrefix: String(view?.repeatIterationUnsupportedPrefix || ""),
+      addStepTitle: String(view?.addStepTitle || ""),
+      inputStepCardTitle: String(view?.inputStepCardTitle || ""),
+      inputStepCardDescFallback: String(view?.inputStepCardDescFallback || ""),
+      branchStepCardTitle: String(view?.branchStepCardTitle || ""),
+      branchStepCardDesc: String(view?.branchStepCardDesc || ""),
+      parallelStepCardTitle: String(view?.parallelStepCardTitle || ""),
+      parallelStepCardDescPrefix: String(view?.parallelStepCardDescPrefix || ""),
+      parallelStepCardCollectionFallback: String(view?.parallelStepCardCollectionFallback || ""),
+      repeatStepCardTitle: String(view?.repeatStepCardTitle || ""),
+      repeatStepCardDescPrefix: String(view?.repeatStepCardDescPrefix || ""),
+      repeatStepCardDescFallback: String(view?.repeatStepCardDescFallback || ""),
+      memberStepCardTitleFallback: String(view?.memberStepCardTitleFallback || ""),
+      pickerKickoffTitle: String(view?.pickerKickoffTitle || ""),
+      pickerKickoffSub: String(view?.pickerKickoffSub || ""),
+      pickerKickoffHint: String(view?.pickerKickoffHint || ""),
+      pickerTitle: String(view?.pickerTitle || ""),
+      pickerSub: String(view?.pickerSub || ""),
+      pickerSearchIcon: String(view?.pickerSearchIcon || ""),
+      pickerSearchPlaceholder: String(view?.pickerSearchPlaceholder || ""),
+      pickerMembersLabel: String(view?.pickerMembersLabel || ""),
+      pickerFlowLabel: String(view?.pickerFlowLabel || ""),
+      pickerEmptyMembersHint: String(view?.pickerEmptyMembersHint || ""),
+      pickerNewBadgeLabel: String(view?.pickerNewBadgeLabel || ""),
+      flowPrimitiveRows: Array.isArray(view?.flowPrimitiveRows) ? view.flowPrimitiveRows : [],
     };
   }
 
@@ -4172,15 +4236,16 @@
     };
   }
 
-  function basicStepCardState({ step, members = [], contract } = {}) {
+  function basicStepCardState({ step, members = [], contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
     const sourceMembers = Array.isArray(members) ? members : [];
     const member = step?.role ? sourceMembers.find((candidate) => candidate?.id === step.role) || null : null;
     if (step?.type === "input") {
       return {
         icon: "▤",
         iconTint: "member",
-        title: "Input",
-        desc: step?.task ? step.task : "the task this mob is run with",
+        title: view.inputStepCardTitle,
+        desc: step?.task ? step.task : view.inputStepCardDescFallback,
         configured: true,
         isFlowCard: false,
       };
@@ -4189,19 +4254,19 @@
       return {
         icon: "⑂",
         iconTint: "member",
-        title: "Branch",
-        desc: "Mob picks the first matching path",
+        title: view.branchStepCardTitle,
+        desc: view.branchStepCardDesc,
         configured: true,
         isFlowCard: true,
       };
     }
     if (step?.type === "parallel") {
-      const collection = step?.collection || contractDefaultValue(contract, "collection_policy") || "—";
+      const collection = step?.collection || contractDefaultValue(contract, "collection_policy") || view.parallelStepCardCollectionFallback;
       return {
         icon: "‖",
         iconTint: "member",
-        title: "Parallel",
-        desc: `fan-out → join · ${collection}`,
+        title: view.parallelStepCardTitle,
+        desc: `${view.parallelStepCardDescPrefix}${collection}`,
         configured: true,
         isFlowCard: true,
       };
@@ -4212,8 +4277,10 @@
       return {
         icon: "↻",
         iconTint: "member",
-        title: "Repeat until",
-        desc: repeatUntilExpression ? `until ${repeatUntilExpression}` : "loop body until condition",
+        title: view.repeatStepCardTitle,
+        desc: repeatUntilExpression
+          ? `${view.repeatStepCardDescPrefix}${repeatUntilExpression}`
+          : view.repeatStepCardDescFallback,
         configured: true,
         isFlowCard: true,
       };
@@ -4221,7 +4288,7 @@
     return {
       icon: "◆",
       iconTint: "accent",
-      title: member ? member.name : "Select member",
+      title: member ? member.name : view.memberStepCardTitleFallback,
       desc: step?.instruction || (member ? `${member.role} · ${member.model}` : ""),
       configured: !!step?.role,
       isFlowCard: false,
@@ -7320,15 +7387,12 @@
     );
   }
 
-  function editorFlowPrimitiveOptions(contract) {
+  function editorFlowPrimitiveOptions(contract, basicView = null) {
+    const view = basicEditorViewState(basicView);
     const stepTypes = Array.isArray(contract?.mob_definition?.editor_flow_step_types) && contract.mob_definition.editor_flow_step_types.length
       ? contract.mob_definition.editor_flow_step_types.map(String)
       : [];
-    const metadata = {
-      repeat: { id: "repeat", glyph: "↻", tint: "member", label: "Repeat until", sub: "Loop a body of steps until a condition holds (max_iterations)" },
-      branch: { id: "branch", glyph: "⑂", tint: "member", label: "Branch", sub: "Pick one downstream path by condition (first match wins)" },
-      parallel: { id: "parallel", glyph: "‖", tint: "member", label: "Parallel", sub: "fan_out to several members, then fan_in with a collection policy" },
-    };
+    const metadata = Object.fromEntries((view.flowPrimitiveRows || []).map((row) => [row.id, row]));
     return stepTypes
       .filter((type) => metadata[type])
       .map((type) => metadata[type]);
@@ -7410,13 +7474,14 @@
     };
   }
 
-  function basicStepPickerState({ members = [], contract = null, query = "", isKickoff = false } = {}) {
+  function basicStepPickerState({ members = [], contract = null, query = "", isKickoff = false, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
     if (isKickoff) {
       return {
         mode: "kickoff",
-        title: "Input",
-        sub: "Every mob run starts from a single task input",
-        kickoffHint: "This node is the mob's ingress — the task it's deployed/run with. Select it on the canvas to edit the task and any typed input fields.",
+        title: view.pickerKickoffTitle,
+        sub: view.pickerKickoffSub,
+        kickoffHint: view.pickerKickoffHint,
       };
     }
     const q = String(query || "");
@@ -7445,7 +7510,7 @@
         pick: { kind: "member", id: member.id },
       }))
       .filter((row) => row.id);
-    const primitiveRows = editorFlowPrimitiveOptions(contract)
+    const primitiveRows = editorFlowPrimitiveOptions(contract, basicView)
       .filter((primitive) => {
         if (!ql) return true;
         return [
@@ -7465,14 +7530,14 @@
       .filter((row) => row.id);
     return {
       mode: "picker",
-      title: "Add step",
-      sub: "A flow node — a member turn or a flow primitive",
-      searchIcon: "⌕",
-      searchPlaceholder: "Search members & primitives…",
-      membersLabel: "Mob members",
-      flowLabel: "Flow",
-      emptyMembersHint: "No members yet — define some in the Agents tab.",
-      newBadgeLabel: "NEW",
+      title: view.pickerTitle,
+      sub: view.pickerSub,
+      searchIcon: view.pickerSearchIcon,
+      searchPlaceholder: view.pickerSearchPlaceholder,
+      membersLabel: view.pickerMembersLabel,
+      flowLabel: view.pickerFlowLabel,
+      emptyMembersHint: view.pickerEmptyMembersHint,
+      newBadgeLabel: view.pickerNewBadgeLabel,
       memberRows,
       primitiveRows,
       hasConfiguredMembers: Array.isArray(members) && members.length > 0,

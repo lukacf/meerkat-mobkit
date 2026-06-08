@@ -1190,6 +1190,30 @@ window.MOBKIT_BOOT = {
       repeatIterationReuseUnsupportedLabel: String(view.repeat_iteration_reuse_unsupported_label || "").trim(),
       repeatIterationFeedsUnsupportedPrefix: String(view.repeat_iteration_feeds_unsupported_prefix || ""),
       repeatIterationUnsupportedPrefix: String(view.repeat_iteration_unsupported_prefix || ""),
+      addStepTitle: String(view.add_step_title || "").trim(),
+      inputStepCardTitle: String(view.input_step_card_title || "").trim(),
+      inputStepCardDescFallback: String(view.input_step_card_desc_fallback || "").trim(),
+      branchStepCardTitle: String(view.branch_step_card_title || "").trim(),
+      branchStepCardDesc: String(view.branch_step_card_desc || "").trim(),
+      parallelStepCardTitle: String(view.parallel_step_card_title || "").trim(),
+      parallelStepCardDescPrefix: String(view.parallel_step_card_desc_prefix || ""),
+      parallelStepCardCollectionFallback: String(view.parallel_step_card_collection_fallback || "").trim(),
+      repeatStepCardTitle: String(view.repeat_step_card_title || "").trim(),
+      repeatStepCardDescPrefix: String(view.repeat_step_card_desc_prefix || ""),
+      repeatStepCardDescFallback: String(view.repeat_step_card_desc_fallback || "").trim(),
+      memberStepCardTitleFallback: String(view.member_step_card_title_fallback || "").trim(),
+      pickerKickoffTitle: String(view.picker_kickoff_title || "").trim(),
+      pickerKickoffSub: String(view.picker_kickoff_sub || "").trim(),
+      pickerKickoffHint: String(view.picker_kickoff_hint || "").trim(),
+      pickerTitle: String(view.picker_title || "").trim(),
+      pickerSub: String(view.picker_sub || "").trim(),
+      pickerSearchIcon: String(view.picker_search_icon || "").trim(),
+      pickerSearchPlaceholder: String(view.picker_search_placeholder || "").trim(),
+      pickerMembersLabel: String(view.picker_members_label || "").trim(),
+      pickerFlowLabel: String(view.picker_flow_label || "").trim(),
+      pickerEmptyMembersHint: String(view.picker_empty_members_hint || "").trim(),
+      pickerNewBadgeLabel: String(view.picker_new_badge_label || "").trim(),
+      flowPrimitiveRows: basicFlowPrimitiveRowsFromSchema(view.flow_primitive_rows),
     };
     return Object.entries(out).every(([key, value]) => Array.isArray(value) ? value.length : !!value)
       ? out
@@ -1209,6 +1233,22 @@ window.MOBKIT_BOOT = {
           kind: kind === "code" || kind === "strong" ? kind : "text",
           text,
         };
+      })
+      .filter(Boolean);
+  }
+
+  function basicFlowPrimitiveRowsFromSchema(rows) {
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .map((row) => {
+        if (!row || typeof row !== "object") return null;
+        const id = String(row.id || "").trim();
+        const glyph = String(row.glyph || "").trim();
+        const tint = String(row.tint || "").trim();
+        const label = String(row.label || "").trim();
+        const sub = String(row.sub || "").trim();
+        if (!id || !glyph || !tint || !label || !sub) return null;
+        return { id, glyph, tint, label, sub, isNew: Boolean(row.is_new) };
       })
       .filter(Boolean);
   }
@@ -1305,6 +1345,30 @@ window.MOBKIT_BOOT = {
       repeatIterationReuseUnsupportedLabel: String(view?.repeatIterationReuseUnsupportedLabel || ""),
       repeatIterationFeedsUnsupportedPrefix: String(view?.repeatIterationFeedsUnsupportedPrefix || ""),
       repeatIterationUnsupportedPrefix: String(view?.repeatIterationUnsupportedPrefix || ""),
+      addStepTitle: String(view?.addStepTitle || ""),
+      inputStepCardTitle: String(view?.inputStepCardTitle || ""),
+      inputStepCardDescFallback: String(view?.inputStepCardDescFallback || ""),
+      branchStepCardTitle: String(view?.branchStepCardTitle || ""),
+      branchStepCardDesc: String(view?.branchStepCardDesc || ""),
+      parallelStepCardTitle: String(view?.parallelStepCardTitle || ""),
+      parallelStepCardDescPrefix: String(view?.parallelStepCardDescPrefix || ""),
+      parallelStepCardCollectionFallback: String(view?.parallelStepCardCollectionFallback || ""),
+      repeatStepCardTitle: String(view?.repeatStepCardTitle || ""),
+      repeatStepCardDescPrefix: String(view?.repeatStepCardDescPrefix || ""),
+      repeatStepCardDescFallback: String(view?.repeatStepCardDescFallback || ""),
+      memberStepCardTitleFallback: String(view?.memberStepCardTitleFallback || ""),
+      pickerKickoffTitle: String(view?.pickerKickoffTitle || ""),
+      pickerKickoffSub: String(view?.pickerKickoffSub || ""),
+      pickerKickoffHint: String(view?.pickerKickoffHint || ""),
+      pickerTitle: String(view?.pickerTitle || ""),
+      pickerSub: String(view?.pickerSub || ""),
+      pickerSearchIcon: String(view?.pickerSearchIcon || ""),
+      pickerSearchPlaceholder: String(view?.pickerSearchPlaceholder || ""),
+      pickerMembersLabel: String(view?.pickerMembersLabel || ""),
+      pickerFlowLabel: String(view?.pickerFlowLabel || ""),
+      pickerEmptyMembersHint: String(view?.pickerEmptyMembersHint || ""),
+      pickerNewBadgeLabel: String(view?.pickerNewBadgeLabel || ""),
+      flowPrimitiveRows: Array.isArray(view?.flowPrimitiveRows) ? view.flowPrimitiveRows : [],
     };
   }
 
@@ -4205,15 +4269,16 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function basicStepCardState({ step, members = [], contract } = {}) {
+  function basicStepCardState({ step, members = [], contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
     const sourceMembers = Array.isArray(members) ? members : [];
     const member = step?.role ? sourceMembers.find((candidate) => candidate?.id === step.role) || null : null;
     if (step?.type === "input") {
       return {
         icon: "▤",
         iconTint: "member",
-        title: "Input",
-        desc: step?.task ? step.task : "the task this mob is run with",
+        title: view.inputStepCardTitle,
+        desc: step?.task ? step.task : view.inputStepCardDescFallback,
         configured: true,
         isFlowCard: false,
       };
@@ -4222,19 +4287,19 @@ window.MOBKIT_BOOT = {
       return {
         icon: "⑂",
         iconTint: "member",
-        title: "Branch",
-        desc: "Mob picks the first matching path",
+        title: view.branchStepCardTitle,
+        desc: view.branchStepCardDesc,
         configured: true,
         isFlowCard: true,
       };
     }
     if (step?.type === "parallel") {
-      const collection = step?.collection || contractDefaultValue(contract, "collection_policy") || "—";
+      const collection = step?.collection || contractDefaultValue(contract, "collection_policy") || view.parallelStepCardCollectionFallback;
       return {
         icon: "‖",
         iconTint: "member",
-        title: "Parallel",
-        desc: `fan-out → join · ${collection}`,
+        title: view.parallelStepCardTitle,
+        desc: `${view.parallelStepCardDescPrefix}${collection}`,
         configured: true,
         isFlowCard: true,
       };
@@ -4245,8 +4310,10 @@ window.MOBKIT_BOOT = {
       return {
         icon: "↻",
         iconTint: "member",
-        title: "Repeat until",
-        desc: repeatUntilExpression ? `until ${repeatUntilExpression}` : "loop body until condition",
+        title: view.repeatStepCardTitle,
+        desc: repeatUntilExpression
+          ? `${view.repeatStepCardDescPrefix}${repeatUntilExpression}`
+          : view.repeatStepCardDescFallback,
         configured: true,
         isFlowCard: true,
       };
@@ -4254,7 +4321,7 @@ window.MOBKIT_BOOT = {
     return {
       icon: "◆",
       iconTint: "accent",
-      title: member ? member.name : "Select member",
+      title: member ? member.name : view.memberStepCardTitleFallback,
       desc: step?.instruction || (member ? `${member.role} · ${member.model}` : ""),
       configured: !!step?.role,
       isFlowCard: false,
@@ -7353,15 +7420,12 @@ window.MOBKIT_BOOT = {
     );
   }
 
-  function editorFlowPrimitiveOptions(contract) {
+  function editorFlowPrimitiveOptions(contract, basicView = null) {
+    const view = basicEditorViewState(basicView);
     const stepTypes = Array.isArray(contract?.mob_definition?.editor_flow_step_types) && contract.mob_definition.editor_flow_step_types.length
       ? contract.mob_definition.editor_flow_step_types.map(String)
       : [];
-    const metadata = {
-      repeat: { id: "repeat", glyph: "↻", tint: "member", label: "Repeat until", sub: "Loop a body of steps until a condition holds (max_iterations)" },
-      branch: { id: "branch", glyph: "⑂", tint: "member", label: "Branch", sub: "Pick one downstream path by condition (first match wins)" },
-      parallel: { id: "parallel", glyph: "‖", tint: "member", label: "Parallel", sub: "fan_out to several members, then fan_in with a collection policy" },
-    };
+    const metadata = Object.fromEntries((view.flowPrimitiveRows || []).map((row) => [row.id, row]));
     return stepTypes
       .filter((type) => metadata[type])
       .map((type) => metadata[type]);
@@ -7443,13 +7507,14 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function basicStepPickerState({ members = [], contract = null, query = "", isKickoff = false } = {}) {
+  function basicStepPickerState({ members = [], contract = null, query = "", isKickoff = false, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
     if (isKickoff) {
       return {
         mode: "kickoff",
-        title: "Input",
-        sub: "Every mob run starts from a single task input",
-        kickoffHint: "This node is the mob's ingress — the task it's deployed/run with. Select it on the canvas to edit the task and any typed input fields.",
+        title: view.pickerKickoffTitle,
+        sub: view.pickerKickoffSub,
+        kickoffHint: view.pickerKickoffHint,
       };
     }
     const q = String(query || "");
@@ -7478,7 +7543,7 @@ window.MOBKIT_BOOT = {
         pick: { kind: "member", id: member.id },
       }))
       .filter((row) => row.id);
-    const primitiveRows = editorFlowPrimitiveOptions(contract)
+    const primitiveRows = editorFlowPrimitiveOptions(contract, basicView)
       .filter((primitive) => {
         if (!ql) return true;
         return [
@@ -7498,14 +7563,14 @@ window.MOBKIT_BOOT = {
       .filter((row) => row.id);
     return {
       mode: "picker",
-      title: "Add step",
-      sub: "A flow node — a member turn or a flow primitive",
-      searchIcon: "⌕",
-      searchPlaceholder: "Search members & primitives…",
-      membersLabel: "Mob members",
-      flowLabel: "Flow",
-      emptyMembersHint: "No members yet — define some in the Agents tab.",
-      newBadgeLabel: "NEW",
+      title: view.pickerTitle,
+      sub: view.pickerSub,
+      searchIcon: view.pickerSearchIcon,
+      searchPlaceholder: view.pickerSearchPlaceholder,
+      membersLabel: view.pickerMembersLabel,
+      flowLabel: view.pickerFlowLabel,
+      emptyMembersHint: view.pickerEmptyMembersHint,
+      newBadgeLabel: view.pickerNewBadgeLabel,
       memberRows,
       primitiveRows,
       hasConfiguredMembers: Array.isArray(members) && members.length > 0,
@@ -11560,17 +11625,20 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       members,
       isKickoff: picker.at?.lane === "main" && picker.at?.index === 0 && kickoffSlotEmpty(flow),
       contract,
+      basicView,
       onPick: (pick) => insertAt(picker.at, pick),
       onClose: () => setPicker({ open: false })
     }
   ) : selStep ? /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, step: selStep, update, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, launchView, onInputParamReferenceChange: reconcileInputParamReferences }) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
 }
 function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract, basicView = null }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-lane" }, steps.map((step, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: step.id }, /* @__PURE__ */ React.createElement(StepCard, { studio, step, index: i, selected: sel === step.id, onSelect: () => setSel(step.id), contract }), step.type === "branch" || step.type === "parallel" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Fork, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : step.type === "repeat" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(RepeatBody, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, onClick: () => openPicker({ ...laneRef, index: i + 1 }) }))), steps.length === 0 && /* @__PURE__ */ React.createElement(InsertBtn, { mode, onClick: () => openPicker({ ...laneRef, index: 0 }) }));
+  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
+  return /* @__PURE__ */ React.createElement("div", { className: "bld-lane" }, steps.map((step, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: step.id }, /* @__PURE__ */ React.createElement(StepCard, { studio, step, index: i, selected: sel === step.id, onSelect: () => setSel(step.id), contract, basicView }), step.type === "branch" || step.type === "parallel" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Fork, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : step.type === "repeat" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(RepeatBody, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) }))), steps.length === 0 && /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: 0 }) }));
 }
 function Fork({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
   const forkState = window.MobKitFlowController.basicForkCanvasState({ step, contract });
-  return /* @__PURE__ */ React.createElement("div", { className: forkState.className }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lanes" }, forkState.lanes.map((l) => /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lane", key: l.id }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__label" }, l.label), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), l.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: l.id, index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: l.steps, laneRef: { lane: "branch", parentId: step.id, branchId: l.id }, sel, setSel, openPicker, contract, basicView }), forkState.isParallel && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" })))), forkState.isParallel ? /* @__PURE__ */ React.createElement(React.Fragment, null, forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail bld-fork__rail--join" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-join" }, forkState.joinLabel)) : (
+  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
+  return /* @__PURE__ */ React.createElement("div", { className: forkState.className }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lanes" }, forkState.lanes.map((l) => /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lane", key: l.id }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__label" }, l.label), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), l.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: l.id, index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: l.steps, laneRef: { lane: "branch", parentId: step.id, branchId: l.id }, sel, setSel, openPicker, contract, basicView }), forkState.isParallel && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" })))), forkState.isParallel ? /* @__PURE__ */ React.createElement(React.Fragment, null, forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail bld-fork__rail--join" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-join" }, forkState.joinLabel)) : (
     // Branch paths reconverge to a single downstream column so the
     // following main-lane step connects cleanly (no diagonal jump).
     forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail bld-fork__rail--join" })
@@ -11579,10 +11647,10 @@ function Fork({ studio, mode, step, sel, setSel, openPicker, contract, basicView
 function RepeatBody({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
   const repeatState = window.MobKitFlowController.basicRepeatCanvasState({ step, members: studio?.members || [], contract, basicView });
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-repeat" }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__rail" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__rail-glyph" }, "\u21BB")), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__frame" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__head" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__badge" }, viewState.loopBadge), /* @__PURE__ */ React.createElement("span", { className: "bld-loop__meta" }, repeatState.whileLabel, " ", /* @__PURE__ */ React.createElement("strong", null, repeatState.notLabel), " (", repeatState.conditionLabel, ") \xB7 ", repeatState.maxIterationsLabel)), step.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: "body", index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: step.steps, laneRef: { lane: "branch", parentId: step.id, branchId: "body" }, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__back" }, repeatState.loopBackLabel))), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__exit" }, repeatState.exitLabel));
+  return /* @__PURE__ */ React.createElement("div", { className: "bld-repeat" }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__rail" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__rail-glyph" }, "\u21BB")), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__frame" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__head" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__badge" }, viewState.loopBadge), /* @__PURE__ */ React.createElement("span", { className: "bld-loop__meta" }, repeatState.whileLabel, " ", /* @__PURE__ */ React.createElement("strong", null, repeatState.notLabel), " (", repeatState.conditionLabel, ") \xB7 ", repeatState.maxIterationsLabel)), step.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: "body", index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: step.steps, laneRef: { lane: "branch", parentId: step.id, branchId: "body" }, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__back" }, repeatState.loopBackLabel))), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__exit" }, repeatState.exitLabel));
 }
-function StepCard({ studio, step, index, selected, onSelect, contract }) {
-  const cardState = window.MobKitFlowController.basicStepCardState({ step, members: studio?.members || [], contract });
+function StepCard({ studio, step, index, selected, onSelect, contract, basicView = null }) {
+  const cardState = window.MobKitFlowController.basicStepCardState({ step, members: studio?.members || [], contract, basicView });
   return /* @__PURE__ */ React.createElement(
     "div",
     {
@@ -11596,18 +11664,18 @@ function StepCard({ studio, step, index, selected, onSelect, contract }) {
     cardState.configured ? /* @__PURE__ */ React.createElement("div", { className: "bld-card__body" }, /* @__PURE__ */ React.createElement("span", { className: "bld-card__desc" }, cardState.desc)) : /* @__PURE__ */ React.createElement("div", { className: "bld-card__skeleton" }, /* @__PURE__ */ React.createElement("span", null), /* @__PURE__ */ React.createElement("span", null))
   );
 }
-function InsertBtn({ onClick, mid, mode }) {
+function InsertBtn({ onClick, mid, mode, title = "" }) {
   if (mode === "flow") {
     return /* @__PURE__ */ React.createElement("div", { className: "bld-insert bld-insert--conn" + (mid ? " bld-insert--mid" : "") }, /* @__PURE__ */ React.createElement("div", { className: "bld-insert__line" }), /* @__PURE__ */ React.createElement("span", { className: "bld-insert__dot" }), mid && /* @__PURE__ */ React.createElement("div", { className: "bld-insert__line" }));
   }
   return /* @__PURE__ */ React.createElement("div", { className: "bld-insert" + (mid ? " bld-insert--mid" : "") }, /* @__PURE__ */ React.createElement("div", { className: "bld-insert__line" }), /* @__PURE__ */ React.createElement("button", { className: "bld-insert__btn", onMouseDown: (e) => {
     e.stopPropagation();
     onClick();
-  }, title: "Add step" }, "+"), mid && /* @__PURE__ */ React.createElement("div", { className: "bld-insert__line" }));
+  }, title }, "+"), mid && /* @__PURE__ */ React.createElement("div", { className: "bld-insert__line" }));
 }
-function StepPicker({ members, isKickoff, contract, onPick, onClose }) {
+function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView = null }) {
   const [q, setQ] = React.useState("");
-  const pickerState = window.MobKitFlowController.basicStepPickerState({ members, contract, query: q, isKickoff });
+  const pickerState = window.MobKitFlowController.basicStepPickerState({ members, contract, query: q, isKickoff, basicView });
   if (pickerState.mode === "kickoff") {
     return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, pickerState.kickoffHint));
   }
