@@ -940,7 +940,7 @@ pub fn mobpack_schema_response() -> Value {
         { "value": "bottom", "label": "Bottom" },
         { "value": "modal", "label": "Modal" }
     ]);
-    let editor_basic_view = json!({
+    let mut editor_basic_view = json!({
         "start_label": "START",
         "loop_badge": "LOOP",
         "tips_title": "Tips",
@@ -953,6 +953,36 @@ pub fn mobpack_schema_response() -> Value {
             { "kind": "text", "text": " flow." }
         ]
     });
+    editor_basic_view["member_step_panel_title_fallback"] = json!("Member step");
+    editor_basic_view["member_step_panel_sub_fallback"] = json!("Assign a member to run this step");
+    editor_basic_view["member_step_member_label"] = json!("Member (profile)");
+    editor_basic_view["member_step_member_placeholder"] = json!("— select member —");
+    editor_basic_view["member_step_runtime_default_label"] = json!("runtime default");
+    editor_basic_view["member_step_instruction_label"] =
+        json!("message — instruction for this turn");
+    editor_basic_view["member_step_instruction_placeholder"] =
+        json!("e.g. Run the focused tests and report failures.");
+    editor_basic_view["member_step_dispatch_label"] = json!("Dispatch mode");
+    editor_basic_view["member_step_collection_label"] = json!("Collection policy");
+    editor_basic_view["member_step_quorum_label"] = json!("Quorum");
+    editor_basic_view["member_step_quorum_placeholder"] = json!("required");
+    editor_basic_view["member_step_timeout_label"] = json!("Timeout (ms)");
+    editor_basic_view["member_step_dependency_label"] = json!("depends_on mode");
+    editor_basic_view["member_step_output_format_label"] = json!("Output format");
+    editor_basic_view["member_step_allowed_tools_label"] = json!("Allowed tools");
+    editor_basic_view["member_step_allowed_tools_empty_label"] = json!("Runtime profile default");
+    editor_basic_view["member_step_blocked_tools_label"] = json!("Blocked tools");
+    editor_basic_view["member_step_blocked_tools_empty_label"] = json!("No step-level blocks");
+    editor_basic_view["member_step_schema_hint_prefix"] = json!("Emits ");
+    editor_basic_view["member_step_schema_hint_tools_prefix"] = json!(" · tools: ");
+    editor_basic_view["member_step_schema_hint_empty_tools_label"] = json!("—");
+    editor_basic_view["tool_scope_not_in_catalog_reason"] = json!("not in MobKit tool catalog");
+    editor_basic_view["tool_scope_not_enabled_reason"] = json!("not enabled on profile");
+    editor_basic_view["tool_scope_tool_description_fallback"] = json!("MobKit tool");
+    editor_basic_view["tool_scope_remove_label"] = json!("×");
+    editor_basic_view["tool_scope_select_member_placeholder"] = json!("select a member first");
+    editor_basic_view["tool_scope_block_catalog_placeholder"] = json!("+ block MobKit tool...");
+    editor_basic_view["tool_scope_add_profile_placeholder"] = json!("+ add profile tool...");
     let editor_graph_template_view = json!({
         "template_eyebrow": "TEMPLATE",
         "summary_title": "SUMMARY",
@@ -15624,6 +15654,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_basic_view"]["empty_panel_subtitle_parts"][3]["text"],
             json!("mob.toml")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["member_step_instruction_placeholder"],
+            json!("e.g. Run the focused tests and report failures.")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["tool_scope_add_profile_placeholder"],
+            json!("+ add profile tool...")
         );
         assert_eq!(
             mob_definition["editor_graph_template_view"]["template_eyebrow"],

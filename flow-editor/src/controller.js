@@ -271,7 +271,8 @@
     };
   }
 
-  function stepToolScopeState({ member, selected, mode = "member", toolCatalog = [] } = {}) {
+  function stepToolScopeState({ member, selected, mode = "member", toolCatalog = [], basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
     const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
     const catalogIds = Array.from(new Set(catalog.map((tool) => String(tool.id).trim()).filter(Boolean)));
     const selectedTools = Array.from(new Set(normalizeStringList(selected)));
@@ -284,7 +285,7 @@
       const meta = metaById.get(id) || null;
       const unavailable = !validToolSet.has(id);
       const reason = unavailable
-        ? (mode === "catalog" ? "not in MobKit tool catalog" : "not enabled on profile")
+        ? (mode === "catalog" ? view.toolScopeNotInCatalogReason : view.toolScopeNotEnabledReason)
         : "";
       return {
         id,
@@ -293,8 +294,8 @@
         unavailable,
         reason,
         className: `tool-row${unavailable ? " tool-row--invalid" : ""}`,
-        description: unavailable ? reason : (meta?.desc || "MobKit tool"),
-        removeLabel: "×",
+        description: unavailable ? reason : (meta?.desc || view.toolScopeToolDescriptionFallback),
+        removeLabel: view.toolScopeRemoveLabel,
       };
     };
     const optionFor = (id) => {
@@ -317,8 +318,8 @@
       rows: selectedTools.map(rowFor),
       addSelectValue: "",
       addSelectPlaceholder: mode === "member" && !member
-        ? "select a member first"
-        : (mode === "catalog" ? "+ block MobKit tool..." : "+ add profile tool..."),
+        ? view.toolScopeSelectMemberPlaceholder
+        : (mode === "catalog" ? view.toolScopeBlockCatalogPlaceholder : view.toolScopeAddProfilePlaceholder),
       disabled: (mode === "member" && !member) || addable.length === 0,
     };
   }
@@ -1072,8 +1073,36 @@
       tipsTitle: String(view.tips_title || "").trim(),
       emptyPanelTitle: String(view.empty_panel_title || "").trim(),
       emptyPanelSubtitleParts: basicViewPartsFromSchema(view.empty_panel_subtitle_parts),
+      memberStepPanelTitleFallback: String(view.member_step_panel_title_fallback || "").trim(),
+      memberStepPanelSubFallback: String(view.member_step_panel_sub_fallback || "").trim(),
+      memberStepMemberLabel: String(view.member_step_member_label || "").trim(),
+      memberStepMemberPlaceholder: String(view.member_step_member_placeholder || "").trim(),
+      memberStepRuntimeDefaultLabel: String(view.member_step_runtime_default_label || "").trim(),
+      memberStepInstructionLabel: String(view.member_step_instruction_label || "").trim(),
+      memberStepInstructionPlaceholder: String(view.member_step_instruction_placeholder || "").trim(),
+      memberStepDispatchLabel: String(view.member_step_dispatch_label || "").trim(),
+      memberStepCollectionLabel: String(view.member_step_collection_label || "").trim(),
+      memberStepQuorumLabel: String(view.member_step_quorum_label || "").trim(),
+      memberStepQuorumPlaceholder: String(view.member_step_quorum_placeholder || "").trim(),
+      memberStepTimeoutLabel: String(view.member_step_timeout_label || "").trim(),
+      memberStepDependencyLabel: String(view.member_step_dependency_label || "").trim(),
+      memberStepOutputFormatLabel: String(view.member_step_output_format_label || "").trim(),
+      memberStepAllowedToolsLabel: String(view.member_step_allowed_tools_label || "").trim(),
+      memberStepAllowedToolsEmptyLabel: String(view.member_step_allowed_tools_empty_label || "").trim(),
+      memberStepBlockedToolsLabel: String(view.member_step_blocked_tools_label || "").trim(),
+      memberStepBlockedToolsEmptyLabel: String(view.member_step_blocked_tools_empty_label || "").trim(),
+      memberStepSchemaHintPrefix: String(view.member_step_schema_hint_prefix || ""),
+      memberStepSchemaHintToolsPrefix: String(view.member_step_schema_hint_tools_prefix || ""),
+      memberStepSchemaHintEmptyToolsLabel: String(view.member_step_schema_hint_empty_tools_label || "").trim(),
+      toolScopeNotInCatalogReason: String(view.tool_scope_not_in_catalog_reason || "").trim(),
+      toolScopeNotEnabledReason: String(view.tool_scope_not_enabled_reason || "").trim(),
+      toolScopeToolDescriptionFallback: String(view.tool_scope_tool_description_fallback || "").trim(),
+      toolScopeRemoveLabel: String(view.tool_scope_remove_label || "").trim(),
+      toolScopeSelectMemberPlaceholder: String(view.tool_scope_select_member_placeholder || "").trim(),
+      toolScopeBlockCatalogPlaceholder: String(view.tool_scope_block_catalog_placeholder || "").trim(),
+      toolScopeAddProfilePlaceholder: String(view.tool_scope_add_profile_placeholder || "").trim(),
     };
-    return out.startLabel && out.loopBadge && out.tipsTitle && out.emptyPanelTitle && out.emptyPanelSubtitleParts.length
+    return Object.entries(out).every(([key, value]) => Array.isArray(value) ? value.length : !!value)
       ? out
       : null;
   }
@@ -1105,6 +1134,34 @@
       emptyPanelSubtitleParts: Array.isArray(view?.emptyPanelSubtitleParts)
         ? view.emptyPanelSubtitleParts
         : [],
+      memberStepPanelTitleFallback: String(view?.memberStepPanelTitleFallback || ""),
+      memberStepPanelSubFallback: String(view?.memberStepPanelSubFallback || ""),
+      memberStepMemberLabel: String(view?.memberStepMemberLabel || ""),
+      memberStepMemberPlaceholder: String(view?.memberStepMemberPlaceholder || ""),
+      memberStepRuntimeDefaultLabel: String(view?.memberStepRuntimeDefaultLabel || ""),
+      memberStepInstructionLabel: String(view?.memberStepInstructionLabel || ""),
+      memberStepInstructionPlaceholder: String(view?.memberStepInstructionPlaceholder || ""),
+      memberStepDispatchLabel: String(view?.memberStepDispatchLabel || ""),
+      memberStepCollectionLabel: String(view?.memberStepCollectionLabel || ""),
+      memberStepQuorumLabel: String(view?.memberStepQuorumLabel || ""),
+      memberStepQuorumPlaceholder: String(view?.memberStepQuorumPlaceholder || ""),
+      memberStepTimeoutLabel: String(view?.memberStepTimeoutLabel || ""),
+      memberStepDependencyLabel: String(view?.memberStepDependencyLabel || ""),
+      memberStepOutputFormatLabel: String(view?.memberStepOutputFormatLabel || ""),
+      memberStepAllowedToolsLabel: String(view?.memberStepAllowedToolsLabel || ""),
+      memberStepAllowedToolsEmptyLabel: String(view?.memberStepAllowedToolsEmptyLabel || ""),
+      memberStepBlockedToolsLabel: String(view?.memberStepBlockedToolsLabel || ""),
+      memberStepBlockedToolsEmptyLabel: String(view?.memberStepBlockedToolsEmptyLabel || ""),
+      memberStepSchemaHintPrefix: String(view?.memberStepSchemaHintPrefix || ""),
+      memberStepSchemaHintToolsPrefix: String(view?.memberStepSchemaHintToolsPrefix || ""),
+      memberStepSchemaHintEmptyToolsLabel: String(view?.memberStepSchemaHintEmptyToolsLabel || ""),
+      toolScopeNotInCatalogReason: String(view?.toolScopeNotInCatalogReason || ""),
+      toolScopeNotEnabledReason: String(view?.toolScopeNotEnabledReason || ""),
+      toolScopeToolDescriptionFallback: String(view?.toolScopeToolDescriptionFallback || ""),
+      toolScopeRemoveLabel: String(view?.toolScopeRemoveLabel || ""),
+      toolScopeSelectMemberPlaceholder: String(view?.toolScopeSelectMemberPlaceholder || ""),
+      toolScopeBlockCatalogPlaceholder: String(view?.toolScopeBlockCatalogPlaceholder || ""),
+      toolScopeAddProfilePlaceholder: String(view?.toolScopeAddProfilePlaceholder || ""),
     };
   }
 
@@ -4052,7 +4109,8 @@
     };
   }
 
-  function basicMemberStepControlState({ step, flow, members = [], contract } = {}) {
+  function basicMemberStepControlState({ step, flow, members = [], contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
     const sourceMembers = Array.isArray(members) ? members : [];
     const memberById = new Map(sourceMembers.map((member) => [member.id, member]));
     const member = step?.role ? memberById.get(step.role) || null : null;
@@ -4068,7 +4126,7 @@
         member: sourceMember,
       };
     });
-    const runtimeDefault = { value: "", label: "runtime default", disabled: false, reason: "" };
+    const runtimeDefault = { value: "", label: view.memberStepRuntimeDefaultLabel, disabled: false, reason: "" };
     const dispatchValue = typeof step?.dispatchMode === "string" ? step.dispatchMode : "";
     const collectionValue = typeof step?.collection === "string" ? step.collection : "";
     const dependencyValue = typeof step?.dependsMode === "string" ? step.dependsMode : "";
@@ -4079,10 +4137,10 @@
     const outputOptions = [runtimeDefault, ...outputFormatOptions(contract, outputValue)];
     return {
       member,
-      panelTitle: member ? member.name : "Member step",
-      panelSub: member ? `${member.role} · ${member.model}` : "Assign a member to run this step",
-      memberFieldLabel: "Member (profile)",
-      memberPlaceholderLabel: "— select member —",
+      panelTitle: member ? member.name : view.memberStepPanelTitleFallback,
+      panelSub: member ? `${member.role} · ${member.model}` : view.memberStepPanelSubFallback,
+      memberFieldLabel: view.memberStepMemberLabel,
+      memberPlaceholderLabel: view.memberStepMemberPlaceholder,
       memberOptions: sourceMembers.map((candidate) => ({
         value: candidate.id,
         label: `${candidate.name} · ${candidate.role}`,
@@ -4092,45 +4150,45 @@
       launchSources,
       launchSourceOptions,
       firstLaunchSourceId: launchSourceOptions[0]?.value || "",
-      instructionLabel: "message — instruction for this turn",
-      instructionPlaceholder: "e.g. Run the focused tests and report failures.",
-      dispatchLabel: "Dispatch mode",
+      instructionLabel: view.memberStepInstructionLabel,
+      instructionPlaceholder: view.memberStepInstructionPlaceholder,
+      dispatchLabel: view.memberStepDispatchLabel,
       dispatchValue,
       dispatchOptions,
       selectedDispatch: dispatchOptions.find((option) => option.value === dispatchValue) || null,
-      collectionLabel: "Collection policy",
+      collectionLabel: view.memberStepCollectionLabel,
       collectionValue,
       collectionOptions,
       selectedCollection: collectionOptions.find((option) => option.value === collectionValue) || null,
-      quorumLabel: "Quorum",
-      quorumPlaceholder: "required",
-      timeoutLabel: "Timeout (ms)",
-      timeoutPlaceholder: "runtime default",
-      dependencyLabel: "depends_on mode",
+      quorumLabel: view.memberStepQuorumLabel,
+      quorumPlaceholder: view.memberStepQuorumPlaceholder,
+      timeoutLabel: view.memberStepTimeoutLabel,
+      timeoutPlaceholder: view.memberStepRuntimeDefaultLabel,
+      dependencyLabel: view.memberStepDependencyLabel,
       dependencyValue,
       dependencyOptions,
       selectedDependency: dependencyOptions.find((option) => option.value === dependencyValue) || null,
-      outputFormatLabel: "Output format",
+      outputFormatLabel: view.memberStepOutputFormatLabel,
       outputValue,
       outputOptions,
       selectedOutput: outputOptions.find((option) => option.value === outputValue) || null,
       showQuorum: collectionValue === "quorum",
-      allowedToolsLabel: "Allowed tools",
-      allowedToolsEmptyLabel: "Runtime profile default",
-      blockedToolsLabel: "Blocked tools",
-      blockedToolsEmptyLabel: "No step-level blocks",
+      allowedToolsLabel: view.memberStepAllowedToolsLabel,
+      allowedToolsEmptyLabel: view.memberStepAllowedToolsEmptyLabel,
+      blockedToolsLabel: view.memberStepBlockedToolsLabel,
+      blockedToolsEmptyLabel: view.memberStepBlockedToolsEmptyLabel,
       schemaHint: member?.schema
         ? (() => {
           const tools = normalizeStringList(member.tools);
-          const toolSummary = tools.join(", ") || "—";
+          const toolSummary = tools.join(", ") || view.memberStepSchemaHintEmptyToolsLabel;
           return {
             schema: member.schema,
             tools,
             toolSummary,
             parts: [
-              { key: "prefix", text: "Emits " },
+              { key: "prefix", text: view.memberStepSchemaHintPrefix },
               { key: "schema", text: member.schema, kind: "code" },
-              { key: "tools", text: ` · tools: ${toolSummary}` },
+              { key: "tools", text: `${view.memberStepSchemaHintToolsPrefix}${toolSummary}` },
             ],
           };
         })()

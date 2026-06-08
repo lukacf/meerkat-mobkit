@@ -636,6 +636,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
     flow,
     members,
     contract,
+    basicView,
   });
   const m = memberStepState.member;
   const launchState = memberStepState.launchState;
@@ -732,6 +733,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
         onChange={tools => update(step.id, window.MobKitFlowController.flowStepAllowedToolsPatch(tools, { member: m, toolCatalog }))}
         mode="member"
         toolCatalog={toolCatalog}
+        basicView={basicView}
       />
       <ToolScopeEditor
         label={memberStepState.blockedToolsLabel}
@@ -741,6 +743,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
         onChange={tools => update(step.id, window.MobKitFlowController.flowStepBlockedToolsPatch(tools, { toolCatalog }))}
         mode="catalog"
         toolCatalog={toolCatalog}
+        basicView={basicView}
       />
       {memberStepState.schemaHint && (
         <div className="bld-hint" style={{ marginTop: 10 }}>
@@ -761,15 +764,15 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
   );
 }
 
-function ToolScopeEditor({ label, emptyLabel, member, selected, onChange, mode = "member", toolCatalog = [] }) {
+function ToolScopeEditor({ label, emptyLabel, member, selected, onChange, mode = "member", toolCatalog = [], basicView = null }) {
   const field = mode === "catalog" ? "blockedTools" : "allowedTools";
-  const scope = window.MobKitFlowController.stepToolScopeState({ member, selected, mode, toolCatalog });
+  const scope = window.MobKitFlowController.stepToolScopeState({ member, selected, mode, toolCatalog, basicView });
   const remove = (id) => {
     const result = window.MobKitFlowController.stepToolScopeRemovePatch(selected, id, { field });
     if (result.patch) onChange(result.patch[field] || []);
   };
   const add = (id) => {
-    const result = window.MobKitFlowController.stepToolScopeAddPatch(selected, id, { member, mode, toolCatalog, field });
+    const result = window.MobKitFlowController.stepToolScopeAddPatch(selected, id, { member, mode, toolCatalog, field, basicView });
     if (result.patch) onChange(result.patch[field] || []);
   };
   return (

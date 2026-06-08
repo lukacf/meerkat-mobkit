@@ -367,6 +367,10 @@ assert.match(controller, /mob_definition\?\.editor_basic_view/, "controller plan
 assert.match(app, /<BuilderView[\s\S]*basicView=\{catalogs\.basicView\}/, "app shell must inject schema-backed Basic editor view state");
 assert.match(builder, /MobKitFlowController\.basicEditorViewState\(basicView\)/, "Basic editor must render chrome through controller-projected Basic view state");
 assert.match(builder, /viewState\.startLabel[\s\S]*viewState\.loopBadge[\s\S]*viewState\.tipsTitle[\s\S]*state\.emptyPanelTitle[\s\S]*state\.emptyPanelSubtitleParts/, "Basic editor start, loop, tips, and empty-panel copy must render through controller state");
+assert.match(controller, /memberStepInstructionPlaceholder:\s*String\(view\.member_step_instruction_placeholder/, "controller plane must hydrate Basic member-step labels from MobKit schema");
+assert.match(controller, /toolScopeAddProfilePlaceholder:\s*String\(view\.tool_scope_add_profile_placeholder/, "controller plane must hydrate Basic tool-scope controls from MobKit schema");
+assert.match(builderMemberStepControlBlock, /basicMemberStepControlState\(\{[\s\S]*basicView/, "Basic member-step controls must pass schema-backed Basic view into controller projection");
+assert.match(builder, /stepToolScopeState\(\{[\s\S]*basicView/, "Basic tool-scope controls must pass schema-backed Basic view into controller projection");
 assert(!/>START<|>LOOP<|>Tips<|Build your mob flow|Pick a node to configure|member turn or flow primitive/.test(builder), "Basic editor chrome copy must not be composed locally");
 assert.match(builder, /MobKitFlowController\.flowStepTaskPatch/, "Basic editor must update input task text through the controller plane");
 assert.match(builder, /MobKitFlowController\.flowStepInstructionPatch/, "Basic editor must update member instruction text through the controller plane");
@@ -961,6 +965,7 @@ assert.match(controller, /function validStepToolSet/, "controller plane must own
 assert.match(controller, /function memberSkillTogglePatch/, "controller plane must own member skill-toggle patching");
 assert(!/function csvList|String\(value \|\| ""\)\.split\(",\"\)|toolCatalog\.find\(tool => tool\.id === id\)|const\s+selectedTools|const\s+memberToolIds|const\s+validToolIds|const\s+validToolSet|const\s+addable/.test(builder), "Basic editor must not assemble step tool-scope parsing, option labels, or catalog/member validation in JSX");
 assert(!/meta\?\.desc|meta\?\.label|tool-row--invalid|select a member first|\+ block MobKit tool|\+ add profile tool|MobKit tool/.test(builder), "Basic editor must not compose step tool-scope row descriptions, invalid classes, or add-option labels locally");
+assert(!/panelTitle:\s*member \? member\.name : ["']Member step["']|memberFieldLabel:\s*["']Member \(profile\)["']|instructionLabel:\s*["']message|allowedToolsLabel:\s*["']Allowed tools["']|reason = unavailable[\s\S]{0,120}["']not enabled on profile["']|addSelectPlaceholder:[\s\S]{0,120}["']\+ add profile tool/.test(controller), "controller must not keep Basic member-step or tool-scope UI copy as local literals");
 assert.match(controller, /addableRows:\s*addable\.map/, "controller plane must project addable step tool option rows for the Basic editor");
 assert(!/change\(\{\s*(?:tools|skills)\s*:/.test(agents), "Agent Editor must not assemble member tool/skill patches directly in JSX");
 assert.match(agents, /MobKitFlowController\.memberPromptSkeleton/, "Agent Editor must apply profile prompt skeletons through the controller plane");
