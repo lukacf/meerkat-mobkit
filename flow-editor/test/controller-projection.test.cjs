@@ -802,6 +802,7 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       runtime_mode_label: "Runtime mode",
       missing_runtime_mode_label: "missing runtime mode",
       backend_label: "Backend",
+      backend_definition_default_label: "definition default",
       inline_peer_notifications_label: "Inline peer notifications",
       inline_peer_notifications_placeholder: "runtime default",
       system_prompt_title: "SYSTEM PROMPT",
@@ -1207,6 +1208,7 @@ assert.deepEqual(hydratedCatalogs.agentDetailView, {
   runtimeModeLabel: "Runtime mode",
   missingRuntimeModeLabel: "missing runtime mode",
   backendLabel: "Backend",
+  backendDefinitionDefaultLabel: "definition default",
   inlinePeerNotificationsLabel: "Inline peer notifications",
   inlinePeerNotificationsPlaceholder: "runtime default",
   systemPromptTitle: "SYSTEM PROMPT",
@@ -3717,6 +3719,7 @@ const agentEditorState = controller.agentEditorControlState({
     runtimeModeLabel: "Runtime",
     missingRuntimeModeLabel: "missing runtime",
     backendLabel: "Profile backend",
+    backendDefinitionDefaultLabel: "use definition backend",
     inlinePeerNotificationsLabel: "Inline notifications",
     inlinePeerNotificationsPlaceholder: "default",
     systemPromptTitle: "PEER DESCRIPTION",
@@ -3793,6 +3796,11 @@ assert.equal(agentEditorState.emptySchemaHint, "Free-form output.");
 assert.equal(agentEditorState.profileBinding, "inline");
 assert.equal(agentEditorState.runtimeMode, "turn_driven");
 assert.equal(agentEditorState.backendValue, "session");
+assert.deepEqual(agentEditorState.backendOptions.map((option) => [option.value, option.label]), [
+  ["", "use definition backend"],
+  ["session", "session"],
+  ["external", "external"],
+]);
 assert.deepEqual(agentEditorState.modelOptions.map((option) => option.label), ["GPT-5.5 · OpenAI"]);
 assert.deepEqual(controller.agentEditorControlState({
   member: { id: "m_custom", model: "custom/model" },

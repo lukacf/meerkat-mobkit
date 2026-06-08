@@ -964,6 +964,9 @@ assert.match(controller, /inlineToggleLabel: inlineOpen \? view\.skillInlineCanc
 assert.match(controller, /function agentListState/, "controller plane must own Agent sidebar projection");
 assert.match(controller, /function agentSelectionState/, "controller plane must own Agent selection projection");
 assert.match(controller, /function agentEditorControlState/, "controller plane must own Agent detail projection");
+assert.match(controller, /backendDefinitionDefaultLabel:\s*String\(view\.backend_definition_default_label/, "controller plane must hydrate Agent backend default label from MobKit schema");
+assert.match(controller, /profileBackendOptions\([\s\S]*view\.backendDefinitionDefaultLabel/, "Agent backend default option must render through schema-backed Agent detail view state");
+assert(!/definition default/.test(controller), "controller plane must not keep Agent backend default copy as a local literal");
 assert.match(controller, /deleteConfirmMessage/, "controller plane must own Agent delete confirmation semantics");
 assert.match(controller, /systemPromptPlaceholder/, "controller plane must own Agent detail presentation labels and placeholders");
 assert.match(controller, /schemaPreviewRows/, "controller plane must own Agent output-schema preview row projection");

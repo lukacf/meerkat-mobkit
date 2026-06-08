@@ -721,6 +721,7 @@
       runtimeModeLabel: String(view.runtime_mode_label || "").trim(),
       missingRuntimeModeLabel: String(view.missing_runtime_mode_label || "").trim(),
       backendLabel: String(view.backend_label || "").trim(),
+      backendDefinitionDefaultLabel: String(view.backend_definition_default_label || "").trim(),
       inlinePeerNotificationsLabel: String(view.inline_peer_notifications_label || "").trim(),
       inlinePeerNotificationsPlaceholder: String(view.inline_peer_notifications_placeholder || "").trim(),
       systemPromptTitle: String(view.system_prompt_title || "").trim(),
@@ -740,6 +741,7 @@
       && out.realmProfileLabel && out.realmProfilePlaceholder && out.realmProfileImportHintFallback
       && out.realmProfileTitle && out.realmProfileReferenceHintBefore && out.realmProfileReferenceHintAfterFallback
       && out.modelLabel && out.runtimeModeLabel && out.missingRuntimeModeLabel && out.backendLabel
+      && out.backendDefinitionDefaultLabel
       && out.inlinePeerNotificationsLabel && out.inlinePeerNotificationsPlaceholder
       && out.systemPromptTitle && out.applySkeletonLabel && out.applySkeletonTitle && out.systemPromptPlaceholder
       && out.outputSchemaTitle && out.schemaNoneLabel && out.schemaRequiredLabel && out.editSchemaLabel && out.emptySchemaHint
@@ -774,6 +776,7 @@
       runtimeModeLabel: String(view?.runtimeModeLabel || ""),
       missingRuntimeModeLabel: String(view?.missingRuntimeModeLabel || ""),
       backendLabel: String(view?.backendLabel || ""),
+      backendDefinitionDefaultLabel: String(view?.backendDefinitionDefaultLabel || ""),
       inlinePeerNotificationsLabel: String(view?.inlinePeerNotificationsLabel || ""),
       inlinePeerNotificationsPlaceholder: String(view?.inlinePeerNotificationsPlaceholder || ""),
       systemPromptTitle: String(view?.systemPromptTitle || ""),
@@ -1732,7 +1735,12 @@
       ...runtimeModeOptions(contract, deploySettings, runtimeMode),
     ];
     const backendValue = String(member?.backend || "");
-    const backendOptions = profileBackendOptions(contract, backendValue, true);
+    const backendOptions = profileBackendOptions(
+      contract,
+      backendValue,
+      true,
+      view.backendDefinitionDefaultLabel,
+    );
     const schemaOptions = [
       { value: "", label: view.schemaNoneLabel, schema: null },
       ...(Array.isArray(schemas) ? schemas : [])
@@ -7373,7 +7381,7 @@
     );
   }
 
-  function profileBackendOptions(contract, currentBackend, includeDefault) {
+  function profileBackendOptions(contract, currentBackend, includeDefault, defaultLabel = "") {
     const options = simpleContractOptions(
       contract?.mob_definition?.profile_backends,
       currentBackend || "",
@@ -7381,7 +7389,7 @@
       "mob_definition.profile_backends"
     );
     if (!includeDefault) return options;
-    return [{ value: "", label: "definition default", disabled: false, reason: "" }, ...options.filter(option => option.value)];
+    return [{ value: "", label: String(defaultLabel || ""), disabled: false, reason: "" }, ...options.filter(option => option.value)];
   }
 
   function profileBindingOptions(contract, currentBinding) {

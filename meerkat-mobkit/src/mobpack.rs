@@ -882,6 +882,7 @@ pub fn mobpack_schema_response() -> Value {
         "runtime_mode_label": "Runtime mode",
         "missing_runtime_mode_label": "missing runtime mode",
         "backend_label": "Backend",
+        "backend_definition_default_label": "definition default",
         "inline_peer_notifications_label": "Inline peer notifications",
         "inline_peer_notifications_placeholder": "runtime default",
         "system_prompt_title": "SYSTEM PROMPT",
@@ -15887,6 +15888,10 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["missing_profile_binding_label"],
             json!("missing profile binding")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["backend_definition_default_label"],
+            json!("definition default")
         );
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["system_prompt_title"],
