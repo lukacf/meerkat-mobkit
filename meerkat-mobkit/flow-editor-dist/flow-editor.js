@@ -5142,7 +5142,12 @@ window.MOBKIT_BOOT = {
     return JSON.stringify({ nodes, links });
   }
 
-  function graphToFlow({ instances, edges, members, previousFlow }) {
+  function graphIsConditionEdge(edge, edgeKinds) {
+    return String(edge?.kind || "").trim() === edgeKinds.conditionKind;
+  }
+
+  function graphToFlow({ instances, edges, members, previousFlow, contract }) {
+    const edgeKinds = graphProjectionEdgeKinds(contract);
     const prior = previousFlow || {};
     const inputStep = (prior.steps || []).find((step) => step.type === "input") || {
       id: uniqueFlowStepId("input", prior),
@@ -5163,7 +5168,7 @@ window.MOBKIT_BOOT = {
     if (!memberNodes.length) return { ...prior, steps: [inputStep] };
 
     const backEdges = (edges || []).filter((edge) => {
-      if ((edge.kind || "") !== "cond") return false;
+      if (!graphIsConditionEdge(edge, edgeKinds)) return false;
       const from = instById.get(edge.from);
       const to = instById.get(edge.to);
       return from && to && Number(to.col || 0) <= Number(from.col || 0);
@@ -5174,6 +5179,7 @@ window.MOBKIT_BOOT = {
       edges: forwardEdges,
       members: members || [],
       priorStepById,
+      contract,
     });
 
     if (backEdges.length) {
@@ -5226,13 +5232,13 @@ window.MOBKIT_BOOT = {
     return found;
   }
 
-  function flowStepForGraphGroup(nodes, edges, members, priorStepById) {
+  function flowStepForGraphGroup(nodes, edges, members, priorStepById, edgeKinds) {
     if (nodes.length === 1) return memberStepFromInstance(nodes[0], members, priorStepById);
     const incoming = new Map();
     for (const node of nodes) {
       incoming.set(node.id, (edges || []).filter((edge) => edge.to === node.id));
     }
-    const hasConditionalFanIn = nodes.some((node) => (incoming.get(node.id) || []).some((edge) => (edge.kind || "") === "cond"));
+    const hasConditionalFanIn = nodes.some((node) => (incoming.get(node.id) || []).some((edge) => graphIsConditionEdge(edge, edgeKinds)));
     if (hasConditionalFanIn) {
       const id = `branch_${nodes.map((node) => node.id).join("_")}`;
       const prior = priorStepById.get(id) || {};
@@ -5242,7 +5248,7 @@ window.MOBKIT_BOOT = {
         type: "branch",
         controllerRole: prior.controllerRole || prior.controllerMemberId || prior.controlRole || "",
         branches: nodes.map((node, index) => {
-          const edge = (incoming.get(node.id) || []).find((candidate) => (candidate.kind || "") === "cond");
+          const edge = (incoming.get(node.id) || []).find((candidate) => graphIsConditionEdge(candidate, edgeKinds));
           return {
             id: `br_${node.id}`,
             label: memberDisplayName(members, node.memberId) || `branch ${index + 1}`,
@@ -5279,7 +5285,8 @@ window.MOBKIT_BOOT = {
     return dependencyModeFromStepSource(gate) || dependencyModeFromStepSource(prior);
   }
 
-  function graphSegmentsToFlowSteps({ instances, edges, members, priorStepById }) {
+  function graphSegmentsToFlowSteps({ instances, edges, members, priorStepById, contract }) {
+    const edgeKinds = graphProjectionEdgeKinds(contract);
     const memberNodes = (instances || [])
       .filter((inst) => inst.memberId && !inst.isTerminal && !inst.isGate)
       .sort(compareGraphNodes);
@@ -5298,7 +5305,7 @@ window.MOBKIT_BOOT = {
         const laneNodes = collectLaneToJoin(instances, edges, node.id, join?.id);
         laneNodes.forEach((laneNode) => consumed.add(laneNode.id));
         const isFallback = gate.gateKind === "branch"
-          && ((edge.kind || "") !== "cond" || String(edge.label || "").toLowerCase() === "fallback" || String(node.lane || "").toLowerCase() === "fallback");
+          && (!graphIsConditionEdge(edge, edgeKinds) || String(edge.label || "").toLowerCase() === "fallback" || String(node.lane || "").toLowerCase() === "fallback");
         return {
           id: `br_${node.id}`,
           label: node.lane || memberDisplayName(members, node.memberId) || `Branch ${index + 1}`,
@@ -5368,7 +5375,7 @@ window.MOBKIT_BOOT = {
     segments.push(...groups.map((group) => ({
       col: group.col,
       spanEnd: group.col,
-      step: flowStepForGraphGroup(group.nodes, edges, members, priorStepById),
+      step: flowStepForGraphGroup(group.nodes, edges, members, priorStepById, edgeKinds),
     })));
     return segments.sort((a, b) => (a.col - b.col) || (a.spanEnd - b.spanEnd));
   }
@@ -11268,9 +11275,10 @@ function App() {
       instances: studio.instances,
       edges: studio.edges,
       members: studio.members,
-      previousFlow: current
+      previousFlow: current,
+      contract
     }));
-  }, [editorMode, studio.instances, studio.edges, studio.members, markDraft]);
+  }, [editorMode, studio.instances, studio.edges, studio.members, markDraft, contract]);
   React.useEffect(() => {
     const previousMembers = previousMembersRef.current || [];
     setFlow((current) => {

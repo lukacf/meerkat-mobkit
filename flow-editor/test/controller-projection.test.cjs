@@ -4884,6 +4884,45 @@ const customProjectionDocument = controller.buildDocument({
   contract: customProjectionContract,
 });
 assert.deepEqual(customProjectionDocument.edges.map((edge) => edge.kind), customProjection.edges.map((edge) => edge.kind));
+const customGraphRoundTripFlow = controller.graphToFlow({
+  previousFlow: customProjectionFlow,
+  members: customGraphProjectionMembers,
+  instances: customProjection.instances,
+  edges: customProjection.edges,
+  contract: customProjectionContract,
+});
+assert.equal(customGraphRoundTripFlow.steps[1].type, "branch");
+assert.deepEqual(customGraphRoundTripFlow.steps[1].branches.map((branch) => [branch.id, branch.cond]), [
+  ["br_left", { namespace: "params", stepId: "params", field: "kind", op: "==", val: "docs" }],
+]);
+assert.deepEqual(customGraphRoundTripFlow.steps[1].fallback.map((step) => [step.id, step.role]), [
+  ["right", "m_right"],
+]);
+assert.equal(customGraphRoundTripFlow.steps[2].type, "parallel");
+assert.deepEqual(customGraphRoundTripFlow.steps[2].branches.map((branch) => branch.steps[0]?.role).sort(), ["m_review", "m_writer"]);
+const customRepeatGraphFlow = controller.graphToFlow({
+  previousFlow: {
+    steps: [{ id: "input", type: "input", task: "Repeat until green.", inputParams: [] }],
+  },
+  members: customGraphProjectionMembers,
+  instances: [{ id: "review", memberId: "m_review", col: 0, row: 0 }],
+  edges: [{
+    id: "e_repeat",
+    from: "review",
+    to: "review",
+    kind: "when",
+    label: "until green",
+    cond: { path: "steps.review.verdict", op: "==", value: "green" },
+  }],
+  contract: customProjectionContract,
+});
+assert.equal(customRepeatGraphFlow.steps[1].type, "repeat");
+assert.deepEqual(customRepeatGraphFlow.steps[1].cond, {
+  stepId: "review",
+  field: "verdict",
+  op: "==",
+  val: "green",
+});
 const graphProjectionInstances = [
   { id: "n_writer", memberId: "m_writer", col: 0, row: 0 },
   { id: "n_review", memberId: "m_review", col: 1, row: 0 },

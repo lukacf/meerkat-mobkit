@@ -342,6 +342,7 @@ assert.match(controller, /function hydrateMobpackDocumentState/, "controller pla
 assert.match(controller, /function flowFromHydratedDocument/, "controller plane must own hydrated flow reset semantics");
 assert.match(controller, /function graphProjectionForDocument/, "controller plane must own hydrated graph projection semantics");
 assert.match(app, /graphProjectionForFlow\(flow,\s*studio\.members,\s*contract\)/, "Basic-to-Graph live projection must use the loaded MobKit graph contract");
+assert.match(app, /graphToFlow\(\{[\s\S]*previousFlow:\s*current,[\s\S]*contract/, "Graph-to-Basic live projection must use the loaded MobKit graph contract");
 assert.match(app, /buildDocument\(\{[\s\S]*deploySettings,[\s\S]*contract/, "Mobpack document export must pass the loaded MobKit contract into controller projection");
 assert.match(app, /hydrateMobpackDocumentState\(result,\s*\{[\s\S]*contractSkillRealms:[\s\S]*contract/, "Mobpack import hydration must pass the loaded MobKit contract into graph projection");
 assert.match(controller, /graphProjectionForDocument\(document,\s*members,\s*contract\)/, "controller hydration graph projection must accept the MobKit graph contract");
@@ -1011,6 +1012,8 @@ assert.match(controller, /function uniqueGraphInstanceId/, "controller plane mus
 assert.match(controller, /function uniqueGraphEdgeId/, "controller plane must own graph edge ID collision handling");
 assert.match(controller, /id:\s*id\s*\|\|\s*uniqueGraphEdgeId\(from\.id,\s*to\.id,\s*edges\)/, "Graph connection drafts must use deterministic collision-safe edge IDs");
 assert.match(controller, /id:\s*uniqueFlowStepId\("input",\s*prior\)/, "graph-to-flow fallback input steps must use controller-owned deterministic flow-step IDs");
+assert.match(controller, /function graphIsConditionEdge/, "controller plane must own graph condition edge classification");
+assert.match(controller, /graphSegmentsToFlowSteps\(\{[\s\S]*contract,[\s\S]*\}\)/, "graph-to-flow reconstruction must pass the MobKit graph contract into segment classification");
 assert(!/Math\.random\(\)|Date\.now\(\)/.test(controller), "controller authoring state must not depend on random or wall-clock IDs");
 assert(!/function\s+insertGraphControlShape|function\s+ensureGraphBranchInputParam|launchMode:\s*\{\s*kind:\s*["']Fresh["']\s*\}|dispatch:\s*["']fan_out["']|collection:\s*["']all["']/.test(app), "App shell must not hard-code graph launch/branch/fork semantics");
 assert(!/studio\.setInstances\(current => \[\.\.\.current, \.\.\.\(inserted\.instances \|\| \[\]\)\]\)|studio\.setEdges\(current => \[\.\.\.current, \.\.\.\(inserted\.edges \|\| \[\]\)\]\)/.test(app), "App quick graph insertion must not append graph rows locally");

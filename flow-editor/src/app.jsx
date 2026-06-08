@@ -228,8 +228,9 @@ function App() {
       edges: studio.edges,
       members: studio.members,
       previousFlow: current,
+      contract,
     }));
-  }, [editorMode, studio.instances, studio.edges, studio.members, markDraft]);
+  }, [editorMode, studio.instances, studio.edges, studio.members, markDraft, contract]);
 
   React.useEffect(() => {
     const previousMembers = previousMembersRef.current || [];
