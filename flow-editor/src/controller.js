@@ -7699,6 +7699,10 @@
     if (!String(source.runtimeMode || "").trim()) {
       throw new Error("MobKit agent definition is missing its runtimeMode contract.");
     }
+    const model = String(source.model || "").trim();
+    if (!model) {
+      throw new Error("MobKit agent definition is missing its model contract.");
+    }
     const baseRole = slug(source.role || source.name || "member", "member").replace(/-/g, "_");
     let id = `m_${baseRole}`;
     let index = 2;
@@ -7709,7 +7713,7 @@
       id,
       name,
       role: source.role || baseRole,
-      model: source.model || "",
+      model,
       schema: source.schema || "",
       skills: Array.isArray(source.skills) ? [...source.skills] : [],
       tools: Array.isArray(source.tools) ? [...source.tools] : [],

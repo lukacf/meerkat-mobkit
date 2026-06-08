@@ -1910,6 +1910,18 @@ assert.throws(
   }, []),
   /profileBinding contract|runtimeMode contract/,
 );
+assert.throws(
+  () => controller.memberFromAgentDefinition({
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/mobpack-profile-member",
+    id: "model_less",
+    role: "model_less",
+    name: "Model Less",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+  }, []),
+  /model contract/,
+);
 
 const agentContract = {
   mob_definition: {

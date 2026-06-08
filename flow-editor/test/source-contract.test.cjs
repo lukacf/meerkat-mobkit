@@ -765,6 +765,8 @@ assert(!/sampleFlowsFromSchema[\s\S]{0,520}sample\.id \|\| sample\.document\?\.m
 assert(!/profileBinding:\s*(?:String\([^)]*["']inline|source\.profileBinding\s*\|\|\s*["']inline)/.test(controller), "Agent definitions must carry real MobKit profileBinding values instead of controller-local inline defaults");
 assert(!/runtimeMode:\s*(?:String\([^)]*["']turn_driven|source\.runtimeMode\s*\|\|\s*["']turn_driven)/.test(controller), "Agent definitions must carry real MobKit runtimeMode values instead of controller-local turn_driven defaults");
 assert.match(controller, /agentDefinitionsFromSchema[\s\S]*\.filter\(\(template\) => String\(template\.model \|\| ""\)\.trim\(\)\)/, "Agent definitions must hydrate only real model-backed MobKit profiles");
+assert.match(controller, /missing its model contract/, "controller plane must reject API-backed agent definitions without a model");
+assert(!/memberFromAgentDefinition[\s\S]{0,900}model:\s*source\.model \|\| ""/.test(controller), "Agent definition member creation must not repair missing models into empty strings");
 assert(!/member\.profileBinding\s*\|\|\s*\(member\.realmProfile \? ["']realm_profile["'] : ["']inline["']\)/.test(agents), "Agent Editor must not display missing profileBinding as inline");
 assert(!/const\s+defaultRuntimeMode[\s\S]{0,120}member\.runtimeMode\s*\|\|\s*defaultRuntimeMode/.test(agents), "Agent Editor must not display missing runtimeMode as turn_driven");
 assert.match(controller, /missing profile binding/, "controller plane must expose missing profile binding explicitly");
