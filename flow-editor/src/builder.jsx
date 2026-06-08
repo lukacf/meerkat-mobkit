@@ -101,23 +101,24 @@ function InputParamField({ param, normalizeName, onRename, onChange, onDelete, c
   );
 }
 
-function BranchConditionEditor({ index, branch, options, schemas, onChange, contract }) {
+function BranchConditionEditor({ index, branch, options, schemas, onChange, contract, basicView = null }) {
   const conditionState = window.MobKitFlowController.basicBranchConditionControlState({
-    branch,
+    branch: { ...branch, index },
     options,
     schemas,
     contract,
+    basicView,
   });
   return (
     <div className="bld-branch-card">
-      <div className="bld-branch-card__head">Branch {index + 1}</div>
+      <div className="bld-branch-card__head">{conditionState.rowTitle}</div>
       {!conditionState.hasConditionOptions ? (
-        <div className="bld-hint" style={{ color: "var(--warn)" }}>Add an upstream member with an output schema before configuring this branch.</div>
+        <div className="bld-hint" style={{ color: "var(--warn)" }}>{conditionState.emptyHint}</div>
       ) : (
         <>
           <div className="bld-cond">
             <select className="field__select" value={conditionState.cond.stepId || ""} onChange={e => onChange(window.MobKitFlowController.basicConditionSourcePatch(options, e.target.value, { includeNamespace: true }))}>
-              <option value="">— source —</option>
+              <option value="">{conditionState.sourcePlaceholder}</option>
               {conditionState.sourceOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
             <select className="field__select" value={conditionState.cond.field || ""} onChange={e => onChange(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, conditionState.fieldOptions))} disabled={!conditionState.fields.length}>
@@ -131,7 +132,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
             </select>
             <CondValue field={conditionState.field} value={conditionState.cond.val} onChange={v => onChange(window.MobKitFlowController.basicConditionValuePatch(v))} />
           </div>
-          <div className="bld-cond__preview">when <code>{conditionState.previewLabel}</code></div>
+          <div className="bld-cond__preview">{conditionState.previewPrefix} <code>{conditionState.previewLabel}</code></div>
         </>
       )}
     </div>
@@ -332,7 +333,7 @@ function Fork({ studio, mode, step, sel, setSel, openPicker, contract, basicView
 }
 
 function RepeatBody({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
-  const repeatState = window.MobKitFlowController.basicRepeatCanvasState({ step, members: studio?.members || [], contract });
+  const repeatState = window.MobKitFlowController.basicRepeatCanvasState({ step, members: studio?.members || [], contract, basicView });
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   return (
     <div className="bld-repeat">
@@ -344,7 +345,7 @@ function RepeatBody({ studio, mode, step, sel, setSel, openPicker, contract, bas
         <div className="bld-loop__frame">
           <div className="bld-loop__head">
             <span className="bld-loop__badge">{viewState.loopBadge}</span>
-            <span className="bld-loop__meta">while <strong>not</strong> ({repeatState.conditionLabel}) · {repeatState.maxIterationsLabel}</span>
+            <span className="bld-loop__meta">{repeatState.whileLabel} <strong>{repeatState.notLabel}</strong> ({repeatState.conditionLabel}) · {repeatState.maxIterationsLabel}</span>
           </div>
           {step.steps.length === 0
             ? <InsertBtn mode={mode} onClick={() => openPicker({ lane: "branch", parentId: step.id, branchId: "body", index: 0 })} />
@@ -518,6 +519,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
       flow,
       members: studio?.members || [],
       contract,
+      basicView,
     });
     const setBranchCondition = (branch, patch) => {
       update(step.id, window.MobKitFlowController.basicBranchConditionPatch(step, branch.id, patch, contract));
@@ -545,6 +547,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
               schemas={studio?.schemas || []}
               onChange={(patch) => setBranchCondition(b, patch)}
               contract={contract}
+              basicView={basicView}
             />
           ))}
           <button className="bld-add-row" onClick={addBranch}>{branchState.addBranchLabel}</button>
@@ -584,6 +587,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
       members: studio?.members || [],
       schemas: studio?.schemas || [],
       contract,
+      basicView,
     });
     const setCond = (patch) => update(step.id, window.MobKitFlowController.flowStepRepeatConditionPatch(step, patch));
     return (

@@ -1101,6 +1101,62 @@
       toolScopeSelectMemberPlaceholder: String(view.tool_scope_select_member_placeholder || "").trim(),
       toolScopeBlockCatalogPlaceholder: String(view.tool_scope_block_catalog_placeholder || "").trim(),
       toolScopeAddProfilePlaceholder: String(view.tool_scope_add_profile_placeholder || "").trim(),
+      branchPanelTitle: String(view.branch_panel_title || "").trim(),
+      branchPanelSub: String(view.branch_panel_sub || "").trim(),
+      parallelPanelTitle: String(view.parallel_panel_title || "").trim(),
+      parallelPanelSub: String(view.parallel_panel_sub || "").trim(),
+      branchRouteMemberLabel: String(view.branch_route_member_label || "").trim(),
+      parallelJoinMemberLabel: String(view.parallel_join_member_label || "").trim(),
+      branchControllerPlaceholderLabel: String(view.branch_controller_placeholder_label || "").trim(),
+      branchEmptyControllerHint: String(view.branch_empty_controller_hint || "").trim(),
+      branchConditionTitle: String(view.branch_condition_title || "").trim(),
+      branchConditionIntro: String(view.branch_condition_intro || "").trim(),
+      branchConditionRowTitlePrefix: String(view.branch_condition_row_title_prefix || "").trim(),
+      branchConditionEmptyHint: String(view.branch_condition_empty_hint || "").trim(),
+      branchConditionSourcePlaceholder: String(view.branch_condition_source_placeholder || "").trim(),
+      branchConditionFieldPlaceholder: String(view.branch_condition_field_placeholder || "").trim(),
+      branchConditionNoSchemaLabel: String(view.branch_condition_no_schema_label || "").trim(),
+      branchConditionPreviewPrefix: String(view.branch_condition_preview_prefix || "").trim(),
+      branchConditionPreviewFallback: String(view.branch_condition_preview_fallback || "").trim(),
+      branchFallbackTitle: String(view.branch_fallback_title || "").trim(),
+      branchFallbackHint: String(view.branch_fallback_hint || "").trim(),
+      addBranchLabel: String(view.add_branch_label || "").trim(),
+      addParallelBranchLabel: String(view.add_parallel_branch_label || "").trim(),
+      parallelDispatchLabel: String(view.parallel_dispatch_label || "").trim(),
+      parallelCollectionLabel: String(view.parallel_collection_label || "").trim(),
+      parallelQuorumLabel: String(view.parallel_quorum_label || "").trim(),
+      parallelQuorumPlaceholder: String(view.parallel_quorum_placeholder || "").trim(),
+      branchDependencyLabel: String(view.branch_dependency_label || "").trim(),
+      repeatPanelTitle: String(view.repeat_panel_title || "").trim(),
+      repeatPanelSub: String(view.repeat_panel_sub || "").trim(),
+      repeatLoopIdLabel: String(view.repeat_loop_id_label || "").trim(),
+      repeatLoopIdPlaceholder: String(view.repeat_loop_id_placeholder || "").trim(),
+      repeatConditionTitle: String(view.repeat_condition_title || "").trim(),
+      repeatConditionIntro: String(view.repeat_condition_intro || "").trim(),
+      repeatEmptyBodyHint: String(view.repeat_empty_body_hint || "").trim(),
+      repeatMemberPlaceholderLabel: String(view.repeat_member_placeholder_label || "").trim(),
+      repeatConditionFieldPlaceholder: String(view.repeat_condition_field_placeholder || "").trim(),
+      repeatConditionNoSchemaLabel: String(view.repeat_condition_no_schema_label || "").trim(),
+      repeatPreviewLabel: String(view.repeat_preview_label || "").trim(),
+      repeatPreviewFallback: String(view.repeat_preview_fallback || "").trim(),
+      repeatIterationInputLabel: String(view.repeat_iteration_input_label || "").trim(),
+      repeatMaxIterationsLabel: String(view.repeat_max_iterations_label || "").trim(),
+      repeatMaxIterationsPlaceholder: String(view.repeat_max_iterations_placeholder || "").trim(),
+      repeatTips: Array.isArray(view.repeat_tips)
+        ? view.repeat_tips.map((tip) => String(tip || "").trim()).filter(Boolean)
+        : [],
+      repeatCanvasWhileLabel: String(view.repeat_canvas_while_label || "").trim(),
+      repeatCanvasNotLabel: String(view.repeat_canvas_not_label || "").trim(),
+      repeatCanvasMissingMaxIterationsLabel: String(view.repeat_canvas_missing_max_iterations_label || "").trim(),
+      repeatCanvasMaxIterationsPrefix: String(view.repeat_canvas_max_iterations_prefix || ""),
+      repeatCanvasLoopBackPrefix: String(view.repeat_canvas_loop_back_prefix || ""),
+      repeatCanvasExitPrefix: String(view.repeat_canvas_exit_prefix || ""),
+      repeatCanvasExitFallback: String(view.repeat_canvas_exit_fallback || "").trim(),
+      repeatIterationRuntimeDefaultLabel: String(view.repeat_iteration_runtime_default_label || "").trim(),
+      repeatIterationCarryLabel: String(view.repeat_iteration_carry_label || "").trim(),
+      repeatIterationReuseUnsupportedLabel: String(view.repeat_iteration_reuse_unsupported_label || "").trim(),
+      repeatIterationFeedsUnsupportedPrefix: String(view.repeat_iteration_feeds_unsupported_prefix || ""),
+      repeatIterationUnsupportedPrefix: String(view.repeat_iteration_unsupported_prefix || ""),
     };
     return Object.entries(out).every(([key, value]) => Array.isArray(value) ? value.length : !!value)
       ? out
@@ -1162,6 +1218,60 @@
       toolScopeSelectMemberPlaceholder: String(view?.toolScopeSelectMemberPlaceholder || ""),
       toolScopeBlockCatalogPlaceholder: String(view?.toolScopeBlockCatalogPlaceholder || ""),
       toolScopeAddProfilePlaceholder: String(view?.toolScopeAddProfilePlaceholder || ""),
+      branchPanelTitle: String(view?.branchPanelTitle || ""),
+      branchPanelSub: String(view?.branchPanelSub || ""),
+      parallelPanelTitle: String(view?.parallelPanelTitle || ""),
+      parallelPanelSub: String(view?.parallelPanelSub || ""),
+      branchRouteMemberLabel: String(view?.branchRouteMemberLabel || ""),
+      parallelJoinMemberLabel: String(view?.parallelJoinMemberLabel || ""),
+      branchControllerPlaceholderLabel: String(view?.branchControllerPlaceholderLabel || ""),
+      branchEmptyControllerHint: String(view?.branchEmptyControllerHint || ""),
+      branchConditionTitle: String(view?.branchConditionTitle || ""),
+      branchConditionIntro: String(view?.branchConditionIntro || ""),
+      branchConditionRowTitlePrefix: String(view?.branchConditionRowTitlePrefix || ""),
+      branchConditionEmptyHint: String(view?.branchConditionEmptyHint || ""),
+      branchConditionSourcePlaceholder: String(view?.branchConditionSourcePlaceholder || ""),
+      branchConditionFieldPlaceholder: String(view?.branchConditionFieldPlaceholder || ""),
+      branchConditionNoSchemaLabel: String(view?.branchConditionNoSchemaLabel || ""),
+      branchConditionPreviewPrefix: String(view?.branchConditionPreviewPrefix || ""),
+      branchConditionPreviewFallback: String(view?.branchConditionPreviewFallback || ""),
+      branchFallbackTitle: String(view?.branchFallbackTitle || ""),
+      branchFallbackHint: String(view?.branchFallbackHint || ""),
+      addBranchLabel: String(view?.addBranchLabel || ""),
+      addParallelBranchLabel: String(view?.addParallelBranchLabel || ""),
+      parallelDispatchLabel: String(view?.parallelDispatchLabel || ""),
+      parallelCollectionLabel: String(view?.parallelCollectionLabel || ""),
+      parallelQuorumLabel: String(view?.parallelQuorumLabel || ""),
+      parallelQuorumPlaceholder: String(view?.parallelQuorumPlaceholder || ""),
+      branchDependencyLabel: String(view?.branchDependencyLabel || ""),
+      repeatPanelTitle: String(view?.repeatPanelTitle || ""),
+      repeatPanelSub: String(view?.repeatPanelSub || ""),
+      repeatLoopIdLabel: String(view?.repeatLoopIdLabel || ""),
+      repeatLoopIdPlaceholder: String(view?.repeatLoopIdPlaceholder || ""),
+      repeatConditionTitle: String(view?.repeatConditionTitle || ""),
+      repeatConditionIntro: String(view?.repeatConditionIntro || ""),
+      repeatEmptyBodyHint: String(view?.repeatEmptyBodyHint || ""),
+      repeatMemberPlaceholderLabel: String(view?.repeatMemberPlaceholderLabel || ""),
+      repeatConditionFieldPlaceholder: String(view?.repeatConditionFieldPlaceholder || ""),
+      repeatConditionNoSchemaLabel: String(view?.repeatConditionNoSchemaLabel || ""),
+      repeatPreviewLabel: String(view?.repeatPreviewLabel || ""),
+      repeatPreviewFallback: String(view?.repeatPreviewFallback || ""),
+      repeatIterationInputLabel: String(view?.repeatIterationInputLabel || ""),
+      repeatMaxIterationsLabel: String(view?.repeatMaxIterationsLabel || ""),
+      repeatMaxIterationsPlaceholder: String(view?.repeatMaxIterationsPlaceholder || ""),
+      repeatTips: Array.isArray(view?.repeatTips) ? view.repeatTips : [],
+      repeatCanvasWhileLabel: String(view?.repeatCanvasWhileLabel || ""),
+      repeatCanvasNotLabel: String(view?.repeatCanvasNotLabel || ""),
+      repeatCanvasMissingMaxIterationsLabel: String(view?.repeatCanvasMissingMaxIterationsLabel || ""),
+      repeatCanvasMaxIterationsPrefix: String(view?.repeatCanvasMaxIterationsPrefix || ""),
+      repeatCanvasLoopBackPrefix: String(view?.repeatCanvasLoopBackPrefix || ""),
+      repeatCanvasExitPrefix: String(view?.repeatCanvasExitPrefix || ""),
+      repeatCanvasExitFallback: String(view?.repeatCanvasExitFallback || ""),
+      repeatIterationRuntimeDefaultLabel: String(view?.repeatIterationRuntimeDefaultLabel || ""),
+      repeatIterationCarryLabel: String(view?.repeatIterationCarryLabel || ""),
+      repeatIterationReuseUnsupportedLabel: String(view?.repeatIterationReuseUnsupportedLabel || ""),
+      repeatIterationFeedsUnsupportedPrefix: String(view?.repeatIterationFeedsUnsupportedPrefix || ""),
+      repeatIterationUnsupportedPrefix: String(view?.repeatIterationUnsupportedPrefix || ""),
     };
   }
 
@@ -3912,14 +4022,15 @@
   }
 
   function basicConditionLabel(cond, options = [], config = {}) {
-    if (!cond || !cond.stepId || !cond.field) return "…";
+    if (!cond || !cond.stepId || !cond.field) return String(config.previewFallback || "");
     const option = (Array.isArray(options) ? options : []).find((candidate) => candidate.stepId === cond.stepId);
     const label = option?.label || option?.member?.name || cond.stepId;
     const op = cond.op || cond.operator || config.defaultOperator || "";
     return `${label}.${cond.field} ${op} ${conditionValueLiteral(cond.val ?? cond.value ?? "")}`;
   }
 
-  function basicBranchConditionControlState({ branch, options = [], schemas = [], contract } = {}) {
+  function basicBranchConditionControlState({ branch, options = [], schemas = [], contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
     const sourceOptions = Array.isArray(options) ? options : [];
     const sourceSchemas = Array.isArray(schemas) ? schemas : [];
     const defaultOperator = contractDefaultValue(contract, "condition_operator");
@@ -3945,16 +4056,24 @@
         label: `${candidate.name} · ${candidate.type}`,
         field: candidate,
       })),
-      fieldPlaceholder: fields.length ? "— field —" : "(no schema)",
+      rowTitle: `${view.branchConditionRowTitlePrefix} ${Number.isFinite(Number(branch?.index)) ? Number(branch.index) + 1 : ""}`.trim(),
+      emptyHint: view.branchConditionEmptyHint,
+      sourcePlaceholder: view.branchConditionSourcePlaceholder,
+      fieldPlaceholder: fields.length ? view.branchConditionFieldPlaceholder : view.branchConditionNoSchemaLabel,
       defaultOperator,
       operatorValue,
       operatorOptions: conditionOperatorOptions(contract, operatorValue),
-      previewLabel: basicConditionLabel(cond, sourceOptions, { defaultOperator }),
+      previewPrefix: view.branchConditionPreviewPrefix,
+      previewLabel: basicConditionLabel(cond, sourceOptions, {
+        defaultOperator,
+        previewFallback: view.branchConditionPreviewFallback,
+      }),
       hasConditionOptions: sourceOptions.length > 0,
     };
   }
 
-  function basicBranchParallelControlState({ step, flow, members = [], contract } = {}) {
+  function basicBranchParallelControlState({ step, flow, members = [], contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
     const sourceMembers = Array.isArray(members) ? members : [];
     const isParallel = step?.type === "parallel";
     const controllerRole = step?.controllerRole || "";
@@ -3970,35 +4089,35 @@
     return {
       isParallel,
       panelIcon: isParallel ? "‖" : "⑂",
-      panelTitle: isParallel ? "Parallel" : "Branch",
-      panelSub: isParallel ? "fan_out to members, then fan_in and collect" : "Choose one downstream path by condition",
-      controllerLabel: isParallel ? "Join member" : "Route member",
-      controllerPlaceholderLabel: "— direct MobKit lanes —",
+      panelTitle: isParallel ? view.parallelPanelTitle : view.branchPanelTitle,
+      panelSub: isParallel ? view.parallelPanelSub : view.branchPanelSub,
+      controllerLabel: isParallel ? view.parallelJoinMemberLabel : view.branchRouteMemberLabel,
+      controllerPlaceholderLabel: view.branchControllerPlaceholderLabel,
       controllerRole,
       memberOptions: sourceMembers.map((member) => ({
         value: member.id,
         label: `${member.name || member.role || member.id} · ${member.role || "profile"}`,
         member,
       })),
-      emptyControllerHint: "Without a selected profile, MobKit conditions/parallel lanes attach directly to the first real member in each lane.",
+      emptyControllerHint: view.branchEmptyControllerHint,
       conditionOptions: basicConditionOptions(flow, step?.id, sourceMembers),
-      branchConditionTitle: "Branch conditions",
-      branchConditionIntro: "Read in order; the first match wins. Conditions read a member's structured output.",
-      fallbackTitle: "Fallback",
-      fallbackHint: "If none match, the flow follows the fallback path; else it stops.",
-      addBranchLabel: isParallel ? "+ Add parallel branch" : "+ Add branch",
-      dispatchLabel: "Dispatch mode",
+      branchConditionTitle: view.branchConditionTitle,
+      branchConditionIntro: view.branchConditionIntro,
+      fallbackTitle: view.branchFallbackTitle,
+      fallbackHint: view.branchFallbackHint,
+      addBranchLabel: isParallel ? view.addParallelBranchLabel : view.addBranchLabel,
+      dispatchLabel: view.parallelDispatchLabel,
       dispatchValue,
       dispatchOptions,
       selectedDispatch: dispatchOptions.find((option) => option.value === dispatchValue) || null,
-      collectionLabel: "Collection policy (fan_in)",
+      collectionLabel: view.parallelCollectionLabel,
       collectionValue,
       collectionOptions,
       selectedCollection: collectionOptions.find((option) => option.value === collectionValue) || null,
       showQuorum: collectionValue === "quorum",
-      quorumLabel: "Quorum (N)",
-      quorumPlaceholder: "required",
-      dependencyLabel: "depends_on mode",
+      quorumLabel: view.parallelQuorumLabel,
+      quorumPlaceholder: view.parallelQuorumPlaceholder,
+      dependencyLabel: view.branchDependencyLabel,
       dependencyValue,
       dependencyOptions,
       selectedDependency: dependencyOptions.find((option) => option.value === dependencyValue) || null,
@@ -4023,25 +4142,33 @@
     };
   }
 
-  function basicRepeatIterationLabel(step, members = []) {
+  function basicRepeatIterationLabel(step, members = [], basicView = null) {
+    const view = basicEditorViewState(basicView);
     const iterationInput = typeof step?.iterationInput === "string" ? step.iterationInput.trim() : "";
-    if (!iterationInput) return "runtime default";
-    if (iterationInput === "carry") return "carries last output";
-    if (iterationInput === "reuse") return "unsupported: re-use input task";
+    if (!iterationInput) return view.repeatIterationRuntimeDefaultLabel;
+    if (iterationInput === "carry") return view.repeatIterationCarryLabel;
+    if (iterationInput === "reuse") return view.repeatIterationReuseUnsupportedLabel;
     const bodyStep = (Array.isArray(step?.steps) ? step.steps : []).find((candidate) => candidate?.id === iterationInput);
     const member = (Array.isArray(members) ? members : []).find((candidate) => candidate?.id === bodyStep?.role);
-    return member ? `unsupported: feeds ${member.name}'s output` : `unsupported: ${iterationInput}`;
+    return member
+      ? `${view.repeatIterationFeedsUnsupportedPrefix}${member.name}'s output`
+      : `${view.repeatIterationUnsupportedPrefix}${iterationInput}`;
   }
 
-  function basicRepeatCanvasState({ step, members = [], contract } = {}) {
+  function basicRepeatCanvasState({ step, members = [], contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
     const defaultOperator = contractDefaultValue(contract, "condition_operator");
     const repeatUntilExpression = basicRepeatUntilExpression(step, members, { defaultOperator });
     return {
       repeatUntilExpression,
-      conditionLabel: repeatUntilExpression || "…",
-      maxIterationsLabel: step?.maxIterations ? `max ${step.maxIterations}` : "missing max_iterations",
-      loopBackLabel: `↑ loop back · ${basicRepeatIterationLabel(step, members)}`,
-      exitLabel: `↓ exit when ${repeatUntilExpression || "condition met"}`,
+      whileLabel: view.repeatCanvasWhileLabel,
+      notLabel: view.repeatCanvasNotLabel,
+      conditionLabel: repeatUntilExpression || view.repeatPreviewFallback,
+      maxIterationsLabel: step?.maxIterations
+        ? `${view.repeatCanvasMaxIterationsPrefix}${step.maxIterations}`
+        : view.repeatCanvasMissingMaxIterationsLabel,
+      loopBackLabel: `${view.repeatCanvasLoopBackPrefix}${basicRepeatIterationLabel(step, members, basicView)}`,
+      exitLabel: `${view.repeatCanvasExitPrefix}${repeatUntilExpression || view.repeatCanvasExitFallback}`,
     };
   }
 
@@ -4101,7 +4228,8 @@
     };
   }
 
-  function basicRepeatControlState({ step, members = [], schemas = [], contract } = {}) {
+  function basicRepeatControlState({ step, members = [], schemas = [], contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
     const sourceMembers = Array.isArray(members) ? members : [];
     const sourceSchemas = Array.isArray(schemas) ? schemas : [];
     const memberById = new Map(sourceMembers.map((member) => [member.id, member]));
@@ -4124,29 +4252,25 @@
     const repeatUntilExpression = basicRepeatUntilExpression(step, sourceMembers, { defaultOperator });
     const iterationInputValue = typeof step?.iterationInput === "string" ? step.iterationInput : "";
     const iterationInputOptions = [
-      { value: "", label: "runtime default", disabled: false, reason: "" },
+      { value: "", label: view.repeatIterationRuntimeDefaultLabel, disabled: false, reason: "" },
       ...repeatIterationInputOptions(contract, iterationInputValue),
     ];
     return {
       panelIcon: "↻",
-      panelTitle: "Repeat until",
-      panelSub: "Loop the body, then evaluate the condition after each iteration",
-      loopIdLabel: "loop_id",
-      loopIdPlaceholder: "quality_loop",
-      conditionTitle: "Until condition",
-      conditionIntro: "Evaluated on a body member's structured output after each pass. The loop exits when it holds.",
-      emptyBodyHint: "Add a member step inside the loop first — the condition reads its output schema.",
-      memberPlaceholderLabel: "— member —",
-      previewLabel: "until",
-      previewFallback: "…",
-      iterationInputLabel: "Iteration input — what each pass receives",
-      maxIterationsLabel: "max_iterations",
-      maxIterationsPlaceholder: "required",
-      tips: [
-        "The body is its own FrameSpec — add member steps inside the loop.",
-        "The condition reads a member's typed output (e.g. reviewer.verdict == green).",
-        "max_iterations bounds the loop so it always terminates.",
-      ],
+      panelTitle: view.repeatPanelTitle,
+      panelSub: view.repeatPanelSub,
+      loopIdLabel: view.repeatLoopIdLabel,
+      loopIdPlaceholder: view.repeatLoopIdPlaceholder,
+      conditionTitle: view.repeatConditionTitle,
+      conditionIntro: view.repeatConditionIntro,
+      emptyBodyHint: view.repeatEmptyBodyHint,
+      memberPlaceholderLabel: view.repeatMemberPlaceholderLabel,
+      previewLabel: view.repeatPreviewLabel,
+      previewFallback: view.repeatPreviewFallback,
+      iterationInputLabel: view.repeatIterationInputLabel,
+      maxIterationsLabel: view.repeatMaxIterationsLabel,
+      maxIterationsPlaceholder: view.repeatMaxIterationsPlaceholder,
+      tips: view.repeatTips,
       bodyMembers,
       bodyMemberOptions: bodyMembers.map((candidate) => ({
         value: candidate.stepId,
@@ -4164,7 +4288,7 @@
         label: `${field.name} · ${field.type}`,
         field,
       })),
-      fieldPlaceholder: condSchema ? "— field —" : "(no schema)",
+      fieldPlaceholder: condSchema ? view.repeatConditionFieldPlaceholder : view.repeatConditionNoSchemaLabel,
       defaultOperator,
       operatorValue,
       operatorOptions: conditionOperatorOptions(contract, operatorValue),

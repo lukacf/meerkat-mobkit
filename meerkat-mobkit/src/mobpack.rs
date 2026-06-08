@@ -1017,6 +1017,76 @@ pub fn mobpack_schema_response() -> Value {
     editor_basic_view["tool_scope_select_member_placeholder"] = json!("select a member first");
     editor_basic_view["tool_scope_block_catalog_placeholder"] = json!("+ block MobKit tool...");
     editor_basic_view["tool_scope_add_profile_placeholder"] = json!("+ add profile tool...");
+    editor_basic_view["branch_panel_title"] = json!("Branch");
+    editor_basic_view["branch_panel_sub"] = json!("Choose one downstream path by condition");
+    editor_basic_view["parallel_panel_title"] = json!("Parallel");
+    editor_basic_view["parallel_panel_sub"] = json!("fan_out to members, then fan_in and collect");
+    editor_basic_view["branch_route_member_label"] = json!("Route member");
+    editor_basic_view["parallel_join_member_label"] = json!("Join member");
+    editor_basic_view["branch_controller_placeholder_label"] = json!("— direct MobKit lanes —");
+    editor_basic_view["branch_empty_controller_hint"] = json!(
+        "Without a selected profile, MobKit conditions/parallel lanes attach directly to the first real member in each lane."
+    );
+    editor_basic_view["branch_condition_title"] = json!("Branch conditions");
+    editor_basic_view["branch_condition_intro"] =
+        json!("Read in order; the first match wins. Conditions read a member's structured output.");
+    editor_basic_view["branch_condition_row_title_prefix"] = json!("Branch");
+    editor_basic_view["branch_condition_empty_hint"] =
+        json!("Add an upstream member with an output schema before configuring this branch.");
+    editor_basic_view["branch_condition_source_placeholder"] = json!("— source —");
+    editor_basic_view["branch_condition_field_placeholder"] = json!("— field —");
+    editor_basic_view["branch_condition_no_schema_label"] = json!("(no schema)");
+    editor_basic_view["branch_condition_preview_prefix"] = json!("when");
+    editor_basic_view["branch_condition_preview_fallback"] = json!("…");
+    editor_basic_view["branch_fallback_title"] = json!("Fallback");
+    editor_basic_view["branch_fallback_hint"] =
+        json!("If none match, the flow follows the fallback path; else it stops.");
+    editor_basic_view["add_branch_label"] = json!("+ Add branch");
+    editor_basic_view["add_parallel_branch_label"] = json!("+ Add parallel branch");
+    editor_basic_view["parallel_dispatch_label"] = json!("Dispatch mode");
+    editor_basic_view["parallel_collection_label"] = json!("Collection policy (fan_in)");
+    editor_basic_view["parallel_quorum_label"] = json!("Quorum (N)");
+    editor_basic_view["parallel_quorum_placeholder"] = json!("required");
+    editor_basic_view["branch_dependency_label"] = json!("depends_on mode");
+    editor_basic_view["repeat_panel_title"] = json!("Repeat until");
+    editor_basic_view["repeat_panel_sub"] =
+        json!("Loop the body, then evaluate the condition after each iteration");
+    editor_basic_view["repeat_loop_id_label"] = json!("loop_id");
+    editor_basic_view["repeat_loop_id_placeholder"] = json!("quality_loop");
+    editor_basic_view["repeat_condition_title"] = json!("Until condition");
+    editor_basic_view["repeat_condition_intro"] = json!(
+        "Evaluated on a body member's structured output after each pass. The loop exits when it holds."
+    );
+    editor_basic_view["repeat_empty_body_hint"] =
+        json!("Add a member step inside the loop first — the condition reads its output schema.");
+    editor_basic_view["repeat_member_placeholder_label"] = json!("— member —");
+    editor_basic_view["repeat_condition_field_placeholder"] = json!("— field —");
+    editor_basic_view["repeat_condition_no_schema_label"] = json!("(no schema)");
+    editor_basic_view["repeat_preview_label"] = json!("until");
+    editor_basic_view["repeat_preview_fallback"] = json!("…");
+    editor_basic_view["repeat_iteration_input_label"] =
+        json!("Iteration input — what each pass receives");
+    editor_basic_view["repeat_max_iterations_label"] = json!("max_iterations");
+    editor_basic_view["repeat_max_iterations_placeholder"] = json!("required");
+    editor_basic_view["repeat_tips"] = json!([
+        "The body is its own FrameSpec — add member steps inside the loop.",
+        "The condition reads a member's typed output (e.g. reviewer.verdict == green).",
+        "max_iterations bounds the loop so it always terminates."
+    ]);
+    editor_basic_view["repeat_canvas_while_label"] = json!("while");
+    editor_basic_view["repeat_canvas_not_label"] = json!("not");
+    editor_basic_view["repeat_canvas_missing_max_iterations_label"] =
+        json!("missing max_iterations");
+    editor_basic_view["repeat_canvas_max_iterations_prefix"] = json!("max ");
+    editor_basic_view["repeat_canvas_loop_back_prefix"] = json!("↑ loop back · ");
+    editor_basic_view["repeat_canvas_exit_prefix"] = json!("↓ exit when ");
+    editor_basic_view["repeat_canvas_exit_fallback"] = json!("condition met");
+    editor_basic_view["repeat_iteration_runtime_default_label"] = json!("runtime default");
+    editor_basic_view["repeat_iteration_carry_label"] = json!("carries last output");
+    editor_basic_view["repeat_iteration_reuse_unsupported_label"] =
+        json!("unsupported: re-use input task");
+    editor_basic_view["repeat_iteration_feeds_unsupported_prefix"] = json!("unsupported: feeds ");
+    editor_basic_view["repeat_iteration_unsupported_prefix"] = json!("unsupported: ");
     let editor_graph_template_view = json!({
         "template_eyebrow": "TEMPLATE",
         "summary_title": "SUMMARY",
@@ -15709,6 +15779,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_basic_view"]["tool_scope_add_profile_placeholder"],
             json!("+ add profile tool...")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["branch_condition_empty_hint"],
+            json!("Add an upstream member with an output schema before configuring this branch.")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["parallel_collection_label"],
+            json!("Collection policy (fan_in)")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["repeat_panel_title"],
+            json!("Repeat until")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["repeat_canvas_loop_back_prefix"],
+            json!("↑ loop back · ")
         );
         assert_eq!(
             mob_definition["editor_graph_template_view"]["template_eyebrow"],

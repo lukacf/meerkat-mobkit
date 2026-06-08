@@ -369,6 +369,10 @@ assert.match(builder, /MobKitFlowController\.basicEditorViewState\(basicView\)/,
 assert.match(builder, /viewState\.startLabel[\s\S]*viewState\.loopBadge[\s\S]*viewState\.tipsTitle[\s\S]*state\.emptyPanelTitle[\s\S]*state\.emptyPanelSubtitleParts/, "Basic editor start, loop, tips, and empty-panel copy must render through controller state");
 assert.match(controller, /memberStepInstructionPlaceholder:\s*String\(view\.member_step_instruction_placeholder/, "controller plane must hydrate Basic member-step labels from MobKit schema");
 assert.match(controller, /toolScopeAddProfilePlaceholder:\s*String\(view\.tool_scope_add_profile_placeholder/, "controller plane must hydrate Basic tool-scope controls from MobKit schema");
+assert.match(controller, /branchConditionEmptyHint:\s*String\(view\.branch_condition_empty_hint/, "controller plane must hydrate Basic branch condition row copy from MobKit schema");
+assert.match(controller, /parallelCollectionLabel:\s*String\(view\.parallel_collection_label/, "controller plane must hydrate Basic parallel control labels from MobKit schema");
+assert.match(controller, /repeatPanelTitle:\s*String\(view\.repeat_panel_title/, "controller plane must hydrate Basic repeat panel labels from MobKit schema");
+assert.match(controller, /repeatCanvasLoopBackPrefix:\s*String\(view\.repeat_canvas_loop_back_prefix/, "controller plane must hydrate Basic repeat canvas labels from MobKit schema");
 assert.match(builderMemberStepControlBlock, /basicMemberStepControlState\(\{[\s\S]*basicView/, "Basic member-step controls must pass schema-backed Basic view into controller projection");
 assert.match(builder, /stepToolScopeState\(\{[\s\S]*basicView/, "Basic tool-scope controls must pass schema-backed Basic view into controller projection");
 assert(!/>START<|>LOOP<|>Tips<|Build your mob flow|Pick a node to configure|member turn or flow primitive/.test(builder), "Basic editor chrome copy must not be composed locally");
@@ -467,6 +471,8 @@ assert.match(builderBranchParallelBlock, /branchState\.quorumLabel/, "Basic para
 assert.match(builderBranchParallelBlock, /branchState\.dependencyLabel/, "Basic branch/parallel dependency label must render through controller state");
 assert.match(builder, /MobKitFlowController\.basicBranchConditionPatch/, "Basic editor must update branch condition arrays through the controller plane");
 assert.match(builderBranchConditionBlock, /MobKitFlowController\.basicBranchConditionControlState/, "Basic branch condition rows must render through the controller plane");
+assert.match(builderBranchConditionBlock, /basicBranchConditionControlState\(\{[\s\S]*basicView/, "Basic branch condition rows must pass schema-backed Basic view into controller projection");
+assert.match(builderBranchConditionBlock, /conditionState\.rowTitle[\s\S]*conditionState\.emptyHint[\s\S]*conditionState\.sourcePlaceholder[\s\S]*conditionState\.previewPrefix/, "Basic branch condition row chrome must render through controller state");
 assert.match(builderBranchConditionBlock, /MobKitFlowController\.basicConditionSourcePatch/, "Basic branch condition source edits must use controller semantics");
 assert.match(builderBranchConditionBlock, /MobKitFlowController\.basicConditionFieldPatch/, "Basic branch condition field edits must use controller semantics");
 assert.match(builderBranchConditionBlock, /basicConditionFieldPatch\(e\.target\.value,\s*conditionState\.fieldOptions\)/, "Basic branch condition field edits must pass controller-projected schema fields");
@@ -480,6 +486,7 @@ assert.match(builderStepInspectorBlock, /MobKitFlowController\.basicConditionOpe
 assert.match(builderStepInspectorBlock, /basicConditionOperatorPatch\(e\.target\.value,\s*contract\)/, "Basic repeat condition operator edits must pass the MobKit operator contract");
 assert.match(builderStepInspectorBlock, /MobKitFlowController\.basicConditionValuePatch/, "Basic repeat condition value edits must use controller semantics");
 assert.match(builderRepeatBlock, /MobKitFlowController\.basicRepeatControlState/, "Basic repeat controls must render loop condition and iteration state through the controller plane");
+assert.match(builderRepeatBlock, /basicRepeatControlState\(\{[\s\S]*basicView/, "Basic repeat controls must pass schema-backed Basic view into controller projection");
 assert.match(builderRepeatBlock, /repeatState\.panelTitle/, "Basic repeat panel title must render through controller state");
 assert.match(builderRepeatBlock, /repeatState\.loopIdLabel/, "Basic repeat loop id label must render through controller state");
 assert.match(builderRepeatBlock, /repeatState\.conditionTitle/, "Basic repeat condition title must render through controller state");
@@ -506,6 +513,7 @@ assert.match(controller, /function basicBranchConditionControlState/, "controlle
 assert.match(controller, /function basicBranchParallelControlState/, "controller plane must own Basic branch/parallel inspector projection");
 assert.match(builderCanvasBlock, /MobKitFlowController\.basicForkCanvasState/, "Basic fork canvas must render lanes and join labels through the controller plane");
 assert.match(builderCanvasBlock, /MobKitFlowController\.basicRepeatCanvasState/, "Basic repeat canvas must render loop labels through the controller plane");
+assert.match(builderCanvasBlock, /basicRepeatCanvasState\(\{[\s\S]*basicView/, "Basic repeat canvas must pass schema-backed Basic view into controller projection");
 assert.match(builderCanvasBlock, /MobKitFlowController\.basicStepCardState/, "Basic step cards must render card labels through the controller plane");
 assert.match(controller, /function basicForkCanvasState/, "controller plane must own Basic fork canvas projection");
 assert.match(controller, /function basicRepeatCanvasState/, "controller plane must own Basic repeat canvas projection");
