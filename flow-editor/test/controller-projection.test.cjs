@@ -2575,9 +2575,13 @@ assert.deepEqual(controller.basicForkCanvasState({
     fallback: [{ id: "fallback_review", type: "member", role: "m_reviewer" }],
   },
   contract: basicCanvasContract,
+  basicView: {
+    ...hydratedCatalogs.basicView,
+    branchFallbackTitle: "Otherwise",
+  },
 }).lanes.map((lane) => [lane.id, lane.label, lane.steps.length]), [
   ["docs", "Docs", 0],
-  ["fallback", "Fallback", 1],
+  ["fallback", "Otherwise", 1],
 ]);
 assert.equal(controller.basicRepeatIterationLabel({
   iterationInput: "review_loop",

@@ -4311,13 +4311,14 @@
     };
   }
 
-  function basicForkCanvasState({ step, contract } = {}) {
+  function basicForkCanvasState({ step, contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
     const isParallel = step?.type === "parallel";
     const collection = step?.collection || contractDefaultValue(contract, "collection_policy");
     const branches = Array.isArray(step?.branches) ? step.branches : [];
     const lanes = [
       ...branches.map((branch) => ({ id: branch.id, label: branch.label, steps: branch.steps || [] })),
-      ...(isParallel ? [] : [{ id: "fallback", label: "Fallback", steps: step?.fallback || [] }]),
+      ...(isParallel ? [] : [{ id: "fallback", label: view.branchFallbackTitle, steps: step?.fallback || [] }]),
     ];
     return {
       isParallel,

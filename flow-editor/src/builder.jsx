@@ -301,7 +301,7 @@ function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract,
 }
 
 function Fork({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
-  const forkState = window.MobKitFlowController.basicForkCanvasState({ step, contract });
+  const forkState = window.MobKitFlowController.basicForkCanvasState({ step, contract, basicView });
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   return (
     <div className={forkState.className}>

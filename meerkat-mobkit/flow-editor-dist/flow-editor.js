@@ -4344,13 +4344,14 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function basicForkCanvasState({ step, contract } = {}) {
+  function basicForkCanvasState({ step, contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
     const isParallel = step?.type === "parallel";
     const collection = step?.collection || contractDefaultValue(contract, "collection_policy");
     const branches = Array.isArray(step?.branches) ? step.branches : [];
     const lanes = [
       ...branches.map((branch) => ({ id: branch.id, label: branch.label, steps: branch.steps || [] })),
-      ...(isParallel ? [] : [{ id: "fallback", label: "Fallback", steps: step?.fallback || [] }]),
+      ...(isParallel ? [] : [{ id: "fallback", label: view.branchFallbackTitle, steps: step?.fallback || [] }]),
     ];
     return {
       isParallel,
@@ -11756,7 +11757,7 @@ function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract,
   return /* @__PURE__ */ React.createElement("div", { className: "bld-lane" }, steps.map((step, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: step.id }, /* @__PURE__ */ React.createElement(StepCard, { studio, step, index: i, selected: sel === step.id, onSelect: () => setSel(step.id), contract, basicView }), step.type === "branch" || step.type === "parallel" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Fork, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : step.type === "repeat" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(RepeatBody, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) }))), steps.length === 0 && /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: 0 }) }));
 }
 function Fork({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
-  const forkState = window.MobKitFlowController.basicForkCanvasState({ step, contract });
+  const forkState = window.MobKitFlowController.basicForkCanvasState({ step, contract, basicView });
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   return /* @__PURE__ */ React.createElement("div", { className: forkState.className }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lanes" }, forkState.lanes.map((l) => /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lane", key: l.id }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__label" }, l.label), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), l.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: l.id, index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: l.steps, laneRef: { lane: "branch", parentId: step.id, branchId: l.id }, sel, setSel, openPicker, contract, basicView }), forkState.isParallel && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" })))), forkState.isParallel ? /* @__PURE__ */ React.createElement(React.Fragment, null, forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail bld-fork__rail--join" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-join" }, forkState.joinLabel)) : (
     // Branch paths reconverge to a single downstream column so the
