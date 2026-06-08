@@ -8437,9 +8437,10 @@
     });
   }
 
-  function sourceDocumentFromExport(document, result) {
+  function sourceDocumentFromExport(document, result, options = {}) {
     const exportedToml = String(result?.mob_toml || "").trim();
     if (!exportedToml) throw new Error("mobkit/mobpacks/export did not return mob_toml");
+    const sourceView = sourceViewForState(null, options.sourceView);
     const renderedDocument = {
       ...(document && typeof document === "object" ? document : {}),
       mob_toml: result.mob_toml,
@@ -8454,6 +8455,7 @@
         filename: result?.filename,
         media_type: result?.media_type,
         source: "mobkit/mobpacks/export",
+        sourceView,
       },
       validation,
       validationRows: diagnosticsToRows(validation),

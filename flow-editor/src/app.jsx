@@ -510,7 +510,9 @@ function App() {
   const exportCurrentSourceDocument = async (requestToken) => {
     const document = buildDocument();
     const result = await window.MobKitFlowController.exportDocument(document);
-    const projection = window.MobKitFlowController.sourceDocumentFromExport(document, result);
+    const projection = window.MobKitFlowController.sourceDocumentFromExport(document, result, {
+      sourceView: catalogs.sourceView,
+    });
     if (!sourceProjectionIsCurrent(requestToken)) return null;
     window.__mobkitFlowLastDocument = projection.document;
     window.__mobkitFlowLastSource = result;

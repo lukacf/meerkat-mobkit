@@ -4663,16 +4663,19 @@ const sourceProjection = controller.sourceDocumentFromExport({
       meta: "mobkit/mobpacks/export",
     }],
   },
+}, {
+  sourceView: hydratedCatalogs.sourceView,
 });
 assert.equal(sourceProjection.document.name, "Source Proof");
 assert.equal(sourceProjection.document.mob_toml, "[mob]\nid = \"source_proof\"\n");
 assert.equal(sourceProjection.sourceDocument.filename, "source-proof.mobpack");
 assert.equal(sourceProjection.sourceDocument.media_type, "application/vnd.mobkit.mobpack");
 assert.equal(sourceProjection.sourceDocument.source, "mobkit/mobpacks/export");
+assert.deepEqual(sourceProjection.sourceDocument.sourceView, hydratedCatalogs.sourceView);
 assert.equal(sourceProjection.sourceDocument.validation.ok, true);
 assert.equal(sourceProjection.validationRows[0].head, "exported");
 assert.equal(sourceProjection.stage, "valid");
-assert.deepEqual(controller.sourceEditorState(sourceProjection.sourceDocument, { sourceView: hydratedCatalogs.sourceView }), {
+assert.deepEqual(controller.sourceEditorState(sourceProjection.sourceDocument), {
   source: "[mob]\nid = \"source_proof\"\n",
   drawerEyebrow: "SOURCE · mob.toml",
   inlineTitle: "mob.toml",

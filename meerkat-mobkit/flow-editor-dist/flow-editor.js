@@ -8470,9 +8470,10 @@ window.MOBKIT_BOOT = {
     });
   }
 
-  function sourceDocumentFromExport(document, result) {
+  function sourceDocumentFromExport(document, result, options = {}) {
     const exportedToml = String(result?.mob_toml || "").trim();
     if (!exportedToml) throw new Error("mobkit/mobpacks/export did not return mob_toml");
+    const sourceView = sourceViewForState(null, options.sourceView);
     const renderedDocument = {
       ...(document && typeof document === "object" ? document : {}),
       mob_toml: result.mob_toml,
@@ -8487,6 +8488,7 @@ window.MOBKIT_BOOT = {
         filename: result?.filename,
         media_type: result?.media_type,
         source: "mobkit/mobpacks/export",
+        sourceView,
       },
       validation,
       validationRows: diagnosticsToRows(validation),
@@ -12440,7 +12442,9 @@ function App() {
   const exportCurrentSourceDocument = async (requestToken) => {
     const document2 = buildDocument();
     const result = await window.MobKitFlowController.exportDocument(document2);
-    const projection = window.MobKitFlowController.sourceDocumentFromExport(document2, result);
+    const projection = window.MobKitFlowController.sourceDocumentFromExport(document2, result, {
+      sourceView: catalogs.sourceView
+    });
     if (!sourceProjectionIsCurrent(requestToken)) return null;
     window.__mobkitFlowLastDocument = projection.document;
     window.__mobkitFlowLastSource = result;
