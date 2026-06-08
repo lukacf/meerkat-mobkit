@@ -1565,6 +1565,7 @@ window.MOBKIT_BOOT = {
       branchConditionModeConditionLabel: String(view.branch_condition_mode_condition_label || "").trim(),
       branchConditionModeFallbackLabel: String(view.branch_condition_mode_fallback_label || "").trim(),
       branchConditionTargetPrefix: String(view.branch_condition_target_prefix || "").trim(),
+      graphInputParamSourceLabel: String(view.branch_input_param_source_label || "").trim(),
       branchConditionFieldPlaceholder: String(view.branch_condition_field_placeholder || "").trim(),
       branchConditionNoOptionsHint: String(view.branch_condition_no_options_hint || "").trim(),
       edgeConditionTitle: String(view.edge_condition_title || "").trim(),
@@ -1594,7 +1595,7 @@ window.MOBKIT_BOOT = {
       && out.gateEmptyBranchHint && out.gateWiringTitle && out.gateIncomingLabel
       && out.gateOutgoingLabel && out.branchConditionModeConditionLabel
       && out.branchConditionModeFallbackLabel && out.branchConditionTargetPrefix
-      && out.branchConditionFieldPlaceholder && out.branchConditionNoOptionsHint
+      && out.graphInputParamSourceLabel && out.branchConditionFieldPlaceholder && out.branchConditionNoOptionsHint
       && out.edgeConditionTitle && out.edgeNoConditionOptionsHint && out.edgeOwnerPlaceholder
       && out.edgeFromTitle && out.edgeToTitle && out.edgeRowInstanceLabel
       && out.edgeRowMemberLabel && out.edgeRowSchemaLabel && out.edgeRowMissingValue
@@ -1657,6 +1658,7 @@ window.MOBKIT_BOOT = {
       branchConditionModeConditionLabel: String(view?.branchConditionModeConditionLabel || ""),
       branchConditionModeFallbackLabel: String(view?.branchConditionModeFallbackLabel || ""),
       branchConditionTargetPrefix: String(view?.branchConditionTargetPrefix || ""),
+      graphInputParamSourceLabel: String(view?.graphInputParamSourceLabel || ""),
       branchConditionFieldPlaceholder: String(view?.branchConditionFieldPlaceholder || ""),
       branchConditionNoOptionsHint: String(view?.branchConditionNoOptionsHint || ""),
       edgeConditionTitle: String(view?.edgeConditionTitle || ""),
@@ -4144,7 +4146,8 @@ window.MOBKIT_BOOT = {
     return parseGraphConditionVar(condition?.path || "");
   }
 
-  function graphConditionOptions({ instances, members, schemas, edge, flow } = {}) {
+  function graphConditionOptions({ instances, members, schemas, edge, flow, graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
     const graphInstances = Array.isArray(instances) ? instances : [];
     const byId = new Map(graphInstances.map((inst) => [inst.id, inst]));
     const memberById = new Map((Array.isArray(members) ? members : []).map((member) => [member.id, member]));
@@ -4173,7 +4176,7 @@ window.MOBKIT_BOOT = {
     if (paramFields.length) {
       options.unshift({
         inst: { id: "params" },
-        member: { name: "Input params" },
+        member: { name: view.graphInputParamSourceLabel },
         schema: { id: "params" },
         fields: paramFields,
         isParams: true,
@@ -5204,6 +5207,7 @@ window.MOBKIT_BOOT = {
           schemas,
           edge,
           flow,
+          graphView,
         });
         const condOwner = conditionOptions.find((option) => option.inst.id === condRef.instanceId) || null;
         const fields = condOwner?.fields || conditionOptions[0]?.fields || [];
@@ -5291,6 +5295,7 @@ window.MOBKIT_BOOT = {
       schemas,
       edge,
       flow,
+      graphView,
     });
     const condOwner = conditionOptions.find((option) => option.inst.id === condRef.instanceId) || null;
     const fields = condOwner?.fields || conditionOptions[0]?.fields || [];

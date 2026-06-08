@@ -797,6 +797,7 @@ pub fn mobpack_schema_response() -> Value {
     editor_graph_view["branch_condition_mode_condition_label"] = json!("condition");
     editor_graph_view["branch_condition_mode_fallback_label"] = json!("fallback");
     editor_graph_view["branch_condition_target_prefix"] = json!("→");
+    editor_graph_view["branch_input_param_source_label"] = json!("Input params");
     editor_graph_view["branch_condition_field_placeholder"] = json!("— field —");
     editor_graph_view["branch_condition_no_options_hint"] =
         json!("add input params or an upstream schema field for this condition");
@@ -15806,6 +15807,10 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_view"]["graph_edge_kind_labels"]["cond"],
             json!("cond — guarded branch")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["branch_input_param_source_label"],
+            json!("Input params")
         );
         assert_eq!(
             mob_definition["editor_graph_view"]["gate_dispatch_hint"],

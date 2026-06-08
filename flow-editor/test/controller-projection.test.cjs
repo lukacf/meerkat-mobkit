@@ -1060,6 +1060,7 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       branch_condition_mode_condition_label: "condition",
       branch_condition_mode_fallback_label: "fallback",
       branch_condition_target_prefix: "→",
+      branch_input_param_source_label: "Input params",
       branch_condition_field_placeholder: "— field —",
       branch_condition_no_options_hint: "add input params or an upstream schema field for this condition",
       edge_condition_title: "CONDITION",
@@ -1578,6 +1579,7 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   branchConditionModeConditionLabel: "condition",
   branchConditionModeFallbackLabel: "fallback",
   branchConditionTargetPrefix: "→",
+  graphInputParamSourceLabel: "Input params",
   branchConditionFieldPlaceholder: "— field —",
   branchConditionNoOptionsHint: "add input params or an upstream schema field for this condition",
   edgeConditionTitle: "CONDITION",
@@ -1629,6 +1631,7 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   branchConditionModeConditionLabel: "",
   branchConditionModeFallbackLabel: "",
   branchConditionTargetPrefix: "",
+  graphInputParamSourceLabel: "",
   branchConditionFieldPlaceholder: "",
   branchConditionNoOptionsHint: "",
   edgeConditionTitle: "",
@@ -5216,6 +5219,7 @@ const graphConditionOptionRows = controller.graphConditionOptions({
   ],
   edge: { from: "review", to: "target", cond: { var: "params.route", op: "==", val: "docs" } },
   flow: { steps: [{ type: "input", fields: "route: enum(code,docs)" }] },
+  graphView: { ...hydratedCatalogs.graphView, graphInputParamSourceLabel: "Runtime input" },
 });
 assert.deepEqual(graphConditionOptionRows.map((option) => ({
   id: option.inst.id,
@@ -5223,7 +5227,7 @@ assert.deepEqual(graphConditionOptionRows.map((option) => ({
   fields: option.fields.map((field) => field.name),
   isParams: !!option.isParams,
 })), [
-  { id: "params", member: "Input params", fields: ["route"], isParams: true },
+  { id: "params", member: "Runtime input", fields: ["route"], isParams: true },
   { id: "planner", member: "Planner", fields: ["plan"], isParams: false },
   { id: "review", member: "Reviewer", fields: ["verdict"], isParams: false },
 ]);
