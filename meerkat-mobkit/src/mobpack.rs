@@ -866,6 +866,75 @@ pub fn mobpack_schema_response() -> Value {
         "plan_previous_label": "‹",
         "plan_next_label": "›"
     });
+    let mut editor_settings_view = json!({
+        "panel_title": "Tweaks",
+        "load_mob_title": "Load mob",
+        "load_mob_label": "Mobpack",
+        "flow_stage_fallback": "draft",
+        "option_separator": " · ",
+        "canvas_title": "Canvas",
+        "edge_style_label": "Edges",
+        "density_label": "Density",
+        "theme_title": "Theme",
+        "theme_mode_label": "Mode",
+        "mob_title": "Mob",
+        "orchestrator_label": "Orchestrator",
+        "profile_none_label": "none",
+        "auto_wire_label": "Auto wire",
+        "default_backend_label": "Default backend",
+        "external_base_label": "External base",
+        "external_base_placeholder": "http://127.0.0.1:9000",
+        "deploy_title": "Deploy",
+        "surface_label": "Surface",
+        "trust_label": "Trust",
+        "model_label": "Model",
+        "model_default_label": "default",
+        "model_vendor_fallback": "provider",
+        "duration_label": "Duration",
+        "duration_placeholder": "30s",
+        "tool_calls_label": "Tool calls",
+        "tool_calls_min": 0,
+        "tool_calls_max": 999,
+        "tokens_label": "Tokens",
+        "tokens_min": 0,
+        "tokens_max": 200000,
+        "realm_label": "Realm",
+        "realm_id_label": "Realm ID",
+        "realm_id_placeholder": "realm id",
+        "backend_label": "Backend",
+        "prompt_label": "Prompt",
+        "prompt_placeholder": "Deploy prompt",
+        "command_label": "Command",
+        "command_fallback": "--",
+        "inspector_title": "Inspector",
+        "inspector_layout_label": "Layout"
+    });
+    editor_settings_view["edge_style_options"] = json!([
+        { "value": "text", "label": "Text" },
+        { "value": "icons", "label": "Icons" },
+        { "value": "colored", "label": "Color" }
+    ]);
+    editor_settings_view["density_options"] = json!([
+        { "value": "compact", "label": "Compact" },
+        { "value": "comfortable", "label": "Comfy" }
+    ]);
+    editor_settings_view["theme_mode_options"] = json!([
+        { "value": "light", "label": "Light" },
+        { "value": "dark", "label": "Dark" }
+    ]);
+    editor_settings_view["auto_wire_options"] = json!([
+        { "value": "no", "label": "No" },
+        { "value": "yes", "label": "Yes" }
+    ]);
+    editor_settings_view["realm_options"] = json!([
+        { "value": "isolated", "label": "Isolated" },
+        { "value": "shared", "label": "Shared" }
+    ]);
+    editor_settings_view["inspector_layout_options"] = json!([
+        { "value": "right", "label": "Right" },
+        { "value": "bottom", "label": "Bottom" },
+        { "value": "modal", "label": "Modal" }
+    ]);
     let editor_basic_view = json!({
         "start_label": "START",
         "loop_badge": "LOOP",
@@ -1027,6 +1096,7 @@ pub fn mobpack_schema_response() -> Value {
     mob_definition["editor_agent_detail_view"] = editor_agent_detail_view;
     mob_definition["editor_agent_access_view"] = editor_agent_access_view;
     mob_definition["editor_deploy_view"] = editor_deploy_view;
+    mob_definition["editor_settings_view"] = editor_settings_view;
     json!({
         "schema_version": MOBPACK_SCHEMA_VERSION,
         "media_type": MOBPACK_MEDIA_TYPE,
@@ -15493,6 +15563,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_deploy_view"]["plan_unavailable_body"],
             json!("mobkit/mobpacks/deploy did not return plan_trace.")
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["panel_title"],
+            json!("Tweaks")
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["duration_placeholder"],
+            json!("30s")
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["tool_calls_max"],
+            json!(999)
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["inspector_layout_options"][0]["label"],
+            json!("Right")
         );
         assert_eq!(
             mob_definition["editor_schema_view"]["eyebrow"],

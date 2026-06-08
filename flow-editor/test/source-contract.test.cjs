@@ -1061,6 +1061,9 @@ assert.match(tweaksBlock, /MobKitFlowController\.mobSettingsPatch/, "Tweaks mob 
 assert.match(tweaksBlock, /deploySettingsPatch\(current,\s*\{\s*\[field\]:\s*value\s*\},\s*\{\s*contract,\s*modelCatalog\s*\}\)/, "Tweaks deploy settings writes must pass MobKit contract and model catalog into controller validation");
 assert.match(tweaksBlock, /mobSettingsPatch\(current,\s*\{\s*\[field\]:\s*value\s*\},\s*\{\s*contract\s*\}\)/, "Tweaks mob settings writes must pass MobKit contract into controller validation");
 assert.match(tweaksBlock, /MobKitFlowController\.tweaksControlState/, "Tweaks controls must read deploy, mob, profile, and loadable-flow option state through the controller plane");
+assert.match(controller, /mob_definition\?\.editor_settings_view/, "controller plane must hydrate Tweaks/settings chrome from MobKit schema");
+assert.match(app, /<Tweaks[\s\S]*settingsView=\{catalogs\.settingsView\}/, "app shell must inject MobKit Tweaks/settings view state");
+assert.match(tweaksBlock, /tweaksControlState\(\{[\s\S]*settingsView/, "Tweaks controls must pass schema-backed settings view into controller projection");
 assert.match(tweaksBlock, /controlState\.panelTitle/, "Tweaks panel title must render through controller state");
 assert.match(tweaksBlock, /controlState\.loadMobTitle/, "Tweaks section titles must render through controller state");
 assert.match(tweaksBlock, /controlState\.edgeStyleOptions/, "Tweaks canvas options must render through controller state");
@@ -1069,9 +1072,9 @@ assert.match(tweaksBlock, /controlState\.durationPlaceholder/, "Tweaks deploy se
 assert.match(tweaksBlock, /controlState\.toolCallsMax/, "Tweaks numeric deploy bounds must render through controller state");
 assert.match(tweaksBlock, /controlState\.commandFallback/, "Tweaks command fallback must render through controller state");
 assert.match(tweaksBlock, /controlState\.inspectorLayoutOptions/, "Tweaks inspector options must render through controller state");
-assert.match(controller, /panelTitle:\s*"Tweaks"/, "controller plane must own Tweaks panel title projection");
-assert.match(controller, /edgeStyleOptions:\s*\[[\s\S]*label:\s*"Text"[\s\S]*label:\s*"Color"/, "controller plane must own Tweaks canvas option projection");
-assert.match(controller, /durationPlaceholder:\s*"30s"/, "controller plane must own Tweaks deploy placeholder projection");
+assert.match(controller, /panelTitle:\s*view\.panelTitle/, "controller plane must project Tweaks panel title from MobKit settings view");
+assert.match(controller, /edgeStyleOptions:\s*view\.edgeStyleOptions/, "controller plane must project Tweaks canvas options from MobKit settings view");
+assert.match(controller, /durationPlaceholder:\s*view\.durationPlaceholder/, "controller plane must project Tweaks deploy placeholder from MobKit settings view");
 assert(!/const loadableFlows|const profileOptions|const profileChoices|modelCatalog\s*\|\|\s*\[\]|profileName\(member\)|flows\.filter\(\(flow\) => flow\.document\)/.test(tweaksBlock), "Tweaks controls must not assemble MobKit authoring option state locally");
 assert(!/<TweaksPanel title=["']Tweaks["']|<TweakSection title=["'](?:Load mob|Canvas|Theme|Mob|Deploy|Inspector)["']|label=["'](?:Mobpack|Edges|Density|Mode|Orchestrator|Auto wire|Default backend|External base|Surface|Trust|Model|Duration|Tool calls|Tokens|Realm|Realm ID|Backend|Prompt|Layout)["']|placeholder=["'](?:http:\/\/127\.0\.0\.1:9000|30s|realm id|Deploy prompt)["']|options=\{\[\{value: ["'](?:text|compact|light|no|isolated|right)["']|min=\{0\}|max=\{(?:999|200000)\}|deployCommandPreview \|\| ["']--["']/.test(tweaksBlock), "Tweaks controls must not compose panel labels, local option sets, placeholders, numeric bounds, or command fallback locally");
 assert.match(roleWiringBlock, /MobKitFlowController\.mobRoleWiringUpdatePatch/, "role wiring editor must update rules through the controller plane");

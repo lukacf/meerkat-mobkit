@@ -927,6 +927,132 @@
     };
   }
 
+  function settingsViewOptionsFromSchema(value) {
+    return Array.isArray(value)
+      ? value
+        .map((option) => ({
+          value: String(option?.value || "").trim(),
+          label: String(option?.label || "").trim(),
+        }))
+        .filter((option) => option.value && option.label)
+      : [];
+  }
+
+  function settingsViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_settings_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      panelTitle: String(view.panel_title || "").trim(),
+      loadMobTitle: String(view.load_mob_title || "").trim(),
+      loadMobLabel: String(view.load_mob_label || "").trim(),
+      flowStageFallback: String(view.flow_stage_fallback || "").trim(),
+      optionSeparator: String(view.option_separator || ""),
+      canvasTitle: String(view.canvas_title || "").trim(),
+      edgeStyleLabel: String(view.edge_style_label || "").trim(),
+      edgeStyleOptions: settingsViewOptionsFromSchema(view.edge_style_options),
+      densityLabel: String(view.density_label || "").trim(),
+      densityOptions: settingsViewOptionsFromSchema(view.density_options),
+      themeTitle: String(view.theme_title || "").trim(),
+      themeModeLabel: String(view.theme_mode_label || "").trim(),
+      themeModeOptions: settingsViewOptionsFromSchema(view.theme_mode_options),
+      mobTitle: String(view.mob_title || "").trim(),
+      orchestratorLabel: String(view.orchestrator_label || "").trim(),
+      profileNoneLabel: String(view.profile_none_label || "").trim(),
+      autoWireLabel: String(view.auto_wire_label || "").trim(),
+      autoWireOptions: settingsViewOptionsFromSchema(view.auto_wire_options),
+      defaultBackendLabel: String(view.default_backend_label || "").trim(),
+      externalBaseLabel: String(view.external_base_label || "").trim(),
+      externalBasePlaceholder: String(view.external_base_placeholder || "").trim(),
+      deployTitle: String(view.deploy_title || "").trim(),
+      surfaceLabel: String(view.surface_label || "").trim(),
+      trustLabel: String(view.trust_label || "").trim(),
+      modelLabel: String(view.model_label || "").trim(),
+      modelDefaultLabel: String(view.model_default_label || "").trim(),
+      modelVendorFallback: String(view.model_vendor_fallback || "").trim(),
+      durationLabel: String(view.duration_label || "").trim(),
+      durationPlaceholder: String(view.duration_placeholder || "").trim(),
+      toolCallsLabel: String(view.tool_calls_label || "").trim(),
+      toolCallsMin: Number(view.tool_calls_min),
+      toolCallsMax: Number(view.tool_calls_max),
+      tokensLabel: String(view.tokens_label || "").trim(),
+      tokensMin: Number(view.tokens_min),
+      tokensMax: Number(view.tokens_max),
+      realmLabel: String(view.realm_label || "").trim(),
+      realmOptions: settingsViewOptionsFromSchema(view.realm_options),
+      realmIdLabel: String(view.realm_id_label || "").trim(),
+      realmIdPlaceholder: String(view.realm_id_placeholder || "").trim(),
+      backendLabel: String(view.backend_label || "").trim(),
+      promptLabel: String(view.prompt_label || "").trim(),
+      promptPlaceholder: String(view.prompt_placeholder || "").trim(),
+      commandLabel: String(view.command_label || "").trim(),
+      commandFallback: String(view.command_fallback || "").trim(),
+      inspectorTitle: String(view.inspector_title || "").trim(),
+      inspectorLayoutLabel: String(view.inspector_layout_label || "").trim(),
+      inspectorLayoutOptions: settingsViewOptionsFromSchema(view.inspector_layout_options),
+    };
+    const numericOk = [out.toolCallsMin, out.toolCallsMax, out.tokensMin, out.tokensMax].every(Number.isFinite);
+    const optionsOk = out.edgeStyleOptions.length && out.densityOptions.length && out.themeModeOptions.length
+      && out.autoWireOptions.length && out.realmOptions.length && out.inspectorLayoutOptions.length;
+    const stringsOk = Object.entries(out).every(([key, value]) => {
+      if (Array.isArray(value) || typeof value === "number") return true;
+      return key === "optionSeparator" ? value.length > 0 : !!value;
+    });
+    return numericOk && optionsOk && stringsOk ? out : null;
+  }
+
+  function settingsViewForState(settingsView) {
+    const view = settingsView && typeof settingsView === "object" ? settingsView : null;
+    return {
+      panelTitle: String(view?.panelTitle || ""),
+      loadMobTitle: String(view?.loadMobTitle || ""),
+      loadMobLabel: String(view?.loadMobLabel || ""),
+      flowStageFallback: String(view?.flowStageFallback || ""),
+      optionSeparator: String(view?.optionSeparator || ""),
+      canvasTitle: String(view?.canvasTitle || ""),
+      edgeStyleLabel: String(view?.edgeStyleLabel || ""),
+      edgeStyleOptions: Array.isArray(view?.edgeStyleOptions) ? view.edgeStyleOptions : [],
+      densityLabel: String(view?.densityLabel || ""),
+      densityOptions: Array.isArray(view?.densityOptions) ? view.densityOptions : [],
+      themeTitle: String(view?.themeTitle || ""),
+      themeModeLabel: String(view?.themeModeLabel || ""),
+      themeModeOptions: Array.isArray(view?.themeModeOptions) ? view.themeModeOptions : [],
+      mobTitle: String(view?.mobTitle || ""),
+      orchestratorLabel: String(view?.orchestratorLabel || ""),
+      profileNoneLabel: String(view?.profileNoneLabel || ""),
+      autoWireLabel: String(view?.autoWireLabel || ""),
+      autoWireOptions: Array.isArray(view?.autoWireOptions) ? view.autoWireOptions : [],
+      defaultBackendLabel: String(view?.defaultBackendLabel || ""),
+      externalBaseLabel: String(view?.externalBaseLabel || ""),
+      externalBasePlaceholder: String(view?.externalBasePlaceholder || ""),
+      deployTitle: String(view?.deployTitle || ""),
+      surfaceLabel: String(view?.surfaceLabel || ""),
+      trustLabel: String(view?.trustLabel || ""),
+      modelLabel: String(view?.modelLabel || ""),
+      modelDefaultLabel: String(view?.modelDefaultLabel || ""),
+      modelVendorFallback: String(view?.modelVendorFallback || ""),
+      durationLabel: String(view?.durationLabel || ""),
+      durationPlaceholder: String(view?.durationPlaceholder || ""),
+      toolCallsLabel: String(view?.toolCallsLabel || ""),
+      toolCallsMin: Number(view?.toolCallsMin ?? NaN),
+      toolCallsMax: Number(view?.toolCallsMax ?? NaN),
+      tokensLabel: String(view?.tokensLabel || ""),
+      tokensMin: Number(view?.tokensMin ?? NaN),
+      tokensMax: Number(view?.tokensMax ?? NaN),
+      realmLabel: String(view?.realmLabel || ""),
+      realmOptions: Array.isArray(view?.realmOptions) ? view.realmOptions : [],
+      realmIdLabel: String(view?.realmIdLabel || ""),
+      realmIdPlaceholder: String(view?.realmIdPlaceholder || ""),
+      backendLabel: String(view?.backendLabel || ""),
+      promptLabel: String(view?.promptLabel || ""),
+      promptPlaceholder: String(view?.promptPlaceholder || ""),
+      commandLabel: String(view?.commandLabel || ""),
+      commandFallback: String(view?.commandFallback || ""),
+      inspectorTitle: String(view?.inspectorTitle || ""),
+      inspectorLayoutLabel: String(view?.inspectorLayoutLabel || ""),
+      inspectorLayoutOptions: Array.isArray(view?.inspectorLayoutOptions) ? view.inspectorLayoutOptions : [],
+    };
+  }
+
   function basicViewFromSchema(schema) {
     const view = schema?.mob_definition?.editor_basic_view;
     if (!view || typeof view !== "object") return null;
@@ -6432,6 +6558,7 @@
       agentDetailView: null,
       agentAccessView: null,
       deployView: null,
+      settingsView: null,
       schemaView: null,
       basicView: null,
       graphView: null,
@@ -6466,6 +6593,7 @@
       agentDetailView: agentDetailViewFromSchema(schema),
       agentAccessView: agentAccessViewFromSchema(schema),
       deployView: deployViewFromSchema(schema),
+      settingsView: settingsViewFromSchema(schema),
       schemaView: schemaViewFromSchema(schema),
       basicView: basicViewFromSchema(schema),
       graphView: graphViewFromSchema(schema),
@@ -6737,90 +6865,72 @@
     members = [],
     modelCatalog = [],
     contract = null,
+    settingsView = null,
   } = {}) {
+    const view = settingsViewForState(settingsView);
     const loadableFlowOptions = (Array.isArray(flows) ? flows : [])
       .filter((flow) => flow?.document)
       .map((flow) => ({
         value: flow.id,
-        label: `${flow.name} · ${flow.stage || flow.source || "draft"}`,
+        label: `${flow.name}${view.optionSeparator}${flow.stage || flow.source || view.flowStageFallback}`,
       }));
     const profileOptions = [
-      { value: "", label: "none" },
+      { value: "", label: view.profileNoneLabel },
       ...(Array.isArray(members) ? members : []).map((member) => {
         const profile = profileName(member);
         return { value: profile, label: profile };
       }),
     ];
     const modelOptions = [
-      { value: "", label: "default" },
+      { value: "", label: view.modelDefaultLabel },
       ...(Array.isArray(modelCatalog) ? modelCatalog : []).map((model) => ({
         value: model.id,
-        label: `${model.label || model.id} · ${model.vendor || "provider"}`,
+        label: `${model.label || model.id}${view.optionSeparator}${model.vendor || view.modelVendorFallback}`,
       })),
     ];
     return {
-      panelTitle: "Tweaks",
-      loadMobTitle: "Load mob",
-      loadMobLabel: "Mobpack",
-      canvasTitle: "Canvas",
-      edgeStyleLabel: "Edges",
-      edgeStyleOptions: [
-        { value: "text", label: "Text" },
-        { value: "icons", label: "Icons" },
-        { value: "colored", label: "Color" },
-      ],
-      densityLabel: "Density",
-      densityOptions: [
-        { value: "compact", label: "Compact" },
-        { value: "comfortable", label: "Comfy" },
-      ],
-      themeTitle: "Theme",
-      themeModeLabel: "Mode",
-      themeModeOptions: [
-        { value: "light", label: "Light" },
-        { value: "dark", label: "Dark" },
-      ],
-      mobTitle: "Mob",
-      orchestratorLabel: "Orchestrator",
-      autoWireLabel: "Auto wire",
-      autoWireOptions: [
-        { value: "no", label: "No" },
-        { value: "yes", label: "Yes" },
-      ],
-      defaultBackendLabel: "Default backend",
-      externalBaseLabel: "External base",
-      externalBasePlaceholder: "http://127.0.0.1:9000",
-      deployTitle: "Deploy",
-      surfaceLabel: "Surface",
-      trustLabel: "Trust",
-      modelLabel: "Model",
-      durationLabel: "Duration",
-      durationPlaceholder: "30s",
-      toolCallsLabel: "Tool calls",
-      toolCallsMin: 0,
-      toolCallsMax: 999,
-      tokensLabel: "Tokens",
-      tokensMin: 0,
-      tokensMax: 200000,
-      realmLabel: "Realm",
-      realmOptions: [
-        { value: "isolated", label: "Isolated" },
-        { value: "shared", label: "Shared" },
-      ],
-      realmIdLabel: "Realm ID",
-      realmIdPlaceholder: "realm id",
-      backendLabel: "Backend",
-      promptLabel: "Prompt",
-      promptPlaceholder: "Deploy prompt",
-      commandLabel: "Command",
-      commandFallback: "--",
-      inspectorTitle: "Inspector",
-      inspectorLayoutLabel: "Layout",
-      inspectorLayoutOptions: [
-        { value: "right", label: "Right" },
-        { value: "bottom", label: "Bottom" },
-        { value: "modal", label: "Modal" },
-      ],
+      panelTitle: view.panelTitle,
+      loadMobTitle: view.loadMobTitle,
+      loadMobLabel: view.loadMobLabel,
+      canvasTitle: view.canvasTitle,
+      edgeStyleLabel: view.edgeStyleLabel,
+      edgeStyleOptions: view.edgeStyleOptions,
+      densityLabel: view.densityLabel,
+      densityOptions: view.densityOptions,
+      themeTitle: view.themeTitle,
+      themeModeLabel: view.themeModeLabel,
+      themeModeOptions: view.themeModeOptions,
+      mobTitle: view.mobTitle,
+      orchestratorLabel: view.orchestratorLabel,
+      autoWireLabel: view.autoWireLabel,
+      autoWireOptions: view.autoWireOptions,
+      defaultBackendLabel: view.defaultBackendLabel,
+      externalBaseLabel: view.externalBaseLabel,
+      externalBasePlaceholder: view.externalBasePlaceholder,
+      deployTitle: view.deployTitle,
+      surfaceLabel: view.surfaceLabel,
+      trustLabel: view.trustLabel,
+      modelLabel: view.modelLabel,
+      durationLabel: view.durationLabel,
+      durationPlaceholder: view.durationPlaceholder,
+      toolCallsLabel: view.toolCallsLabel,
+      toolCallsMin: view.toolCallsMin,
+      toolCallsMax: view.toolCallsMax,
+      tokensLabel: view.tokensLabel,
+      tokensMin: view.tokensMin,
+      tokensMax: view.tokensMax,
+      realmLabel: view.realmLabel,
+      realmOptions: view.realmOptions,
+      realmIdLabel: view.realmIdLabel,
+      realmIdPlaceholder: view.realmIdPlaceholder,
+      backendLabel: view.backendLabel,
+      promptLabel: view.promptLabel,
+      promptPlaceholder: view.promptPlaceholder,
+      commandLabel: view.commandLabel,
+      commandFallback: view.commandFallback,
+      inspectorTitle: view.inspectorTitle,
+      inspectorLayoutLabel: view.inspectorLayoutLabel,
+      inspectorLayoutOptions: view.inspectorLayoutOptions,
       loadableFlowOptions,
       profileOptions,
       profileChoices: profileOptions.filter((option) => option.value),

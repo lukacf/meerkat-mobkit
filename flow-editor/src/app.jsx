@@ -918,6 +918,7 @@ function App() {
         modelCatalog={catalogs.models}
         contract={contract}
         deployCommandPreview={deployCommandPreview}
+        settingsView={catalogs.settingsView}
         onLoadFlow={(id) => {
           const selection = window.MobKitFlowController.flowRegistrySelectionState(flows, id);
           if (!selection.hydration) return;
@@ -1118,7 +1119,7 @@ function ModeToggle({ mode, setMode, railState }) {
   );
 }
 
-function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, onLoadFlow }) {
+function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, onLoadFlow }) {
   const setDeployField = (field, value) => setDeploySettings((current) =>
     window.MobKitFlowController.deploySettingsPatch(current, { [field]: value }, { contract, modelCatalog })
   );
@@ -1132,6 +1133,7 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     members,
     modelCatalog,
     contract,
+    settingsView,
   });
   return (
     <TweaksPanel title={controlState.panelTitle}>
