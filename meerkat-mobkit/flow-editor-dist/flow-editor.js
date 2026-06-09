@@ -121,6 +121,13 @@ window.MOBKIT_BOOT = {
     return controllerConfig.rpcUrl || "/flow-editor/rpc";
   }
 
+  function operationErrorText(result = null, fallback = "") {
+    const validationHead = String(result?.validation?.display_rows?.[0]?.head || "").trim();
+    if (validationHead) return validationHead;
+    const error = String(result?.error || "").trim();
+    return error || String(fallback || "").trim();
+  }
+
   function rpcMethod(name) {
     return controllerConfig.rpcMethods?.[name] || RPC_METHODS[name] || "";
   }
@@ -348,6 +355,8 @@ window.MOBKIT_BOOT = {
       sourceLabel: view.toolSourceLabel,
       sourcePlaceholder: view.toolSourcePlaceholder,
       addButtonLabel: view.toolAddButtonLabel,
+      emptyToolError: view.toolEmptyError,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
     };
   }
 
@@ -543,6 +552,7 @@ window.MOBKIT_BOOT = {
       inlineCreateHint: view.skillInlineCreateHint,
       inlineAddLabel: view.skillInlineAddLabel,
       inlineErrorFallback: view.skillInlineErrorFallback,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
       noRealmsMessage: view.skillNoRealmsMessage,
       realmLabel: view.skillRealmLabel,
       hasRealms: realms.length > 0,
@@ -616,6 +626,8 @@ window.MOBKIT_BOOT = {
       agentsHeading: view.agentsHeading,
       schemasHeading: view.schemasHeading,
       addSchemaLabel: view.addSchemaLabel,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
+      schemaAddFallbackError: view.schemaAddFallbackError,
       emptyTitle: view.emptyTitle,
       emptyLines: view.emptyLines,
       missingSchemaLabel: view.missingSchemaLabel,
@@ -639,6 +651,11 @@ window.MOBKIT_BOOT = {
       addAgentUnavailableLabel: String(view.add_agent_unavailable_label || "").trim(),
       addAgentPlaceholderLabel: String(view.add_agent_placeholder_label || "").trim(),
       addAgentErrorPrefix: String(view.add_agent_error_prefix || "").trim(),
+      authoringOperationUnavailableError: String(view.authoring_operation_unavailable_error || "").trim(),
+      memberUpdateFallbackError: String(view.member_update_fallback_error || "").trim(),
+      toolUpdateFallbackError: String(view.tool_update_fallback_error || "").trim(),
+      schemaAssignmentFallbackError: String(view.schema_assignment_fallback_error || "").trim(),
+      schemaAddFallbackError: String(view.schema_add_fallback_error || "").trim(),
       definitionCatalogTitle: String(view.definition_catalog_title || "").trim(),
       definitionCatalogEmpty: String(view.definition_catalog_empty || "").trim(),
       definitionCatalogSourceLabel: String(view.definition_catalog_source_label || "").trim(),
@@ -661,6 +678,9 @@ window.MOBKIT_BOOT = {
     return out.agentsHeading && out.schemasHeading && out.addSchemaLabel
       && out.addAgentTitle && out.addAgentUnavailableTitle
       && out.addAgentUnavailableLabel && out.addAgentPlaceholderLabel
+      && out.authoringOperationUnavailableError && out.memberUpdateFallbackError
+      && out.toolUpdateFallbackError && out.schemaAssignmentFallbackError
+      && out.schemaAddFallbackError
       && out.definitionCatalogTitle && out.definitionCatalogEmpty
       && out.definitionCatalogSourceLabel && out.definitionCatalogToolsLabel && out.definitionCatalogSkillsLabel
       && out.memberSubLabelTemplate && out.memberPlacedEmptyLabel && out.memberPlacedCountTemplate
@@ -682,6 +702,11 @@ window.MOBKIT_BOOT = {
       addAgentUnavailableLabel: String(view?.addAgentUnavailableLabel || ""),
       addAgentPlaceholderLabel: String(view?.addAgentPlaceholderLabel || ""),
       addAgentErrorPrefix: String(view?.addAgentErrorPrefix || ""),
+      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
+      memberUpdateFallbackError: String(view?.memberUpdateFallbackError || ""),
+      toolUpdateFallbackError: String(view?.toolUpdateFallbackError || ""),
+      schemaAssignmentFallbackError: String(view?.schemaAssignmentFallbackError || ""),
+      schemaAddFallbackError: String(view?.schemaAddFallbackError || ""),
       definitionCatalogTitle: String(view?.definitionCatalogTitle || ""),
       definitionCatalogEmpty: String(view?.definitionCatalogEmpty || ""),
       definitionCatalogSourceLabel: String(view?.definitionCatalogSourceLabel || ""),
@@ -793,6 +818,9 @@ window.MOBKIT_BOOT = {
       fieldsTitlePrefix: String(view.fields_title_prefix || "").trim(),
       fieldsTitleTemplate: String(view.fields_title_template || "").trim(),
       addFieldLabel: String(view.add_field_label || "").trim(),
+      authoringOperationUnavailableError: String(view.authoring_operation_unavailable_error || "").trim(),
+      schemaOperationFallbackError: String(view.schema_operation_fallback_error || "").trim(),
+      fieldAddFallbackError: String(view.field_add_fallback_error || "").trim(),
       headerLabels: {
         name: String(headers.name || "").trim(),
         type: String(headers.type || "").trim(),
@@ -816,6 +844,7 @@ window.MOBKIT_BOOT = {
       fieldEnumAddValue: String(view.field_enum_add_value || "").trim(),
     };
     return out.eyebrow && out.descriptionTitle && out.fieldsTitlePrefix && out.fieldsTitleTemplate && out.addFieldLabel
+      && out.authoringOperationUnavailableError && out.schemaOperationFallbackError && out.fieldAddFallbackError
       && out.headerLabels.name && out.headerLabels.type && out.headerLabels.required && out.headerLabels.description
       && out.emptyFieldsHint && out.usedByPrefix && out.usedByTitleTemplate
       && out.usageSingularTemplate && out.usagePluralTemplate && out.emptyUsedByHint && out.deleteLabel && out.deleteBlockedTitle
@@ -834,6 +863,9 @@ window.MOBKIT_BOOT = {
       fieldsTitlePrefix: String(view?.fieldsTitlePrefix || ""),
       fieldsTitleTemplate: String(view?.fieldsTitleTemplate || ""),
       addFieldLabel: String(view?.addFieldLabel || ""),
+      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
+      schemaOperationFallbackError: String(view?.schemaOperationFallbackError || ""),
+      fieldAddFallbackError: String(view?.fieldAddFallbackError || ""),
       headerLabels: {
         name: String(view?.headerLabels?.name || ""),
         type: String(view?.headerLabels?.type || ""),
@@ -998,6 +1030,8 @@ window.MOBKIT_BOOT = {
     if (!view || typeof view !== "object") return null;
     const out = {
       toolInvalidError: String(view.tool_invalid_error || "").trim(),
+      toolEmptyError: String(view.tool_empty_error || "").trim(),
+      authoringOperationUnavailableError: String(view.authoring_operation_unavailable_error || "").trim(),
       toolTitle: String(view.tool_title || "").trim(),
       toolHint: String(view.tool_hint || "").trim(),
       toolMissingDescription: String(view.tool_missing_description || "").trim(),
@@ -1042,6 +1076,8 @@ window.MOBKIT_BOOT = {
     const view = agentAccessView && typeof agentAccessView === "object" ? agentAccessView : null;
     return {
       toolInvalidError: String(view?.toolInvalidError || ""),
+      toolEmptyError: String(view?.toolEmptyError || ""),
+      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
       toolTitle: String(view?.toolTitle || ""),
       toolHint: String(view?.toolHint || ""),
       toolMissingDescription: String(view?.toolMissingDescription || ""),
@@ -1317,6 +1353,8 @@ window.MOBKIT_BOOT = {
       emptyPanelTitle: String(view.empty_panel_title || "").trim(),
       emptyPanelSubtitleParts: basicViewPartsFromSchema(view.empty_panel_subtitle_parts),
       sourceToggleLabel: String(view.source_toggle_label || "").trim(),
+      authoringOperationUnavailableError: String(view.authoring_operation_unavailable_error || "").trim(),
+      authoringOperationFallbackError: String(view.authoring_operation_fallback_error || "").trim(),
       memberStepPanelTitleFallback: String(view.member_step_panel_title_fallback || "").trim(),
       memberStepPanelSubFallback: String(view.member_step_panel_sub_fallback || "").trim(),
       memberStepMemberLabel: String(view.member_step_member_label || "").trim(),
@@ -1505,6 +1543,8 @@ window.MOBKIT_BOOT = {
         ? view.emptyPanelSubtitleParts
         : [],
       sourceToggleLabel: String(view?.sourceToggleLabel || ""),
+      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
+      authoringOperationFallbackError: String(view?.authoringOperationFallbackError || ""),
       memberStepPanelTitleFallback: String(view?.memberStepPanelTitleFallback || ""),
       memberStepPanelSubFallback: String(view?.memberStepPanelSubFallback || ""),
       memberStepMemberLabel: String(view?.memberStepMemberLabel || ""),
@@ -1780,6 +1820,8 @@ window.MOBKIT_BOOT = {
       addNodeEmptyPrefix: String(view.add_node_empty_prefix || ""),
       addNodeEmptySuffix: String(view.add_node_empty_suffix || ""),
       addNodeJumpLabel: String(view.add_node_jump_label || "").trim(),
+      authoringOperationUnavailableError: String(view.authoring_operation_unavailable_error || "").trim(),
+      authoringOperationFallbackError: String(view.authoring_operation_fallback_error || "").trim(),
       gatePaletteRows: graphGatePaletteRowsFromSchema(view.gate_palette_rows),
       gateKindLabels: viewStringMapFromSchema(view.graph_gate_kind_labels),
       terminalKindLabels: viewStringMapFromSchema(view.graph_terminal_kind_labels),
@@ -1862,6 +1904,7 @@ window.MOBKIT_BOOT = {
       && out.addNodeSearchIcon && out.addNodeSearchPlaceholder && out.addNodeCloseLabel
       && out.addNodeCloseTitle && out.addNodeAgentsLabel && out.addNodeControlsLabel
       && out.addNodeEmptyPrefix && out.addNodeEmptySuffix && out.addNodeJumpLabel
+      && out.authoringOperationUnavailableError && out.authoringOperationFallbackError
       && out.gatePaletteRows.length
       && Object.keys(out.gateKindLabels).length
       && Object.keys(out.terminalKindLabels).length
@@ -1933,6 +1976,8 @@ window.MOBKIT_BOOT = {
       addNodeEmptyPrefix: String(view?.addNodeEmptyPrefix || ""),
       addNodeEmptySuffix: String(view?.addNodeEmptySuffix || ""),
       addNodeJumpLabel: String(view?.addNodeJumpLabel || ""),
+      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
+      authoringOperationFallbackError: String(view?.authoringOperationFallbackError || ""),
       gatePaletteRows: Array.isArray(view?.gatePaletteRows) ? view.gatePaletteRows : [],
       gateKindLabels: view?.gateKindLabels && typeof view.gateKindLabels === "object" ? view.gateKindLabels : {},
       terminalKindLabels: view?.terminalKindLabels && typeof view.terminalKindLabels === "object" ? view.terminalKindLabels : {},
@@ -2060,7 +2105,8 @@ window.MOBKIT_BOOT = {
     return null;
   }
 
-  function agentEditorControlState({ member, instances = [], schemas = [], contract, deploySettings, modelCatalog = [], agentDetailView = null } = {}) {
+  function agentEditorControlState({ member, instances = [], schemas = [], contract, deploySettings, modelCatalog = [], agentView = null, agentDetailView = null } = {}) {
+    const agentUiView = agentViewForState(agentView);
     const view = agentDetailViewForState(agentDetailView);
     const placedAt = (Array.isArray(instances) ? instances : []).filter((instance) => instance?.memberId === member?.id);
     const placedCount = placedAt.length;
@@ -2115,6 +2161,10 @@ window.MOBKIT_BOOT = {
     return {
       placedAt,
       placedCount,
+      authoringOperationUnavailableError: agentUiView.authoringOperationUnavailableError,
+      memberUpdateFallbackError: agentUiView.memberUpdateFallbackError,
+      toolUpdateFallbackError: agentUiView.toolUpdateFallbackError,
+      schemaAssignmentFallbackError: agentUiView.schemaAssignmentFallbackError,
       eyebrow: [view.agentEyebrowPrefix, member?.role || ""].filter(Boolean).join(" · "),
       idLine: `${member?.id || ""} · ${view.usedInLabel} ${placedCount} ${instanceNoun}`,
       deleteLabel: view.deleteLabel,
@@ -2260,6 +2310,7 @@ window.MOBKIT_BOOT = {
         ? view.addAgentTitle
         : view.addAgentUnavailableTitle,
       unavailableLabel: view.addAgentUnavailableLabel,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
       placeholderOption: { value: "", label: view.addAgentPlaceholderLabel },
       value: "",
     };
@@ -2267,7 +2318,7 @@ window.MOBKIT_BOOT = {
 
   function agentDefinitionAddErrorState(result = null, agentView = null) {
     const view = agentViewForState(agentView);
-    const error = String(result?.error || "").trim();
+    const error = operationErrorText(result, "");
     const prefix = view.addAgentErrorPrefix
       ? `${view.addAgentErrorPrefix}${/\s$/.test(view.addAgentErrorPrefix) ? "" : " "}`
       : "";
@@ -2312,8 +2363,8 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function memberSchemaChangeErrorState(result = null) {
-    const error = String(result?.error || "").trim();
+  function memberSchemaChangeErrorState(result = null, fallback = "") {
+    const error = operationErrorText(result, fallback);
     return {
       hasError: !!error,
       text: error,
@@ -2321,16 +2372,16 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function schemaDefinitionAddErrorState(result = null) {
-    return memberSchemaChangeErrorState(result);
+  function schemaDefinitionAddErrorState(result = null, fallback = "") {
+    return memberSchemaChangeErrorState(result, fallback);
   }
 
-  function schemaFieldAddErrorState(result = null) {
-    return memberSchemaChangeErrorState(result);
+  function schemaFieldAddErrorState(result = null, fallback = "") {
+    return memberSchemaChangeErrorState(result, fallback);
   }
 
-  function inputParamAddErrorState(result = null) {
-    return memberSchemaChangeErrorState(result);
+  function inputParamAddErrorState(result = null, fallback = "") {
+    return memberSchemaChangeErrorState(result, fallback);
   }
 
   function schemaEditorControlState({ schema, members = [], schemaView = null } = {}) {
@@ -2359,6 +2410,9 @@ window.MOBKIT_BOOT = {
         count: fields.length,
       }),
       addFieldLabel: view.addFieldLabel,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
+      schemaOperationFallbackError: view.schemaOperationFallbackError,
+      fieldAddFallbackError: view.fieldAddFallbackError,
       headerLabels: view.headerLabels,
       fieldRows,
       emptyFieldsHint: view.emptyFieldsHint,
@@ -4028,6 +4082,8 @@ window.MOBKIT_BOOT = {
       sourceErrorMeta: String(view.source_error_meta || "").trim(),
       validationApiFailedHead: String(view.validation_api_failed_head || "").trim(),
       rpcErrorMeta: String(view.rpc_error_meta || "").trim(),
+      authoringOperationFailedHead: String(view.authoring_operation_failed_head || "").trim(),
+      authoringOperationMeta: String(view.authoring_operation_meta || "").trim(),
       exportFailedHead: String(view.export_failed_head || "").trim(),
       importFailedHead: String(view.import_failed_head || "").trim(),
       missingEditorFlowHead: String(view.missing_editor_flow_head || "").trim(),
@@ -4049,6 +4105,8 @@ window.MOBKIT_BOOT = {
       sourceErrorMeta: String(view?.sourceErrorMeta || ""),
       validationApiFailedHead: String(view?.validationApiFailedHead || ""),
       rpcErrorMeta: String(view?.rpcErrorMeta || ""),
+      authoringOperationFailedHead: String(view?.authoringOperationFailedHead || ""),
+      authoringOperationMeta: String(view?.authoringOperationMeta || ""),
       exportFailedHead: String(view?.exportFailedHead || ""),
       importFailedHead: String(view?.importFailedHead || ""),
       missingEditorFlowHead: String(view?.missingEditorFlowHead || ""),
@@ -10433,12 +10491,8 @@ window.MOBKIT_BOOT = {
 
   function flowCatalogBootstrapState(catalogPayload, options = {}) {
     const sampleFlows = sampleFlowsFromCatalogs(catalogPayload);
-    const blank = blankMobpackFromCatalogs(catalogPayload);
-    const blankFlow = blank
-      ? { ...blank, stage: "draft", validation: null }
-      : null;
     const registryFlows = flowRegistryRowsFromBackend(options.registryRows || options.registryResult?.rows);
-    const flows = registryFlows.length ? registryFlows : (blankFlow ? [blankFlow] : []);
+    const flows = registryFlows;
     const first = flows[0] || null;
     return {
       templates: sampleFlows,
@@ -11446,6 +11500,7 @@ window.MOBKIT_BOOT = {
     configure,
     authoringOperationsFromSchema,
     authoringOperationAvailability,
+    operationErrorText,
     buildDocument,
     authoringFlowForDocument,
     authoringDocumentFromState,
@@ -12397,27 +12452,24 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   const g = gridState.grid;
   const totalW = gridState.totalW;
   const totalH = gridState.totalH;
-  const graphOperationErrorText = (result, fallback) => {
-    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
-    return result?.error || fallback;
-  };
   const applyGraphOperation = async (payload, fallback) => {
+    const fallbackText = fallback || canvasView.authoringOperationFallbackError;
     if (!applyAuthoringReplacement) {
-      const result = { ok: false, error: "MobKit authoring operation API is unavailable" };
-      setOperationError(graphOperationErrorText(result, fallback));
+      const result = { ok: false, error: canvasView.authoringOperationUnavailableError };
+      setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
       return result;
     }
     try {
       const result = await applyAuthoringReplacement(payload);
       if (result?.ok === false) {
-        setOperationError(graphOperationErrorText(result, fallback));
+        setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
       } else {
         setOperationError("");
       }
       return result;
     } catch (error) {
-      const result = { ok: false, error: error?.message || String(error || fallback) };
-      setOperationError(graphOperationErrorText(result, fallback));
+      const result = { ok: false, error: error?.message || String(error || fallbackText) };
+      setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
       return result;
     }
   };
@@ -13064,7 +13116,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
     selection: agentSel,
     agentView
   });
-  const schemaAddErrorState = window.MobKitFlowController.schemaDefinitionAddErrorState(schemaAddResult);
+  const schemaAddErrorState = window.MobKitFlowController.schemaDefinitionAddErrorState(schemaAddResult, listState.schemaAddFallbackError);
   return /* @__PURE__ */ React.createElement("aside", { className: "agents-list" }, /* @__PURE__ */ React.createElement("div", { className: "agents-list__head" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__title" }, listState.agentsHeading), /* @__PURE__ */ React.createElement("span", { className: "agents-list__count" }, listState.memberCount)), /* @__PURE__ */ React.createElement("div", { className: "agents-list__scroll" }, listState.memberRows.map((row) => {
     return /* @__PURE__ */ React.createElement(
       "button",
@@ -13094,7 +13146,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
       className: "agents-list__add",
       onClick: () => {
         if (!applyAuthoringReplacement) {
-          setSchemaAddResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+          setSchemaAddResult({ ok: false, error: listState.authoringOperationUnavailableError });
           return;
         }
         setSchemaAddResult(null);
@@ -13112,7 +13164,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
         }).catch((error) => {
           setSchemaAddResult({
             ok: false,
-            error: error?.message || String(error || "add_schema failed")
+            error: error?.message || String(error || listState.schemaAddFallbackError)
           });
         });
       }
@@ -13127,7 +13179,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAuth
   const definitionErrorState = window.MobKitFlowController.agentDefinitionAddErrorState(lastAddResult, agentView);
   const createFromDefinition = async (definitionId) => {
     if (!applyAuthoringOperation) {
-      setLastAddResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      setLastAddResult({ ok: false, error: definitionState.authoringOperationUnavailableError });
       return;
     }
     if (studio.snap) studio.snap();
@@ -13195,22 +13247,32 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
     return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow, schemaView, applyAuthoringReplacement });
   }
   if (!selectionState.member) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingAgentLabel);
-  return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAuthoringOperation, applyAuthoringReplacement, agentDetailView, agentAccessView });
+  return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAuthoringOperation, applyAuthoringReplacement, agentView, agentDetailView, agentAccessView });
 }
-function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAuthoringOperation = null, applyAuthoringReplacement = null, agentDetailView = null, agentAccessView = null }) {
+function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAuthoringOperation = null, applyAuthoringReplacement = null, agentView = null, agentDetailView = null, agentAccessView = null }) {
   const [memberEditError, setMemberEditError] = React.useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
   React.useEffect(() => {
     setDeleteConfirmOpen(false);
   }, [member.id]);
   const mobKitOperationError = (result, fallback) => {
-    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
-    return result?.error || fallback;
+    return window.MobKitFlowController.operationErrorText(result, fallback);
   };
+  const editorState = window.MobKitFlowController.agentEditorControlState({
+    member,
+    instances: studio.instances,
+    schemas: studio.schemas,
+    contract,
+    deploySettings,
+    modelCatalog,
+    agentDetailView,
+    agentView
+  });
+  const unavailableError = editorState.authoringOperationUnavailableError;
   const change = async (patch) => {
     if (!patch || typeof patch !== "object" || !Object.keys(patch).length) return;
     if (!applyAuthoringOperation) {
-      setMemberEditError("MobKit authoring operation API is unavailable");
+      setMemberEditError(unavailableError);
       return;
     }
     try {
@@ -13221,36 +13283,27 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
         patch
       });
       if (!result?.ok) {
-        setMemberEditError(mobKitOperationError(result, "MobKit member update failed"));
+        setMemberEditError(mobKitOperationError(result, editorState.memberUpdateFallbackError));
         return;
       }
       setMemberEditError("");
     } catch (error) {
-      setMemberEditError(error?.message || "MobKit member update failed");
+      setMemberEditError(error?.message || editorState.memberUpdateFallbackError);
     }
   };
   const [toolDraft, setToolDraft] = React.useState("");
   const [toolDraftError, setToolDraftError] = React.useState("");
   const [schemaChangeResult, setSchemaChangeResult] = React.useState(null);
   const toolAccessState = window.MobKitFlowController.memberToolAccessState(member, toolCatalog, agentAccessView);
-  const editorState = window.MobKitFlowController.agentEditorControlState({
-    member,
-    instances: studio.instances,
-    schemas: studio.schemas,
-    contract,
-    deploySettings,
-    modelCatalog,
-    agentDetailView
-  });
   const schemaErrorState = window.MobKitFlowController.memberSchemaChangeErrorState(schemaChangeResult);
   const addToolAccess = async (raw) => {
     const toolId = String(raw || "").trim();
     if (!toolId) {
-      setToolDraftError(toolAccessState.emptyToolError || "Choose a tool first.");
+      setToolDraftError(toolAccessState.emptyToolError);
       return;
     }
     if (!applyAuthoringOperation) {
-      setToolDraftError("MobKit authoring operation API is unavailable");
+      setToolDraftError(toolAccessState.authoringOperationUnavailableError);
       return;
     }
     try {
@@ -13261,18 +13314,18 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
         tool_id: toolId
       });
       if (!result?.ok) {
-        setToolDraftError(mobKitOperationError(result, "MobKit tool update failed"));
+        setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
         return;
       }
       setToolDraft("");
       setToolDraftError("");
     } catch (error) {
-      setToolDraftError(error?.message || "MobKit tool update failed");
+      setToolDraftError(error?.message || editorState.toolUpdateFallbackError);
     }
   };
   const removeToolAccess = async (toolId) => {
     if (!applyAuthoringOperation) {
-      setToolDraftError("MobKit authoring operation API is unavailable");
+      setToolDraftError(toolAccessState.authoringOperationUnavailableError);
       return;
     }
     try {
@@ -13283,17 +13336,17 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
         tool_id: toolId
       });
       if (!result?.ok) {
-        setToolDraftError(mobKitOperationError(result, "MobKit tool update failed"));
+        setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
         return;
       }
       setToolDraftError("");
     } catch (error) {
-      setToolDraftError(error?.message || "MobKit tool update failed");
+      setToolDraftError(error?.message || editorState.toolUpdateFallbackError);
     }
   };
   const changeSchema = (rawSchema) => {
     if (!applyAuthoringReplacement) {
-      setSchemaChangeResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      setSchemaChangeResult({ ok: false, error: unavailableError });
       return;
     }
     applyAuthoringReplacement({
@@ -13303,7 +13356,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     }).then((result) => {
       setSchemaChangeResult(result?.ok === false ? result : null);
     }).catch((error) => {
-      setSchemaChangeResult({ ok: false, error: error?.message || "MobKit schema assignment failed" });
+      setSchemaChangeResult({ ok: false, error: error?.message || editorState.schemaAssignmentFallbackError });
     });
   };
   const deleteConfirmState = window.MobKitFlowController.agentDeleteConfirmationState(editorState, deleteConfirmOpen);
@@ -13420,15 +13473,12 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     members: studio.members,
     schemaView
   });
-  const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult);
-  const schemaOperationErrorText = (result, fallback) => {
-    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
-    return result?.error || fallback;
-  };
+  const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult, schemaState.fieldAddFallbackError);
   const applySchemaOperation = async (selection = { kind: "schema", id: schema.id }, operationType = "update_schema", operation = {}) => {
+    const fallback = schemaState.schemaOperationFallbackError;
     if (!applyAuthoringReplacement) {
-      const result = { ok: false, error: "MobKit authoring operation API is unavailable" };
-      setSchemaOperationError(schemaOperationErrorText(result, "MobKit schema operation failed"));
+      const result = { ok: false, error: schemaState.authoringOperationUnavailableError };
+      setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       return result;
     }
     try {
@@ -13438,14 +13488,14 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
         selection
       });
       if (result?.ok === false) {
-        setSchemaOperationError(schemaOperationErrorText(result, "MobKit schema operation failed"));
+        setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       } else {
         setSchemaOperationError("");
       }
       return result;
     } catch (error) {
-      const result = { ok: false, error: error?.message || String(error || "MobKit schema operation failed") };
-      setSchemaOperationError(schemaOperationErrorText(result, "MobKit schema operation failed"));
+      const result = { ok: false, error: error?.message || String(error || fallback) };
+      setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       return result;
     }
   };
@@ -13477,7 +13527,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   };
   const addField = () => {
     if (!applyAuthoringReplacement) {
-      setFieldAddResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      setFieldAddResult({ ok: false, error: schemaState.authoringOperationUnavailableError });
       return;
     }
     setFieldAddResult(null);
@@ -13494,7 +13544,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     }).catch((error) => {
       setFieldAddResult({
         ok: false,
-        error: error?.message || String(error || "add_schema_field failed")
+        error: error?.message || String(error || schemaState.fieldAddFallbackError)
       });
     });
   };
@@ -13896,20 +13946,17 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const isFlow = mode === "flow";
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   const canvasView = Math.abs(view.ty) > 1200 ? { ...view, ty: 0 } : view;
-  const operationErrorText = (result, fallback) => {
-    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
-    return result?.error || fallback;
-  };
   const commitFlow = async (operationType = "update_flow_step", operation = {}) => {
+    const fallback = viewState.authoringOperationFallbackError;
     if (!applyAuthoringReplacement) {
-      const result = { ok: false, error: "MobKit authoring operation API is unavailable" };
-      setOperationError(operationErrorText(result, "MobKit authoring operation failed"));
+      const result = { ok: false, error: viewState.authoringOperationUnavailableError };
+      setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       return result;
     }
     try {
       const result = await applyAuthoringReplacement({ operationType, operation });
       if (result?.ok === false) {
-        setOperationError(operationErrorText(result, "MobKit authoring operation failed"));
+        setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       } else {
         setOperationError("");
       }
@@ -13917,9 +13964,9 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     } catch (error) {
       const result = {
         ok: false,
-        error: error?.message || String(error || "MobKit authoring operation failed")
+        error: error?.message || String(error || fallback)
       };
-      setOperationError(operationErrorText(result, "MobKit authoring operation failed"));
+      setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       return result;
     }
   };
@@ -14080,9 +14127,9 @@ function StepInspector({ studio, members, flow, setFlow, step, update, editStep,
   if (step.type === "input") {
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
-    const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult);
+    const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult, viewState.authoringOperationFallbackError);
     const applyInputOperation = (operationType, operation = {}) => {
-      if (!update) return Promise.resolve({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      if (!update) return Promise.resolve({ ok: false, error: viewState.authoringOperationUnavailableError });
       return update(step.id, {}, operationType, operation);
     };
     const updateParam = (id, patch) => {
@@ -14373,14 +14420,16 @@ function App() {
       setFlows((rows) => window.MobKitFlowController.flowRegistryMarkDraftPatch(rows, currentFlowId));
     }
   }, [clearSourceProjection, currentFlowId]);
-  const showAuthoringFailure = React.useCallback((resultOrError, fallbackHead = "MobKit authoring operation failed") => {
+  const showAuthoringFailure = React.useCallback((resultOrError, fallbackHead = "") => {
+    const errorView = catalogs.errorView || {};
+    const authoringHead = fallbackHead || errorView.authoringOperationFailedHead;
     const validation = resultOrError?.validation || null;
     const validationRows = validation ? window.MobKitFlowController.diagnosticsToRows(validation) : null;
     const outcome = validationRows?.length ? { validationRows, stage: "draft" } : window.MobKitFlowController.criticalErrorOutcome({
-      head: fallbackHead,
+      head: authoringHead,
       error: resultOrError?.error || resultOrError,
-      meta: "MobKit authoring",
-      errorView: catalogs.errorView
+      meta: errorView.authoringOperationMeta,
+      errorView
     });
     setValidationResults(outcome.validationRows);
     setStage(outcome.stage);
