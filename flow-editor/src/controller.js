@@ -8173,14 +8173,23 @@
 
   async function saveDocument(row = {}) {
     const document = row.document;
-    return callRpc(rpcMethod("save"), {
+    const request = {
       id: row.id || row.currentFlowId,
       document,
       validation: row.validation ?? null,
       stage: row.stage,
       trigger: row.trigger,
       source: row.source,
-    });
+    };
+    const expectedRevision = row.expectedRevision ?? row.expected_revision ?? row.baseRevision ?? row.base_revision ?? row.revision ?? row.draft_revision;
+    if (expectedRevision !== undefined && expectedRevision !== null && expectedRevision !== "") {
+      request.expected_revision = Number(expectedRevision);
+    }
+    const expectedEtag = row.expectedEtag ?? row.expected_etag ?? row.draft_etag ?? row.etag;
+    if (expectedEtag) {
+      request.expected_etag = String(expectedEtag);
+    }
+    return callRpc(rpcMethod("save"), request);
   }
 
   async function deleteDocument(id, params = {}) {
@@ -10572,6 +10581,17 @@
     return changed ? next : list;
   }
 
+  function flowRegistryRowRevision(row) {
+    const value = row?.revision ?? row?.draft_revision;
+    const revision = Number(value);
+    return Number.isFinite(revision) && revision >= 0 ? revision : null;
+  }
+
+  function flowRegistryRowEtag(row) {
+    const value = row?.draft_etag ?? row?.etag;
+    return value ? String(value) : "";
+  }
+
   function flowRegistryDocumentPersistence({
     currentFlowId,
     document,
@@ -10579,6 +10599,8 @@
     stage = "draft",
     previousSignature = "",
     skipIfUnchanged = false,
+    expectedRevision = null,
+    expectedEtag = "",
   } = {}) {
     if (!currentFlowId || !document || typeof document !== "object") {
       return {
@@ -10607,13 +10629,20 @@
         document,
         validation,
         stage: nextStage,
+        ...(expectedRevision !== null && expectedRevision !== undefined ? { expectedRevision } : {}),
+        ...(expectedEtag ? { expectedEtag } : {}),
       },
     };
   }
 
   function flowRegistryPersistDocumentProjection(rows, options = {}) {
     const sourceRows = Array.isArray(rows) ? rows : [];
-    const persistence = flowRegistryDocumentPersistence(options);
+    const currentRow = sourceRows.find((row) => row?.id === options.currentFlowId) || null;
+    const persistence = flowRegistryDocumentPersistence({
+      expectedRevision: flowRegistryRowRevision(currentRow),
+      expectedEtag: flowRegistryRowEtag(currentRow),
+      ...options,
+    });
     if (!persistence.ok || !persistence.rowPatch) {
       return {
         ...persistence,

@@ -3136,9 +3136,57 @@ fn mobpack_draft_id_from_params(
     Ok(id)
 }
 
-fn mobpack_draft_row_from_params(params: &Value) -> Result<Value, String> {
+fn mobpack_draft_revision_from_row(row: Option<&Value>) -> u64 {
+    row.and_then(|value| {
+        value
+            .get("revision")
+            .or_else(|| value.get("draft_revision"))
+            .and_then(Value::as_u64)
+    })
+    .unwrap_or(0)
+}
+
+fn mobpack_draft_expected_revision(params: &Value) -> Option<u64> {
+    [
+        "expected_revision",
+        "expectedRevision",
+        "base_revision",
+        "baseRevision",
+        "if_revision",
+        "ifRevision",
+    ]
+    .iter()
+    .find_map(|key| params.get(*key).and_then(Value::as_u64))
+}
+
+fn mobpack_draft_etag(id: &str, revision: u64) -> String {
+    format!("{id}:{revision}")
+}
+
+fn mobpack_draft_expected_etag(params: &Value) -> Option<String> {
+    [
+        "expected_etag",
+        "expectedEtag",
+        "if_match",
+        "ifMatch",
+        "draft_etag",
+        "etag",
+    ]
+    .iter()
+    .find_map(|key| {
+        params
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    })
+}
+
+fn mobpack_draft_row_from_params(params: &Value, revision: u64) -> Result<Value, String> {
     let document = document_from_params(params)?;
     let id = mobpack_draft_id_from_params(params, &document)?;
+    let draft_etag = mobpack_draft_etag(&id, revision);
     let validation = serde_json::to_value(validate_document(&document)).unwrap_or(Value::Null);
     let stage = if validation.get("ok").and_then(Value::as_bool) == Some(true) {
         "valid".to_string()
@@ -3184,7 +3232,11 @@ fn mobpack_draft_row_from_params(params: &Value) -> Result<Value, String> {
         "artifact": artifact,
         "validation": validation,
         "updated_at_unix_ms": updated_at_unix_ms,
-        "registry_source": "mobkit/mobpacks/save"
+        "registry_source": "mobkit/mobpacks/save",
+        "revision": revision,
+        "draft_revision": revision,
+        "etag": draft_etag,
+        "draft_etag": draft_etag
     }))
 }
 
@@ -3356,6 +3408,8 @@ pub fn create_mobpack_draft(params: &Value) -> Result<Value, String> {
         .unwrap_or(0);
     let validation_value = serde_json::to_value(&validation).unwrap_or(Value::Null);
     let artifact = mobpack_registry_artifact_for_document(&document, &validation_value);
+    let revision = 1_u64;
+    let draft_etag = mobpack_draft_etag(&id, revision);
     let row = json!({
         "id": id,
         "name": if document.name.trim().is_empty() { document.mob_id.clone() } else { document.name.clone() },
@@ -3369,7 +3423,11 @@ pub fn create_mobpack_draft(params: &Value) -> Result<Value, String> {
         "validation": validation_value,
         "updated_at_unix_ms": updated_at_unix_ms,
         "registry_source": "mobkit/mobpacks/create",
-        "template": template_id
+        "template": template_id,
+        "revision": revision,
+        "draft_revision": revision,
+        "etag": draft_etag,
+        "draft_etag": draft_etag
     });
     rows.insert(id, row.clone());
     write_mobpack_draft_store(&path, &rows)?;
@@ -3464,8 +3522,8 @@ pub fn get_mobpack_draft(params: &Value) -> Result<Value, String> {
 }
 
 pub fn save_mobpack_draft(params: &Value) -> Result<Value, String> {
-    let row = mobpack_draft_row_from_params(params)?;
-    let id = row["id"]
+    let candidate = mobpack_draft_row_from_params(params, 0)?;
+    let id = candidate["id"]
         .as_str()
         .ok_or_else(|| "mobpack draft row missing id".to_string())?
         .to_string();
@@ -3474,6 +3532,24 @@ pub fn save_mobpack_draft(params: &Value) -> Result<Value, String> {
         .map_err(|_| "mobpack draft store lock poisoned".to_string())?;
     let path = mobpack_draft_store_path(params);
     let mut rows = read_mobpack_draft_store(&path)?;
+    let existing = rows.get(&id);
+    let current_revision = mobpack_draft_revision_from_row(existing);
+    if let Some(expected_revision) = mobpack_draft_expected_revision(params) {
+        if expected_revision != current_revision {
+            return Err(format!(
+                "mobpack draft revision conflict for {id}: expected {expected_revision}, found {current_revision}"
+            ));
+        }
+    }
+    if let Some(expected_etag) = mobpack_draft_expected_etag(params) {
+        let current_etag = mobpack_draft_etag(&id, current_revision);
+        if expected_etag != current_etag {
+            return Err(format!(
+                "mobpack draft etag conflict for {id}: expected {expected_etag}, found {current_etag}"
+            ));
+        }
+    }
+    let row = mobpack_draft_row_from_params(params, current_revision.saturating_add(1))?;
     rows.insert(id, row.clone());
     write_mobpack_draft_store(&path, &rows)?;
     let row = normalize_mobpack_draft_row(&row);
@@ -24564,6 +24640,9 @@ model = "gpt-5.5"
         .expect("save draft");
         assert_eq!(saved["source"], json!("mobkit/mobpacks/save"));
         assert_eq!(saved["row"]["id"], json!("registry_draft"));
+        assert_eq!(saved["row"]["revision"], json!(1));
+        assert_eq!(saved["row"]["draft_revision"], json!(1));
+        assert_eq!(saved["row"]["draft_etag"], json!("registry_draft:1"));
         assert_eq!(saved["row"]["document"]["name"], json!("Registry Draft"));
         assert_eq!(saved["row"]["document_kind"], json!("editor_projection"));
         assert_eq!(saved["row"]["document_source"], json!("mobpack_archive"));
@@ -24591,6 +24670,8 @@ model = "gpt-5.5"
         assert_eq!(listed["source"], json!("mobkit/mobpacks/list"));
         assert_eq!(listed["rows"].as_array().expect("rows").len(), 1);
         assert_eq!(listed["rows"][0]["id"], json!("registry_draft"));
+        assert_eq!(listed["rows"][0]["revision"], json!(1));
+        assert_eq!(listed["rows"][0]["draft_etag"], json!("registry_draft:1"));
         assert_eq!(
             listed["rows"][0]["document_source"],
             json!("mobpack_archive")
@@ -24604,6 +24685,8 @@ model = "gpt-5.5"
         }))
         .expect("get draft");
         assert_eq!(fetched["row"]["document"]["mob_id"], json!("review-pack"));
+        assert_eq!(fetched["row"]["revision"], json!(1));
+        assert_eq!(fetched["row"]["draft_etag"], json!("registry_draft:1"));
         assert_eq!(fetched["row"]["document_source"], json!("mobpack_archive"));
         assert_eq!(fetched["row"]["document_authority"], json!("artifact"));
         assert_eq!(fetched["row"]["artifact"]["kind"], json!("mobpack_archive"));
@@ -24615,6 +24698,60 @@ model = "gpt-5.5"
         .expect("delete draft");
         assert_eq!(deleted["deleted"], json!(true));
         assert_eq!(deleted["rows"].as_array().expect("rows").len(), 0);
+    }
+
+    #[test]
+    fn mobpack_draft_registry_rejects_stale_expected_revision() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("drafts.json");
+        let mut document = valid_document();
+        document.name = "Revision One".to_string();
+
+        let first = save_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "revision_guard",
+            "document": document,
+        }))
+        .expect("initial save");
+        assert_eq!(first["row"]["revision"], json!(1));
+        assert_eq!(first["row"]["draft_etag"], json!("revision_guard:1"));
+
+        let mut updated = valid_document();
+        updated.name = "Revision Two".to_string();
+        let second = save_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "revision_guard",
+            "document": updated,
+            "expected_revision": 1,
+        }))
+        .expect("second save");
+        assert_eq!(second["row"]["revision"], json!(2));
+        assert_eq!(second["row"]["draft_etag"], json!("revision_guard:2"));
+
+        let mut stale = valid_document();
+        stale.name = "Stale Revision".to_string();
+        let error = save_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "revision_guard",
+            "document": stale,
+            "expected_revision": 1,
+        }))
+        .expect_err("stale save must fail");
+        assert!(
+            error.contains(
+                "mobpack draft revision conflict for revision_guard: expected 1, found 2"
+            ),
+            "{error}"
+        );
+
+        let fetched = get_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "revision_guard"
+        }))
+        .expect("get draft");
+        assert_eq!(fetched["row"]["revision"], json!(2));
+        assert_eq!(fetched["row"]["draft_etag"], json!("revision_guard:2"));
+        assert_eq!(fetched["row"]["document"]["name"], json!("Revision Two"));
     }
 
     #[test]
@@ -24713,6 +24850,8 @@ model = "gpt-5.5"
             json!("mobkit/mobpacks/create")
         );
         assert_eq!(created["row"]["id"], json!("f_docs_flow_draft"));
+        assert_eq!(created["row"]["revision"], json!(1));
+        assert_eq!(created["row"]["draft_etag"], json!("f_docs_flow_draft:1"));
         assert_eq!(created["row"]["name"], json!("Docs Flow Draft"));
         assert_eq!(created["row"]["document"]["name"], json!("Docs Flow Draft"));
         assert_eq!(

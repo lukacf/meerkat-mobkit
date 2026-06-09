@@ -683,7 +683,13 @@ function App() {
   };
   const saveRegistryDocument = (rowPatch) => {
     if (!rowPatch?.document) return;
-    window.MobKitFlowController.saveDocument(rowPatch).catch(() => {});
+    window.MobKitFlowController.saveDocument(rowPatch)
+      .then((result) => {
+        if (result?.row) {
+          setFlows((rows) => window.MobKitFlowController.flowRegistryUpsertRowPatch(rows, result.row));
+        }
+      })
+      .catch((error) => showAuthoringFailure(error, "MobKit draft save failed"));
   };
   React.useEffect(() => {
     let cancelled = false;

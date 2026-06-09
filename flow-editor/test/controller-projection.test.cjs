@@ -10336,7 +10336,7 @@ assert.deepEqual(controller.flowStepInsertPatch({
 }), { members: graphMembers }).steps.map((step) => step.id), ["s_1", "s_2", "s_3"]);
 
 const registryRows = [
-  { id: "f_existing", name: "Existing", version: "old", stage: "valid", validation: { ok: true } },
+  { id: "f_existing", name: "Existing", version: "old", stage: "valid", validation: { ok: true }, revision: 7, draft_etag: "f_existing:7" },
   { id: "f_other", name: "Other", version: "old", stage: "valid", validation: { ok: true } },
 ];
 const draftRows = controller.flowRegistryMarkDraftPatch(registryRows, "f_existing");
@@ -10468,6 +10468,8 @@ const persistedRegistryProjection = controller.flowRegistryPersistDocumentProjec
 });
 assert.equal(persistedRegistryProjection.ok, true);
 assert.equal(persistedRegistryProjection.changed, true);
+assert.equal(persistedRegistryProjection.rowPatch.expectedRevision, 7);
+assert.equal(persistedRegistryProjection.rowPatch.expectedEtag, "f_existing:7");
 assert.equal(persistedRegistryProjection.rows[0].stage, "published");
 assert.deepEqual(persistedRegistryProjection.rows[0].validation, { ok: true });
 assert.equal(persistedRegistryProjection.rows[0].document, registryDocument);
@@ -10503,6 +10505,8 @@ const persistedOutcomeProjection = controller.flowRegistryPersistOutcomeProjecti
 });
 assert.equal(persistedOutcomeProjection.ok, true);
 assert.equal(persistedOutcomeProjection.changed, true);
+assert.equal(persistedOutcomeProjection.persistence.rowPatch.expectedRevision, 7);
+assert.equal(persistedOutcomeProjection.persistence.rowPatch.expectedEtag, "f_existing:7");
 assert.equal(persistedOutcomeProjection.stage, "valid");
 assert.deepEqual(persistedOutcomeProjection.validationRows, [{ kind: "ok", head: "valid" }]);
 assert.deepEqual(persistedOutcomeProjection.rows[0].validation, { ok: true });
