@@ -6922,6 +6922,32 @@ assert.deepEqual(customGraphRoundTripFlow.steps[1].fallback.map((step) => [step.
 ]);
 assert.equal(customGraphRoundTripFlow.steps[2].type, "parallel");
 assert.deepEqual(customGraphRoundTripFlow.steps[2].branches.map((branch) => branch.steps[0]?.role).sort(), ["m_review", "m_writer"]);
+const customFallbackLabelContract = {
+  mob_definition: {
+    ...customProjectionContract.mob_definition,
+    editor_graph_draft: {
+      ...testEditorGraphDraft,
+      fallback_edge_label: "otherwise",
+    },
+  },
+};
+const customFallbackLabelRoundTripFlow = controller.graphToFlow({
+  previousFlow: customProjectionFlow,
+  members: customGraphProjectionMembers,
+  instances: [
+    { id: "g_branch_route", isGate: true, gateKind: "branch", col: 0, row: 0 },
+    { id: "left", memberId: "m_left", col: 1, row: 0 },
+    { id: "right", memberId: "m_right", col: 1, row: 1 },
+  ],
+  edges: [
+    { id: "e_left", from: "g_branch_route", to: "left", kind: "when", label: "params.kind == \"docs\"", cond: { var: "params.kind", op: "==", val: "docs" } },
+    { id: "e_right", from: "g_branch_route", to: "right", kind: "when", label: "otherwise", cond: null },
+  ],
+  contract: customFallbackLabelContract,
+});
+assert.equal(customFallbackLabelRoundTripFlow.steps[1].type, "branch");
+assert.deepEqual(customFallbackLabelRoundTripFlow.steps[1].branches.map((branch) => branch.steps[0]?.role), ["m_left"]);
+assert.deepEqual(customFallbackLabelRoundTripFlow.steps[1].fallback.map((step) => step.role), ["m_right"]);
 const customRepeatGraphFlow = controller.graphToFlow({
   previousFlow: {
     steps: [{ id: "input", type: "input", task: "Repeat until green.", inputParams: [] }],

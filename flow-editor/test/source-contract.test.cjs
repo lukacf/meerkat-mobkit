@@ -656,6 +656,8 @@ assert.match(controller, /mob_definition\?\.editor_graph_draft/, "Graph draft la
 assert.match(controller, /parallelMissingDispatchLabel:\s*String\(draft\.parallel_missing_dispatch_label/, "Graph projection missing-dispatch copy must hydrate from MobKit editor_graph_draft");
 assert.match(controller, /repeatMissingMaxIterationsLabel:\s*String\(draft\.repeat_missing_max_iterations_label/, "Graph projection repeat missing-max copy must hydrate from MobKit editor_graph_draft");
 assert.match(controller, /graphProjectionForFlow\(flow, members, contract\)[\s\S]*editorGraphDraftContract\(contract\)/, "Basic-to-Graph projection must render graph labels through MobKit editor_graph_draft");
+assert.match(controller, /function graphIsFallbackBranchLane[\s\S]*draft\?\.fallbackEdgeLabel[\s\S]*draft\?\.branchFallbackLaneLabel/, "Graph-to-Basic fallback lane detection must use MobKit editor_graph_draft labels");
+assert(!/toLowerCase\(\)\s*===\s*["']fallback["']/.test(controller), "Graph-to-Basic projection must not classify fallback lanes by raw English labels");
 assert(!/graphEdgeFallbackPatch[\s\S]{0,180}label:\s*["']fallback["']/.test(controller), "Graph fallback edge transition must not own the fallback label locally");
 assert(!/studio\.updateEdge\(e\.id,\s*\{\s*kind:\s*["']next["'],\s*label:\s*["']fallback["'],\s*cond:\s*null\s*\}\s*\)/.test(inspector), "Graph inspector must not hard-code fallback edges as next locally");
 assert(!/`steps\.\$\{/.test(inspector), "Graph inspector must not construct steps.* condition paths locally");

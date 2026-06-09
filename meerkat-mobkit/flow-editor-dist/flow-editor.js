@@ -6603,6 +6603,18 @@ window.MOBKIT_BOOT = {
     return String(edge?.kind || "").trim() === edgeKinds.conditionKind;
   }
 
+  function graphDraftLabelEquals(value, label) {
+    const actual = String(value || "").trim().toLowerCase();
+    const expected = String(label || "").trim().toLowerCase();
+    return !!actual && !!expected && actual === expected;
+  }
+
+  function graphIsFallbackBranchLane(edge, node, edgeKinds, draft) {
+    if (!graphIsConditionEdge(edge, edgeKinds)) return true;
+    return graphDraftLabelEquals(edge?.label, draft?.fallbackEdgeLabel)
+      || graphDraftLabelEquals(node?.lane, draft?.branchFallbackLaneLabel);
+  }
+
   function graphToFlow({ instances, edges, members, previousFlow, contract }) {
     const edgeKinds = graphProjectionEdgeKinds(contract);
     const prior = previousFlow || {};
@@ -6744,6 +6756,7 @@ window.MOBKIT_BOOT = {
 
   function graphSegmentsToFlowSteps({ instances, edges, members, priorStepById, contract }) {
     const edgeKinds = graphProjectionEdgeKinds(contract);
+    const draft = editorGraphDraftContract(contract) || emptyGraphDraftContract();
     const memberNodes = (instances || [])
       .filter((inst) => inst.memberId && !inst.isTerminal && !inst.isGate)
       .sort(compareGraphNodes);
@@ -6762,7 +6775,7 @@ window.MOBKIT_BOOT = {
         const laneNodes = collectLaneToJoin(instances, edges, node.id, join?.id);
         laneNodes.forEach((laneNode) => consumed.add(laneNode.id));
         const isFallback = gate.gateKind === "branch"
-          && (!graphIsConditionEdge(edge, edgeKinds) || String(edge.label || "").toLowerCase() === "fallback" || String(node.lane || "").toLowerCase() === "fallback");
+          && graphIsFallbackBranchLane(edge, node, edgeKinds, draft);
         return {
           id: `br_${node.id}`,
           label: node.lane || memberDisplayName(members, node.memberId) || `Branch ${index + 1}`,
