@@ -94,6 +94,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
             if (applyAuthoringReplacement) {
               applyAuthoringReplacement({
                 operationType: "add_schema",
+                operation: { schema: result.schema },
                 studio: { schemas: result.schemas },
                 selection: result.selection,
               });
@@ -318,6 +319,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     if (applyAuthoringReplacement) {
       applyAuthoringReplacement({
         operationType: "assign_member_schema",
+        operation: { member_id: member.id, schema_id: rawSchema },
         flow: result.flow,
         studio: {
           members: result.members,
@@ -349,6 +351,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     if (applyAuthoringReplacement) {
       applyAuthoringReplacement({
         operationType: "delete_member",
+        operation: { member_id: member.id },
         flow: result.flow,
         mobSettings: result.mobSettings,
         studio: {
@@ -638,10 +641,11 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     schemaView,
   });
   const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult);
-  const applySchemaCascade = (result, selection = { kind: "schema", id: schema.id }, operationType = "update_schema") => {
+  const applySchemaCascade = (result, selection = { kind: "schema", id: schema.id }, operationType = "update_schema", operation = {}) => {
     if (applyAuthoringReplacement) {
       applyAuthoringReplacement({
         operationType,
+        operation,
         flow: result.flow || flow,
         studio: {
           schemas: result.schemas,
@@ -668,7 +672,11 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       members: studio.members,
       instances: studio.instances,
     }, fieldId, newName, oldName, contract);
-    applySchemaCascade(result, { kind: "schema", id: schema.id }, "rename_schema_field");
+    applySchemaCascade(result, { kind: "schema", id: schema.id }, "rename_schema_field", {
+      schema_id: schema.id,
+      field_id: fieldId,
+      new_name: newName,
+    });
   };
 
   const updateField = (fieldId, patch) => {
@@ -680,7 +688,11 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       members: studio.members,
       instances: studio.instances,
     }, fieldId, patch, contract);
-    applySchemaCascade(result, { kind: "schema", id: schema.id }, "update_schema_field");
+    applySchemaCascade(result, { kind: "schema", id: schema.id }, "update_schema_field", {
+      schema_id: schema.id,
+      field_id: fieldId,
+      patch,
+    });
   };
 
   const deleteField = (fieldId) => {
@@ -692,7 +704,10 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       members: studio.members,
       instances: studio.instances,
     }, fieldId);
-    applySchemaCascade(result, { kind: "schema", id: schema.id }, "delete_schema_field");
+    applySchemaCascade(result, { kind: "schema", id: schema.id }, "delete_schema_field", {
+      schema_id: schema.id,
+      field_id: fieldId,
+    });
   };
 
   const addField = () => {
@@ -706,7 +721,10 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       members: studio.members,
       flow,
       edges: studio.edges,
-    }, { kind: "schema", id: schema.id }, "add_schema_field");
+    }, { kind: "schema", id: schema.id }, "add_schema_field", {
+      schema_id: schema.id,
+      field: result.field,
+    });
   };
 
   const deleteSchema = () => {
@@ -717,7 +735,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       edges: studio.edges,
       instances: studio.instances,
     }, schema.id);
-    applySchemaCascade(result, result.selection, "delete_schema");
+    applySchemaCascade(result, result.selection, "delete_schema", { schema_id: schema.id });
     setAgentSel(result.selection);
   };
 
@@ -731,7 +749,10 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     applySchemaCascade({
       ...result,
       edges: studio.edges,
-    }, result.selection, "rename_schema");
+    }, result.selection, "rename_schema", {
+      schema_id: schema.id,
+      new_id: newId,
+    });
     setAgentSel(result.selection);
   };
 

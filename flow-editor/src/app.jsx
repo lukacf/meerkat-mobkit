@@ -603,13 +603,21 @@ function App() {
     },
     addSchema: (schema) => {
       const next = window.MobKitFlowController.studioAddSchemaPatch({ schemas: studio.schemas }, schema);
-      applyMobKitAuthoringReplacement({ operationType: "add_schema", studio: { schemas: next.schemas } });
+      if (next.ok && next.schema) {
+        applyMobKitAuthoringReplacement({
+          operationType: "add_schema",
+          operation: { schema: next.schema },
+          studio: { schemas: next.schemas },
+          selection: { kind: "schema", id: next.schema.id },
+        });
+      }
       return next;
     },
     updateSchema: (id, patch) => {
       const next = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas: studio.schemas }, id, patch);
       applyMobKitAuthoringReplacement({
         operationType: "update_schema",
+        operation: { schema_id: id, patch },
         studio: { schemas: next.schemas },
         selection: { kind: "schema", id },
       });
@@ -625,6 +633,7 @@ function App() {
       }, id);
       applyMobKitAuthoringReplacement({
         operationType: "delete_schema",
+        operation: { schema_id: id },
         flow: next.flow,
         studio: { schemas: next.schemas, members: next.members, edges: next.edges },
         selection: next.selection,
@@ -1429,7 +1438,11 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
   const setDeployField = (field, value) => {
     const next = window.MobKitFlowController.deploySettingsFieldPatch(deploySettings, field, value, { contract, modelCatalog });
     if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({ operationType: "update_deploy_settings", deploySettings: next });
+      applyAuthoringReplacement({
+        operationType: "update_deploy_settings",
+        operation: { deploy: next },
+        deploySettings: next,
+      });
     } else {
       setDeploySettings(next);
     }
@@ -1437,7 +1450,11 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
   const setMobField = (field, value) => {
     const next = window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, field, value, { contract });
     if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({ operationType: field === "roleWiring" ? "update_role_wiring" : "update_mob_settings", mobSettings: next });
+      applyAuthoringReplacement({
+        operationType: field === "roleWiring" ? "update_role_wiring" : "update_mob_settings",
+        operation: field === "roleWiring" ? { role_wiring: next.roleWiring || [] } : { mob_settings: next },
+        mobSettings: next,
+      });
     } else {
       setMobSettings(next);
     }
