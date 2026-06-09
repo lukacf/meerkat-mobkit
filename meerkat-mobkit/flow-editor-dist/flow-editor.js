@@ -301,45 +301,6 @@ window.MOBKIT_BOOT = {
     return { ok: true, id, patch: { tools: tools.filter((candidate) => candidate !== id) } };
   }
 
-  function memberToolAccessCascadePatch({ memberId, members, flow, instances } = {}, raw, toolCatalog, accessView = null) {
-    const list = Array.isArray(members) ? members : [];
-    const member = list.find((candidate) => candidate?.id === memberId) || null;
-    if (!member) return { ok: false, error: "member not found", id: "", patch: null, members: list, flow, instances };
-    const access = memberToolAccessPatch(member, raw, toolCatalog, accessView);
-    if (!access.ok) return { ...access, members: list, flow, instances };
-    if (!access.patch) return { ...access, members: list, member, flow, instances };
-    const updated = studioUpdateMemberPatch({ members: list }, member.id, access.patch);
-    if (!updated.ok) {
-      return { ...access, ok: false, error: updated.error || access.error || "", members: list, flow, instances };
-    }
-    return {
-      ...access,
-      members: updated.members,
-      member: updated.member,
-      flow: reconcileFlowStepToolScopes(flow, updated.members),
-      instances: reconcileGraphStepToolScopes(instances, updated.members),
-    };
-  }
-
-  function memberToolRemoveCascadePatch({ memberId, members, flow, instances } = {}, toolId) {
-    const list = Array.isArray(members) ? members : [];
-    const member = list.find((candidate) => candidate?.id === memberId) || null;
-    if (!member) return { ok: false, error: "member not found", id: "", patch: null, members: list, flow, instances };
-    const removal = memberToolRemovePatch(member, toolId);
-    if (!removal.ok) return { ...removal, members: list, flow, instances };
-    const updated = studioUpdateMemberPatch({ members: list }, member.id, removal.patch || {});
-    if (!updated.ok) {
-      return { ...removal, ok: false, error: updated.error || "", members: list, flow, instances };
-    }
-    return {
-      ...removal,
-      members: updated.members,
-      member: updated.member,
-      flow: reconcileFlowStepToolScopes(flow, updated.members),
-      instances: reconcileGraphStepToolScopes(instances, updated.members),
-    };
-  }
-
   function memberToolAccessState(member, toolCatalog = [], accessView = null) {
     const view = agentAccessViewForState(accessView);
     const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
@@ -518,57 +479,6 @@ window.MOBKIT_BOOT = {
       ...result,
       realmId: view.inlineSkillRealmId,
       patch: { skills: skills.includes(result.id) ? skills : [...skills, result.id] },
-    };
-  }
-
-  function memberSkillToggleCascadePatch({ memberId, members, skillRealms } = {}, skillId) {
-    const list = Array.isArray(members) ? members : [];
-    const member = list.find((candidate) => candidate?.id === memberId) || null;
-    if (!member) return { ok: false, error: "member not found", id: "", patch: null, members: list, skillRealms };
-    const result = memberSkillTogglePatch(member, skillId, skillRealms);
-    if (!result.ok) return { ...result, members: list, skillRealms };
-    const updated = studioUpdateMemberPatch({ members: list }, member.id, result.patch || {});
-    if (!updated.ok) {
-      return { ...result, ok: false, error: updated.error || "", members: list, skillRealms };
-    }
-    return { ...result, members: updated.members, member: updated.member, skillRealms };
-  }
-
-  function memberSkillRemoveCascadePatch({ memberId, members, skillRealms } = {}, skillId) {
-    const list = Array.isArray(members) ? members : [];
-    const member = list.find((candidate) => candidate?.id === memberId) || null;
-    if (!member) return { ok: false, error: "member not found", id: "", patch: null, members: list, skillRealms };
-    const result = memberSkillRemovePatch(member, skillId);
-    if (!result.ok) return { ...result, members: list, skillRealms };
-    const updated = studioUpdateMemberPatch({ members: list }, member.id, result.patch || {});
-    if (!updated.ok) {
-      return { ...result, ok: false, error: updated.error || "", members: list, skillRealms };
-    }
-    return { ...result, members: updated.members, member: updated.member, skillRealms };
-  }
-
-  function memberInlineSkillCascadePatch({ memberId, members, skillRealms } = {}, spec = {}, accessView = null) {
-    const list = Array.isArray(members) ? members : [];
-    const member = list.find((candidate) => candidate?.id === memberId) || null;
-    if (!member) return { ok: false, error: "member not found", id: "", patch: null, members: list, skillRealms };
-    const result = memberInlineSkillPatch(member, skillRealms, spec, accessView);
-    const updated = studioUpdateMemberPatch({ members: list }, member.id, result.patch || {});
-    if (!updated.ok) {
-      return { ...result, ok: false, error: updated.error || "", members: list, skillRealms };
-    }
-    return {
-      ...result,
-      ok: true,
-      members: updated.members,
-      member: updated.member,
-      skillRealms: result.skillRealms,
-      inlineForm: {
-        realmId: result.realmId,
-        label: "",
-        content: "",
-        error: "",
-        open: false,
-      },
     };
   }
 
@@ -5143,25 +5053,6 @@ window.MOBKIT_BOOT = {
     return { inputParams: next, fields: inputParamSummary(next, contract) };
   }
 
-  function inputParamUpdateCascadePatch({ flow, edges, members, instances, schemas } = {}, stepId, paramId, patch, contract) {
-    const step = flowStepById(flow?.steps || [], stepId);
-    const params = inputParamsForStep(step || {});
-    const updatePatch = inputParamUpdatePatch(params, paramId, patch, contract);
-    const updatedFlow = flowStepUpdatePatch(flow, stepId, updatePatch);
-    const reconciled = reconcileConditionFieldAvailability({
-      flow: updatedFlow,
-      edges,
-      members,
-      instances,
-      schemas,
-    });
-    return {
-      patch: updatePatch,
-      flow: reconciled.flow,
-      edges: reconciled.edges,
-    };
-  }
-
   function inputParamDeletePatch(params, id, contract) {
     const removed = (params || []).find((param) => param?.id === id) || null;
     const next = (params || []).filter((param) => param?.id !== id);
@@ -5172,48 +5063,6 @@ window.MOBKIT_BOOT = {
     const nextName = uniqueInputParamName(params, rawName, id, editorInputParamNameFallback(contract));
     const next = (params || []).map((param) => param?.id === id ? { ...param, name: nextName } : param);
     return { name: nextName, patch: { inputParams: next, fields: inputParamSummary(next, contract) } };
-  }
-
-  function inputParamRenameCascadePatch({ flow, edges } = {}, stepId, paramId, rawName, previousName, contract) {
-    const step = flowStepById(flow?.steps || [], stepId);
-    const params = inputParamsForStep(step || {});
-    const oldName = String(previousName || params.find((param) => param?.id === paramId)?.name || "").trim();
-    const renamed = inputParamRenamePatch(params, paramId, rawName, contract);
-    const updatedFlow = flowStepUpdatePatch(flow, stepId, renamed.patch);
-    const reconciled = oldName && oldName !== renamed.name
-      ? reconcileInputParamReferences({
-        flow: updatedFlow,
-        edges,
-        oldName,
-        newName: renamed.name,
-      })
-      : { flow: updatedFlow, edges };
-    return {
-      ...renamed,
-      flow: reconciled.flow,
-      edges: reconciled.edges,
-    };
-  }
-
-  function inputParamDeleteCascadePatch({ flow, edges } = {}, stepId, paramId, contract) {
-    const step = flowStepById(flow?.steps || [], stepId);
-    const params = inputParamsForStep(step || {});
-    const deleted = inputParamDeletePatch(params, paramId, contract);
-    const updatedFlow = flowStepUpdatePatch(flow, stepId, deleted.patch);
-    const oldName = String(deleted.removed?.name || "").trim();
-    const reconciled = oldName
-      ? reconcileInputParamReferences({
-        flow: updatedFlow,
-        edges,
-        oldName,
-        newName: "",
-      })
-      : { flow: updatedFlow, edges };
-    return {
-      ...deleted,
-      flow: reconciled.flow,
-      edges: reconciled.edges,
-    };
   }
 
   function basicConditionFromText(text) {
@@ -11554,8 +11403,6 @@ window.MOBKIT_BOOT = {
     addInlineSkillToRealms,
     memberToolAccessPatch,
     memberToolRemovePatch,
-    memberToolAccessCascadePatch,
-    memberToolRemoveCascadePatch,
     memberToolAccessState,
     stepToolScopeState,
     stepToolScopeAddPatch,
@@ -11563,9 +11410,6 @@ window.MOBKIT_BOOT = {
     memberSkillTogglePatch,
     memberSkillRemovePatch,
     memberInlineSkillPatch,
-    memberSkillToggleCascadePatch,
-    memberSkillRemoveCascadePatch,
-    memberInlineSkillCascadePatch,
     memberSkillAccessState,
     agentListState,
     agentSelectionState,
@@ -11763,11 +11607,8 @@ window.MOBKIT_BOOT = {
     basicInputControlState,
     basicConditionOptions,
     inputParamUpdatePatch,
-    inputParamUpdateCascadePatch,
     inputParamDeletePatch,
     inputParamRenamePatch,
-    inputParamRenameCascadePatch,
-    inputParamDeleteCascadePatch,
     parseGraphConditionVar,
     graphConditionRefForEdge,
     graphConditionOptions,

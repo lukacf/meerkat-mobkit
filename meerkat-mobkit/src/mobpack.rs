@@ -3329,6 +3329,11 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "mobkit/mobpacks/apply_operation requires operation.type".to_string())?;
+    if operation_type != "replace_authoring_document" && operation.get("document").is_some() {
+        return Err(format!(
+            "{operation_type} does not accept operation.document; use replace_authoring_document for explicit document replacement"
+        ));
+    }
     let selection = match operation_type {
         "sync_graph_to_flow" => apply_sync_graph_to_flow_operation(&mut document, operation)?,
         "reconcile_members" => apply_reconcile_members_operation(&mut document, operation)?,
@@ -7769,7 +7774,8 @@ fn apply_connect_graph_nodes_operation(
     let id = validate_graph_edge(&edge, &edges, &instances, None)?;
     edges.push(edge);
     document.edges = Value::Array(edges);
-    apply_graph_operation_sections(document, operation, &["flow", "frames"]);
+    document.flow = graph_to_flow_from_document(document);
+    apply_graph_operation_sections(document, operation, &["frames"]);
     Ok(json!({ "kind": "edge", "id": id }))
 }
 
@@ -24190,15 +24196,29 @@ model = "gpt-5.5"
         let current_document = document.clone();
         let mut projected_document = document.clone();
         projected_document["name"] = json!("Projected operation payload accepted");
+        let rejected_projection = apply_mobpack_authoring_operation(&json!({
+            "document": current_document.clone(),
+            "operation": {
+                "type": "update_flow_step",
+                "document": projected_document.clone(),
+                "selection": { "kind": "schema", "id": "PlanArtifact" }
+            }
+        }));
+        assert!(
+            rejected_projection
+                .expect_err("semantic operation document replacement must fail")
+                .contains("does not accept operation.document")
+        );
+
         let replaced = apply_mobpack_authoring_operation(&json!({
             "document": current_document,
             "operation": {
-                "type": "update_flow_step",
+                "type": "replace_authoring_document",
                 "document": projected_document,
                 "selection": { "kind": "schema", "id": "PlanArtifact" }
             }
         }))
-        .expect("apply projected operation document");
+        .expect("apply explicit projected operation document");
         assert_eq!(
             replaced["document"]["name"],
             json!("Projected operation payload accepted")
@@ -24677,6 +24697,14 @@ model = "gpt-5.5"
             { "id": "n_review", "memberId": "reviewer", "kind": "member", "col": 1, "row": 0 }
         ]);
         document.edges = json!([]);
+        document.flow = json!({
+            "id": "main",
+            "steps": [
+                { "id": "input_1", "type": "input", "task": "Route.", "fields": "" },
+                { "id": "n_plan", "type": "member", "role": "planner", "instruction": "Plan." },
+                { "id": "n_review", "type": "member", "role": "reviewer", "instruction": "Review." }
+            ]
+        });
 
         let semantic_member = apply_mobpack_authoring_operation(&json!({
             "document": document.clone(),
@@ -24723,6 +24751,33 @@ model = "gpt-5.5"
         assert_eq!(
             semantic_branch["document"]["edges"][1]["label"],
             json!("fallback")
+        );
+
+        let endpoint_connected = apply_mobpack_authoring_operation(&json!({
+            "document": document.clone(),
+            "operation": {
+                "type": "connect_graph_nodes",
+                "from_id": "n_plan",
+                "to_id": "n_review"
+            }
+        }))
+        .expect("connect member graph nodes by endpoints");
+        assert_eq!(endpoint_connected["selection"]["kind"], json!("edge"));
+        assert_eq!(
+            endpoint_connected["selection"]["id"],
+            json!("e_n_plan_n_review")
+        );
+        assert_eq!(
+            endpoint_connected["document"]["flow"],
+            graph_to_flow_mobpack(&json!({ "document": endpoint_connected["document"] }))
+                .expect("graph sync after endpoint connect")["flow"]
+        );
+        assert!(
+            endpoint_connected["validation"]["ok"]
+                .as_bool()
+                .unwrap_or(false),
+            "{}",
+            serde_json::to_string_pretty(&endpoint_connected["validation"]).unwrap()
         );
 
         let inserted = apply_mobpack_authoring_operation(&json!({
@@ -24803,6 +24858,11 @@ model = "gpt-5.5"
             1
         );
         assert_eq!(connected["document"]["edges"][0]["kind"], json!("next"));
+        assert_eq!(
+            connected["document"]["flow"],
+            graph_to_flow_mobpack(&json!({ "document": connected["document"] }))
+                .expect("graph sync after endpoint connect")["flow"]
+        );
 
         let edge_updated = apply_mobpack_authoring_operation(&json!({
             "document": connected["document"],
