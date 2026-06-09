@@ -322,6 +322,7 @@ function App() {
             edges: studio.edges,
           }, selection.id);
           applyMobKitAuthoringReplacement({
+            operationType: "delete_graph_node",
             studio: { instances: result.instances, edges: result.edges },
             selection: result.selection,
           }).then(() => clearSelection(result.selection));
@@ -329,6 +330,7 @@ function App() {
         else if (selection.kind === "edge") {
           const result = window.MobKitFlowController.studioDeleteEdgePatch({ edges: studio.edges }, selection.id);
           applyMobKitAuthoringReplacement({
+            operationType: "delete_graph_edge",
             studio: { edges: result.edges },
             selection: result.selection,
           }).then(() => clearSelection(result.selection));
@@ -371,6 +373,7 @@ function App() {
     });
     if (inserted.ok) {
       applyMobKitAuthoringReplacement({
+        operationType: "insert_graph_node",
         flow: inserted.flow,
         studio: {
           instances: inserted.instances,
@@ -484,9 +487,11 @@ function App() {
   };
   const applyMobKitAuthoringReplacement = async (overrides = {}) => {
     const requestToken = currentAuthoringRevision();
+    const document = buildDocument();
     const replacement = buildAuthoringProjection(overrides);
-    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(replacement.document, {
-      type: "replace_authoring_document",
+    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, {
+      type: overrides.operationType || "replace_authoring_document",
+      document: replacement.document,
       selection: overrides.selection || null,
     });
     if (!authoringRevisionIsCurrent(requestToken)) {
@@ -509,7 +514,7 @@ function App() {
         instances: studio.instances,
         members: studio.members,
       }, instance);
-      applyMobKitAuthoringReplacement({ studio: { instances: next.instances } });
+      applyMobKitAuthoringReplacement({ operationType: "insert_graph_node", studio: { instances: next.instances } });
       return next;
     },
     updateInstance: (id, patch) => {
@@ -518,6 +523,7 @@ function App() {
         members: studio.members,
       }, id, patch);
       applyMobKitAuthoringReplacement({
+        operationType: "update_graph_node",
         studio: { instances: next.instances },
         selection: { kind: "instance", id },
       });
@@ -529,6 +535,7 @@ function App() {
         edges: studio.edges,
       }, id);
       applyMobKitAuthoringReplacement({
+        operationType: "delete_graph_node",
         studio: { instances: next.instances, edges: next.edges },
         selection: next.selection,
       });
@@ -539,7 +546,7 @@ function App() {
         edges: studio.edges,
         instances: studio.instances,
       }, edge);
-      applyMobKitAuthoringReplacement({ studio: { edges: next.edges } });
+      applyMobKitAuthoringReplacement({ operationType: "connect_graph_nodes", studio: { edges: next.edges } });
       return next;
     },
     updateEdge: (id, patch) => {
@@ -548,6 +555,7 @@ function App() {
         instances: studio.instances,
       }, id, patch);
       applyMobKitAuthoringReplacement({
+        operationType: "update_graph_edge",
         studio: { edges: next.edges },
         selection: { kind: "edge", id },
       });
@@ -556,6 +564,7 @@ function App() {
     deleteEdge: (id) => {
       const next = window.MobKitFlowController.studioDeleteEdgePatch({ edges: studio.edges }, id);
       applyMobKitAuthoringReplacement({
+        operationType: "delete_graph_edge",
         studio: { edges: next.edges },
         selection: next.selection,
       });
@@ -563,12 +572,13 @@ function App() {
     },
     addSchema: (schema) => {
       const next = window.MobKitFlowController.studioAddSchemaPatch({ schemas: studio.schemas }, schema);
-      applyMobKitAuthoringReplacement({ studio: { schemas: next.schemas } });
+      applyMobKitAuthoringReplacement({ operationType: "add_schema", studio: { schemas: next.schemas } });
       return next;
     },
     updateSchema: (id, patch) => {
       const next = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas: studio.schemas }, id, patch);
       applyMobKitAuthoringReplacement({
+        operationType: "update_schema",
         studio: { schemas: next.schemas },
         selection: { kind: "schema", id },
       });
@@ -583,6 +593,7 @@ function App() {
         instances: studio.instances,
       }, id);
       applyMobKitAuthoringReplacement({
+        operationType: "delete_schema",
         flow: next.flow,
         studio: { schemas: next.schemas, members: next.members, edges: next.edges },
         selection: next.selection,
@@ -1387,7 +1398,7 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
   const setDeployField = (field, value) => {
     const next = window.MobKitFlowController.deploySettingsFieldPatch(deploySettings, field, value, { contract, modelCatalog });
     if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({ deploySettings: next });
+      applyAuthoringReplacement({ operationType: "update_deploy_settings", deploySettings: next });
     } else {
       setDeploySettings(next);
     }
@@ -1395,7 +1406,7 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
   const setMobField = (field, value) => {
     const next = window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, field, value, { contract });
     if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({ mobSettings: next });
+      applyAuthoringReplacement({ operationType: field === "roleWiring" ? "update_role_wiring" : "update_mob_settings", mobSettings: next });
     } else {
       setMobSettings(next);
     }

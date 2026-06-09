@@ -12784,6 +12784,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
           });
           if (applyAuthoringReplacement) {
             applyAuthoringReplacement({
+              operationType: "move_graph_node",
               studio: { instances: next.instances },
               selection: { kind: "instance", id: drag.instId }
             });
@@ -12809,6 +12810,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
           if (result.ok && result.edge) {
             if (applyAuthoringReplacement) {
               applyAuthoringReplacement({
+                operationType: "connect_graph_nodes",
                 studio: { edges: result.edges },
                 selection: { kind: "edge", id: result.selectId }
               }).then(() => selectEdge(result.selectId));
@@ -13381,6 +13383,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
         if (result.ok === false) return;
         if (applyAuthoringReplacement) {
           applyAuthoringReplacement({
+            operationType: "add_schema",
             studio: { schemas: result.schemas },
             selection: result.selection
           });
@@ -13579,6 +13582,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     if (!result.ok) return;
     if (applyAuthoringReplacement) {
       applyAuthoringReplacement({
+        operationType: "assign_member_schema",
         flow: result.flow,
         studio: {
           members: result.members,
@@ -13609,6 +13613,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     if (!result.ok) return;
     if (applyAuthoringReplacement) {
       applyAuthoringReplacement({
+        operationType: "delete_member",
         flow: result.flow,
         mobSettings: result.mobSettings,
         studio: {
@@ -13727,9 +13732,10 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     schemaView
   });
   const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult);
-  const applySchemaCascade = (result, selection = { kind: "schema", id: schema.id }) => {
+  const applySchemaCascade = (result, selection = { kind: "schema", id: schema.id }, operationType = "update_schema") => {
     if (applyAuthoringReplacement) {
       applyAuthoringReplacement({
+        operationType,
         flow: result.flow || flow,
         studio: {
           schemas: result.schemas,
@@ -13755,7 +13761,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       members: studio.members,
       instances: studio.instances
     }, fieldId, newName, oldName, contract);
-    applySchemaCascade(result);
+    applySchemaCascade(result, { kind: "schema", id: schema.id }, "rename_schema_field");
   };
   const updateField = (fieldId, patch) => {
     const result = window.MobKitFlowController.schemaFieldUpdateCascadePatch({
@@ -13766,7 +13772,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       members: studio.members,
       instances: studio.instances
     }, fieldId, patch, contract);
-    applySchemaCascade(result);
+    applySchemaCascade(result, { kind: "schema", id: schema.id }, "update_schema_field");
   };
   const deleteField = (fieldId) => {
     const result = window.MobKitFlowController.schemaFieldDeleteCascadePatch({
@@ -13777,14 +13783,20 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       members: studio.members,
       instances: studio.instances
     }, fieldId);
-    applySchemaCascade(result);
+    applySchemaCascade(result, { kind: "schema", id: schema.id }, "delete_schema_field");
   };
   const addField = () => {
     const result = window.MobKitFlowController.schemaFieldAddPatch(schema, contract);
     setFieldAddResult(result);
     if (result.ok === false) return;
     setFieldAddResult(null);
-    change(result.patch);
+    const next = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas: studio.schemas }, schema.id, result.patch);
+    applySchemaCascade({
+      schemas: next.schemas,
+      members: studio.members,
+      flow,
+      edges: studio.edges
+    }, { kind: "schema", id: schema.id }, "add_schema_field");
   };
   const deleteSchema = () => {
     const result = window.MobKitFlowController.studioDeleteSchemaPatch({
@@ -13794,7 +13806,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       edges: studio.edges,
       instances: studio.instances
     }, schema.id);
-    applySchemaCascade(result, result.selection);
+    applySchemaCascade(result, result.selection, "delete_schema");
     setAgentSel(result.selection);
   };
   const renameSchema = (newId) => {
@@ -13807,7 +13819,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     applySchemaCascade({
       ...result,
       edges: studio.edges
-    }, result.selection);
+    }, result.selection, "rename_schema");
     setAgentSel(result.selection);
   };
   return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, schemaState.eyebrow), /* @__PURE__ */ React.createElement(
@@ -14177,14 +14189,14 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const isFlow = mode === "flow";
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   const canvasView = Math.abs(view.ty) > 1200 ? { ...view, ty: 0 } : view;
-  const commitFlow = (nextFlow, studioPatch = {}) => {
+  const commitFlow = (nextFlow, studioPatch = {}, operationType = "update_flow_step") => {
     if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({ flow: nextFlow, studio: studioPatch });
+      applyAuthoringReplacement({ operationType, flow: nextFlow, studio: studioPatch });
     } else {
       setFlow(nextFlow);
     }
   };
-  const update = (id, patch) => commitFlow(window.MobKitFlowController.flowStepUpdatePatch(flow, id, patch, { members }));
+  const update = (id, patch, operationType = "update_flow_step") => commitFlow(window.MobKitFlowController.flowStepUpdatePatch(flow, id, patch, { members }), {}, operationType);
   const selStep = findStep(flow.steps, sel);
   const applyBasicInteraction = (result) => {
     if (!result) return;
@@ -14196,13 +14208,13 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     if (!newStep) return;
     const result = window.MobKitFlowController.flowStepInsertTransition(flow, laneRef, newStep, { members });
     if (!result.ok) return;
-    commitFlow(result.flow);
+    commitFlow(result.flow, {}, "insert_flow_step");
     setSel(result.selection);
     setPicker(result.picker);
   };
   const removeStep = (id) => {
     const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
-    commitFlow(result.flow);
+    commitFlow(result.flow, {}, "delete_flow_step");
     setSel(result.selection);
     setPicker(result.picker);
   };
@@ -14335,9 +14347,10 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
     const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult);
-    const applyInputCascade = (result) => {
+    const applyInputCascade = (result, operationType) => {
       if (applyAuthoringReplacement) {
         applyAuthoringReplacement({
+          operationType,
           flow: result.flow,
           studio: { edges: result.edges }
         });
@@ -14356,26 +14369,26 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
         members: studio?.members || [],
         instances: studio?.instances || [],
         schemas: studio?.schemas || []
-      }, step.id, id, patch, contract));
+      }, step.id, id, patch, contract), "update_input_param");
     };
     const deleteParam = (id) => {
       applyInputCascade(window.MobKitFlowController.inputParamDeleteCascadePatch({
         flow,
         edges: studio?.edges || []
-      }, step.id, id, contract));
+      }, step.id, id, contract), "delete_input_param");
     };
     const renameParam = (id, rawName, previousName) => {
       applyInputCascade(window.MobKitFlowController.inputParamRenameCascadePatch({
         flow,
         edges: studio?.edges || []
-      }, step.id, id, rawName, previousName, contract));
+      }, step.id, id, rawName, previousName, contract), "rename_input_param");
     };
     const addParam = () => {
       const result = window.MobKitFlowController.inputParamAddPatch(params, contract);
       setParamAddResult(result);
       if (result.ok === false) return;
       setParamAddResult(null);
-      update(step.id, result.patch);
+      update(step.id, result.patch, "add_input_param");
     };
     return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: inputState.panelIcon, iconTint: "member", title: inputState.panelTitle, sub: inputState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: inputState.taskLabel }, /* @__PURE__ */ React.createElement("textarea", { className: "field__textarea", rows: 3, placeholder: inputState.taskPlaceholder, value: step.task || "", onChange: (e) => update(step.id, window.MobKitFlowController.flowStepTaskPatch(e.target.value)) })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, inputState.paramsTitle), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: addParam }, inputState.addParamLabel)), paramAddErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, paramAddErrorState.text), /* @__PURE__ */ React.createElement("div", { className: "schema-builder" }, /* @__PURE__ */ React.createElement("div", { className: "schema-builder__header" }, inputState.headerRows.map((row) => /* @__PURE__ */ React.createElement("span", { key: row.key, className: row.className }, row.label))), params.map((param) => /* @__PURE__ */ React.createElement(
       InputParamField,
@@ -14831,12 +14844,14 @@ function App() {
             edges: studio.edges
           }, selection.id);
           applyMobKitAuthoringReplacement({
+            operationType: "delete_graph_node",
             studio: { instances: result.instances, edges: result.edges },
             selection: result.selection
           }).then(() => clearSelection(result.selection));
         } else if (selection.kind === "edge") {
           const result = window.MobKitFlowController.studioDeleteEdgePatch({ edges: studio.edges }, selection.id);
           applyMobKitAuthoringReplacement({
+            operationType: "delete_graph_edge",
             studio: { edges: result.edges },
             selection: result.selection
           }).then(() => clearSelection(result.selection));
@@ -14880,6 +14895,7 @@ function App() {
     });
     if (inserted.ok) {
       applyMobKitAuthoringReplacement({
+        operationType: "insert_graph_node",
         flow: inserted.flow,
         studio: {
           instances: inserted.instances,
@@ -14991,9 +15007,11 @@ function App() {
   };
   const applyMobKitAuthoringReplacement = async (overrides = {}) => {
     const requestToken = currentAuthoringRevision();
+    const document2 = buildDocument();
     const replacement = buildAuthoringProjection(overrides);
-    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(replacement.document, {
-      type: "replace_authoring_document",
+    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, {
+      type: overrides.operationType || "replace_authoring_document",
+      document: replacement.document,
       selection: overrides.selection || null
     });
     if (!authoringRevisionIsCurrent(requestToken)) {
@@ -15016,7 +15034,7 @@ function App() {
         instances: studio.instances,
         members: studio.members
       }, instance);
-      applyMobKitAuthoringReplacement({ studio: { instances: next.instances } });
+      applyMobKitAuthoringReplacement({ operationType: "insert_graph_node", studio: { instances: next.instances } });
       return next;
     },
     updateInstance: (id, patch) => {
@@ -15025,6 +15043,7 @@ function App() {
         members: studio.members
       }, id, patch);
       applyMobKitAuthoringReplacement({
+        operationType: "update_graph_node",
         studio: { instances: next.instances },
         selection: { kind: "instance", id }
       });
@@ -15036,6 +15055,7 @@ function App() {
         edges: studio.edges
       }, id);
       applyMobKitAuthoringReplacement({
+        operationType: "delete_graph_node",
         studio: { instances: next.instances, edges: next.edges },
         selection: next.selection
       });
@@ -15046,7 +15066,7 @@ function App() {
         edges: studio.edges,
         instances: studio.instances
       }, edge);
-      applyMobKitAuthoringReplacement({ studio: { edges: next.edges } });
+      applyMobKitAuthoringReplacement({ operationType: "connect_graph_nodes", studio: { edges: next.edges } });
       return next;
     },
     updateEdge: (id, patch) => {
@@ -15055,6 +15075,7 @@ function App() {
         instances: studio.instances
       }, id, patch);
       applyMobKitAuthoringReplacement({
+        operationType: "update_graph_edge",
         studio: { edges: next.edges },
         selection: { kind: "edge", id }
       });
@@ -15063,6 +15084,7 @@ function App() {
     deleteEdge: (id) => {
       const next = window.MobKitFlowController.studioDeleteEdgePatch({ edges: studio.edges }, id);
       applyMobKitAuthoringReplacement({
+        operationType: "delete_graph_edge",
         studio: { edges: next.edges },
         selection: next.selection
       });
@@ -15070,12 +15092,13 @@ function App() {
     },
     addSchema: (schema) => {
       const next = window.MobKitFlowController.studioAddSchemaPatch({ schemas: studio.schemas }, schema);
-      applyMobKitAuthoringReplacement({ studio: { schemas: next.schemas } });
+      applyMobKitAuthoringReplacement({ operationType: "add_schema", studio: { schemas: next.schemas } });
       return next;
     },
     updateSchema: (id, patch) => {
       const next = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas: studio.schemas }, id, patch);
       applyMobKitAuthoringReplacement({
+        operationType: "update_schema",
         studio: { schemas: next.schemas },
         selection: { kind: "schema", id }
       });
@@ -15090,6 +15113,7 @@ function App() {
         instances: studio.instances
       }, id);
       applyMobKitAuthoringReplacement({
+        operationType: "delete_schema",
         flow: next.flow,
         studio: { schemas: next.schemas, members: next.members, edges: next.edges },
         selection: next.selection
@@ -15749,7 +15773,7 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
   const setDeployField = (field, value) => {
     const next = window.MobKitFlowController.deploySettingsFieldPatch(deploySettings, field, value, { contract, modelCatalog });
     if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({ deploySettings: next });
+      applyAuthoringReplacement({ operationType: "update_deploy_settings", deploySettings: next });
     } else {
       setDeploySettings(next);
     }
@@ -15757,7 +15781,7 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
   const setMobField = (field, value) => {
     const next = window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, field, value, { contract });
     if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({ mobSettings: next });
+      applyAuthoringReplacement({ operationType: field === "roleWiring" ? "update_role_wiring" : "update_mob_settings", mobSettings: next });
     } else {
       setMobSettings(next);
     }

@@ -1381,6 +1381,61 @@ async function validateDocumentBackedDeployPreview(document) {
   };
 }
 
+async function validateNamedProjectedOperations(catalogs) {
+  let document = catalogs.blank_mobpack.document;
+  const added = await rpc("mobkit/mobpacks/apply_operation", {
+    document,
+    operation: {
+      type: "add_agent_definition",
+      definition_id: "mobkit_authoring_profiles__01_implementer",
+    },
+  });
+  if (!added.ok) {
+    throw new Error(`named operation proof could not add agent definition: ${JSON.stringify(added.validation)}`);
+  }
+  document = added.document;
+  const memberId = added.selection.id;
+  const projected = JSON.parse(JSON.stringify(document));
+  projected.name = "Named operation payload proof";
+  projected.flow.name = "Named operation payload proof";
+  projected.deploy = { ...(projected.deploy || {}), prompt: "Named projected operation prompt." };
+  projected.members = projected.members.map((member) => (
+    member.id === memberId ? { ...member, name: "Named operation agent" } : member
+  ));
+  const updated = await rpc("mobkit/mobpacks/apply_operation", {
+    document,
+    operation: {
+      type: "update_flow_step",
+      document: projected,
+      selection: { kind: "agent", id: memberId },
+    },
+  });
+  if (!updated.ok || updated.document.name !== projected.name) {
+    throw new Error(`named projected operation did not apply operation.document: ${JSON.stringify(updated)}`);
+  }
+  const settings = await rpc("mobkit/mobpacks/apply_operation", {
+    document: updated.document,
+    operation: {
+      type: "update_deploy_settings",
+      deploy: { ...(updated.document.deploy || {}), prompt: "Named section payload prompt." },
+    },
+  });
+  if (!settings.ok || settings.document.deploy.prompt !== "Named section payload prompt.") {
+    throw new Error(`named deploy settings operation did not apply operation.deploy: ${JSON.stringify(settings)}`);
+  }
+  const validation = await rpc("mobkit/mobpacks/validate", { document: settings.document });
+  if (!validation.ok) {
+    throw new Error(`named projected operation document failed validation: ${JSON.stringify(validation.diagnostics)}`);
+  }
+  return {
+    memberId,
+    name: settings.document.name,
+    prompt: settings.document.deploy.prompt,
+    operationDocumentApplied: updated.operation === "update_flow_step",
+    sectionPayloadApplied: settings.operation === "update_deploy_settings",
+  };
+}
+
 (async () => {
   run("rkat", ["mob", "--help"]);
 
@@ -1583,6 +1638,7 @@ async function validateDocumentBackedDeployPreview(document) {
     blankMobpackTemplate: await validateBlankMobpackTemplate(dir, catalogs),
     customDeploySettings: await validateCustomDeploySettings(dir),
     documentBackedDeployPreview: await validateDocumentBackedDeployPreview(sample.document),
+    namedProjectedOperations: await validateNamedProjectedOperations(catalogs),
     deploy: null,
   };
 

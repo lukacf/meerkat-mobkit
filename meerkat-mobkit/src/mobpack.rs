@@ -2837,7 +2837,36 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
             apply_member_skill_operation(&mut document, operation, SkillOperation::Remove)?
         }
         "create_inline_skill" => apply_create_inline_skill_operation(&mut document, operation)?,
-        "replace_authoring_document" => apply_replace_authoring_document_operation(operation)?,
+        "delete_member"
+        | "assign_member_schema"
+        | "add_schema"
+        | "update_schema"
+        | "rename_schema"
+        | "delete_schema"
+        | "add_schema_field"
+        | "update_schema_field"
+        | "rename_schema_field"
+        | "delete_schema_field"
+        | "insert_flow_step"
+        | "update_flow_step"
+        | "delete_flow_step"
+        | "add_input_param"
+        | "update_input_param"
+        | "rename_input_param"
+        | "delete_input_param"
+        | "insert_graph_node"
+        | "update_graph_node"
+        | "move_graph_node"
+        | "delete_graph_node"
+        | "connect_graph_nodes"
+        | "update_graph_edge"
+        | "delete_graph_edge"
+        | "update_deploy_settings"
+        | "update_mob_settings"
+        | "update_role_wiring"
+        | "replace_authoring_document" => {
+            apply_projected_authoring_document_operation(&mut document, operation)?
+        }
         other => {
             return Err(format!(
                 "mobkit/mobpacks/apply_operation unsupported operation.type: {other}"
@@ -2855,9 +2884,49 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
     }))
 }
 
-fn apply_replace_authoring_document_operation(
+fn apply_projected_authoring_document_operation(
+    document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
+    if let Some(next_document) = operation.get("document") {
+        *document = serde_json::from_value(next_document.clone()).map_err(|error| {
+            format!("operation.document is not a valid mobpack document: {error}")
+        })?;
+    } else {
+        if let Some(value) = operation.get("flow") {
+            document.flow = value.clone();
+        }
+        if let Some(value) = operation.get("members") {
+            document.members = value.clone();
+        }
+        if let Some(value) = operation.get("instances") {
+            document.instances = value.clone();
+        }
+        if let Some(value) = operation.get("edges") {
+            document.edges = value.clone();
+        }
+        if let Some(value) = operation.get("frames") {
+            document.frames = value.clone();
+        }
+        if let Some(value) = operation.get("schemas") {
+            document.schemas = value.clone();
+        }
+        if let Some(value) = operation
+            .get("skill_realms")
+            .or_else(|| operation.get("skillRealms"))
+        {
+            document.skill_realms = value.clone();
+        }
+        if let Some(value) = operation.get("deploy") {
+            document.deploy = value.clone();
+        }
+        if let Some(value) = operation
+            .get("mob_settings")
+            .or_else(|| operation.get("mobSettings"))
+        {
+            document.mob_settings = value.clone();
+        }
+    }
     Ok(operation
         .get("selection")
         .cloned()
@@ -17789,19 +17858,41 @@ model = "gpt-5.5"
         );
         document = inline_skill["document"].clone();
 
-        document["name"] = json!("Replacement accepted");
+        let current_document = document.clone();
+        let mut projected_document = document.clone();
+        projected_document["name"] = json!("Projected operation payload accepted");
         let replaced = apply_mobpack_authoring_operation(&json!({
-            "document": document,
+            "document": current_document,
             "operation": {
-                "type": "replace_authoring_document",
+                "type": "update_flow_step",
+                "document": projected_document,
                 "selection": { "kind": "schema", "id": "PlanArtifact" }
             }
         }))
-        .expect("replace document");
-        assert_eq!(replaced["document"]["name"], json!("Replacement accepted"));
+        .expect("apply projected operation document");
+        assert_eq!(
+            replaced["document"]["name"],
+            json!("Projected operation payload accepted")
+        );
         assert_eq!(
             replaced["selection"],
             json!({ "kind": "schema", "id": "PlanArtifact" })
+        );
+
+        let mut deploy = replaced["document"]["deploy"].clone();
+        deploy["prompt"] = json!("Payload section prompt.");
+        let settings = apply_mobpack_authoring_operation(&json!({
+            "document": replaced["document"],
+            "operation": {
+                "type": "update_deploy_settings",
+                "deploy": deploy,
+                "selection": { "kind": null, "id": null }
+            }
+        }))
+        .expect("apply projected deploy settings");
+        assert_eq!(
+            settings["document"]["deploy"]["prompt"],
+            json!("Payload section prompt.")
         );
     }
 
