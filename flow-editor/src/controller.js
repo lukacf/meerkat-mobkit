@@ -8,6 +8,7 @@
     schema: "mobkit/mobpacks/schema",
     catalogs: "mobkit/mobpacks/catalogs",
     validate: "mobkit/mobpacks/validate",
+    source: "mobkit/mobpacks/source",
     export: "mobkit/mobpacks/export",
     import: "mobkit/mobpacks/import",
     deployCommand: "mobkit/mobpacks/deploy_command",
@@ -17,6 +18,7 @@
     schema: "schema",
     catalogs: "catalogs",
     validate: "validate",
+    source: "source",
     export: "export",
     import: "import",
     deployCommand: "deploy_command",
@@ -8165,6 +8167,10 @@
     return callRpc(rpcMethod("validate"), { document });
   }
 
+  async function sourceDocument(document) {
+    return callRpc(rpcMethod("source"), { document });
+  }
+
   async function exportDocument(document) {
     return callRpc(rpcMethod("export"), { document });
   }
@@ -10006,18 +10012,19 @@
   }
 
   function sourceDocumentFromExport(document, result, options = {}) {
+    const apiSource = String(result?.source || (result?.content_base64 ? "mobkit/mobpacks/export" : "mobkit/mobpacks/source"));
     const files = Array.isArray(result?.source_files) ? result.source_files : [];
-    if (!files.length) throw new Error("mobkit/mobpacks/export did not return source_files");
+    if (!files.length) throw new Error(`${apiSource} did not return source_files`);
     const mobTomlFile = files.find((file) => String(file?.path || "") === "mobkit/mob.toml");
-    if (!mobTomlFile) throw new Error("mobkit/mobpacks/export did not return mobkit/mob.toml source file");
+    if (!mobTomlFile) throw new Error(`${apiSource} did not return mobkit/mob.toml source file`);
     const exportedToml = String(mobTomlFile.text || "").trim();
-    if (!exportedToml) throw new Error("mobkit/mobpacks/export did not return mobkit/mob.toml text");
+    if (!exportedToml) throw new Error(`${apiSource} did not return mobkit/mob.toml text`);
     const filename = String(result?.filename || "").trim();
-    if (!filename) throw new Error("mobkit/mobpacks/export did not return filename");
+    if (!filename) throw new Error(`${apiSource} did not return filename`);
     const mediaType = String(result?.media_type || "").trim();
-    if (!mediaType) throw new Error("mobkit/mobpacks/export did not return media_type");
+    if (!mediaType) throw new Error(`${apiSource} did not return media_type`);
     const sourceDigest = String(mobTomlFile.sha256 || "").trim();
-    if (!sourceDigest) throw new Error("mobkit/mobpacks/export did not return mobkit/mob.toml sha256");
+    if (!sourceDigest) throw new Error(`${apiSource} did not return mobkit/mob.toml sha256`);
     const sourceView = sourceViewForState(null, options.sourceView);
     const renderedDocument = {
       ...(document && typeof document === "object" ? document : {}),
@@ -10036,7 +10043,7 @@
         sourceFile: mobTomlFile,
         sourceFiles: files,
         sourceDigest,
-        source: "mobkit/mobpacks/export",
+        source: apiSource,
         sourceView,
       },
       validation,
@@ -11441,6 +11448,7 @@
     authoringRpcMethodsFromSchema,
     configureAuthoringMethodsFromSchema,
     validateDocument,
+    sourceDocument,
     exportDocument,
     deployDocument,
     importDocument,

@@ -49,6 +49,7 @@ async function assertAuthoringCapabilities() {
     "mobkit/mobpacks/schema",
     "mobkit/mobpacks/catalogs",
     "mobkit/mobpacks/validate",
+    "mobkit/mobpacks/source",
     "mobkit/mobpacks/export",
     "mobkit/mobpacks/import",
     "mobkit/mobpacks/deploy_command",
@@ -1370,6 +1371,19 @@ async function validateDocumentBackedDeployPreview(document) {
     throw new Error(`MobKit validation response did not provide API-backed display rows: ${JSON.stringify(validation.display_rows)}`);
   }
 
+  const sourcePreview = await rpc("mobkit/mobpacks/source", { document: sample.document });
+  if (!sourcePreview.validation?.ok || sourcePreview.source !== "mobkit/mobpacks/source") {
+    throw new Error(`source preview did not return API-backed validated source metadata: ${JSON.stringify(sourcePreview)}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(sourcePreview, "content_base64")) {
+    throw new Error("mobkit/mobpacks/source must not return the full archive content_base64 payload");
+  }
+  const previewSourceFiles = array(sourcePreview.source_files, "sourcePreview.source_files");
+  const previewMobToml = previewSourceFiles.find((file) => file.path === "mobkit/mob.toml");
+  if (previewMobToml?.text !== sourcePreview.mob_toml || previewMobToml?.media_type !== "text/toml") {
+    throw new Error(`source preview mob.toml file does not match MobKit-rendered TOML: ${JSON.stringify(previewMobToml)}`);
+  }
+
   const exported = await rpc("mobkit/mobpacks/export", {
     document: sample.document,
     filename: `${sample.id || "flow-editor-e2e"}.mobpack`,
@@ -1412,6 +1426,10 @@ async function validateDocumentBackedDeployPreview(document) {
     packPath,
     inspect,
     validate,
+    sourcePreview: {
+      source: sourcePreview.source,
+      files: previewSourceFiles.map((file) => ({ path: file.path, media_type: file.media_type, size_bytes: file.size_bytes })),
+    },
     sourceFiles: sourceFiles.map((file) => ({ path: file.path, media_type: file.media_type, size_bytes: file.size_bytes })),
     roundTrip,
     graphBranchShape: await validateGraphBranchShape(dir),

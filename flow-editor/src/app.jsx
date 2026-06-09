@@ -548,7 +548,7 @@ function App() {
 
   const exportCurrentSourceDocument = async (requestToken, projectedDocument = null) => {
     const document = projectedDocument || buildDocument();
-    const result = await window.MobKitFlowController.exportDocument(document);
+    const result = await window.MobKitFlowController.sourceDocument(document);
     const projection = window.MobKitFlowController.sourceDocumentFromExport(document, result, {
       sourceView: catalogs.sourceView,
     });

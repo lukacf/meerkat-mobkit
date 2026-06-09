@@ -61,6 +61,7 @@ pub(crate) const MOBPACK_AUTHORING_METHODS: &[&str] = &[
     "mobkit/mobpacks/schema",
     "mobkit/mobpacks/catalogs",
     "mobkit/mobpacks/validate",
+    "mobkit/mobpacks/source",
     "mobkit/mobpacks/export",
     "mobkit/mobpacks/import",
     "mobkit/mobpacks/deploy_command",
@@ -85,6 +86,8 @@ pub(crate) fn handle_mobpack_authoring_rpc(
         "mobkit/mobpacks/schema" => Ok(crate::mobpack::mobpack_schema_response()),
         "mobkit/mobpacks/catalogs" => Ok(crate::mobpack::mobpack_catalogs_response()),
         "mobkit/mobpacks/validate" => crate::mobpack::validate_mobpack(params)
+            .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
+        "mobkit/mobpacks/source" => crate::mobpack::source_mobpack(params)
             .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
         "mobkit/mobpacks/export" => crate::mobpack::export_mobpack(params)
             .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),

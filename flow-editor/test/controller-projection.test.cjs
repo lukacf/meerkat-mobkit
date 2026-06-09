@@ -337,7 +337,7 @@ const TEST_ERROR_VIEW_SCHEMA = {
   deploy_plan_failed_head: "Deploy plan failed",
   deploy_error_meta: "mobkit/mobpacks/deploy",
   source_failed_head: "Source render failed",
-  source_error_meta: "mobkit/mobpacks/export",
+  source_error_meta: "mobkit/mobpacks/source",
   validation_api_failed_head: "MobKit API unavailable",
   rpc_error_meta: "/flow-editor/rpc",
   export_failed_head: "Export failed",
@@ -353,7 +353,7 @@ const TEST_ERROR_VIEW = {
   deployPlanFailedHead: "Deploy plan failed",
   deployErrorMeta: "mobkit/mobpacks/deploy",
   sourceFailedHead: "Source render failed",
-  sourceErrorMeta: "mobkit/mobpacks/export",
+  sourceErrorMeta: "mobkit/mobpacks/source",
   validationApiFailedHead: "MobKit API unavailable",
   rpcErrorMeta: "/flow-editor/rpc",
   exportFailedHead: "Export failed",
@@ -948,6 +948,7 @@ assert.deepEqual(controller.authoringRpcMethodsFromSchema({
     schema: "mobkit/mobpacks/schema",
     catalogs: "mobkit/editor/catalogs",
     validate: "mobkit/editor/validate",
+    source: "mobkit/editor/source",
     export: "mobkit/editor/export",
     import: "mobkit/editor/import",
     deploy_command: "mobkit/editor/deploy_command",
@@ -957,6 +958,7 @@ assert.deepEqual(controller.authoringRpcMethodsFromSchema({
   schema: "mobkit/mobpacks/schema",
   catalogs: "mobkit/editor/catalogs",
   validate: "mobkit/editor/validate",
+  source: "mobkit/editor/source",
   export: "mobkit/editor/export",
   import: "mobkit/editor/import",
   deployCommand: "mobkit/editor/deploy_command",
@@ -1112,7 +1114,7 @@ const hydratedContractAndCatalogFixture = {
     editor_source_view: {
       drawer_eyebrow: "SOURCE · mob.toml",
       inline_title: "mob.toml",
-      loading_text: "rendering mob.toml from mobkit/mobpacks/export...",
+      loading_text: "rendering mob.toml from mobkit/mobpacks/source...",
       copy_label: "copy",
       close_label: "×",
     },
@@ -1578,7 +1580,7 @@ assert.deepEqual(hydratedCatalogs.flowRegistryView, TEST_FLOW_REGISTRY_VIEW);
 assert.deepEqual(hydratedCatalogs.sourceView, {
   drawerEyebrow: "SOURCE · mob.toml",
   inlineTitle: "mob.toml",
-  loadingText: "rendering mob.toml from mobkit/mobpacks/export...",
+  loadingText: "rendering mob.toml from mobkit/mobpacks/source...",
   copyLabel: "copy",
   closeLabel: "×",
 });
@@ -6316,7 +6318,7 @@ assert.deepEqual(controller.sourceErrorOutcome(new Error("missing toml"), { erro
   glyph: "!",
   head: "Source render failed",
   sub: "missing toml",
-  meta: "mobkit/mobpacks/export",
+  meta: "mobkit/mobpacks/source",
 });
 assert.equal(controller.validationErrorOutcome(new Error("rpc down"), { errorView: hydratedCatalogs.errorView }).validationRows[0].head, "MobKit API unavailable");
 assert.equal(controller.validationErrorOutcome(new Error("rpc down"), { errorView: hydratedCatalogs.errorView }).validationRows[0].meta, "/flow-editor/rpc");
@@ -6345,6 +6347,7 @@ const sourceProjection = controller.sourceDocumentFromExport({
   mob_id: "source_proof",
   mob_toml: "[stale]",
 }, {
+  source: "mobkit/mobpacks/source",
   mob_toml: "[top-level stale export text]",
   source_files: [{
     path: "mobkit/mob.toml",
@@ -6385,7 +6388,7 @@ assert.equal(sourceProjection.sourceDocument.sourcePath, "mobkit/mob.toml");
 assert.equal(sourceProjection.sourceDocument.sourceFile.media_type, "text/toml");
 assert.equal(sourceProjection.sourceDocument.sourceFiles.length, 2);
 assert.equal(sourceProjection.sourceDocument.sourceDigest, "2496e694a40dca7b5f535d6cb5969d867b6989aa9fa258535c048947073086fa");
-assert.equal(sourceProjection.sourceDocument.source, "mobkit/mobpacks/export");
+assert.equal(sourceProjection.sourceDocument.source, "mobkit/mobpacks/source");
 assert.deepEqual(sourceProjection.sourceDocument.sourceView, hydratedCatalogs.sourceView);
 assert.equal(sourceProjection.sourceDocument.validation.ok, true);
 assert.equal(sourceProjection.validationRows[0].head, "exported");
@@ -6395,7 +6398,7 @@ assert.deepEqual(controller.sourceEditorState(sourceProjection.sourceDocument), 
   sourceHtml: '<span class="toml-table">[mob]</span>\n<span class="toml-key">id</span> = "source_proof"\n',
   drawerEyebrow: "SOURCE · mob.toml",
   inlineTitle: "mob.toml",
-  sourceLabel: "mobkit/mobpacks/export · mobkit/mob.toml · source-proof.mobpack · application/vnd.mobkit.mobpack",
+  sourceLabel: "mobkit/mobpacks/source · mobkit/mob.toml · source-proof.mobpack · application/vnd.mobkit.mobpack",
   validationSource: "",
   bodyClass: "source-drawer__body",
   selectedPath: "mobkit/mob.toml",
@@ -6420,7 +6423,7 @@ assert.deepEqual(controller.sourceEditorState(sourceProjection.sourceDocument), 
     },
   ],
   showLoading: false,
-  loadingText: "rendering mob.toml from mobkit/mobpacks/export...",
+  loadingText: "rendering mob.toml from mobkit/mobpacks/source...",
   copyLabel: "copy",
   closeLabel: "×",
   copyDisabled: false,
@@ -6430,7 +6433,7 @@ const selectedDefinitionSource = controller.sourceEditorState(sourceProjection.s
 });
 assert.equal(selectedDefinitionSource.source, "{\"mob\":{\"id\":\"source_proof\"}}\n");
 assert.equal(selectedDefinitionSource.sourceHtml, "{\"mob\":{\"id\":\"source_proof\"}}\n");
-assert.equal(selectedDefinitionSource.sourceLabel, "mobkit/mobpacks/export · definition.json · source-proof.mobpack · application/vnd.mobkit.mobpack");
+assert.equal(selectedDefinitionSource.sourceLabel, "mobkit/mobpacks/source · definition.json · source-proof.mobpack · application/vnd.mobkit.mobpack");
 assert.equal(selectedDefinitionSource.selectedPath, "definition.json");
 assert.deepEqual(selectedDefinitionSource.fileRows.map((row) => [row.path, row.selected]), [
   ["mobkit/mob.toml", false],
@@ -6463,7 +6466,7 @@ assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true,
   selectedPath: "",
   fileRows: [],
   showLoading: true,
-  loadingText: "rendering mob.toml from mobkit/mobpacks/export...",
+  loadingText: "rendering mob.toml from mobkit/mobpacks/source...",
   copyLabel: "copy",
   closeLabel: "×",
   copyDisabled: true,
@@ -6486,19 +6489,19 @@ assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true 
 });
 assert.throws(
   () => controller.sourceDocumentFromExport({ name: "No files" }, { source_files: [] }),
-  /mobkit\/mobpacks\/export did not return source_files/,
+  /mobkit\/mobpacks\/source did not return source_files/,
 );
 assert.throws(
   () => controller.sourceDocumentFromExport({ name: "No TOML file" }, {
     source_files: [{ path: "manifest.toml", text: "name = \"missing\"" }],
   }),
-  /mobkit\/mobpacks\/export did not return mobkit\/mob\.toml source file/,
+  /mobkit\/mobpacks\/source did not return mobkit\/mob\.toml source file/,
 );
 assert.throws(
   () => controller.sourceDocumentFromExport({ name: "No TOML text" }, {
     source_files: [{ path: "mobkit/mob.toml", text: "" }],
   }),
-  /mobkit\/mobpacks\/export did not return mobkit\/mob\.toml text/,
+  /mobkit\/mobpacks\/source did not return mobkit\/mob\.toml text/,
 );
 assert.throws(
   () => controller.sourceDocumentFromExport({ name: "No filename" }, {
@@ -6506,7 +6509,7 @@ assert.throws(
     source_files: [{ path: "mobkit/mob.toml", text: "[mob]\nid = \"no_filename\"\n" }],
     media_type: "application/vnd.mobkit.mobpack",
   }),
-  /mobkit\/mobpacks\/export did not return filename/,
+  /mobkit\/mobpacks\/source did not return filename/,
 );
 assert.throws(
   () => controller.sourceDocumentFromExport({ name: "No media" }, {
@@ -6514,7 +6517,7 @@ assert.throws(
     source_files: [{ path: "mobkit/mob.toml", text: "[mob]\nid = \"no_media\"\n" }],
     filename: "no-media.mobpack",
   }),
-  /mobkit\/mobpacks\/export did not return media_type/,
+  /mobkit\/mobpacks\/source did not return media_type/,
 );
 assert.throws(
   () => controller.sourceDocumentFromExport({ name: "No sha" }, {
@@ -6523,7 +6526,7 @@ assert.throws(
     filename: "no-sha.mobpack",
     media_type: "application/vnd.mobkit.mobpack",
   }),
-  /mobkit\/mobpacks\/export did not return mobkit\/mob.toml sha256/,
+  /mobkit\/mobpacks\/source did not return mobkit\/mob.toml sha256/,
 );
 
 assert.deepEqual(controller.exportDownloadPayload({
