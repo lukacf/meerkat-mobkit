@@ -5973,7 +5973,7 @@ window.MOBKIT_BOOT = {
     });
   }
 
-  function authoringDocumentFromState({ editorMode, flow, studio, currentFlow, deploySettings, mobSettings, contract } = {}) {
+  function authoringDocumentFromState({ editorMode, flow, studio, currentFlow, deploySettings, mobSettings, contract, modelCatalog, toolCatalog, contractLoaded = false } = {}) {
     const sourceStudio = studio && typeof studio === "object" ? studio : {};
     const effectiveFlow = authoringFlowForDocument({
       editorMode,
@@ -5983,24 +5983,43 @@ window.MOBKIT_BOOT = {
       members: sourceStudio.members,
       contract,
     });
-    const document = buildDocument({
+    const reconciled = reconcileAuthoringWithContract({
+      members: sourceStudio.members,
+      skillRealms: sourceStudio.skillRealms,
+      schemas: sourceStudio.schemas,
+      deploySettings,
+      mobSettings,
       flow: effectiveFlow,
+      instances: sourceStudio.instances,
+      edges: sourceStudio.edges,
+      contract,
+      modelCatalog,
+      toolCatalog,
+      contractLoaded,
+    });
+    const document = buildDocument({
+      flow: reconciled.flow,
       studio: {
-        members: sourceStudio.members,
+        members: reconciled.members,
         schemas: sourceStudio.schemas,
-        instances: sourceStudio.instances,
-        edges: sourceStudio.edges,
+        instances: reconciled.instances,
+        edges: reconciled.edges,
         frames: sourceStudio.frames,
         skillRealms: sourceStudio.skillRealms,
-        mobSettings,
+        mobSettings: reconciled.mobSettings,
       },
       currentFlow,
-      deploySettings,
+      deploySettings: reconciled.deploySettings,
       contract,
     });
     return {
-      flow: effectiveFlow,
+      flow: reconciled.flow,
       document,
+      members: reconciled.members,
+      instances: reconciled.instances,
+      edges: reconciled.edges,
+      deploySettings: reconciled.deploySettings,
+      mobSettings: reconciled.mobSettings,
     };
   }
 
@@ -13139,7 +13158,10 @@ function App() {
     currentFlow,
     deploySettings,
     mobSettings,
-    contract
+    contract,
+    modelCatalog: catalogs.models,
+    toolCatalog: catalogs.toolCatalog,
+    contractLoaded: !!catalogs.contractMeta.loaded
   }).document;
   const persistCurrentOutcome = (outcome) => {
     const projection = window.MobKitFlowController.flowRegistryPersistOutcomeProjection(flows, {

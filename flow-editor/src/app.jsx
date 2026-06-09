@@ -372,6 +372,9 @@ function App() {
     deploySettings,
     mobSettings,
     contract,
+    modelCatalog: catalogs.models,
+    toolCatalog: catalogs.toolCatalog,
+    contractLoaded: !!catalogs.contractMeta.loaded,
   }).document;
   const persistCurrentOutcome = (outcome) => {
     const projection = window.MobKitFlowController.flowRegistryPersistOutcomeProjection(flows, {

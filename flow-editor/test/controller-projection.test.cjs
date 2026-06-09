@@ -2683,6 +2683,64 @@ assert.equal(graphModeDocumentProjection.document.flow.steps[1].id, "review_step
 assert.equal(graphModeDocumentProjection.document.instances[0].id, "review_step");
 assert.equal(graphModeDocumentProjection.document.mob_settings.backendDefault, "session");
 
+const reconciledAuthoringDocumentProjection = controller.authoringDocumentFromState({
+  editorMode: "basic",
+  flow: {
+    name: "export-reconcile-doc",
+    steps: [{
+      id: "work",
+      type: "member",
+      role: "m_worker",
+      schema: "MissingArtifact",
+      expectedSchemaRef: "schemas/MissingArtifact.json",
+      allowedTools: ["shell", "git"],
+      blockedTools: ["git"],
+    }],
+  },
+  studio: {
+    members: [{
+      id: "m_worker",
+      name: "Worker",
+      role: "worker",
+      profileBinding: "inline",
+      runtimeMode: "turn_driven",
+      backend: "session",
+      model: "bad-model",
+      tools: ["shell", "git"],
+      skills: ["mob.review", "missing.skill"],
+      schema: "MissingArtifact",
+    }],
+    schemas: [{ id: "ReviewArtifact", fields: [] }],
+    instances: [{ id: "work", memberId: "m_worker", allowedTools: ["shell", "git"], blockedTools: ["git"] }],
+    edges: [],
+    frames: [],
+    skillRealms: [{ id: "main", skills: [{ id: "mob.review", source: "inline", content: "Review." }] }],
+  },
+  currentFlow: { name: "export-reconcile-doc" },
+  deploySettings: { ...testDeploySettings(), model: "bad-model" },
+  mobSettings: { backendDefault: "session" },
+  contract: {
+    deploy_settings: { command: "rkat mob deploy" },
+    mob_definition: {
+      runtime_modes: ["turn_driven"],
+      profile_binding: ["inline"],
+      profile_backends: ["session"],
+    },
+  },
+  modelCatalog: [{ id: "gpt-5.5" }],
+  toolCatalog: [{ id: "shell" }],
+  contractLoaded: true,
+});
+assert.equal(reconciledAuthoringDocumentProjection.document.deploy.model, "");
+assert.deepEqual(reconciledAuthoringDocumentProjection.document.members[0].tools, ["shell"]);
+assert.deepEqual(reconciledAuthoringDocumentProjection.document.members[0].skills, ["mob.review"]);
+assert.equal(reconciledAuthoringDocumentProjection.document.members[0].schema, "");
+assert(!("schema" in reconciledAuthoringDocumentProjection.document.flow.steps[0]));
+assert(!("expectedSchemaRef" in reconciledAuthoringDocumentProjection.document.flow.steps[0]));
+assert.deepEqual(reconciledAuthoringDocumentProjection.document.flow.steps[0].allowedTools, ["shell"]);
+assert.deepEqual(reconciledAuthoringDocumentProjection.document.flow.steps[0].blockedTools, []);
+assert.deepEqual(reconciledAuthoringDocumentProjection.document.skill_realms[0].skills, [{ id: "mob.review", source: "inline", content: "Review." }]);
+
 const prunedSkillDocument = controller.buildDocument({
   flow,
   studio: {
