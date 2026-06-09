@@ -18,6 +18,7 @@
     delete: "mobkit/mobpacks/delete",
     applyOperation: "mobkit/mobpacks/apply_operation",
     graphProjection: "mobkit/mobpacks/graph_projection",
+    graphToFlow: "mobkit/mobpacks/graph_to_flow",
     deployCommand: "mobkit/mobpacks/deploy_command",
     deploy: "mobkit/mobpacks/deploy",
   };
@@ -35,6 +36,7 @@
     delete: "delete",
     applyOperation: "apply_operation",
     graphProjection: "graph_projection",
+    graphToFlow: "graph_to_flow",
     deployCommand: "deploy_command",
     deploy: "deploy_rpc",
   };
@@ -6772,14 +6774,7 @@
   }
 
   function authoringFlowForDocument({ editorMode, flow, instances, edges, members, contract } = {}) {
-    if (String(editorMode || "") !== "advanced") return flow;
-    return graphToFlow({
-      instances,
-      edges,
-      members,
-      previousFlow: flow,
-      contract,
-    });
+    return flow;
   }
 
   function authoringDocumentFromState({ editorMode, flow, studio, currentFlow, deploySettings, mobSettings, contract, modelCatalog, toolCatalog, contractLoaded = false } = {}) {
@@ -8442,6 +8437,10 @@
     return callRpc(rpcMethod("graphProjection"), { document });
   }
 
+  async function graphToFlowDocument(document) {
+    return callRpc(rpcMethod("graphToFlow"), { document });
+  }
+
   function importParamsFromDecodedFile(input = {}) {
     const {
       filename = "",
@@ -8675,10 +8674,6 @@
 
   function graphProjectionForDocument(document, members, contract) {
     const storedFrames = Array.isArray(document?.frames) ? document.frames : [];
-    const hasStoredEditorGraph = storedFrames.length > 0;
-    if (!hasStoredEditorGraph && document?.flow && Array.isArray(document.flow.steps)) {
-      return graphProjectionForFlow(document.flow, members || [], contract);
-    }
     return {
       instances: Array.isArray(document?.instances) ? document.instances : [],
       edges: Array.isArray(document?.edges) ? document.edges : [],
@@ -11871,6 +11866,7 @@
     deleteDocument,
     applyAuthoringOperationDocument,
     graphProjectionDocument,
+    graphToFlowDocument,
     importParamsFromDecodedFile,
     deploySettingsForUi,
     deployDefaultsFromSchema,

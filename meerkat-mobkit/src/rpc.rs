@@ -71,6 +71,7 @@ pub(crate) const MOBPACK_AUTHORING_METHODS: &[&str] = &[
     "mobkit/mobpacks/delete",
     "mobkit/mobpacks/apply_operation",
     "mobkit/mobpacks/graph_projection",
+    "mobkit/mobpacks/graph_to_flow",
     "mobkit/mobpacks/deploy_command",
     "mobkit/mobpacks/deploy",
 ];
@@ -109,6 +110,7 @@ pub(crate) fn handle_mobpack_authoring_rpc(
             crate::mobpack::apply_mobpack_authoring_operation(params)
         }
         "mobkit/mobpacks/graph_projection" => crate::mobpack::graph_projection_mobpack(params),
+        "mobkit/mobpacks/graph_to_flow" => crate::mobpack::graph_to_flow_mobpack(params),
         "mobkit/mobpacks/deploy_command" => crate::mobpack::deploy_command_preview(params)
             .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
         "mobkit/mobpacks/deploy" => crate::mobpack::deploy_mobpack(params)

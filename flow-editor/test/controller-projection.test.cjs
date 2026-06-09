@@ -3108,13 +3108,12 @@ const graphModeDocumentProjection = controller.authoringDocumentFromState({
   deploySettings: testDeploySettings(),
   mobSettings: { backendDefault: "session" },
 });
-assert.equal(graphModeDocumentProjection.flow.steps[1].id, "review_step");
-assert.equal(graphModeDocumentProjection.flow.steps[1].role, "m_reviewer");
-assert.equal(graphModeDocumentProjection.document.flow.steps[1].id, "review_step");
-assert.equal(graphModeDocumentProjection.document.instances[0].id, "review_step");
+assert.deepEqual(graphModeDocumentProjection.flow.steps, []);
+assert.deepEqual(graphModeDocumentProjection.document.flow.steps, []);
 assert.deepEqual(graphModeDocumentProjection.instances, graphModeDocumentProjection.document.instances);
 assert.deepEqual(graphModeDocumentProjection.edges, graphModeDocumentProjection.document.edges);
 assert.deepEqual(graphModeDocumentProjection.frames, graphModeDocumentProjection.document.frames);
+assert.deepEqual(graphModeDocumentProjection.instances, []);
 assert.deepEqual(graphModeDocumentProjection.edges, []);
 assert.deepEqual(graphModeDocumentProjection.frames, []);
 assert.equal(graphModeDocumentProjection.document.mob_settings.backendDefault, "session");
@@ -3151,9 +3150,10 @@ const graphModeBranchProjection = controller.authoringDocumentFromState({
 assert.deepEqual(graphModeBranchProjection.instances, graphModeBranchProjection.document.instances);
 assert.deepEqual(graphModeBranchProjection.edges, graphModeBranchProjection.document.edges);
 assert.deepEqual(graphModeBranchProjection.frames, graphModeBranchProjection.document.frames);
-assert(graphModeBranchProjection.edges.every((edge) => edge.to !== "ghost"));
-assert(graphModeBranchProjection.frames.some((frame) => frame.id === "frame_branch_route" && frame.kind === "Branch"));
-assert.equal(graphModeBranchProjection.flow.steps[1].type, "branch");
+assert.deepEqual(graphModeBranchProjection.instances, []);
+assert.deepEqual(graphModeBranchProjection.edges, []);
+assert.deepEqual(graphModeBranchProjection.frames, []);
+assert.deepEqual(graphModeBranchProjection.flow.steps, []);
 
 const reconciledAuthoringDocumentProjection = controller.authoringDocumentFromState({
   editorMode: "basic",
@@ -10896,8 +10896,8 @@ const flowOnlyHydrated = controller.hydrateMobpackDocumentState({
 });
 assert.equal(flowOnlyHydrated.addToRegistry, false);
 assert.equal(flowOnlyHydrated.openEditor, false);
-assert.equal(flowOnlyHydrated.graphProjection.instances[0].id, "step_1");
-assert.equal(flowOnlyHydrated.graphProjection.instances[0].memberId, "reviewer");
+assert.deepEqual(flowOnlyHydrated.graphProjection.instances, []);
+assert.deepEqual(flowOnlyHydrated.graphProjection.edges, []);
 assert.deepEqual(flowOnlyHydrated.graphProjection.frames, []);
 assert.deepEqual(flowOnlyHydrated.validationRows, []);
 

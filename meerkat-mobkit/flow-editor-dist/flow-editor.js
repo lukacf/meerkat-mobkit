@@ -51,6 +51,7 @@ window.MOBKIT_BOOT = {
     delete: "mobkit/mobpacks/delete",
     applyOperation: "mobkit/mobpacks/apply_operation",
     graphProjection: "mobkit/mobpacks/graph_projection",
+    graphToFlow: "mobkit/mobpacks/graph_to_flow",
     deployCommand: "mobkit/mobpacks/deploy_command",
     deploy: "mobkit/mobpacks/deploy",
   };
@@ -68,6 +69,7 @@ window.MOBKIT_BOOT = {
     delete: "delete",
     applyOperation: "apply_operation",
     graphProjection: "graph_projection",
+    graphToFlow: "graph_to_flow",
     deployCommand: "deploy_command",
     deploy: "deploy_rpc",
   };
@@ -6805,14 +6807,7 @@ window.MOBKIT_BOOT = {
   }
 
   function authoringFlowForDocument({ editorMode, flow, instances, edges, members, contract } = {}) {
-    if (String(editorMode || "") !== "advanced") return flow;
-    return graphToFlow({
-      instances,
-      edges,
-      members,
-      previousFlow: flow,
-      contract,
-    });
+    return flow;
   }
 
   function authoringDocumentFromState({ editorMode, flow, studio, currentFlow, deploySettings, mobSettings, contract, modelCatalog, toolCatalog, contractLoaded = false } = {}) {
@@ -8475,6 +8470,10 @@ window.MOBKIT_BOOT = {
     return callRpc(rpcMethod("graphProjection"), { document });
   }
 
+  async function graphToFlowDocument(document) {
+    return callRpc(rpcMethod("graphToFlow"), { document });
+  }
+
   function importParamsFromDecodedFile(input = {}) {
     const {
       filename = "",
@@ -8708,10 +8707,6 @@ window.MOBKIT_BOOT = {
 
   function graphProjectionForDocument(document, members, contract) {
     const storedFrames = Array.isArray(document?.frames) ? document.frames : [];
-    const hasStoredEditorGraph = storedFrames.length > 0;
-    if (!hasStoredEditorGraph && document?.flow && Array.isArray(document.flow.steps)) {
-      return graphProjectionForFlow(document.flow, members || [], contract);
-    }
     return {
       instances: Array.isArray(document?.instances) ? document.instances : [],
       edges: Array.isArray(document?.edges) ? document.edges : [],
@@ -11904,6 +11899,7 @@ window.MOBKIT_BOOT = {
     deleteDocument,
     applyAuthoringOperationDocument,
     graphProjectionDocument,
+    graphToFlowDocument,
     importParamsFromDecodedFile,
     deploySettingsForUi,
     deployDefaultsFromSchema,
@@ -14775,24 +14771,41 @@ function App() {
   }, [flow, editorMode, contract, studio.members]);
   React.useEffect(() => {
     if (editorMode !== "advanced") return;
-    if (!window.MobKitFlowController?.graphToFlow) return;
+    if (!window.MobKitFlowController?.graphToFlowDocument) return;
     const sig = window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges, { members: studio.members, contract });
     if (sig === graphProjectionSig.current) return;
     graphProjectionSig.current = sig;
     skipNextGraphProjection.current = true;
-    const nextFlow = window.MobKitFlowController.graphToFlow({
-      instances: studio.instances,
-      edges: studio.edges,
-      members: studio.members,
-      previousFlow: flow,
-      contract
+    let cancelled = false;
+    const requestToken = currentAuthoringRevision();
+    const projectionOverrides = {
+      editorMode: "basic",
+      studio: {
+        instances: studio.instances,
+        edges: studio.edges,
+        frames: studio.frames,
+        members: studio.members
+      }
+    };
+    const projectionDocument = graphDocumentFromProjection(
+      buildAuthoringProjection(projectionOverrides),
+      projectionOverrides
+    );
+    window.MobKitFlowController.graphToFlowDocument(projectionDocument).then((projectionResult) => {
+      if (cancelled || !authoringRevisionIsCurrent(requestToken)) return;
+      const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(projectionResult, {
+        deployDefaults: catalogs.deployDefaults,
+        mobDefaults: catalogs.mobDefaults
+      });
+      if (!projection) return;
+      beginProjectionSync();
+      applyAuthoringDocumentProjection(projection);
+      markDraft();
+    }).catch(() => {
     });
-    if (nextFlow === flow) return;
-    applyMobKitAuthoringReplacement({
-      operationType: "replace_authoring_document",
-      operation: { reason: "project_graph_to_flow" },
-      flow: nextFlow
-    });
+    return () => {
+      cancelled = true;
+    };
   }, [editorMode, studio.instances, studio.edges, studio.members, flow, contract]);
   React.useEffect(() => {
     const previousMembers = previousMembersRef.current || [];
@@ -15039,8 +15052,9 @@ function App() {
       skillRealms: studio.skillRealms,
       ...overrides.studio || {}
     };
+    const projectionMode = Object.prototype.hasOwnProperty.call(overrides, "editorMode") ? overrides.editorMode : editorMode === "advanced" ? "basic" : editorMode;
     return window.MobKitFlowController.authoringDocumentFromState({
-      editorMode,
+      editorMode: projectionMode,
       flow: overrides.flow || flow,
       studio: nextStudio,
       currentFlow,
@@ -15052,11 +15066,46 @@ function App() {
       contractLoaded: !!catalogs.contractMeta.loaded
     });
   };
-  const buildDocument = () => {
-    const projection = buildAuthoringProjection();
+  const buildDocument = (overrides = {}) => {
+    const projection = buildAuthoringProjection(overrides);
     beginProjectionSync();
     applyAuthoringDocumentProjection(projection);
     return projection.document;
+  };
+  const graphRowsForProjection = (overrides = {}) => {
+    const nextStudio = overrides.studio || {};
+    return {
+      instances: Object.prototype.hasOwnProperty.call(nextStudio, "instances") ? nextStudio.instances : studio.instances,
+      edges: Object.prototype.hasOwnProperty.call(nextStudio, "edges") ? nextStudio.edges : studio.edges,
+      frames: Object.prototype.hasOwnProperty.call(nextStudio, "frames") ? nextStudio.frames : studio.frames
+    };
+  };
+  const graphDocumentFromProjection = (projection, overrides = {}) => ({
+    ...projection?.document || {},
+    ...graphRowsForProjection(overrides)
+  });
+  const buildMobKitProjectedDocument = async (overrides = {}) => {
+    const requestToken = currentAuthoringRevision();
+    if (editorMode !== "advanced") {
+      const document3 = buildDocument(overrides);
+      return { document: document3, requestToken };
+    }
+    const baseProjection = buildAuthoringProjection({ ...overrides, editorMode: "basic" });
+    const document2 = graphDocumentFromProjection(baseProjection, overrides);
+    const result = await window.MobKitFlowController.graphToFlowDocument(document2);
+    if (!authoringRevisionIsCurrent(requestToken)) {
+      return { document: null, requestToken, stale: true };
+    }
+    const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
+      deployDefaults: catalogs.deployDefaults,
+      mobDefaults: catalogs.mobDefaults
+    });
+    if (!projection) {
+      return { document: document2, requestToken };
+    }
+    beginProjectionSync();
+    applyAuthoringDocumentProjection(projection);
+    return { document: projection.document, requestToken };
   };
   const applyMobKitAuthoringOperation = async (operation) => {
     const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operation?.type);
@@ -15241,8 +15290,10 @@ function App() {
         cancelled = true;
       };
     }
-    const projection = buildAuthoringProjection();
-    window.MobKitFlowController.deployCommandPreviewForDocument(projection.document).then((preview) => {
+    buildMobKitProjectedDocument().then(({ document: document2, stale }) => {
+      if (cancelled || stale || !document2) return null;
+      return window.MobKitFlowController.deployCommandPreviewForDocument(document2);
+    }).then((preview) => {
       if (!cancelled) {
         setDeployCommandPreview(preview?.command || "");
       }
@@ -15326,8 +15377,10 @@ function App() {
     let requestToken = null;
     setApiBusy(true);
     try {
-      const document2 = buildDocument();
-      requestToken = currentAuthoringRevision();
+      const projected = await buildMobKitProjectedDocument();
+      if (projected.stale || !projected.document) return;
+      const document2 = projected.document;
+      requestToken = projected.requestToken;
       const plan = await window.MobKitFlowController.deployDocument(document2, { execute: false });
       if (!authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.deployOutcome(document2, plan, { execute: false });
@@ -15348,7 +15401,8 @@ function App() {
     }
   };
   const renderCurrentSourceDocument = async (requestToken, projectedDocument = null) => {
-    const document2 = projectedDocument || buildDocument();
+    const document2 = projectedDocument || (await buildMobKitProjectedDocument()).document;
+    if (!document2) return null;
     const result = await window.MobKitFlowController.sourceDocument(document2);
     const projection = window.MobKitFlowController.sourceDocumentFromSourceResult(document2, result, {
       sourceView: catalogs.sourceView
@@ -15368,7 +15422,9 @@ function App() {
     let requestToken = null;
     setApiBusy(true);
     try {
-      const document2 = buildDocument();
+      const projected = await buildMobKitProjectedDocument();
+      if (projected.stale || !projected.document) return;
+      const document2 = projected.document;
       requestToken = beginSourceProjection();
       const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document2);
       if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
@@ -15391,7 +15447,9 @@ function App() {
     applySourceProjectionPatch(window.MobKitFlowController.inlineSourcePendingTransition(surface));
     setApiBusy(true);
     try {
-      const document2 = buildDocument();
+      const projected = await buildMobKitProjectedDocument();
+      if (projected.stale || !projected.document) return;
+      const document2 = projected.document;
       requestToken = beginSourceProjection();
       applySourceProjectionPatch(window.MobKitFlowController.inlineSourcePendingTransition(surface));
       const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document2);
@@ -15423,8 +15481,10 @@ function App() {
     let requestToken = null;
     setApiBusy(true);
     try {
-      const document2 = buildDocument();
-      requestToken = currentAuthoringRevision();
+      const projected = await buildMobKitProjectedDocument();
+      if (projected.stale || !projected.document) return;
+      const document2 = projected.document;
+      requestToken = projected.requestToken;
       const result = await window.MobKitFlowController.validateDocument(document2);
       if (!authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.validationOutcome(document2, result);
@@ -15449,8 +15509,10 @@ function App() {
     let requestToken = null;
     setApiBusy(true);
     try {
-      const document2 = buildDocument();
-      requestToken = currentAuthoringRevision();
+      const projected = await buildMobKitProjectedDocument();
+      if (projected.stale || !projected.document) return;
+      const document2 = projected.document;
+      requestToken = projected.requestToken;
       const result = await window.MobKitFlowController.exportDocument(document2);
       if (!authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.exportOutcome(document2, result);
@@ -15477,8 +15539,10 @@ function App() {
     let requestToken = null;
     setApiBusy(true);
     try {
-      const document2 = buildDocument();
-      requestToken = currentAuthoringRevision();
+      const projected = await buildMobKitProjectedDocument();
+      if (projected.stale || !projected.document) return;
+      const document2 = projected.document;
+      requestToken = projected.requestToken;
       const result = await window.MobKitFlowController.deployDocument(document2, { execute });
       if (!authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.deployOutcome(document2, result, { execute });

@@ -2071,6 +2071,7 @@ pub fn mobpack_schema_response() -> Value {
             "delete": "mobkit/mobpacks/delete",
             "apply_operation": "mobkit/mobpacks/apply_operation",
             "graph_projection": "mobkit/mobpacks/graph_projection",
+            "graph_to_flow": "mobkit/mobpacks/graph_to_flow",
             "deploy_command": "mobkit/mobpacks/deploy_command",
             "deploy_rpc": "mobkit/mobpacks/deploy",
             "deploy_cli": "rkat mob deploy <pack.mobpack> <prompt>"
@@ -6608,6 +6609,881 @@ pub fn graph_projection_mobpack(params: &Value) -> Result<Value, String> {
         "frames": frames,
         "validation": validate_document(&document),
     }))
+}
+
+pub fn graph_to_flow_mobpack(params: &Value) -> Result<Value, String> {
+    let mut document = document_from_params(params)?;
+    let flow = graph_to_flow_from_document(&document);
+    document.flow = flow;
+    let validation = validate_document(&document);
+    Ok(json!({
+        "source": "mobkit/mobpacks/graph_to_flow",
+        "ok": validation.ok,
+        "document": document,
+        "flow": document.flow,
+        "validation": validation,
+    }))
+}
+
+fn graph_to_flow_from_document(document: &MobpackDocument) -> Value {
+    let prior = if document.flow.is_object() {
+        document.flow.clone()
+    } else {
+        json!({})
+    };
+    let prior_steps = prior
+        .get("steps")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let input_step = prior_steps
+        .iter()
+        .find(|step| step.get("type").and_then(Value::as_str) == Some("input"))
+        .cloned()
+        .unwrap_or_else(|| editor_input_step_draft_contract()["default_step"].clone());
+    let instances = document.instances.as_array().cloned().unwrap_or_default();
+    let edges = document.edges.as_array().cloned().unwrap_or_default();
+    let members = document.members.as_array().cloned().unwrap_or_default();
+    let prior_by_id = graph_to_flow_prior_steps_by_id(&prior_steps);
+    let mut member_nodes: Vec<Value> = instances
+        .iter()
+        .filter(|instance| graph_to_flow_is_member_node(instance))
+        .cloned()
+        .collect();
+    member_nodes.sort_by(graph_to_flow_compare_nodes);
+    if member_nodes.is_empty() {
+        return graph_to_flow_with_steps(prior, vec![input_step]);
+    }
+
+    let instance_by_id: BTreeMap<String, Value> = instances
+        .iter()
+        .filter_map(|instance| {
+            let id = graph_to_flow_string(instance, "id");
+            (!id.is_empty()).then(|| (id, instance.clone()))
+        })
+        .collect();
+    let (back_edges, forward_edges): (Vec<Value>, Vec<Value>) = edges
+        .iter()
+        .cloned()
+        .partition(|edge| graph_to_flow_is_back_edge(edge, &instance_by_id));
+    let column_steps =
+        graph_to_flow_segments_to_steps(&instances, &forward_edges, &members, &prior_by_id);
+
+    if let Some(back_edge) = graph_to_flow_widest_back_edge(&back_edges, &instance_by_id) {
+        let from = instance_by_id.get(&graph_to_flow_string(&back_edge, "from"));
+        let to = instance_by_id.get(&graph_to_flow_string(&back_edge, "to"));
+        if let (Some(from), Some(to)) = (from, to) {
+            let first_col = graph_to_flow_col(to);
+            let last_col = graph_to_flow_col(from);
+            let before: Vec<Value> = column_steps
+                .iter()
+                .filter(|segment| segment.col < first_col)
+                .map(|segment| segment.step.clone())
+                .collect();
+            let body: Vec<Value> = column_steps
+                .iter()
+                .filter(|segment| segment.col >= first_col && segment.col <= last_col)
+                .map(|segment| segment.step.clone())
+                .collect();
+            let after: Vec<Value> = column_steps
+                .iter()
+                .filter(|segment| segment.col > last_col)
+                .map(|segment| segment.step.clone())
+                .collect();
+            if !body.is_empty() {
+                let previous_repeat = graph_to_flow_previous_repeat_for_body(&prior_steps, &body);
+                let repeat = json!({
+                    "id": previous_repeat
+                        .as_ref()
+                        .and_then(|step| step.get("id").and_then(Value::as_str))
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| format!("loop_{}_{}", graph_to_flow_string(to, "id"), graph_to_flow_string(from, "id"))),
+                    "type": "repeat",
+                    "loopId": previous_repeat.as_ref().and_then(|step| step.get("loopId").and_then(Value::as_str)).unwrap_or_default(),
+                    "maxIterations": previous_repeat.as_ref().and_then(|step| step.get("maxIterations")).cloned().unwrap_or(Value::Null),
+                    "iterationInput": previous_repeat.as_ref().and_then(|step| step.get("iterationInput").and_then(Value::as_str)).unwrap_or_default(),
+                    "cond": graph_to_flow_repeat_condition_from_edge(&back_edge, &graph_to_flow_string(from, "id")).unwrap_or(Value::Null),
+                    "steps": body,
+                });
+                let steps = std::iter::once(input_step)
+                    .chain(before)
+                    .chain(std::iter::once(repeat))
+                    .chain(after)
+                    .collect();
+                return graph_to_flow_with_steps(prior, steps);
+            }
+        }
+    }
+
+    let steps = std::iter::once(input_step)
+        .chain(column_steps.into_iter().map(|segment| segment.step))
+        .collect();
+    graph_to_flow_with_steps(prior, steps)
+}
+
+#[derive(Clone)]
+struct GraphToFlowSegment {
+    col: i64,
+    span_end: i64,
+    step: Value,
+}
+
+fn graph_to_flow_with_steps(mut prior: Value, steps: Vec<Value>) -> Value {
+    if let Some(object) = prior.as_object_mut() {
+        object.insert("steps".to_string(), Value::Array(steps));
+        prior
+    } else {
+        json!({ "steps": steps })
+    }
+}
+
+fn graph_to_flow_prior_steps_by_id(steps: &[Value]) -> BTreeMap<String, Value> {
+    fn visit(step: &Value, out: &mut BTreeMap<String, Value>) {
+        let id = graph_to_flow_string(step, "id");
+        if !id.is_empty() {
+            out.insert(id, step.clone());
+        }
+        for key in ["steps", "fallback"] {
+            if let Some(steps) = step.get(key).and_then(Value::as_array) {
+                for step in steps {
+                    visit(step, out);
+                }
+            }
+        }
+        if let Some(branches) = step.get("branches").and_then(Value::as_array) {
+            for branch in branches {
+                if let Some(steps) = branch.get("steps").and_then(Value::as_array) {
+                    for step in steps {
+                        visit(step, out);
+                    }
+                }
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for step in steps {
+        visit(step, &mut out);
+    }
+    out
+}
+
+fn graph_to_flow_segments_to_steps(
+    instances: &[Value],
+    edges: &[Value],
+    members: &[Value],
+    prior_by_id: &BTreeMap<String, Value>,
+) -> Vec<GraphToFlowSegment> {
+    let mut member_nodes: Vec<Value> = instances
+        .iter()
+        .filter(|instance| graph_to_flow_is_member_node(instance))
+        .cloned()
+        .collect();
+    member_nodes.sort_by(graph_to_flow_compare_nodes);
+    let mut gate_nodes: Vec<Value> = instances
+        .iter()
+        .filter(|instance| {
+            graph_to_flow_bool(instance, "isGate")
+                || matches!(
+                    graph_to_flow_string(instance, "gateKind").as_str(),
+                    "branch" | "fork" | "join"
+                )
+        })
+        .cloned()
+        .collect();
+    gate_nodes.sort_by(graph_to_flow_compare_nodes);
+    let mut consumed = BTreeSet::new();
+    let mut segments = Vec::new();
+
+    for gate in gate_nodes {
+        let gate_kind = graph_to_flow_string(&gate, "gateKind");
+        if gate_kind != "fork" && gate_kind != "branch" {
+            continue;
+        }
+        let branch_starts: Vec<(Value, Value)> =
+            graph_to_flow_outgoing_edges(edges, &graph_to_flow_string(&gate, "id"))
+                .into_iter()
+                .filter_map(|edge| {
+                    let node =
+                        graph_to_flow_node_by_id(instances, &graph_to_flow_string(&edge, "to"))?;
+                    graph_to_flow_is_member_node(&node).then_some((edge, node))
+                })
+                .collect();
+        if branch_starts.len() < 2 {
+            continue;
+        }
+        let join = graph_to_flow_find_join(
+            instances,
+            edges,
+            &branch_starts
+                .iter()
+                .map(|(_, node)| graph_to_flow_string(node, "id"))
+                .collect::<Vec<_>>(),
+        );
+        let mut lanes = Vec::new();
+        for (index, (edge, node)) in branch_starts.iter().enumerate() {
+            let join_id = join.as_ref().map(|join| graph_to_flow_string(join, "id"));
+            let lane_nodes = graph_to_flow_collect_lane_to_join(
+                instances,
+                edges,
+                &graph_to_flow_string(node, "id"),
+                join_id.as_deref(),
+            );
+            for lane_node in &lane_nodes {
+                consumed.insert(graph_to_flow_string(lane_node, "id"));
+            }
+            let is_fallback =
+                gate_kind == "branch" && graph_to_flow_is_fallback_branch_lane(edge, node);
+            lanes.push(json!({
+                "id": format!("br_{}", graph_to_flow_string(node, "id")),
+                "label": graph_to_flow_lane_label(node, members, index),
+                "isFallback": is_fallback,
+                "condition": if gate_kind == "branch" { graph_to_flow_condition_text_from_edge(edge, "") } else { String::new() },
+                "cond": if gate_kind == "branch" { graph_to_flow_edge_condition_to_editor_cond(edge).unwrap_or(Value::Null) } else { Value::Null },
+                "steps": lane_nodes.iter().map(|lane_node| graph_to_flow_member_step_from_instance(lane_node, members, prior_by_id)).collect::<Vec<_>>(),
+            }));
+        }
+        let id = graph_to_flow_primitive_id_from_gate(
+            &gate,
+            if gate_kind == "branch" {
+                "branch"
+            } else {
+                "parallel"
+            },
+        );
+        let prior = prior_by_id.get(&id).cloned().unwrap_or_else(|| json!({}));
+        let depends_mode = graph_to_flow_first_string(&[
+            graph_to_flow_string(&gate, "dependsMode"),
+            graph_to_flow_string(&gate, "depends_mode"),
+            graph_to_flow_string(&prior, "dependsMode"),
+            graph_to_flow_string(&prior, "depends_mode"),
+        ]);
+        let step = if gate_kind == "branch" {
+            let branches: Vec<Value> = lanes
+                .iter()
+                .filter(|lane| {
+                    !lane
+                        .get("isFallback")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+                .map(|lane| {
+                    json!({
+                        "id": lane["id"],
+                        "label": lane["label"],
+                        "condition": lane["condition"],
+                        "cond": lane["cond"],
+                        "steps": lane["steps"],
+                    })
+                })
+                .collect();
+            let fallback: Vec<Value> = lanes
+                .iter()
+                .filter(|lane| {
+                    lane.get("isFallback")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+                .flat_map(|lane| {
+                    lane.get("steps")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .collect();
+            let mut step = json!({
+                "id": id,
+                "type": "branch",
+                "controllerRole": graph_to_flow_control_role(&gate, join.as_ref(), &prior),
+                "branches": branches,
+                "fallback": fallback,
+            });
+            if !depends_mode.is_empty() {
+                step["dependsMode"] = json!(depends_mode);
+            }
+            step
+        } else {
+            let branches: Vec<Value> = lanes
+                .iter()
+                .map(|lane| json!({ "id": lane["id"], "label": lane["label"], "steps": lane["steps"] }))
+                .collect();
+            let mut step = json!({
+                "id": id,
+                "type": "parallel",
+                "controllerRole": graph_to_flow_control_role(&gate, join.as_ref(), &prior),
+                "dispatch": graph_to_flow_first_string(&[
+                    graph_to_flow_string(&gate, "dispatch"),
+                    graph_to_flow_string(&gate, "dispatchMode"),
+                    graph_to_flow_string(&gate, "dispatch_mode"),
+                    graph_to_flow_string(&prior, "dispatch"),
+                    graph_to_flow_string(&prior, "dispatchMode"),
+                    graph_to_flow_string(&prior, "dispatch_mode"),
+                ]),
+                "collection": join.as_ref().map(|join| graph_to_flow_collection_from_join(join)).unwrap_or_default(),
+                "branches": branches,
+            });
+            if let Some(quorum) = join
+                .as_ref()
+                .and_then(|join| join.get("quorum"))
+                .and_then(|quorum| quorum.get("n").or(Some(quorum)))
+                .cloned()
+            {
+                if !quorum.is_null() {
+                    step["quorum"] = quorum;
+                }
+            }
+            if !depends_mode.is_empty() {
+                step["dependsMode"] = json!(depends_mode);
+            }
+            step
+        };
+        segments.push(GraphToFlowSegment {
+            col: graph_to_flow_col(&gate),
+            span_end: join
+                .as_ref()
+                .map(graph_to_flow_col)
+                .unwrap_or_else(|| graph_to_flow_col(&gate)),
+            step,
+        });
+    }
+
+    let mut groups: BTreeMap<i64, Vec<Value>> = BTreeMap::new();
+    for node in member_nodes {
+        let node_id = graph_to_flow_string(&node, "id");
+        if consumed.contains(&node_id)
+            || segments.iter().any(|segment| {
+                graph_to_flow_col(&node) >= segment.col
+                    && graph_to_flow_col(&node) <= segment.span_end
+            })
+        {
+            continue;
+        }
+        groups
+            .entry(graph_to_flow_col(&node))
+            .or_default()
+            .push(node);
+    }
+    for (col, mut nodes) in groups {
+        nodes.sort_by(graph_to_flow_compare_nodes);
+        segments.push(GraphToFlowSegment {
+            col,
+            span_end: col,
+            step: graph_to_flow_step_for_group(&nodes, edges, members, prior_by_id),
+        });
+    }
+    segments.sort_by(|a, b| a.col.cmp(&b.col).then(a.span_end.cmp(&b.span_end)));
+    segments
+}
+
+fn graph_to_flow_step_for_group(
+    nodes: &[Value],
+    edges: &[Value],
+    members: &[Value],
+    prior_by_id: &BTreeMap<String, Value>,
+) -> Value {
+    if nodes.len() == 1 {
+        return graph_to_flow_member_step_from_instance(&nodes[0], members, prior_by_id);
+    }
+    let has_conditional_fan_in = nodes.iter().any(|node| {
+        graph_to_flow_incoming_edges(edges, &graph_to_flow_string(node, "id"))
+            .iter()
+            .any(graph_to_flow_is_condition_edge)
+    });
+    let prefix = if has_conditional_fan_in {
+        "branch"
+    } else {
+        "parallel"
+    };
+    let id = format!(
+        "{prefix}_{}",
+        nodes
+            .iter()
+            .map(|node| graph_to_flow_string(node, "id"))
+            .collect::<Vec<_>>()
+            .join("_")
+    );
+    let prior = prior_by_id.get(&id).cloned().unwrap_or_else(|| json!({}));
+    if has_conditional_fan_in {
+        json!({
+            "id": id,
+            "type": "branch",
+            "controllerRole": graph_to_flow_control_role(&Value::Null, None, &prior),
+            "branches": nodes.iter().enumerate().map(|(index, node)| {
+                let edge = graph_to_flow_incoming_edges(edges, &graph_to_flow_string(node, "id"))
+                    .into_iter()
+                    .find(graph_to_flow_is_condition_edge);
+                json!({
+                    "id": format!("br_{}", graph_to_flow_string(node, "id")),
+                    "label": graph_to_flow_lane_label(node, members, index),
+                    "condition": edge.as_ref().map(|edge| graph_to_flow_condition_text_from_edge(edge, "")).unwrap_or_default(),
+                    "cond": edge.as_ref().and_then(graph_to_flow_edge_condition_to_editor_cond).unwrap_or(Value::Null),
+                    "steps": [graph_to_flow_member_step_from_instance(node, members, prior_by_id)],
+                })
+            }).collect::<Vec<_>>(),
+            "fallback": [],
+        })
+    } else {
+        json!({
+            "id": id,
+            "type": "parallel",
+            "controllerRole": graph_to_flow_control_role(&Value::Null, None, &prior),
+            "dispatch": graph_to_flow_string(&prior, "dispatch"),
+            "collection": graph_to_flow_string(&prior, "collection"),
+            "branches": nodes.iter().enumerate().map(|(index, node)| {
+                json!({
+                    "id": format!("br_{}", graph_to_flow_string(node, "id")),
+                    "label": graph_to_flow_lane_label(node, members, index),
+                    "steps": [graph_to_flow_member_step_from_instance(node, members, prior_by_id)],
+                })
+            }).collect::<Vec<_>>(),
+        })
+    }
+}
+
+fn graph_to_flow_member_step_from_instance(
+    instance: &Value,
+    _members: &[Value],
+    prior_by_id: &BTreeMap<String, Value>,
+) -> Value {
+    let id = graph_to_flow_string(instance, "id");
+    let prior = prior_by_id.get(&id).cloned().unwrap_or_else(|| json!({}));
+    let mut step = json!({
+        "id": id,
+        "type": "member",
+        "role": graph_to_flow_string(instance, "memberId"),
+        "instruction": graph_to_flow_string(&prior, "instruction"),
+        "launchMode": graph_to_flow_value_with_alias(instance, &prior, &["launchMode", "launch_mode"]).unwrap_or(Value::Null),
+        "quorum": graph_to_flow_value_with_alias(instance, &prior, &["quorum", "collectionQuorum"]).unwrap_or(Value::Null),
+        "timeoutMs": graph_to_flow_value_with_alias(instance, &prior, &["timeoutMs", "timeout_ms"]).unwrap_or(Value::Null),
+        "allowedTools": graph_to_flow_value_with_alias(instance, &prior, &["allowedTools", "allowed_tools"]).unwrap_or_else(|| json!([])),
+        "blockedTools": graph_to_flow_value_with_alias(instance, &prior, &["blockedTools", "blocked_tools"]).unwrap_or_else(|| json!([])),
+    });
+    for (out_key, keys) in [
+        ("dispatchMode", ["dispatchMode", "dispatch_mode", ""]),
+        (
+            "collection",
+            ["collection", "collectionPolicy", "collection_policy"],
+        ),
+        ("dependsMode", ["dependsMode", "depends_mode", ""]),
+        ("outputFormat", ["outputFormat", "output_format", ""]),
+    ] {
+        let value = graph_to_flow_first_string(
+            &keys
+                .iter()
+                .filter(|key| !key.is_empty())
+                .map(|key| graph_to_flow_string(instance, key))
+                .chain(
+                    keys.iter()
+                        .filter(|key| !key.is_empty())
+                        .map(|key| graph_to_flow_string(&prior, key)),
+                )
+                .collect::<Vec<_>>(),
+        );
+        if !value.is_empty() {
+            step[out_key] = json!(value);
+        }
+    }
+    step
+}
+
+fn graph_to_flow_previous_repeat_for_body(prior_steps: &[Value], body: &[Value]) -> Option<Value> {
+    let body_ids = body
+        .iter()
+        .map(|step| graph_to_flow_string(step, "id"))
+        .collect::<Vec<_>>()
+        .join("|");
+    let mut found = None;
+    fn visit(step: &Value, body_ids: &str, found: &mut Option<Value>) {
+        if found.is_some() {
+            return;
+        }
+        if step.get("type").and_then(Value::as_str) == Some("repeat") {
+            let candidate = step
+                .get("steps")
+                .and_then(Value::as_array)
+                .map(|steps| {
+                    steps
+                        .iter()
+                        .map(|step| graph_to_flow_string(step, "id"))
+                        .collect::<Vec<_>>()
+                        .join("|")
+                })
+                .unwrap_or_default();
+            if candidate == body_ids {
+                *found = Some(step.clone());
+                return;
+            }
+        }
+        for key in ["steps", "fallback"] {
+            if let Some(steps) = step.get(key).and_then(Value::as_array) {
+                for step in steps {
+                    visit(step, body_ids, found);
+                }
+            }
+        }
+        if let Some(branches) = step.get("branches").and_then(Value::as_array) {
+            for branch in branches {
+                if let Some(steps) = branch.get("steps").and_then(Value::as_array) {
+                    for step in steps {
+                        visit(step, body_ids, found);
+                    }
+                }
+            }
+        }
+    }
+    for step in prior_steps {
+        visit(step, &body_ids, &mut found);
+    }
+    found
+}
+
+fn graph_to_flow_is_member_node(instance: &Value) -> bool {
+    !graph_to_flow_string(instance, "memberId").is_empty()
+        && !graph_to_flow_bool(instance, "isTerminal")
+        && !graph_to_flow_bool(instance, "isGate")
+}
+
+fn graph_to_flow_is_back_edge(edge: &Value, instance_by_id: &BTreeMap<String, Value>) -> bool {
+    if !graph_to_flow_is_condition_edge(edge) {
+        return false;
+    }
+    let from = instance_by_id.get(&graph_to_flow_string(edge, "from"));
+    let to = instance_by_id.get(&graph_to_flow_string(edge, "to"));
+    matches!((from, to), (Some(from), Some(to)) if graph_to_flow_col(to) <= graph_to_flow_col(from))
+}
+
+fn graph_to_flow_widest_back_edge(
+    back_edges: &[Value],
+    instance_by_id: &BTreeMap<String, Value>,
+) -> Option<Value> {
+    back_edges.iter().cloned().max_by_key(|edge| {
+        let from = instance_by_id.get(&graph_to_flow_string(edge, "from"));
+        let to = instance_by_id.get(&graph_to_flow_string(edge, "to"));
+        match (from, to) {
+            (Some(from), Some(to)) => graph_to_flow_col(from) - graph_to_flow_col(to),
+            _ => 0,
+        }
+    })
+}
+
+fn graph_to_flow_is_condition_edge(edge: &Value) -> bool {
+    graph_to_flow_string(edge, "kind") == "cond"
+}
+
+fn graph_to_flow_is_fallback_branch_lane(edge: &Value, node: &Value) -> bool {
+    !graph_to_flow_is_condition_edge(edge)
+        || graph_to_flow_string(edge, "label").eq_ignore_ascii_case("fallback")
+        || graph_to_flow_string(node, "lane").eq_ignore_ascii_case("fallback")
+}
+
+fn graph_to_flow_condition_text_from_edge(edge: &Value, fallback: &str) -> String {
+    let Some((path, op, val)) = graph_to_flow_normalized_edge_condition(edge) else {
+        let label = graph_to_flow_string(edge, "label");
+        return if label.is_empty() {
+            fallback.to_string()
+        } else {
+            label
+        };
+    };
+    if path.is_empty() || op.is_empty() || val.is_null() || val.as_str() == Some("") {
+        return fallback.to_string();
+    }
+    format!(
+        "{path} {op} {}",
+        serde_json::to_string(&val).unwrap_or_else(|_| "\"\"".to_string())
+    )
+}
+
+fn graph_to_flow_edge_condition_to_editor_cond(edge: &Value) -> Option<Value> {
+    let (path, op, val) = graph_to_flow_normalized_edge_condition(edge)?;
+    let val_string = match val {
+        Value::String(value) => value,
+        other => other.to_string(),
+    };
+    if path.is_empty() || op.is_empty() || val_string.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = path.split('.').filter(|part| !part.is_empty()).collect();
+    if parts.len() == 2 && parts[0] == "params" {
+        return Some(
+            json!({ "namespace": "params", "stepId": "params", "field": parts[1], "op": op, "val": val_string }),
+        );
+    }
+    if parts.len() == 3 && parts[0] == "steps" {
+        return Some(
+            json!({ "namespace": "steps", "stepId": parts[1], "field": parts[2], "op": op, "val": val_string }),
+        );
+    }
+    None
+}
+
+fn graph_to_flow_repeat_condition_from_edge(edge: &Value, step_id: &str) -> Option<Value> {
+    let (path, op, val) = graph_to_flow_normalized_edge_condition(edge)?;
+    let field = path
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .last()?
+        .to_string();
+    let val_string = match val {
+        Value::String(value) => value,
+        other => other.to_string(),
+    };
+    if field.is_empty() || op.is_empty() || val_string.is_empty() {
+        return None;
+    }
+    Some(json!({ "stepId": step_id, "field": field, "op": op, "val": val_string }))
+}
+
+fn graph_to_flow_normalized_edge_condition(edge: &Value) -> Option<(String, String, Value)> {
+    let cond = edge.get("cond")?;
+    let op = graph_to_flow_first_string(&[
+        graph_to_flow_string(cond, "op"),
+        graph_to_flow_string(cond, "operator"),
+    ]);
+    let val = cond
+        .get("val")
+        .or_else(|| cond.get("value"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let direct_path = graph_to_flow_first_string(&[
+        graph_to_flow_string(cond, "var"),
+        graph_to_flow_string(cond, "path"),
+        graph_to_flow_string(cond, "source"),
+    ]);
+    if !direct_path.is_empty() {
+        return Some((direct_path, op, val));
+    }
+    let namespace = graph_to_flow_string(cond, "namespace");
+    let step_id = graph_to_flow_first_string(&[
+        graph_to_flow_string(cond, "stepId"),
+        graph_to_flow_string(cond, "step_id"),
+    ]);
+    let field = graph_to_flow_string(cond, "field");
+    if field.is_empty() {
+        return None;
+    }
+    if namespace == "params" || step_id == "params" {
+        return Some((format!("params.{field}"), op, val));
+    }
+    if !step_id.is_empty() {
+        return Some((format!("steps.{step_id}.{field}"), op, val));
+    }
+    None
+}
+
+fn graph_to_flow_find_join(
+    instances: &[Value],
+    edges: &[Value],
+    branch_start_ids: &[String],
+) -> Option<Value> {
+    let mut joins: Vec<Value> = instances
+        .iter()
+        .filter(|instance| graph_to_flow_string(instance, "gateKind") == "join")
+        .cloned()
+        .collect();
+    joins.sort_by(graph_to_flow_compare_nodes);
+    joins.into_iter().find(|join| {
+        let join_id = graph_to_flow_string(join, "id");
+        let incoming: BTreeSet<String> = graph_to_flow_incoming_edges(edges, &join_id)
+            .iter()
+            .map(|edge| graph_to_flow_string(edge, "from"))
+            .collect();
+        branch_start_ids.iter().any(|id| {
+            incoming.contains(id) || graph_to_flow_lane_reaches(instances, edges, id, &join_id)
+        })
+    })
+}
+
+fn graph_to_flow_collect_lane_to_join(
+    instances: &[Value],
+    edges: &[Value],
+    start_id: &str,
+    join_id: Option<&str>,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut current = graph_to_flow_node_by_id(instances, start_id);
+    let mut seen = BTreeSet::new();
+    while let Some(node) = current {
+        let node_id = graph_to_flow_string(&node, "id");
+        if join_id == Some(node_id.as_str()) || !seen.insert(node_id.clone()) {
+            break;
+        }
+        if graph_to_flow_is_member_node(&node) {
+            out.push(node.clone());
+        }
+        let mut next_nodes: Vec<Value> = graph_to_flow_outgoing_edges(edges, &node_id)
+            .iter()
+            .filter(|edge| join_id != Some(graph_to_flow_string(edge, "to").as_str()))
+            .filter_map(|edge| {
+                graph_to_flow_node_by_id(instances, &graph_to_flow_string(edge, "to"))
+            })
+            .filter(|node| !graph_to_flow_bool(node, "isTerminal"))
+            .collect();
+        next_nodes.sort_by(graph_to_flow_compare_nodes);
+        current = next_nodes.into_iter().next();
+    }
+    out
+}
+
+fn graph_to_flow_lane_reaches(
+    instances: &[Value],
+    edges: &[Value],
+    start_id: &str,
+    target_id: &str,
+) -> bool {
+    let mut queue = VecDeque::from([start_id.to_string()]);
+    let mut seen = BTreeSet::new();
+    while let Some(id) = queue.pop_front() {
+        if id == target_id {
+            return true;
+        }
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        for edge in graph_to_flow_outgoing_edges(edges, &id) {
+            if let Some(node) =
+                graph_to_flow_node_by_id(instances, &graph_to_flow_string(&edge, "to"))
+            {
+                if !graph_to_flow_bool(&node, "isTerminal") {
+                    queue.push_back(graph_to_flow_string(&node, "id"));
+                }
+            }
+        }
+    }
+    false
+}
+
+fn graph_to_flow_collection_from_join(join: &Value) -> String {
+    graph_to_flow_first_string(&[
+        graph_to_flow_string(join, "collection"),
+        graph_to_flow_string(join, "collectionPolicy"),
+        graph_to_flow_string(join, "collection_policy"),
+    ])
+}
+
+fn graph_to_flow_control_role(gate: &Value, join: Option<&Value>, prior: &Value) -> String {
+    let mut values = Vec::new();
+    if let Some(join) = join {
+        values.extend([
+            graph_to_flow_string(join, "controllerRole"),
+            graph_to_flow_string(join, "controllerMemberId"),
+            graph_to_flow_string(join, "controlRole"),
+        ]);
+    }
+    values.extend([
+        graph_to_flow_string(gate, "controllerRole"),
+        graph_to_flow_string(gate, "controllerMemberId"),
+        graph_to_flow_string(gate, "controlRole"),
+        graph_to_flow_string(prior, "controllerRole"),
+        graph_to_flow_string(prior, "controllerMemberId"),
+        graph_to_flow_string(prior, "controlRole"),
+    ]);
+    graph_to_flow_first_string(&values)
+}
+
+fn graph_to_flow_primitive_id_from_gate(gate: &Value, kind: &str) -> String {
+    let id = graph_to_flow_string(gate, "id");
+    let prefix = format!("g_{kind}_");
+    if id.starts_with(&prefix) && id.len() > prefix.len() {
+        id[prefix.len()..].to_string()
+    } else {
+        format!(
+            "{kind}_{}",
+            if id.is_empty() { "flow" } else { id.as_str() }
+        )
+    }
+}
+
+fn graph_to_flow_lane_label(node: &Value, members: &[Value], index: usize) -> String {
+    let lane = graph_to_flow_string(node, "lane");
+    if !lane.is_empty() {
+        return lane;
+    }
+    let member_id = graph_to_flow_string(node, "memberId");
+    members
+        .iter()
+        .find(|member| graph_to_flow_string(member, "id") == member_id)
+        .map(|member| graph_to_flow_string(member, "name"))
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| {
+            if !member_id.is_empty() {
+                member_id
+            } else {
+                format!("Branch {}", index + 1)
+            }
+        })
+}
+
+fn graph_to_flow_node_by_id(instances: &[Value], id: &str) -> Option<Value> {
+    instances
+        .iter()
+        .find(|instance| graph_to_flow_string(instance, "id") == id)
+        .cloned()
+}
+
+fn graph_to_flow_outgoing_edges(edges: &[Value], id: &str) -> Vec<Value> {
+    edges
+        .iter()
+        .filter(|edge| graph_to_flow_string(edge, "from") == id)
+        .cloned()
+        .collect()
+}
+
+fn graph_to_flow_incoming_edges(edges: &[Value], id: &str) -> Vec<Value> {
+    edges
+        .iter()
+        .filter(|edge| graph_to_flow_string(edge, "to") == id)
+        .cloned()
+        .collect()
+}
+
+fn graph_to_flow_compare_nodes(a: &Value, b: &Value) -> std::cmp::Ordering {
+    graph_to_flow_col(a)
+        .cmp(&graph_to_flow_col(b))
+        .then(graph_to_flow_row(a).cmp(&graph_to_flow_row(b)))
+        .then(graph_to_flow_string(a, "id").cmp(&graph_to_flow_string(b, "id")))
+}
+
+fn graph_to_flow_col(value: &Value) -> i64 {
+    value.get("col").and_then(Value::as_i64).unwrap_or(0)
+}
+
+fn graph_to_flow_row(value: &Value) -> i64 {
+    value.get("row").and_then(Value::as_i64).unwrap_or(0)
+}
+
+fn graph_to_flow_bool(value: &Value, key: &str) -> bool {
+    value.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn graph_to_flow_string(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn graph_to_flow_value_with_alias(
+    primary: &Value,
+    fallback: &Value,
+    keys: &[&str],
+) -> Option<Value> {
+    keys.iter()
+        .find_map(|key| primary.get(*key).filter(|value| !value.is_null()).cloned())
+        .or_else(|| {
+            keys.iter()
+                .find_map(|key| fallback.get(*key).filter(|value| !value.is_null()).cloned())
+        })
+}
+
+fn graph_to_flow_first_string(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| value.trim())
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string()
 }
 
 pub fn validate_mobpack(params: &Value) -> Result<MobpackValidationResult, String> {
@@ -20621,6 +21497,175 @@ model = "gpt-5.5"
     }
 
     #[test]
+    fn graph_to_flow_rpc_projects_member_sequence() {
+        let mut document = valid_document();
+        document.members = json!([
+            { "id": "planner", "name": "Planner", "role": "planner", "model": "gpt-5.5", "profileBinding": "inline", "runtimeMode": "turn_driven", "skills": [], "tools": ["comms"] },
+            { "id": "reviewer", "name": "Reviewer", "role": "reviewer", "model": "gpt-5.5", "profileBinding": "inline", "runtimeMode": "turn_driven", "skills": [], "tools": ["comms"] }
+        ]);
+        document.flow = json!({
+            "name": "main",
+            "steps": [
+                { "id": "input_1", "type": "input", "task": "Task", "fields": "", "inputParams": [] },
+                { "id": "plan", "type": "member", "role": "planner", "instruction": "Plan." },
+                { "id": "review", "type": "member", "role": "reviewer", "instruction": "Review." }
+            ]
+        });
+        document.instances = json!([
+            { "id": "plan", "memberId": "planner", "col": 0, "row": 0 },
+            { "id": "review", "memberId": "reviewer", "col": 1, "row": 0 }
+        ]);
+        document.edges = json!([
+            { "id": "e_plan_review", "from": "plan", "to": "review", "kind": "next", "label": "" }
+        ]);
+        document.frames = json!([]);
+
+        let projection =
+            graph_to_flow_mobpack(&json!({ "document": document })).expect("graph to flow");
+
+        assert_eq!(projection["source"], json!("mobkit/mobpacks/graph_to_flow"));
+        assert_eq!(projection["flow"]["steps"][0]["type"], json!("input"));
+        assert_eq!(projection["flow"]["steps"][1]["id"], json!("plan"));
+        assert_eq!(
+            projection["flow"]["steps"][1]["instruction"],
+            json!("Plan.")
+        );
+        assert_eq!(projection["flow"]["steps"][2]["id"], json!("review"));
+        assert_eq!(projection["document"]["flow"], projection["flow"]);
+    }
+
+    #[test]
+    fn graph_to_flow_rpc_projects_branch_fallback() {
+        let mut document = valid_document();
+        document.members = json!([
+            { "id": "m_worker", "name": "Worker", "role": "worker", "model": "gpt-5.5", "profileBinding": "inline", "runtimeMode": "turn_driven", "skills": [], "tools": ["comms"] },
+            { "id": "m_reviewer", "name": "Reviewer", "role": "reviewer", "model": "gpt-5.5", "profileBinding": "inline", "runtimeMode": "turn_driven", "skills": [], "tools": ["comms"] }
+        ]);
+        document.flow = json!({
+            "name": "main",
+            "steps": [
+                { "id": "input_1", "type": "input", "task": "Route", "fields": "", "inputParams": [{ "id": "route", "name": "route", "type": "string", "required": true }] },
+                { "id": "branch_route", "type": "branch", "controllerRole": "m_reviewer", "branches": [], "fallback": [] }
+            ]
+        });
+        document.instances = json!([
+            { "id": "g_branch_branch_route", "isGate": true, "gateKind": "branch", "col": 0, "row": 0 },
+            { "id": "work", "memberId": "m_worker", "col": 1, "row": 0 },
+            { "id": "review", "memberId": "m_reviewer", "lane": "fallback", "col": 1, "row": 1 },
+            { "id": "j_branch_branch_route", "isGate": true, "gateKind": "join", "controllerRole": "m_reviewer", "collection": "any", "col": 2, "row": 0 }
+        ]);
+        document.edges = json!([
+            { "id": "e_route_work", "from": "g_branch_branch_route", "to": "work", "kind": "cond", "label": "route == code", "cond": { "namespace": "params", "stepId": "params", "field": "route", "op": "==", "val": "code" } },
+            { "id": "e_route_fallback", "from": "g_branch_branch_route", "to": "review", "kind": "next", "label": "fallback" },
+            { "id": "e_work_join", "from": "work", "to": "j_branch_branch_route", "kind": "next", "label": "" },
+            { "id": "e_review_join", "from": "review", "to": "j_branch_branch_route", "kind": "next", "label": "" }
+        ]);
+        document.frames = json!([]);
+
+        let projection =
+            graph_to_flow_mobpack(&json!({ "document": document })).expect("graph to flow");
+        let branch = &projection["flow"]["steps"][1];
+
+        assert_eq!(branch["id"], json!("branch_route"));
+        assert_eq!(branch["type"], json!("branch"));
+        assert_eq!(branch["controllerRole"], json!("m_reviewer"));
+        assert_eq!(branch["branches"].as_array().expect("branches").len(), 1);
+        assert_eq!(branch["branches"][0]["steps"][0]["id"], json!("work"));
+        assert_eq!(branch["branches"][0]["cond"]["namespace"], json!("params"));
+        assert_eq!(branch["branches"][0]["cond"]["field"], json!("route"));
+        assert_eq!(branch["fallback"][0]["id"], json!("review"));
+    }
+
+    #[test]
+    fn graph_to_flow_rpc_projects_parallel_join_policy() {
+        let mut document = valid_document();
+        document.members = json!([
+            { "id": "m_worker", "name": "Worker", "role": "worker", "model": "gpt-5.5", "profileBinding": "inline", "runtimeMode": "turn_driven", "skills": [], "tools": ["comms"] },
+            { "id": "m_reviewer", "name": "Reviewer", "role": "reviewer", "model": "gpt-5.5", "profileBinding": "inline", "runtimeMode": "turn_driven", "skills": [], "tools": ["comms"] }
+        ]);
+        document.flow = json!({
+            "name": "main",
+            "steps": [
+                { "id": "input_1", "type": "input", "task": "Parallel", "fields": "", "inputParams": [] },
+                { "id": "parallel_pair", "type": "parallel", "dispatch": "fan_out", "collection": "all", "branches": [] }
+            ]
+        });
+        document.instances = json!([
+            { "id": "g_parallel_parallel_pair", "isGate": true, "gateKind": "fork", "dispatch": "fan_out", "col": 0, "row": 0 },
+            { "id": "work", "memberId": "m_worker", "col": 1, "row": 0 },
+            { "id": "review", "memberId": "m_reviewer", "col": 1, "row": 1 },
+            { "id": "j_parallel_parallel_pair", "isGate": true, "gateKind": "join", "controllerRole": "m_reviewer", "collection": "all", "col": 2, "row": 0 }
+        ]);
+        document.edges = json!([
+            { "id": "e_parallel_work", "from": "g_parallel_parallel_pair", "to": "work", "kind": "next", "label": "" },
+            { "id": "e_parallel_review", "from": "g_parallel_parallel_pair", "to": "review", "kind": "next", "label": "" },
+            { "id": "e_work_join", "from": "work", "to": "j_parallel_parallel_pair", "kind": "next", "label": "" },
+            { "id": "e_review_join", "from": "review", "to": "j_parallel_parallel_pair", "kind": "next", "label": "" }
+        ]);
+        document.frames = json!([]);
+
+        let projection =
+            graph_to_flow_mobpack(&json!({ "document": document })).expect("graph to flow");
+        let parallel = &projection["flow"]["steps"][1];
+
+        assert_eq!(parallel["id"], json!("parallel_pair"));
+        assert_eq!(parallel["type"], json!("parallel"));
+        assert_eq!(parallel["dispatch"], json!("fan_out"));
+        assert_eq!(parallel["collection"], json!("all"));
+        assert_eq!(parallel["controllerRole"], json!("m_reviewer"));
+        assert_eq!(parallel["branches"].as_array().expect("branches").len(), 2);
+    }
+
+    #[test]
+    fn graph_to_flow_rpc_projects_repeat_back_edge() {
+        let mut document = valid_document();
+        document.members = json!([
+            { "id": "m_worker", "name": "Worker", "role": "worker", "model": "gpt-5.5", "profileBinding": "inline", "runtimeMode": "turn_driven", "skills": [], "tools": ["comms"] },
+            { "id": "m_reviewer", "name": "Reviewer", "role": "reviewer", "model": "gpt-5.5", "profileBinding": "inline", "runtimeMode": "turn_driven", "skills": [], "tools": ["comms"] }
+        ]);
+        document.flow = json!({
+            "name": "main",
+            "steps": [
+                { "id": "input_1", "type": "input", "task": "Repeat", "fields": "", "inputParams": [] },
+                {
+                    "id": "repeat_review",
+                    "type": "repeat",
+                    "loopId": "review_loop",
+                    "maxIterations": 4,
+                    "iterationInput": "draft",
+                    "steps": [
+                        { "id": "work", "type": "member", "role": "m_worker", "instruction": "Work." },
+                        { "id": "review", "type": "member", "role": "m_reviewer", "instruction": "Review." }
+                    ]
+                }
+            ]
+        });
+        document.instances = json!([
+            { "id": "work", "memberId": "m_worker", "col": 0, "row": 0 },
+            { "id": "review", "memberId": "m_reviewer", "col": 1, "row": 0 }
+        ]);
+        document.edges = json!([
+            { "id": "e_work_review", "from": "work", "to": "review", "kind": "next", "label": "" },
+            { "id": "e_review_work", "from": "review", "to": "work", "kind": "cond", "label": "retry", "cond": { "namespace": "steps", "stepId": "review", "field": "status", "op": "==", "val": "revise" } }
+        ]);
+        document.frames = json!([]);
+
+        let projection =
+            graph_to_flow_mobpack(&json!({ "document": document })).expect("graph to flow");
+        let repeat = &projection["flow"]["steps"][1];
+
+        assert_eq!(repeat["id"], json!("repeat_review"));
+        assert_eq!(repeat["type"], json!("repeat"));
+        assert_eq!(repeat["loopId"], json!("review_loop"));
+        assert_eq!(repeat["maxIterations"], json!(4));
+        assert_eq!(repeat["iterationInput"], json!("draft"));
+        assert_eq!(repeat["cond"]["stepId"], json!("review"));
+        assert_eq!(repeat["cond"]["field"], json!("status"));
+        assert_eq!(repeat["steps"][0]["instruction"], json!("Work."));
+        assert_eq!(repeat["steps"][1]["instruction"], json!("Review."));
+    }
+
+    #[test]
     fn apply_operation_adds_agent_definition_as_real_document_member() {
         let catalogs = mobpack_catalogs_response();
         let definition = catalogs["agent_definitions"]
@@ -22030,6 +23075,7 @@ model = "gpt-5.5"
             ("delete", "mobkit/mobpacks/delete"),
             ("apply_operation", "mobkit/mobpacks/apply_operation"),
             ("graph_projection", "mobkit/mobpacks/graph_projection"),
+            ("graph_to_flow", "mobkit/mobpacks/graph_to_flow"),
             ("deploy_command", "mobkit/mobpacks/deploy_command"),
             ("deploy_rpc", "mobkit/mobpacks/deploy"),
             ("deploy_cli", "rkat mob deploy <pack.mobpack> <prompt>"),
