@@ -137,33 +137,6 @@ function App() {
 
   React.useEffect(() => {
     let cancelled = false;
-    setDeployCommandPreview("");
-    if (!deployContractLoaded) {
-      return () => {
-        cancelled = true;
-      };
-    }
-    window.MobKitFlowController.deployCommandPreview(deploySettings, {
-      packPath: "<pack.mobpack>",
-      prompt: deploySettings.prompt || "<prompt>",
-    })
-      .then((preview) => {
-        if (!cancelled) {
-          setDeployCommandPreview(preview?.command || "");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setDeployCommandPreview("");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deploySettings, deployContractLoaded]);
-
-  React.useEffect(() => {
-    let cancelled = false;
     window.MobKitFlowController.configure({ rpcUrl: rpcUrlFromShell() });
     window.MobKitFlowController.loadSchema()
       .then(async (schema) => {
@@ -410,6 +383,46 @@ function App() {
     applyAuthoringDocumentProjection(projection);
     return projection.document;
   };
+  React.useEffect(() => {
+    let cancelled = false;
+    setDeployCommandPreview("");
+    if (!deployContractLoaded) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const projection = buildAuthoringProjection();
+    window.MobKitFlowController.deployCommandPreviewForDocument(projection.document)
+      .then((preview) => {
+        if (!cancelled) {
+          setDeployCommandPreview(preview?.command || "");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDeployCommandPreview("");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    deployContractLoaded,
+    editorMode,
+    flow,
+    studio.members,
+    studio.instances,
+    studio.edges,
+    studio.frames,
+    studio.schemas,
+    studio.skillRealms,
+    deploySettings,
+    mobSettings,
+    contract,
+    catalogs.models,
+    catalogs.toolCatalog,
+    catalogs.contractMeta.loaded,
+  ]);
   const persistCurrentOutcome = (outcome) => {
     const projection = window.MobKitFlowController.flowRegistryPersistOutcomeProjection(flows, {
       currentFlowId,

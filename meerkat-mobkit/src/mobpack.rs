@@ -2254,15 +2254,14 @@ pub fn validate_mobpack(params: &Value) -> Result<MobpackValidationResult, Strin
 }
 
 pub fn deploy_command_preview(params: &Value) -> Result<MobpackDeployCommandResult, String> {
+    let document = params
+        .get("document")
+        .map(document_from_value)
+        .transpose()?;
     let deploy = params
         .get("deploy")
         .cloned()
-        .or_else(|| {
-            params
-                .get("document")
-                .and_then(|document| document.get("deploy"))
-                .cloned()
-        })
+        .or_else(|| document.as_ref().map(|document| document.deploy.clone()))
         .unwrap_or(Value::Null);
     let prompt = params
         .get("prompt")
@@ -2282,9 +2281,11 @@ pub fn deploy_command_preview(params: &Value) -> Result<MobpackDeployCommandResu
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("<pack.mobpack>");
+        .map(ToString::to_string)
+        .or_else(|| document.as_ref().map(document_export_filename))
+        .unwrap_or_else(|| "<pack.mobpack>".to_string());
     let rkat_bin = deploy_rkat_bin(params);
-    let argv = deploy_argv(&rkat_bin, &deploy, Path::new(pack_path), prompt);
+    let argv = deploy_argv(&rkat_bin, &deploy, Path::new(&pack_path), prompt);
     let command = shell_command(&argv);
     Ok(MobpackDeployCommandResult {
         command,
@@ -2301,19 +2302,15 @@ pub fn export_mobpack(params: &Value) -> Result<MobpackExportResult, String> {
         return Err("cannot export invalid mobpack document".to_string());
     }
     let mob_toml = authoring_mob_toml(&document)?;
-    let slug = sanitize_slug(
-        document
-            .name
-            .trim()
-            .strip_suffix(".mobpack")
-            .unwrap_or_else(|| document.name.trim()),
-    )
-    .or_else(|| sanitize_slug(document.mob_id.trim()))
-    .unwrap_or_else(|| "mobpack".to_string());
+    let filename = document_export_filename(&document);
+    let slug = filename
+        .strip_suffix(".mobpack")
+        .unwrap_or(filename.as_str())
+        .to_string();
     let files = deployable_mobpack_archive_files(&slug, &document, &mob_toml)?;
     let bytes = encode_deployable_mobpack_archive(&files)?;
     Ok(MobpackExportResult {
-        filename: format!("{slug}.mobpack"),
+        filename,
         media_type: MOBPACK_MEDIA_TYPE.to_string(),
         content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
         mob_toml,
@@ -11589,6 +11586,19 @@ fn sanitize_slug(input: &str) -> Option<String> {
     (!slug.is_empty()).then_some(slug)
 }
 
+fn document_export_filename(document: &MobpackDocument) -> String {
+    let slug = sanitize_slug(
+        document
+            .name
+            .trim()
+            .strip_suffix(".mobpack")
+            .unwrap_or_else(|| document.name.trim()),
+    )
+    .or_else(|| sanitize_slug(document.mob_id.trim()))
+    .unwrap_or_else(|| "mobpack".to_string());
+    format!("{slug}.mobpack")
+}
+
 fn extract_manifest_name(text: &str) -> Option<String> {
     let mut in_mobpack = false;
     for line in text.lines().map(str::trim) {
@@ -16008,6 +16018,33 @@ model = "gpt-5.5"
                 && row.sub.contains("rkat mob deploy")
                 && row.meta == result.pack_path
         }));
+    }
+
+    #[test]
+    fn deploy_command_preview_derives_pack_filename_from_document() {
+        let document = valid_document();
+        let preview = deploy_command_preview(&json!({
+            "document": document,
+            "prompt": "Reply with exactly OK."
+        }))
+        .expect("deploy command preview");
+
+        assert_eq!(&preview.argv[0..3], ["rkat", "mob", "deploy"]);
+        assert!(
+            preview.argv.iter().any(|arg| arg == "review-pack.mobpack"),
+            "{:?}",
+            preview.argv
+        );
+        assert!(
+            preview.command.contains("review-pack.mobpack"),
+            "{}",
+            preview.command
+        );
+        assert!(
+            !preview.command.contains("<pack.mobpack>"),
+            "{}",
+            preview.command
+        );
     }
 
     #[test]

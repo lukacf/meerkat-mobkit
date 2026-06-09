@@ -7903,6 +7903,21 @@
     });
   }
 
+  async function deployCommandPreviewForDocument(document, options = {}) {
+    const sourceDocument = document && typeof document === "object" ? document : {};
+    const deploy = normalizeDeploySettings(sourceDocument.deploy || options.deploySettings);
+    const prompt = String(options.prompt || deploy.prompt || "").trim();
+    const request = {
+      document: {
+        ...sourceDocument,
+        deploy,
+      },
+    };
+    if (String(options.packPath || "").trim()) request.pack_path = String(options.packPath).trim();
+    if (prompt) request.prompt = prompt;
+    return callRpc(rpcMethod("deployCommand"), request);
+  }
+
   async function importDocument(params) {
     return callRpc(rpcMethod("import"), params || {});
   }
@@ -10919,6 +10934,7 @@
     normalizeDeploySettings,
     deploySettingsPatch,
     deployCommandPreview,
+    deployCommandPreviewForDocument,
     callRpc,
     loadSchema,
     loadCatalogs,
