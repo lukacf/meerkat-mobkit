@@ -34,6 +34,8 @@ const REPEAT_ITERATION_INPUTS: &[&str] = &["carry"];
 const EDITOR_FLOW_STEP_TYPES: &[&str] = &["input", "member", "repeat", "branch", "parallel"];
 const EDITOR_INPUT_STEP_ID_PREFIX: &str = "input";
 const EDITOR_INPUT_STEP_DEFAULT_TASK: &str = "Run the mobpack flow.";
+const DEFAULT_DEPLOY_EXEC_TIMEOUT_MS: u64 = 120_000;
+const DEPLOY_EXEC_TIMEOUT_GRACE_MS: u64 = 250;
 const EDITOR_SCHEMA_FIELD_TYPES: &[&str] = &[
     "string", "string[]", "number", "float", "int", "integer", "boolean", "bool", "enum", "bytes",
     "object",
@@ -2296,21 +2298,9 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
         .unwrap_or(false);
 
     let (status_code, stdout, stderr) = if execute {
-        match std::process::Command::new(&argv[0])
-            .args(&argv[1..])
-            .output()
-        {
-            Ok(output) => (
-                output.status.code(),
-                Some(String::from_utf8_lossy(&output.stdout).to_string()),
-                Some(String::from_utf8_lossy(&output.stderr).to_string()),
-            ),
-            Err(err) => (
-                None,
-                None,
-                Some(format!("failed to run rkat mob deploy: {err}")),
-            ),
-        }
+        let timeout = deploy_execution_timeout(&deploy);
+        let output = run_deploy_command(&argv, timeout);
+        (output.status_code, output.stdout, output.stderr)
     } else {
         (None, None, None)
     };
@@ -2502,6 +2492,138 @@ fn deploy_argv(rkat_bin: &str, deploy: &Value, pack_path: &Path, prompt: &str) -
     argv.push(pack_path.to_string_lossy().to_string());
     argv.push(prompt.to_string());
     argv
+}
+
+struct DeployProcessOutput {
+    status_code: Option<i32>,
+    stdout: Option<String>,
+    stderr: Option<String>,
+}
+
+fn run_deploy_command(argv: &[String], timeout: std::time::Duration) -> DeployProcessOutput {
+    if argv.is_empty() {
+        return DeployProcessOutput {
+            status_code: None,
+            stdout: None,
+            stderr: Some("failed to run rkat mob deploy: empty argv".to_string()),
+        };
+    }
+    let mut child = match std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) => {
+            return DeployProcessOutput {
+                status_code: None,
+                stdout: None,
+                stderr: Some(format!("failed to run rkat mob deploy: {err}")),
+            };
+        }
+    };
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return match child.wait_with_output() {
+                    Ok(output) => DeployProcessOutput {
+                        status_code: output.status.code(),
+                        stdout: Some(String::from_utf8_lossy(&output.stdout).to_string()),
+                        stderr: Some(String::from_utf8_lossy(&output.stderr).to_string()),
+                    },
+                    Err(err) => DeployProcessOutput {
+                        status_code: None,
+                        stdout: None,
+                        stderr: Some(format!("failed to collect rkat mob deploy output: {err}")),
+                    },
+                };
+            }
+            Ok(None) if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                return match child.wait_with_output() {
+                    Ok(output) => {
+                        let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                        if !stderr.trim().is_empty() {
+                            stderr.push('\n');
+                        }
+                        stderr.push_str(&format!(
+                            "rkat mob deploy timed out after {}ms",
+                            timeout.as_millis()
+                        ));
+                        DeployProcessOutput {
+                            status_code: output.status.code(),
+                            stdout: Some(String::from_utf8_lossy(&output.stdout).to_string()),
+                            stderr: Some(stderr),
+                        }
+                    }
+                    Err(err) => DeployProcessOutput {
+                        status_code: None,
+                        stdout: None,
+                        stderr: Some(format!(
+                            "rkat mob deploy timed out after {}ms; failed to collect output: {err}",
+                            timeout.as_millis()
+                        )),
+                    },
+                };
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(err) => {
+                let _ = child.kill();
+                return DeployProcessOutput {
+                    status_code: None,
+                    stdout: None,
+                    stderr: Some(format!("failed to wait for rkat mob deploy: {err}")),
+                };
+            }
+        }
+    }
+}
+
+fn deploy_execution_timeout(deploy: &Value) -> std::time::Duration {
+    let millis = deploy_string(deploy, "max_duration")
+        .and_then(|value| parse_deploy_duration_ms(&value))
+        .map(|millis| millis.saturating_add(DEPLOY_EXEC_TIMEOUT_GRACE_MS))
+        .filter(|millis| *millis > 0)
+        .unwrap_or(DEFAULT_DEPLOY_EXEC_TIMEOUT_MS);
+    std::time::Duration::from_millis(millis)
+}
+
+fn parse_deploy_duration_ms(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some(number) = lower.strip_suffix("ms") {
+        return number.trim().parse::<u64>().ok();
+    }
+    if let Some(number) = lower.strip_suffix('s') {
+        return number
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .map(|seconds| seconds.saturating_mul(1_000));
+    }
+    if let Some(number) = lower.strip_suffix('m') {
+        return number
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .map(|minutes| minutes.saturating_mul(60_000));
+    }
+    if let Some(number) = lower.strip_suffix('h') {
+        return number
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .map(|hours| hours.saturating_mul(3_600_000));
+    }
+    lower
+        .parse::<u64>()
+        .ok()
+        .map(|seconds| seconds.saturating_mul(1_000))
 }
 
 fn deploy_string(deploy: &Value, key: &str) -> Option<String> {
@@ -15756,6 +15878,57 @@ model = "gpt-5.5"
         assert!(argv.lines().any(|line| line == "deploy"));
         assert!(argv.lines().any(|line| line == result.pack_path));
         assert!(argv.lines().any(|line| line == "Reply with exactly OK."));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn times_out_hung_rkat_mob_deploy_execution() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fake_rkat = dir.path().join("rkat");
+        std::fs::write(&fake_rkat, "#!/bin/sh\nexec sleep 2\n").expect("write fake rkat");
+        let mut permissions = std::fs::metadata(&fake_rkat)
+            .expect("fake rkat metadata")
+            .permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_rkat, permissions).expect("chmod fake rkat");
+
+        let mut document = valid_document();
+        document.deploy = json!({
+            "command": "rkat mob deploy",
+            "surface": "cli",
+            "max_duration": "1ms",
+            "prompt": "Reply with exactly OK."
+        });
+        let started = std::time::Instant::now();
+        let result = deploy_mobpack(&json!({
+            "document": document,
+            "output_dir": dir.path(),
+            "rkat_bin": fake_rkat,
+            "execute": true
+        }))
+        .expect("deploy result");
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(result.executed);
+        assert!(!result.success);
+        assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+        assert!(
+            result
+                .stderr
+                .as_deref()
+                .unwrap_or_default()
+                .contains("rkat mob deploy timed out"),
+            "{result:?}"
+        );
+        assert!(result.display_rows.iter().any(|row| {
+            row.kind == "crit"
+                && row.head == "rkat mob deploy failed"
+                && row.sub.contains("rkat mob deploy")
+        }));
+        assert!(result.display_rows.iter().any(|row| {
+            row.kind == "warn" && row.head == "rkat output" && row.sub.contains("timed out")
+        }));
     }
 
     #[cfg(unix)]
