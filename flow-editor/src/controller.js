@@ -1955,6 +1955,13 @@
     return { ...base, kind: String(selection.kind || ""), member: null, schema: null, missing: true };
   }
 
+  function agentListSelectionProjection(kind, id) {
+    const selectionKind = String(kind || "").trim();
+    const selectionId = String(id || "").trim();
+    if (!selectionId || (selectionKind !== "agent" && selectionKind !== "schema")) return null;
+    return { kind: selectionKind, id: selectionId };
+  }
+
   function agentEditorControlState({ member, instances = [], schemas = [], contract, deploySettings, modelCatalog = [], agentDetailView = null } = {}) {
     const view = agentDetailViewForState(agentDetailView);
     const placedAt = (Array.isArray(instances) ? instances : []).filter((instance) => instance?.memberId === member?.id);
@@ -11104,6 +11111,7 @@
     memberSkillAccessState,
     agentListState,
     agentSelectionState,
+    agentListSelectionProjection,
     agentEditorControlState,
     agentSourceProvenanceState,
     agentDefinitionOptions,

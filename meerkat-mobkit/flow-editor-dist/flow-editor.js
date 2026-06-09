@@ -1988,6 +1988,13 @@ window.MOBKIT_BOOT = {
     return { ...base, kind: String(selection.kind || ""), member: null, schema: null, missing: true };
   }
 
+  function agentListSelectionProjection(kind, id) {
+    const selectionKind = String(kind || "").trim();
+    const selectionId = String(id || "").trim();
+    if (!selectionId || (selectionKind !== "agent" && selectionKind !== "schema")) return null;
+    return { kind: selectionKind, id: selectionId };
+  }
+
   function agentEditorControlState({ member, instances = [], schemas = [], contract, deploySettings, modelCatalog = [], agentDetailView = null } = {}) {
     const view = agentDetailViewForState(agentDetailView);
     const placedAt = (Array.isArray(instances) ? instances : []).filter((instance) => instance?.memberId === member?.id);
@@ -11137,6 +11144,7 @@ window.MOBKIT_BOOT = {
     memberSkillAccessState,
     agentListState,
     agentSelectionState,
+    agentListSelectionProjection,
     agentEditorControlState,
     agentSourceProvenanceState,
     agentDefinitionOptions,
@@ -12803,7 +12811,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
       {
         key: row.id,
         className: row.itemClass,
-        onClick: () => setAgentSel({ kind: "agent", id: row.id })
+        onClick: () => setAgentSel(window.MobKitFlowController.agentListSelectionProjection("agent", row.id))
       },
       /* @__PURE__ */ React.createElement("span", { className: "agents-list__bullet", "data-role": row.bulletRole }, "\u25CF"),
       /* @__PURE__ */ React.createElement("div", { className: "agents-list__col" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "agents-list__sub" }, row.subLabel)),
@@ -12815,7 +12823,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
       {
         key: row.id,
         className: row.itemClass,
-        onClick: () => setAgentSel({ kind: "schema", id: row.id })
+        onClick: () => setAgentSel(window.MobKitFlowController.agentListSelectionProjection("schema", row.id))
       },
       /* @__PURE__ */ React.createElement("span", { className: "agents-list__bullet", "data-role": row.bulletRole }, "\u25A2"),
       /* @__PURE__ */ React.createElement("div", { className: "agents-list__col" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__name" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "agents-list__sub" }, row.subLabel))

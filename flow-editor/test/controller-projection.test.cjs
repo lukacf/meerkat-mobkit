@@ -4895,6 +4895,16 @@ assert.equal(controller.agentSelectionState({
   schemas: agentSchemasForProjection,
   agentView: hydratedCatalogs.agentView,
 }).missingAgentLabel, "Agent not found.");
+assert.deepEqual(controller.agentListSelectionProjection("agent", "m_reviewer"), {
+  kind: "agent",
+  id: "m_reviewer",
+});
+assert.deepEqual(controller.agentListSelectionProjection("schema", "ReviewGate"), {
+  kind: "schema",
+  id: "ReviewGate",
+});
+assert.equal(controller.agentListSelectionProjection("edge", "e_1"), null);
+assert.equal(controller.agentListSelectionProjection("agent", " "), null);
 const agentEditorState = controller.agentEditorControlState({
   member: agentMembersForProjection[1],
   instances: agentInstancesForProjection,

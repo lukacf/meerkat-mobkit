@@ -1225,6 +1225,9 @@ assert.match(agentsSkillAccessBlock, /skillState\.unavailableHeading/, "Agent un
 assert.match(agentsSkillAccessBlock, /skillState\.inlineToggleLabel/, "Agent inline-skill toggle copy must come from controller projection");
 assert.match(agentsSkillAccessBlock, /skillState\.inlineContentPlaceholder/, "Agent inline-skill placeholders must come from controller projection");
 assert.match(agentsListBlock, /MobKitFlowController\.agentListState/, "Agent sidebar must render member/schema rows through the controller plane");
+assert.match(agentsListBlock, /MobKitFlowController\.agentListSelectionProjection\("agent",\s*row\.id\)/, "Agent sidebar member selection must route through the controller plane");
+assert.match(agentsListBlock, /MobKitFlowController\.agentListSelectionProjection\("schema",\s*row\.id\)/, "Agent sidebar schema selection must route through the controller plane");
+assert(!/setAgentSel\(\{\s*kind:\s*"(?:agent|schema)",\s*id:\s*row\.id\s*\}\)/.test(agentsListBlock), "Agent sidebar must not assemble Agent Editor selection objects locally");
 assert.match(addAgentControlBlock, /MobKitFlowController\.agentDefinitionAddControlState/, "Agent creation select must render control state through the controller plane");
 assert.match(addAgentControlBlock, /MobKitFlowController\.agentDefinitionAddByIdPatch/, "Agent creation must resolve definition ids through the controller plane");
 assert.match(agentsMainBlock, /MobKitFlowController\.agentSelectionState/, "Agent main pane must resolve selected agents/schemas through the controller plane");
@@ -1265,6 +1268,7 @@ assert.match(controller, /mob_definition\?\.editor_agent_access_view/, "controll
 assert.match(controller, /inlineToggleLabel: inlineOpen \? view\.skillInlineCancelLabel : view\.skillInlineOpenLabel/, "controller plane must own schema-backed Agent inline-skill toggle labels");
 assert.match(controller, /function agentListState/, "controller plane must own Agent sidebar projection");
 assert.match(controller, /function agentSelectionState/, "controller plane must own Agent selection projection");
+assert.match(controller, /function agentListSelectionProjection/, "controller plane must own Agent sidebar selection projection");
 assert.match(controller, /function agentEditorControlState/, "controller plane must own Agent detail projection");
 assert.match(controller, /backendDefinitionDefaultLabel:\s*String\(view\.backend_definition_default_label/, "controller plane must hydrate Agent backend default label from MobKit schema");
 assert.match(controller, /profileBackendOptions\([\s\S]*view\.backendDefinitionDefaultLabel/, "Agent backend default option must render through schema-backed Agent detail view state");
