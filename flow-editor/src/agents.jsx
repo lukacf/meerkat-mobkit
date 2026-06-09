@@ -28,6 +28,7 @@ function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, f
 }
 
 function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, toolCatalog = [], modelCatalog = [], agentView = null }) {
+  const [schemaAddResult, setSchemaAddResult] = React.useState(null);
   const listState = window.MobKitFlowController.agentListState({
     members: studio.members,
     instances: studio.instances,
@@ -35,6 +36,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
     selection: agentSel,
     agentView,
   });
+  const schemaAddErrorState = window.MobKitFlowController.schemaDefinitionAddErrorState(schemaAddResult);
   return (
     <aside className="agents-list">
       <div className="agents-list__head">
@@ -87,12 +89,15 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
           className="agents-list__add"
           onClick={() => {
             const result = window.MobKitFlowController.schemaDefinitionAddPatch(studio.schemas, contract);
+            setSchemaAddResult(result);
             if (result.ok === false) return;
             if (studio.snap) studio.snap();
             studio.setSchemas(result.schemas);
+            setSchemaAddResult(null);
             setAgentSel({ kind: "schema", id: result.schema.id });
           }}
         >{listState.addSchemaLabel}</button>
+        {schemaAddErrorState.hasError && <div className="hint__line">{schemaAddErrorState.text}</div>}
       </div>
     </aside>
   );

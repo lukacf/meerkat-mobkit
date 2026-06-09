@@ -577,6 +577,9 @@ assert.match(builder, /MobKitFlowController\.inputParamDeleteCascadePatch/, "Bas
 assert.match(builder, /MobKitFlowController\.inputParamRenameCascadePatch/, "Basic editor must rename input params through the controller cascade plane");
 assert.match(builder, /MobKitFlowController\.inputParamAddPatch/, "Basic editor must add input params through the controller plane");
 assert.match(controller, /function inputParamAddPatch/, "controller plane must own schema-backed input-param creation");
+assert.match(controller, /function inputParamAddErrorState/, "controller plane must own rejected input-param add display state");
+assert.match(builderStepInspectorBlock, /const \[paramAddResult,\s*setParamAddResult\] = React\.useState\(null\);[\s\S]*MobKitFlowController\.inputParamAddErrorState\(paramAddResult\)/, "Basic input panel must ask the controller plane to project rejected param-add errors");
+assert.match(builderStepInspectorBlock, /setParamAddResult\(result\);[\s\S]*if \(result\.ok === false\) return;[\s\S]*setParamAddResult\(null\);[\s\S]*paramAddErrorState\.hasError[\s\S]*paramAddErrorState\.text/, "Basic input-param add must render rejected controller results instead of silently dropping them");
 assert.match(controller, /inputParamUpdateCascadePatch[\s\S]*inputParamUpdatePatch\(params,\s*paramId,\s*patch,\s*contract\)[\s\S]*reconcileConditionFieldAvailability\(\{[\s\S]*members,[\s\S]*instances,[\s\S]*schemas/, "input-param semantic update cascade must update the input step and clear invalid Basic/Graph conditions without dropping schema context");
 assert.match(controller, /function editorInputStepDraftContract/, "controller plane must hydrate missing input-step drafts from MobKit schema");
 assert.match(controller, /graphToFlow[\s\S]*inputStepDraft\(contract,\s*prior\)/, "Graph-to-Basic projection must create missing input steps from MobKit schema draft state");
@@ -1060,6 +1063,9 @@ assert.match(controller, /function agentDefinitionAddErrorState/, "controller pl
 assert.match(addAgentControlBlock, /const \[lastAddResult,\s*setLastAddResult\] = React\.useState\(null\);[\s\S]*MobKitFlowController\.agentDefinitionAddErrorState\(lastAddResult,\s*agentView\)/, "Agent add-control must ask the controller plane to project rejected definition errors");
 assert.match(addAgentControlBlock, /setLastAddResult\(result\);[\s\S]*definitionErrorState\.hasError[\s\S]*definitionErrorState\.text/, "Agent add-control must render controller-projected add-definition errors");
 assert.match(controller, /function memberSchemaChangeErrorState/, "controller plane must own rejected member schema-change display state");
+assert.match(controller, /function schemaDefinitionAddErrorState/, "controller plane must own rejected schema-definition add display state");
+assert.match(agentsListBlock, /const \[schemaAddResult,\s*setSchemaAddResult\] = React\.useState\(null\);[\s\S]*MobKitFlowController\.schemaDefinitionAddErrorState\(schemaAddResult\)/, "Agent schema list must ask the controller plane to project rejected schema-add errors");
+assert.match(agentsListBlock, /setSchemaAddResult\(result\);[\s\S]*if \(result\.ok === false\) return;[\s\S]*setSchemaAddResult\(null\);[\s\S]*schemaAddErrorState\.hasError[\s\S]*schemaAddErrorState\.text/, "Agent schema add must render rejected controller results instead of silently dropping them");
 assert(!/unknown agent definition|unavailable tool|unavailable skill|unsupported runtime mode|Agent definition unavailable/.test(addAgentControlBlock), "Agent add-control JSX must not compose rejected definition error copy locally");
 assert.match(agents, /<AgentsList[\s\S]*deploySettings=\{deploySettings\}[\s\S]*toolCatalog=\{toolCatalog\}[\s\S]*modelCatalog=\{modelCatalog\}/, "Agent sidebar must receive live MobKit deploy, tool, and model catalog context");
 assert.match(agents, /<AddAgentControl[\s\S]*toolCatalog=\{toolCatalog\}/, "Agent add-control must receive the live MobKit tool catalog");

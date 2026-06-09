@@ -2095,6 +2095,14 @@
     };
   }
 
+  function schemaDefinitionAddErrorState(result = null) {
+    return memberSchemaChangeErrorState(result);
+  }
+
+  function inputParamAddErrorState(result = null) {
+    return memberSchemaChangeErrorState(result);
+  }
+
   function schemaEditorControlState({ schema, members = [], schemaView = null } = {}) {
     const view = schemaViewForState(schemaView);
     const fields = Array.isArray(schema?.fields) ? schema.fields : [];
@@ -10636,6 +10644,8 @@
     agentDefinitionAddControlState,
     agentDefinitionAddErrorState,
     memberSchemaChangeErrorState,
+    schemaDefinitionAddErrorState,
+    inputParamAddErrorState,
     basicEditorViewState,
     schemaEditorControlState,
     memberPromptSkeleton,

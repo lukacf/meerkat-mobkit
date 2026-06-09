@@ -438,10 +438,13 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
 
 // ── Inspector ──
 function StepInspector({ studio, members, flow, setFlow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null }) {
+  const [paramAddResult, setParamAddResult] = React.useState(null);
+  React.useEffect(() => setParamAddResult(null), [step?.id]);
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   if (step.type === "input") {
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
+    const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult);
     const updateParam = (id, patch) => {
       if (Object.prototype.hasOwnProperty.call(patch || {}, "name")) {
         update(step.id, window.MobKitFlowController.inputParamUpdatePatch(params, id, patch, contract));
@@ -490,7 +493,9 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
     };
     const addParam = () => {
       const result = window.MobKitFlowController.inputParamAddPatch(params, contract);
+      setParamAddResult(result);
       if (result.ok === false) return;
+      setParamAddResult(null);
       update(step.id, result.patch);
     };
     return (
@@ -502,6 +507,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
             <div className="section__title">{inputState.paramsTitle}</div>
             <button className="btn btn--ghost btn--sm" onClick={addParam}>{inputState.addParamLabel}</button>
           </div>
+          {paramAddErrorState.hasError && <div className="hint__line">{paramAddErrorState.text}</div>}
           <div className="schema-builder">
             <div className="schema-builder__header">
               {inputState.headerRows.map(row => <span key={row.key} className={row.className}>{row.label}</span>)}

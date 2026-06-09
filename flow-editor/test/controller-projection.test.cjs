@@ -4908,6 +4908,19 @@ assert.deepEqual(controller.schemaDefinitionAddPatch([], {
   error: "MobKit schema is missing mob_definition.editor_schema_draft",
   schemas: [],
 });
+assert.deepEqual(controller.schemaDefinitionAddErrorState({
+  ok: false,
+  error: "MobKit schema is missing mob_definition.editor_schema_draft",
+}), {
+  hasError: true,
+  text: "MobKit schema is missing mob_definition.editor_schema_draft",
+  rawError: "MobKit schema is missing mob_definition.editor_schema_draft",
+});
+assert.deepEqual(controller.schemaDefinitionAddErrorState({ ok: true }), {
+  hasError: false,
+  text: "",
+  rawError: "",
+});
 assert.deepEqual(controller.schemaFieldAddPatch({
   fields: [{ id: "f1", name: "existing", type: "string" }],
 }, {
@@ -8688,6 +8701,19 @@ assert.deepEqual(controller.inputParamAddPatch([
     inputParams: [{ id: "p1", name: "param", type: "string", required: true, description: "", enumValues: [] }],
     fields: "param: string",
   },
+});
+assert.deepEqual(controller.inputParamAddErrorState({
+  ok: false,
+  error: "MobKit schema is missing mob_definition.editor_input_param_draft",
+}), {
+  hasError: true,
+  text: "MobKit schema is missing mob_definition.editor_input_param_draft",
+  rawError: "MobKit schema is missing mob_definition.editor_input_param_draft",
+});
+assert.deepEqual(controller.inputParamAddErrorState({ ok: true }), {
+  hasError: false,
+  text: "",
+  rawError: "",
 });
 
 const treeFlow = {
