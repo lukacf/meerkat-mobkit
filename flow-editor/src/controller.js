@@ -10196,6 +10196,17 @@
     return changed ? merged : schemas;
   }
 
+  function validateAgentDefinitionSchemaRef(source, schemas = []) {
+    const schemaId = String(source?.schema || "").trim();
+    if (!schemaId) return;
+    const available = new Set((Array.isArray(schemas) ? schemas : [])
+      .map((schema) => String(schema?.id || "").trim())
+      .filter(Boolean));
+    if (!available.has(schemaId)) {
+      throw new Error(`MobKit agent definition references unavailable schema: ${schemaId}`);
+    }
+  }
+
   function memberFromAgentDefinition(definition, existingMembers = [], options = {}) {
     const source = definition;
     if (!source) {
@@ -10271,8 +10282,9 @@
   function agentDefinitionAddPatch(definition, { members, schemas, contract, deploySettings, modelCatalog, toolCatalog, skillRealms } = {}) {
     const existingMembers = Array.isArray(members) ? members : [];
     const existingSchemas = Array.isArray(schemas) ? schemas : [];
-    const member = memberFromAgentDefinition(definition, existingMembers, { contract, deploySettings, modelCatalog, toolCatalog, skillRealms });
     const nextSchemas = mergeAgentDefinitionSchemas(existingSchemas, definition);
+    validateAgentDefinitionSchemaRef(definition, nextSchemas);
+    const member = memberFromAgentDefinition(definition, existingMembers, { contract, deploySettings, modelCatalog, toolCatalog, skillRealms });
     return {
       member,
       members: [...existingMembers, member],

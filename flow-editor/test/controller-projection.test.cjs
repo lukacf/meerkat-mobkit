@@ -4321,9 +4321,27 @@ const addedById = controller.agentDefinitionAddByIdPatch([agentDefinition], "rev
 });
 assert.equal(addedById.ok, true);
 assert.equal(addedById.member.id, "m_reviewer");
+assert.equal(addedById.schemas[0].id, "ReviewArtifact");
 assert.equal(addedById.member.sourceDefinition.sourceMobpack, "sample_review_pr");
 assert.equal(addedById.member.sourceDefinition.sourceOrigin, "mobkit/sample-mobpack");
 assert.equal(controller.agentDefinitionAddByIdPatch([agentDefinition], "missing").ok, false);
+const schemaRefOnlyDefinition = {
+  ...agentDefinition,
+  schemaDefinition: null,
+};
+const addedSchemaRefOnlyAgent = controller.agentDefinitionAddByIdPatch([schemaRefOnlyDefinition], "reviewer", {
+  members: [],
+  schemas: [{ id: "ReviewArtifact", fields: [] }],
+});
+assert.equal(addedSchemaRefOnlyAgent.ok, true);
+assert.equal(addedSchemaRefOnlyAgent.member.schema, "ReviewArtifact");
+assert.match(
+  controller.agentDefinitionAddByIdPatch([schemaRefOnlyDefinition], "reviewer", {
+    members: [],
+    schemas: [],
+  }).error,
+  /unavailable schema/,
+);
 const catalogBackedAgentDefinition = {
   ...agentDefinition,
   tools: ["mob"],
