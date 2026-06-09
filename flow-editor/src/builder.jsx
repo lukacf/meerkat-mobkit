@@ -571,9 +571,9 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
       basicView,
     });
     const setBranchCondition = (branch, patch) => {
-      update(step.id, window.MobKitFlowController.basicBranchConditionPatch(step, branch.id, patch, contract));
+      editStep(step.id, "set_branch_condition", { branch_id: branch.id, patch });
     };
-    const addBranch = () => update(step.id, window.MobKitFlowController.basicBranchAddPatch(step, { flow, basicView }));
+    const addBranch = () => editStep(step.id, "add_branch");
     return (
       <div className="bld-panel__inner">
         <PanelHead icon={branchState.panelIcon} iconTint="member" title={branchState.panelTitle} sub={branchState.panelSub} onClose={onDelete} deleteMode />

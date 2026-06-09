@@ -13990,9 +13990,9 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
       basicView
     });
     const setBranchCondition = (branch, patch) => {
-      update(step.id, window.MobKitFlowController.basicBranchConditionPatch(step, branch.id, patch, contract));
+      editStep(step.id, "set_branch_condition", { branch_id: branch.id, patch });
     };
-    const addBranch = () => update(step.id, window.MobKitFlowController.basicBranchAddPatch(step, { flow, basicView }));
+    const addBranch = () => editStep(step.id, "add_branch");
     return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: branchState.panelIcon, iconTint: "member", title: branchState.panelTitle, sub: branchState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: branchState.controllerLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: branchState.controllerRole, onChange: (e) => editStep(step.id, "set_controller_role", { role: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, branchState.controllerPlaceholderLabel), branchState.memberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), !branchState.controllerRole && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { marginTop: 8 } }, branchState.emptyControllerHint), !branchState.isParallel && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bld-section-label" }, branchState.branchConditionTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, branchState.branchConditionIntro), step.branches.map((b, i) => /* @__PURE__ */ React.createElement(
       BranchConditionEditor,
       {

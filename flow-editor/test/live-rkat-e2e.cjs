@@ -1837,8 +1837,34 @@ async function validateFlowStepOperations(catalogs) {
   if (updated.document.flow.steps[1]?.instruction !== "Review carefully.") {
     throw new Error(`semantic flow step edit did not apply instruction: ${JSON.stringify(updated.document.flow.steps)}`);
   }
-  const deleted = await rpc("mobkit/mobpacks/apply_operation", {
+  const branchCondition = await rpc("mobkit/mobpacks/apply_operation", {
     document: updated.document,
+    operation: {
+      type: "apply_flow_step_edit",
+      step_id: "route",
+      action: "set_branch_condition",
+      branch_id: "approved",
+      patch: { namespace: "steps", stepId: semanticStepId, field: "verdict", op: "==", val: "blue" },
+    },
+  });
+  const routeStep = branchCondition.document.flow.steps.find((step) => step.id === "route");
+  if (routeStep?.branches?.[0]?.cond?.stepId !== semanticStepId || routeStep.branches[0].condition !== `steps.${semanticStepId}.verdict == "blue"`) {
+    throw new Error(`semantic branch condition edit did not mutate branch condition: ${JSON.stringify(routeStep)}`);
+  }
+  const branchAdded = await rpc("mobkit/mobpacks/apply_operation", {
+    document: branchCondition.document,
+    operation: {
+      type: "apply_flow_step_edit",
+      step_id: "route",
+      action: "add_branch",
+    },
+  });
+  const branchAddedRoute = branchAdded.document.flow.steps.find((step) => step.id === "route");
+  if (branchAddedRoute?.branches?.length !== 2 || branchAddedRoute.branches[1]?.id !== "br_1" || branchAddedRoute.branches[1]?.label !== "Branch 2") {
+    throw new Error(`semantic branch add did not append a real MobKit lane: ${JSON.stringify(branchAddedRoute)}`);
+  }
+  const deleted = await rpc("mobkit/mobpacks/apply_operation", {
+    document: branchAdded.document,
     operation: {
       type: "delete_flow_step",
       step_id: semanticStepId,
@@ -1854,8 +1880,10 @@ async function validateFlowStepOperations(catalogs) {
     inserted: inserted.selection.id,
     nested: nested.document.flow.steps[2].branches[0].steps[0].id,
     updatedInstruction: updated.document.flow.steps[1].instruction,
+    branchCondition: branchCondition.document.flow.steps.find((step) => step.id === "route").branches[0].condition,
+    branchCount: branchAddedRoute.branches.length,
     remainingSteps: deleted.document.flow.steps.map((step) => step.id),
-    operations: [inserted.operation, authoredReview.operation, nested.operation, updated.operation, deleted.operation],
+    operations: [inserted.operation, authoredReview.operation, nested.operation, updated.operation, branchCondition.operation, branchAdded.operation, deleted.operation],
   };
 }
 

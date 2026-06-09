@@ -748,7 +748,8 @@ assert.match(builderBranchParallelBlock, /branchState\.dispatchLabel/, "Basic pa
 assert.match(builderBranchParallelBlock, /branchState\.collectionLabel/, "Basic parallel collection label must render through controller state");
 assert.match(builderBranchParallelBlock, /branchState\.quorumLabel/, "Basic parallel quorum label must render through controller state");
 assert.match(builderBranchParallelBlock, /branchState\.dependencyLabel/, "Basic branch/parallel dependency label must render through controller state");
-assert.match(builder, /MobKitFlowController\.basicBranchConditionPatch/, "Basic editor must update branch condition arrays through the controller plane");
+assert.match(builder, /editStep\(step\.id,\s*["']set_branch_condition["']/, "Basic editor must update branch conditions through MobKit semantic flow-step operations");
+assert(!/update\(step\.id,\s*window\.MobKitFlowController\.basicBranchConditionPatch/.test(builder), "Basic editor must not author branch conditions with browser-side step patches");
 assert.match(builderBranchConditionBlock, /MobKitFlowController\.basicBranchConditionControlState/, "Basic branch condition rows must render through the controller plane");
 assert.match(builderBranchConditionBlock, /basicBranchConditionControlState\(\{[\s\S]*basicView/, "Basic branch condition rows must pass schema-backed Basic view into controller projection");
 assert.match(builderBranchConditionBlock, /conditionState\.rowTitle[\s\S]*conditionState\.emptyHint[\s\S]*conditionState\.sourcePlaceholder[\s\S]*conditionState\.previewPrefix/, "Basic branch condition row chrome must render through controller state");
@@ -774,8 +775,8 @@ assert.match(builderRepeatBlock, /repeatState\.previewLabel/, "Basic repeat prev
 assert.match(builderRepeatBlock, /repeatState\.iterationInputLabel/, "Basic repeat iteration label must render through controller state");
 assert.match(builderRepeatBlock, /repeatState\.maxIterationsLabel/, "Basic repeat max-iterations label must render through controller state");
 assert.match(builderRepeatBlock, /repeatState\.tips/, "Basic repeat tips must render through controller state");
-assert.match(builder, /MobKitFlowController\.basicBranchAddPatch/, "Basic editor must add branch and parallel lanes through the controller plane");
-assert.match(builder, /basicBranchAddPatch\(step,\s*\{\s*flow,\s*basicView\s*\}\)/, "Basic branch lane creation must pass current flow and schema-backed Basic view state");
+assert.match(builder, /editStep\(step\.id,\s*["']add_branch["']/, "Basic editor must add branch and parallel lanes through MobKit semantic flow-step operations");
+assert(!/update\(step\.id,\s*window\.MobKitFlowController\.basicBranchAddPatch/.test(builder), "Basic editor must not author branch lanes with browser-side step patches");
 assert.match(builder, /MobKitFlowController\.conditionValueControl/, "Basic editor must choose condition value controls through the controller plane");
 assert.match(inspector, /MobKitFlowController\.conditionValueControl/, "Graph inspector must choose condition value controls through the controller plane");
 assert.match(controller, /function basicConditionFromText/, "controller plane must own Basic condition parsing");
@@ -801,6 +802,8 @@ assert.match(controller, /function basicStepCardState/, "controller plane must o
 assert.match(controller, /function basicRepeatControlState/, "controller plane must own Basic repeat condition and iteration projection");
 assert.match(controller, /function basicBranchAddPatch/, "controller plane must own Basic branch lane creation semantics");
 assert.match(controller, /function basicBranchDefaultLabel/, "controller plane must own Basic branch default label projection");
+assert.match(mobpackRust, /"set_branch_condition"\s*=>/, "MobKit API must own Basic branch condition mutation semantics");
+assert.match(mobpackRust, /"add_branch"\s*=>/, "MobKit API must own Basic branch lane creation semantics");
 assert(!/label:\s*["']Branch (?:1|2)["']|label:\s*["']Branch ["']\s*\+/.test(controller), "Basic branch default labels must render through MobKit Basic view state");
 assert.match(controller, /reserveFlowBranchId\("br",\s*branchIds\)/, "controller plane must use collision-safe branch IDs for Basic branch lane creation");
 assert.match(controller, /function conditionValueControl/, "controller plane must own schema field type interpretation for condition value controls");

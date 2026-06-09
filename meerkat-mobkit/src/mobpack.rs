@@ -5895,6 +5895,189 @@ fn first_flow_fork_source(flow: &Value, step_id: &str) -> String {
         .unwrap_or_default()
 }
 
+fn operation_branch_id(operation: &serde_json::Map<String, Value>) -> Result<String, String> {
+    operation
+        .get("branch_id")
+        .or_else(|| operation.get("branchId"))
+        .or_else(|| operation.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| "MobKit authoring operation requires branch_id".to_string())
+}
+
+fn editor_condition_value_literal(value: &Value) -> String {
+    let text = value
+        .as_str()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| value.to_string())
+        .trim()
+        .to_string();
+    if text == "true" || text == "false" || text.parse::<f64>().is_ok() {
+        text
+    } else {
+        serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string())
+    }
+}
+
+fn editor_branch_condition_text(cond: &Value) -> String {
+    let Some(field) = cond
+        .get("field")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return String::new();
+    };
+    let op = cond
+        .get("op")
+        .or_else(|| cond.get("operator"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| mob_definition_default("condition_operator"));
+    if op.is_empty() {
+        return String::new();
+    }
+    let value = cond
+        .get("val")
+        .or_else(|| cond.get("value"))
+        .cloned()
+        .unwrap_or_else(|| Value::String(String::new()));
+    let source_is_params = cond
+        .get("namespace")
+        .and_then(Value::as_str)
+        .is_some_and(|namespace| namespace == "params")
+        || cond
+            .get("stepId")
+            .and_then(Value::as_str)
+            .is_some_and(|step_id| step_id == "params");
+    if source_is_params {
+        format!(
+            "params.{field} {op} {}",
+            editor_condition_value_literal(&value)
+        )
+    } else {
+        let Some(step_id) = cond
+            .get("stepId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return String::new();
+        };
+        format!(
+            "steps.{step_id}.{field} {op} {}",
+            editor_condition_value_literal(&value)
+        )
+    }
+}
+
+fn editor_branch_condition_from_text(text: &str) -> Option<serde_json::Map<String, Value>> {
+    let raw = text.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    for op in ["==", ">", "<"] {
+        if let Some((path, value)) = raw.split_once(op) {
+            let path = path.trim();
+            let value = value.trim().trim_matches(['"', '\'']).to_string();
+            if let Some(field) = path.strip_prefix("params.") {
+                let mut out = serde_json::Map::new();
+                out.insert("namespace".to_string(), Value::String("params".to_string()));
+                out.insert("stepId".to_string(), Value::String("params".to_string()));
+                out.insert("field".to_string(), Value::String(field.trim().to_string()));
+                out.insert("op".to_string(), Value::String(op.to_string()));
+                out.insert("val".to_string(), Value::String(value));
+                return Some(out);
+            }
+            if let Some(rest) = path.strip_prefix("steps.") {
+                let (step_id, field) = rest.split_once('.')?;
+                let mut out = serde_json::Map::new();
+                out.insert("namespace".to_string(), Value::String("steps".to_string()));
+                out.insert(
+                    "stepId".to_string(),
+                    Value::String(step_id.trim().to_string()),
+                );
+                out.insert("field".to_string(), Value::String(field.trim().to_string()));
+                out.insert("op".to_string(), Value::String(op.to_string()));
+                out.insert("val".to_string(), Value::String(value));
+                return Some(out);
+            }
+        }
+    }
+    None
+}
+
+fn editor_branch_condition_patch(
+    branch: &Value,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let mut cond = branch
+        .get("cond")
+        .and_then(Value::as_object)
+        .cloned()
+        .or_else(|| {
+            branch
+                .get("condition")
+                .and_then(Value::as_str)
+                .and_then(editor_branch_condition_from_text)
+        })
+        .unwrap_or_default();
+    if let Some(patch) = operation.get("patch").and_then(Value::as_object) {
+        for (key, value) in patch {
+            cond.insert(
+                if key == "step_id" {
+                    "stepId".to_string()
+                } else {
+                    key.clone()
+                },
+                value.clone(),
+            );
+        }
+    }
+    for key in ["namespace", "field", "op", "operator", "val", "value"] {
+        if let Some(value) = operation.get(key) {
+            cond.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(value) = operation
+        .get("condition_step_id")
+        .or_else(|| operation.get("conditionStepId"))
+        .or_else(|| operation.get("source_step_id"))
+        .or_else(|| operation.get("sourceStepId"))
+    {
+        cond.insert("stepId".to_string(), value.clone());
+    }
+    let out = Value::Object(cond);
+    if !out.is_object() {
+        return Err("flow step branch condition must be an object".to_string());
+    }
+    Ok(out)
+}
+
+fn editor_basic_view_string(key: &str) -> String {
+    mobpack_schema_response()
+        .get("mob_definition")
+        .and_then(|mob| mob.get("editor_basic_view"))
+        .and_then(|view| view.get(key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn editor_branch_default_label(index: usize) -> String {
+    let prefix = editor_basic_view_string("branch_condition_row_title_prefix");
+    if prefix.is_empty() {
+        format!("Branch {index}")
+    } else {
+        format!("{prefix} {index}")
+    }
+}
+
 fn apply_flow_step_edit_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
@@ -6119,6 +6302,66 @@ fn apply_flow_step_edit_operation(
                         "blockedTools",
                     )?),
                 );
+            }
+            "set_branch_condition" => {
+                if object
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind == "parallel")
+                {
+                    return Err("parallel branches do not have conditions".to_string());
+                }
+                let branch_id = operation_branch_id(operation)?;
+                let branches = object
+                    .get_mut("branches")
+                    .and_then(Value::as_array_mut)
+                    .ok_or_else(|| format!("flow step branches must be an array: {step_id}"))?;
+                let branch = branches
+                    .iter_mut()
+                    .find(|branch| {
+                        branch
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|id| id == branch_id)
+                    })
+                    .ok_or_else(|| format!("flow branch not found: {branch_id}"))?;
+                let cond = editor_branch_condition_patch(branch, operation)?;
+                let condition = editor_branch_condition_text(&cond);
+                let branch_object = branch
+                    .as_object_mut()
+                    .ok_or_else(|| format!("flow branch is not an object: {branch_id}"))?;
+                branch_object.insert("cond".to_string(), cond);
+                branch_object.insert("condition".to_string(), Value::String(condition));
+            }
+            "add_branch" => {
+                let step_type = object
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if step_type != "branch" && step_type != "parallel" {
+                    return Err(format!(
+                        "add_branch requires a branch or parallel step, found: {step_type}"
+                    ));
+                }
+                let branches = object
+                    .entry("branches".to_string())
+                    .or_insert_with(|| Value::Array(Vec::new()))
+                    .as_array_mut()
+                    .ok_or_else(|| format!("flow step branches must be an array: {step_id}"))?;
+                let mut branch_ids = BTreeSet::new();
+                let branch_id = next_flow_branch_id(&document.flow, &mut branch_ids);
+                let mut next_branch = serde_json::Map::new();
+                next_branch.insert("id".to_string(), Value::String(branch_id));
+                next_branch.insert(
+                    "label".to_string(),
+                    Value::String(editor_branch_default_label(branches.len() + 1)),
+                );
+                next_branch.insert("steps".to_string(), Value::Array(Vec::new()));
+                if step_type != "parallel" {
+                    next_branch.insert("condition".to_string(), Value::String(String::new()));
+                }
+                branches.push(Value::Object(next_branch));
             }
             "set_launch_kind" => {
                 let kind = canonical_graph_launch_kind(&operation_string_value(
@@ -25400,8 +25643,59 @@ model = "gpt-5.5"
             json!("plan")
         );
 
-        let deleted = apply_mobpack_authoring_operation(&json!({
+        let branch_condition_edited = apply_mobpack_authoring_operation(&json!({
             "document": launch_edited["document"],
+            "operation": {
+                "type": "apply_flow_step_edit",
+                "step_id": "route",
+                "action": "set_branch_condition",
+                "branch_id": "approved",
+                "patch": {
+                    "namespace": "steps",
+                    "stepId": "review",
+                    "field": "verdict",
+                    "op": "==",
+                    "val": "blue"
+                }
+            }
+        }))
+        .expect("semantic branch condition edit");
+        assert_eq!(
+            branch_condition_edited["document"]["flow"]["steps"][3]["branches"][0]["cond"],
+            json!({
+                "namespace": "steps",
+                "stepId": "review",
+                "field": "verdict",
+                "op": "==",
+                "val": "blue"
+            })
+        );
+        assert_eq!(
+            branch_condition_edited["document"]["flow"]["steps"][3]["branches"][0]["condition"],
+            json!("steps.review.verdict == \"blue\"")
+        );
+
+        let branch_added = apply_mobpack_authoring_operation(&json!({
+            "document": branch_condition_edited["document"],
+            "operation": {
+                "type": "apply_flow_step_edit",
+                "step_id": "route",
+                "action": "add_branch"
+            }
+        }))
+        .expect("semantic branch lane add");
+        assert_eq!(
+            branch_added["document"]["flow"]["steps"][3]["branches"][1],
+            json!({
+                "id": "br_1",
+                "label": "Branch 2",
+                "steps": [],
+                "condition": ""
+            })
+        );
+
+        let deleted = apply_mobpack_authoring_operation(&json!({
+            "document": branch_added["document"],
             "operation": {
                 "type": "delete_flow_step",
                 "step_id": "review"
