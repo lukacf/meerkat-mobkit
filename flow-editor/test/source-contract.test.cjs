@@ -468,8 +468,11 @@ assert.match(app, /setValidationResults\(hydration\.validationRows\)/, "app shel
 assert(!/validationRowsForDisplay/.test(app), "app shell must not own hydration validation-row projection");
 assert(!/function (?:emptyMobKitCatalogs|mobKitCatalogsFromSchema|schemaSkillRealms|mergeSkillRealms|hydrateMobpackDocumentState|flowFromHydratedDocument|graphProjectionForDocument)\(/.test(app), "app shell must not own MobKit catalog, skill-realm, or hydration projection helpers");
 assert.match(controller, /function reconcileInputParamReferences/, "controller plane must own input-param reference reconciliation");
+assert.match(controller, /function inputParamUpdateCascadePatch/, "controller plane must own input-param semantic update cascade semantics");
 assert.match(builder, /MobKitFlowController\.inputParamRenameCascadePatch/, "Basic editor must commit input-param renames through the controller cascade plane");
 assert.match(builder, /MobKitFlowController\.inputParamDeleteCascadePatch/, "Basic editor must commit input-param deletes through the controller cascade plane");
+assert.match(builder, /MobKitFlowController\.inputParamUpdateCascadePatch/, "Basic editor must commit input-param semantic edits through the controller cascade plane");
+assert.match(builder, /inputParamUpdateCascadePatch\(\{[\s\S]*flow:\s*current,[\s\S]*edges:\s*studio\?\.edges \|\| \[\],[\s\S]*members:\s*studio\?\.members \|\| \[\],[\s\S]*instances:\s*studio\?\.instances \|\| \[\],[\s\S]*schemas:\s*studio\?\.schemas \|\| \[\]/, "Basic input-param semantic cascade must pass current Basic flow, Graph edges, and real Agent schemas into controller cleanup");
 assert.match(builder, /inputParamRenameCascadePatch\(\{[\s\S]*flow:\s*current,[\s\S]*edges:\s*studio\?\.edges \|\| \[\][\s\S]*\}, step\.id, id, rawName, previousName, contract\)/, "Basic input-param rename cascade must pass current Basic flow and Graph edges into controller cleanup");
 assert.match(builder, /inputParamDeleteCascadePatch\(\{[\s\S]*flow:\s*current,[\s\S]*edges:\s*studio\?\.edges \|\| \[\][\s\S]*\}, step\.id, id, contract\)/, "Basic input-param delete cascade must pass current Basic flow and Graph edges into controller cleanup");
 assert.match(builder, /result\.edges !== studio\?\.edges[\s\S]*if \(studio\?\.snap\) studio\.snap\(\);[\s\S]*studio\.setEdges\(result\.edges\)/, "Basic input-param cascades must snapshot graph condition-edge changes as authoring mutations");
@@ -569,10 +572,12 @@ assert.match(builderInputStepBlock, /inputState\.paramsTitle/, "Basic input pane
 assert.match(builderInputStepBlock, /inputState\.headerRows/, "Basic input panel must render schema table headers through projected controller state");
 assert.match(builderInputStepBlock, /inputState\.emptyParamsParts/, "Basic input panel must render empty param copy through projected controller state");
 assert.match(builder, /MobKitFlowController\.inputParamUpdatePatch/, "Basic editor must update input params through the controller plane");
+assert.match(builder, /MobKitFlowController\.inputParamUpdateCascadePatch/, "Basic editor must update input-param semantics through the controller cascade plane");
 assert.match(builder, /MobKitFlowController\.inputParamDeleteCascadePatch/, "Basic editor must delete input params through the controller cascade plane");
 assert.match(builder, /MobKitFlowController\.inputParamRenameCascadePatch/, "Basic editor must rename input params through the controller cascade plane");
 assert.match(builder, /MobKitFlowController\.inputParamAddPatch/, "Basic editor must add input params through the controller plane");
 assert.match(controller, /function inputParamAddPatch/, "controller plane must own schema-backed input-param creation");
+assert.match(controller, /inputParamUpdateCascadePatch[\s\S]*inputParamUpdatePatch\(params,\s*paramId,\s*patch,\s*contract\)[\s\S]*reconcileConditionFieldAvailability\(\{[\s\S]*members,[\s\S]*instances,[\s\S]*schemas/, "input-param semantic update cascade must update the input step and clear invalid Basic/Graph conditions without dropping schema context");
 assert.match(controller, /function editorInputStepDraftContract/, "controller plane must hydrate missing input-step drafts from MobKit schema");
 assert.match(controller, /graphToFlow[\s\S]*inputStepDraft\(contract,\s*prior\)/, "Graph-to-Basic projection must create missing input steps from MobKit schema draft state");
 assert(!/Run the mobpack flow\./.test(controller), "controller plane must not own the local input task draft string");

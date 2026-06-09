@@ -4723,6 +4723,25 @@
     return { inputParams: next, fields: inputParamSummary(next, contract) };
   }
 
+  function inputParamUpdateCascadePatch({ flow, edges, members, instances, schemas } = {}, stepId, paramId, patch, contract) {
+    const step = flowStepById(flow?.steps || [], stepId);
+    const params = inputParamsForStep(step || {});
+    const updatePatch = inputParamUpdatePatch(params, paramId, patch, contract);
+    const updatedFlow = flowStepUpdatePatch(flow, stepId, updatePatch);
+    const reconciled = reconcileConditionFieldAvailability({
+      flow: updatedFlow,
+      edges,
+      members,
+      instances,
+      schemas,
+    });
+    return {
+      patch: updatePatch,
+      flow: reconciled.flow,
+      edges: reconciled.edges,
+    };
+  }
+
   function inputParamDeletePatch(params, id, contract) {
     const removed = (params || []).find((param) => param?.id === id) || null;
     const next = (params || []).filter((param) => param?.id !== id);
@@ -10789,6 +10808,7 @@
     basicInputControlState,
     basicConditionOptions,
     inputParamUpdatePatch,
+    inputParamUpdateCascadePatch,
     inputParamDeletePatch,
     inputParamRenamePatch,
     inputParamRenameCascadePatch,

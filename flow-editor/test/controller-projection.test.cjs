@@ -8585,6 +8585,60 @@ assert.deepEqual(controller.inputParamUpdatePatch([
   inputParams: [{ id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["value"] }],
   fields: "route: enum",
 });
+const updatedParamCascade = controller.inputParamUpdateCascadePatch({
+  flow: {
+    name: "input-param-update-cascade",
+    steps: [
+      {
+        id: "input_1",
+        type: "input",
+        inputParams: [{ id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["docs", "code"] }],
+        fields: "route: enum",
+      },
+      {
+        id: "branch_1",
+        type: "branch",
+        branches: [{
+          id: "docs",
+          cond: { namespace: "params", stepId: "params", field: "route", op: "==", val: "docs" },
+          condition: "params.route == \"docs\"",
+          steps: [],
+        }],
+        fallback: [],
+      },
+      { id: "review_step", type: "member", role: "m_reviewer" },
+      {
+        id: "branch_2",
+        type: "branch",
+        branches: [{
+          id: "green",
+          cond: { namespace: "steps", stepId: "review_step", field: "verdict", op: "==", val: "green" },
+          condition: "steps.review_step.verdict == \"green\"",
+          steps: [],
+        }],
+        fallback: [],
+      },
+    ],
+  },
+  edges: [
+    { id: "e_param", from: "gate", to: "docs", kind: "cond", label: "params.route == \"docs\"", cond: { var: "params.route", op: "==", val: "docs" } },
+    { id: "e_schema", from: "review_inst", to: "done", kind: "cond", label: "steps.review_inst.verdict == \"green\"", cond: { var: "steps.review_inst.verdict", op: "==", val: "green" } },
+  ],
+  members: [{ id: "m_reviewer", schema: "ReviewArtifact" }],
+  instances: [
+    { id: "review_inst", memberId: "m_reviewer" },
+    { id: "done", isTerminal: true },
+  ],
+  schemas: [{ id: "ReviewArtifact", fields: [{ id: "f1", name: "verdict", type: "enum", enumValues: ["green"] }] }],
+}, "input_1", "p1", { enumValues: ["code"] }, graphShapeContract);
+assert.deepEqual(updatedParamCascade.flow.steps[0].inputParams[0].enumValues, ["code"]);
+assert.equal(updatedParamCascade.flow.steps[0].fields, "route: enum");
+assert.deepEqual(updatedParamCascade.flow.steps[1].branches[0].cond, {});
+assert.equal(updatedParamCascade.flow.steps[1].branches[0].condition, "");
+assert.deepEqual(updatedParamCascade.edges[0].cond, null);
+assert.equal(updatedParamCascade.edges[0].label, "");
+assert.deepEqual(updatedParamCascade.flow.steps[3].branches[0].cond, { namespace: "steps", stepId: "review_step", field: "verdict", op: "==", val: "green" });
+assert.deepEqual(updatedParamCascade.edges[1].cond, { var: "steps.review_inst.verdict", op: "==", val: "green" });
 assert.deepEqual(controller.inputParamRenamePatch([
   { id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: [] },
   { id: "p2", name: "route_2", type: "string", required: true, description: "", enumValues: [] },

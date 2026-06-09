@@ -4756,6 +4756,25 @@ window.MOBKIT_BOOT = {
     return { inputParams: next, fields: inputParamSummary(next, contract) };
   }
 
+  function inputParamUpdateCascadePatch({ flow, edges, members, instances, schemas } = {}, stepId, paramId, patch, contract) {
+    const step = flowStepById(flow?.steps || [], stepId);
+    const params = inputParamsForStep(step || {});
+    const updatePatch = inputParamUpdatePatch(params, paramId, patch, contract);
+    const updatedFlow = flowStepUpdatePatch(flow, stepId, updatePatch);
+    const reconciled = reconcileConditionFieldAvailability({
+      flow: updatedFlow,
+      edges,
+      members,
+      instances,
+      schemas,
+    });
+    return {
+      patch: updatePatch,
+      flow: reconciled.flow,
+      edges: reconciled.edges,
+    };
+  }
+
   function inputParamDeletePatch(params, id, contract) {
     const removed = (params || []).find((param) => param?.id === id) || null;
     const next = (params || []).filter((param) => param?.id !== id);
@@ -10822,6 +10841,7 @@ window.MOBKIT_BOOT = {
     basicInputControlState,
     basicConditionOptions,
     inputParamUpdatePatch,
+    inputParamUpdateCascadePatch,
     inputParamDeletePatch,
     inputParamRenamePatch,
     inputParamRenameCascadePatch,
@@ -13102,7 +13122,26 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
   if (step.type === "input") {
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
-    const updateParam = (id, patch) => update(step.id, window.MobKitFlowController.inputParamUpdatePatch(params, id, patch, contract));
+    const updateParam = (id, patch) => {
+      if (Object.prototype.hasOwnProperty.call(patch || {}, "name")) {
+        update(step.id, window.MobKitFlowController.inputParamUpdatePatch(params, id, patch, contract));
+        return;
+      }
+      setFlow((current) => {
+        const result = window.MobKitFlowController.inputParamUpdateCascadePatch({
+          flow: current,
+          edges: studio?.edges || [],
+          members: studio?.members || [],
+          instances: studio?.instances || [],
+          schemas: studio?.schemas || []
+        }, step.id, id, patch, contract);
+        if (result.edges !== studio?.edges && studio?.setEdges) {
+          if (studio?.snap) studio.snap();
+          studio.setEdges(result.edges);
+        }
+        return result.flow;
+      });
+    };
     const deleteParam = (id) => {
       setFlow((current) => {
         const result = window.MobKitFlowController.inputParamDeleteCascadePatch({
