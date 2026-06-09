@@ -320,18 +320,16 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const t = document.elementFromPoint(e.clientX, e.clientY);
         const closest = t?.closest?.("[data-inst-id]");
         if (closest && closest.dataset.instId !== conn.fromId) {
-          const toId = closest.dataset.instId;
-          const fromI = state.instances.find(i => i.id === conn.fromId);
-          const toI = state.instances.find(i => i.id === toId);
-          const newEdge = window.MobKitFlowController.graphConnectionEdgeDraft({
-            from: fromI,
-            to: toI,
+          const result = window.MobKitFlowController.graphConnectionAddPatch({
+            fromId: conn.fromId,
+            toId: closest.dataset.instId,
+            instances: state.instances,
             edges: state.edges,
             contract,
           });
-          if (newEdge) {
-            state.addEdge(newEdge);
-            selectEdge(newEdge.id);
+          if (result.ok && result.edge) {
+            state.setEdges(result.edges);
+            selectEdge(result.selectId);
           }
         }
         setConn(null); setHoverInId(null);

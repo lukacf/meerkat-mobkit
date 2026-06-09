@@ -236,8 +236,10 @@ assert(!/setMembers\(ms => ms\.map\(m => m\.schema === id \?/.test(graph), "Grap
 assert.match(app, /MobKitFlowController\.reconcileAuthoringForMembers/, "app shell must keep Basic and Graph step tool scopes synchronized through aggregate member reconciliation");
 assert.match(controller, /function reconcileFlowStepToolScopes/, "controller plane must own Basic step tool-scope reconciliation");
 assert.match(controller, /function reconcileGraphStepToolScopes/, "controller plane must own Graph step tool-scope reconciliation");
-assert.match(graph, /MobKitFlowController\.graphConnectionEdgeDraft/, "Graph editor must ask the controller plane to construct semantic edge drafts");
+assert.match(graph, /MobKitFlowController\.graphConnectionAddPatch/, "Graph editor must ask the controller plane to complete semantic connection adds");
+assert.match(controller, /function graphConnectionAddPatch/, "controller plane must own graph connection endpoint lookup, semantic draft, and edge add validation");
 assert.match(controller, /function graphConnectionEdgeDraft/, "controller plane must own semantic edge creation for graph connections");
+assert(!/if \(conn\)[\s\S]{0,900}state\.instances\.find|if \(conn\)[\s\S]{0,900}state\.addEdge|const\s+fromI\s*=|const\s+toI\s*=/.test(graph), "Graph editor must not resolve graph connection endpoints or add connection edges locally");
 assert.match(builderStepPickerBlock, /MobKitFlowController\.basicStepPickerState/, "Basic add-step picker must render controller-projected palette rows");
 assert.match(builderStepPickerBlock, /basicStepPickerState\(\{[\s\S]*basicView/, "Basic add-step picker must pass schema-backed Basic view into controller projection");
 assert.match(builderStepPickerBlock, /pickerState\.memberRows\.map/, "Basic add-step member rows must come from controller state");

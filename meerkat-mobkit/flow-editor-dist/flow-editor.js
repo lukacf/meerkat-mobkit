@@ -4581,6 +4581,33 @@ window.MOBKIT_BOOT = {
     return { ok: true, error: "", edges: [...list, edge], edge };
   }
 
+  function graphConnectionAddPatch({ fromId, toId, instances, edges, contract } = {}) {
+    const from = String(fromId || "").trim();
+    const to = String(toId || "").trim();
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    const sourceEdges = Array.isArray(edges) ? edges : [];
+    if (!from || !to || from === to) {
+      return { ok: false, error: "edge endpoints must be different graph nodes", edges: sourceEdges, edge: null, selectId: "" };
+    }
+    const fromInstance = sourceInstances.find((instance) => String(instance?.id || "") === from) || null;
+    const toInstance = sourceInstances.find((instance) => String(instance?.id || "") === to) || null;
+    if (!fromInstance || !toInstance) {
+      return { ok: false, error: "edge endpoints must reference existing graph nodes", edges: sourceEdges, edge: null, selectId: "" };
+    }
+    const draft = graphConnectionEdgeDraft({
+      from: fromInstance,
+      to: toInstance,
+      edges: sourceEdges,
+      contract,
+    });
+    if (!draft) return { ok: false, error: "edge draft unavailable", edges: sourceEdges, edge: null, selectId: "" };
+    const patch = studioAddEdgePatch({ edges: sourceEdges, instances: sourceInstances }, draft);
+    return {
+      ...patch,
+      selectId: patch.ok && patch.edge ? patch.edge.id : "",
+    };
+  }
+
   function studioAppendEdgesPatch({ edges, instances } = {}, nextEdges = []) {
     let list = Array.isArray(edges) ? edges : [];
     for (const edge of Array.isArray(nextEdges) ? nextEdges : []) {
@@ -11146,6 +11173,7 @@ window.MOBKIT_BOOT = {
     studioMoveInstancePatch,
     studioDeleteInstancePatch,
     studioAddEdgePatch,
+    graphConnectionAddPatch,
     studioAppendEdgesPatch,
     studioUpdateEdgePatch,
     studioDeleteEdgePatch,
@@ -12115,18 +12143,16 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const t = document.elementFromPoint(e.clientX, e.clientY);
         const closest = t?.closest?.("[data-inst-id]");
         if (closest && closest.dataset.instId !== conn.fromId) {
-          const toId = closest.dataset.instId;
-          const fromI = state.instances.find((i) => i.id === conn.fromId);
-          const toI = state.instances.find((i) => i.id === toId);
-          const newEdge = window.MobKitFlowController.graphConnectionEdgeDraft({
-            from: fromI,
-            to: toI,
+          const result = window.MobKitFlowController.graphConnectionAddPatch({
+            fromId: conn.fromId,
+            toId: closest.dataset.instId,
+            instances: state.instances,
             edges: state.edges,
             contract
           });
-          if (newEdge) {
-            state.addEdge(newEdge);
-            selectEdge(newEdge.id);
+          if (result.ok && result.edge) {
+            state.setEdges(result.edges);
+            selectEdge(result.selectId);
           }
         }
         setConn(null);

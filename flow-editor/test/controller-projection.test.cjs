@@ -7746,6 +7746,45 @@ assert.deepEqual(controller.graphConnectionEdgeDraft({
   edges: [{ id: "e_plannode_code_node", from: "other", to: "target" }],
   contract: graphShapeContract,
 }), { id: "e_plannode_code_node_2", from: "plan.node", to: "code node", kind: "next", label: "" });
+assert.deepEqual(controller.graphConnectionAddPatch({
+  fromId: "plan",
+  toId: "code",
+  instances: [{ id: "plan", col: 0, row: 0 }, { id: "code", col: 1, row: 0 }],
+  edges: [],
+  contract: graphShapeContract,
+}), {
+  ok: true,
+  error: "",
+  edges: [{ id: "e_plan_code", from: "plan", to: "code", kind: "next", label: "" }],
+  edge: { id: "e_plan_code", from: "plan", to: "code", kind: "next", label: "" },
+  selectId: "e_plan_code",
+});
+assert.deepEqual(controller.graphConnectionAddPatch({
+  fromId: "plan",
+  toId: "missing",
+  instances: [{ id: "plan", col: 0, row: 0 }],
+  edges: [],
+  contract: graphShapeContract,
+}), {
+  ok: false,
+  error: "edge endpoints must reference existing graph nodes",
+  edges: [],
+  edge: null,
+  selectId: "",
+});
+assert.deepEqual(controller.graphConnectionAddPatch({
+  fromId: "plan",
+  toId: "code",
+  instances: [{ id: "plan", col: 0, row: 0 }, { id: "code", col: 1, row: 0 }],
+  edges: [{ id: "e_plan_code", from: "plan", to: "code", kind: "next", label: "" }],
+  contract: graphShapeContract,
+}), {
+  ok: false,
+  error: "edge draft unavailable",
+  edges: [{ id: "e_plan_code", from: "plan", to: "code", kind: "next", label: "" }],
+  edge: null,
+  selectId: "",
+});
 
 const gateState = controller.graphGateControlState({
   id: "join_1",
