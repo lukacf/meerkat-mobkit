@@ -5242,29 +5242,6 @@
     };
   }
 
-  function inputParamAddPatch(params, contract) {
-    const current = Array.isArray(params) ? params : [];
-    const draft = editorInputParamDraftContract(contract);
-    if (!draft) {
-      return {
-        ok: false,
-        error: "MobKit schema is missing mob_definition.editor_input_param_draft",
-        patch: { inputParams: current, fields: inputParamSummary(current, contract) },
-      };
-    }
-    const nextNumber = Math.max(0, ...current.map((param) => Number(String(param?.id || "p0").slice(1)) || 0)) + 1;
-    const param = {
-      id: `p${nextNumber}`,
-      name: uniqueInputParamName(current, draft.addedField.name),
-      type: draft.schemaFieldType,
-      required: draft.addedField.required,
-      description: draft.addedField.description,
-      enumValues: draft.addedField.enumValues,
-    };
-    const next = [...current, param];
-    return { param, patch: { inputParams: next, fields: inputParamSummary(next, contract) } };
-  }
-
   function basicConditionFromText(text) {
     return parseEditorConditionText(text);
   }
@@ -11820,7 +11797,6 @@
     inputParamRenamePatch,
     inputParamRenameCascadePatch,
     inputParamDeleteCascadePatch,
-    inputParamAddPatch,
     parseGraphConditionVar,
     graphConditionRefForEdge,
     graphConditionOptions,

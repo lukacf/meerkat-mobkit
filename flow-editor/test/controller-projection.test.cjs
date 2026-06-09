@@ -9756,33 +9756,7 @@ assert.deepEqual(controller.inputParamDeletePatch([
     fields: "notes: string?",
   },
 });
-assert.deepEqual(controller.inputParamAddPatch([
-  { id: "p1", name: "param", type: "string", required: true, description: "", enumValues: [] },
-], graphShapeContract), {
-  param: { id: "p2", name: "param_2", type: "string", required: true, description: "", enumValues: [] },
-  patch: {
-    inputParams: [
-      { id: "p1", name: "param", type: "string", required: true, description: "", enumValues: [] },
-      { id: "p2", name: "param_2", type: "string", required: true, description: "", enumValues: [] },
-    ],
-    fields: "param: string, param_2: string",
-  },
-});
-assert.deepEqual(controller.inputParamAddPatch([
-  { id: "p1", name: "param", type: "string", required: true, description: "", enumValues: [] },
-], {
-  mob_definition: {
-    defaults: { schema_field_type: "string" },
-    editor_schema_field_types: ["string"],
-  },
-}), {
-  ok: false,
-  error: "MobKit schema is missing mob_definition.editor_input_param_draft",
-  patch: {
-    inputParams: [{ id: "p1", name: "param", type: "string", required: true, description: "", enumValues: [] }],
-    fields: "param: string",
-  },
-});
+assert.equal(controller.inputParamAddPatch, undefined);
 assert.deepEqual(controller.inputParamAddErrorState({
   ok: false,
   error: "MobKit schema is missing mob_definition.editor_input_param_draft",

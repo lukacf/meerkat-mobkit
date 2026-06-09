@@ -1014,7 +1014,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "add_input_param",
             "plane": "basic",
             "authority": "mobkit",
-            "requires": ["step_id", "param"],
+            "requires": ["step_id"],
             "mutates": ["document.flow"],
             "projection_document_supported": true
         },
@@ -5032,6 +5032,126 @@ fn refresh_input_param_summary(step: &mut Value) {
     step["fields"] = Value::String(input_param_summary(&params));
 }
 
+fn next_input_param_id(params: &[Value]) -> String {
+    let used = params
+        .iter()
+        .filter_map(|param| param.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .collect::<BTreeSet<_>>();
+    let mut index = 1;
+    loop {
+        let id = format!("p{index}");
+        if !used.contains(id.as_str()) {
+            return id;
+        }
+        index += 1;
+    }
+}
+
+fn input_param_name(raw: &str, fallback: &str) -> String {
+    let out = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    let out = out.trim_matches('_').to_string();
+    let out = if out.is_empty() {
+        fallback.to_string()
+    } else {
+        out
+    };
+    if out.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+        format!("_{out}")
+    } else {
+        out
+    }
+}
+
+fn unique_input_param_name(params: &[Value], raw: &str) -> String {
+    let base = input_param_name(raw, "param");
+    let taken = params
+        .iter()
+        .filter_map(|param| param.get("name").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect::<BTreeSet<_>>();
+    if !taken.contains(base.as_str()) {
+        return base;
+    }
+    let mut index = 2;
+    loop {
+        let candidate = format!("{base}_{index}");
+        if !taken.contains(candidate.as_str()) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn input_param_from_draft(params: &[Value]) -> Result<Value, String> {
+    let schema = mobpack_schema_response();
+    let mob_definition = schema
+        .get("mob_definition")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "MobKit schema is missing mob_definition".to_string())?;
+    let default_type = mob_definition
+        .get("defaults")
+        .and_then(Value::as_object)
+        .and_then(|defaults| defaults.get("schema_field_type"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("string");
+    if !is_editor_schema_field_type(default_type) {
+        return Err(format!(
+            "MobKit schema default schema_field_type is unsupported: {default_type}"
+        ));
+    }
+    let added_field = mob_definition
+        .get("editor_input_param_draft")
+        .and_then(Value::as_object)
+        .and_then(|draft| draft.get("added_field"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            "MobKit schema is missing mob_definition.editor_input_param_draft".to_string()
+        })?;
+    let name = added_field
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("param");
+    let enum_values = added_field
+        .get("enumValues")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok(json!({
+        "id": next_input_param_id(params),
+        "name": unique_input_param_name(params, name),
+        "type": default_type,
+        "required": added_field
+            .get("required")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        "description": added_field
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+        "enumValues": enum_values,
+    }))
+}
+
 fn apply_add_input_param_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
@@ -5045,10 +5165,14 @@ fn apply_add_input_param_operation(
         return apply_projected_authoring_document_operation(document, operation);
     }
     let step_id = operation_step_id(operation)?;
+    let step = flow_step_mut_by_id(&mut document.flow, &step_id)
+        .ok_or_else(|| format!("flow step not found: {step_id}"))?;
+    let params = input_params_mut_for_step(step, &step_id)?;
     let param = operation
         .get("param")
         .cloned()
-        .ok_or_else(|| "add_input_param requires param object".to_string())?;
+        .map(Ok)
+        .unwrap_or_else(|| input_param_from_draft(params))?;
     let param_id = param
         .get("id")
         .and_then(Value::as_str)
@@ -5056,9 +5180,6 @@ fn apply_add_input_param_operation(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "add_input_param requires param.id".to_string())?
         .to_string();
-    let step = flow_step_mut_by_id(&mut document.flow, &step_id)
-        .ok_or_else(|| format!("flow step not found: {step_id}"))?;
-    let params = input_params_mut_for_step(step, &step_id)?;
     if input_param_index(params, &param_id).is_some() {
         return Err(format!("input param already exists: {param_id}"));
     }
@@ -22646,14 +22767,25 @@ model = "gpt-5.5"
             "document": document,
             "operation": {
                 "type": "add_input_param",
-                "step_id": "input",
-                "param": { "id": "p2", "name": "priority", "type": "string", "required": false, "description": "" }
+                "step_id": "input"
             }
         }))
         .expect("add input param");
+        assert_eq!(added["selection"]["param_id"], json!("p2"));
+        assert_eq!(
+            added["document"]["flow"]["steps"][0]["inputParams"][1],
+            json!({
+                "id": "p2",
+                "name": "param",
+                "type": "string",
+                "required": true,
+                "description": "",
+                "enumValues": []
+            })
+        );
         assert_eq!(
             added["document"]["flow"]["steps"][0]["fields"],
-            json!("route: enum, priority: string?")
+            json!("route: enum, param: string")
         );
 
         let renamed = apply_mobpack_authoring_operation(&json!({

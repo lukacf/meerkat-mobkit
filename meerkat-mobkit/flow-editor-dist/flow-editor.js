@@ -5275,29 +5275,6 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function inputParamAddPatch(params, contract) {
-    const current = Array.isArray(params) ? params : [];
-    const draft = editorInputParamDraftContract(contract);
-    if (!draft) {
-      return {
-        ok: false,
-        error: "MobKit schema is missing mob_definition.editor_input_param_draft",
-        patch: { inputParams: current, fields: inputParamSummary(current, contract) },
-      };
-    }
-    const nextNumber = Math.max(0, ...current.map((param) => Number(String(param?.id || "p0").slice(1)) || 0)) + 1;
-    const param = {
-      id: `p${nextNumber}`,
-      name: uniqueInputParamName(current, draft.addedField.name),
-      type: draft.schemaFieldType,
-      required: draft.addedField.required,
-      description: draft.addedField.description,
-      enumValues: draft.addedField.enumValues,
-    };
-    const next = [...current, param];
-    return { param, patch: { inputParams: next, fields: inputParamSummary(next, contract) } };
-  }
-
   function basicConditionFromText(text) {
     return parseEditorConditionText(text);
   }
@@ -11853,7 +11830,6 @@ window.MOBKIT_BOOT = {
     inputParamRenamePatch,
     inputParamRenameCascadePatch,
     inputParamDeleteCascadePatch,
-    inputParamAddPatch,
     parseGraphConditionVar,
     graphConditionRefForEdge,
     graphConditionOptions,
@@ -14401,11 +14377,23 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
       }, step.id, id, rawName, previousName, contract), "rename_input_param", { step_id: step.id, param_id: id, new_name: rawName });
     };
     const addParam = () => {
-      const result = window.MobKitFlowController.inputParamAddPatch(params, contract);
-      setParamAddResult(result);
-      if (result.ok === false) return;
+      if (!applyAuthoringReplacement) return;
       setParamAddResult(null);
-      update(step.id, result.patch, "add_input_param", { step_id: step.id, param: result.param });
+      applyAuthoringReplacement({
+        operationType: "add_input_param",
+        operation: { step_id: step.id }
+      }).then((result) => {
+        if (result?.ok === false) {
+          setParamAddResult(result);
+          return;
+        }
+        setParamAddResult(null);
+      }).catch((error) => {
+        setParamAddResult({
+          ok: false,
+          error: error?.message || String(error || "add_input_param failed")
+        });
+      });
     };
     return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: inputState.panelIcon, iconTint: "member", title: inputState.panelTitle, sub: inputState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: inputState.taskLabel }, /* @__PURE__ */ React.createElement("textarea", { className: "field__textarea", rows: 3, placeholder: inputState.taskPlaceholder, value: step.task || "", onChange: (e) => update(step.id, window.MobKitFlowController.flowStepTaskPatch(e.target.value)) })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, inputState.paramsTitle), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: addParam }, inputState.addParamLabel)), paramAddErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, paramAddErrorState.text), /* @__PURE__ */ React.createElement("div", { className: "schema-builder" }, /* @__PURE__ */ React.createElement("div", { className: "schema-builder__header" }, inputState.headerRows.map((row) => /* @__PURE__ */ React.createElement("span", { key: row.key, className: row.className }, row.label))), params.map((param) => /* @__PURE__ */ React.createElement(
       InputParamField,

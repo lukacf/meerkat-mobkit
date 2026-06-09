@@ -577,7 +577,10 @@ assert.match(builder, /applyAuthoringReplacement\(\{[\s\S]*operationType,[\s\S]*
 assert.match(builder, /update_input_param", \{ step_id:\s*step\.id,\s*param_id:\s*id,\s*patch \}/, "Basic input-param updates must send explicit MobKit operation payloads");
 assert.match(builder, /rename_input_param", \{ step_id:\s*step\.id,\s*param_id:\s*id,\s*new_name:\s*rawName \}/, "Basic input-param renames must send explicit MobKit operation payloads");
 assert.match(builder, /delete_input_param", \{ step_id:\s*step\.id,\s*param_id:\s*id \}/, "Basic input-param deletes must send explicit MobKit operation payloads");
-assert.match(builder, /add_input_param", \{ step_id:\s*step\.id,\s*param:\s*result\.param \}/, "Basic input-param adds must send explicit MobKit operation payloads");
+assert.match(builder, /operationType:\s*"add_input_param"[\s\S]*operation:\s*\{\s*step_id:\s*step\.id\s*\}/, "Basic input-param adds must send only semantic step_id payloads to MobKit");
+assert(!/add_input_param", \{ step_id:\s*step\.id,\s*param:/.test(builder), "Basic input-param adds must not send browser-drafted param objects");
+assert.match(mobpackRust, /"type":\s*"add_input_param"[\s\S]*"authority":\s*"mobkit"[\s\S]*"requires":\s*\["step_id"\]/, "MobKit operation catalog must advertise input-param add as a semantic MobKit-owned operation");
+assert.match(mobpackRust, /fn input_param_from_draft[\s\S]*mobpack_schema_response\(\)[\s\S]*editor_input_param_draft/, "MobKit apply_operation must own schema-backed input-param draft creation");
 assert(!/const reconcileInputParamReferences =|onInputParamReferenceChange|MobKitFlowController\.reconcileInputParamReferences\(\{/.test(builder), "Basic editor must not split input-param updates from reference reconciliation in JSX");
 assert.match(builder, /MobKitFlowController\.flowStepUpdatePatch/, "Basic editor must update flow steps through the controller plane");
 assert.match(builder, /flowStepUpdatePatch\(flow,\s*id,\s*patch,\s*\{\s*members\s*\}\)/, "Basic flow step updates must pass real MobKit members into controller validation");
@@ -705,14 +708,14 @@ assert(!/MobKitFlowController\.inputParamUpdatePatch/.test(builder), "Basic edit
 assert.match(builder, /MobKitFlowController\.inputParamUpdateCascadePatch/, "Basic editor must update input-param semantics through the controller cascade plane");
 assert.match(builder, /MobKitFlowController\.inputParamDeleteCascadePatch/, "Basic editor must delete input params through the controller cascade plane");
 assert.match(builder, /MobKitFlowController\.inputParamRenameCascadePatch/, "Basic editor must rename input params through the controller cascade plane");
-assert.match(builder, /MobKitFlowController\.inputParamAddPatch/, "Basic editor must add input params through the controller plane");
+assert(!/MobKitFlowController\.inputParamAddPatch/.test(builder), "Basic editor must add input params through MobKit apply_operation, not controller draft creation");
 assert.match(builderInputParamBlock, /const \[draftName,\s*setDraftName\] = React\.useState\(param\.name \|\| ""\)/, "Basic input-param names must draft in the UI plane before commit");
 assert.match(builderInputParamBlock, /onChange=\{e => setDraftName\(e\.target\.value\)\}[\s\S]*onBlur=\{e => \{[\s\S]*onRename\?\.\(normalized,\s*previousName\)/, "Basic input-param names must commit through the controller rename cascade on blur");
 assert(!/onChange=\{e => onChange\(\{\s*name:\s*e\.target\.value\s*\}\)\}/.test(builderInputParamBlock), "Basic input-param name typing must not mutate deployable flow state directly");
-assert.match(controller, /function inputParamAddPatch/, "controller plane must own schema-backed input-param creation");
+assert(!/function inputParamAddPatch/.test(controller), "controller plane must not own deployable input-param creation");
 assert.match(controller, /function inputParamAddErrorState/, "controller plane must own rejected input-param add display state");
 assert.match(builderStepInspectorBlock, /const \[paramAddResult,\s*setParamAddResult\] = React\.useState\(null\);[\s\S]*MobKitFlowController\.inputParamAddErrorState\(paramAddResult\)/, "Basic input panel must ask the controller plane to project rejected param-add errors");
-assert.match(builderStepInspectorBlock, /setParamAddResult\(result\);[\s\S]*if \(result\.ok === false\) return;[\s\S]*setParamAddResult\(null\);[\s\S]*paramAddErrorState\.hasError[\s\S]*paramAddErrorState\.text/, "Basic input-param add must render rejected controller results instead of silently dropping them");
+assert.match(builderStepInspectorBlock, /applyAuthoringReplacement\(\{[\s\S]*operationType:\s*"add_input_param"[\s\S]*\}\)\.then\(\(result\) => \{[\s\S]*result\?\.ok === false[\s\S]*setParamAddResult\(result\)[\s\S]*setParamAddResult\(null\)/, "Basic input-param add must render rejected MobKit operation results instead of silently dropping them");
 assert.match(controller, /inputParamUpdateCascadePatch[\s\S]*inputParamUpdatePatch\(params,\s*paramId,\s*patch,\s*contract\)[\s\S]*reconcileConditionFieldAvailability\(\{[\s\S]*members,[\s\S]*instances,[\s\S]*schemas/, "input-param semantic update cascade must update the input step and clear invalid Basic/Graph conditions without dropping schema context");
 assert.match(controller, /function editorInputStepDraftContract/, "controller plane must hydrate missing input-step drafts from MobKit schema");
 assert.match(controller, /graphToFlow[\s\S]*inputStepDraft\(contract,\s*prior\)/, "Graph-to-Basic projection must create missing input steps from MobKit schema draft state");
@@ -722,7 +725,7 @@ assert.match(controller, /function inputParamDeleteCascadePatch/, "controller pl
 assert.match(controller, /inputParamRenameCascadePatch[\s\S]*flowStepUpdatePatch\(flow,\s*stepId,\s*renamed\.patch\)[\s\S]*reconcileInputParamReferences\(\{/, "input-param rename cascade must update the input step and rewrite Basic/Graph references together");
 assert.match(controller, /inputParamDeleteCascadePatch[\s\S]*flowStepUpdatePatch\(flow,\s*stepId,\s*deleted\.patch\)[\s\S]*reconcileInputParamReferences\(\{/, "input-param delete cascade must update the input step and clear Basic/Graph references together");
 assert.match(controller, /mob_definition\?\.editor_input_param_draft/, "Basic input-param creation must hydrate from the MobKit editor_input_param_draft contract");
-assert(!/inputParamAddPatch[\s\S]{0,420}["']param["']/.test(controller), "controller must not own the local Basic input-param draft name");
+assert(!/inputParamAddPatch|editorInputParamDraftContract[\s\S]{0,420}id:\s*`p|editorInputParamDraftContract[\s\S]{0,420}patch:\s*\{\s*inputParams/.test(controller), "controller must not own local Basic input-param draft objects");
 assert.match(controller, /function basicInputControlState/, "controller plane must own Basic input panel projection");
 assert.match(controller, /inputPanelTitle:\s*String\(view\.input_panel_title/, "controller plane must hydrate Basic input panel title from MobKit schema");
 assert.match(controller, /inputParamHeaderLabels:\s*\{[\s\S]*name:\s*String\(view\.input_param_header_labels\?\.name/, "controller plane must hydrate Basic input param headers from MobKit schema");

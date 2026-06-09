@@ -516,11 +516,23 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
       }, step.id, id, rawName, previousName, contract), "rename_input_param", { step_id: step.id, param_id: id, new_name: rawName });
     };
     const addParam = () => {
-      const result = window.MobKitFlowController.inputParamAddPatch(params, contract);
-      setParamAddResult(result);
-      if (result.ok === false) return;
+      if (!applyAuthoringReplacement) return;
       setParamAddResult(null);
-      update(step.id, result.patch, "add_input_param", { step_id: step.id, param: result.param });
+      applyAuthoringReplacement({
+        operationType: "add_input_param",
+        operation: { step_id: step.id },
+      }).then((result) => {
+        if (result?.ok === false) {
+          setParamAddResult(result);
+          return;
+        }
+        setParamAddResult(null);
+      }).catch((error) => {
+        setParamAddResult({
+          ok: false,
+          error: error?.message || String(error || "add_input_param failed"),
+        });
+      });
     };
     return (
       <div className="bld-panel__inner">

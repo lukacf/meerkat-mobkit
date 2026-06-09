@@ -1518,9 +1518,11 @@ async function validateInputParamOperations(catalogs) {
     operation: {
       type: "add_input_param",
       step_id: "input",
-      param: { id: "p2", name: "priority", type: "string", required: false, description: "" },
     },
   });
+  if (added.selection?.param_id !== "p2" || added.document.flow.steps[0].inputParams[1]?.name !== "param") {
+    throw new Error(`input param add operation did not use MobKit draft defaults: ${JSON.stringify(added.document.flow.steps[0])}`);
+  }
   const renamed = await rpc("mobkit/mobpacks/apply_operation", {
     document: added.document,
     operation: {
