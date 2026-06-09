@@ -60,6 +60,10 @@ pub const MAX_SCHEDULES_PER_REQUEST: usize = 256;
 pub(crate) const MOBPACK_AUTHORING_METHODS: &[&str] = &[
     "mobkit/mobpacks/schema",
     "mobkit/mobpacks/catalogs",
+    "mobkit/tools/catalog",
+    "mobkit/skills/catalog",
+    "mobkit/agent_definitions/list",
+    "mobkit/mobpacks/templates",
     "mobkit/mobpacks/validate",
     "mobkit/mobpacks/source",
     "mobkit/mobpacks/export",
@@ -94,6 +98,10 @@ pub(crate) fn handle_mobpack_authoring_rpc(
     let result = match method {
         "mobkit/mobpacks/schema" => Ok(crate::mobpack::mobpack_schema_response()),
         "mobkit/mobpacks/catalogs" => Ok(crate::mobpack::mobpack_catalogs_response()),
+        "mobkit/tools/catalog" => Ok(crate::mobpack::mobpack_tools_catalog_response()),
+        "mobkit/skills/catalog" => Ok(crate::mobpack::mobpack_skills_catalog_response()),
+        "mobkit/agent_definitions/list" => Ok(crate::mobpack::mobpack_agent_definitions_response()),
+        "mobkit/mobpacks/templates" => Ok(crate::mobpack::mobpack_templates_response()),
         "mobkit/mobpacks/validate" => crate::mobpack::validate_mobpack(params)
             .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
         "mobkit/mobpacks/source" => crate::mobpack::source_mobpack(params)

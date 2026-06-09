@@ -788,8 +788,8 @@ fn parse_skill_frontmatter(content: &str) -> BTreeMap<String, String> {
     out
 }
 
-pub fn mobpack_catalogs_response() -> Value {
-    let models: Vec<Value> = meerkat_models::catalog()
+fn model_catalog_response() -> Vec<Value> {
+    meerkat_models::catalog()
         .iter()
         .filter_map(|entry| {
             Some(json!({
@@ -802,33 +802,107 @@ pub fn mobpack_catalogs_response() -> Value {
                     .and_then(|profile| serde_json::to_value(profile).ok()),
             }))
         })
-        .collect();
-    let provider_defaults: Vec<Value> = meerkat_models::provider_defaults()
+        .collect()
+}
+
+fn provider_defaults_response() -> Vec<Value> {
+    meerkat_models::provider_defaults()
         .iter()
         .filter_map(|default| serde_json::to_value(default).ok())
-        .collect();
+        .collect()
+}
+
+fn authoring_skill_realms_response() -> Value {
     let authoring_sources = authoring_agent_definition_mobpack_sources();
     let sample_mobpacks = sample_mobpack_catalog();
-    let blank_mobpack = blank_mobpack_template();
-    let skill_realms = discover_skill_realms(&sample_mobpacks, &authoring_sources);
+    discover_skill_realms(&sample_mobpacks, &authoring_sources)
+}
+
+pub fn mobpack_tools_catalog_response() -> Value {
+    json!({
+        "schema_version": MOBPACK_SCHEMA_VERSION,
+        "runtime_backed": false,
+        "source": "mobkit/tool-config",
+        "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle",
+        "tool_catalog": tool_catalog_response(),
+    })
+}
+
+pub fn mobpack_skills_catalog_response() -> Value {
+    json!({
+        "schema_version": MOBPACK_SCHEMA_VERSION,
+        "runtime_backed": false,
+        "source": "mobkit/authoring-skill-realms",
+        "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle",
+        "skill_realms": authoring_skill_realms_response(),
+    })
+}
+
+pub fn mobpack_agent_definitions_response() -> Value {
     let tool_catalog = tool_catalog_response();
+    let skill_realms = authoring_skill_realms_response();
+    let authoring_sources = authoring_agent_definition_mobpack_sources();
     let agent_definitions = agent_definition_catalog(
         &authoring_sources,
         &tool_catalog,
         &skill_realms,
         "authoring",
     );
+    json!({
+        "schema_version": MOBPACK_SCHEMA_VERSION,
+        "runtime_backed": false,
+        "source": "mobkit/authoring-agent-definitions",
+        "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle",
+        "agent_definitions": agent_definitions,
+    })
+}
+
+pub fn mobpack_templates_response() -> Value {
+    let sample_mobpacks = sample_mobpack_catalog();
+    let blank_mobpack = blank_mobpack_template();
+    let tool_catalog = tool_catalog_response();
+    let skill_realms = authoring_skill_realms_response();
     let sample_agent_definitions =
         agent_definition_catalog(&sample_mobpacks, &tool_catalog, &skill_realms, "sample");
     json!({
-        "tool_catalog": tool_catalog,
-        "skill_realms": skill_realms,
+        "schema_version": MOBPACK_SCHEMA_VERSION,
+        "source": "mobkit/mobpack-templates",
         "blank_mobpack": blank_mobpack,
         "sample_mobpacks": sample_mobpacks,
-        "agent_definitions": agent_definitions,
         "sample_agent_definitions": sample_agent_definitions,
-        "models": models,
-        "provider_defaults": provider_defaults,
+        "templates": {
+            "blank_mobpack": blank_mobpack,
+            "sample_mobpacks": sample_mobpacks,
+        },
+    })
+}
+
+pub fn mobpack_catalogs_response() -> Value {
+    let tools = mobpack_tools_catalog_response();
+    let skills = mobpack_skills_catalog_response();
+    let agents = mobpack_agent_definitions_response();
+    let templates = mobpack_templates_response();
+    json!({
+        "schema_version": MOBPACK_SCHEMA_VERSION,
+        "runtime_backed": false,
+        "sources": {
+            "catalog": "mobkit/mobpacks/catalogs",
+            "tools": "mobkit/tools/catalog",
+            "skills": "mobkit/skills/catalog",
+            "agent_definitions": "mobkit/agent_definitions/list",
+            "templates": "mobkit/mobpacks/templates",
+            "runtime": "standalone_authoring",
+            "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle"
+        },
+        "templates": templates["templates"].clone(),
+        "tool_catalog": tools["tool_catalog"].clone(),
+        "skill_realms": skills["skill_realms"].clone(),
+        "blank_mobpack": templates["blank_mobpack"].clone(),
+        "sample_mobpacks": templates["sample_mobpacks"].clone(),
+        "agent_definitions": agents["agent_definitions"].clone(),
+        "sample_agent_definitions": templates["sample_agent_definitions"].clone(),
+        "models": model_catalog_response(),
+        "provider_defaults": provider_defaults_response(),
     })
 }
 
@@ -2118,6 +2192,10 @@ pub fn mobpack_schema_response() -> Value {
         "commands": {
             "schema": "mobkit/mobpacks/schema",
             "catalogs": "mobkit/mobpacks/catalogs",
+            "tools_catalog": "mobkit/tools/catalog",
+            "skills_catalog": "mobkit/skills/catalog",
+            "agent_definitions": "mobkit/agent_definitions/list",
+            "templates": "mobkit/mobpacks/templates",
             "validate": "mobkit/mobpacks/validate",
             "source": "mobkit/mobpacks/source",
             "export": "mobkit/mobpacks/export",
@@ -26682,6 +26760,10 @@ model = "gpt-5.5"
         let expected = BTreeMap::from([
             ("schema", "mobkit/mobpacks/schema"),
             ("catalogs", "mobkit/mobpacks/catalogs"),
+            ("tools_catalog", "mobkit/tools/catalog"),
+            ("skills_catalog", "mobkit/skills/catalog"),
+            ("agent_definitions", "mobkit/agent_definitions/list"),
+            ("templates", "mobkit/mobpacks/templates"),
             ("validate", "mobkit/mobpacks/validate"),
             ("source", "mobkit/mobpacks/source"),
             ("export", "mobkit/mobpacks/export"),

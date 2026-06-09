@@ -48,6 +48,10 @@ async function assertAuthoringCapabilities() {
   const expectedMethods = [
     "mobkit/mobpacks/schema",
     "mobkit/mobpacks/catalogs",
+    "mobkit/tools/catalog",
+    "mobkit/skills/catalog",
+    "mobkit/agent_definitions/list",
+    "mobkit/mobpacks/templates",
     "mobkit/mobpacks/validate",
     "mobkit/mobpacks/source",
     "mobkit/mobpacks/export",
@@ -1893,6 +1897,25 @@ async function validateFlowStepOperations(catalogs) {
   const authoringCapabilities = await assertAuthoringCapabilities();
   const schema = await rpc("mobkit/mobpacks/schema", {});
   const catalogs = await rpc("mobkit/mobpacks/catalogs", {});
+  const toolsCatalog = await rpc("mobkit/tools/catalog", {});
+  const skillsCatalog = await rpc("mobkit/skills/catalog", {});
+  const agentDefinitions = await rpc("mobkit/agent_definitions/list", {});
+  const templatesCatalog = await rpc("mobkit/mobpacks/templates", {});
+  if (!catalogs.sources || catalogs.sources.tools !== "mobkit/tools/catalog" || catalogs.sources.templates !== "mobkit/mobpacks/templates") {
+    throw new Error(`mobkit/mobpacks/catalogs did not expose split catalog source metadata: ${JSON.stringify(catalogs.sources)}`);
+  }
+  if (!Array.isArray(toolsCatalog.tool_catalog) || toolsCatalog.tool_catalog.length !== catalogs.tool_catalog.length) {
+    throw new Error(`mobkit/tools/catalog did not expose the tool catalog slice: ${JSON.stringify(toolsCatalog)}`);
+  }
+  if (!Array.isArray(skillsCatalog.skill_realms) || skillsCatalog.skill_realms.length !== catalogs.skill_realms.length) {
+    throw new Error(`mobkit/skills/catalog did not expose the skill realm slice: ${JSON.stringify(skillsCatalog)}`);
+  }
+  if (!Array.isArray(agentDefinitions.agent_definitions) || agentDefinitions.agent_definitions.length !== catalogs.agent_definitions.length) {
+    throw new Error(`mobkit/agent_definitions/list did not expose the agent definition slice: ${JSON.stringify(agentDefinitions)}`);
+  }
+  if (!templatesCatalog.blank_mobpack || !Array.isArray(templatesCatalog.sample_mobpacks) || !Array.isArray(templatesCatalog.sample_agent_definitions)) {
+    throw new Error(`mobkit/mobpacks/templates did not expose separated templates and samples: ${JSON.stringify(templatesCatalog)}`);
+  }
   if (!Array.isArray(catalogs.tool_catalog) || catalogs.tool_catalog.length === 0) {
     throw new Error("mobkit/mobpacks/catalogs did not expose a real tool_catalog");
   }
