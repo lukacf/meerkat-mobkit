@@ -6017,11 +6017,12 @@ window.MOBKIT_BOOT = {
     return out;
   }
 
-  function graphToolTagClass(toolId) {
+  function graphToolTagClass(toolId, toolCatalog = []) {
     const id = String(toolId || "");
-    if (id.startsWith("shell") || id === "git") return " is-shell";
-    if (id.startsWith("mcp")) return " is-write";
-    return "";
+    const tool = (Array.isArray(toolCatalog) ? toolCatalog : [])
+      .find((candidate) => String(candidate?.id || "") === id) || null;
+    const tagClass = String(tool?.tagClass || tool?.tag_class || tool?.raw?.tag_class || "").trim();
+    return tagClass ? ` ${tagClass}` : "";
   }
 
   const GRAPH_NODE_W = 200;
@@ -6180,7 +6181,7 @@ window.MOBKIT_BOOT = {
     return { columns, rows: rowHeaders };
   }
 
-  function graphNodeCanvasState({ inst, members = [], density = "", graphView = null } = {}) {
+  function graphNodeCanvasState({ inst, members = [], density = "", graphView = null, toolCatalog = [] } = {}) {
     const view = graphCanvasViewState(graphView);
     const isCompact = density === "compact";
     if (inst?.isTerminal) {
@@ -6215,7 +6216,7 @@ window.MOBKIT_BOOT = {
       subtitle: member.model,
       toolRows: visibleTools.map((tool) => ({
         id: tool,
-        className: "tag" + graphToolTagClass(tool),
+        className: "tag" + graphToolTagClass(tool, toolCatalog),
       })),
       overflowLabel: tools.length > visibleTools.length ? `+${tools.length - visibleTools.length}` : "",
     };
@@ -8453,6 +8454,7 @@ window.MOBKIT_BOOT = {
         desc: String(tool.desc),
         kind: String(tool.kind),
         source: String(tool.source),
+        tagClass: String(tool.tag_class || ""),
         raw: tool,
       }));
   }
@@ -12453,7 +12455,7 @@ function useStudioState(initial, onDirty, authoring = {}) {
     updateSkillRealms
   };
 }
-function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null }) {
+function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [] }) {
   const hostRef = React.useRef(null);
   const [drag, setDrag] = React.useState(null);
   const [conn, setConn] = React.useState(null);
@@ -12714,7 +12716,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         key: inst.id,
         g,
         inst,
-        nodeState: window.MobKitFlowController.graphNodeCanvasState({ inst, members: state.members, density, graphView: canvasView }),
+        nodeState: window.MobKitFlowController.graphNodeCanvasState({ inst, members: state.members, density, graphView: canvasView, toolCatalog }),
         selected: selection.kind === "instance" && selection.id === inst.id,
         memberHighlight: memberFocus && inst.memberId === memberFocus,
         memberDim: !!memberFocus && inst.memberId !== memberFocus && !inst.isTerminal,
@@ -15105,7 +15107,8 @@ function App() {
       memberFocus: null,
       grid: catalogs.grid,
       contract,
-      graphView: catalogs.graphView
+      graphView: catalogs.graphView,
+      toolCatalog: catalogs.toolCatalog
     }
   ), /* @__PURE__ */ React.createElement(
     InlineSourceEditor,

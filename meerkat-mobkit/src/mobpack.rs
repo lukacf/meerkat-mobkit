@@ -579,6 +579,7 @@ fn tool_catalog_response() -> Vec<Value> {
                 "field": field,
                 "source": "meerkat_mob::ToolConfig",
                 "desc": tool_config_field_desc(&field),
+                "tag_class": tool_config_field_tag_class(&field),
             })
         })
         .collect::<Vec<_>>();
@@ -589,6 +590,7 @@ fn tool_catalog_response() -> Vec<Value> {
             "kind": "mcp",
             "source": source,
             "desc": "Configured host MCP source allowlist entry",
+            "tag_class": "is-write",
         }));
     }
     for bundle in discover_rust_tool_bundles() {
@@ -598,6 +600,7 @@ fn tool_catalog_response() -> Vec<Value> {
             "kind": "rust",
             "source": bundle,
             "desc": "Host-registered Rust tool bundle name",
+            "tag_class": "",
         }));
     }
     tools
@@ -632,6 +635,13 @@ fn tool_config_field_desc(field: &str) -> String {
         other => return format!("MobKit ToolConfig.{other} runtime tool flag"),
     }
     .to_string()
+}
+
+fn tool_config_field_tag_class(field: &str) -> &'static str {
+    match field {
+        "shell" => "is-shell",
+        _ => "",
+    }
 }
 
 fn discover_mcp_sources() -> BTreeSet<String> {
@@ -17033,6 +17043,16 @@ model = "gpt-5.5"
         assert!(tool_catalog.iter().any(|tool| {
             tool["id"] == "shell" && tool["kind"] == "runtime" && tool["field"] == "shell"
         }));
+        assert!(
+            tool_catalog
+                .iter()
+                .any(|tool| { tool["id"] == "shell" && tool["tag_class"] == "is-shell" })
+        );
+        assert!(
+            tool_catalog
+                .iter()
+                .any(|tool| { tool["id"] == "builtins" && tool["tag_class"] == "" })
+        );
         assert!(tool_catalog.iter().any(|tool| {
             tool["id"] == "comms" && tool["kind"] == "runtime" && tool["field"] == "comms"
         }));
@@ -17044,6 +17064,7 @@ model = "gpt-5.5"
                 && tool["label"]
                     .as_str()
                     .is_some_and(|label| !label.is_empty())
+                && tool.get("tag_class").is_some_and(Value::is_string)
         }));
     }
 

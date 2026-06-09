@@ -115,12 +115,14 @@ assert(!/AGENT\s*·/.test(agents), "Agent editor header must not hardcode select
 assert.match(app, /<GraphEditor[\s\S]*grid=\{catalogs\.grid\}/, "app shell must inject layout data into Graph editor");
 assert.match(app, /<GraphEditor[\s\S]*contract=\{contract\}/, "app shell must inject the MobKit graph contract into Graph editor");
 assert.match(app, /<GraphEditor[\s\S]*graphView=\{catalogs\.graphView\}/, "app shell must inject schema-backed Graph canvas view state");
+assert.match(app, /<GraphEditor[\s\S]*toolCatalog=\{catalogs\.toolCatalog\}/, "app shell must inject MobKit tool catalog metadata into Graph editor");
 assert.match(controller, /mob_definition\?\.editor_graph_view/, "controller plane must hydrate Graph canvas chrome from MobKit schema");
 assert.match(app, /<AddNodeMenu[\s\S]*graphView=\{catalogs\.graphView\}/, "app shell must inject schema-backed Graph add-node menu view state");
 assert.match(controller, /gatePaletteRows:\s*graphGatePaletteRowsFromSchema\(view\.gate_palette_rows\)/, "controller plane must hydrate Graph gate palette rows from MobKit schema");
 assert.match(controller, /gateKindLabels:\s*viewStringMapFromSchema\(view\.graph_gate_kind_labels\)/, "controller plane must hydrate Graph option labels from MobKit schema");
 assert.match(controller, /inspectorDeleteLabel:\s*String\(view\.inspector_delete_label/, "controller plane must hydrate Graph inspector chrome from MobKit schema");
 assert.match(graphEditorBlock, /graphView(?:\s*=\s*null)?[\s\S]*MobKitFlowController\.graphCanvasViewState\(graphView\)/, "Graph editor must render canvas affordance titles through controller-projected view state");
+assert.match(graphEditorBlock, /toolCatalog(?:\s*=\s*\[\])?[\s\S]*graphNodeCanvasState\(\{[\s\S]*toolCatalog/, "Graph editor must pass MobKit tool catalog metadata into node projection");
 assert.match(graphEditorBlock, /(?=[\s\S]*canvasView\.zoomOutTitle)(?=[\s\S]*canvasView\.fitTitle)(?=[\s\S]*canvasView\.zoomInTitle)(?=[\s\S]*canvasView\.portDragTitle)/, "Graph editor must use controller-projected zoom and port titles");
 assert(!/title=["'](?:Zoom out|Fit to view|Zoom in|Drag to a member to connect)["']/.test(graph), "Graph editor JSX must not compose canvas affordance titles locally");
 assert.match(app, /<Inspector[\s\S]*templateSeed=\{catalogs\.template\}/, "app shell must inject MobKit summary seed into Inspector");
@@ -949,7 +951,7 @@ assert.match(graph, /role=\{nodeState\.role\}[\s\S]*aria-label=\{nodeState\.aria
 assert.match(controller, /sourceFileAriaLabel:\s*String\(view\.source_file_aria_label/, "controller plane must hydrate Graph mob.toml terminal accessibility affordance from MobKit schema");
 assert.match(controller, /graphNodeCanvasState\(\{[\s\S]*graphView = null[\s\S]*ariaLabel:\s*isSourceFile \? view\.sourceFileAriaLabel/, "controller plane must project Graph mob.toml terminal accessibility through graph view state");
 assert.match(graph, /graphCanvasInstances\(\{ instances: state\.instances, graphView: canvasView \}\)/, "Graph source-file node labels must render through schema-backed canvas view state");
-assert.match(graph, /graphNodeCanvasState\(\{ inst, members: state\.members, density, graphView: canvasView \}\)/, "Graph mob.toml terminal display must render through schema-backed canvas view state");
+assert.match(graph, /graphNodeCanvasState\(\{ inst, members: state\.members, density, graphView: canvasView, toolCatalog \}\)/, "Graph mob.toml terminal display must render through schema-backed canvas view state and MobKit tool catalog metadata");
 assert.match(graph, /const onHostKeyDownCapture = \(e\) => \{[\s\S]*e\.key !== "Enter" && e\.key !== " "[\s\S]*openSourceFromEvent\(e\)/, "Graph mob.toml terminal must open from keyboard activation as well as pointer activation");
 assert.match(src("overlays.jsx"), /role="textbox"[\s\S]*aria-readonly="true"/, "inline/source TOML surfaces must be read-only editor views");
 assert.match(controller, /function sourceProjectionClearTransition[\s\S]*sourceOpen:\s*false[\s\S]*inlineSourceOpen:\s*false[\s\S]*inlineSourceBusy:\s*false/, "controller plane must own source projection clear transitions");
@@ -1189,6 +1191,7 @@ assert.match(controller, /definitionType[\s\S]*mobkit\/profile-member/, "Agent E
 assert(!/starter_skills/.test(app + "\n" + controller), "Flow Editor frontend must consume skills from mobkit/mobpacks/catalogs skill_realms, not starter_skills fallback catalogs");
 assert(!/schema\?\.tool_config\s*\|\||schema\?\.tool_catalog[\s\S]{0,80}schema\?\.tool_config/.test(controller), "Tool catalog hydration must consume mobkit/mobpacks/catalogs tool_catalog, not compatibility tool_config aliases");
 assert(!/schema\.tool_config|schema\.tool_catalog[\s\S]{0,80}schema\.tool_config/.test(liveRkatE2eTest), "Live rkat e2e proof must require catalogs.tool_catalog, not compatibility tool_config aliases");
+assert.match(liveRkatE2eTest, /shellTool[\s\S]*tag_class[\s\S]*tool tag_class metadata/, "Live rkat e2e proof must require MobKit tool catalog graph tag metadata");
 assert.match(liveRkatE2eTest, /mobkit\/mobpacks\/schema leaked dynamic catalog key/, "Live rkat e2e proof must fail if schema leaks dynamic catalog payloads");
 assert.match(liveRkatE2eTest, /member_sub_label_template[\s\S]*schema_usage_label_template[\s\S]*Agent sidebar template/, "Live rkat e2e proof must require MobKit schema-owned Agent sidebar display templates");
 assert.match(liveRkatE2eTest, /fields_title_template[\s\S]*usage_plural_template[\s\S]*Schema Editor template/, "Live rkat e2e proof must require MobKit schema-owned Schema Editor display templates");
@@ -1198,6 +1201,9 @@ assert(!/sampleFlowsFromCatalogs[\s\S]{0,620}validation\?\.ok \? ["']valid["'] :
 assert(!/profileBinding:\s*(?:String\([^)]*["']inline|source\.profileBinding\s*\|\|\s*["']inline)/.test(controller), "Agent definitions must carry real MobKit profileBinding values instead of controller-local inline defaults");
 assert(!/runtimeMode:\s*(?:String\([^)]*["']turn_driven|source\.runtimeMode\s*\|\|\s*["']turn_driven)/.test(controller), "Agent definitions must carry real MobKit runtimeMode values instead of controller-local turn_driven defaults");
 assert.match(controller, /agentDefinitionsFromCatalogs[\s\S]*\.filter\(\(template\) => String\(template\.model \|\| ""\)\.trim\(\)\)/, "Agent definitions must hydrate only real model-backed MobKit profiles");
+assert.match(controller, /tagClass:\s*String\(tool\.tag_class \|\| ""\)/, "Tool catalog hydration must preserve MobKit-provided graph tag classes");
+assert.match(controller, /graphToolTagClass\(toolId,\s*toolCatalog = \[\]\)[\s\S]*raw\?\.tag_class/, "Graph tool tag classes must resolve through MobKit tool catalog metadata");
+assert(!/startsWith\(["']shell["']\)|id === ["']git["']|startsWith\(["']mcp["']\)/.test(controller), "Graph tool tag classes must not be inferred from local tool id heuristics");
 assert.match(controller, /function agentDetailViewFromSchema/, "controller plane must hydrate Agent detail view contract from MobKit schema");
 assert.match(controller, /mob_definition\?\.editor_agent_detail_view/, "Agent detail view copy must come from MobKit editor_agent_detail_view");
 assert.match(controller, /missing its model contract/, "controller plane must reject API-backed agent definitions without a model");

@@ -995,7 +995,7 @@ assert.deepEqual(controller.toolCatalogFromCatalogs({
   tool_catalog: [
     { id: "missing-desc", label: "Missing Desc", kind: "runtime", source: "meerkat_mob::ToolConfig" },
     { id: "missing-source", label: "Missing Source", desc: "No source", kind: "runtime" },
-    { id: "builtins", label: "builtins", desc: "Built-ins", kind: "runtime", source: "meerkat_mob::ToolConfig" },
+    { id: "builtins", label: "builtins", desc: "Built-ins", kind: "runtime", source: "meerkat_mob::ToolConfig", tag_class: "is-runtime" },
   ],
 }), [{
   id: "builtins",
@@ -1003,7 +1003,8 @@ assert.deepEqual(controller.toolCatalogFromCatalogs({
   desc: "Built-ins",
   kind: "runtime",
   source: "meerkat_mob::ToolConfig",
-  raw: { id: "builtins", label: "builtins", desc: "Built-ins", kind: "runtime", source: "meerkat_mob::ToolConfig" },
+  tagClass: "is-runtime",
+  raw: { id: "builtins", label: "builtins", desc: "Built-ins", kind: "runtime", source: "meerkat_mob::ToolConfig", tag_class: "is-runtime" },
 }]);
 
 const catalogBoot = { grid: { cellW: 10 }, cellXY: () => ({ x: 0, y: 0 }), template: { col: 1 } };
@@ -1557,7 +1558,7 @@ const hydratedContractAndCatalogFixture = {
     },
   },
   models: [{ id: "openai/gpt-5.5", label: "GPT-5.5", vendor: "openai" }],
-  tool_catalog: [{ id: "builtins", label: "builtins", desc: "Built-ins", kind: "runtime", source: "meerkat_mob::ToolConfig" }],
+  tool_catalog: [{ id: "builtins", label: "builtins", desc: "Built-ins", kind: "runtime", source: "meerkat_mob::ToolConfig", tag_class: "" }],
   skill_realms: [{ id: "mobkit/sample-mobpacks", source: "mobkit/sample-mobpack", skills: [{ id: "mob.workpad" }] }],
   agent_definitions: [{
     id: "sample_reviewer",
@@ -8599,6 +8600,12 @@ assert.deepEqual(controller.graphNodeCanvasState({
   inst: { id: "n_writer", memberId: "m_writer", launchMode: { kind: "Fork" } },
   members: graphProjectionMembers,
   density: "comfortable",
+  toolCatalog: [
+    { id: "builtins", tagClass: "" },
+    { id: "shell", tagClass: "is-shell" },
+    { id: "mcp:linear", tagClass: "is-write" },
+    { id: "comms", tagClass: "" },
+  ],
 }), {
   hidden: false,
   isTerminal: false,
@@ -8610,11 +8617,18 @@ assert.deepEqual(controller.graphNodeCanvasState({
   toolRows: [
     { id: "builtins", className: "tag" },
     { id: "shell", className: "tag is-shell" },
-    { id: "git", className: "tag is-shell" },
+    { id: "git", className: "tag" },
     { id: "comms", className: "tag" },
   ],
   overflowLabel: "",
 });
+assert.deepEqual(controller.graphNodeCanvasState({
+  inst: { id: "n_mcp", memberId: "m_mcp" },
+  members: [{ id: "m_mcp", name: "MCP", role: "worker", tools: ["mcp:linear"] }],
+  toolCatalog: [{ id: "mcp:linear", tagClass: "is-write" }],
+}).toolRows, [
+  { id: "mcp:linear", className: "tag is-write" },
+]);
 assert.deepEqual(controller.graphNodeCanvasState({
   inst: { id: "n_writer", memberId: "m_writer" },
   members: graphProjectionMembers,

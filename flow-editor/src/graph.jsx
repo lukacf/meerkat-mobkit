@@ -151,7 +151,7 @@ function useStudioState(initial, onDirty, authoring = {}) {
   };
 }
 
-function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null }) {
+function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [] }) {
   const hostRef = React.useRef(null);
   const [drag, setDrag] = React.useState(null);
   const [conn, setConn] = React.useState(null);
@@ -433,7 +433,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       <NodeView key={inst.id}
         g={g}
         inst={inst}
-        nodeState={window.MobKitFlowController.graphNodeCanvasState({ inst, members: state.members, density, graphView: canvasView })}
+        nodeState={window.MobKitFlowController.graphNodeCanvasState({ inst, members: state.members, density, graphView: canvasView, toolCatalog })}
         selected={selection.kind === "instance" && selection.id === inst.id}
         memberHighlight={memberFocus && inst.memberId === memberFocus}
         memberDim={!!memberFocus && inst.memberId !== memberFocus && !inst.isTerminal}

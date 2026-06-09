@@ -5984,11 +5984,12 @@
     return out;
   }
 
-  function graphToolTagClass(toolId) {
+  function graphToolTagClass(toolId, toolCatalog = []) {
     const id = String(toolId || "");
-    if (id.startsWith("shell") || id === "git") return " is-shell";
-    if (id.startsWith("mcp")) return " is-write";
-    return "";
+    const tool = (Array.isArray(toolCatalog) ? toolCatalog : [])
+      .find((candidate) => String(candidate?.id || "") === id) || null;
+    const tagClass = String(tool?.tagClass || tool?.tag_class || tool?.raw?.tag_class || "").trim();
+    return tagClass ? ` ${tagClass}` : "";
   }
 
   const GRAPH_NODE_W = 200;
@@ -6147,7 +6148,7 @@
     return { columns, rows: rowHeaders };
   }
 
-  function graphNodeCanvasState({ inst, members = [], density = "", graphView = null } = {}) {
+  function graphNodeCanvasState({ inst, members = [], density = "", graphView = null, toolCatalog = [] } = {}) {
     const view = graphCanvasViewState(graphView);
     const isCompact = density === "compact";
     if (inst?.isTerminal) {
@@ -6182,7 +6183,7 @@
       subtitle: member.model,
       toolRows: visibleTools.map((tool) => ({
         id: tool,
-        className: "tag" + graphToolTagClass(tool),
+        className: "tag" + graphToolTagClass(tool, toolCatalog),
       })),
       overflowLabel: tools.length > visibleTools.length ? `+${tools.length - visibleTools.length}` : "",
     };
@@ -8420,6 +8421,7 @@
         desc: String(tool.desc),
         kind: String(tool.kind),
         source: String(tool.source),
+        tagClass: String(tool.tag_class || ""),
         raw: tool,
       }));
   }

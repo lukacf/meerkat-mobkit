@@ -1378,6 +1378,13 @@ async function validateDocumentBackedDeployPreview(document) {
   if (!Array.isArray(catalogs.tool_catalog) || catalogs.tool_catalog.length === 0) {
     throw new Error("mobkit/mobpacks/catalogs did not expose a real tool_catalog");
   }
+  const shellTool = catalogs.tool_catalog.find((tool) => tool.id === "shell");
+  if (!shellTool || shellTool.tag_class !== "is-shell") {
+    throw new Error(`mobkit/mobpacks/catalogs did not expose graph tag metadata for shell: ${JSON.stringify(shellTool)}`);
+  }
+  if (!catalogs.tool_catalog.every((tool) => Object.prototype.hasOwnProperty.call(tool, "tag_class"))) {
+    throw new Error(`mobkit/mobpacks/catalogs omitted tool tag_class metadata: ${JSON.stringify(catalogs.tool_catalog)}`);
+  }
   if (!Array.isArray(catalogs.skill_realms) || catalogs.skill_realms.length === 0) {
     throw new Error("mobkit/mobpacks/catalogs did not expose real skill_realms");
   }

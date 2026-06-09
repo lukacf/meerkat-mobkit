@@ -872,6 +872,7 @@ function App() {
             grid={catalogs.grid}
             contract={contract}
             graphView={catalogs.graphView}
+            toolCatalog={catalogs.toolCatalog}
           />
             <InlineSourceEditor
               open={inlineSourceOpen && inlineSourceSurface === "graph"}
