@@ -5362,7 +5362,7 @@
   }
 
   function graphConditionEdgeKindForPatch(options = {}) {
-    return String(options.conditionKind || contractDefaultValue(options.contract, "graph_condition_edge_kind") || "cond").trim();
+    return String(options.conditionKind || contractDefaultValue(options.contract, "graph_condition_edge_kind")).trim();
   }
 
   function graphEdgeConditionOwnerPatch(edge, conditionOptions = [], instanceId, options = {}) {

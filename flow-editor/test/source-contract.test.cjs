@@ -249,7 +249,7 @@ assert(!/const\s+match\s*=|members\.filter|editorFlowPrimitiveOptions\(contract\
 assert(!/const\s+ql\s*=|matchM|members\.filter|graphControlNodes\(contract\)|shownM|shownControls|placeholder=["']Add a node…["']|title=["']Close["']|>Agents<\/div>|>Flow controls<\/div>|No matches for|New agent in Agents/.test(addNodeMenuBlock), "Graph add-node menu must not filter palette rows or compose labels locally");
 assert(!/contractDefaultValue\(contract,\s*["']graph_edge_kind["']\)\s*\|\|\s*["']next["']/.test(controller), "controller graph edge drafts must not invent a local default edge kind");
 assert(!/contractDefaultValue\(contract,\s*["']graph_fanout_edge_kind["']\)\s*\|\|\s*["']fanout["']/.test(controller), "controller graph edge drafts must not invent a local fanout edge kind");
-assert(!/contractDefaultValue\(contract,\s*["']graph_condition_edge_kind["']\)\s*\|\|\s*["']cond["']/.test(controller), "controller graph edge drafts must not invent a local condition edge kind");
+assert(!/contractDefaultValue\([^)]*["']graph_condition_edge_kind["']\)\s*\|\|\s*["']cond["']/.test(controller), "controller graph edge drafts must not invent a local condition edge kind");
 assert.match(inspectorRootBlock, /MobKitFlowController\.graphSelectionState/, "Graph Inspector root must resolve selected instances and edges through the controller plane");
 assert.match(inspectorTemplateBlock, /MobKitFlowController\.graphTemplateInspectorState/, "Graph template inspector must render summary rows through the controller plane");
 assert.match(controller, /mob_definition\?\.editor_graph_template_view/, "controller plane must hydrate Graph template inspector chrome from MobKit schema");

@@ -6643,6 +6643,26 @@ assert.deepEqual(controller.graphEdgeConditionOwnerPatch(
   "review",
   { defaultOperator: "==", forceLabel: true, includeKind: true },
 ), {
+  kind: "",
+  cond: { var: "steps.review.verdict", op: "==", val: "" },
+  label: "steps.review.verdict == \"\"",
+});
+assert.deepEqual(controller.graphEdgeConditionOwnerPatch(
+  { kind: "next", label: "", cond: null },
+  graphConditionOptionRows,
+  "review",
+  {
+    defaultOperator: "==",
+    forceLabel: true,
+    includeKind: true,
+    contract: {
+      mob_definition: {
+        defaults: { graph_condition_edge_kind: "cond" },
+        graph_edge_kinds: ["next", "cond"],
+      },
+    },
+  },
+), {
   kind: "cond",
   cond: { var: "steps.review.verdict", op: "==", val: "" },
   label: "steps.review.verdict == \"\"",
@@ -6718,6 +6738,29 @@ const conditionKindPatch = controller.graphEdgeKindPatch({
   forceLabel: true,
 });
 assert.deepEqual(conditionKindPatch, {
+  kind: "cond",
+  cond: null,
+  label: "",
+});
+const contractBackedConditionKindPatch = controller.graphEdgeKindPatch({
+  id: "e_next",
+  from: "input",
+  to: "writer",
+  kind: "next",
+  label: "",
+  cond: null,
+}, "cond", {
+  defaultOperator: "==",
+  conditionPatch: { var: "params.route", val: "docs" },
+  forceLabel: true,
+  contract: {
+    mob_definition: {
+      defaults: { graph_condition_edge_kind: "cond" },
+      graph_edge_kinds: ["next", "cond"],
+    },
+  },
+});
+assert.deepEqual(contractBackedConditionKindPatch, {
   kind: "cond",
   cond: { var: "params.route", op: "==", val: "docs" },
   label: "params.route == \"docs\"",
