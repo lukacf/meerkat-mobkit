@@ -5495,6 +5495,29 @@ const testEditorGraphDraft = {
   rework_edge_label: "rework",
   terminal_edge_label_prefix: "to ",
   join_label_prefix: "join · ",
+  branch_frame_label_prefix: "BRANCH · ",
+  branch_frame_singular_suffix: " path",
+  branch_frame_plural_suffix: " paths",
+  parallel_frame_label_prefix: "PARALLEL · ",
+  parallel_frame_join_infix: " · join ",
+  parallel_missing_dispatch_label: "missing dispatch",
+  parallel_missing_collection_label: "missing collection",
+  repeat_frame_label_prefix: "REPEAT-UNTIL · ",
+  repeat_max_iterations_prefix: "max ",
+  repeat_missing_max_iterations_label: "missing max_iterations",
+  repeat_edge_until_prefix: "until ",
+  repeat_edge_until_fallback: "until condition",
+};
+const graphProjectionTestContract = {
+  mob_definition: {
+    defaults: {
+      graph_edge_kind: "next",
+      graph_condition_edge_kind: "cond",
+      graph_fanout_edge_kind: "fanout",
+    },
+    graph_edge_kinds: ["next", "fanout", "cond"],
+    editor_graph_draft: testEditorGraphDraft,
+  },
 };
 assert.deepEqual(controller.graphEdgeFallbackPatch({
   id: "e_cond",
@@ -5606,6 +5629,7 @@ const branchDocumentWithStaleFrame = controller.buildDocument({
   },
   currentFlow: { name: "branch-frame-filter-proof" },
   deploySettings: testDeploySettings(),
+  contract: graphProjectionTestContract,
 });
 
 assert.deepEqual(branchDocumentWithStaleFrame.frames.map((frame) => frame.id), ["frame_branch_route"]);
@@ -5674,7 +5698,7 @@ assert.equal(incompleteParallelFlow.steps[1].dispatch, "");
 assert.equal(incompleteParallelFlow.steps[1].collection, "");
 assert(!("dependsMode" in incompleteParallelFlow.steps[1]));
 
-const incompleteParallelProjection = controller.graphProjectionForFlow(incompleteParallelFlow, graphMembers);
+const incompleteParallelProjection = controller.graphProjectionForFlow(incompleteParallelFlow, graphMembers, graphProjectionTestContract);
 const incompleteParallelFork = incompleteParallelProjection.instances.find((instance) => instance.id === "g_parallel_review");
 const incompleteParallelJoin = incompleteParallelProjection.instances.find((instance) => instance.id === "j_parallel_review");
 assert.equal(incompleteParallelFork.dispatch, "");
@@ -5695,6 +5719,7 @@ const incompleteParallelDocument = controller.buildDocument({
   },
   currentFlow: { name: "missing-parallel-metadata-proof" },
   deploySettings: testDeploySettings(),
+  contract: graphProjectionTestContract,
 });
 const incompleteDocumentFork = incompleteParallelDocument.instances.find((instance) => instance.id === "g_parallel_review");
 const incompleteDocumentJoin = incompleteParallelDocument.instances.find((instance) => instance.id === "j_parallel_review");
@@ -5721,7 +5746,7 @@ assert.equal(repeatStep.steps[0].role, "m_review");
 assert.equal(repeatStep.loopId, "");
 assert.equal(repeatStep.maxIterations, null);
 assert.equal(repeatStep.iterationInput, "");
-const incompleteRepeatProjection = controller.graphProjectionForFlow(repeatFlow, graphMembers);
+const incompleteRepeatProjection = controller.graphProjectionForFlow(repeatFlow, graphMembers, graphProjectionTestContract);
 assert.equal(incompleteRepeatProjection.frames[0].label, "REPEAT-UNTIL · missing max_iterations");
 assert.notEqual(incompleteRepeatProjection.frames[0].label, "REPEAT-UNTIL · max 3");
 
@@ -5753,7 +5778,7 @@ assert.equal(authoredRepeatFlow.steps[1].loopId, "quality_loop");
 assert.equal(authoredRepeatFlow.steps[1].maxIterations, 4);
 assert.equal(authoredRepeatFlow.steps[1].iterationInput, "carry");
 assert.equal(authoredRepeatFlow.steps[1].steps[0].instruction, "Review the loop output.");
-const authoredRepeatProjection = controller.graphProjectionForFlow(authoredRepeatFlow, graphMembers);
+const authoredRepeatProjection = controller.graphProjectionForFlow(authoredRepeatFlow, graphMembers, graphProjectionTestContract);
 assert.equal(authoredRepeatProjection.frames[0].label, "REPEAT-UNTIL · max 4");
 
 const repeatWithoutCondition = controller.graphToFlow({
@@ -5782,6 +5807,7 @@ const repeatDocument = controller.buildDocument({
   },
   currentFlow: { name: "repeat-projection-proof" },
   deploySettings: testDeploySettings(),
+  contract: graphProjectionTestContract,
 });
 
 assert(repeatDocument.frames.some((frame) => frame.id === `frame_${repeatStep.id}` && frame.kind === "RepeatUntil"));

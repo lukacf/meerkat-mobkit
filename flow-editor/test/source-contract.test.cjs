@@ -613,6 +613,9 @@ assert.match(controller, /function graphEdgeKindPatch/, "controller plane must o
 assert.match(inspector, /MobKitFlowController\.graphBranchConditionModePatch/, "Graph inspector must patch branch condition/fallback transitions through the controller plane");
 assert.match(controller, /function graphEdgeFallbackPatch/, "controller plane must own Graph fallback edge transition semantics");
 assert.match(controller, /mob_definition\?\.editor_graph_draft/, "Graph draft labels and lane names must hydrate from the MobKit editor_graph_draft contract");
+assert.match(controller, /parallelMissingDispatchLabel:\s*String\(draft\.parallel_missing_dispatch_label/, "Graph projection missing-dispatch copy must hydrate from MobKit editor_graph_draft");
+assert.match(controller, /repeatMissingMaxIterationsLabel:\s*String\(draft\.repeat_missing_max_iterations_label/, "Graph projection repeat missing-max copy must hydrate from MobKit editor_graph_draft");
+assert.match(controller, /graphProjectionForFlow\(flow, members, contract\)[\s\S]*editorGraphDraftContract\(contract\)/, "Basic-to-Graph projection must render graph labels through MobKit editor_graph_draft");
 assert(!/graphEdgeFallbackPatch[\s\S]{0,180}label:\s*["']fallback["']/.test(controller), "Graph fallback edge transition must not own the fallback label locally");
 assert(!/studio\.updateEdge\(e\.id,\s*\{\s*kind:\s*["']next["'],\s*label:\s*["']fallback["'],\s*cond:\s*null\s*\}\s*\)/.test(inspector), "Graph inspector must not hard-code fallback edges as next locally");
 assert(!/`steps\.\$\{/.test(inspector), "Graph inspector must not construct steps.* condition paths locally");
@@ -789,6 +792,7 @@ assert.match(controller, /function collectionModeFromStepSource/, "Basic-to-Grap
 assert(!/label:\s*isBranch \? ["']branch["'] : \(step\.dispatch \|\| ["']fan_out["']\)/.test(controller), "Basic-to-Graph projection must not invent fan_out labels for incomplete parallel steps");
 assert(!/label:\s*isBranch \? ["']join · branch paths["'] : `join · \$\{step\.collection \|\| ["']all["']\}`/.test(controller), "Basic-to-Graph projection must not invent all collection labels for incomplete parallel joins");
 assert(!/PARALLEL · \$\{step\.dispatch \|\| ["']fan_out["']\} · join \$\{step\.collection \|\| ["']all["']\}/.test(controller), "Graph frame projection must not invent fan_out/all for incomplete parallel metadata");
+assert(!/["'](?:Fallback|join · branch paths|missing dispatch|missing collection|REPEAT-UNTIL · missing max_iterations|until condition)["']/.test((controller.match(/function graphProjectionForFlow[\s\S]*?function conditionTextToGraphCond/) || [""])[0]), "Basic-to-Graph projection must not own graph labels, lane labels, or missing-state copy locally");
 assert.match(controller, /function launchModeFromAuthoringSource/, "Graph/member projection must preserve explicit launch-mode authoring state");
 assert(!/launchMode:\s*normalizeLaunchMode\(inst\.launchMode\)/.test(controller), "Graph member conversion must not invent Fresh when launchMode is missing");
 assert(!/const\s+launchMode\s*=\s*normalizeLaunchMode\(step\.launchMode\)/.test(controller), "Mobpack export must not invent Fresh when a member step has no launchMode");

@@ -712,7 +712,19 @@ pub fn mobpack_schema_response() -> Value {
         "parallel_edge_label": "parallel",
         "rework_edge_label": "rework",
         "terminal_edge_label_prefix": "to ",
-        "join_label_prefix": "join · "
+        "join_label_prefix": "join · ",
+        "branch_frame_label_prefix": "BRANCH · ",
+        "branch_frame_singular_suffix": " path",
+        "branch_frame_plural_suffix": " paths",
+        "parallel_frame_label_prefix": "PARALLEL · ",
+        "parallel_frame_join_infix": " · join ",
+        "parallel_missing_dispatch_label": "missing dispatch",
+        "parallel_missing_collection_label": "missing collection",
+        "repeat_frame_label_prefix": "REPEAT-UNTIL · ",
+        "repeat_max_iterations_prefix": "max ",
+        "repeat_missing_max_iterations_label": "missing max_iterations",
+        "repeat_edge_until_prefix": "until ",
+        "repeat_edge_until_fallback": "until condition"
     });
     let editor_source_view = json!({
         "drawer_eyebrow": "SOURCE · mob.toml",
@@ -15819,6 +15831,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_draft"]["parallel_lane_labels"],
             json!(["lane 1", "lane 2"])
+        );
+        assert_eq!(
+            mob_definition["editor_graph_draft"]["parallel_missing_dispatch_label"],
+            json!("missing dispatch")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_draft"]["repeat_missing_max_iterations_label"],
+            json!("missing max_iterations")
         );
         assert_eq!(
             mob_definition["editor_source_view"]["drawer_eyebrow"],

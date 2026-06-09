@@ -5836,6 +5836,7 @@ window.MOBKIT_BOOT = {
 
   function graphProjectionForFlow(flow, members, contract) {
     const edgeKinds = graphProjectionEdgeKinds(contract);
+    const draft = editorGraphDraftContract(contract) || emptyGraphDraftContract();
     const projection = { instances: [], edges: [], frames: [] };
     const edgeId = () => `e${projection.edges.length + 1}`;
 
@@ -5902,7 +5903,7 @@ window.MOBKIT_BOOT = {
             id: gateId,
             isGate: true,
             gateKind: isBranch ? "branch" : "fork",
-            label: isBranch ? "branch" : dispatch,
+            label: isBranch ? draft.branchGateLabel : dispatch,
             dispatch: isBranch ? undefined : dispatch,
             dependsMode: dependencyModeFromStepSource(step),
             col: gateCol,
@@ -5913,7 +5914,7 @@ window.MOBKIT_BOOT = {
           const lanes = [
             ...(step.branches || []),
             ...(isBranch && Array.isArray(step.fallback) && step.fallback.length
-              ? [{ id: "fallback", label: "Fallback", steps: step.fallback }]
+              ? [{ id: "fallback", label: draft.branchFallbackLaneLabel, steps: step.fallback }]
               : []),
           ];
           const exits = [];
@@ -5929,8 +5930,8 @@ window.MOBKIT_BOOT = {
               row + index,
               [gateId],
               isFallback ? edgeKinds.defaultKind : isBranch ? edgeKinds.conditionKind : edgeKinds.fanoutKind,
-              isFallback ? "fallback" : isBranch ? (branch.condition || "") : "",
-              isFallback ? "fallback" : "",
+              isFallback ? draft.fallbackEdgeLabel : isBranch ? (branch.condition || "") : "",
+              isFallback ? draft.branchFallbackLaneLabel : "",
             );
             if (cond) {
               for (const edge of projection.edges) {
@@ -5944,7 +5945,7 @@ window.MOBKIT_BOOT = {
             id: joinId,
             isGate: true,
             gateKind: "join",
-            label: isBranch ? "join · branch paths" : `join · ${collection || "missing collection"}`,
+            label: isBranch ? draft.branchJoinLabel : `${draft.joinLabelPrefix}${collection || draft.parallelMissingCollectionLabel}`,
             collection,
             controllerRole: step.controllerRole || step.controllerMemberId || step.controlRole || "",
             quorum: !isBranch && collection === "quorum"
@@ -5960,8 +5961,8 @@ window.MOBKIT_BOOT = {
             colStart: gateCol,
             colEnd: maxCol,
             label: isBranch
-              ? `BRANCH · ${lanes.length} path${lanes.length === 1 ? "" : "s"}`
-              : parallelFrameLabel(dispatch, collection),
+              ? branchFrameLabel(lanes.length, draft)
+              : parallelFrameLabel(dispatch, collection, draft),
           });
           prevExits = [joinId];
           col = maxCol + 1;
@@ -5984,7 +5985,7 @@ window.MOBKIT_BOOT = {
             loopProjection.exits,
             loopProjection.entries,
             edgeKinds.conditionKind,
-            step.until ? `until ${step.until}` : "until condition",
+            repeatEdgeLabel(step, draft),
             cond ? { cond } : {},
           );
           if (loopProjection.entries.length) {
@@ -5993,7 +5994,7 @@ window.MOBKIT_BOOT = {
               kind: "RepeatUntil",
               colStart: frameStart,
               colEnd: Math.max(frameStart, loopProjection.nextCol - 1),
-              label: repeatFrameLabel(step),
+              label: repeatFrameLabel(step, draft),
             });
           }
           col = loopProjection.nextCol;
@@ -6038,17 +6039,27 @@ window.MOBKIT_BOOT = {
     return normalizeCollectionMode(raw);
   }
 
-  function parallelFrameLabel(dispatch, collection) {
-    const dispatchLabel = dispatch || "missing dispatch";
-    const collectionLabel = collection || "missing collection";
-    return `PARALLEL · ${dispatchLabel} · join ${collectionLabel}`;
+  function branchFrameLabel(pathCount, draft) {
+    const count = Math.max(0, Number(pathCount) || 0);
+    const suffix = count === 1 ? draft.branchFrameSingularSuffix : draft.branchFramePluralSuffix;
+    return `${draft.branchFrameLabelPrefix}${count}${suffix}`;
   }
 
-  function repeatFrameLabel(step) {
+  function parallelFrameLabel(dispatch, collection, draft) {
+    const dispatchLabel = dispatch || draft.parallelMissingDispatchLabel;
+    const collectionLabel = collection || draft.parallelMissingCollectionLabel;
+    return `${draft.parallelFrameLabelPrefix}${dispatchLabel}${draft.parallelFrameJoinInfix}${collectionLabel}`;
+  }
+
+  function repeatFrameLabel(step, draft) {
     const max = Number(step?.maxIterations ?? step?.max_iterations);
     return Number.isInteger(max) && max > 0
-      ? `REPEAT-UNTIL · max ${max}`
-      : "REPEAT-UNTIL · missing max_iterations";
+      ? `${draft.repeatFrameLabelPrefix}${draft.repeatMaxIterationsPrefix}${max}`
+      : `${draft.repeatFrameLabelPrefix}${draft.repeatMissingMaxIterationsLabel}`;
+  }
+
+  function repeatEdgeLabel(step, draft) {
+    return step?.until ? `${draft.repeatEdgeUntilPrefix}${step.until}` : draft.repeatEdgeUntilFallback;
   }
 
   function conditionTextToGraphCond(text) {
@@ -6066,8 +6077,9 @@ window.MOBKIT_BOOT = {
   }
 
   function framesForDocument(flow, members, existingFrames, contract) {
+    const draft = editorGraphDraftContract(contract) || emptyGraphDraftContract();
     const projected = graphProjectionForFlow(flow, members, contract).frames || [];
-    const required = requiredFramesFromFlow(flow);
+    const required = requiredFramesFromFlow(flow, draft);
     const canonicalFrames = new Map();
     for (const frame of [...projected, ...required]) {
       if (frame?.id && !canonicalFrames.has(String(frame.id))) canonicalFrames.set(String(frame.id), frame);
@@ -6095,7 +6107,7 @@ window.MOBKIT_BOOT = {
     return Array.from(byId.values());
   }
 
-  function requiredFramesFromFlow(flow) {
+  function requiredFramesFromFlow(flow, draft) {
     const frames = [];
     const visit = (steps) => {
       for (const step of steps || []) {
@@ -6106,7 +6118,7 @@ window.MOBKIT_BOOT = {
             kind: "Branch",
             colStart: 0,
             colEnd: 0,
-            label: `BRANCH · ${(step.branches || []).length + (Array.isArray(step.fallback) && step.fallback.length ? 1 : 0)} paths`,
+            label: branchFrameLabel((step.branches || []).length + (Array.isArray(step.fallback) && step.fallback.length ? 1 : 0), draft),
           });
         } else if (step.type === "parallel") {
           const dispatch = dispatchModeFromStepSource(step);
@@ -6116,7 +6128,7 @@ window.MOBKIT_BOOT = {
             kind: "Parallel",
             colStart: 0,
             colEnd: 0,
-            label: parallelFrameLabel(dispatch, collection),
+            label: parallelFrameLabel(dispatch, collection, draft),
           });
         } else if (step.type === "repeat") {
           frames.push({
@@ -6124,7 +6136,7 @@ window.MOBKIT_BOOT = {
             kind: "RepeatUntil",
             colStart: 0,
             colEnd: 0,
-            label: repeatFrameLabel(step),
+            label: repeatFrameLabel(step, draft),
           });
         }
         if (Array.isArray(step.steps)) visit(step.steps);
@@ -8017,14 +8029,58 @@ window.MOBKIT_BOOT = {
       reworkEdgeLabel: String(draft.rework_edge_label || "").trim(),
       terminalEdgeLabelPrefix: String(draft.terminal_edge_label_prefix || ""),
       joinLabelPrefix: String(draft.join_label_prefix || ""),
+      branchFrameLabelPrefix: String(draft.branch_frame_label_prefix || ""),
+      branchFrameSingularSuffix: String(draft.branch_frame_singular_suffix || ""),
+      branchFramePluralSuffix: String(draft.branch_frame_plural_suffix || ""),
+      parallelFrameLabelPrefix: String(draft.parallel_frame_label_prefix || ""),
+      parallelFrameJoinInfix: String(draft.parallel_frame_join_infix || ""),
+      parallelMissingDispatchLabel: String(draft.parallel_missing_dispatch_label || "").trim(),
+      parallelMissingCollectionLabel: String(draft.parallel_missing_collection_label || "").trim(),
+      repeatFrameLabelPrefix: String(draft.repeat_frame_label_prefix || ""),
+      repeatMaxIterationsPrefix: String(draft.repeat_max_iterations_prefix || ""),
+      repeatMissingMaxIterationsLabel: String(draft.repeat_missing_max_iterations_label || "").trim(),
+      repeatEdgeUntilPrefix: String(draft.repeat_edge_until_prefix || ""),
+      repeatEdgeUntilFallback: String(draft.repeat_edge_until_fallback || "").trim(),
     };
     if (!out.branchGateLabel || !out.branchConditionLaneLabel || !out.branchFallbackLaneLabel
       || !out.branchJoinLabel || !out.fallbackEdgeLabel || out.parallelLaneLabels.length < 2
       || !out.parallelEdgeLabel || !out.reworkEdgeLabel || !out.terminalEdgeLabelPrefix
-      || !out.joinLabelPrefix) {
+      || !out.joinLabelPrefix || !out.branchFrameLabelPrefix || !out.branchFrameSingularSuffix
+      || !out.branchFramePluralSuffix || !out.parallelFrameLabelPrefix || !out.parallelFrameJoinInfix
+      || !out.parallelMissingDispatchLabel || !out.parallelMissingCollectionLabel
+      || !out.repeatFrameLabelPrefix || !out.repeatMaxIterationsPrefix
+      || !out.repeatMissingMaxIterationsLabel || !out.repeatEdgeUntilPrefix
+      || !out.repeatEdgeUntilFallback) {
       return null;
     }
     return out;
+  }
+
+  function emptyGraphDraftContract() {
+    return {
+      branchGateLabel: "",
+      branchConditionLaneLabel: "",
+      branchFallbackLaneLabel: "",
+      branchJoinLabel: "",
+      fallbackEdgeLabel: "",
+      parallelLaneLabels: [],
+      parallelEdgeLabel: "",
+      reworkEdgeLabel: "",
+      terminalEdgeLabelPrefix: "",
+      joinLabelPrefix: "",
+      branchFrameLabelPrefix: "",
+      branchFrameSingularSuffix: "",
+      branchFramePluralSuffix: "",
+      parallelFrameLabelPrefix: "",
+      parallelFrameJoinInfix: "",
+      parallelMissingDispatchLabel: "",
+      parallelMissingCollectionLabel: "",
+      repeatFrameLabelPrefix: "",
+      repeatMaxIterationsPrefix: "",
+      repeatMissingMaxIterationsLabel: "",
+      repeatEdgeUntilPrefix: "",
+      repeatEdgeUntilFallback: "",
+    };
   }
 
   function graphControlShape({ gateKind, at, members, instances, edges, flow, contract, graphView = null } = {}) {
