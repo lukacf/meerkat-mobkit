@@ -3183,6 +3183,46 @@ const graphMemberSync = controller.reconcileGraphMemberInstances({
 assert.deepEqual(graphMemberSync.instances.map((instance) => instance.id), ["gate_branch", "review_step", "source_file"]);
 assert.deepEqual(graphMemberSync.edges.map((edge) => edge.id), ["keep_gate_review", "keep_source"]);
 
+const aggregateMemberReconcile = controller.reconcileAuthoringForMembers({
+  members: [{ id: "m_reviewer", name: "Reviewer", role: "reviewer", tools: ["shell"], schema: "ReviewArtifact" }],
+  previousMembers: [
+    { id: "m_reviewer", name: "Review Lead", role: "reviewer" },
+    { id: "m_deleted", name: "Deleted", role: "deleted" },
+  ],
+  mobSettings: {
+    orchestrator: "review_lead",
+    roleWiring: [{ a: "review_lead", b: "deleted" }, { a: "deleted", b: "review_lead" }],
+    backendDefault: "session",
+  },
+  flow: {
+    name: "aggregate-member-reconcile",
+    steps: [
+      { id: "keep_review", type: "member", role: "m_reviewer", schema: "OldArtifact", allowedTools: ["shell", "git"] },
+      { id: "drop_deleted", type: "member", role: "m_deleted" },
+      { id: "parallel_review", type: "parallel", controllerRole: "m_deleted", branches: [{ id: "br", steps: [{ id: "nested_review", type: "member", role: "m_reviewer" }] }] },
+    ],
+  },
+  instances: [
+    { id: "join_stale", isGate: true, gateKind: "join", controllerRole: "m_deleted" },
+    { id: "review_inst", memberId: "m_reviewer", schema: "OldArtifact", allowedTools: ["shell", "git"] },
+    { id: "deleted_inst", memberId: "m_deleted" },
+  ],
+  edges: [
+    { id: "keep_join_review", from: "join_stale", to: "review_inst", kind: "next" },
+    { id: "drop_deleted", from: "deleted_inst", to: "review_inst", kind: "next" },
+  ],
+});
+assert.deepEqual(aggregateMemberReconcile.flow.steps.map((step) => step.id), ["keep_review", "parallel_review"]);
+assert.equal(aggregateMemberReconcile.flow.steps[0].schema, "ReviewArtifact");
+assert.deepEqual(aggregateMemberReconcile.flow.steps[0].allowedTools, ["shell"]);
+assert(!("controllerRole" in aggregateMemberReconcile.flow.steps[1]));
+assert.deepEqual(aggregateMemberReconcile.instances.map((instance) => instance.id), ["join_stale", "review_inst"]);
+assert(!("controllerRole" in aggregateMemberReconcile.instances[0]));
+assert.deepEqual(aggregateMemberReconcile.instances[1].allowedTools, ["shell"]);
+assert.deepEqual(aggregateMemberReconcile.edges.map((edge) => edge.id), ["keep_join_review"]);
+assert.equal(aggregateMemberReconcile.mobSettings.orchestrator, "reviewer");
+assert.deepEqual(aggregateMemberReconcile.mobSettings.roleWiring, []);
+
 const launchSourceFlow = controller.reconcileFlowLaunchSources({
   name: "launch-source-proof",
   steps: [

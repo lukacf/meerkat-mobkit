@@ -2603,6 +2603,25 @@
     return changed ? next : instances;
   }
 
+  function reconcileAuthoringForMembers({ flow, instances, edges, mobSettings, previousMembers, members } = {}) {
+    const nextMembers = Array.isArray(members) ? members : [];
+    let nextFlow = reconcileFlowMemberSteps(flow, nextMembers);
+    nextFlow = reconcileFlowMemberSchemas(nextFlow, nextMembers);
+    nextFlow = reconcileFlowControlRoles(nextFlow, nextMembers);
+    nextFlow = reconcileFlowLaunchSources(nextFlow, nextMembers);
+    nextFlow = reconcileFlowStepToolScopes(nextFlow, nextMembers);
+    const memberSynced = reconcileGraphMemberInstances({ instances, edges }, nextMembers);
+    let nextInstances = reconcileGraphControlRoles(memberSynced.instances, nextMembers);
+    nextInstances = reconcileGraphLaunchSources(nextInstances, nextMembers);
+    nextInstances = reconcileGraphStepToolScopes(nextInstances, nextMembers);
+    return {
+      flow: nextFlow,
+      instances: nextInstances,
+      edges: memberSynced.edges,
+      mobSettings: reconcileMobSettingsProfiles(mobSettings, previousMembers, nextMembers),
+    };
+  }
+
   function reconcileMemberSkillRefs(members, skillRealms, options = {}) {
     const knownSkills = skillIdSet(skillRealms);
     if (knownSkills.size === 0 && !options.strictEmpty) return members;
@@ -10073,6 +10092,7 @@
     reconcileGraphLaunchSources,
     reconcileFlowStepToolScopes,
     reconcileGraphStepToolScopes,
+    reconcileAuthoringForMembers,
     reconcileMemberSkillRefs,
     mobSettingsPatch,
     reconcileDeploySettingsWithContract,

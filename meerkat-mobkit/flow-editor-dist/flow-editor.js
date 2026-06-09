@@ -2636,6 +2636,25 @@ window.MOBKIT_BOOT = {
     return changed ? next : instances;
   }
 
+  function reconcileAuthoringForMembers({ flow, instances, edges, mobSettings, previousMembers, members } = {}) {
+    const nextMembers = Array.isArray(members) ? members : [];
+    let nextFlow = reconcileFlowMemberSteps(flow, nextMembers);
+    nextFlow = reconcileFlowMemberSchemas(nextFlow, nextMembers);
+    nextFlow = reconcileFlowControlRoles(nextFlow, nextMembers);
+    nextFlow = reconcileFlowLaunchSources(nextFlow, nextMembers);
+    nextFlow = reconcileFlowStepToolScopes(nextFlow, nextMembers);
+    const memberSynced = reconcileGraphMemberInstances({ instances, edges }, nextMembers);
+    let nextInstances = reconcileGraphControlRoles(memberSynced.instances, nextMembers);
+    nextInstances = reconcileGraphLaunchSources(nextInstances, nextMembers);
+    nextInstances = reconcileGraphStepToolScopes(nextInstances, nextMembers);
+    return {
+      flow: nextFlow,
+      instances: nextInstances,
+      edges: memberSynced.edges,
+      mobSettings: reconcileMobSettingsProfiles(mobSettings, previousMembers, nextMembers),
+    };
+  }
+
   function reconcileMemberSkillRefs(members, skillRealms, options = {}) {
     const knownSkills = skillIdSet(skillRealms);
     if (knownSkills.size === 0 && !options.strictEmpty) return members;
@@ -10106,6 +10125,7 @@ window.MOBKIT_BOOT = {
     reconcileGraphLaunchSources,
     reconcileFlowStepToolScopes,
     reconcileGraphStepToolScopes,
+    reconcileAuthoringForMembers,
     reconcileMemberSkillRefs,
     mobSettingsPatch,
     reconcileDeploySettingsWithContract,
@@ -12726,28 +12746,18 @@ function App() {
   }, [editorMode, studio.instances, studio.edges, studio.members, markDraft, contract]);
   React.useEffect(() => {
     const previousMembers = previousMembersRef.current || [];
-    setFlow((current) => {
-      const pruned = window.MobKitFlowController?.reconcileFlowMemberSteps ? window.MobKitFlowController.reconcileFlowMemberSteps(current, studio.members) : current;
-      const schemaSynced = window.MobKitFlowController?.reconcileFlowMemberSchemas ? window.MobKitFlowController.reconcileFlowMemberSchemas(pruned, studio.members) : pruned;
-      const controlSynced = window.MobKitFlowController?.reconcileFlowControlRoles ? window.MobKitFlowController.reconcileFlowControlRoles(schemaSynced, studio.members) : schemaSynced;
-      const launchSynced = window.MobKitFlowController?.reconcileFlowLaunchSources ? window.MobKitFlowController.reconcileFlowLaunchSources(controlSynced, studio.members) : controlSynced;
-      return window.MobKitFlowController?.reconcileFlowStepToolScopes ? window.MobKitFlowController.reconcileFlowStepToolScopes(launchSynced, studio.members) : launchSynced;
+    const result = window.MobKitFlowController.reconcileAuthoringForMembers({
+      flow,
+      instances: studio.instances,
+      edges: studio.edges,
+      mobSettings,
+      previousMembers,
+      members: studio.members
     });
-    if (window.MobKitFlowController?.reconcileGraphMemberInstances || window.MobKitFlowController?.reconcileGraphControlRoles || window.MobKitFlowController?.reconcileGraphLaunchSources || window.MobKitFlowController?.reconcileGraphStepToolScopes) {
-      const memberSynced = window.MobKitFlowController?.reconcileGraphMemberInstances ? window.MobKitFlowController.reconcileGraphMemberInstances({ instances: studio.instances, edges: studio.edges }, studio.members) : { instances: studio.instances, edges: studio.edges };
-      const controlSynced = window.MobKitFlowController?.reconcileGraphControlRoles ? window.MobKitFlowController.reconcileGraphControlRoles(memberSynced.instances, studio.members) : memberSynced.instances;
-      const launchSynced = window.MobKitFlowController?.reconcileGraphLaunchSources ? window.MobKitFlowController.reconcileGraphLaunchSources(controlSynced, studio.members) : controlSynced;
-      const toolSynced = window.MobKitFlowController?.reconcileGraphStepToolScopes ? window.MobKitFlowController.reconcileGraphStepToolScopes(launchSynced, studio.members) : launchSynced;
-      if (memberSynced.edges !== studio.edges) studio.setEdges(memberSynced.edges);
-      if (toolSynced !== studio.instances) studio.setInstances(toolSynced);
-    }
-    if (window.MobKitFlowController?.reconcileMobSettingsProfiles) {
-      setMobSettings((current) => window.MobKitFlowController.reconcileMobSettingsProfiles(
-        current,
-        previousMembers,
-        studio.members
-      ));
-    }
+    if (result.flow !== flow) setFlow(result.flow);
+    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    if (result.instances !== studio.instances) studio.setInstances(result.instances);
+    if (result.mobSettings !== mobSettings) setMobSettings(result.mobSettings);
     previousMembersRef.current = studio.members;
   }, [studio.members]);
   React.useEffect(() => {
