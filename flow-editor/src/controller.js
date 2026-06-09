@@ -5493,13 +5493,11 @@
     return sourceFileNode ? [sourceFileNode, ...sourceInstances] : sourceInstances;
   }
 
-  function graphGateCanvasState({ inst, edges = [], contract = null } = {}) {
+  function graphGateCanvasState({ inst, edges = [], contract = null, graphView = null } = {}) {
     const gateKind = String(inst?.gateKind || "");
     const draft = editorGraphDraftContract(contract) || emptyGraphDraftContract();
-    const glyph = gateKind === "fork" ? "‖"
-      : gateKind === "join" ? "⋈"
-        : gateKind === "branch" ? "⑂"
-          : "•";
+    const view = graphCanvasViewState(graphView);
+    const glyph = view.gatePaletteRows.find((row) => row.id === gateKind)?.glyph || "";
     let sublabel = inst?.label || gateKind;
     if (gateKind === "join" && inst?.collection === "quorum" && inst?.quorum) {
       const incoming = (Array.isArray(edges) ? edges : []).filter((edge) => edge.to === inst?.id).length;

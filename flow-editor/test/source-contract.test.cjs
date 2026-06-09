@@ -278,7 +278,7 @@ assert.match(graphEdgeCanvasBlock, /graphEdgeCanvasState\(\{[\s\S]*contract/, "G
 assert.match(graph, /MobKitFlowController\.graphNodeCanvasState/, "Graph canvas must render node member/tool/source metadata through the controller plane");
 assert.match(graph, /MobKitFlowController\.graphCanvasInstances/, "Graph canvas must ask the controller plane for renderable graph instances including the mob.toml source-file adornment");
 assert.match(graph, /MobKitFlowController\.graphGateCanvasState/, "Graph canvas must render gate glyph and sublabels through the controller plane");
-assert.match(graphGateViewBlock, /graphGateCanvasState\(\{ inst,\s*edges:\s*state\.edges,\s*contract \}\)/, "Graph gate canvas projection must receive the MobKit graph draft contract");
+assert.match(graphGateViewBlock, /graphGateCanvasState\(\{ inst,\s*edges:\s*state\.edges,\s*contract,\s*graphView \}\)/, "Graph gate canvas projection must receive the MobKit graph draft and graph view contracts");
 assert.match(controller, /function graphSelectionState/, "controller plane must own Graph Inspector selection projection");
 assert.match(controller, /function graphTemplateInspectorState/, "controller plane must own Graph template summary projection");
 assert.match(controller, /function graphInstanceControlState/, "controller plane must own Graph instance summary and launch-source projection");
@@ -289,6 +289,7 @@ assert.match(controller, /function graphNodeCanvasState/, "controller plane must
 assert.match(controller, /function graphSourceFileNode/, "controller plane must own Graph source-file adornment projection");
 assert.match(controller, /function graphCanvasInstances/, "controller plane must own Graph canvas instance assembly");
 assert.match(controller, /function graphGateCanvasState/, "controller plane must own Graph gate canvas projection");
+assert.match(controller, /graphGateCanvasState[\s\S]*graphCanvasViewState\(graphView\)[\s\S]*view\.gatePaletteRows\.find\(\(row\) => row\.id === gateKind\)\?\.glyph/, "Graph gate canvas glyphs must come from MobKit editor_graph_view gate palette rows");
 assert.match(controller, /graphGateCanvasState[\s\S]*editorGraphDraftContract\(contract\)[\s\S]*sublabel\s*=\s*`\$\{draft\.joinLabelPrefix\}\$\{inst\.collection\}`/, "Graph gate canvas join labels must come from MobKit editor_graph_draft metadata");
 assert.match(controller, /joinQuorumLabelPrefix:\s*String\(draft\.join_quorum_label_prefix/, "Graph gate canvas quorum labels must hydrate from MobKit editor_graph_draft metadata");
 assert.match(controller, /graphGateCanvasState[\s\S]*sublabel\s*=\s*`\$\{draft\.joinQuorumLabelPrefix\}\$\{inst\.quorum\.n\}\/\$\{incoming \|\| inst\.quorum\.m\}`/, "Graph gate canvas quorum labels must render through the MobKit join quorum prefix");
