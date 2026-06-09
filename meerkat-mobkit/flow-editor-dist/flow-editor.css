@@ -1477,6 +1477,67 @@ a.node {
   text-align: center;
 }
 .agents-list__add:hover { color: var(--accent); border-color: var(--accent); }
+.agent-def-catalog {
+  margin: 8px 4px 2px;
+  border-top: 1px solid var(--hair);
+  padding-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+.agent-def-catalog__title {
+  font: var(--t-mono-meta);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--subtle);
+  padding: 0 2px 2px;
+}
+.agent-def-catalog__empty {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--subtle);
+  padding: 8px 2px;
+}
+.agent-def-card {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-xs);
+  background: var(--bg);
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+}
+.agent-def-card:hover {
+  border-color: var(--accent);
+  background: var(--ink-soft);
+}
+.agent-def-card__name {
+  font-size: 12px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-def-card__role,
+.agent-def-card__meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-def-card__role {
+  color: var(--subtle);
+}
+.agent-def-card__meta strong {
+  color: var(--subtle);
+  font-weight: 500;
+  margin-right: 5px;
+  text-transform: lowercase;
+}
 
 /* ── Main: editor pane ───────────────────────────────────── */
 .agents-view__main {

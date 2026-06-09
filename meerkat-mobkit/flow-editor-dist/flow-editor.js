@@ -669,6 +669,11 @@ window.MOBKIT_BOOT = {
       addAgentUnavailableLabel: String(view.add_agent_unavailable_label || "").trim(),
       addAgentPlaceholderLabel: String(view.add_agent_placeholder_label || "").trim(),
       addAgentErrorPrefix: String(view.add_agent_error_prefix || "").trim(),
+      definitionCatalogTitle: String(view.definition_catalog_title || "").trim(),
+      definitionCatalogEmpty: String(view.definition_catalog_empty || "").trim(),
+      definitionCatalogSourceLabel: String(view.definition_catalog_source_label || "").trim(),
+      definitionCatalogToolsLabel: String(view.definition_catalog_tools_label || "").trim(),
+      definitionCatalogSkillsLabel: String(view.definition_catalog_skills_label || "").trim(),
       emptyTitle: String(view.empty_title || "").trim(),
       emptyLines: Array.isArray(view.empty_lines)
         ? view.empty_lines.map((line) => String(line || "").trim()).filter(Boolean)
@@ -679,6 +684,8 @@ window.MOBKIT_BOOT = {
     return out.agentsHeading && out.schemasHeading && out.addSchemaLabel
       && out.addAgentTitle && out.addAgentUnavailableTitle
       && out.addAgentUnavailableLabel && out.addAgentPlaceholderLabel
+      && out.definitionCatalogTitle && out.definitionCatalogEmpty
+      && out.definitionCatalogSourceLabel && out.definitionCatalogToolsLabel && out.definitionCatalogSkillsLabel
       && out.emptyTitle && out.emptyLines.length && out.missingSchemaLabel && out.missingAgentLabel
       ? out
       : null;
@@ -695,6 +702,11 @@ window.MOBKIT_BOOT = {
       addAgentUnavailableLabel: String(view?.addAgentUnavailableLabel || ""),
       addAgentPlaceholderLabel: String(view?.addAgentPlaceholderLabel || ""),
       addAgentErrorPrefix: String(view?.addAgentErrorPrefix || ""),
+      definitionCatalogTitle: String(view?.definitionCatalogTitle || ""),
+      definitionCatalogEmpty: String(view?.definitionCatalogEmpty || ""),
+      definitionCatalogSourceLabel: String(view?.definitionCatalogSourceLabel || ""),
+      definitionCatalogToolsLabel: String(view?.definitionCatalogToolsLabel || ""),
+      definitionCatalogSkillsLabel: String(view?.definitionCatalogSkillsLabel || ""),
       emptyTitle: String(view?.emptyTitle || ""),
       emptyLines: Array.isArray(view?.emptyLines) ? view.emptyLines : [],
       missingSchemaLabel: String(view?.missingSchemaLabel || ""),
@@ -2206,6 +2218,40 @@ window.MOBKIT_BOOT = {
       hasError: !!error,
       text: error ? `${prefix}${error}` : "",
       rawError: error,
+    };
+  }
+
+  function agentDefinitionCatalogState(agentDefinitions = [], agentView = null) {
+    const view = agentViewForState(agentView);
+    const rows = (Array.isArray(agentDefinitions) ? agentDefinitions : [])
+      .filter((definition) => definition?.id)
+      .map((definition) => {
+        const label = String(definition.label || definition.name || definition.role || definition.id).trim();
+        const role = String(definition.role || "").trim();
+        const source = [
+          definition.sourceMobpackName || definition.source_mobpack_name || definition.sourceMobpack || definition.source_mobpack || "",
+          definition.sourceOrigin || definition.source_origin || definition.source || "",
+        ].map((value) => String(value || "").trim()).filter(Boolean).join(" · ");
+        const tools = sourceDefinitionRefRows(definition.toolDefinitions || definition.tool_definitions);
+        const skills = sourceDefinitionRefRows(definition.skillDefinitions || definition.skill_definitions);
+        return {
+          id: String(definition.id || "").trim(),
+          title: label,
+          role,
+          sourceLabel: view.definitionCatalogSourceLabel,
+          toolsLabel: view.definitionCatalogToolsLabel,
+          skillsLabel: view.definitionCatalogSkillsLabel,
+          source,
+          tools: tools.join(", "),
+          skills: skills.join(", "),
+          definition,
+        };
+      });
+    return {
+      title: view.definitionCatalogTitle,
+      empty: view.definitionCatalogEmpty,
+      hasRows: rows.length > 0,
+      rows,
     };
   }
 
@@ -11657,6 +11703,7 @@ window.MOBKIT_BOOT = {
     advancedMobSettingsDraftPatch,
     cloneDocument,
     agentDefinitionsFromCatalogs,
+    agentDefinitionCatalogState,
     memberFromAgentDefinition,
     agentDefinitionAddPatch,
     agentDefinitionAddByIdPatch,
@@ -13057,6 +13104,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
 function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const [lastAddResult, setLastAddResult] = React.useState(null);
   const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
+  const catalogState = window.MobKitFlowController.agentDefinitionCatalogState(agentDefinitions, agentView);
   const definitionErrorState = window.MobKitFlowController.agentDefinitionAddErrorState(lastAddResult, agentView);
   const createFromDefinition = (definitionId) => {
     const result = window.MobKitFlowController.agentDefinitionAddByIdPatch(agentDefinitions, definitionId, {
@@ -13101,7 +13149,20 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract 
     },
     /* @__PURE__ */ React.createElement("option", { value: definitionState.placeholderOption.value }, definitionState.placeholderOption.label),
     definitionState.optionRows.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))
-  ), definitionErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, definitionErrorState.text));
+  ), /* @__PURE__ */ React.createElement("div", { className: "agent-def-catalog" }, /* @__PURE__ */ React.createElement("div", { className: "agent-def-catalog__title" }, catalogState.title), catalogState.hasRows ? catalogState.rows.map((row) => /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      key: row.id,
+      className: "agent-def-card",
+      type: "button",
+      onClick: () => createFromDefinition(row.id)
+    },
+    /* @__PURE__ */ React.createElement("span", { className: "agent-def-card__name" }, row.title),
+    row.role && /* @__PURE__ */ React.createElement("span", { className: "agent-def-card__role" }, row.role),
+    row.source && /* @__PURE__ */ React.createElement("span", { className: "agent-def-card__meta" }, /* @__PURE__ */ React.createElement("strong", null, row.sourceLabel), row.source),
+    row.tools && /* @__PURE__ */ React.createElement("span", { className: "agent-def-card__meta" }, /* @__PURE__ */ React.createElement("strong", null, row.toolsLabel), row.tools),
+    row.skills && /* @__PURE__ */ React.createElement("span", { className: "agent-def-card__meta" }, /* @__PURE__ */ React.createElement("strong", null, row.skillsLabel), row.skills)
+  )) : /* @__PURE__ */ React.createElement("div", { className: "agent-def-catalog__empty" }, catalogState.empty)), definitionErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, definitionErrorState.text));
 }
 function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({

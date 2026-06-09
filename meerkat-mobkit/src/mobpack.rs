@@ -1012,6 +1012,11 @@ pub fn mobpack_schema_response() -> Value {
         "add_agent_unavailable_label": "agents unavailable",
         "add_agent_placeholder_label": "+ new agent...",
         "add_agent_error_prefix": "Agent definition unavailable: ",
+        "definition_catalog_title": "DEFINITION CATALOG",
+        "definition_catalog_empty": "No MobKit profile-member definitions available.",
+        "definition_catalog_source_label": "source",
+        "definition_catalog_tools_label": "tools",
+        "definition_catalog_skills_label": "skills",
         "empty_title": "AGENT LIBRARY",
         "empty_lines": [
             "Select an agent or schema on the left.",
@@ -17158,6 +17163,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_view"]["missing_agent_label"],
             json!("Agent not found.")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["definition_catalog_title"],
+            json!("DEFINITION CATALOG")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["definition_catalog_source_label"],
+            json!("source")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["definition_catalog_tools_label"],
+            json!("tools")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["definition_catalog_skills_label"],
+            json!("skills")
         );
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["identity_title"],

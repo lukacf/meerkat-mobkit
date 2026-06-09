@@ -71,9 +71,15 @@ function allowedCssDelta(sign, line) {
       /inline-skill/,
       /skill-chip em/,
       /skill-chip\.is-invalid/,
+      /button\.node/,
+      /a\.node/,
       /node--source-file/,
       /source-file__/,
+      /source-file-list/,
+      /source-file-row/,
       /bld-toml--graph/,
+      /agent-def-catalog/,
+      /agent-def-card/,
       /grid-template-columns/,
       /max-width: 120px/,
     ].some((pattern) => pattern.test(text));
@@ -97,7 +103,7 @@ const unexpected = styleDiff.filter((line) => {
     if (line.includes("}")) allowedAddedBlock = false;
     return false;
   }
-  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|\.node--source-file|\.source-file__|\.bld-toml--graph)/.test(line)) {
+  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|button\.node|a\.node|\.node--source-file|\.source-file__|\.source-file-list|\.source-file-row|\.bld-toml--graph|\.agent-def-catalog|\.agent-def-card)/.test(line)) {
     if (!line.includes("}")) allowedAddedBlock = true;
     return false;
   }

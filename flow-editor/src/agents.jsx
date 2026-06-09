@@ -106,6 +106,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
 function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const [lastAddResult, setLastAddResult] = React.useState(null);
   const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
+  const catalogState = window.MobKitFlowController.agentDefinitionCatalogState(agentDefinitions, agentView);
   const definitionErrorState = window.MobKitFlowController.agentDefinitionAddErrorState(lastAddResult, agentView);
   const createFromDefinition = (definitionId) => {
     const result = window.MobKitFlowController.agentDefinitionAddByIdPatch(agentDefinitions, definitionId, {
@@ -154,6 +155,25 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract 
           <option key={option.value} value={option.value}>{option.label}</option>
         ))}
       </select>
+      <div className="agent-def-catalog">
+        <div className="agent-def-catalog__title">{catalogState.title}</div>
+        {catalogState.hasRows ? catalogState.rows.map(row => (
+          <button
+            key={row.id}
+            className="agent-def-card"
+            type="button"
+            onClick={() => createFromDefinition(row.id)}
+          >
+            <span className="agent-def-card__name">{row.title}</span>
+            {row.role && <span className="agent-def-card__role">{row.role}</span>}
+            {row.source && <span className="agent-def-card__meta"><strong>{row.sourceLabel}</strong>{row.source}</span>}
+            {row.tools && <span className="agent-def-card__meta"><strong>{row.toolsLabel}</strong>{row.tools}</span>}
+            {row.skills && <span className="agent-def-card__meta"><strong>{row.skillsLabel}</strong>{row.skills}</span>}
+          </button>
+        )) : (
+          <div className="agent-def-catalog__empty">{catalogState.empty}</div>
+        )}
+      </div>
       {definitionErrorState.hasError && <div className="hint__line">{definitionErrorState.text}</div>}
     </>
   );

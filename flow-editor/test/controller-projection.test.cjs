@@ -1131,6 +1131,11 @@ const hydratedContractAndCatalogFixture = {
       add_agent_unavailable_label: "agents unavailable",
       add_agent_placeholder_label: "+ new agent...",
       add_agent_error_prefix: "Agent definition unavailable: ",
+      definition_catalog_title: "DEFINITION CATALOG",
+      definition_catalog_empty: "No MobKit profile-member definitions available.",
+      definition_catalog_source_label: "source",
+      definition_catalog_tools_label: "tools",
+      definition_catalog_skills_label: "skills",
       empty_title: "AGENT LIBRARY",
       empty_lines: [
         "Select an agent or schema on the left.",
@@ -1595,6 +1600,11 @@ assert.deepEqual(hydratedCatalogs.agentView, {
   addAgentUnavailableLabel: "agents unavailable",
   addAgentPlaceholderLabel: "+ new agent...",
   addAgentErrorPrefix: "Agent definition unavailable:",
+  definitionCatalogTitle: "DEFINITION CATALOG",
+  definitionCatalogEmpty: "No MobKit profile-member definitions available.",
+  definitionCatalogSourceLabel: "source",
+  definitionCatalogToolsLabel: "tools",
+  definitionCatalogSkillsLabel: "skills",
   emptyTitle: "AGENT LIBRARY",
   emptyLines: [
     "Select an agent or schema on the left.",
@@ -5118,6 +5128,47 @@ assert.deepEqual(controller.agentDefinitionOptions([{
   ["sample_b__01_reviewer", "Reviewer · Docs Only"],
 ]);
 assert.deepEqual(controller.agentDefinitionOptions([]), { hasDefinitions: false, optionRows: [] });
+assert.deepEqual(controller.agentDefinitionCatalogState([], hydratedCatalogs.agentView), {
+  title: "DEFINITION CATALOG",
+  empty: "No MobKit profile-member definitions available.",
+  hasRows: false,
+  rows: [],
+});
+assert.deepEqual(controller.agentDefinitionCatalogState([{
+  id: "sample_review",
+  role: "reviewer",
+  label: "Quality Reviewer",
+  source: "mobkit/mobpack-profile-member",
+  sourceMobpackName: "Planner Coder Review",
+  sourceOrigin: "mobkit/sample-mobpack",
+  toolDefinitions: [{ id: "builtins", source: "meerkat_mob::ToolConfig" }],
+  skillDefinitions: [{ id: "mob.review", sourceMobpack: "sample_planner_coder_review_loop" }],
+}], hydratedCatalogs.agentView), {
+  title: "DEFINITION CATALOG",
+  empty: "No MobKit profile-member definitions available.",
+  hasRows: true,
+  rows: [{
+    id: "sample_review",
+    title: "Quality Reviewer",
+    role: "reviewer",
+    sourceLabel: "source",
+    toolsLabel: "tools",
+    skillsLabel: "skills",
+    source: "Planner Coder Review · mobkit/sample-mobpack",
+    tools: "builtins (meerkat_mob::ToolConfig)",
+    skills: "mob.review (sample_planner_coder_review_loop)",
+    definition: {
+      id: "sample_review",
+      role: "reviewer",
+      label: "Quality Reviewer",
+      source: "mobkit/mobpack-profile-member",
+      sourceMobpackName: "Planner Coder Review",
+      sourceOrigin: "mobkit/sample-mobpack",
+      toolDefinitions: [{ id: "builtins", source: "meerkat_mob::ToolConfig" }],
+      skillDefinitions: [{ id: "mob.review", sourceMobpack: "sample_planner_coder_review_loop" }],
+    },
+  }],
+});
 assert.deepEqual(controller.agentDefinitionAddControlState([], hydratedCatalogs.agentView), {
   hasDefinitions: false,
   optionRows: [],

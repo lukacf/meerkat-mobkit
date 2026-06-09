@@ -636,6 +636,11 @@
       addAgentUnavailableLabel: String(view.add_agent_unavailable_label || "").trim(),
       addAgentPlaceholderLabel: String(view.add_agent_placeholder_label || "").trim(),
       addAgentErrorPrefix: String(view.add_agent_error_prefix || "").trim(),
+      definitionCatalogTitle: String(view.definition_catalog_title || "").trim(),
+      definitionCatalogEmpty: String(view.definition_catalog_empty || "").trim(),
+      definitionCatalogSourceLabel: String(view.definition_catalog_source_label || "").trim(),
+      definitionCatalogToolsLabel: String(view.definition_catalog_tools_label || "").trim(),
+      definitionCatalogSkillsLabel: String(view.definition_catalog_skills_label || "").trim(),
       emptyTitle: String(view.empty_title || "").trim(),
       emptyLines: Array.isArray(view.empty_lines)
         ? view.empty_lines.map((line) => String(line || "").trim()).filter(Boolean)
@@ -646,6 +651,8 @@
     return out.agentsHeading && out.schemasHeading && out.addSchemaLabel
       && out.addAgentTitle && out.addAgentUnavailableTitle
       && out.addAgentUnavailableLabel && out.addAgentPlaceholderLabel
+      && out.definitionCatalogTitle && out.definitionCatalogEmpty
+      && out.definitionCatalogSourceLabel && out.definitionCatalogToolsLabel && out.definitionCatalogSkillsLabel
       && out.emptyTitle && out.emptyLines.length && out.missingSchemaLabel && out.missingAgentLabel
       ? out
       : null;
@@ -662,6 +669,11 @@
       addAgentUnavailableLabel: String(view?.addAgentUnavailableLabel || ""),
       addAgentPlaceholderLabel: String(view?.addAgentPlaceholderLabel || ""),
       addAgentErrorPrefix: String(view?.addAgentErrorPrefix || ""),
+      definitionCatalogTitle: String(view?.definitionCatalogTitle || ""),
+      definitionCatalogEmpty: String(view?.definitionCatalogEmpty || ""),
+      definitionCatalogSourceLabel: String(view?.definitionCatalogSourceLabel || ""),
+      definitionCatalogToolsLabel: String(view?.definitionCatalogToolsLabel || ""),
+      definitionCatalogSkillsLabel: String(view?.definitionCatalogSkillsLabel || ""),
       emptyTitle: String(view?.emptyTitle || ""),
       emptyLines: Array.isArray(view?.emptyLines) ? view.emptyLines : [],
       missingSchemaLabel: String(view?.missingSchemaLabel || ""),
@@ -2173,6 +2185,40 @@
       hasError: !!error,
       text: error ? `${prefix}${error}` : "",
       rawError: error,
+    };
+  }
+
+  function agentDefinitionCatalogState(agentDefinitions = [], agentView = null) {
+    const view = agentViewForState(agentView);
+    const rows = (Array.isArray(agentDefinitions) ? agentDefinitions : [])
+      .filter((definition) => definition?.id)
+      .map((definition) => {
+        const label = String(definition.label || definition.name || definition.role || definition.id).trim();
+        const role = String(definition.role || "").trim();
+        const source = [
+          definition.sourceMobpackName || definition.source_mobpack_name || definition.sourceMobpack || definition.source_mobpack || "",
+          definition.sourceOrigin || definition.source_origin || definition.source || "",
+        ].map((value) => String(value || "").trim()).filter(Boolean).join(" · ");
+        const tools = sourceDefinitionRefRows(definition.toolDefinitions || definition.tool_definitions);
+        const skills = sourceDefinitionRefRows(definition.skillDefinitions || definition.skill_definitions);
+        return {
+          id: String(definition.id || "").trim(),
+          title: label,
+          role,
+          sourceLabel: view.definitionCatalogSourceLabel,
+          toolsLabel: view.definitionCatalogToolsLabel,
+          skillsLabel: view.definitionCatalogSkillsLabel,
+          source,
+          tools: tools.join(", "),
+          skills: skills.join(", "),
+          definition,
+        };
+      });
+    return {
+      title: view.definitionCatalogTitle,
+      empty: view.definitionCatalogEmpty,
+      hasRows: rows.length > 0,
+      rows,
     };
   }
 
@@ -11624,6 +11670,7 @@
     advancedMobSettingsDraftPatch,
     cloneDocument,
     agentDefinitionsFromCatalogs,
+    agentDefinitionCatalogState,
     memberFromAgentDefinition,
     agentDefinitionAddPatch,
     agentDefinitionAddByIdPatch,
