@@ -2809,8 +2809,8 @@ const graphModeDocumentProjection = controller.authoringDocumentFromState({
     members,
     schemas: [],
     instances: [{ id: "review_step", memberId: "m_reviewer", col: 0, row: 0 }],
-    edges: [],
-    frames: [],
+    edges: [{ id: "stale_edge", from: "review_step", to: "ghost", kind: "next", label: "stale" }],
+    frames: [{ id: "stale_frame", kind: "Branch", label: "stale", colStart: 99, colEnd: 99 }],
     skillRealms: [],
   },
   currentFlow: { name: "graph-mode-doc" },
@@ -2821,7 +2821,48 @@ assert.equal(graphModeDocumentProjection.flow.steps[1].id, "review_step");
 assert.equal(graphModeDocumentProjection.flow.steps[1].role, "m_reviewer");
 assert.equal(graphModeDocumentProjection.document.flow.steps[1].id, "review_step");
 assert.equal(graphModeDocumentProjection.document.instances[0].id, "review_step");
+assert.deepEqual(graphModeDocumentProjection.instances, graphModeDocumentProjection.document.instances);
+assert.deepEqual(graphModeDocumentProjection.edges, graphModeDocumentProjection.document.edges);
+assert.deepEqual(graphModeDocumentProjection.frames, graphModeDocumentProjection.document.frames);
+assert.deepEqual(graphModeDocumentProjection.edges, []);
+assert.deepEqual(graphModeDocumentProjection.frames, []);
 assert.equal(graphModeDocumentProjection.document.mob_settings.backendDefault, "session");
+
+const graphModeBranchMembers = [
+  { id: "m_left", name: "Left", role: "left", model: "gpt-5.5", tools: ["builtins"], skills: [] },
+  { id: "m_right", name: "Right", role: "right", model: "gpt-5.5", tools: ["builtins"], skills: [] },
+  { id: "m_review", name: "Review", role: "review", model: "gpt-5.5", tools: ["builtins"], skills: [] },
+];
+const graphModeBranchProjection = controller.authoringDocumentFromState({
+  editorMode: "advanced",
+  flow: { name: "graph-mode-branch-doc", steps: [] },
+  studio: {
+    members: graphModeBranchMembers,
+    schemas: [],
+    instances: [
+      { id: "g_branch_route", isGate: true, gateKind: "branch", col: 0, row: 0 },
+      { id: "left", memberId: "m_left", col: 1, row: 0 },
+      { id: "right", memberId: "m_right", col: 1, row: 1 },
+      { id: "j_branch_route", isGate: true, gateKind: "join", collection: "any", controllerRole: "m_review", col: 2, row: 0 },
+    ],
+    edges: [
+      { id: "e1", from: "g_branch_route", to: "left", kind: "cond", label: "docs", cond: { source: "params.kind", op: "==", value: "docs" } },
+      { id: "e2", from: "g_branch_route", to: "right", kind: "next", label: "fallback" },
+      { id: "stale_extra", from: "right", to: "ghost", kind: "next", label: "stale" },
+    ],
+    frames: [{ id: "stale_frame", kind: "Parallel", label: "stale", colStart: 7, colEnd: 8 }],
+    skillRealms: [],
+  },
+  currentFlow: { name: "graph-mode-branch-doc" },
+  deploySettings: testDeploySettings(),
+  mobSettings: { backendDefault: "session" },
+});
+assert.deepEqual(graphModeBranchProjection.instances, graphModeBranchProjection.document.instances);
+assert.deepEqual(graphModeBranchProjection.edges, graphModeBranchProjection.document.edges);
+assert.deepEqual(graphModeBranchProjection.frames, graphModeBranchProjection.document.frames);
+assert(graphModeBranchProjection.edges.every((edge) => edge.to !== "ghost"));
+assert(graphModeBranchProjection.frames.some((frame) => frame.id === "frame_branch_route" && frame.kind === "Branch"));
+assert.equal(graphModeBranchProjection.flow.steps[1].type, "branch");
 
 const reconciledAuthoringDocumentProjection = controller.authoringDocumentFromState({
   editorMode: "basic",

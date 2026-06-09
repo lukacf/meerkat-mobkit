@@ -54,6 +54,18 @@ function App() {
   const [deploySettings, setDeploySettings] = React.useState(() => window.MobKitFlowController.deployDefaultsFromSchema(null));
   const [deployCommandPreview, setDeployCommandPreview] = React.useState("");
   const [mobSettings, setMobSettings] = React.useState(() => window.MobKitFlowController.mobDefaultsFromSchema(null));
+  const projectionSyncInFlight = React.useRef(false);
+  const projectionSyncReset = React.useRef(0);
+  const beginProjectionSync = React.useCallback(() => {
+    projectionSyncInFlight.current = true;
+    if (projectionSyncReset.current) window.cancelAnimationFrame(projectionSyncReset.current);
+    projectionSyncReset.current = window.requestAnimationFrame(() => {
+      projectionSyncReset.current = window.requestAnimationFrame(() => {
+        projectionSyncInFlight.current = false;
+        projectionSyncReset.current = 0;
+      });
+    });
+  }, []);
   const beginSourceProjection = React.useCallback(() => {
     sourceProjectionVersion.current += 1;
     return sourceProjectionVersion.current;
@@ -73,6 +85,7 @@ function App() {
     setInlineSourceBusy(false);
   }, []);
   const markDraft = React.useCallback(() => {
+    if (projectionSyncInFlight.current) return;
     authoringRevision.current += 1;
     setStage("draft");
     setValidationResults([]);
@@ -355,9 +368,22 @@ function App() {
     setAddAt(null);
   };
 
+  const applyAuthoringDocumentProjection = (projection) => {
+    if (!projection) return;
+    if (JSON.stringify(projection.flow) !== JSON.stringify(flow)) setFlow(projection.flow);
+    if (JSON.stringify(projection.members || []) !== JSON.stringify(studio.members)) studio.setMembers(projection.members || []);
+    if (projection.instances && window.MobKitFlowController.graphStructureSignature(projection.instances, projection.edges || []) !== window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges)) {
+      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || []);
+      studio.setInstances(projection.instances || []);
+      studio.setEdges(projection.edges || []);
+    }
+    if (JSON.stringify(projection.frames || []) !== JSON.stringify(studio.frames)) studio.setFrames(projection.frames || []);
+    if (JSON.stringify(projection.deploySettings) !== JSON.stringify(deploySettings)) setDeploySettings(projection.deploySettings);
+    if (JSON.stringify(projection.mobSettings) !== JSON.stringify(mobSettings)) setMobSettings(projection.mobSettings);
+  };
   const currentFlowSelection = window.MobKitFlowController.flowRegistrySelectionState(flows, currentFlowId);
   const currentFlow = currentFlowSelection.row;
-  const buildDocument = () => window.MobKitFlowController.authoringDocumentFromState({
+  const buildAuthoringProjection = () => window.MobKitFlowController.authoringDocumentFromState({
     editorMode,
     flow,
     studio: {
@@ -375,7 +401,13 @@ function App() {
     modelCatalog: catalogs.models,
     toolCatalog: catalogs.toolCatalog,
     contractLoaded: !!catalogs.contractMeta.loaded,
-  }).document;
+  });
+  const buildDocument = () => {
+    const projection = buildAuthoringProjection();
+    beginProjectionSync();
+    applyAuthoringDocumentProjection(projection);
+    return projection.document;
+  };
   const persistCurrentOutcome = (outcome) => {
     const projection = window.MobKitFlowController.flowRegistryPersistOutcomeProjection(flows, {
       currentFlowId,
@@ -428,10 +460,11 @@ function App() {
   ]);
 
   const handleDrySim = async () => {
-    const requestToken = currentAuthoringRevision();
+    let requestToken = null;
     setApiBusy(true);
     try {
       const document = buildDocument();
+      requestToken = currentAuthoringRevision();
       const plan = await window.MobKitFlowController.deployDocument(document, { execute: false });
       if (!authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.deployOutcome(document, plan, { execute: false });
@@ -445,7 +478,7 @@ function App() {
       setDrySim(true);
       setDrySimKey(k => k + 1);
     } catch (error) {
-      if (!authoringRevisionIsCurrent(requestToken)) return;
+      if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.deployErrorOutcome(error, { execute: false, errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
       setValidate(true);
@@ -455,8 +488,8 @@ function App() {
     }
   };
 
-  const exportCurrentSourceDocument = async (requestToken) => {
-    const document = buildDocument();
+  const exportCurrentSourceDocument = async (requestToken, projectedDocument = null) => {
+    const document = projectedDocument || buildDocument();
     const result = await window.MobKitFlowController.exportDocument(document);
     const projection = window.MobKitFlowController.sourceDocumentFromExport(document, result, {
       sourceView: catalogs.sourceView,
@@ -475,15 +508,17 @@ function App() {
       clearSourceProjection();
       return;
     }
-    const requestToken = beginSourceProjection();
+    let requestToken = null;
     setApiBusy(true);
     try {
-      const nextSourceDocument = await exportCurrentSourceDocument(requestToken);
+      const document = buildDocument();
+      requestToken = beginSourceProjection();
+      const nextSourceDocument = await exportCurrentSourceDocument(requestToken, document);
       if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
       setSourceDocument(nextSourceDocument);
       setSourceOpen(true);
     } catch (error) {
-      if (!sourceProjectionIsCurrent(requestToken)) return;
+      if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
       setValidate(true);
@@ -498,17 +533,22 @@ function App() {
   }, [view, editorMode, clearSourceProjection]);
 
   const handleInlineSource = async (surface = "basic") => {
-    const requestToken = beginSourceProjection();
+    let requestToken = null;
     setInlineSourceSurface(surface);
     setInlineSourceOpen(true);
     setInlineSourceBusy(true);
     setApiBusy(true);
     try {
-      const nextSourceDocument = await exportCurrentSourceDocument(requestToken);
+      const document = buildDocument();
+      requestToken = beginSourceProjection();
+      setInlineSourceSurface(surface);
+      setInlineSourceOpen(true);
+      setInlineSourceBusy(true);
+      const nextSourceDocument = await exportCurrentSourceDocument(requestToken, document);
       if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
       setInlineSourceDocument(nextSourceDocument);
     } catch (error) {
-      if (!sourceProjectionIsCurrent(requestToken)) return;
+      if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
       setValidate(true);
@@ -519,11 +559,23 @@ function App() {
     }
   };
 
+  React.useEffect(() => {
+    const openGraphSourceFromHash = () => {
+      if (window.location.hash !== "#mobkit-graph-source") return;
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+      handleInlineSource("graph");
+    };
+    window.addEventListener("hashchange", openGraphSourceFromHash);
+    openGraphSourceFromHash();
+    return () => window.removeEventListener("hashchange", openGraphSourceFromHash);
+  }, [handleInlineSource]);
+
   const handleValidate = async () => {
-    const requestToken = currentAuthoringRevision();
+    let requestToken = null;
     setApiBusy(true);
     try {
       const document = buildDocument();
+      requestToken = currentAuthoringRevision();
       const result = await window.MobKitFlowController.validateDocument(document);
       if (!authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.validationOutcome(document, result);
@@ -533,12 +585,12 @@ function App() {
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
     } catch (error) {
-      if (!authoringRevisionIsCurrent(requestToken)) return;
+      if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.validationErrorOutcome(error, { errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
     } finally {
-      if (authoringRevisionIsCurrent(requestToken)) {
+      if (requestToken === null || authoringRevisionIsCurrent(requestToken)) {
         setValidate(true);
       }
       setApiBusy(false);
@@ -546,10 +598,11 @@ function App() {
   };
 
   const handlePublish = async () => {
-    const requestToken = currentAuthoringRevision();
+    let requestToken = null;
     setApiBusy(true);
     try {
       const document = buildDocument();
+      requestToken = currentAuthoringRevision();
       const result = await window.MobKitFlowController.exportDocument(document);
       if (!authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.exportOutcome(document, result);
@@ -563,7 +616,7 @@ function App() {
       setStage(outcome.stage);
       setValidate(false);
     } catch (error) {
-      if (!authoringRevisionIsCurrent(requestToken)) return;
+      if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.exportErrorOutcome(error, { errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
       setValidate(true);
@@ -574,10 +627,11 @@ function App() {
   };
 
   const handleDeploy = async ({ execute }) => {
-    const requestToken = currentAuthoringRevision();
+    let requestToken = null;
     setApiBusy(true);
     try {
       const document = buildDocument();
+      requestToken = currentAuthoringRevision();
       const result = await window.MobKitFlowController.deployDocument(document, { execute });
       if (!authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.deployOutcome(document, result, { execute });
@@ -588,7 +642,7 @@ function App() {
       setStage(outcome.stage);
       setValidate(true);
     } catch (error) {
-      if (!authoringRevisionIsCurrent(requestToken)) return;
+      if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.deployErrorOutcome(error, { execute, errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
       setValidate(true);

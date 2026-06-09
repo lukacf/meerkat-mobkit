@@ -6281,8 +6281,9 @@
       flow: reconciled.flow,
       document,
       members: reconciled.members,
-      instances: reconciled.instances,
-      edges: reconciled.edges,
+      instances: document.instances,
+      edges: document.edges,
+      frames: document.frames,
       deploySettings: reconciled.deploySettings,
       mobSettings: reconciled.mobSettings,
     };

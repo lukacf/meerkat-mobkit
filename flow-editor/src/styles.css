@@ -422,6 +422,14 @@ body {
   overflow: hidden;
   z-index: 1;
 }
+button.node,
+a.node {
+  appearance: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  text-decoration: none;
+}
 .node:hover { border-color: var(--hair-strong, var(--ink)); }
 .node.is-selected {
   border-color: var(--accent);

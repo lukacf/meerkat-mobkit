@@ -238,6 +238,25 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       e.preventDefault();
     }
   };
+  const openSourceFromEvent = (e) => {
+    const sourceEl = e.target?.closest?.(".node--source-file");
+    if (!sourceEl || !hostRef.current?.contains(sourceEl)) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    onOpenSourceFile?.({
+      id: sourceEl.dataset.instId || "",
+      kind: sourceEl.dataset.kind || "source",
+    });
+    return true;
+  };
+  const onHostMouseDownCapture = (e) => {
+    if (e.button !== 0) return;
+    openSourceFromEvent(e);
+  };
+  const onHostKeyDownCapture = (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    openSourceFromEvent(e);
+  };
 
   const onHostWheel = (e) => {
     if (!hostRef.current) return;
@@ -430,6 +449,8 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
 
   return (
     <div ref={hostRef} className={"canvas-host" + (memberFocus ? " is-member-focus" : "") + (panDrag ? " is-panning" : "")}
+      onMouseDownCapture={onHostMouseDownCapture}
+      onKeyDownCapture={onHostKeyDownCapture}
       onMouseDown={onHostMouseDown}
       onClick={(e) => { if (e.target === hostRef.current || e.target.classList?.contains("canvas")) clearSelection(); }}
     >
@@ -480,7 +501,7 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
     };
     if (nodeState.isSourceFile) {
       return (
-        <div data-inst-id={inst.id}
+        <a href="#mobkit-graph-source" data-inst-id={inst.id}
           className={"node node--term node--source-file" + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : "")}
           data-kind={nodeState.dataKind}
           role={nodeState.role}
@@ -490,16 +511,10 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
           onMouseDown={(e) => {
             e.stopPropagation();
           }}
-          onClick={openSourceFile}
-          onKeyDown={(e) => {
-            if (e.key !== "Enter" && e.key !== " ") return;
-            e.preventDefault();
-            openSourceFile(e);
-          }}
         >
           <span className="source-file__glyph">{nodeState.sourceGlyph}</span>
           <span className="source-file__label">{nodeState.title}</span>
-        </div>
+        </a>
       );
     }
     return (
