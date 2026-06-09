@@ -9558,6 +9558,7 @@ window.MOBKIT_BOOT = {
     const bodyClass = options.compact ? "bld-toml__body" : "source-drawer__body";
     return {
       source,
+      sourceHtml: highlightTomlSource(source),
       drawerEyebrow: view.drawerEyebrow,
       inlineTitle: view.inlineTitle,
       sourceLabel,
@@ -9569,6 +9570,20 @@ window.MOBKIT_BOOT = {
       closeLabel: view.closeLabel,
       copyDisabled: !!options.busy || !source,
     };
+  }
+
+  function highlightTomlSource(source) {
+    return escapeHtml(String(source || ""))
+      .replace(/^(\s*#.*)$/gm, '<span class="toml-comment">$1</span>')
+      .replace(/^(\s*)(\[[^\]]+\])/gm, '$1<span class="toml-table">$2</span>')
+      .replace(/^(\s*)([A-Za-z_][\w-]*)(\s*=)/gm, '$1<span class="toml-key">$2</span>$3');
+  }
+
+  function escapeHtml(source) {
+    return String(source || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
   }
 
   function sourceViewFromSchema(schema) {
@@ -12061,7 +12076,7 @@ function SourceCodePanel({ state, busy = false, compact = false, sourceView = nu
       className: editorState.bodyClass,
       role: "textbox",
       "aria-readonly": "true",
-      dangerouslySetInnerHTML: { __html: highlightToml(editorState.source) }
+      dangerouslySetInnerHTML: { __html: editorState.sourceHtml }
     }
   );
 }
@@ -12074,9 +12089,6 @@ function InlineSourceEditor({ open, onClose, state, busy = false, surface = "bas
   if (!open) return null;
   const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true, sourceView });
   return /* @__PURE__ */ React.createElement("div", { className: "bld-toml bld-toml--" + surface, onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "bld-toml__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", null, editorState.inlineTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, busy, compact: true, sourceView }));
-}
-function highlightToml(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/^(\s*#.*)$/gm, '<span class="toml-comment">$1</span>').replace(/^(\s*)(\[[^\]]+\])/gm, '$1<span class="toml-table">$2</span>').replace(/^(\s*)([A-Za-z_][\w-]*)(\s*=)/gm, '$1<span class="toml-key">$2</span>$3');
 }
 window.DrySim = DrySim;
 window.ValidateSheet = ValidateSheet;

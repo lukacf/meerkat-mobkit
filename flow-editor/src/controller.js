@@ -9525,6 +9525,7 @@
     const bodyClass = options.compact ? "bld-toml__body" : "source-drawer__body";
     return {
       source,
+      sourceHtml: highlightTomlSource(source),
       drawerEyebrow: view.drawerEyebrow,
       inlineTitle: view.inlineTitle,
       sourceLabel,
@@ -9536,6 +9537,20 @@
       closeLabel: view.closeLabel,
       copyDisabled: !!options.busy || !source,
     };
+  }
+
+  function highlightTomlSource(source) {
+    return escapeHtml(String(source || ""))
+      .replace(/^(\s*#.*)$/gm, '<span class="toml-comment">$1</span>')
+      .replace(/^(\s*)(\[[^\]]+\])/gm, '$1<span class="toml-table">$2</span>')
+      .replace(/^(\s*)([A-Za-z_][\w-]*)(\s*=)/gm, '$1<span class="toml-key">$2</span>$3');
+  }
+
+  function escapeHtml(source) {
+    return String(source || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
   }
 
   function sourceViewFromSchema(schema) {

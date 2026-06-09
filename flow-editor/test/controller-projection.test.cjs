@@ -5733,6 +5733,7 @@ assert.equal(sourceProjection.validationRows[0].head, "exported");
 assert.equal(sourceProjection.stage, "valid");
 assert.deepEqual(controller.sourceEditorState(sourceProjection.sourceDocument), {
   source: "[mob]\nid = \"source_proof\"\n",
+  sourceHtml: '<span class="toml-table">[mob]</span>\n<span class="toml-key">id</span> = "source_proof"\n',
   drawerEyebrow: "SOURCE · mob.toml",
   inlineTitle: "mob.toml",
   sourceLabel: "mobkit/mobpacks/export · mobkit/mob.toml · source-proof.mobpack · application/vnd.mobkit.mobpack",
@@ -5744,8 +5745,16 @@ assert.deepEqual(controller.sourceEditorState(sourceProjection.sourceDocument), 
   closeLabel: "×",
   copyDisabled: false,
 });
+const escapedSourceEditorState = controller.sourceEditorState({
+  mob_toml: "# <unsafe & comment>\n[mob]\nid = \"safe\"\n",
+}, { sourceView: hydratedCatalogs.sourceView });
+assert.equal(
+  escapedSourceEditorState.sourceHtml,
+  '<span class="toml-comment"># &lt;unsafe &amp; comment&gt;</span>\n<span class="toml-table">[mob]</span>\n<span class="toml-key">id</span> = "safe"\n',
+);
 assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true, sourceView: hydratedCatalogs.sourceView }), {
   source: "",
+  sourceHtml: "",
   drawerEyebrow: "SOURCE · mob.toml",
   inlineTitle: "mob.toml",
   sourceLabel: "",
@@ -5759,6 +5768,7 @@ assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true,
 });
 assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true }), {
   source: "",
+  sourceHtml: "",
   drawerEyebrow: "",
   inlineTitle: "",
   sourceLabel: "",

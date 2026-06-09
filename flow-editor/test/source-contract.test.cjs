@@ -785,18 +785,23 @@ assert.match(controller, /mobkit\/mobpacks\/export did not return mobkit\/mob\.t
 assert.match(controller, /function sourceDocumentFromExport[\s\S]*did not return source_files[\s\S]*did not return mobkit\/mob\.toml source file[\s\S]*did not return mobkit\/mob\.toml text[\s\S]*did not return filename[\s\S]*did not return media_type[\s\S]*did not return mobkit\/mob\.toml sha256/, "Source drawer must fail closed when MobKit export omits source archive metadata");
 assert.match(controller, /function sourceDocumentFromExport/, "controller plane must own export result to source-document projection");
 assert.match(controller, /function sourceEditorState/, "controller plane must own source editor display projection");
+assert.match(controller, /function highlightTomlSource/, "controller plane must own source editor TOML highlighting projection");
+assert.match(controller, /function escapeHtml/, "controller plane must own source editor HTML escaping");
+assert.match(sourceEditorBlock, /sourceHtml:\s*highlightTomlSource\(source\)/, "source editor state must expose controller-projected highlighted source HTML");
 assert.match(controller, /mob_definition\?\.editor_source_view/, "controller plane must hydrate source editor labels from MobKit schema");
 assert.match(controllerProjectionTest, /editor_source_view:\s*\{[\s\S]*drawer_eyebrow:\s*"SOURCE · mob\.toml"[\s\S]*loading_text:\s*"rendering mob\.toml from mobkit\/mobpacks\/export\.\.\."/,
   "source editor label/loading copy must be test-covered as MobKit schema data");
 assert(!/SOURCE · mob\.toml|rendering mob\.toml from mobkit\/mobpacks\/export|copyLabel:\s*"copy"|closeLabel:\s*"×"/.test(sourceEditorBlock),
   "source editor projection must not keep local label/loading defaults");
 assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceEditorState\(state, \{ busy, compact, sourceView \}\)/, "source code panel must render controller-projected source state with schema source view");
+assert.match(src("overlays.jsx"), /dangerouslySetInnerHTML=\{\{\s*__html:\s*editorState\.sourceHtml\s*\}\}/, "source code panel must render controller-projected highlighted source HTML");
 assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceEditorState\(state, \{ sourceView \}\)/, "source drawer must render controller-projected source state with schema source view");
 assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceEditorState\(state, \{ busy, compact: true, sourceView \}\)/, "inline source editor must render controller-projected source state with schema source view");
 assert.match(src("overlays.jsx"), /editorState\.drawerEyebrow/, "source drawer header must render through controller state");
 assert.match(src("overlays.jsx"), /editorState\.inlineTitle/, "inline source title must render through controller state");
 assert.match(src("overlays.jsx"), /editorState\.copyLabel/, "source copy action label must render through controller state");
 assert(!/function sourceMeta|state\?\.mob_toml|state\?\.source|state\?\.filename|state\?\.media_type|state\?\.validation\?\.validation_source/.test(src("overlays.jsx")), "source editor overlays must not derive MobKit export/source metadata locally");
+assert(!/function\s+highlightToml|replace\(\s*\/&\/g|toml-comment|toml-table|toml-key/.test(src("overlays.jsx")), "source editor overlays must not parse, escape, or highlight mob.toml locally");
 assert.match(app, /MobKitFlowController\.sourceDocumentFromExport\(document, result, \{\s*sourceView:\s*catalogs\.sourceView,\s*\}\)/, "app shell must project MobKit export results through the controller plane with the schema-backed source-view contract");
 assert.match(controller, /sourceDocument:\s*\{[\s\S]*sourcePath:\s*mobTomlFile\.path[\s\S]*sourceFile:\s*mobTomlFile[\s\S]*sourceFiles:\s*files[\s\S]*sourceDigest[\s\S]*source:\s*"mobkit\/mobpacks\/export"[\s\S]*sourceView,/, "controller-projected source documents must carry the MobKit archive member and source-view contracts");
 assert(!/const renderedDocument = \{ \.\.\.document, mob_toml: result\.mob_toml \}|filename:\s*result\.filename|media_type:\s*result\.media_type|source:\s*["']mobkit\/mobpacks\/export["']/.test(app), "app shell must not assemble export-backed source documents locally");

@@ -107,7 +107,7 @@ function SourceCodePanel({ state, busy = false, compact = false, sourceView = nu
       className={editorState.bodyClass}
       role="textbox"
       aria-readonly="true"
-      dangerouslySetInnerHTML={{ __html: highlightToml(editorState.source) }}
+      dangerouslySetInnerHTML={{ __html: editorState.sourceHtml }}
     />
   );
 }
@@ -152,14 +152,6 @@ function InlineSourceEditor({ open, onClose, state, busy = false, surface = "bas
       <SourceCodePanel state={state} busy={busy} compact sourceView={sourceView} />
     </div>
   );
-}
-
-function highlightToml(s) {
-  return s
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/^(\s*#.*)$/gm, '<span class="toml-comment">$1</span>')
-    .replace(/^(\s*)(\[[^\]]+\])/gm, '$1<span class="toml-table">$2</span>')
-    .replace(/^(\s*)([A-Za-z_][\w-]*)(\s*=)/gm, '$1<span class="toml-key">$2</span>$3');
 }
 
 window.DrySim = DrySim;
