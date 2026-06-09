@@ -825,6 +825,7 @@ assert.match(app, /MobKitFlowController\.validationOutcome\(document, result\)/,
 assert.match(app, /MobKitFlowController\.exportOutcome\(document, result\)/, "app shell must project publish/export API results through the controller plane");
 assert.match(app, /MobKitFlowController\.deployOutcome\(document, (?:plan|result), \{ execute(?:: false)? \}\)/, "app shell must project deploy API results through the controller plane");
 assert.match(app, /MobKitFlowController\.deployErrorOutcome\(error, \{ execute(?:: false)?, errorView: catalogs\.errorView \}\)/, "app shell must project deploy errors through the controller plane with schema-backed error view");
+assert.match(liveRkatE2eTest, /result\.pack_sha256[\s\S]*sha256\(packBytes\)/, "live rkat deploy proof must compare MobKit deploy pack_sha256 to the written mobpack bytes");
 assert.match(app, /MobKitFlowController\.sourceErrorOutcome\(error, \{ errorView: catalogs\.errorView \}\)/, "app shell must project source export errors through the controller plane with schema-backed error view");
 assert.match(app, /MobKitFlowController\.validationErrorOutcome\(error, \{ errorView: catalogs\.errorView \}\)/, "app shell must project validation API errors through the controller plane with schema-backed error view");
 assert.match(app, /MobKitFlowController\.exportErrorOutcome\(error, \{ errorView: catalogs\.errorView \}\)/, "app shell must project publish/export errors through the controller plane with schema-backed error view");

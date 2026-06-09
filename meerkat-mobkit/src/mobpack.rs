@@ -276,6 +276,7 @@ pub struct MobpackSourceFile {
 pub struct MobpackDeployResult {
     pub filename: String,
     pub pack_path: String,
+    pub pack_sha256: String,
     pub command: String,
     pub argv: Vec<String>,
     pub plan_trace: Vec<Value>,
@@ -2292,6 +2293,7 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(export.content_base64.as_bytes())
         .map_err(|err| format!("failed to decode exported mobpack: {err}"))?;
+    let pack_sha256 = source_file_sha256(&bytes);
     let pack_path = deploy_pack_path(params, &export.filename)?;
     if let Some(parent) = pack_path.parent() {
         std::fs::create_dir_all(parent)
@@ -2349,6 +2351,7 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
     Ok(MobpackDeployResult {
         filename: export.filename,
         pack_path: pack_path.to_string_lossy().to_string(),
+        pack_sha256,
         command,
         argv,
         plan_trace,
@@ -15847,6 +15850,8 @@ model = "gpt-5.5"
         assert!(!result.executed);
         assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
         assert!(std::path::Path::new(&result.pack_path).exists());
+        let packed_bytes = std::fs::read(&result.pack_path).expect("read deploy pack");
+        assert_eq!(result.pack_sha256, source_file_sha256(&packed_bytes));
         assert_eq!(&result.argv[0..3], ["rkat", "mob", "deploy"]);
         assert_eq!(preview.argv, result.argv);
         assert_eq!(preview.command, result.command);
@@ -15949,6 +15954,8 @@ model = "gpt-5.5"
         assert_eq!(result.argv[1], "mob");
         assert_eq!(result.argv[2], "deploy");
         assert!(std::path::Path::new(&result.pack_path).exists());
+        let packed_bytes = std::fs::read(&result.pack_path).expect("read deploy pack");
+        assert_eq!(result.pack_sha256, source_file_sha256(&packed_bytes));
 
         let argv = std::fs::read_to_string(args_file).expect("recorded fake rkat args");
         assert!(argv.lines().any(|line| line == "mob"));

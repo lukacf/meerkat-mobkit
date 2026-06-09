@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
 global.window = {};
@@ -19,6 +20,10 @@ const controller = global.window.MobKitFlowController;
 let contractSchema = null;
 const testDeploySettings = () => controller.deployDefaultsFromSchema(contractSchema);
 const testMobSettings = () => controller.mobDefaultsFromSchema(contractSchema);
+
+function sha256(bytes) {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
+}
 
 async function rpc(method, params) {
   const response = await fetch(rpcUrl, {
@@ -1282,6 +1287,10 @@ async function validateCustomDeploySettings(dir) {
     throw new Error(`MobKit deploy response did not provide API-backed display rows: ${JSON.stringify(result.display_rows)}`);
   }
   const planTrace = assertDeployPlanTrace(result, "customDeploySettings");
+  const packBytes = fs.readFileSync(result.pack_path);
+  if (result.pack_sha256 !== sha256(packBytes)) {
+    throw new Error(`MobKit deploy response did not report the written pack sha256: ${JSON.stringify({ pack_sha256: result.pack_sha256, pack_path: result.pack_path })}`);
+  }
   const validate = run("rkat", ["mob", "validate", result.pack_path]);
   return {
     validate,
@@ -1290,6 +1299,7 @@ async function validateCustomDeploySettings(dir) {
     argv,
     executed: result.executed,
     packPath: result.pack_path,
+    packSha256: result.pack_sha256,
     planTrace,
   };
 }
@@ -1351,6 +1361,9 @@ async function validateCustomDeploySettings(dir) {
   const sourceMobToml = sourceFiles.find((file) => file.path === "mobkit/mob.toml");
   if (sourceMobToml?.text !== exported.mob_toml || sourceMobToml?.media_type !== "text/toml") {
     throw new Error(`exported mob.toml source file does not match MobKit-rendered TOML: ${JSON.stringify(sourceMobToml)}`);
+  }
+  if (sourceMobToml.sha256 !== sha256(Buffer.from(exported.mob_toml || "", "utf8"))) {
+    throw new Error(`exported mob.toml source file did not report a matching sha256: ${JSON.stringify(sourceMobToml)}`);
   }
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mobkit-flow-editor-e2e."));
