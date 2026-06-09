@@ -873,6 +873,7 @@ assert.match(controller, /function sourceDocumentFromExport[\s\S]*did not return
 assert.match(controller, /function sourceDocumentFromExport/, "controller plane must own export result to source-document projection");
 assert.match(controller, /function sourceEditorState/, "controller plane must own source editor display projection");
 assert.match(controller, /function sourceFileForPath/, "controller plane must own source archive file selection");
+assert.match(controller, /function sourceFileSelectionTransition/, "controller plane must own source archive file selection transitions");
 assert.match(controller, /function sourceFileRows/, "controller plane must own source archive file row projection");
 assert.match(controller, /function highlightSourceFile/, "controller plane must own source archive file highlighting selection");
 assert.match(controller, /function highlightTomlSource/, "controller plane must own source editor TOML highlighting projection");
@@ -889,6 +890,8 @@ assert.match(src("overlays.jsx"), /dangerouslySetInnerHTML=\{\{\s*__html:\s*edit
 assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceEditorState\(state, \{ sourceView, sourcePath \}\)/, "source drawer must render controller-projected source state with schema source view");
 assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceEditorState\(state, \{ busy, compact: true, sourceView, sourcePath \}\)/, "inline source editor must render controller-projected source state with schema source view");
 assert.match(src("overlays.jsx"), /editorState\.fileRows\.map/, "source editor overlays must render controller-projected archive file rows");
+assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceFileSelectionTransition\(state,\s*path,\s*sourcePath\)/, "source editor overlays must select archive files through the controller transition plane");
+assert(!/setSourcePath\(row\.path\)/.test(src("overlays.jsx")), "source editor overlays must not set archive member paths directly from UI rows");
 assert.match(src("overlays.jsx"), /editorState\.drawerEyebrow/, "source drawer header must render through controller state");
 assert.match(src("overlays.jsx"), /editorState\.inlineTitle/, "inline source title must render through controller state");
 assert.match(src("overlays.jsx"), /editorState\.copyLabel/, "source copy action label must render through controller state");

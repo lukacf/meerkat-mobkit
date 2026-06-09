@@ -6418,6 +6418,15 @@ assert.deepEqual(selectedDefinitionSource.fileRows.map((row) => [row.path, row.s
   ["mobkit/mob.toml", false],
   ["definition.json", true],
 ]);
+assert.deepEqual(controller.sourceFileSelectionTransition(sourceProjection.sourceDocument, "definition.json"), {
+  sourcePath: "definition.json",
+});
+assert.deepEqual(controller.sourceFileSelectionTransition(sourceProjection.sourceDocument, "missing.toml", "definition.json"), {
+  sourcePath: "definition.json",
+});
+assert.deepEqual(controller.sourceFileSelectionTransition(sourceProjection.sourceDocument, "missing.toml", ""), {
+  sourcePath: "mobkit/mob.toml",
+});
 const escapedSourceEditorState = controller.sourceEditorState({
   mob_toml: "# <unsafe & comment>\n[mob]\nid = \"safe\"\n",
 }, { sourceView: hydratedCatalogs.sourceView });

@@ -114,6 +114,10 @@ function SourceCodePanel({ state, busy = false, compact = false, sourceView = nu
 
 function SourceDrawer({ open, onClose, state, sourceView = null }) {
   const [sourcePath, setSourcePath] = React.useState("");
+  const selectSourcePath = (path) => {
+    const result = window.MobKitFlowController.sourceFileSelectionTransition(state, path, sourcePath);
+    setSourcePath(result.sourcePath);
+  };
   React.useEffect(() => {
     setSourcePath("");
   }, [state]);
@@ -135,7 +139,7 @@ function SourceDrawer({ open, onClose, state, sourceView = null }) {
       {editorState.fileRows.length > 1 && (
         <div className="source-file-list">
           {editorState.fileRows.map(row => (
-            <button key={row.path} className={row.className} onClick={() => setSourcePath(row.path)}>
+            <button key={row.path} className={row.className} onClick={() => selectSourcePath(row.path)}>
               <span>{row.label}</span>
               <em>{row.meta}</em>
             </button>
@@ -149,6 +153,10 @@ function SourceDrawer({ open, onClose, state, sourceView = null }) {
 
 function InlineSourceEditor({ open, onClose, state, busy = false, surface = "basic", sourceView = null }) {
   const [sourcePath, setSourcePath] = React.useState("");
+  const selectSourcePath = (path) => {
+    const result = window.MobKitFlowController.sourceFileSelectionTransition(state, path, sourcePath);
+    setSourcePath(result.sourcePath);
+  };
   React.useEffect(() => {
     setSourcePath("");
   }, [state]);
@@ -170,7 +178,7 @@ function InlineSourceEditor({ open, onClose, state, busy = false, surface = "bas
       {editorState.fileRows.length > 1 && (
         <div className="source-file-list source-file-list--inline">
           {editorState.fileRows.map(row => (
-            <button key={row.path} className={row.className} onClick={() => setSourcePath(row.path)}>
+            <button key={row.path} className={row.className} onClick={() => selectSourcePath(row.path)}>
               <span>{row.label}</span>
               <em>{row.meta}</em>
             </button>

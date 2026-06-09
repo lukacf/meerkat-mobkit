@@ -10018,6 +10018,15 @@
       || null;
   }
 
+  function sourceFileSelectionTransition(sourceDocument, path, currentPath = "") {
+    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
+    const requestedPath = String(path || "").trim();
+    const requestedFile = files.find((file) => String(file?.path || "") === requestedPath) || null;
+    if (requestedFile) return { sourcePath: String(requestedFile.path || "") };
+    const currentFile = sourceFileForPath(sourceDocument, currentPath);
+    return { sourcePath: String(currentFile?.path || "") };
+  }
+
   function sourceFileContent(file) {
     return typeof file?.text === "string" ? file.text : "";
   }
@@ -11402,6 +11411,7 @@
     sourceDocumentFromExport,
     exportDownloadPayload,
     sourceEditorState,
+    sourceFileSelectionTransition,
     sampleFlowsFromSchema,
     flowCatalogBootstrapState,
     newFlowModalPatch,
