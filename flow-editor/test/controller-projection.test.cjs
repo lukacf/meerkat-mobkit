@@ -5101,6 +5101,20 @@ assert.throws(
   () => controller.sourceDocumentFromExport({ name: "No TOML" }, { mob_toml: "" }),
   /mobkit\/mobpacks\/export did not return mob_toml/,
 );
+assert.throws(
+  () => controller.sourceDocumentFromExport({ name: "No filename" }, {
+    mob_toml: "[mob]\nid = \"no_filename\"\n",
+    media_type: "application/vnd.mobkit.mobpack",
+  }),
+  /mobkit\/mobpacks\/export did not return filename/,
+);
+assert.throws(
+  () => controller.sourceDocumentFromExport({ name: "No media" }, {
+    mob_toml: "[mob]\nid = \"no_media\"\n",
+    filename: "no-media.mobpack",
+  }),
+  /mobkit\/mobpacks\/export did not return media_type/,
+);
 
 assert.deepEqual(controller.importParamsFromDecodedFile({
   filename: "mob.toml",

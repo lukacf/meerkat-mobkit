@@ -675,6 +675,7 @@ assert.match(src("overlays.jsx"), /traceState\.firstLabel/, "Plan Trace first ac
 assert.match(src("overlays.jsx"), /traceState\.stepLabel/, "Plan Trace progress label must render through controller state");
 assert(!/plan\?\.plan_trace|plan\?\.command|document\?\.deploy_command|plan\?\.pack_path|mobkit\/mobpacks\/deploy did not return plan_trace|const title = document\?/.test(src("overlays.jsx")), "Plan Trace overlay must not inspect MobKit deploy results or invent fallback labels locally");
 assert.match(controller, /mobkit\/mobpacks\/export did not return mob_toml/, "Source drawer must fail closed when MobKit export omits mob_toml");
+assert.match(controller, /function sourceDocumentFromExport[\s\S]*did not return mob_toml[\s\S]*did not return filename[\s\S]*did not return media_type/, "Source drawer must fail closed when MobKit export omits source archive metadata");
 assert.match(controller, /function sourceDocumentFromExport/, "controller plane must own export result to source-document projection");
 assert.match(controller, /function sourceEditorState/, "controller plane must own source editor display projection");
 assert.match(controller, /mob_definition\?\.editor_source_view/, "controller plane must hydrate source editor labels from MobKit schema");

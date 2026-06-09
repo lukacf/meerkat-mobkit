@@ -8780,6 +8780,10 @@ window.MOBKIT_BOOT = {
   function sourceDocumentFromExport(document, result, options = {}) {
     const exportedToml = String(result?.mob_toml || "").trim();
     if (!exportedToml) throw new Error("mobkit/mobpacks/export did not return mob_toml");
+    const filename = String(result?.filename || "").trim();
+    if (!filename) throw new Error("mobkit/mobpacks/export did not return filename");
+    const mediaType = String(result?.media_type || "").trim();
+    if (!mediaType) throw new Error("mobkit/mobpacks/export did not return media_type");
     const sourceView = sourceViewForState(null, options.sourceView);
     const renderedDocument = {
       ...(document && typeof document === "object" ? document : {}),
@@ -8792,8 +8796,8 @@ window.MOBKIT_BOOT = {
       sourceDocument: {
         ...renderedDocument,
         validation,
-        filename: result?.filename,
-        media_type: result?.media_type,
+        filename,
+        media_type: mediaType,
         source: "mobkit/mobpacks/export",
         sourceView,
       },
