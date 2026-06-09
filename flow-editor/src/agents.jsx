@@ -909,6 +909,16 @@ function ProviderParamsEditor({ member, change, agentDetailView = null }) {
 }
 
 // ── Skill access (realm picker + per-skill toggles, baked into the pack) ──
+function inlineSkillRealmIdFromOperationResult(result) {
+  const skillId = String(result?.selection?.skill_id || result?.skill_id || "").trim();
+  const realms = Array.isArray(result?.document?.skill_realms) ? result.document.skill_realms : [];
+  if (!skillId) return "";
+  const realm = realms.find(candidate => {
+    return Array.isArray(candidate?.skills) && candidate.skills.some(skill => String(skill?.id || "").trim() === skillId);
+  });
+  return String(realm?.id || "").trim();
+}
+
 function SkillAccess({ studio, member, agentAccessView = null, applyAuthoringOperation = null }) {
   const realms = studio.skillRealms || [];
   const initialSkillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, accessView: agentAccessView });
@@ -923,8 +933,8 @@ function SkillAccess({ studio, member, agentAccessView = null, applyAuthoringOpe
   }, [skillState.realmId, realmId]);
   const applySkillOperation = async (operation, fallback = skillState.inlineErrorFallback) => {
     if (!applyAuthoringOperation) {
-      setInlineError("MobKit authoring operation API is unavailable");
-      return false;
+      setInlineError(fallback);
+      return null;
     }
     try {
       if (studio.snap) studio.snap();
@@ -935,13 +945,13 @@ function SkillAccess({ studio, member, agentAccessView = null, applyAuthoringOpe
       if (!result?.ok) {
         const validationError = result?.validation?.display_rows?.length ? result.validation.display_rows[0].head : "";
         setInlineError(validationError || result?.error || fallback);
-        return false;
+        return null;
       }
       setInlineError("");
-      return true;
+      return result;
     } catch (err) {
       setInlineError(err?.message || fallback);
-      return false;
+      return null;
     }
   };
   const toggle = (sid) => {
@@ -957,13 +967,14 @@ function SkillAccess({ studio, member, agentAccessView = null, applyAuthoringOpe
     });
   };
   const addInlineSkill = async () => {
-    const ok = await applySkillOperation({
+    const result = await applySkillOperation({
       type: "create_inline_skill",
       label: inlineLabel,
       content: inlineContent,
     }, skillState.inlineErrorFallback);
-    if (ok) {
-      setRealmId("mobkit/editor-inline");
+    if (result) {
+      const nextRealmId = inlineSkillRealmIdFromOperationResult(result);
+      if (nextRealmId) setRealmId(nextRealmId);
       setInlineLabel("");
       setInlineContent("");
       setInlineError("");

@@ -1393,7 +1393,9 @@ assert(!/memberInlineSkillCascadePatch\(\{[\s\S]*memberId:\s*member\.id/.test(ag
 assert.match(mobpackRust, /"type":\s*"create_inline_skill"[\s\S]*"authority":\s*"mobkit"[\s\S]*"requires":\s*\["member_id",\s*"label",\s*"content"\]/, "MobKit operation catalog must advertise inline skill creation operations");
 assert.match(mobpackRust, /"toggle_member_skill"\s*=>\s*\{[\s\S]*apply_member_skill_operation\(&mut document, operation, SkillOperation::Toggle\)/, "MobKit apply_operation must own skill toggle mutations");
 assert.match(mobpackRust, /"create_inline_skill"\s*=>\s*apply_create_inline_skill_operation/, "MobKit apply_operation must own inline skill creation");
-assert.match(agentsSkillAccessBlock, /setRealmId\("mobkit\/editor-inline"\)[\s\S]*setInlineOpen\(false\)/, "Agent inline skill creation must reset the form after the MobKit operation succeeds");
+assert.match(agents, /function inlineSkillRealmIdFromOperationResult\(result\)[\s\S]*result\?\.selection\?\.skill_id \|\| result\?\.skill_id[\s\S]*result\?\.document\?\.skill_realms/, "Agent inline skill creation must select the created realm from MobKit-returned operation state");
+assert.match(agentsSkillAccessBlock, /inlineSkillRealmIdFromOperationResult\(result\)[\s\S]*setInlineOpen\(false\)/, "Agent inline skill creation must reset the form after the MobKit operation succeeds");
+assert(!/"mobkit\/editor-inline"/.test(agents), "Agent Editor UI must not hardcode the inline skill realm id");
 assert.match(agents, /MobKitFlowController\.memberSkillAccessState/, "Agent Editor must render skill access rows through the controller plane");
 assert.match(agentsSkillAccessBlock, /row\.className/, "Agent skill rows must render controller-projected class names");
 assert.match(agentsSkillAccessBlock, /skillState\.unavailableHeading/, "Agent unavailable skill copy must come from controller projection");
