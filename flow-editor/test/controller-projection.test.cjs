@@ -378,6 +378,34 @@ const TEST_NEW_FLOW_VIEW = {
   nextLabel: "NEXT",
   createLabel: "CREATE MOB",
 };
+const TEST_FLOW_REGISTRY_VIEW_SCHEMA = {
+  eyebrow: "MOBS",
+  title_singular_suffix: "mob",
+  title_plural_suffix: "mobs",
+  create_label: "+ CREATE MOB",
+  create_ready_title: "Create a deployable MobKit mobpack",
+  create_unavailable_title: "MobKit authoring contract unavailable",
+  columns: [
+    { key: "name", label: "MOB" },
+    { key: "trigger", label: "TRIGGER" },
+    { key: "version", label: "PACK" },
+    { key: "stage", label: "STATE" },
+  ],
+};
+const TEST_FLOW_REGISTRY_VIEW = {
+  eyebrow: "MOBS",
+  titleSingularSuffix: "mob",
+  titlePluralSuffix: "mobs",
+  createLabel: "+ CREATE MOB",
+  createReadyTitle: "Create a deployable MobKit mobpack",
+  createUnavailableTitle: "MobKit authoring contract unavailable",
+  columns: [
+    { key: "name", label: "MOB" },
+    { key: "trigger", label: "TRIGGER" },
+    { key: "version", label: "PACK" },
+    { key: "stage", label: "STATE" },
+  ],
+};
 const TEST_SCHEMA = {
   deploy_settings: {
     command: "rkat mob deploy",
@@ -408,6 +436,7 @@ const TEST_SCHEMA = {
     editor_condition_view: TEST_CONDITION_VIEW_SCHEMA,
     editor_error_view: TEST_ERROR_VIEW_SCHEMA,
     editor_new_flow_view: TEST_NEW_FLOW_VIEW_SCHEMA,
+    editor_flow_registry_view: TEST_FLOW_REGISTRY_VIEW_SCHEMA,
     mob_settings: {
       defaults: {
         orchestrator: "",
@@ -641,17 +670,17 @@ assert.equal(controller.newFlowModalState({ step: 2, name: "Draft", template: "b
 assert.deepEqual(controller.flowRegistryViewState([
   { id: "f_existing", name: "Existing", trigger: "label · docs", version: "0.1", stage: "valid" },
   { id: "f_draft", name: "Draft", trigger: "", version: "", stage: "" },
-], "f_existing", { canCreate: false }), {
-  eyebrow: "FLOWS",
-  title: "2 flows",
-  createLabel: "+ NEW FLOW",
+], "f_existing", { canCreate: false, flowRegistryView: TEST_FLOW_REGISTRY_VIEW }), {
+  eyebrow: "MOBS",
+  title: "2 mobs",
+  createLabel: "+ CREATE MOB",
   createDisabled: true,
-  createTitle: "Waiting for MobKit schema",
+  createTitle: "MobKit authoring contract unavailable",
   columns: [
-    { key: "name", label: "NAME" },
+    { key: "name", label: "MOB" },
     { key: "trigger", label: "TRIGGER" },
-    { key: "version", label: "VERSION" },
-    { key: "stage", label: "STAGE" },
+    { key: "version", label: "PACK" },
+    { key: "stage", label: "STATE" },
   ],
   rows: [
     {
@@ -672,17 +701,17 @@ assert.deepEqual(controller.flowRegistryViewState([
     },
   ],
 });
-assert.deepEqual(controller.flowRegistryViewState([{ id: "only", name: "One" }], "", { canCreate: true }), {
-  eyebrow: "FLOWS",
-  title: "1 flow",
-  createLabel: "+ NEW FLOW",
+assert.deepEqual(controller.flowRegistryViewState([{ id: "only", name: "One" }], "", { canCreate: true, flowRegistryView: TEST_FLOW_REGISTRY_VIEW }), {
+  eyebrow: "MOBS",
+  title: "1 mob",
+  createLabel: "+ CREATE MOB",
   createDisabled: false,
-  createTitle: "Create a MobKit mobpack",
+  createTitle: "Create a deployable MobKit mobpack",
   columns: [
-    { key: "name", label: "NAME" },
+    { key: "name", label: "MOB" },
     { key: "trigger", label: "TRIGGER" },
-    { key: "version", label: "VERSION" },
-    { key: "stage", label: "STAGE" },
+    { key: "version", label: "PACK" },
+    { key: "stage", label: "STATE" },
   ],
   rows: [{
     id: "only",
@@ -934,6 +963,7 @@ const hydratedContractAndCatalogFixture = {
     editor_condition_view: TEST_CONDITION_VIEW_SCHEMA,
     editor_error_view: TEST_ERROR_VIEW_SCHEMA,
     editor_new_flow_view: TEST_NEW_FLOW_VIEW_SCHEMA,
+    editor_flow_registry_view: TEST_FLOW_REGISTRY_VIEW_SCHEMA,
     editor_agent_view: {
       agents_heading: "AGENTS",
       schemas_heading: "SCHEMAS",
@@ -1340,6 +1370,7 @@ assert.deepEqual(hydratedCatalogs.toolCatalog.map((tool) => tool.id), ["builtins
 assert.deepEqual(hydratedCatalogs.skillRealms.map((realm) => realm.id), ["mobkit/sample-mobpacks"]);
 assert.deepEqual(hydratedCatalogs.agentDefinitions.map((definition) => definition.id), ["sample_reviewer"]);
 assert.deepEqual(hydratedCatalogs.newFlowView, TEST_NEW_FLOW_VIEW);
+assert.deepEqual(hydratedCatalogs.flowRegistryView, TEST_FLOW_REGISTRY_VIEW);
 assert.deepEqual(hydratedCatalogs.sourceView, {
   drawerEyebrow: "SOURCE · mob.toml",
   inlineTitle: "mob.toml",

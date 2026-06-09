@@ -696,6 +696,49 @@
     };
   }
 
+  function flowRegistryViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_flow_registry_view;
+    if (!view || typeof view !== "object") return null;
+    const columns = Array.isArray(view.columns)
+      ? view.columns.map((column) => ({
+        key: String(column?.key || "").trim(),
+        label: String(column?.label || "").trim(),
+      })).filter((column) => column.key && column.label)
+      : [];
+    const out = {
+      eyebrow: String(view.eyebrow || "").trim(),
+      titleSingularSuffix: String(view.title_singular_suffix || "").trim(),
+      titlePluralSuffix: String(view.title_plural_suffix || "").trim(),
+      createLabel: String(view.create_label || "").trim(),
+      createReadyTitle: String(view.create_ready_title || "").trim(),
+      createUnavailableTitle: String(view.create_unavailable_title || "").trim(),
+      columns,
+    };
+    return out.eyebrow && out.titleSingularSuffix && out.titlePluralSuffix
+      && out.createLabel && out.createReadyTitle && out.createUnavailableTitle
+      && out.columns.length === 4
+      ? out
+      : null;
+  }
+
+  function flowRegistryViewForState(flowRegistryView) {
+    const view = flowRegistryView && typeof flowRegistryView === "object" ? flowRegistryView : null;
+    return {
+      eyebrow: String(view?.eyebrow || ""),
+      titleSingularSuffix: String(view?.titleSingularSuffix || ""),
+      titlePluralSuffix: String(view?.titlePluralSuffix || ""),
+      createLabel: String(view?.createLabel || ""),
+      createReadyTitle: String(view?.createReadyTitle || ""),
+      createUnavailableTitle: String(view?.createUnavailableTitle || ""),
+      columns: Array.isArray(view?.columns)
+        ? view.columns.map((column) => ({
+          key: String(column?.key || ""),
+          label: String(column?.label || ""),
+        })).filter((column) => column.key && column.label)
+        : [],
+    };
+  }
+
   function schemaViewFromSchema(schema) {
     const view = schema?.mob_definition?.editor_schema_view;
     if (!view || typeof view !== "object") return null;
@@ -7277,6 +7320,7 @@
       sourceView: null,
       agentView: null,
       newFlowView: null,
+      flowRegistryView: null,
       agentDetailView: null,
       agentAccessView: null,
       deployView: null,
@@ -7317,6 +7361,7 @@
       sourceView: sourceViewFromSchema(schema),
       agentView: agentViewFromSchema(schema),
       newFlowView: newFlowViewFromSchema(schema),
+      flowRegistryView: flowRegistryViewFromSchema(schema),
       agentDetailView: agentDetailViewFromSchema(schema),
       agentAccessView: agentAccessViewFromSchema(schema),
       deployView: deployViewFromSchema(schema),
@@ -8942,18 +8987,15 @@
 
   function flowRegistryViewState(rows, currentFlowId, options = {}) {
     const list = Array.isArray(rows) ? rows : [];
+    const view = flowRegistryViewForState(options.flowRegistryView);
+    const suffix = list.length === 1 ? view.titleSingularSuffix : view.titlePluralSuffix;
     return {
-      eyebrow: "FLOWS",
-      title: `${list.length} flow${list.length === 1 ? "" : "s"}`,
-      createLabel: "+ NEW FLOW",
+      eyebrow: view.eyebrow,
+      title: `${list.length} ${suffix}`.trim(),
+      createLabel: view.createLabel,
       createDisabled: !options.canCreate,
-      createTitle: options.canCreate ? "Create a MobKit mobpack" : "Waiting for MobKit schema",
-      columns: [
-        { key: "name", label: "NAME" },
-        { key: "trigger", label: "TRIGGER" },
-        { key: "version", label: "VERSION" },
-        { key: "stage", label: "STAGE" },
-      ],
+      createTitle: options.canCreate ? view.createReadyTitle : view.createUnavailableTitle,
+      columns: view.columns,
       rows: list.map((row) => {
         const id = String(row?.id || "");
         const stage = String(row?.stage || "draft");

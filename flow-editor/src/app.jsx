@@ -775,6 +775,7 @@ function App() {
             setView(selection.fallback.view);
           }}
           canCreate={canCreateAuthoring}
+          flowRegistryView={catalogs.flowRegistryView}
           onNew={() => {
             if (!canCreateAuthoring) return;
             setCreating({ step: 1, name: "", trigger: "label · small-fix", template: "blank" });
@@ -1036,8 +1037,8 @@ function TopRail({ studio, stage, view, setView, editorMode, setEditorMode, curr
 }
 
 // ── Flows registry view ───────────────────────────────────────────
-function FlowsView({ flows, currentFlowId, onOpen, onNew, canCreate }) {
-  const registryState = window.MobKitFlowController.flowRegistryViewState(flows, currentFlowId, { canCreate });
+function FlowsView({ flows, currentFlowId, onOpen, onNew, canCreate, flowRegistryView = null }) {
+  const registryState = window.MobKitFlowController.flowRegistryViewState(flows, currentFlowId, { canCreate, flowRegistryView });
   return (
     <div className="flows-view">
       <div className="flows-view__head">

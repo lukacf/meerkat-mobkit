@@ -988,6 +988,20 @@ pub fn mobpack_schema_response() -> Value {
         "next_label": "NEXT →",
         "create_label": "CREATE"
     });
+    let editor_flow_registry_view = json!({
+        "eyebrow": "FLOWS",
+        "title_singular_suffix": "flow",
+        "title_plural_suffix": "flows",
+        "create_label": "+ NEW FLOW",
+        "create_ready_title": "Create a MobKit mobpack",
+        "create_unavailable_title": "Waiting for MobKit schema",
+        "columns": [
+            { "key": "name", "label": "NAME" },
+            { "key": "trigger", "label": "TRIGGER" },
+            { "key": "version", "label": "VERSION" },
+            { "key": "stage", "label": "STAGE" }
+        ]
+    });
     let editor_deploy_view = json!({
         "brand_label": "MobKit · Flow Editor",
         "flows_tab_label": "FLOWS",
@@ -1479,6 +1493,7 @@ pub fn mobpack_schema_response() -> Value {
     mob_definition["editor_agent_detail_view"] = editor_agent_detail_view;
     mob_definition["editor_agent_access_view"] = editor_agent_access_view;
     mob_definition["editor_new_flow_view"] = editor_new_flow_view;
+    mob_definition["editor_flow_registry_view"] = editor_flow_registry_view;
     mob_definition["editor_deploy_view"] = editor_deploy_view;
     mob_definition["editor_settings_view"] = editor_settings_view;
     mob_definition["editor_launch_view"] = editor_launch_view;
@@ -16035,6 +16050,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_new_flow_view"]["create_label"],
             json!("CREATE")
+        );
+        assert_eq!(
+            mob_definition["editor_flow_registry_view"]["eyebrow"],
+            json!("FLOWS")
+        );
+        assert_eq!(
+            mob_definition["editor_flow_registry_view"]["create_label"],
+            json!("+ NEW FLOW")
+        );
+        assert_eq!(
+            mob_definition["editor_flow_registry_view"]["columns"][3]["label"],
+            json!("STAGE")
         );
         assert_eq!(
             mob_definition["editor_deploy_view"]["brand_label"],
