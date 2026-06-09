@@ -662,14 +662,6 @@ pub fn mobpack_catalogs_response() -> Value {
 }
 
 pub fn mobpack_schema_response() -> Value {
-    let catalogs = mobpack_catalogs_response();
-    let tool_catalog = catalogs["tool_catalog"].clone();
-    let skill_realms = catalogs["skill_realms"].clone();
-    let blank_mobpack = catalogs["blank_mobpack"].clone();
-    let sample_mobpacks = catalogs["sample_mobpacks"].clone();
-    let agent_definitions = catalogs["agent_definitions"].clone();
-    let models = catalogs["models"].clone();
-    let provider_defaults = catalogs["provider_defaults"].clone();
     let mob_settings_defaults = json!({
         "orchestrator": "",
         "autoWireOrchestrator": false,
@@ -1497,14 +1489,6 @@ pub fn mobpack_schema_response() -> Value {
         },
         "deploy_settings": deploy_settings,
         "mob_definition": mob_definition,
-        "tool_config": tool_catalog.clone(),
-        "tool_catalog": tool_catalog,
-        "skill_realms": skill_realms,
-        "blank_mobpack": blank_mobpack,
-        "sample_mobpacks": sample_mobpacks,
-        "agent_definitions": agent_definitions,
-        "models": models,
-        "provider_defaults": provider_defaults,
         "validation_source": MOBPACK_VALIDATION_SOURCE
     })
 }
@@ -15399,13 +15383,18 @@ model = "gpt-5.5"
     }
 
     #[test]
-    fn schema_response_exposes_filesystem_skill_catalog() {
+    fn catalogs_response_exposes_filesystem_skill_catalog() {
         let schema = mobpack_schema_response();
+        let catalogs = mobpack_catalogs_response();
         assert!(
             schema.get("starter_skills").is_none(),
             "starter skills must be exposed through skill_realms, not a duplicate fallback catalog"
         );
-        let realms = schema["skill_realms"].as_array().expect("skill realms");
+        assert!(
+            schema.get("skill_realms").is_none(),
+            "dynamic skill realms must be loaded through mobkit/mobpacks/catalogs"
+        );
+        let realms = catalogs["skill_realms"].as_array().expect("skill realms");
         let mobkit_platform = realms
             .iter()
             .find(|realm| realm["source"] == "filesystem")
@@ -15633,16 +15622,23 @@ model = "gpt-5.5"
     }
 
     #[test]
-    fn schema_response_exposes_real_tool_catalog_aliases() {
+    fn catalogs_response_exposes_real_tool_catalog_without_schema_aliases() {
         let schema = mobpack_schema_response();
         let catalogs = mobpack_catalogs_response();
-        let tool_config = schema["tool_config"].as_array().expect("tool_config");
-        let tool_catalog = schema["tool_catalog"].as_array().expect("tool_catalog");
+        assert!(
+            schema.get("tool_config").is_none(),
+            "schema must not expose compatibility tool_config aliases"
+        );
+        assert!(
+            schema.get("tool_catalog").is_none(),
+            "dynamic tool catalogs must be loaded through mobkit/mobpacks/catalogs"
+        );
+        assert!(
+            schema.get("agent_definitions").is_none(),
+            "dynamic agent definitions must be loaded through mobkit/mobpacks/catalogs"
+        );
+        let tool_catalog = catalogs["tool_catalog"].as_array().expect("tool_catalog");
 
-        assert_eq!(tool_catalog, tool_config);
-        assert_eq!(schema["tool_catalog"], catalogs["tool_catalog"]);
-        assert_eq!(schema["skill_realms"], catalogs["skill_realms"]);
-        assert_eq!(schema["agent_definitions"], catalogs["agent_definitions"]);
         let tool_config_fields = serde_json::to_value(ToolConfig::default())
             .expect("ToolConfig serializes")
             .as_object()
@@ -15735,7 +15731,8 @@ model = "gpt-5.5"
                 .as_str()
                 .is_some_and(|reason| reason.contains("rkat mob validate"))
         );
-        let blank_mobpack = &schema["blank_mobpack"];
+        let catalogs = mobpack_catalogs_response();
+        let blank_mobpack = &catalogs["blank_mobpack"];
         assert_eq!(blank_mobpack["id"], json!("blank"));
         assert_eq!(blank_mobpack["source"], json!("mobkit/blank-mobpack"));
         assert_eq!(blank_mobpack["validation"]["ok"], json!(true));
@@ -16207,15 +16204,24 @@ model = "gpt-5.5"
     #[test]
     fn writes_schema_response_fixture_when_requested() {
         let schema = mobpack_schema_response();
+        let catalogs = mobpack_catalogs_response();
         assert_eq!(schema["schema_version"], MOBPACK_SCHEMA_VERSION);
-        assert!(schema["sample_mobpacks"].as_array().is_some_and(|samples| {
-            samples.iter().all(|sample| {
-                sample["document"]["mob_toml"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("[mob]"))
-            })
-        }));
-        let invalid_samples = schema["sample_mobpacks"]
+        assert!(
+            schema.get("sample_mobpacks").is_none(),
+            "dynamic sample mobpacks must be loaded through mobkit/mobpacks/catalogs"
+        );
+        assert!(
+            catalogs["sample_mobpacks"]
+                .as_array()
+                .is_some_and(|samples| {
+                    samples.iter().all(|sample| {
+                        sample["document"]["mob_toml"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("[mob]"))
+                    })
+                })
+        );
+        let invalid_samples = catalogs["sample_mobpacks"]
             .as_array()
             .expect("sample mobpacks")
             .iter()
@@ -16230,9 +16236,13 @@ model = "gpt-5.5"
         assert!(invalid_samples.is_empty(), "{invalid_samples:#?}");
         assert!(
             schema.get("profile_templates").is_none(),
-            "authoring schema must expose actual agent_definitions, not profile-template aliases"
+            "authoring schema must not expose profile-template aliases"
         );
-        let agent_definitions = schema["agent_definitions"]
+        assert!(
+            schema.get("agent_definitions").is_none(),
+            "dynamic agent definitions must be loaded through mobkit/mobpacks/catalogs"
+        );
+        let agent_definitions = catalogs["agent_definitions"]
             .as_array()
             .expect("agent definitions");
         assert!(agent_definitions.iter().any(|definition| {
@@ -16241,7 +16251,7 @@ model = "gpt-5.5"
                     .as_array()
                     .is_some_and(|tools| tools.contains(&json!("mob")))
         }));
-        let sample_members = schema["sample_mobpacks"]
+        let sample_members = catalogs["sample_mobpacks"]
             .as_array()
             .expect("sample mobpacks")
             .iter()

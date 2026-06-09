@@ -228,13 +228,13 @@ mod tests {
 
     #[test]
     fn flow_editor_rpc_plans_real_sample_mobpack_deploy() {
-        let schema = super::handle_flow_editor_rpc(JsonRpcRequest {
+        let catalogs = super::handle_flow_editor_rpc(JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(1)),
-            method: "mobkit/mobpacks/schema".to_string(),
+            method: "mobkit/mobpacks/catalogs".to_string(),
             params: Value::Null,
         });
-        let sample = schema["result"]["sample_mobpacks"]
+        let sample = catalogs["result"]["sample_mobpacks"]
             .as_array()
             .expect("sample mobpacks")
             .iter()

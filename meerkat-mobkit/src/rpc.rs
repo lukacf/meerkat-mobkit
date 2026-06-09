@@ -4238,8 +4238,8 @@ comms = true
             response["result"]["commands"]["deploy_rpc"],
             json!("mobkit/mobpacks/deploy")
         );
-        assert!(response["result"]["sample_mobpacks"].is_array());
-        assert!(response["result"]["agent_definitions"].is_array());
+        assert!(response["result"]["sample_mobpacks"].is_null());
+        assert!(response["result"]["agent_definitions"].is_null());
 
         Ok(())
     }
@@ -4299,7 +4299,7 @@ comms = true
             schema["result"]["commands"]["deploy_rpc"],
             json!("mobkit/mobpacks/deploy")
         );
-        assert!(schema["result"]["agent_definitions"].is_array());
+        assert!(schema["result"]["agent_definitions"].is_null());
 
         let _ = runtime.shutdown();
         Ok(())

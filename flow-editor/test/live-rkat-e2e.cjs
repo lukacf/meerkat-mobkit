@@ -830,17 +830,17 @@ async function validateFilesystemSkillPacking(dir) {
   };
 }
 
-function buildUnifiedProjectionDocument(schema) {
-  const definitions = controller.agentDefinitionsFromSchema(schema);
+function buildUnifiedProjectionDocument(catalogs) {
+  const definitions = controller.agentDefinitionsFromSchema(catalogs);
   const coderDefinition = definitions.find((definition) => definition.id === "coder") || definitions[0];
   const reviewerDefinition = definitions.find((definition) => definition.id === "reviewer") || definitions[1] || definitions[0];
   if (!coderDefinition || !reviewerDefinition) {
-    throw new Error("unified projection proof needs MobKit agent definitions from schema");
+    throw new Error("unified projection proof needs MobKit agent definitions from mobkit/mobpacks/catalogs");
   }
-  const model = schema.models?.[0]?.id || coderDefinition.model || reviewerDefinition.model || "gpt-5.5";
-  const toolCatalog = Array.isArray(schema.tool_catalog) ? schema.tool_catalog : [];
+  const model = catalogs.models?.[0]?.id || coderDefinition.model || reviewerDefinition.model || "gpt-5.5";
+  const toolCatalog = Array.isArray(catalogs.tool_catalog) ? catalogs.tool_catalog : [];
   if (!toolCatalog.length) {
-    throw new Error("unified projection proof needs real MobKit tools from schema.tool_catalog");
+    throw new Error("unified projection proof needs real MobKit tools from mobkit/mobpacks/catalogs");
   }
   const toolIds = toolCatalog.map((tool) => tool.id).filter(Boolean);
   for (const required of ["builtins", "shell", "comms", "mob"]) {
@@ -898,12 +898,12 @@ function buildUnifiedProjectionDocument(schema) {
       },
     ],
   }];
-  const sampleSkillRealm = (schema.skill_realms || [])
+  const sampleSkillRealm = (catalogs.skill_realms || [])
     .find((realm) => realm.id === "mobkit/sample-mobpacks" || (realm.skills || []).some((skill) => skill.id === "mob.workpad"));
   const sampleSkills = (sampleSkillRealm?.skills || [])
     .filter((skill) => ["mob.workpad", "mob.review"].includes(skill.id));
   if (sampleSkills.length < 2) {
-    throw new Error("unified projection proof needs real MobKit sample mobpack skills from skill_realms");
+    throw new Error("unified projection proof needs real MobKit sample mobpack skills from mobkit/mobpacks/catalogs");
   }
   if (!sampleSkillRealm?.source) {
     throw new Error(`unified projection proof needs MobKit sample skill realm source metadata: ${JSON.stringify(sampleSkillRealm)}`);
@@ -1015,8 +1015,8 @@ function buildUnifiedProjectionDocument(schema) {
   });
 }
 
-async function validateUnifiedEditorProjection(dir, schema) {
-  const document = buildUnifiedProjectionDocument(schema);
+async function validateUnifiedEditorProjection(dir, catalogs) {
+  const document = buildUnifiedProjectionDocument(catalogs);
   const validation = await rpc("mobkit/mobpacks/validate", { document });
   if (!validation.ok) {
     throw new Error(`unified editor projection failed MobKit validation: ${JSON.stringify(validation.diagnostics)}`);
@@ -1145,10 +1145,10 @@ async function rejectRealmProfileDefinition() {
   };
 }
 
-async function validateBlankMobpackTemplate(dir, schema) {
-  const blankTemplate = controller.blankMobpackFromSchema(schema);
+async function validateBlankMobpackTemplate(dir, catalogs) {
+  const blankTemplate = controller.blankMobpackFromSchema(catalogs);
   if (!blankTemplate?.document) {
-    throw new Error(`schema did not provide a blank mobpack template: ${JSON.stringify(schema.blank_mobpack)}`);
+    throw new Error(`mobkit/mobpacks/catalogs did not provide a blank mobpack template: ${JSON.stringify(catalogs.blank_mobpack)}`);
   }
   if (blankTemplate.validation?.ok !== true) {
     throw new Error(`blank mobpack template is not API-valid: ${JSON.stringify(blankTemplate.validation)}`);
@@ -1160,7 +1160,7 @@ async function validateBlankMobpackTemplate(dir, schema) {
       trigger: "label · blank-live-proof",
       template: "blank",
     },
-    templates: controller.sampleFlowsFromSchema(schema),
+    templates: controller.sampleFlowsFromSchema(catalogs),
     blankTemplate,
     deploySettings: testDeploySettings(),
     mobSettings: testMobSettings(),
@@ -1298,11 +1298,10 @@ async function validateCustomDeploySettings(dir) {
   if (!Array.isArray(catalogs.agent_definitions) || catalogs.agent_definitions.length === 0) {
     throw new Error("mobkit/mobpacks/catalogs did not expose real agent_definitions");
   }
-  if (JSON.stringify(schema.tool_catalog) !== JSON.stringify(catalogs.tool_catalog)) {
-    throw new Error("schema.tool_catalog and catalogs.tool_catalog diverged");
-  }
-  if (JSON.stringify(schema.skill_realms) !== JSON.stringify(catalogs.skill_realms)) {
-    throw new Error("schema.skill_realms and catalogs.skill_realms diverged");
+  for (const dynamicKey of ["tool_catalog", "skill_realms", "agent_definitions", "sample_mobpacks", "blank_mobpack", "models", "provider_defaults"]) {
+    if (Object.prototype.hasOwnProperty.call(schema, dynamicKey)) {
+      throw new Error(`mobkit/mobpacks/schema leaked dynamic catalog key ${dynamicKey}`);
+    }
   }
   contractSchema = schema;
   const mobDefaults = schema.mob_definition?.mob_settings?.defaults;
@@ -1313,7 +1312,7 @@ async function validateCustomDeploySettings(dir) {
   if (realmProfileRestriction?.deployable !== false || !String(realmProfileRestriction?.reason || "").includes("rkat mob validate")) {
     throw new Error(`flow editor schema did not expose rkat-backed realm_profile restriction: ${JSON.stringify(realmProfileRestriction)}`);
   }
-  const samples = schema.sample_mobpacks || [];
+  const samples = catalogs.sample_mobpacks || [];
   const sample = samples.find((candidate) => candidate.id === sampleId) || samples[0];
   if (!sample?.document) throw new Error("flow editor schema did not return any sample mobpack documents");
 
@@ -1360,9 +1359,9 @@ async function validateCustomDeploySettings(dir) {
     graphLoopShape: await validateGraphLoopShape(dir),
     editedAgentDefinition: await validateEditedAgentDefinition(dir),
     filesystemSkillPacking: await validateFilesystemSkillPacking(dir),
-    unifiedEditorProjection: await validateUnifiedEditorProjection(dir, schema),
+    unifiedEditorProjection: await validateUnifiedEditorProjection(dir, catalogs),
     realmProfileDefinition: await rejectRealmProfileDefinition(),
-    blankMobpackTemplate: await validateBlankMobpackTemplate(dir, schema),
+    blankMobpackTemplate: await validateBlankMobpackTemplate(dir, catalogs),
     customDeploySettings: await validateCustomDeploySettings(dir),
     deploy: null,
   };
