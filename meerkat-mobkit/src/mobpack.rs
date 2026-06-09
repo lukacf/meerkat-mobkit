@@ -3067,6 +3067,7 @@ fn mobpack_draft_row_from_params(params: &Value) -> Result<Value, String> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
+    let artifact = mobpack_registry_artifact_for_document(&document, &validation);
     Ok(json!({
         "id": id,
         "name": if document.name.trim().is_empty() { document.mob_id.clone() } else { document.name.clone() },
@@ -3074,11 +3075,52 @@ fn mobpack_draft_row_from_params(params: &Value) -> Result<Value, String> {
         "stage": stage,
         "trigger": trigger,
         "source": source,
+        "document_kind": "editor_projection",
         "document": document,
+        "artifact": artifact,
         "validation": validation,
         "updated_at_unix_ms": updated_at_unix_ms,
         "registry_source": "mobkit/mobpacks/save"
     }))
+}
+
+fn mobpack_registry_artifact_for_document(document: &MobpackDocument, validation: &Value) -> Value {
+    if validation.get("ok").and_then(Value::as_bool) != Some(true) {
+        return json!({
+            "kind": "editor_draft",
+            "deployable": false,
+            "reason": "validation_failed",
+            "source": "mobkit/mobpacks/save"
+        });
+    }
+    match export_mobpack(&json!({ "document": document })) {
+        Ok(export) => {
+            let pack_sha256 = base64::engine::general_purpose::STANDARD
+                .decode(export.content_base64.as_bytes())
+                .ok()
+                .map(|bytes| source_file_sha256(&bytes))
+                .unwrap_or_default();
+            json!({
+                "kind": "mobpack_archive",
+                "deployable": true,
+                "source": "mobkit/mobpacks/export",
+                "filename": export.filename,
+                "media_type": export.media_type,
+                "content_base64": export.content_base64,
+                "pack_sha256": pack_sha256,
+                "mob_toml": export.mob_toml,
+                "source_files": export.source_files,
+                "validation": export.validation
+            })
+        }
+        Err(error) => json!({
+            "kind": "editor_draft",
+            "deployable": false,
+            "reason": "export_failed",
+            "error": error,
+            "source": "mobkit/mobpacks/save"
+        }),
+    }
 }
 
 fn mobpack_draft_template(template_id: &str) -> Result<Value, String> {
@@ -3208,6 +3250,8 @@ pub fn create_mobpack_draft(params: &Value) -> Result<Value, String> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
+    let validation_value = serde_json::to_value(&validation).unwrap_or(Value::Null);
+    let artifact = mobpack_registry_artifact_for_document(&document, &validation_value);
     let row = json!({
         "id": id,
         "name": if document.name.trim().is_empty() { document.mob_id.clone() } else { document.name.clone() },
@@ -3215,8 +3259,10 @@ pub fn create_mobpack_draft(params: &Value) -> Result<Value, String> {
         "stage": "draft",
         "trigger": trigger,
         "source": source,
+        "document_kind": "editor_projection",
         "document": document,
-        "validation": validation,
+        "artifact": artifact,
+        "validation": validation_value,
         "updated_at_unix_ms": updated_at_unix_ms,
         "registry_source": "mobkit/mobpacks/create",
         "template": template_id
@@ -23669,13 +23715,31 @@ model = "gpt-5.5"
         assert_eq!(saved["source"], json!("mobkit/mobpacks/save"));
         assert_eq!(saved["row"]["id"], json!("registry_draft"));
         assert_eq!(saved["row"]["document"]["name"], json!("Registry Draft"));
+        assert_eq!(saved["row"]["document_kind"], json!("editor_projection"));
         assert_eq!(saved["row"]["stage"], json!("draft"));
+        assert_eq!(saved["row"]["artifact"]["kind"], json!("mobpack_archive"));
+        assert_eq!(saved["row"]["artifact"]["deployable"], json!(true));
+        assert_eq!(
+            saved["row"]["artifact"]["media_type"],
+            json!(MOBPACK_MEDIA_TYPE)
+        );
+        assert!(
+            saved["row"]["artifact"]["content_base64"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert!(
+            saved["row"]["artifact"]["pack_sha256"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
 
         let listed =
             list_mobpack_drafts(&json!({ "store_path": store_path })).expect("list drafts");
         assert_eq!(listed["source"], json!("mobkit/mobpacks/list"));
         assert_eq!(listed["rows"].as_array().expect("rows").len(), 1);
         assert_eq!(listed["rows"][0]["id"], json!("registry_draft"));
+        assert_eq!(listed["rows"][0]["artifact"]["deployable"], json!(true));
 
         let fetched = get_mobpack_draft(&json!({
             "store_path": store_path,
@@ -23683,6 +23747,7 @@ model = "gpt-5.5"
         }))
         .expect("get draft");
         assert_eq!(fetched["row"]["document"]["mob_id"], json!("review-pack"));
+        assert_eq!(fetched["row"]["artifact"]["kind"], json!("mobpack_archive"));
 
         let deleted = delete_mobpack_draft(&json!({
             "store_path": store_path,
@@ -23727,6 +23792,12 @@ model = "gpt-5.5"
             created["row"]["validation"]["ok"]
                 .as_bool()
                 .unwrap_or(false)
+        );
+        assert_eq!(created["row"]["artifact"]["kind"], json!("mobpack_archive"));
+        assert_eq!(created["row"]["artifact"]["deployable"], json!(true));
+        assert_eq!(
+            created["row"]["artifact"]["media_type"],
+            json!(MOBPACK_MEDIA_TYPE)
         );
 
         let listed =
