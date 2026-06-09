@@ -12466,8 +12466,10 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
               operationType: "connect_graph_nodes",
               operation: { from_id: conn.fromId, to_id: closest.dataset.instId }
             }).then((result) => {
+              if (result?.ok === false) return;
               const id = result?.selection?.id;
               if (id) selectEdge(id);
+            }).catch(() => {
             });
           }
         }
@@ -12716,6 +12718,13 @@ function Inspector({ studio, selection, selectMember, selectInstance, clearSelec
   }
   return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
 }
+function clearSelectionAfterOperation(result, clearSelection) {
+  Promise.resolve(result).then((operationResult) => {
+    if (operationResult?.ok === false) return;
+    clearSelection(operationResult?.selection);
+  }).catch(() => {
+  });
+}
 function TemplateInspector({ studio, template, templateSeed, templateView }) {
   const templateState = window.MobKitFlowController.graphTemplateInspectorState({ studio, template, templateSeed, templateView });
   return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, templateState.templateEyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, templateState.name), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, templateState.repo, " \xB7 ", templateState.version)), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, templateState.summaryTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, templateState.summaryRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, templateState.triggersTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, templateState.triggerRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section section--hint" }, /* @__PURE__ */ React.createElement("div", { className: "hint__title" }, templateState.quickStartTitle), templateState.quickStartRows.map((row) => /* @__PURE__ */ React.createElement("div", { className: "hint__line", key: row.key }, row.parts.map((part) => {
@@ -12743,10 +12752,7 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
     contract,
     graphView
   }) : [];
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, gateState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, gateState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, gateState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
-    const result = studio.deleteInstance(inst.id);
-    clearSelection(result?.selection);
-  } }, gateState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: inst.label, onChange: (e) => change("set_label", { label: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: gateState.gateKind, onChange: (e) => change("set_gate_kind", { gate_kind: e.target.value }) }, gateState.gateKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), gateState.selectedGateKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, gateState.selectedGateKind.reason)), kind === "join" && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.collectionTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: gateState.collection, onChange: (e) => change("set_join_collection", { collection: e.target.value }) }, gateState.collectionOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), gateState.selectedCollection?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, gateState.selectedCollection.reason), gateState.collection === "quorum" && /* @__PURE__ */ React.createElement("div", { className: "row", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, gateState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, gateState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, gateState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(studio.deleteInstance(inst.id), clearSelection) }, gateState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: inst.label, onChange: (e) => change("set_label", { label: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: gateState.gateKind, onChange: (e) => change("set_gate_kind", { gate_kind: e.target.value }) }, gateState.gateKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), gateState.selectedGateKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, gateState.selectedGateKind.reason)), kind === "join" && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.collectionTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: gateState.collection, onChange: (e) => change("set_join_collection", { collection: e.target.value }) }, gateState.collectionOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), gateState.selectedCollection?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, gateState.selectedCollection.reason), gateState.collection === "quorum" && /* @__PURE__ */ React.createElement("div", { className: "row", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement(
     "input",
     {
       className: "field__input field__input--num",
@@ -12778,16 +12784,10 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
   }
   if (inst.isTerminal) {
     const terminalState = window.MobKitFlowController.graphTerminalControlState(inst, contract, graphView);
-    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, terminalState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, terminalState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, terminalState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
-      const result = studio.deleteInstance(inst.id);
-      clearSelection(result?.selection);
-    } }, terminalState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: terminalState.labelValue, onChange: (e) => studio.editInstance(inst.id, "set_label", { label: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: terminalState.terminalKind, onChange: (e) => studio.editInstance(inst.id, "set_terminal_kind", { terminal_kind: e.target.value }) }, terminalState.terminalKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), terminalState.selectedTerminalKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, terminalState.selectedTerminalKind.reason))));
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, terminalState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, terminalState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, terminalState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(studio.deleteInstance(inst.id), clearSelection) }, terminalState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: terminalState.labelValue, onChange: (e) => studio.editInstance(inst.id, "set_label", { label: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: terminalState.terminalKind, onChange: (e) => studio.editInstance(inst.id, "set_terminal_kind", { terminal_kind: e.target.value }) }, terminalState.terminalKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), terminalState.selectedTerminalKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, terminalState.selectedTerminalKind.reason))));
   }
   const launchState = window.MobKitFlowController.launchModeControlState(inst, contract, launchView);
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, instanceState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, instanceState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, instanceState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
-    const result = studio.deleteInstance(inst.id);
-    clearSelection(result?.selection);
-  } }, instanceState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, member && /* @__PURE__ */ React.createElement("div", { className: "section section--member-card" }, /* @__PURE__ */ React.createElement("div", { className: "member-card" }, /* @__PURE__ */ React.createElement("div", { className: "member-card__head" }, /* @__PURE__ */ React.createElement("span", { className: "member-card__role" }, instanceState.memberRoleLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => selectMember(instanceState.memberId) }, instanceState.editMemberLabel)), /* @__PURE__ */ React.createElement("div", { className: "member-card__name" }, instanceState.memberName), /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, instanceState.memberSummaryRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))), /* @__PURE__ */ React.createElement("div", { className: "member-card__hint" }, instanceState.memberHint))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, launchState.graphLaunchTitle), /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, instanceState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, instanceState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, instanceState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(studio.deleteInstance(inst.id), clearSelection) }, instanceState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, member && /* @__PURE__ */ React.createElement("div", { className: "section section--member-card" }, /* @__PURE__ */ React.createElement("div", { className: "member-card" }, /* @__PURE__ */ React.createElement("div", { className: "member-card__head" }, /* @__PURE__ */ React.createElement("span", { className: "member-card__role" }, instanceState.memberRoleLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => selectMember(instanceState.memberId) }, instanceState.editMemberLabel)), /* @__PURE__ */ React.createElement("div", { className: "member-card__name" }, instanceState.memberName), /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, instanceState.memberSummaryRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))), /* @__PURE__ */ React.createElement("div", { className: "member-card__hint" }, instanceState.memberHint))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, launchState.graphLaunchTitle), /* @__PURE__ */ React.createElement(
     "select",
     {
       className: "field__select",
@@ -12831,10 +12831,7 @@ function EdgeInspector({ studio, flow, edge, clearSelection, contract, graphView
   const setEdgeKind = (kind) => change("set_kind", { edge_kind: kind });
   const setCondOwner = (instanceId) => change("set_condition_owner", { owner_instance_id: instanceId });
   const setCondField = (field) => change("set_condition_field", { field_name: field });
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, edgeState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, edgeState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, edgeState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
-    const result = studio.deleteEdge(edge.id);
-    clearSelection(result?.selection);
-  } }, edgeState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.edgeKind, onChange: (e) => setEdgeKind(e.target.value) }, edgeState.edgeKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), edgeState.selectedEdgeKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.selectedEdgeKind.reason)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: edge.label || "", onChange: (e) => change("set_label", { label: e.target.value }) })), edgeState.isCondition && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.conditionTitle), !edgeState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "cond-row" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.ownerValue, onChange: (e) => setCondOwner(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: edgeState.ownerPlaceholderOption.value }, edgeState.ownerPlaceholderOption.label), edgeState.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.fieldValue, disabled: !edgeState.condOwner, onChange: (e) => setCondField(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, edgeState.fieldPlaceholder), edgeState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", style: { width: 60 }, value: edgeState.operatorValue, onChange: (e) => change("set_condition_operator", { operator: e.target.value }) }, edgeState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: edgeState.condField, value: edge.cond?.val, conditionView, onChange: (val) => change("set_condition_value", { value: val }) }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.fromTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.fromRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.toTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.toRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))))));
+  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, edgeState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, edgeState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, edgeState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(studio.deleteEdge(edge.id), clearSelection) }, edgeState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.edgeKind, onChange: (e) => setEdgeKind(e.target.value) }, edgeState.edgeKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), edgeState.selectedEdgeKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.selectedEdgeKind.reason)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: edge.label || "", onChange: (e) => change("set_label", { label: e.target.value }) })), edgeState.isCondition && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.conditionTitle), !edgeState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "cond-row" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.ownerValue, onChange: (e) => setCondOwner(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: edgeState.ownerPlaceholderOption.value }, edgeState.ownerPlaceholderOption.label), edgeState.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.fieldValue, disabled: !edgeState.condOwner, onChange: (e) => setCondField(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, edgeState.fieldPlaceholder), edgeState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", style: { width: 60 }, value: edgeState.operatorValue, onChange: (e) => change("set_condition_operator", { operator: e.target.value }) }, edgeState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: edgeState.condField, value: edge.cond?.val, conditionView, onChange: (val) => change("set_condition_value", { value: val }) }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.fromTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.fromRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.toTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.toRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))))));
 }
 function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose, onJumpToAgents }) {
   const [q, setQ] = React.useState("");
@@ -13217,9 +13214,13 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       operationType: "delete_member",
       operation: { member_id: member.id },
       selection
+    }).then((result) => {
+      if (result?.ok === false) return;
+      setAgentSel(selection);
+      setDeleteConfirmOpen(false);
+    }).catch(() => {
+      setDeleteConfirmOpen(false);
     });
-    setAgentSel(selection);
-    setDeleteConfirmOpen(false);
   };
   return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.eyebrow), /* @__PURE__ */ React.createElement(
     "input",
@@ -13771,9 +13772,8 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   const canvasView = Math.abs(view.ty) > 1200 ? { ...view, ty: 0 } : view;
   const commitFlow = (operationType = "update_flow_step", operation = {}) => {
-    if (!applyAuthoringReplacement) return false;
-    applyAuthoringReplacement({ operationType, operation });
-    return true;
+    if (!applyAuthoringReplacement) return Promise.resolve({ ok: false, error: "MobKit authoring operation API is unavailable" });
+    return applyAuthoringReplacement({ operationType, operation });
   };
   const update = (id, patch, operationType = "update_flow_step", operation = {}) => {
     const payload = operationType === "update_flow_step" && !Object.keys(operation || {}).length ? { step_id: id, patch } : operation;
@@ -13802,9 +13802,12 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   };
   const removeStep = (id) => {
     const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
-    if (!commitFlow("delete_flow_step", { step_id: id })) return;
-    setSel(result.selection);
-    setPicker(result.picker);
+    commitFlow("delete_flow_step", { step_id: id }).then((operationResult) => {
+      if (operationResult?.ok === false) return;
+      setSel(result.selection);
+      setPicker(result.picker);
+    }).catch(() => {
+    });
   };
   const openPicker = (laneRef) => applyBasicInteraction(window.MobKitFlowController.basicStepPickerOpenTransition(laneRef));
   const onWheel = (e) => {
@@ -14661,98 +14664,87 @@ function App() {
     ...studio,
     addInstance: (instance) => {
       const id = String(instance?.id || "").trim();
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "insert_graph_node",
         operation: { instance },
         selection: id ? { kind: "instance", id } : null
       });
-      return { ok: true, instance, selection: id ? { kind: "instance", id } : null };
     },
     updateInstance: (id, patch) => {
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "update_graph_node",
         operation: { instance_id: id, patch },
         selection: { kind: "instance", id }
       });
-      return { ok: true, selection: { kind: "instance", id } };
     },
     editInstance: (id, action, payload = {}) => {
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "apply_graph_node_edit",
         operation: { instance_id: id, action, ...payload },
         selection: { kind: "instance", id }
       });
-      return { ok: true, selection: { kind: "instance", id } };
     },
     deleteInstance: (id) => {
       const selection2 = { kind: null, id: null };
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "delete_graph_node",
         operation: { instance_id: id },
         selection: selection2
       });
-      return { ok: true, selection: selection2 };
     },
     addEdge: (edge) => {
       const fromId = String(edge?.from || "").trim();
       const toId = String(edge?.to || "").trim();
       const id = String(edge?.id || "").trim();
       const operation = fromId && toId ? { from_id: fromId, to_id: toId } : { edge };
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "connect_graph_nodes",
         operation,
         selection: id ? { kind: "edge", id } : null
       });
-      return { ok: true, edge, selection: id ? { kind: "edge", id } : null };
     },
     updateEdge: (id, patch) => {
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "update_graph_edge",
         operation: { edge_id: id, patch },
         selection: { kind: "edge", id }
       });
-      return { ok: true, selection: { kind: "edge", id } };
     },
     editEdge: (id, action, payload = {}) => {
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "apply_graph_edge_edit",
         operation: { edge_id: id, action, ...payload },
         selection: { kind: "edge", id }
       });
-      return { ok: true, selection: { kind: "edge", id } };
     },
     deleteEdge: (id) => {
       const selection2 = { kind: null, id: null };
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "delete_graph_edge",
         operation: { edge_id: id },
         selection: selection2
       });
-      return { ok: true, selection: selection2 };
     },
     addSchema: () => {
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "add_schema",
         operation: {}
       });
-      return { ok: true };
     },
     updateSchema: (id, patch) => {
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "update_schema",
         operation: { schema_id: id, patch },
         selection: { kind: "schema", id }
       });
-      return { ok: true, selection: { kind: "schema", id } };
     },
     deleteSchema: (id) => {
       const selection2 = { kind: null, id: null };
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "delete_schema",
         operation: { schema_id: id },
         selection: selection2
       });
-      return { ok: true, selection: selection2 };
     }
   };
   const saveRegistryDocument = (rowPatch) => {

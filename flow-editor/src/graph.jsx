@@ -235,9 +235,10 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
               operationType: "connect_graph_nodes",
               operation: { from_id: conn.fromId, to_id: closest.dataset.instId },
             }).then((result) => {
+              if (result?.ok === false) return;
               const id = result?.selection?.id;
               if (id) selectEdge(id);
-            });
+            }).catch(() => {});
           }
         }
         setConn(null); setHoverInId(null);

@@ -26,6 +26,13 @@ function Inspector({ studio, selection, selectMember, selectInstance, clearSelec
   return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
 }
 
+function clearSelectionAfterOperation(result, clearSelection) {
+  Promise.resolve(result).then((operationResult) => {
+    if (operationResult?.ok === false) return;
+    clearSelection(operationResult?.selection);
+  }).catch(() => {});
+}
+
 // ── Template (no selection) ──────────────────────────────────────
 function TemplateInspector({ studio, template, templateSeed, templateView }) {
   const templateState = window.MobKitFlowController.graphTemplateInspectorState({ studio, template, templateSeed, templateView });
@@ -106,7 +113,7 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
             <div className="inspector__title">{gateState.title}</div>
             <div className="inspector__id">{gateState.idLine}</div>
           </div>
-          <button className="btn btn--ghost btn--sm" onClick={() => { const result = studio.deleteInstance(inst.id); clearSelection(result?.selection); }}>{gateState.deleteLabel}</button>
+          <button className="btn btn--ghost btn--sm" onClick={() => clearSelectionAfterOperation(studio.deleteInstance(inst.id), clearSelection)}>{gateState.deleteLabel}</button>
         </div>
       </div>
       <div className="inspector__body">
@@ -246,7 +253,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
               <div className="inspector__title">{terminalState.title}</div>
               <div className="inspector__id">{terminalState.idLine}</div>
             </div>
-            <button className="btn btn--ghost btn--sm" onClick={() => { const result = studio.deleteInstance(inst.id); clearSelection(result?.selection); }}>{terminalState.deleteLabel}</button>
+            <button className="btn btn--ghost btn--sm" onClick={() => clearSelectionAfterOperation(studio.deleteInstance(inst.id), clearSelection)}>{terminalState.deleteLabel}</button>
           </div>
         </div>
         <div className="inspector__body">
@@ -279,7 +286,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
             <div className="inspector__title">{instanceState.title}</div>
             <div className="inspector__id">{instanceState.idLine}</div>
           </div>
-          <button className="btn btn--ghost btn--sm" onClick={() => { const result = studio.deleteInstance(inst.id); clearSelection(result?.selection); }}>{instanceState.deleteLabel}</button>
+          <button className="btn btn--ghost btn--sm" onClick={() => clearSelectionAfterOperation(studio.deleteInstance(inst.id), clearSelection)}>{instanceState.deleteLabel}</button>
         </div>
       </div>
 
@@ -444,7 +451,7 @@ function EdgeInspector({ studio, flow, edge, clearSelection, contract, graphView
             <div className="inspector__title">{edgeState.title}</div>
             <div className="inspector__id">{edgeState.idLine}</div>
           </div>
-          <button className="btn btn--ghost btn--sm" onClick={() => { const result = studio.deleteEdge(edge.id); clearSelection(result?.selection); }}>{edgeState.deleteLabel}</button>
+          <button className="btn btn--ghost btn--sm" onClick={() => clearSelectionAfterOperation(studio.deleteEdge(edge.id), clearSelection)}>{edgeState.deleteLabel}</button>
         </div>
       </div>
       <div className="inspector__body">

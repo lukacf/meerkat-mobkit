@@ -334,9 +334,13 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       operationType: "delete_member",
       operation: { member_id: member.id },
       selection,
+    }).then((result) => {
+      if (result?.ok === false) return;
+      setAgentSel(selection);
+      setDeleteConfirmOpen(false);
+    }).catch(() => {
+      setDeleteConfirmOpen(false);
     });
-    setAgentSel(selection);
-    setDeleteConfirmOpen(false);
   };
 
   return (

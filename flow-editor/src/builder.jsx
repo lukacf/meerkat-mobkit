@@ -178,9 +178,8 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     : view;
 
   const commitFlow = (operationType = "update_flow_step", operation = {}) => {
-    if (!applyAuthoringReplacement) return false;
-    applyAuthoringReplacement({ operationType, operation });
-    return true;
+    if (!applyAuthoringReplacement) return Promise.resolve({ ok: false, error: "MobKit authoring operation API is unavailable" });
+    return applyAuthoringReplacement({ operationType, operation });
   };
   const update = (id, patch, operationType = "update_flow_step", operation = {}) => {
     const payload = operationType === "update_flow_step" && !Object.keys(operation || {}).length
@@ -211,9 +210,11 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   };
   const removeStep = (id) => {
     const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
-    if (!commitFlow("delete_flow_step", { step_id: id })) return;
-    setSel(result.selection);
-    setPicker(result.picker);
+    commitFlow("delete_flow_step", { step_id: id }).then((operationResult) => {
+      if (operationResult?.ok === false) return;
+      setSel(result.selection);
+      setPicker(result.picker);
+    }).catch(() => {});
   };
   const openPicker = (laneRef) => applyBasicInteraction(window.MobKitFlowController.basicStepPickerOpenTransition(laneRef));
 

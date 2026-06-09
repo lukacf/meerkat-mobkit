@@ -569,37 +569,33 @@ function App() {
     ...studio,
     addInstance: (instance) => {
       const id = String(instance?.id || "").trim();
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "insert_graph_node",
         operation: { instance },
         selection: id ? { kind: "instance", id } : null,
       });
-      return { ok: true, instance, selection: id ? { kind: "instance", id } : null };
     },
     updateInstance: (id, patch) => {
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "update_graph_node",
         operation: { instance_id: id, patch },
         selection: { kind: "instance", id },
       });
-      return { ok: true, selection: { kind: "instance", id } };
     },
     editInstance: (id, action, payload = {}) => {
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "apply_graph_node_edit",
         operation: { instance_id: id, action, ...payload },
         selection: { kind: "instance", id },
       });
-      return { ok: true, selection: { kind: "instance", id } };
     },
     deleteInstance: (id) => {
       const selection = { kind: null, id: null };
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "delete_graph_node",
         operation: { instance_id: id },
         selection,
       });
-      return { ok: true, selection };
     },
     addEdge: (edge) => {
       const fromId = String(edge?.from || "").trim();
@@ -608,61 +604,54 @@ function App() {
       const operation = fromId && toId
         ? { from_id: fromId, to_id: toId }
         : { edge };
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "connect_graph_nodes",
         operation,
         selection: id ? { kind: "edge", id } : null,
       });
-      return { ok: true, edge, selection: id ? { kind: "edge", id } : null };
     },
     updateEdge: (id, patch) => {
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "update_graph_edge",
         operation: { edge_id: id, patch },
         selection: { kind: "edge", id },
       });
-      return { ok: true, selection: { kind: "edge", id } };
     },
     editEdge: (id, action, payload = {}) => {
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "apply_graph_edge_edit",
         operation: { edge_id: id, action, ...payload },
         selection: { kind: "edge", id },
       });
-      return { ok: true, selection: { kind: "edge", id } };
     },
     deleteEdge: (id) => {
       const selection = { kind: null, id: null };
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "delete_graph_edge",
         operation: { edge_id: id },
         selection,
       });
-      return { ok: true, selection };
     },
     addSchema: () => {
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "add_schema",
         operation: {},
       });
-      return { ok: true };
     },
     updateSchema: (id, patch) => {
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "update_schema",
         operation: { schema_id: id, patch },
         selection: { kind: "schema", id },
       });
-      return { ok: true, selection: { kind: "schema", id } };
     },
     deleteSchema: (id) => {
       const selection = { kind: null, id: null };
-      applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringReplacement({
         operationType: "delete_schema",
         operation: { schema_id: id },
         selection,
       });
-      return { ok: true, selection };
     },
   };
   const saveRegistryDocument = (rowPatch) => {
