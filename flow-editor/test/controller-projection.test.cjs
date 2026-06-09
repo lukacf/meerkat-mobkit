@@ -577,7 +577,7 @@ assert.deepEqual(controller.themeToggleTransition(""), { field: "theme", value: 
 
 assert.equal(controller.buildBlankDocument, undefined, "blank mobpack documents must come from MobKit schema, not a local builder");
 
-const schemaBlankMobpack = controller.blankMobpackFromSchema({
+const schemaBlankMobpack = controller.blankMobpackFromCatalogs({
   blank_mobpack: {
     id: "blank",
     name: "Blank",
@@ -596,13 +596,13 @@ const schemaBlankMobpack = controller.blankMobpackFromSchema({
 });
 assert.equal(schemaBlankMobpack.id, "blank");
 assert.equal(schemaBlankMobpack.source, "mobkit/blank-mobpack");
-assert.equal(controller.blankMobpackFromSchema({
+assert.equal(controller.blankMobpackFromCatalogs({
   blank_mobpack: {
     source: "mobkit/blank-mobpack",
     document: { mob_id: "blank_mob" },
   },
 }), null);
-assert.equal(controller.blankMobpackFromSchema({
+assert.equal(controller.blankMobpackFromCatalogs({
   blank_mobpack: {
     id: "blank",
     document: { mob_id: "blank_mob" },
@@ -966,7 +966,7 @@ assert.deepEqual(controller.authoringRpcMethodsFromSchema({
 });
 assert.deepEqual(controller.authoringRpcMethodsFromSchema({ commands: { catalogs: "" } }), {});
 
-assert.deepEqual(controller.modelCatalogFromSchema({
+assert.deepEqual(controller.modelCatalogFromCatalogs({
   models: [
     { id: "missing-label", vendor: "openai" },
     { id: "missing-vendor", label: "Missing Vendor" },
@@ -979,7 +979,7 @@ assert.deepEqual(controller.modelCatalogFromSchema({
   profile: { temperature: 0 },
 }]);
 
-assert.deepEqual(controller.toolCatalogFromSchema({
+assert.deepEqual(controller.toolCatalogFromCatalogs({
   tool_config: [{
     id: "compat-only",
     label: "Compatibility Only",
@@ -989,7 +989,7 @@ assert.deepEqual(controller.toolCatalogFromSchema({
   }],
 }), []);
 
-assert.deepEqual(controller.toolCatalogFromSchema({
+assert.deepEqual(controller.toolCatalogFromCatalogs({
   tool_catalog: [
     { id: "missing-desc", label: "Missing Desc", kind: "runtime", source: "meerkat_mob::ToolConfig" },
     { id: "missing-source", label: "Missing Source", desc: "No source", kind: "runtime" },
@@ -1012,7 +1012,7 @@ assert.equal(emptyCatalogs.cellXY, catalogBoot.cellXY);
 assert.equal(emptyCatalogs.template, null);
 assert.equal(emptyCatalogs.conditionView, null);
 assert.equal(emptyCatalogs.errorView, null);
-assert.deepEqual(controller.schemaSkillRealms({ skill_realms: "starter" }), []);
+assert.deepEqual(controller.skillRealmsFromCatalogs({ skill_realms: "starter" }), []);
 const schemaOnlyCatalogLeakState = controller.mobKitCatalogsFromSchema({
   schema_version: "mobpack/v1",
   media_type: "application/vnd.mobkit.mobpack+json",
@@ -2640,7 +2640,7 @@ assert.throws(
   new RegExp(hydratedCatalogs.agentAccessView.skillInlineInvalidIdError.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
 );
 
-const sampleRows = controller.sampleFlowsFromSchema({
+const sampleRows = controller.sampleFlowsFromCatalogs({
   sample_mobpacks: [
     {
       id: "missing_source",
@@ -4091,7 +4091,7 @@ assert.deepEqual(document.flow.steps[1].allowedTools, ["git"]);
 assert.deepEqual(document.flow.steps[1].blockedTools, ["shell"]);
 assert.equal(document.flow.steps[1].outputFormat, "text");
 
-const [agentDefinition] = controller.agentDefinitionsFromSchema({
+const [agentDefinition] = controller.agentDefinitionsFromCatalogs({
   agent_definitions: [{
     id: "reviewer",
     role: "reviewer",
@@ -4127,7 +4127,7 @@ assert.equal(agentDefinition.schemaSourceDocumentPath, "document.schemas[]");
 assert.deepEqual(agentDefinition.toolDefinitions, [{ id: "mob", kind: "runtime", source: "meerkat_mob::ToolConfig" }]);
 assert.deepEqual(agentDefinition.skillDefinitions, [{ id: "mob.review", source: "inline", sourceMobpack: "sample_review_pr" }]);
 
-assert.deepEqual(controller.agentDefinitionsFromSchema({
+assert.deepEqual(controller.agentDefinitionsFromCatalogs({
   members: [{
     id: "legacy-member",
     role: "legacy",
@@ -4136,7 +4136,7 @@ assert.deepEqual(controller.agentDefinitionsFromSchema({
   }],
 }), []);
 
-assert.deepEqual(controller.agentDefinitionsFromSchema({
+assert.deepEqual(controller.agentDefinitionsFromCatalogs({
   agent_definitions: [{
     id: "origin_less",
     role: "origin_less",
@@ -4151,7 +4151,7 @@ assert.deepEqual(controller.agentDefinitionsFromSchema({
   }],
 }), []);
 
-assert.deepEqual(controller.agentDefinitionsFromSchema({
+assert.deepEqual(controller.agentDefinitionsFromCatalogs({
   agent_definitions: [{
     id: "partial",
     role: "partial",
@@ -4164,7 +4164,7 @@ assert.deepEqual(controller.agentDefinitionsFromSchema({
   }],
 }), []);
 
-assert.deepEqual(controller.agentDefinitionsFromSchema({
+assert.deepEqual(controller.agentDefinitionsFromCatalogs({
   agent_definitions: [{
     id: "model_less",
     role: "model_less",
@@ -4201,7 +4201,7 @@ assert.deepEqual(controller.memberNamePatch(" Quality Reviewer "), { name: " Qua
 assert.deepEqual(controller.memberRealmProfilePatch(" qa_profile "), { realmProfile: "qa_profile" });
 assert.deepEqual(controller.memberSystemPromptPatch("  Review carefully.\n"), { systemPrompt: "  Review carefully.\n" });
 
-assert.deepEqual(controller.agentDefinitionsFromSchema({
+assert.deepEqual(controller.agentDefinitionsFromCatalogs({
   agent_definitions: [{
     id: "",
     role: "missing_id",
@@ -7640,7 +7640,7 @@ assert.equal(missingOperatorGraphBranchFlow.steps[1].branches[0].condition, "");
 assert.equal(missingOperatorGraphBranchFlow.steps[1].branches[0].cond, null);
 
 assert.deepEqual(
-  controller.toolCatalogFromSchema({
+  controller.toolCatalogFromCatalogs({
     tool_catalog: [{ id: "mob", label: "Mob tools", kind: "runtime", field: "mob", desc: "real mob tools", source: "meerkat_mob::ToolConfig" }],
     tool_config: [{ id: "stale", label: "stale" }],
   }).map((tool) => [tool.id, tool.kind, tool.raw.field]),
@@ -7648,7 +7648,7 @@ assert.deepEqual(
 );
 
 assert.deepEqual(
-  controller.toolCatalogFromSchema({
+  controller.toolCatalogFromCatalogs({
     tool_config: [{ id: "shell", label: "Shell", kind: "runtime", field: "shell", desc: "real shell tool", source: "meerkat_mob::ToolConfig" }],
   }).map((tool) => [tool.id, tool.kind, tool.raw.field]),
   [],

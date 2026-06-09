@@ -8323,7 +8323,7 @@ window.MOBKIT_BOOT = {
     return deploySettingsForUi(schema?.deploy_settings?.defaults);
   }
 
-  function modelCatalogFromSchema(schema) {
+  function modelCatalogFromCatalogs(schema) {
     return (schema?.models || [])
       .filter((model) => model && typeof model === "object" && model.id && model.label && (model.vendor || model.provider))
       .map((model) => ({
@@ -8334,7 +8334,7 @@ window.MOBKIT_BOOT = {
       }));
   }
 
-  function toolCatalogFromSchema(schema) {
+  function toolCatalogFromCatalogs(schema) {
     return (Array.isArray(schema?.tool_catalog) ? schema.tool_catalog : [])
       .filter((tool) => tool && typeof tool === "object" && tool.id && tool.label && tool.desc && tool.kind && tool.source)
       .map((tool) => ({
@@ -8387,13 +8387,13 @@ window.MOBKIT_BOOT = {
 
   function mobKitCatalogsFromSchema(schema, boot = {}, catalogPayload = null) {
     const catalogSource = catalogPayload && typeof catalogPayload === "object" ? catalogPayload : {};
-    const agentDefinitions = agentDefinitionsFromSchema(catalogSource);
-    const blankMobpack = blankMobpackFromSchema(catalogSource);
+    const agentDefinitions = agentDefinitionsFromCatalogs(catalogSource);
+    const blankMobpack = blankMobpackFromCatalogs(catalogSource);
     return {
-      models: modelCatalogFromSchema(catalogSource),
-      toolCatalog: toolCatalogFromSchema(catalogSource),
+      models: modelCatalogFromCatalogs(catalogSource),
+      toolCatalog: toolCatalogFromCatalogs(catalogSource),
       agentDefinitions,
-      skillRealms: schemaSkillRealms(catalogSource),
+      skillRealms: skillRealmsFromCatalogs(catalogSource),
       blankMobpack,
       deployDefaults: deployDefaultsFromSchema(schema),
       mobDefaults: mobDefaultsFromSchema(schema),
@@ -8426,7 +8426,7 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function schemaSkillRealms(schema) {
+  function skillRealmsFromCatalogs(schema) {
     const skillRealms = schema?.skill_realms || [];
     return Array.isArray(skillRealms) ? skillRealms : [];
   }
@@ -10301,7 +10301,7 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function sampleFlowsFromSchema(schema) {
+  function sampleFlowsFromCatalogs(schema) {
     return (schema?.sample_mobpacks || [])
       .filter((sample) => sample && typeof sample === "object" && sample.document)
       .map((sample) => {
@@ -10325,7 +10325,7 @@ window.MOBKIT_BOOT = {
   }
 
   function flowCatalogBootstrapState(catalogPayload, options = {}) {
-    const sampleFlows = sampleFlowsFromSchema(catalogPayload);
+    const sampleFlows = sampleFlowsFromCatalogs(catalogPayload);
     const first = sampleFlows[0] || null;
     return {
       templates: sampleFlows,
@@ -10349,7 +10349,7 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function blankMobpackFromSchema(schema) {
+  function blankMobpackFromCatalogs(schema) {
     const blank = schema?.blank_mobpack;
     if (!blank || typeof blank !== "object" || !blank.document) return null;
     const source = typeof blank.source === "string" ? blank.source.trim() : "";
@@ -10832,7 +10832,7 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function agentDefinitionsFromSchema(schema) {
+  function agentDefinitionsFromCatalogs(schema) {
     const definitions = Array.isArray(schema?.agent_definitions) ? schema.agent_definitions : [];
     return definitions
       .filter((template) => template && typeof template === "object")
@@ -11566,12 +11566,12 @@ window.MOBKIT_BOOT = {
     importParamsFromDecodedFile,
     deploySettingsForUi,
     deployDefaultsFromSchema,
-    modelCatalogFromSchema,
-    toolCatalogFromSchema,
-    blankMobpackFromSchema,
+    modelCatalogFromCatalogs,
+    toolCatalogFromCatalogs,
+    blankMobpackFromCatalogs,
     emptyMobKitCatalogs,
     mobKitCatalogsFromSchema,
-    schemaSkillRealms,
+    skillRealmsFromCatalogs,
     mergeSkillRealms,
     graphCanvasViewState,
     runtimeModeOptions,
@@ -11606,7 +11606,7 @@ window.MOBKIT_BOOT = {
     inlineSourceBusyTransition,
     sourceEditorState,
     sourceFileSelectionTransition,
-    sampleFlowsFromSchema,
+    sampleFlowsFromCatalogs,
     flowCatalogBootstrapState,
     newFlowModalPatch,
     newFlowModalFieldPatch,
@@ -11656,7 +11656,7 @@ window.MOBKIT_BOOT = {
     advancedMobSettingsEditorState,
     advancedMobSettingsDraftPatch,
     cloneDocument,
-    agentDefinitionsFromSchema,
+    agentDefinitionsFromCatalogs,
     memberFromAgentDefinition,
     agentDefinitionAddPatch,
     agentDefinitionAddByIdPatch,

@@ -843,7 +843,7 @@ async function validateFilesystemSkillPacking(dir) {
 }
 
 function buildUnifiedProjectionDocument(catalogs) {
-  const definitions = controller.agentDefinitionsFromSchema(catalogs);
+  const definitions = controller.agentDefinitionsFromCatalogs(catalogs);
   const coderDefinition = definitions.find((definition) => definition.role === "coder") || definitions[0];
   const reviewerDefinition = definitions.find((definition) => definition.role === "reviewer") || definitions[1] || definitions[0];
   if (!coderDefinition || !reviewerDefinition) {
@@ -1163,7 +1163,7 @@ async function rejectRealmProfileDefinition() {
 }
 
 async function validateBlankMobpackTemplate(dir, catalogs) {
-  const blankTemplate = controller.blankMobpackFromSchema(catalogs);
+  const blankTemplate = controller.blankMobpackFromCatalogs(catalogs);
   if (!blankTemplate?.document) {
     throw new Error(`mobkit/mobpacks/catalogs did not provide a blank mobpack template: ${JSON.stringify(catalogs.blank_mobpack)}`);
   }
@@ -1177,7 +1177,7 @@ async function validateBlankMobpackTemplate(dir, catalogs) {
       trigger: "label · blank-live-proof",
       template: "blank",
     },
-    templates: controller.sampleFlowsFromSchema(catalogs),
+    templates: controller.sampleFlowsFromCatalogs(catalogs),
     blankTemplate,
     deploySettings: testDeploySettings(),
     mobSettings: testMobSettings(),
