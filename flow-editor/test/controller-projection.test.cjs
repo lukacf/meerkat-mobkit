@@ -3588,6 +3588,7 @@ const [agentDefinition] = controller.agentDefinitionsFromSchema({
     sourceDocumentPath: "document.members[]",
     profileBinding: "inline",
     runtimeMode: "turn_driven",
+    backend: "sidecar",
     schema: "ReviewArtifact",
     schemaDefinition: {
       id: "ReviewArtifact",
@@ -3596,6 +3597,7 @@ const [agentDefinition] = controller.agentDefinitionsFromSchema({
     },
   }],
 });
+assert.equal(agentDefinition.backend, "sidecar");
 
 assert.deepEqual(controller.agentDefinitionsFromSchema({
   members: [{
@@ -5620,7 +5622,7 @@ assert.deepEqual(controller.mobDefaultsFromSchema({
         orchestrator: "planner",
         autoWireOrchestrator: true,
         roleWiring: [{ a: "planner", b: "coder" }],
-        backendDefault: "external",
+        backendDefault: "sidecar",
         externalAddressBase: "http://127.0.0.1:9000",
         advanced: {
           topology: { kind: "mesh" },
@@ -5636,7 +5638,7 @@ assert.deepEqual(controller.mobDefaultsFromSchema({
   orchestrator: "planner",
   autoWireOrchestrator: true,
   roleWiring: [{ a: "planner", b: "coder" }],
-  backendDefault: "external",
+  backendDefault: "sidecar",
   externalAddressBase: "http://127.0.0.1:9000",
   advanced: {
     topology: { kind: "mesh" },
@@ -8847,6 +8849,9 @@ const catalogedMob = controller.mobSettingsPatch({
 assert.equal(catalogedMob.backendDefault, "session");
 assert.equal(catalogedMob.externalAddressBase, "http://127.0.0.1:9000");
 assert.equal(controller.mobSettingsPatch(catalogedMob, { backendDefault: "" }, { contract: settingsContract }).backendDefault, "");
+assert.equal(controller.mobSettingsPatch(catalogedMob, { backendDefault: "sidecar" }, {
+  contract: { mob_definition: { profile_backends: ["session", "sidecar"] } },
+}).backendDefault, "sidecar");
 
 const roleRules = [{ a: "planner", b: "coder" }, { a: "coder", b: "reviewer" }];
 assert.deepEqual(

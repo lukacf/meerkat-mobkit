@@ -10022,8 +10022,7 @@ window.MOBKIT_BOOT = {
   }
 
   function normalizeProfileBackend(value) {
-    const backend = String(value || "").trim();
-    return backend === "session" || backend === "external" ? backend : "";
+    return String(value || "").trim();
   }
 
   function normalizeMaxInlinePeerNotifications(value) {

@@ -1130,6 +1130,7 @@ assert.match(controller, /memberModelPatch[\s\S]*catalogValueAllowed\(ids,\s*mod
 assert.match(controller, /memberSchemaPatch[\s\S]*schemas\.map/, "member schema writes must validate against real editor schema definitions");
 assert.match(controller, /memberSchemaCascadePatch[\s\S]*memberSchemaPatch\(rawSchema,\s*schemas\)[\s\S]*reconcileConditionFieldAvailability\(\{/, "member schema cascade must validate schema refs and clear unavailable Basic/Graph conditions");
 assert.match(controller, /memberBackendPatch[\s\S]*profileBackendOptions\(contract,\s*backend,\s*true\)/, "member backend writes must validate against MobKit profile_backends");
+assert(!/backend === ["']session["']|backend === ["']external["']/.test(controller), "controller plane must not hard-code profile backend values outside MobKit profile_backends validation");
 assert.match(controller, /function memberMaxInlinePeerNotificationsPatch/, "controller plane must own inline peer notification limit semantics");
 assert.match(controller, /function memberProviderParamsEditorState/, "controller plane must own provider params textarea projection");
 assert.match(controller, /function memberProviderParamsPatch/, "controller plane must own provider params parsing semantics");
