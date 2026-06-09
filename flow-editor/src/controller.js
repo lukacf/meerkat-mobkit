@@ -2408,18 +2408,19 @@
     return steps === flow.steps ? flow : { ...flow, steps };
   }
 
-  function renameSchemaDefinition({ schemas, members } = {}, oldId, newId) {
+  function renameSchemaDefinition({ schemas, members, flow } = {}, oldId, newId) {
     const previousId = String(oldId || "").trim();
     const nextId = String(newId || "").trim();
     const sourceSchemas = Array.isArray(schemas) ? schemas : [];
     const sourceMembers = Array.isArray(members) ? members : [];
     if (!previousId || !nextId || previousId === nextId) {
-      return { schemas: sourceSchemas, members: sourceMembers, renamed: false };
+      return { schemas: sourceSchemas, members: sourceMembers, flow, renamed: false };
     }
     if (sourceSchemas.some((schema) => String(schema?.id || "").trim() === nextId)) {
       return {
         schemas: sourceSchemas,
         members: sourceMembers,
+        flow,
         renamed: false,
         reason: "duplicate_schema_id",
       };
@@ -2434,6 +2435,7 @@
       return {
         schemas: sourceSchemas,
         members: sourceMembers,
+        flow,
         renamed: false,
         reason: "unknown_schema_id",
       };
@@ -2443,7 +2445,7 @@
         ? { ...member, schema: nextId }
         : member
     );
-    return { schemas: nextSchemas, members: nextMembers, renamed: true };
+    return { schemas: nextSchemas, members: nextMembers, flow: reconcileFlowMemberSchemas(flow, nextMembers), renamed: true };
   }
 
   function reconcileFlowMemberSteps(flow, members) {

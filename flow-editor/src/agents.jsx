@@ -546,11 +546,13 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     const result = window.MobKitFlowController.renameSchemaDefinition({
       schemas: studio.schemas,
       members: studio.members,
+      flow,
     }, schema.id, newId);
     if (!result.renamed) return;
     if (studio.snap) studio.snap();
     studio.setSchemas(result.schemas);
     studio.setMembers(result.members);
+    if (result.flow !== flow && setFlow) setFlow(result.flow);
     setAgentSel({ kind: "schema", id: String(newId || "").trim() });
   };
 

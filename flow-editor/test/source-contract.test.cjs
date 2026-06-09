@@ -125,6 +125,9 @@ assert.match(app, /MobKitFlowController\.reconcileFlowMemberSchemas/, "app shell
 assert.match(controller, /function reconcileFlowMemberSchemas/, "controller plane must own member/schema flow reconciliation");
 assert.match(agents, /MobKitFlowController\.renameSchemaDefinition/, "Agent editor must ask the controller plane to rename schemas and member schema refs");
 assert.match(controller, /function renameSchemaDefinition/, "controller plane must own schema id rename reconciliation");
+assert.match(agents, /renameSchemaDefinition\(\{[\s\S]*schemas:\s*studio\.schemas,[\s\S]*members:\s*studio\.members,[\s\S]*flow,[\s\S]*\}, schema\.id, newId\)/, "Agent schema rename must pass Basic flow into the controller cascade");
+assert.match(agents, /if \(result\.flow !== flow && setFlow\) setFlow\(result\.flow\)/, "Agent schema rename must apply controller-reconciled Basic flow immediately");
+assert.match(controller, /renameSchemaDefinition[\s\S]*reconcileFlowMemberSchemas\(flow,\s*nextMembers\)/, "controller schema rename must reconcile Basic member-step schema refs with Agent member refs");
 assert(!/studio\.members\.filter\(m => m\.schema === schema\.id\)[\s\S]{0,120}studio\.updateMember/.test(agents), "Agent editor must not rewrite member.schema refs directly when renaming schemas");
 assert.match(app, /MobKitFlowController\.reconcileFlowMemberSteps/, "app shell must ask the controller plane to prune member steps after Agent definition changes");
 assert.match(controller, /function reconcileFlowMemberSteps/, "controller plane must own member-step pruning for Basic/Graph flow projections");

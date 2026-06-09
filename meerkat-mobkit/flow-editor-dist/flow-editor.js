@@ -2441,18 +2441,19 @@ window.MOBKIT_BOOT = {
     return steps === flow.steps ? flow : { ...flow, steps };
   }
 
-  function renameSchemaDefinition({ schemas, members } = {}, oldId, newId) {
+  function renameSchemaDefinition({ schemas, members, flow } = {}, oldId, newId) {
     const previousId = String(oldId || "").trim();
     const nextId = String(newId || "").trim();
     const sourceSchemas = Array.isArray(schemas) ? schemas : [];
     const sourceMembers = Array.isArray(members) ? members : [];
     if (!previousId || !nextId || previousId === nextId) {
-      return { schemas: sourceSchemas, members: sourceMembers, renamed: false };
+      return { schemas: sourceSchemas, members: sourceMembers, flow, renamed: false };
     }
     if (sourceSchemas.some((schema) => String(schema?.id || "").trim() === nextId)) {
       return {
         schemas: sourceSchemas,
         members: sourceMembers,
+        flow,
         renamed: false,
         reason: "duplicate_schema_id",
       };
@@ -2467,6 +2468,7 @@ window.MOBKIT_BOOT = {
       return {
         schemas: sourceSchemas,
         members: sourceMembers,
+        flow,
         renamed: false,
         reason: "unknown_schema_id",
       };
@@ -2476,7 +2478,7 @@ window.MOBKIT_BOOT = {
         ? { ...member, schema: nextId }
         : member
     );
-    return { schemas: nextSchemas, members: nextMembers, renamed: true };
+    return { schemas: nextSchemas, members: nextMembers, flow: reconcileFlowMemberSchemas(flow, nextMembers), renamed: true };
   }
 
   function reconcileFlowMemberSteps(flow, members) {
@@ -11740,12 +11742,14 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   const renameSchema = (newId) => {
     const result = window.MobKitFlowController.renameSchemaDefinition({
       schemas: studio.schemas,
-      members: studio.members
+      members: studio.members,
+      flow
     }, schema.id, newId);
     if (!result.renamed) return;
     if (studio.snap) studio.snap();
     studio.setSchemas(result.schemas);
     studio.setMembers(result.members);
+    if (result.flow !== flow && setFlow) setFlow(result.flow);
     setAgentSel({ kind: "schema", id: String(newId || "").trim() });
   };
   return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, schemaState.eyebrow), /* @__PURE__ */ React.createElement(

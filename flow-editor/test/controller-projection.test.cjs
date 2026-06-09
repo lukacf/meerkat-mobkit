@@ -2841,11 +2841,23 @@ const schemaRename = controller.renameSchemaDefinition({
     { id: "m_reviewer", schema: "ReviewArtifact" },
     { id: "m_planner", schema: "PlanArtifact" },
   ],
+  flow: {
+    name: "main",
+    steps: [{
+      id: "review_step",
+      type: "member",
+      role: "m_reviewer",
+      schema: "ReviewArtifact",
+      expectedSchemaRef: "schemas/ReviewArtifact.json",
+    }],
+  },
 }, "ReviewArtifact", "RenamedVerdict");
 assert.equal(schemaRename.renamed, true);
 assert.deepEqual(schemaRename.schemas.map((schema) => schema.id), ["RenamedVerdict", "PlanArtifact"]);
 assert.equal(schemaRename.members[0].schema, "RenamedVerdict");
 assert.equal(schemaRename.members[1].schema, "PlanArtifact");
+assert.equal(schemaRename.flow.steps[0].schema, "RenamedVerdict");
+assert.equal(schemaRename.flow.steps[0].expectedSchemaRef, "schemas/RenamedVerdict.json");
 
 const duplicateSchemaRename = controller.renameSchemaDefinition({
   schemas: [
@@ -2853,10 +2865,12 @@ const duplicateSchemaRename = controller.renameSchemaDefinition({
     { id: "PlanArtifact", fields: [] },
   ],
   members: [{ id: "m_reviewer", schema: "ReviewArtifact" }],
+  flow: { name: "main", steps: [] },
 }, "ReviewArtifact", "PlanArtifact");
 assert.equal(duplicateSchemaRename.renamed, false);
 assert.equal(duplicateSchemaRename.reason, "duplicate_schema_id");
 assert.equal(duplicateSchemaRename.members[0].schema, "ReviewArtifact");
+assert.deepEqual(duplicateSchemaRename.flow, { name: "main", steps: [] });
 
 assert.deepEqual(controller.basicConditionFromText('params.route == "docs"'), {
   namespace: "params",
