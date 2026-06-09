@@ -623,14 +623,15 @@ function App() {
 
   React.useEffect(() => {
     const openGraphSourceFromHash = () => {
-      if (window.location.hash !== "#mobkit-graph-source") return;
+      const canvasView = window.MobKitFlowController.graphCanvasViewState(catalogs.graphView);
+      if (!canvasView.sourceFileActivationHash || window.location.hash !== canvasView.sourceFileActivationHash) return;
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
       handleInlineSource("graph");
     };
     window.addEventListener("hashchange", openGraphSourceFromHash);
     openGraphSourceFromHash();
     return () => window.removeEventListener("hashchange", openGraphSourceFromHash);
-  }, [handleInlineSource]);
+  }, [handleInlineSource, catalogs.graphView]);
 
   const handleValidate = async () => {
     let requestToken = null;

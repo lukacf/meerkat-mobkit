@@ -1848,6 +1848,8 @@
       sourceFileNodeKind: String(view.source_file_node_kind || "").trim(),
       sourceFileNodeColOffset: Number(view.source_file_node_col_offset || 0),
       sourceFileNodeRowOffset: Number(view.source_file_node_row_offset || 0),
+      sourceFileActivationHash: String(view.source_file_activation_hash || "").trim(),
+      sourceFileActivationSelector: String(view.source_file_activation_selector || "").trim(),
       branchConditionFieldPlaceholder: String(view.branch_condition_field_placeholder || "").trim(),
       branchConditionNoOptionsHint: String(view.branch_condition_no_options_hint || "").trim(),
       edgeConditionTitle: String(view.edge_condition_title || "").trim(),
@@ -1893,6 +1895,7 @@
       && out.sourceFileAriaLabel && out.sourceFileGlyph && out.sourceFileRoleLabel
       && out.sourceFileNodeId && out.sourceFileNodeKind
       && Number.isFinite(out.sourceFileNodeColOffset) && Number.isFinite(out.sourceFileNodeRowOffset)
+      && out.sourceFileActivationHash && out.sourceFileActivationSelector
       && out.branchConditionFieldPlaceholder && out.branchConditionNoOptionsHint
       && out.edgeConditionTitle && out.edgeNoConditionOptionsHint && out.edgeOwnerPlaceholder
       && out.edgeFromTitle && out.edgeToTitle && out.edgeRowInstanceLabel
@@ -1994,6 +1997,8 @@
       sourceFileNodeKind: String(view?.sourceFileNodeKind || ""),
       sourceFileNodeColOffset: Number(view?.sourceFileNodeColOffset || 0),
       sourceFileNodeRowOffset: Number(view?.sourceFileNodeRowOffset || 0),
+      sourceFileActivationHash: String(view?.sourceFileActivationHash || ""),
+      sourceFileActivationSelector: String(view?.sourceFileActivationSelector || ""),
       branchConditionFieldPlaceholder: String(view?.branchConditionFieldPlaceholder || ""),
       branchConditionNoOptionsHint: String(view?.branchConditionNoOptionsHint || ""),
       edgeConditionTitle: String(view?.edgeConditionTitle || ""),
@@ -6176,6 +6181,8 @@
         tabIndex: isSourceFile ? 0 : undefined,
         ariaLabel: isSourceFile ? view.sourceFileAriaLabel : undefined,
         sourceGlyph: isSourceFile ? view.sourceFileGlyph : "",
+        sourceActivationHash: isSourceFile ? view.sourceFileActivationHash : "",
+        sourceActivationSelector: isSourceFile ? view.sourceFileActivationSelector : "",
         roleLabel: isSourceFile ? view.sourceFileRoleLabel : `terminal · ${inst.kind}`,
         title: inst.label,
         subtitle: isSourceFile ? "" : inst.kind,

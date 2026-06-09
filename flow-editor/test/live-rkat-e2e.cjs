@@ -1475,6 +1475,8 @@ async function validateDocumentBackedDeployPreview(document) {
     source_file_node_kind: "source",
     source_file_node_col_offset: 0,
     source_file_node_row_offset: -1,
+    source_file_activation_hash: "#mobkit-graph-source",
+    source_file_activation_selector: ".node--source-file",
   })) {
     if (graphView[key] !== expected) {
       throw new Error(`flow editor schema did not expose Graph source-file node contract ${key}: ${JSON.stringify(graphView)}`);

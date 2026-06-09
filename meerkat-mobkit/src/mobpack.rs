@@ -1022,6 +1022,8 @@ pub fn mobpack_schema_response() -> Value {
     editor_graph_view["source_file_node_kind"] = json!("source");
     editor_graph_view["source_file_node_col_offset"] = json!(0);
     editor_graph_view["source_file_node_row_offset"] = json!(-1);
+    editor_graph_view["source_file_activation_hash"] = json!("#mobkit-graph-source");
+    editor_graph_view["source_file_activation_selector"] = json!(".node--source-file");
     editor_graph_view["branch_condition_field_placeholder"] = json!("— field —");
     editor_graph_view["branch_condition_no_options_hint"] =
         json!("add input params or an upstream schema field for this condition");
@@ -17395,6 +17397,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_view"]["source_file_node_row_offset"],
             json!(-1)
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["source_file_activation_hash"],
+            json!("#mobkit-graph-source")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["source_file_activation_selector"],
+            json!(".node--source-file")
         );
         assert_eq!(
             mob_definition["editor_graph_view"]["gate_dispatch_hint"],

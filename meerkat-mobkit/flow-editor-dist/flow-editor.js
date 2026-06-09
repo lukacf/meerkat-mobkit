@@ -1881,6 +1881,8 @@ window.MOBKIT_BOOT = {
       sourceFileNodeKind: String(view.source_file_node_kind || "").trim(),
       sourceFileNodeColOffset: Number(view.source_file_node_col_offset || 0),
       sourceFileNodeRowOffset: Number(view.source_file_node_row_offset || 0),
+      sourceFileActivationHash: String(view.source_file_activation_hash || "").trim(),
+      sourceFileActivationSelector: String(view.source_file_activation_selector || "").trim(),
       branchConditionFieldPlaceholder: String(view.branch_condition_field_placeholder || "").trim(),
       branchConditionNoOptionsHint: String(view.branch_condition_no_options_hint || "").trim(),
       edgeConditionTitle: String(view.edge_condition_title || "").trim(),
@@ -1926,6 +1928,7 @@ window.MOBKIT_BOOT = {
       && out.sourceFileAriaLabel && out.sourceFileGlyph && out.sourceFileRoleLabel
       && out.sourceFileNodeId && out.sourceFileNodeKind
       && Number.isFinite(out.sourceFileNodeColOffset) && Number.isFinite(out.sourceFileNodeRowOffset)
+      && out.sourceFileActivationHash && out.sourceFileActivationSelector
       && out.branchConditionFieldPlaceholder && out.branchConditionNoOptionsHint
       && out.edgeConditionTitle && out.edgeNoConditionOptionsHint && out.edgeOwnerPlaceholder
       && out.edgeFromTitle && out.edgeToTitle && out.edgeRowInstanceLabel
@@ -2027,6 +2030,8 @@ window.MOBKIT_BOOT = {
       sourceFileNodeKind: String(view?.sourceFileNodeKind || ""),
       sourceFileNodeColOffset: Number(view?.sourceFileNodeColOffset || 0),
       sourceFileNodeRowOffset: Number(view?.sourceFileNodeRowOffset || 0),
+      sourceFileActivationHash: String(view?.sourceFileActivationHash || ""),
+      sourceFileActivationSelector: String(view?.sourceFileActivationSelector || ""),
       branchConditionFieldPlaceholder: String(view?.branchConditionFieldPlaceholder || ""),
       branchConditionNoOptionsHint: String(view?.branchConditionNoOptionsHint || ""),
       edgeConditionTitle: String(view?.edgeConditionTitle || ""),
@@ -6209,6 +6214,8 @@ window.MOBKIT_BOOT = {
         tabIndex: isSourceFile ? 0 : undefined,
         ariaLabel: isSourceFile ? view.sourceFileAriaLabel : undefined,
         sourceGlyph: isSourceFile ? view.sourceFileGlyph : "",
+        sourceActivationHash: isSourceFile ? view.sourceFileActivationHash : "",
+        sourceActivationSelector: isSourceFile ? view.sourceFileActivationSelector : "",
         roleLabel: isSourceFile ? view.sourceFileRoleLabel : `terminal · ${inst.kind}`,
         title: inst.label,
         subtitle: isSourceFile ? "" : inst.kind,
@@ -12554,13 +12561,15 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     }
   };
   const openSourceFromEvent = (e) => {
-    const sourceEl = e.target?.closest?.(".node--source-file");
+    const selector = canvasView.sourceFileActivationSelector;
+    if (!selector) return false;
+    const sourceEl = e.target?.closest?.(selector);
     if (!sourceEl || !hostRef.current?.contains(sourceEl)) return false;
     e.preventDefault();
     e.stopPropagation();
     onOpenSourceFile?.({
       id: sourceEl.dataset.instId || "",
-      kind: sourceEl.dataset.kind || "source"
+      kind: sourceEl.dataset.kind || canvasView.sourceFileNodeKind
     });
     return true;
   };
@@ -12782,7 +12791,7 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
       return /* @__PURE__ */ React.createElement(
         "a",
         {
-          href: "#mobkit-graph-source",
+          href: nodeState.sourceActivationHash,
           "data-inst-id": inst.id,
           className: "node node--term node--source-file" + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : ""),
           "data-kind": nodeState.dataKind,
@@ -14889,14 +14898,15 @@ function App() {
   };
   React.useEffect(() => {
     const openGraphSourceFromHash = () => {
-      if (window.location.hash !== "#mobkit-graph-source") return;
+      const canvasView = window.MobKitFlowController.graphCanvasViewState(catalogs.graphView);
+      if (!canvasView.sourceFileActivationHash || window.location.hash !== canvasView.sourceFileActivationHash) return;
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
       handleInlineSource("graph");
     };
     window.addEventListener("hashchange", openGraphSourceFromHash);
     openGraphSourceFromHash();
     return () => window.removeEventListener("hashchange", openGraphSourceFromHash);
-  }, [handleInlineSource]);
+  }, [handleInlineSource, catalogs.graphView]);
   const handleValidate = async () => {
     let requestToken = null;
     setApiBusy(true);

@@ -1518,6 +1518,8 @@ const hydratedContractAndCatalogFixture = {
       source_file_node_kind: "source",
       source_file_node_col_offset: 0,
       source_file_node_row_offset: -1,
+      source_file_activation_hash: "#mobkit-graph-source",
+      source_file_activation_selector: ".node--source-file",
       branch_condition_field_placeholder: "— field —",
       branch_condition_no_options_hint: "add input params or an upstream schema field for this condition",
       edge_condition_title: "CONDITION",
@@ -2146,6 +2148,8 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   sourceFileNodeKind: "source",
   sourceFileNodeColOffset: 0,
   sourceFileNodeRowOffset: -1,
+  sourceFileActivationHash: "#mobkit-graph-source",
+  sourceFileActivationSelector: ".node--source-file",
   branchConditionFieldPlaceholder: "— field —",
   branchConditionNoOptionsHint: "add input params or an upstream schema field for this condition",
   edgeConditionTitle: "CONDITION",
@@ -2235,6 +2239,8 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   sourceFileNodeKind: "",
   sourceFileNodeColOffset: 0,
   sourceFileNodeRowOffset: 0,
+  sourceFileActivationHash: "",
+  sourceFileActivationSelector: "",
   branchConditionFieldPlaceholder: "",
   branchConditionNoOptionsHint: "",
   edgeConditionTitle: "",
@@ -8754,6 +8760,8 @@ assert.equal(terminalSourceState.isSourceFile, true);
 assert.equal(terminalSourceState.role, "button");
 assert.equal(terminalSourceState.ariaLabel, "Open mob.toml read-only source editor");
 assert.equal(terminalSourceState.sourceGlyph, "{ }");
+assert.equal(terminalSourceState.sourceActivationHash, "#mobkit-graph-source");
+assert.equal(terminalSourceState.sourceActivationSelector, ".node--source-file");
 assert.equal(terminalSourceState.roleLabel, "source file");
 assert.equal(terminalSourceState.title, "mob.toml");
 assert.equal(terminalSourceState.subtitle, "");

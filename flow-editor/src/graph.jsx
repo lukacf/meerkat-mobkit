@@ -241,13 +241,15 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     }
   };
   const openSourceFromEvent = (e) => {
-    const sourceEl = e.target?.closest?.(".node--source-file");
+    const selector = canvasView.sourceFileActivationSelector;
+    if (!selector) return false;
+    const sourceEl = e.target?.closest?.(selector);
     if (!sourceEl || !hostRef.current?.contains(sourceEl)) return false;
     e.preventDefault();
     e.stopPropagation();
     onOpenSourceFile?.({
       id: sourceEl.dataset.instId || "",
-      kind: sourceEl.dataset.kind || "source",
+      kind: sourceEl.dataset.kind || canvasView.sourceFileNodeKind,
     });
     return true;
   };
@@ -501,7 +503,7 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
     };
     if (nodeState.isSourceFile) {
       return (
-        <a href="#mobkit-graph-source" data-inst-id={inst.id}
+        <a href={nodeState.sourceActivationHash} data-inst-id={inst.id}
           className={"node node--term node--source-file" + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : "")}
           data-kind={nodeState.dataKind}
           role={nodeState.role}
