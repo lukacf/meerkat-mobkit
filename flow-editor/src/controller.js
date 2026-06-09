@@ -3716,6 +3716,37 @@
     return { fields: fields.map((field) => field?.id === fieldId ? { ...field, ...normalized } : field) };
   }
 
+  function schemaFieldRenameCascadePatch({ schema, schemas, flow, edges, members, instances } = {}, fieldId, rawName, oldName, contract) {
+    const currentSchemaId = String(schema?.id || "").trim();
+    const updatePatch = schemaFieldUpdatePatch(schema, fieldId, { name: rawName }, contract);
+    const nextSchema = { ...(schema || {}), ...updatePatch };
+    const list = Array.isArray(schemas) ? schemas : [];
+    const nextSchemas = currentSchemaId
+      ? list.map((candidate) => candidate?.id === currentSchemaId ? nextSchema : candidate)
+      : list;
+    const nextField = (nextSchema.fields || []).find((field) => field?.id === fieldId) || null;
+    const previousName = String(oldName || "").trim();
+    const nextName = String(nextField?.name || "").trim();
+    const reconciled = previousName && previousName !== nextName
+      ? reconcileSchemaFieldReferences({
+        flow,
+        edges,
+        members,
+        instances,
+        schemaId: currentSchemaId,
+        oldName: previousName,
+        newName: nextName,
+      })
+      : { flow, edges };
+    return {
+      patch: updatePatch,
+      schema: nextSchema,
+      schemas: nextSchemas,
+      flow: reconciled.flow,
+      edges: reconciled.edges,
+    };
+  }
+
   function schemaFieldDeletePatch(schema, fieldId) {
     const fields = Array.isArray(schema?.fields) ? schema.fields : [];
     const removed = fields.find((field) => field?.id === fieldId) || null;
@@ -9822,6 +9853,7 @@
     enumValueAddPatch,
     schemaFieldAddPatch,
     schemaFieldUpdatePatch,
+    schemaFieldRenameCascadePatch,
     schemaFieldDeletePatch,
     schemaFieldDeleteCascadePatch,
     studioAddMemberPatch,

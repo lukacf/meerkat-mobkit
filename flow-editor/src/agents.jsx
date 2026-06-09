@@ -484,20 +484,19 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     schemaView,
   });
 
-  const reconcileFieldReferences = (oldName, newName) => {
-    if (!window.MobKitFlowController?.reconcileSchemaFieldReferences) return;
-    const result = window.MobKitFlowController.reconcileSchemaFieldReferences({
+  const renameField = (fieldId, oldName, newName) => {
+    const result = window.MobKitFlowController.schemaFieldRenameCascadePatch({
+      schema,
+      schemas: studio.schemas,
       flow,
       edges: studio.edges,
       members: studio.members,
       instances: studio.instances,
-      schemaId: schema.id,
-      oldName,
-      newName,
-    });
+    }, fieldId, newName, oldName, contract);
     const flowChanged = result.flow !== flow;
     const edgesChanged = result.edges !== studio.edges;
-    if (edgesChanged && studio.snap) studio.snap();
+    if (studio.snap) studio.snap();
+    studio.setSchemas(result.schemas);
     if (flowChanged && setFlow) setFlow(result.flow);
     if (edgesChanged) studio.setEdges(result.edges);
   };
@@ -611,7 +610,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
                 field={f}
                 normalizeName={(raw) => window.MobKitFlowController.uniqueSchemaFieldName(schema.fields, raw, f.id)}
                 onChange={(patch) => updateField(f.id, patch)}
-                onRename={(oldName, newName) => reconcileFieldReferences(oldName, newName)}
+                onRename={(oldName, newName) => renameField(f.id, oldName, newName)}
                 onDelete={() => deleteField(f.id)}
                 contract={contract}
                 schemaView={schemaView}

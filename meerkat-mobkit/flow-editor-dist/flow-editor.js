@@ -3749,6 +3749,37 @@ window.MOBKIT_BOOT = {
     return { fields: fields.map((field) => field?.id === fieldId ? { ...field, ...normalized } : field) };
   }
 
+  function schemaFieldRenameCascadePatch({ schema, schemas, flow, edges, members, instances } = {}, fieldId, rawName, oldName, contract) {
+    const currentSchemaId = String(schema?.id || "").trim();
+    const updatePatch = schemaFieldUpdatePatch(schema, fieldId, { name: rawName }, contract);
+    const nextSchema = { ...(schema || {}), ...updatePatch };
+    const list = Array.isArray(schemas) ? schemas : [];
+    const nextSchemas = currentSchemaId
+      ? list.map((candidate) => candidate?.id === currentSchemaId ? nextSchema : candidate)
+      : list;
+    const nextField = (nextSchema.fields || []).find((field) => field?.id === fieldId) || null;
+    const previousName = String(oldName || "").trim();
+    const nextName = String(nextField?.name || "").trim();
+    const reconciled = previousName && previousName !== nextName
+      ? reconcileSchemaFieldReferences({
+        flow,
+        edges,
+        members,
+        instances,
+        schemaId: currentSchemaId,
+        oldName: previousName,
+        newName: nextName,
+      })
+      : { flow, edges };
+    return {
+      patch: updatePatch,
+      schema: nextSchema,
+      schemas: nextSchemas,
+      flow: reconciled.flow,
+      edges: reconciled.edges,
+    };
+  }
+
   function schemaFieldDeletePatch(schema, fieldId) {
     const fields = Array.isArray(schema?.fields) ? schema.fields : [];
     const removed = fields.find((field) => field?.id === fieldId) || null;
@@ -9855,6 +9886,7 @@ window.MOBKIT_BOOT = {
     enumValueAddPatch,
     schemaFieldAddPatch,
     schemaFieldUpdatePatch,
+    schemaFieldRenameCascadePatch,
     schemaFieldDeletePatch,
     schemaFieldDeleteCascadePatch,
     studioAddMemberPatch,
@@ -11687,20 +11719,19 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     members: studio.members,
     schemaView
   });
-  const reconcileFieldReferences = (oldName, newName) => {
-    if (!window.MobKitFlowController?.reconcileSchemaFieldReferences) return;
-    const result = window.MobKitFlowController.reconcileSchemaFieldReferences({
+  const renameField = (fieldId, oldName, newName) => {
+    const result = window.MobKitFlowController.schemaFieldRenameCascadePatch({
+      schema,
+      schemas: studio.schemas,
       flow,
       edges: studio.edges,
       members: studio.members,
-      instances: studio.instances,
-      schemaId: schema.id,
-      oldName,
-      newName
-    });
+      instances: studio.instances
+    }, fieldId, newName, oldName, contract);
     const flowChanged = result.flow !== flow;
     const edgesChanged = result.edges !== studio.edges;
-    if (edgesChanged && studio.snap) studio.snap();
+    if (studio.snap) studio.snap();
+    studio.setSchemas(result.schemas);
     if (flowChanged && setFlow) setFlow(result.flow);
     if (edgesChanged) studio.setEdges(result.edges);
   };
@@ -11787,7 +11818,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       field: f,
       normalizeName: (raw) => window.MobKitFlowController.uniqueSchemaFieldName(schema.fields, raw, f.id),
       onChange: (patch) => updateField(f.id, patch),
-      onRename: (oldName, newName) => reconcileFieldReferences(oldName, newName),
+      onRename: (oldName, newName) => renameField(f.id, oldName, newName),
       onDelete: () => deleteField(f.id),
       contract,
       schemaView

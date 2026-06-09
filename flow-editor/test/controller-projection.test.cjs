@@ -4379,6 +4379,52 @@ assert.equal(deletedSchemaFieldCascade.flow.steps[1].branches[0].condition, "");
 assert.deepEqual(deletedSchemaFieldCascade.edges[0].cond, null);
 assert.equal(deletedSchemaFieldCascade.edges[0].label, "");
 
+const renamedSchemaFieldCascade = controller.schemaFieldRenameCascadePatch({
+  schema: {
+    id: "ReviewArtifact",
+    fields: [{ id: "f1", name: "verdict", type: "enum" }, { id: "f2", name: "summary", type: "string" }],
+  },
+  schemas: [
+    { id: "ReviewArtifact", fields: [{ id: "f1", name: "verdict", type: "enum" }, { id: "f2", name: "summary", type: "string" }] },
+  ],
+  members: [{ id: "m_reviewer", schema: "ReviewArtifact" }],
+  flow: {
+    name: "field-rename-cascade",
+    steps: [
+      { id: "review_step", type: "member", role: "m_reviewer" },
+      {
+        id: "route",
+        type: "branch",
+        branches: [{
+          id: "br_green",
+          cond: { stepId: "review_step", field: "verdict", op: "==", val: "green" },
+          condition: "steps.review_step.verdict == \"green\"",
+          steps: [],
+        }],
+        fallback: [],
+      },
+    ],
+  },
+  edges: [{
+    id: "e_review_done",
+    from: "review_inst",
+    to: "done",
+    kind: "cond",
+    label: "steps.review_inst.verdict == \"green\"",
+    cond: { var: "steps.review_inst.verdict", op: "==", val: "green" },
+  }],
+  instances: [
+    { id: "review_inst", memberId: "m_reviewer" },
+    { id: "done", isTerminal: true },
+  ],
+}, "f1", "outcome", "verdict", schemaDraftContract);
+assert.equal(renamedSchemaFieldCascade.schema.fields[0].name, "outcome");
+assert.equal(renamedSchemaFieldCascade.schemas[0].fields[0].name, "outcome");
+assert.equal(renamedSchemaFieldCascade.flow.steps[1].branches[0].cond.field, "outcome");
+assert.equal(renamedSchemaFieldCascade.flow.steps[1].branches[0].condition, "steps.review_step.outcome == \"green\"");
+assert.deepEqual(renamedSchemaFieldCascade.edges[0].cond, { var: "steps.review_inst.outcome", op: "==", val: "green" });
+assert.equal(renamedSchemaFieldCascade.edges[0].label, "steps.review_inst.outcome == \"green\"");
+
 assert.deepEqual(controller.studioAddMemberPatch({
   members: [{ id: "m_old" }],
 }, { id: "m_new" }), {
