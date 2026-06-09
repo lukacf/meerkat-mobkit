@@ -1164,10 +1164,10 @@ function ModeToggle({ mode, setMode, railState }) {
 
 function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, onLoadFlow }) {
   const setDeployField = (field, value) => setDeploySettings((current) =>
-    window.MobKitFlowController.deploySettingsPatch(current, { [field]: value }, { contract, modelCatalog })
+    window.MobKitFlowController.deploySettingsFieldPatch(current, field, value, { contract, modelCatalog })
   );
   const setMobField = (field, value) => setMobSettings((current) =>
-    window.MobKitFlowController.mobSettingsPatch(current, { [field]: value }, { contract })
+    window.MobKitFlowController.mobSettingsFieldPatch(current, field, value, { contract })
   );
   const controlState = window.MobKitFlowController.tweaksControlState({
     flows,

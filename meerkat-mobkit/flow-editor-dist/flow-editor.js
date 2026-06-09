@@ -2911,6 +2911,12 @@ window.MOBKIT_BOOT = {
     return deploySettingsForUi(next);
   }
 
+  function deploySettingsFieldPatch(settings, field, value, options = {}) {
+    const key = String(field || "").trim();
+    if (!key) return deploySettingsForUi(settings);
+    return deploySettingsPatch(settings, { [key]: value }, options);
+  }
+
   function mobSettingsPatch(settings, patch, options = {}) {
     const source = normalizeMobSettings(settings);
     const rawPatch = patch && typeof patch === "object" ? patch : {};
@@ -2921,6 +2927,12 @@ window.MOBKIT_BOOT = {
       next[key] = value;
     }
     return normalizeMobSettings(next);
+  }
+
+  function mobSettingsFieldPatch(settings, field, value, options = {}) {
+    const key = String(field || "").trim();
+    if (!key) return normalizeMobSettings(settings);
+    return mobSettingsPatch(settings, { [key]: value }, options);
   }
 
   function reconcileMembersWithContract(members, contract, deploySettings, modelCatalog, toolCatalog, options = {}) {
@@ -11189,6 +11201,7 @@ window.MOBKIT_BOOT = {
     outputFormatOptions,
     normalizeDeploySettings,
     deploySettingsPatch,
+    deploySettingsFieldPatch,
     deployCommandPreview,
     deployCommandPreviewForDocument,
     callRpc,
@@ -11255,6 +11268,7 @@ window.MOBKIT_BOOT = {
     reconcileAuthoringWithContract,
     reconcileMemberSkillRefs,
     mobSettingsPatch,
+    mobSettingsFieldPatch,
     reconcileDeploySettingsWithContract,
     reconcileMembersWithContract,
     reconcileMobSettingsWithContract,
@@ -14734,10 +14748,10 @@ function ModeToggle({ mode, setMode, railState }) {
 }
 function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, onLoadFlow }) {
   const setDeployField = (field, value) => setDeploySettings(
-    (current) => window.MobKitFlowController.deploySettingsPatch(current, { [field]: value }, { contract, modelCatalog })
+    (current) => window.MobKitFlowController.deploySettingsFieldPatch(current, field, value, { contract, modelCatalog })
   );
   const setMobField = (field, value) => setMobSettings(
-    (current) => window.MobKitFlowController.mobSettingsPatch(current, { [field]: value }, { contract })
+    (current) => window.MobKitFlowController.mobSettingsFieldPatch(current, field, value, { contract })
   );
   const controlState = window.MobKitFlowController.tweaksControlState({
     flows,

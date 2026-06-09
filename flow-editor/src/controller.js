@@ -2878,6 +2878,12 @@
     return deploySettingsForUi(next);
   }
 
+  function deploySettingsFieldPatch(settings, field, value, options = {}) {
+    const key = String(field || "").trim();
+    if (!key) return deploySettingsForUi(settings);
+    return deploySettingsPatch(settings, { [key]: value }, options);
+  }
+
   function mobSettingsPatch(settings, patch, options = {}) {
     const source = normalizeMobSettings(settings);
     const rawPatch = patch && typeof patch === "object" ? patch : {};
@@ -2888,6 +2894,12 @@
       next[key] = value;
     }
     return normalizeMobSettings(next);
+  }
+
+  function mobSettingsFieldPatch(settings, field, value, options = {}) {
+    const key = String(field || "").trim();
+    if (!key) return normalizeMobSettings(settings);
+    return mobSettingsPatch(settings, { [key]: value }, options);
   }
 
   function reconcileMembersWithContract(members, contract, deploySettings, modelCatalog, toolCatalog, options = {}) {
@@ -11156,6 +11168,7 @@
     outputFormatOptions,
     normalizeDeploySettings,
     deploySettingsPatch,
+    deploySettingsFieldPatch,
     deployCommandPreview,
     deployCommandPreviewForDocument,
     callRpc,
@@ -11222,6 +11235,7 @@
     reconcileAuthoringWithContract,
     reconcileMemberSkillRefs,
     mobSettingsPatch,
+    mobSettingsFieldPatch,
     reconcileDeploySettingsWithContract,
     reconcileMembersWithContract,
     reconcileMobSettingsWithContract,

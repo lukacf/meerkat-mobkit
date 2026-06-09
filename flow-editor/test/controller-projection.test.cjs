@@ -10247,6 +10247,20 @@ const validCatalogedDeploy = controller.deploySettingsPatch(catalogedDeploy, {
 });
 assert.equal(validCatalogedDeploy.model, "");
 assert.equal(validCatalogedDeploy.realmBackend, "jsonl");
+assert.equal(
+  controller.deploySettingsFieldPatch(catalogedDeploy, "model", "openai/ghost", {
+    contract: settingsContract,
+    modelCatalog: [{ id: "openai/gpt-5.5" }],
+  }).model,
+  "openai/gpt-5.5",
+);
+assert.equal(
+  controller.deploySettingsFieldPatch(catalogedDeploy, "model", "", {
+    contract: settingsContract,
+    modelCatalog: [{ id: "openai/gpt-5.5" }],
+  }).model,
+  "",
+);
 
 const patchedMob = controller.mobSettingsPatch({
   orchestrator: "planner",
@@ -10273,6 +10287,8 @@ const catalogedMob = controller.mobSettingsPatch({
 });
 assert.equal(catalogedMob.backendDefault, "session");
 assert.equal(catalogedMob.externalAddressBase, "http://127.0.0.1:9000");
+assert.equal(controller.mobSettingsFieldPatch(catalogedMob, "backendDefault", "daemon", { contract: settingsContract }).backendDefault, "session");
+assert.equal(controller.mobSettingsFieldPatch(catalogedMob, "backendDefault", "", { contract: settingsContract }).backendDefault, "");
 assert.equal(controller.mobSettingsPatch(catalogedMob, { backendDefault: "" }, { contract: settingsContract }).backendDefault, "");
 assert.equal(controller.mobSettingsPatch(catalogedMob, { backendDefault: "sidecar" }, {
   contract: { mob_definition: { profile_backends: ["session", "sidecar"] } },

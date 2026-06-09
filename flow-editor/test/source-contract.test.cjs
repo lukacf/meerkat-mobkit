@@ -1407,10 +1407,10 @@ assert.match(controller, /function flowRegistryAppendRowPatch/, "controller plan
 assert.match(controller, /function flowRegistryUpsertRowPatch/, "controller plane must own flow registry upsert semantics");
 assert(!/setFlows\(\s*\(?\w+\)?\s*=>\s*\w+\.map\([^)]*=>[\s\S]{0,220}stage:\s*["']draft["']|setFlows\(\s*\(?\w+\)?\s*=>\s*\w+\.some\([^)]*\)\s*\?\s*\w+\.map|setFlows\(\s*\(?\w+\)?\s*=>\s*\[\.\.\.\w+,\s*row\]/.test(app), "app shell must not locally map/upsert/append flow registry rows");
 assert(!/flows\.find/.test(app), "app shell must not search flow registry rows locally");
-assert.match(tweaksBlock, /MobKitFlowController\.deploySettingsPatch/, "Tweaks deploy controls must patch deploy settings through the controller plane");
-assert.match(tweaksBlock, /MobKitFlowController\.mobSettingsPatch/, "Tweaks mob controls must patch mob settings through the controller plane");
-assert.match(tweaksBlock, /deploySettingsPatch\(current,\s*\{\s*\[field\]:\s*value\s*\},\s*\{\s*contract,\s*modelCatalog\s*\}\)/, "Tweaks deploy settings writes must pass MobKit contract and model catalog into controller validation");
-assert.match(tweaksBlock, /mobSettingsPatch\(current,\s*\{\s*\[field\]:\s*value\s*\},\s*\{\s*contract\s*\}\)/, "Tweaks mob settings writes must pass MobKit contract into controller validation");
+assert.match(tweaksBlock, /MobKitFlowController\.deploySettingsFieldPatch/, "Tweaks deploy controls must patch deploy settings through the controller plane");
+assert.match(tweaksBlock, /MobKitFlowController\.mobSettingsFieldPatch/, "Tweaks mob controls must patch mob settings through the controller plane");
+assert.match(tweaksBlock, /deploySettingsFieldPatch\(current,\s*field,\s*value,\s*\{\s*contract,\s*modelCatalog\s*\}\)/, "Tweaks deploy settings writes must pass MobKit contract and model catalog into controller validation");
+assert.match(tweaksBlock, /mobSettingsFieldPatch\(current,\s*field,\s*value,\s*\{\s*contract\s*\}\)/, "Tweaks mob settings writes must pass MobKit contract into controller validation");
 assert.match(tweaksBlock, /MobKitFlowController\.tweaksControlState/, "Tweaks controls must read deploy, mob, profile, and loadable-flow option state through the controller plane");
 assert.match(controller, /mob_definition\?\.editor_settings_view/, "controller plane must hydrate Tweaks/settings chrome from MobKit schema");
 assert.match(app, /<Tweaks[\s\S]*settingsView=\{catalogs\.settingsView\}/, "app shell must inject MobKit Tweaks/settings view state");
@@ -1450,6 +1450,8 @@ assert.match(advancedMobSettingsBlock, /MobKitFlowController\.advancedMobSetting
 assert.match(advancedMobSettingsBlock, /advancedMobSettingsDraftPatch\(next,\s*settingsView\)/, "advanced mob settings editor must pass MobKit settings view into parse errors");
 assert.match(controller, /function deploySettingsPatch/, "controller plane must own deploy settings patch semantics");
 assert.match(controller, /function mobSettingsPatch/, "controller plane must own mob settings patch semantics");
+assert.match(controller, /function deploySettingsFieldPatch/, "controller plane must own deploy settings single-field patch semantics");
+assert.match(controller, /function mobSettingsFieldPatch/, "controller plane must own mob settings single-field patch semantics");
 assert.match(controller, /function contractValueAllowed/, "controller plane must validate settings enum writes against MobKit contract values");
 assert.match(controller, /function catalogValueAllowed/, "controller plane must validate settings catalog writes against MobKit catalogs");
 assert.match(controller, /key === "surface"[\s\S]*deploy_settings\?\.surfaces/, "deploy settings patch must validate surface writes against deploy_settings.surfaces");
@@ -1468,7 +1470,7 @@ assert.match(controller, /function mobRoleWiringEditorState/, "controller plane 
 assert.match(controller, /function advancedMobSettingsEditorState/, "controller plane must own advanced mob settings textarea projection");
 assert.match(controller, /function advancedMobSettingsDraftPatch/, "controller plane must own advanced mob settings parse semantics");
 assert(!/label:\s*["']Role wiring["']|addLabel:\s*["']\+ rule["']|label:\s*["']Advanced["']|error:\s*["']object required["']/.test(controller), "settings editor labels and errors must not be controller-local strings");
-assert(!/\{\s*\.\.\.current,\s*\.\.\.patch\s*\}|\{\s*\.\.\.current,\s*\.\.\.\{\s*\[field\]/.test(tweaksBlock), "Tweaks must not locally spread exported deploy/mob settings patches");
+assert(!/\{\s*\.\.\.current,\s*\.\.\.patch\s*\}|\{\s*\.\.\.current,\s*\.\.\.\{\s*\[field\]|\{\s*\[field\]:\s*value/.test(tweaksBlock), "Tweaks must not locally spread or construct exported deploy/mob settings patches");
 assert(!/normalizeRoleWiring|const\s+options\s*=\s*profileOptions|wiring\.length|>Role wiring<\/span>|>\+ rule<\/button>|onChange\(\s*wiring\.(?:map|filter)\(|onChange\(\s*\[\.\.\.wiring|updateRule\(index,\s*\{\s*[ab]:/.test(roleWiringBlock), "role wiring editor must not locally normalize, label, count, or transform exported wiring arrays");
 assert(!/JSON\.parse|JSON\.stringify|const\s+serialized|>Advanced<\/span>/.test(advancedMobSettingsBlock), "advanced mob settings editor must not serialize, parse, or label exported settings JSON locally");
 assert.match(builderInputParamBlock, /MobKitFlowController\.schemaLikeFieldTypePatch/, "Basic input-param type changes must use controller enum/type semantics");
