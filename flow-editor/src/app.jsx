@@ -421,6 +421,10 @@ function App() {
     studio.skillRealms,
     deploySettings,
     mobSettings,
+    contract,
+    catalogs.models,
+    catalogs.toolCatalog,
+    catalogs.contractMeta.loaded,
   ]);
 
   const handleDrySim = async () => {

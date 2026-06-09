@@ -13206,7 +13206,11 @@ function App() {
     studio.schemas,
     studio.skillRealms,
     deploySettings,
-    mobSettings
+    mobSettings,
+    contract,
+    catalogs.models,
+    catalogs.toolCatalog,
+    catalogs.contractMeta.loaded
   ]);
   const handleDrySim = async () => {
     const requestToken = currentAuthoringRevision();
