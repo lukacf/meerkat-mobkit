@@ -47,96 +47,10 @@ function useStudioState(initial, onDirty, authoring = {}) {
     return next;
   };
 
-  // Mutations (each takes a snapshot)
-  const addMember = (m) => {
-    snap();
-    const next = window.MobKitFlowController.studioAddMemberPatch({ members, contract: authoring.contract }, m);
-    setMembers(next.members);
-  };
-  const updateMember = (id, patch) => {
-    snap();
-    const next = window.MobKitFlowController.studioUpdateMemberPatch({ members, contract: authoring.contract }, id, patch);
-    setMembers(next.members);
-  };
-  const deleteMember = (id) => {
-    snap();
-    const next = window.MobKitFlowController.studioDeleteMemberPatch({ members, instances, edges }, id);
-    setMembers(next.members);
-    setInstances(next.instances);
-    setEdges(next.edges);
-  };
-  const addInstance = (i) => {
-    snap();
-    const next = window.MobKitFlowController.studioAddInstancePatch({ instances, members }, i);
-    setInstances(next.instances);
-  };
-  const updateInstance = (id, patch) => {
-    snap();
-    const next = window.MobKitFlowController.studioUpdateInstancePatch({ instances, members }, id, patch);
-    setInstances(next.instances);
-  };
-  const deleteInstance = (id) => {
-    snap();
-    const next = window.MobKitFlowController.studioDeleteInstancePatch({ instances, edges }, id);
-    setInstances(next.instances);
-    setEdges(next.edges);
-    return next;
-  };
-  const addEdge = (e) => {
-    snap();
-    const next = window.MobKitFlowController.studioAddEdgePatch({ edges, instances }, e);
-    setEdges(next.edges);
-  };
-  const updateEdge = (id, patch) => {
-    snap();
-    const next = window.MobKitFlowController.studioUpdateEdgePatch({ edges, instances }, id, patch);
-    setEdges(next.edges);
-  };
-  const deleteEdge = (id) => {
-    snap();
-    const next = window.MobKitFlowController.studioDeleteEdgePatch({ edges }, id);
-    setEdges(next.edges);
-    return next;
-  };
-
-  const addSchema = (s) => {
-    snap();
-    const next = window.MobKitFlowController.studioAddSchemaPatch({ schemas }, s);
-    setSchemas(next.schemas);
-  };
-  const updateSchema = (id, patch) => {
-    snap();
-    const next = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas }, id, patch);
-    setSchemas(next.schemas);
-  };
-  const deleteSchema = (id) => {
-    snap();
-    const next = window.MobKitFlowController.studioDeleteSchemaPatch({
-      schemas,
-      members,
-      flow: authoring.flow,
-      edges,
-      instances,
-    }, id);
-    setSchemas(next.schemas);
-    setMembers(next.members);
-    if (next.flow !== authoring.flow && authoring.setFlow) authoring.setFlow(next.flow);
-    if (next.edges) setEdges(next.edges);
-  };
-  const updateSkillRealms = (next) => {
-    snap();
-    setSkillRealms(Array.isArray(next) ? next : []);
-  };
-
   return {
     members, instances, edges, frames, schemas, skillRealms,
     setMembers, setInstances, setEdges, setFrames, setSchemas, setSkillRealms,
     snap, undo, redo, canUndo: !!history.length, canRedo: !!future.length,
-    addMember, updateMember, deleteMember,
-    addInstance, updateInstance, deleteInstance,
-    addEdge, updateEdge, deleteEdge,
-    addSchema, updateSchema, deleteSchema,
-    updateSkillRealms,
   };
 }
 
@@ -298,12 +212,6 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const w = screenToWorld(e.clientX, e.clientY);
         const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
         if (cell && (cell.col !== drag.origCol || cell.row !== drag.origRow)) {
-          const next = window.MobKitFlowController.studioMoveInstancePatch({
-            instances: state.instances,
-          }, drag.instId, cell, {
-            col: drag.origCol,
-            row: drag.origRow,
-          });
           if (applyAuthoringReplacement) {
             applyAuthoringReplacement({
               operationType: "move_graph_node",
@@ -312,7 +220,6 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
                 cell,
                 original_cell: { col: drag.origCol, row: drag.origRow },
               },
-              studio: { instances: next.instances },
               selection: { kind: "instance", id: drag.instId },
             });
           }

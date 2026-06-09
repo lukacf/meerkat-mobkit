@@ -554,19 +554,13 @@ function App() {
   const mobKitStudio = {
     ...studio,
     addInstance: (instance) => {
-      const next = window.MobKitFlowController.studioAddInstancePatch({
-        instances: studio.instances,
-        members: studio.members,
-      }, instance);
-      if (next.ok && next.instance) {
-        applyMobKitAuthoringReplacement({
-          operationType: "insert_graph_node",
-          operation: { instance: next.instance },
-          studio: { instances: next.instances },
-          selection: { kind: "instance", id: next.instance.id },
-        });
-      }
-      return next;
+      const id = String(instance?.id || "").trim();
+      applyMobKitAuthoringReplacement({
+        operationType: "insert_graph_node",
+        operation: { instance },
+        selection: id ? { kind: "instance", id } : null,
+      });
+      return { ok: true, instance, selection: id ? { kind: "instance", id } : null };
     },
     updateInstance: (id, patch) => {
       applyMobKitAuthoringReplacement({
@@ -594,19 +588,18 @@ function App() {
       return { ok: true, selection };
     },
     addEdge: (edge) => {
-      const next = window.MobKitFlowController.studioAddEdgePatch({
-        edges: studio.edges,
-        instances: studio.instances,
-      }, edge);
-      if (next.ok && next.edge) {
-        applyMobKitAuthoringReplacement({
-          operationType: "connect_graph_nodes",
-          operation: { edge: next.edge },
-          studio: { edges: next.edges },
-          selection: { kind: "edge", id: next.edge.id },
-        });
-      }
-      return next;
+      const fromId = String(edge?.from || "").trim();
+      const toId = String(edge?.to || "").trim();
+      const id = String(edge?.id || "").trim();
+      const operation = fromId && toId
+        ? { from_id: fromId, to_id: toId }
+        : { edge };
+      applyMobKitAuthoringReplacement({
+        operationType: "connect_graph_nodes",
+        operation,
+        selection: id ? { kind: "edge", id } : null,
+      });
+      return { ok: true, edge, selection: id ? { kind: "edge", id } : null };
     },
     updateEdge: (id, patch) => {
       applyMobKitAuthoringReplacement({

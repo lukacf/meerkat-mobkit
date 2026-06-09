@@ -3021,26 +3021,12 @@ fn mobpack_draft_id_from_params(
 fn mobpack_draft_row_from_params(params: &Value) -> Result<Value, String> {
     let document = document_from_params(params)?;
     let id = mobpack_draft_id_from_params(params, &document)?;
-    let validation = params
-        .get("validation")
-        .cloned()
-        .filter(|value| !value.is_null())
-        .unwrap_or_else(|| {
-            serde_json::to_value(validate_document(&document)).unwrap_or(Value::Null)
-        });
-    let stage = params
-        .get("stage")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-        .unwrap_or_else(|| {
-            if validation.get("ok").and_then(Value::as_bool) == Some(true) {
-                "valid".to_string()
-            } else {
-                "draft".to_string()
-            }
-        });
+    let validation = serde_json::to_value(validate_document(&document)).unwrap_or(Value::Null);
+    let stage = if validation.get("ok").and_then(Value::as_bool) == Some(true) {
+        "valid".to_string()
+    } else {
+        "draft".to_string()
+    };
     let trigger = params
         .get("trigger")
         .and_then(Value::as_str)
@@ -23938,7 +23924,7 @@ model = "gpt-5.5"
         assert_eq!(saved["row"]["id"], json!("registry_draft"));
         assert_eq!(saved["row"]["document"]["name"], json!("Registry Draft"));
         assert_eq!(saved["row"]["document_kind"], json!("editor_projection"));
-        assert_eq!(saved["row"]["stage"], json!("draft"));
+        assert_eq!(saved["row"]["stage"], json!("valid"));
         assert_eq!(saved["row"]["artifact"]["kind"], json!("mobpack_archive"));
         assert_eq!(saved["row"]["artifact"]["deployable"], json!(true));
         assert_eq!(
@@ -23978,6 +23964,31 @@ model = "gpt-5.5"
         .expect("delete draft");
         assert_eq!(deleted["deleted"], json!(true));
         assert_eq!(deleted["rows"].as_array().expect("rows").len(), 0);
+    }
+
+    #[test]
+    fn mobpack_draft_registry_recomputes_validation_on_save() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("drafts.json");
+        let mut document = valid_document();
+        document.mob_toml = Some("not valid mob toml =".to_string());
+
+        let saved = save_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "fake_valid",
+            "document": document,
+            "stage": "valid",
+            "validation": { "ok": true, "display_rows": [{ "kind": "ok", "head": "caller fake" }] }
+        }))
+        .expect("save draft");
+
+        assert_eq!(saved["row"]["stage"], json!("draft"));
+        assert_eq!(saved["row"]["validation"]["ok"], json!(false));
+        assert_ne!(
+            saved["row"]["validation"]["display_rows"][0]["head"],
+            json!("caller fake")
+        );
+        assert_eq!(saved["row"]["artifact"]["deployable"], json!(false));
     }
 
     #[test]
