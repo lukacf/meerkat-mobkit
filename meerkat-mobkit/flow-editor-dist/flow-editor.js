@@ -9914,6 +9914,13 @@ window.MOBKIT_BOOT = {
     return { editorMode };
   }
 
+  function themeToggleTransition(currentTheme) {
+    return {
+      field: "theme",
+      value: currentTheme === "dark" ? "light" : "dark",
+    };
+  }
+
   function validationOutcome(document, result) {
     const validation = result || null;
     return {
@@ -11489,6 +11496,7 @@ window.MOBKIT_BOOT = {
     topRailState,
     topRailNavigationTransition,
     editorModeTransition,
+    themeToggleTransition,
     validationOutcome,
     exportOutcome,
     deployOutcome,
@@ -14360,6 +14368,10 @@ function App() {
     if (!next) return;
     setEditorMode(next.editorMode);
   };
+  const handleThemeToggle = () => {
+    const next = window.MobKitFlowController.themeToggleTransition(t.theme);
+    setTweak(next.field, next.value);
+  };
   const applyAuthoringDocumentProjection = (projection) => {
     const plan = window.MobKitFlowController.authoringProjectionApplyPlan(projection, {
       flow,
@@ -14780,7 +14792,7 @@ function App() {
       contract,
       theme: t.theme,
       railState: shellState,
-      onToggleTheme: () => setTweak("theme", t.theme === "dark" ? "light" : "dark"),
+      onToggleTheme: handleThemeToggle,
       onValidate: handleValidate,
       onPublish: handlePublish,
       onDeployPlan: handleDeployPlan,

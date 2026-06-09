@@ -1117,6 +1117,9 @@ assert.match(controller, /function topRailNavigationTransition/, "controller pla
 assert(!/setView\(|view === ["']editor["'] \? ["']flows["'] : ["']editor["']/.test(topRailBlock), "TopRail renderer must not assemble view transitions locally");
 assert.match(app, /<TopRail[\s\S]*railState=\{shellState\}/, "Top rail must receive the shared controller-projected shell state");
 assert.match(app, /<TopRail[\s\S]*onNavigate=\{handleTopRailNavigation\}/, "Top rail must emit semantic navigation targets to the app shell");
+assert.match(app, /MobKitFlowController\.themeToggleTransition\(t\.theme\)/, "Top rail theme toggles must be routed through the controller plane");
+assert.match(controller, /function themeToggleTransition/, "controller plane must own theme toggle transitions");
+assert(!/setTweak\(["']theme["'],\s*t\.theme === ["']dark["'] \? ["']light["'] : ["']dark["']\)/.test(app), "app shell must not compute the next top-rail theme locally");
 assert.match(app, /<ModeToggle[\s\S]*railState=\{shellState\}/, "Mode toggle labels must use the shared controller-projected shell state");
 assert.match(app, /MobKitFlowController\.editorModeTransition\(target\)/, "editor mode changes must be routed through the controller plane");
 assert.match(controller, /function editorModeTransition/, "controller plane must own editor mode transitions");

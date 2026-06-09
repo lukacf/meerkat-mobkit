@@ -9881,6 +9881,13 @@
     return { editorMode };
   }
 
+  function themeToggleTransition(currentTheme) {
+    return {
+      field: "theme",
+      value: currentTheme === "dark" ? "light" : "dark",
+    };
+  }
+
   function validationOutcome(document, result) {
     const validation = result || null;
     return {
@@ -11456,6 +11463,7 @@
     topRailState,
     topRailNavigationTransition,
     editorModeTransition,
+    themeToggleTransition,
     validationOutcome,
     exportOutcome,
     deployOutcome,

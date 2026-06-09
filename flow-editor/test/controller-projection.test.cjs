@@ -571,6 +571,9 @@ assert.equal(controller.topRailNavigationTransition("editor", "missing"), null);
 assert.deepEqual(controller.editorModeTransition("basic"), { editorMode: "basic" });
 assert.deepEqual(controller.editorModeTransition("advanced"), { editorMode: "advanced" });
 assert.equal(controller.editorModeTransition("graph"), null);
+assert.deepEqual(controller.themeToggleTransition("dark"), { field: "theme", value: "light" });
+assert.deepEqual(controller.themeToggleTransition("light"), { field: "theme", value: "dark" });
+assert.deepEqual(controller.themeToggleTransition(""), { field: "theme", value: "dark" });
 
 assert.equal(controller.buildBlankDocument, undefined, "blank mobpack documents must come from MobKit schema, not a local builder");
 
