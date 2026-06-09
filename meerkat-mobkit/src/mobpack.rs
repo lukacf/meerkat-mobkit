@@ -32,10 +32,44 @@ const GRAPH_FRAME_KINDS: &[&str] = &["Branch", "Parallel", "RepeatUntil"];
 const GRAPH_EDGE_KINDS: &[&str] = &["next", "cond", "fanout"];
 const REPEAT_ITERATION_INPUTS: &[&str] = &["carry"];
 const EDITOR_FLOW_STEP_TYPES: &[&str] = &["input", "member", "repeat", "branch", "parallel"];
+const EDITOR_INPUT_STEP_ID_PREFIX: &str = "input";
+const EDITOR_INPUT_STEP_DEFAULT_TASK: &str = "Run the mobpack flow.";
 const EDITOR_SCHEMA_FIELD_TYPES: &[&str] = &[
     "string", "string[]", "number", "float", "int", "integer", "boolean", "bool", "enum", "bytes",
     "object",
 ];
+
+fn editor_input_step_default_task() -> &'static str {
+    EDITOR_INPUT_STEP_DEFAULT_TASK
+}
+
+fn editor_input_step_value(
+    id: &str,
+    task: String,
+    fields: String,
+    input_params: Vec<Value>,
+) -> Value {
+    json!({
+        "id": id,
+        "type": "input",
+        "task": task,
+        "fields": fields,
+        "inputParams": input_params
+    })
+}
+
+fn editor_input_step_draft_contract() -> Value {
+    json!({
+        "document_path": "document.flow.steps[type=input]",
+        "default_step": {
+            "id": EDITOR_INPUT_STEP_ID_PREFIX,
+            "type": "input",
+            "task": editor_input_step_default_task(),
+            "fields": "",
+            "inputParams": []
+        }
+    })
+}
 
 fn serialized_string_values<T: Serialize>(values: Vec<T>) -> Vec<String> {
     values
@@ -1512,16 +1546,7 @@ pub fn mobpack_schema_response() -> Value {
     mob_definition["editor_deploy_view"] = editor_deploy_view;
     mob_definition["editor_settings_view"] = editor_settings_view;
     mob_definition["editor_launch_view"] = editor_launch_view;
-    mob_definition["editor_input_step_draft"] = json!({
-        "document_path": "document.flow.steps[type=input]",
-        "default_step": {
-            "id": "input",
-            "type": "input",
-            "task": "Run the mobpack flow.",
-            "fields": "",
-            "inputParams": []
-        }
-    });
+    mob_definition["editor_input_step_draft"] = editor_input_step_draft_contract();
     json!({
         "schema_version": MOBPACK_SCHEMA_VERSION,
         "media_type": MOBPACK_MEDIA_TYPE,
@@ -3316,13 +3341,12 @@ fn project_definition_to_editor_document(
         (
             json!({
                 "name": definition.id.to_string(),
-                "steps": [{
-                    "id": "input_1",
-                    "type": "input",
-                    "task": "Run the mobpack flow.",
-                    "fields": "",
-                    "inputParams": []
-                }]
+                "steps": [editor_input_step_value(
+                    "input_1",
+                    editor_input_step_default_task().to_string(),
+                    String::new(),
+                    Vec::new()
+                )]
             }),
             Vec::new(),
             Vec::new(),
@@ -3385,16 +3409,15 @@ fn project_flow(flow_id: &str, flow: &FlowSpec) -> (Value, Vec<Value>, Vec<Value
     let task = flow
         .description
         .clone()
-        .unwrap_or_else(|| "Run the mobpack flow.".to_string());
+        .unwrap_or_else(|| editor_input_step_default_task().to_string());
     let input_params = input_params_from_flow(flow);
     let input_fields = input_param_summary(&input_params);
-    let mut steps = vec![json!({
-        "id": "input_1",
-        "type": "input",
-        "task": task,
-        "fields": input_fields,
-        "inputParams": input_params
-    })];
+    let mut steps = vec![editor_input_step_value(
+        "input_1",
+        task,
+        input_fields,
+        input_params,
+    )];
     steps.extend(visual_steps);
     let (instances, edges, frames) = graph_projection_from_visual_steps(&steps);
     (
@@ -16932,6 +16955,32 @@ message = "Plan without output format"
             .and_then(|steps| steps.iter().find(|step| step["id"] == "plan"))
             .expect("plan step projected");
         assert_eq!(plan_step["outputFormat"], Value::Null);
+    }
+
+    #[test]
+    fn import_projection_uses_editor_input_step_draft_for_missing_flow_description() {
+        let toml = r#"
+[mob]
+id = "missing-flow-description"
+
+[profiles.planner]
+model = "gpt-5.2"
+
+[flows.main.steps.plan]
+role = "planner"
+message = "Plan without a flow description"
+"#;
+        let result = import_mobpack(&json!({ "mob_toml": toml })).expect("import");
+        let document: MobpackDocument =
+            serde_json::from_value(result["document"].clone()).expect("document");
+        let input_step = document.flow["steps"]
+            .as_array()
+            .and_then(|steps| steps.iter().find(|step| step["type"] == "input"))
+            .expect("input step projected");
+        assert_eq!(
+            input_step["task"],
+            editor_input_step_draft_contract()["default_step"]["task"]
+        );
     }
 
     #[test]
