@@ -5854,6 +5854,7 @@ assert.deepEqual(controller.studioDeleteInstancePatch({
 }, "a"), {
   instances: [{ id: "b" }, { id: "c" }],
   edges: [{ id: "bc", from: "b", to: "c" }],
+  selection: { kind: null, id: null },
 });
 assert.deepEqual(controller.studioDeleteInstancePatch({
   instances: [
@@ -5873,6 +5874,7 @@ assert.deepEqual(controller.studioDeleteInstancePatch({
   edges: [
     { id: "review_done", from: "review", to: "done", kind: "cond", label: "", cond: null },
   ],
+  selection: { kind: null, id: null },
 });
 assert.deepEqual(controller.studioAddEdgePatch({
   edges: [{ id: "ab" }],
@@ -5951,6 +5953,7 @@ assert.deepEqual(controller.studioDeleteEdgePatch({
   edges: [{ id: "keep" }, { id: "drop" }],
 }, "drop"), {
   edges: [{ id: "keep" }],
+  selection: { kind: null, id: null },
 });
 assert.deepEqual(controller.studioAddSchemaPatch({
   schemas: [{ id: "PlanArtifact" }],

@@ -292,15 +292,21 @@ function App() {
 
   const selectInstance = (id) => setSelection({ kind: "instance", id });
   const selectEdge = (id) => setSelection({ kind: "edge", id });
-  const clearSelection = () => setSelection({ kind: null, id: null });
+  const clearSelection = (nextSelection = { kind: null, id: null }) => setSelection(nextSelection || { kind: null, id: null });
 
   React.useEffect(() => {
     const onKey = (e) => {
       const tg = e.target;
       if (tg.tagName === "INPUT" || tg.tagName === "TEXTAREA" || tg.tagName === "SELECT") return;
       if (e.key === "Backspace" || e.key === "Delete") {
-        if (selection.kind === "instance") { studio.deleteInstance(selection.id); clearSelection(); }
-        else if (selection.kind === "edge") { studio.deleteEdge(selection.id); clearSelection(); }
+        if (selection.kind === "instance") {
+          const result = studio.deleteInstance(selection.id);
+          clearSelection(result?.selection);
+        }
+        else if (selection.kind === "edge") {
+          const result = studio.deleteEdge(selection.id);
+          clearSelection(result?.selection);
+        }
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
         e.preventDefault();

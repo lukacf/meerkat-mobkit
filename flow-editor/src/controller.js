@@ -4517,6 +4517,7 @@
     return {
       instances: nextInstances,
       edges: nextEdges,
+      selection: { kind: null, id: null },
     };
   }
 
@@ -4625,7 +4626,10 @@
 
   function studioDeleteEdgePatch({ edges } = {}, id) {
     const target = String(id || "");
-    return { edges: (edges || []).filter((edge) => edge?.id !== target) };
+    return {
+      edges: (edges || []).filter((edge) => edge?.id !== target),
+      selection: { kind: null, id: null },
+    };
   }
 
   function studioAddSchemaPatch({ schemas } = {}, schema) {

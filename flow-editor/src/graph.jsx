@@ -91,6 +91,7 @@ function useStudioState(initial, onDirty, authoring = {}) {
     const next = window.MobKitFlowController.studioDeleteInstancePatch({ instances, edges }, id);
     setInstances(next.instances);
     setEdges(next.edges);
+    return next;
   };
   const addEdge = (e) => {
     snap();
@@ -106,6 +107,7 @@ function useStudioState(initial, onDirty, authoring = {}) {
     snap();
     const next = window.MobKitFlowController.studioDeleteEdgePatch({ edges }, id);
     setEdges(next.edges);
+    return next;
   };
 
   const addSchema = (s) => {
