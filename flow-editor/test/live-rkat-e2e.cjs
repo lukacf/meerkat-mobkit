@@ -1438,6 +1438,17 @@ async function validateDocumentBackedDeployPreview(document) {
       throw new Error(`flow editor schema did not expose Agent sidebar template ${key}: ${JSON.stringify(agentView)}`);
     }
   }
+  const schemaView = schema.mob_definition?.editor_schema_view || {};
+  for (const [key, expected] of Object.entries({
+    fields_title_template: "{prefix} · {count}",
+    used_by_title_template: "{prefix} · {count}",
+    usage_singular_template: "used by {count} agent",
+    usage_plural_template: "used by {count} agents",
+  })) {
+    if (schemaView[key] !== expected) {
+      throw new Error(`flow editor schema did not expose Schema Editor template ${key}: ${JSON.stringify(schemaView)}`);
+    }
+  }
   const samples = catalogs.sample_mobpacks || [];
   const sample = samples.find((candidate) => candidate.id === sampleId) || samples[0];
   if (!sample?.document) throw new Error("flow editor schema did not return any sample mobpack documents");

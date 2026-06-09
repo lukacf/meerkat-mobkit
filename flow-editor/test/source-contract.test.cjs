@@ -1191,6 +1191,7 @@ assert(!/schema\?\.tool_config\s*\|\||schema\?\.tool_catalog[\s\S]{0,80}schema\?
 assert(!/schema\.tool_config|schema\.tool_catalog[\s\S]{0,80}schema\.tool_config/.test(liveRkatE2eTest), "Live rkat e2e proof must require catalogs.tool_catalog, not compatibility tool_config aliases");
 assert.match(liveRkatE2eTest, /mobkit\/mobpacks\/schema leaked dynamic catalog key/, "Live rkat e2e proof must fail if schema leaks dynamic catalog payloads");
 assert.match(liveRkatE2eTest, /member_sub_label_template[\s\S]*schema_usage_label_template[\s\S]*Agent sidebar template/, "Live rkat e2e proof must require MobKit schema-owned Agent sidebar display templates");
+assert.match(liveRkatE2eTest, /fields_title_template[\s\S]*usage_plural_template[\s\S]*Schema Editor template/, "Live rkat e2e proof must require MobKit schema-owned Schema Editor display templates");
 assert(!/model\.vendor \|\| model\.provider \|\| ["']provider["']|tool\.desc \|\| tool\.description \|\| tool\.summary \|\| ["']MobKit tool_config["']|tool\.kind \|\| tool\.type \|\| ["']tool["']/.test(controller), "Catalog hydration must not invent model/tool display metadata");
 assert(!/sampleFlowsFromCatalogs[\s\S]{0,520}sample\.id \|\| sample\.document\?\.mob_id|sampleFlowsFromCatalogs[\s\S]{0,560}sample\.name \|\| sample\.document\?\.name/.test(controller), "Sample mobpack hydration must require schema-provided sample id/name instead of document fallbacks");
 assert(!/sampleFlowsFromCatalogs[\s\S]{0,620}validation\?\.ok \? ["']valid["'] : ["']draft["']/.test(controller), "Sample mobpack hydration must require MobKit catalog stage metadata instead of deriving status from validation");
@@ -1368,7 +1369,11 @@ assert.match(agentsMainBlock, /agentView(?:\s*=\s*null)?[\s\S]*MobKitFlowControl
 assert.match(agentsMainBlock, /agentDetailView(?:\s*=\s*null)?[\s\S]*agentAccessView(?:\s*=\s*null)?[\s\S]*<AgentEditor[\s\S]*agentDetailView=\{agentDetailView\}[\s\S]*agentAccessView=\{agentAccessView\}/, "Agent main pane must pass schema-backed Agent detail and access view state");
 assert.match(agentsMainBlock, /selectionState\.emptyState\.title[\s\S]*selectionState\.emptyState\.lines\.map[\s\S]*selectionState\.missingSchemaLabel[\s\S]*selectionState\.missingAgentLabel/, "Agent main empty and missing states must render through controller state");
 assert.match(controller, /function schemaEditorControlState/, "controller plane must own schema detail usage projection");
-assert.match(controller, /fieldsTitle: `\$\{view\.fieldsTitlePrefix\} · \$\{fields\.length\}`/, "controller plane must render Schema Editor field-count title from MobKit view contract");
+assert.match(controller, /fieldsTitleTemplate:\s*String\(view\.fields_title_template/, "controller plane must hydrate Schema Editor field-title template from MobKit schema");
+assert.match(controller, /usagePluralTemplate:\s*String\(view\.usage_plural_template/, "controller plane must hydrate Schema Editor usage template from MobKit schema");
+assert.match(controller, /fieldsTitle:\s*graphTemplateText\(view\.fieldsTitleTemplate/, "controller plane must render Schema Editor field-count title from MobKit view templates");
+assert.match(controller, /usageLabel:\s*graphTemplateText\([\s\S]*view\.usageSingularTemplate[\s\S]*view\.usagePluralTemplate/, "controller plane must render Schema Editor usage labels from MobKit view templates");
+assert(!/fieldsTitle:\s*`\$\{view\.fieldsTitlePrefix\} · \$\{fields\.length\}`|usedByTitle:\s*`\$\{view\.usedByPrefix\} · \$\{usedBy\.length\}`|usageLabel:\s*`used by \$\{usedBy\.length\} agent/.test(controller), "Schema Editor controller projection must not compose field-count or usage copy locally");
 assert.match(controller, /function agentDefinitionAddByIdPatch/, "controller plane must own agent definition id resolution");
 assert.match(controller, /addAgentPlaceholderLabel:\s*String\(view\.add_agent_placeholder_label/, "controller plane must hydrate Agent add-control labels from MobKit schema");
 assert.match(controller, /memberSubLabelTemplate:\s*String\(view\.member_sub_label_template/, "controller plane must hydrate Agent sidebar member label templates from MobKit schema");

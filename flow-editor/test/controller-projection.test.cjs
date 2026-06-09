@@ -1216,6 +1216,7 @@ const hydratedContractAndCatalogFixture = {
       description_title: "DESCRIPTION",
       description_placeholder: "What is this artifact and when is it emitted?",
       fields_title_prefix: "FIELDS",
+      fields_title_template: "{prefix} · {count}",
       add_field_label: "+ field",
       header_labels: {
         name: "NAME",
@@ -1226,6 +1227,9 @@ const hydratedContractAndCatalogFixture = {
       },
       empty_fields_hint: "No fields yet. Click + field to start.",
       used_by_prefix: "USED BY",
+      used_by_title_template: "{prefix} · {count}",
+      usage_singular_template: "used by {count} agent",
+      usage_plural_template: "used by {count} agents",
       empty_used_by_hint: "Not yet referenced by any agent.",
       delete_label: "DELETE",
       delete_blocked_title: "Unassign from agents first",
@@ -1693,6 +1697,7 @@ assert.deepEqual(hydratedCatalogs.schemaView, {
   descriptionTitle: "DESCRIPTION",
   descriptionPlaceholder: "What is this artifact and when is it emitted?",
   fieldsTitlePrefix: "FIELDS",
+  fieldsTitleTemplate: "{prefix} · {count}",
   addFieldLabel: "+ field",
   headerLabels: {
     name: "NAME",
@@ -1703,6 +1708,9 @@ assert.deepEqual(hydratedCatalogs.schemaView, {
   },
   emptyFieldsHint: "No fields yet. Click + field to start.",
   usedByPrefix: "USED BY",
+  usedByTitleTemplate: "{prefix} · {count}",
+  usageSingularTemplate: "used by {count} agent",
+  usagePluralTemplate: "used by {count} agents",
   emptyUsedByHint: "Not yet referenced by any agent.",
   deleteLabel: "DELETE",
   deleteBlockedTitle: "Unassign from agents first",
@@ -5297,6 +5305,7 @@ assert.deepEqual(controller.schemaEditorControlState({
     descriptionTitle: "SUMMARY",
     descriptionPlaceholder: "Describe emitted data.",
     fieldsTitlePrefix: "COLUMNS",
+    fieldsTitleTemplate: "{prefix} · {count}",
     addFieldLabel: "+ column",
     headerLabels: {
       name: "FIELD",
@@ -5307,6 +5316,9 @@ assert.deepEqual(controller.schemaEditorControlState({
     },
     emptyFieldsHint: "No contract fields.",
     usedByPrefix: "REFERENCED BY",
+    usedByTitleTemplate: "{prefix} · {count}",
+    usageSingularTemplate: "used by {count} agent",
+    usagePluralTemplate: "used by {count} agents",
     emptyUsedByHint: "No agent references.",
     deleteLabel: "REMOVE",
     deleteBlockedTitle: "Clear agent schema refs first",
@@ -5345,6 +5357,33 @@ assert.deepEqual(controller.schemaEditorControlState({
   canDelete: false,
   deleteTitle: "Clear agent schema refs first",
 });
+const reskinnedSchemaEditorState = controller.schemaEditorControlState({
+  schema: agentSchemasForProjection[1],
+  members: agentMembersForProjection,
+  schemaView: {
+    ...hydratedCatalogs.schemaView,
+    fieldsTitlePrefix: "PROPS",
+    fieldsTitleTemplate: "{count} {prefix}",
+    usedByPrefix: "REFS",
+    usedByTitleTemplate: "{count} {prefix}",
+    usageSingularTemplate: "{count} profile",
+    usagePluralTemplate: "{count} profiles",
+  },
+});
+assert.equal(reskinnedSchemaEditorState.fieldsTitle, "2 PROPS");
+assert.equal(reskinnedSchemaEditorState.usedByTitle, "1 REFS");
+assert.equal(reskinnedSchemaEditorState.usageLabel, "1 profile");
+assert.equal(controller.schemaEditorControlState({
+  schema: agentSchemasForProjection[1],
+  members: [
+    ...agentMembersForProjection,
+    { id: "m_extra", name: "Extra", role: "extra", model: "gpt-5.5", schema: "ReviewArtifact" },
+  ],
+  schemaView: {
+    ...hydratedCatalogs.schemaView,
+    usagePluralTemplate: "{count} profiles",
+  },
+}).usageLabel, "2 profiles");
 
 const schemaDraftContract = {
   mob_definition: {

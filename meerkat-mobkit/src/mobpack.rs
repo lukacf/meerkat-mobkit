@@ -1075,6 +1075,7 @@ pub fn mobpack_schema_response() -> Value {
         "description_title": "DESCRIPTION",
         "description_placeholder": "What is this artifact and when is it emitted?",
         "fields_title_prefix": "FIELDS",
+        "fields_title_template": "{prefix} · {count}",
         "add_field_label": "+ field",
         "header_labels": {
             "name": "NAME",
@@ -1085,6 +1086,9 @@ pub fn mobpack_schema_response() -> Value {
         },
         "empty_fields_hint": "No fields yet. Click + field to start.",
         "used_by_prefix": "USED BY",
+        "used_by_title_template": "{prefix} · {count}",
+        "usage_singular_template": "used by {count} agent",
+        "usage_plural_template": "used by {count} agents",
         "empty_used_by_hint": "Not yet referenced by any agent.",
         "delete_label": "DELETE",
         "delete_blocked_title": "Unassign from agents first",
@@ -17611,6 +17615,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_schema_view"]["fields_title_prefix"],
             json!("FIELDS")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_view"]["fields_title_template"],
+            json!("{prefix} · {count}")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_view"]["used_by_title_template"],
+            json!("{prefix} · {count}")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_view"]["usage_singular_template"],
+            json!("used by {count} agent")
+        );
+        assert_eq!(
+            mob_definition["editor_schema_view"]["usage_plural_template"],
+            json!("used by {count} agents")
         );
         assert_eq!(
             mob_definition["editor_schema_view"]["header_labels"]["required"],

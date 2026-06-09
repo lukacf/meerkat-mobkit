@@ -800,6 +800,7 @@
       descriptionTitle: String(view.description_title || "").trim(),
       descriptionPlaceholder: String(view.description_placeholder || "").trim(),
       fieldsTitlePrefix: String(view.fields_title_prefix || "").trim(),
+      fieldsTitleTemplate: String(view.fields_title_template || "").trim(),
       addFieldLabel: String(view.add_field_label || "").trim(),
       headerLabels: {
         name: String(headers.name || "").trim(),
@@ -810,6 +811,9 @@
       },
       emptyFieldsHint: String(view.empty_fields_hint || "").trim(),
       usedByPrefix: String(view.used_by_prefix || "").trim(),
+      usedByTitleTemplate: String(view.used_by_title_template || "").trim(),
+      usageSingularTemplate: String(view.usage_singular_template || "").trim(),
+      usagePluralTemplate: String(view.usage_plural_template || "").trim(),
       emptyUsedByHint: String(view.empty_used_by_hint || "").trim(),
       deleteLabel: String(view.delete_label || "").trim(),
       deleteBlockedTitle: String(view.delete_blocked_title || "").trim(),
@@ -820,9 +824,10 @@
       fieldEnumAddLabel: String(view.field_enum_add_label || "").trim(),
       fieldEnumAddValue: String(view.field_enum_add_value || "").trim(),
     };
-    return out.eyebrow && out.descriptionTitle && out.fieldsTitlePrefix && out.addFieldLabel
+    return out.eyebrow && out.descriptionTitle && out.fieldsTitlePrefix && out.fieldsTitleTemplate && out.addFieldLabel
       && out.headerLabels.name && out.headerLabels.type && out.headerLabels.required && out.headerLabels.description
-      && out.emptyFieldsHint && out.usedByPrefix && out.emptyUsedByHint && out.deleteLabel && out.deleteBlockedTitle
+      && out.emptyFieldsHint && out.usedByPrefix && out.usedByTitleTemplate
+      && out.usageSingularTemplate && out.usagePluralTemplate && out.emptyUsedByHint && out.deleteLabel && out.deleteBlockedTitle
       && out.fieldNamePlaceholder && out.fieldDescriptionPlaceholder && out.fieldRemoveTitle
       && out.fieldEnumLabel && out.fieldEnumAddLabel && out.fieldEnumAddValue
       ? out
@@ -836,6 +841,7 @@
       descriptionTitle: String(view?.descriptionTitle || ""),
       descriptionPlaceholder: String(view?.descriptionPlaceholder || ""),
       fieldsTitlePrefix: String(view?.fieldsTitlePrefix || ""),
+      fieldsTitleTemplate: String(view?.fieldsTitleTemplate || ""),
       addFieldLabel: String(view?.addFieldLabel || ""),
       headerLabels: {
         name: String(view?.headerLabels?.name || ""),
@@ -846,6 +852,9 @@
       },
       emptyFieldsHint: String(view?.emptyFieldsHint || ""),
       usedByPrefix: String(view?.usedByPrefix || ""),
+      usedByTitleTemplate: String(view?.usedByTitleTemplate || ""),
+      usageSingularTemplate: String(view?.usageSingularTemplate || ""),
+      usagePluralTemplate: String(view?.usagePluralTemplate || ""),
       emptyUsedByHint: String(view?.emptyUsedByHint || ""),
       deleteLabel: String(view?.deleteLabel || ""),
       deleteBlockedTitle: String(view?.deleteBlockedTitle || ""),
@@ -2310,15 +2319,24 @@
       eyebrow: view.eyebrow,
       descriptionTitle: view.descriptionTitle,
       descriptionPlaceholder: view.descriptionPlaceholder,
-      fieldsTitle: `${view.fieldsTitlePrefix} · ${fields.length}`,
+      fieldsTitle: graphTemplateText(view.fieldsTitleTemplate, {
+        prefix: view.fieldsTitlePrefix,
+        count: fields.length,
+      }),
       addFieldLabel: view.addFieldLabel,
       headerLabels: view.headerLabels,
       fieldRows,
       emptyFieldsHint: view.emptyFieldsHint,
       usedBy,
       usedCount: usedBy.length,
-      usageLabel: `used by ${usedBy.length} agent${usedBy.length === 1 ? "" : "s"}`,
-      usedByTitle: `${view.usedByPrefix} · ${usedBy.length}`,
+      usageLabel: graphTemplateText(
+        usedBy.length === 1 ? view.usageSingularTemplate : view.usagePluralTemplate,
+        { count: usedBy.length },
+      ),
+      usedByTitle: graphTemplateText(view.usedByTitleTemplate, {
+        prefix: view.usedByPrefix,
+        count: usedBy.length,
+      }),
       emptyUsedByHint: view.emptyUsedByHint,
       deleteLabel: view.deleteLabel,
       canDelete: usedBy.length === 0,
