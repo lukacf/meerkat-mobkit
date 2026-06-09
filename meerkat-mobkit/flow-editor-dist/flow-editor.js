@@ -13010,6 +13010,7 @@ function App() {
   const hydrateMobpackDocument = (result, options = {}) => {
     const hydration = window.MobKitFlowController.hydrateMobpackDocumentState(result, {
       id: options.id,
+      existingRows: options.existingRows,
       addToRegistry: options.addToRegistry,
       openEditor: options.openEditor,
       flowRow: options.flowRow || null,

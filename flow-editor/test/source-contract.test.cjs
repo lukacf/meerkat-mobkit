@@ -774,6 +774,7 @@ assert.match(importParamsFromFileBlock, /MobKitFlowController\.importParamsFromD
 assert(!/const sourceMeta = \{[\s\S]*source_name|document:\s*parsed|content_base64:\s*btoa\(binary\)|mob_toml:\s*new TextDecoder/.test(app), "app shell must not assemble MobKit import params locally");
 assert(!(/JSON\.parse|kind:\s*["'](?:toml|json|binary)["']|\.toml|\.json/.test(importParamsFromFileBlock)), "app import adapter must not infer MobKit import kind or parse JSON locally");
 assert.match(app, /hydrateMobpackDocument\(result,\s*\{\s*existingRows:\s*flows\s*\}\)/, "imported mobpack registry identity must be derived by the controller with current registry rows");
+assert.match(app, /hydrateMobpackDocumentState\(result,\s*\{[\s\S]*existingRows:\s*options\.existingRows/, "app hydration wrapper must forward registry rows into the controller import-id derivation");
 assert.match(controller, /function flowImportedIdFromDocument[\s\S]*flowDraftIdFromSpec/, "controller plane must derive imported mobpack registry ids from document/source metadata");
 assert(!/id:\s*["']f_imported["']/.test(app + "\n" + controller), "Flow Editor must not assign every imported mobpack the same local f_imported registry id");
 assert(!/sampleSkillRealm\?\.source\s*\|\|\s*["']mobkit\/sample-mobpack["']/.test(testSrc("live-rkat-e2e.cjs")), "live projection tests must require sample skill realm source metadata from MobKit");
