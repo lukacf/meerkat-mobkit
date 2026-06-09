@@ -10847,9 +10847,10 @@ const operationProjection = controller.authoringProjectionFromOperationResult({
   document: {
     ...storedGraphDocument,
     schemas: [{ id: "AddedVerdict", fields: [{ id: "f_verdict", name: "verdict", type: "string" }] }],
+    skill_realms: [{ id: "mobkit/editor-inline", skills: [{ id: "mob.editor.review", label: "Review", source: "inline", content: "Review carefully." }] }],
     members: [
       ...storedGraphDocument.members,
-      { id: "m_added", name: "Added", role: "added", profileBinding: "inline", runtimeMode: "turn_driven" },
+      { id: "m_added", name: "Added", role: "added", profileBinding: "inline", runtimeMode: "turn_driven", skills: ["mob.editor.review"] },
     ],
   },
   selection: { kind: "agent", id: "m_added" },
@@ -10861,6 +10862,7 @@ const operationProjection = controller.authoringProjectionFromOperationResult({
 assert.equal(operationProjection.flow.name, "Stored Graph Import");
 assert.equal(operationProjection.members.at(-1).id, "m_added");
 assert.equal(operationProjection.schemas[0].id, "AddedVerdict");
+assert.equal(operationProjection.skillRealms[0].skills[0].id, "mob.editor.review");
 assert.deepEqual(operationProjection.instances, storedGraphDocument.instances);
 assert.equal(operationProjection.deploySettings.command, "rkat mob deploy");
 assert.equal(operationProjection.mobSettings.backendDefault, "session");

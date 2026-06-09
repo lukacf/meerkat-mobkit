@@ -317,12 +317,21 @@ function App() {
       if (tg.tagName === "INPUT" || tg.tagName === "TEXTAREA" || tg.tagName === "SELECT") return;
       if (e.key === "Backspace" || e.key === "Delete") {
         if (selection.kind === "instance") {
-          const result = studio.deleteInstance(selection.id);
-          clearSelection(result?.selection);
+          const result = window.MobKitFlowController.studioDeleteInstancePatch({
+            instances: studio.instances,
+            edges: studio.edges,
+          }, selection.id);
+          applyMobKitAuthoringReplacement({
+            studio: { instances: result.instances, edges: result.edges },
+            selection: result.selection,
+          }).then(() => clearSelection(result.selection));
         }
         else if (selection.kind === "edge") {
-          const result = studio.deleteEdge(selection.id);
-          clearSelection(result?.selection);
+          const result = window.MobKitFlowController.studioDeleteEdgePatch({ edges: studio.edges }, selection.id);
+          applyMobKitAuthoringReplacement({
+            studio: { edges: result.edges },
+            selection: result.selection,
+          }).then(() => clearSelection(result.selection));
         }
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
@@ -361,11 +370,16 @@ function App() {
       graphView: catalogs.graphView,
     });
     if (inserted.ok) {
-      if (inserted.snap) studio.snap();
-      if (inserted.flow !== flow) setAuthoringFlow(inserted.flow);
-      if (inserted.instances !== studio.instances) studio.setInstances(inserted.instances);
-      if (inserted.edges !== studio.edges) studio.setEdges(inserted.edges);
-      if (inserted.selectId) selectInstance(inserted.selectId);
+      applyMobKitAuthoringReplacement({
+        flow: inserted.flow,
+        studio: {
+          instances: inserted.instances,
+          edges: inserted.edges,
+        },
+        selection: inserted.selectId ? { kind: "instance", id: inserted.selectId } : null,
+      }).then(() => {
+        if (inserted.selectId) selectInstance(inserted.selectId);
+      });
     }
     setAddAt(inserted.addAt);
   };
@@ -400,6 +414,7 @@ function App() {
         edges: studio.edges,
         frames: studio.frames,
         schemas: studio.schemas,
+        skillRealms: studio.skillRealms,
       },
       deploySettings,
       mobSettings,
@@ -408,6 +423,7 @@ function App() {
     if (!plan.ok) return;
     if (plan.flow.changed) setFlow(plan.flow.value);
     if (plan.members.changed) studio.setMembers(plan.members.value);
+    if (plan.skillRealms.changed) studio.setSkillRealms(plan.skillRealms.value);
     if (plan.schemas.changed) studio.setSchemas(plan.schemas.value);
     if (plan.graph.changed) {
       graphProjectionSig.current = plan.graph.signature;
@@ -420,25 +436,29 @@ function App() {
   };
   const currentFlowSelection = window.MobKitFlowController.flowRegistrySelectionState(flows, currentFlowId);
   const currentFlow = currentFlowSelection.row;
-  const buildAuthoringProjection = () => window.MobKitFlowController.authoringDocumentFromState({
-    editorMode,
-    flow,
-    studio: {
+  const buildAuthoringProjection = (overrides = {}) => {
+    const nextStudio = {
       members: studio.members,
       schemas: studio.schemas,
       instances: studio.instances,
       edges: studio.edges,
       frames: studio.frames,
       skillRealms: studio.skillRealms,
-    },
+      ...(overrides.studio || {}),
+    };
+    return window.MobKitFlowController.authoringDocumentFromState({
+    editorMode,
+    flow: overrides.flow || flow,
+    studio: nextStudio,
     currentFlow,
-    deploySettings,
-    mobSettings,
+    deploySettings: overrides.deploySettings || deploySettings,
+    mobSettings: overrides.mobSettings || mobSettings,
     contract,
     modelCatalog: catalogs.models,
     toolCatalog: catalogs.toolCatalog,
     contractLoaded: !!catalogs.contractMeta.loaded,
-  });
+    });
+  };
   const buildDocument = () => {
     const projection = buildAuthoringProjection();
     beginProjectionSync();
@@ -461,6 +481,114 @@ function App() {
     applyAuthoringDocumentProjection(projection);
     markDraft();
     return result;
+  };
+  const applyMobKitAuthoringReplacement = async (overrides = {}) => {
+    const requestToken = currentAuthoringRevision();
+    const replacement = buildAuthoringProjection(overrides);
+    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(replacement.document, {
+      type: "replace_authoring_document",
+      selection: overrides.selection || null,
+    });
+    if (!authoringRevisionIsCurrent(requestToken)) {
+      return { ok: false, error: "stale authoring operation" };
+    }
+    const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
+      deployDefaults: catalogs.deployDefaults,
+      mobDefaults: catalogs.mobDefaults,
+    });
+    if (!projection) return { ok: false, error: "MobKit authoring operation did not return a document" };
+    beginProjectionSync();
+    applyAuthoringDocumentProjection(projection);
+    markDraft();
+    return result;
+  };
+  const mobKitStudio = {
+    ...studio,
+    addInstance: (instance) => {
+      const next = window.MobKitFlowController.studioAddInstancePatch({
+        instances: studio.instances,
+        members: studio.members,
+      }, instance);
+      applyMobKitAuthoringReplacement({ studio: { instances: next.instances } });
+      return next;
+    },
+    updateInstance: (id, patch) => {
+      const next = window.MobKitFlowController.studioUpdateInstancePatch({
+        instances: studio.instances,
+        members: studio.members,
+      }, id, patch);
+      applyMobKitAuthoringReplacement({
+        studio: { instances: next.instances },
+        selection: { kind: "instance", id },
+      });
+      return next;
+    },
+    deleteInstance: (id) => {
+      const next = window.MobKitFlowController.studioDeleteInstancePatch({
+        instances: studio.instances,
+        edges: studio.edges,
+      }, id);
+      applyMobKitAuthoringReplacement({
+        studio: { instances: next.instances, edges: next.edges },
+        selection: next.selection,
+      });
+      return next;
+    },
+    addEdge: (edge) => {
+      const next = window.MobKitFlowController.studioAddEdgePatch({
+        edges: studio.edges,
+        instances: studio.instances,
+      }, edge);
+      applyMobKitAuthoringReplacement({ studio: { edges: next.edges } });
+      return next;
+    },
+    updateEdge: (id, patch) => {
+      const next = window.MobKitFlowController.studioUpdateEdgePatch({
+        edges: studio.edges,
+        instances: studio.instances,
+      }, id, patch);
+      applyMobKitAuthoringReplacement({
+        studio: { edges: next.edges },
+        selection: { kind: "edge", id },
+      });
+      return next;
+    },
+    deleteEdge: (id) => {
+      const next = window.MobKitFlowController.studioDeleteEdgePatch({ edges: studio.edges }, id);
+      applyMobKitAuthoringReplacement({
+        studio: { edges: next.edges },
+        selection: next.selection,
+      });
+      return next;
+    },
+    addSchema: (schema) => {
+      const next = window.MobKitFlowController.studioAddSchemaPatch({ schemas: studio.schemas }, schema);
+      applyMobKitAuthoringReplacement({ studio: { schemas: next.schemas } });
+      return next;
+    },
+    updateSchema: (id, patch) => {
+      const next = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas: studio.schemas }, id, patch);
+      applyMobKitAuthoringReplacement({
+        studio: { schemas: next.schemas },
+        selection: { kind: "schema", id },
+      });
+      return next;
+    },
+    deleteSchema: (id) => {
+      const next = window.MobKitFlowController.studioDeleteSchemaPatch({
+        schemas: studio.schemas,
+        members: studio.members,
+        flow,
+        edges: studio.edges,
+        instances: studio.instances,
+      }, id);
+      applyMobKitAuthoringReplacement({
+        flow: next.flow,
+        studio: { schemas: next.schemas, members: next.members, edges: next.edges },
+        selection: next.selection,
+      });
+      return next;
+    },
   };
   const saveRegistryDocument = (rowPatch) => {
     if (!rowPatch?.document) return;
@@ -909,7 +1037,7 @@ function App() {
       {view === "editor" && editorMode === "advanced" && (
         <div className="stage-area" onClick={(e) => { if (e.target === e.currentTarget) closeGraphAddMenu(); }}>
           <GraphEditor
-            state={studio}
+            state={mobKitStudio}
             selection={selection}
             selectInstance={selectInstance}
             selectEdge={selectEdge}
@@ -924,6 +1052,7 @@ function App() {
             contract={contract}
             graphView={catalogs.graphView}
             toolCatalog={catalogs.toolCatalog}
+            applyAuthoringReplacement={applyMobKitAuthoringReplacement}
           />
             <InlineSourceEditor
               open={inlineSourceOpen && inlineSourceSurface === "graph"}
@@ -944,7 +1073,7 @@ function App() {
           />
           <aside className="inspector">
             <Inspector
-              studio={studio}
+              studio={mobKitStudio}
               selection={selection}
               flow={flow}
               template={currentFlow}
@@ -965,7 +1094,7 @@ function App() {
 
       {view === "editor" && editorMode === "basic" && (
         <BuilderView
-          studio={studio}
+          studio={mobKitStudio}
           mode="build"
           flow={flow}
           setFlow={setAuthoringFlow}
@@ -982,12 +1111,13 @@ function App() {
           basicView={catalogs.basicView}
           launchView={catalogs.launchView}
           conditionView={catalogs.conditionView}
+          applyAuthoringReplacement={applyMobKitAuthoringReplacement}
         />
       )}
 
       {view === "agents" && (
         <AgentsView
-          studio={studio}
+          studio={mobKitStudio}
           agentSel={agentSel}
           setAgentSel={setAgentSel}
           contract={contract}
@@ -1000,6 +1130,7 @@ function App() {
           modelCatalog={catalogs.models}
           agentDefinitions={catalogs.agentDefinitions}
           applyAuthoringOperation={applyMobKitAuthoringOperation}
+          applyAuthoringReplacement={applyMobKitAuthoringReplacement}
           agentView={catalogs.agentView}
           agentDetailView={catalogs.agentDetailView}
           agentAccessView={catalogs.agentAccessView}
@@ -1050,6 +1181,7 @@ function App() {
         contract={contract}
         deployCommandPreview={deployCommandPreview}
         settingsView={catalogs.settingsView}
+        applyAuthoringReplacement={applyMobKitAuthoringReplacement}
         onLoadFlow={(id) => {
           const selection = window.MobKitFlowController.flowRegistrySelectionState(flows, id);
           openFlowRegistrySelection(selection);
@@ -1251,13 +1383,23 @@ function ModeToggle({ mode, onSelectMode, railState }) {
   );
 }
 
-function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, onLoadFlow }) {
-  const setDeployField = (field, value) => setDeploySettings((current) =>
-    window.MobKitFlowController.deploySettingsFieldPatch(current, field, value, { contract, modelCatalog })
-  );
-  const setMobField = (field, value) => setMobSettings((current) =>
-    window.MobKitFlowController.mobSettingsFieldPatch(current, field, value, { contract })
-  );
+function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, applyAuthoringReplacement = null, onLoadFlow }) {
+  const setDeployField = (field, value) => {
+    const next = window.MobKitFlowController.deploySettingsFieldPatch(deploySettings, field, value, { contract, modelCatalog });
+    if (applyAuthoringReplacement) {
+      applyAuthoringReplacement({ deploySettings: next });
+    } else {
+      setDeploySettings(next);
+    }
+  };
+  const setMobField = (field, value) => {
+    const next = window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, field, value, { contract });
+    if (applyAuthoringReplacement) {
+      applyAuthoringReplacement({ mobSettings: next });
+    } else {
+      setMobSettings(next);
+    }
+  };
   const controlState = window.MobKitFlowController.tweaksControlState({
     flows,
     deploySettings,

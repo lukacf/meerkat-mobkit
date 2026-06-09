@@ -159,7 +159,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
   );
 }
 
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null }) {
+function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringReplacement = null }) {
   const members = studio?.members || [];
   const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [selLocal, setSelLocal] = React.useState(null);
@@ -177,8 +177,15 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     ? { ...view, ty: 0 }
     : view;
 
+  const commitFlow = (nextFlow, studioPatch = {}) => {
+    if (applyAuthoringReplacement) {
+      applyAuthoringReplacement({ flow: nextFlow, studio: studioPatch });
+    } else {
+      setFlow(nextFlow);
+    }
+  };
   const update = (id, patch) =>
-    setFlow(f => window.MobKitFlowController.flowStepUpdatePatch(f, id, patch, { members }));
+    commitFlow(window.MobKitFlowController.flowStepUpdatePatch(flow, id, patch, { members }));
   const selStep = findStep(flow.steps, sel);
   const applyBasicInteraction = (result) => {
     if (!result) return;
@@ -191,13 +198,13 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     if (!newStep) return;
     const result = window.MobKitFlowController.flowStepInsertTransition(flow, laneRef, newStep, { members });
     if (!result.ok) return;
-    setFlow(result.flow);
+    commitFlow(result.flow);
     setSel(result.selection);
     setPicker(result.picker);
   };
   const removeStep = (id) => {
     const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
-    setFlow(result.flow);
+    commitFlow(result.flow);
     setSel(result.selection);
     setPicker(result.picker);
   };
@@ -277,7 +284,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
             onClose={() => applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition())}
           />
         ) : selStep ? (
-          <StepInspector studio={studio} members={members} flow={flow} setFlow={setFlow} step={selStep} update={update} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} launchView={launchView} conditionView={conditionView} />
+          <StepInspector studio={studio} members={members} flow={flow} setFlow={setFlow} step={selStep} update={update} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} launchView={launchView} conditionView={conditionView} applyAuthoringReplacement={applyAuthoringReplacement} />
         ) : (
           <EmptyPanel state={viewState} />
         )}
@@ -466,7 +473,7 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
 }
 
 // ── Inspector ──
-function StepInspector({ studio, members, flow, setFlow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null }) {
+function StepInspector({ studio, members, flow, setFlow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null, applyAuthoringReplacement = null }) {
   const [paramAddResult, setParamAddResult] = React.useState(null);
   React.useEffect(() => setParamAddResult(null), [step?.id]);
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
@@ -474,47 +481,40 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
     const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult);
+    const applyInputCascade = (result) => {
+      if (applyAuthoringReplacement) {
+        applyAuthoringReplacement({
+          flow: result.flow,
+          studio: { edges: result.edges },
+        });
+        return;
+      }
+      if (result.edges !== studio?.edges && studio?.setEdges) {
+        if (studio?.snap) studio.snap();
+        studio.setEdges(result.edges);
+      }
+      setFlow(result.flow);
+    };
     const updateParam = (id, patch) => {
-      setFlow(current => {
-        const result = window.MobKitFlowController.inputParamUpdateCascadePatch({
-          flow: current,
-          edges: studio?.edges || [],
-          members: studio?.members || [],
-          instances: studio?.instances || [],
-          schemas: studio?.schemas || [],
-        }, step.id, id, patch, contract);
-        if (result.edges !== studio?.edges && studio?.setEdges) {
-          if (studio?.snap) studio.snap();
-          studio.setEdges(result.edges);
-        }
-        return result.flow;
-      });
+      applyInputCascade(window.MobKitFlowController.inputParamUpdateCascadePatch({
+        flow,
+        edges: studio?.edges || [],
+        members: studio?.members || [],
+        instances: studio?.instances || [],
+        schemas: studio?.schemas || [],
+      }, step.id, id, patch, contract));
     };
     const deleteParam = (id) => {
-      setFlow(current => {
-        const result = window.MobKitFlowController.inputParamDeleteCascadePatch({
-          flow: current,
-          edges: studio?.edges || [],
-        }, step.id, id, contract);
-        if (result.edges !== studio?.edges && studio?.setEdges) {
-          if (studio?.snap) studio.snap();
-          studio.setEdges(result.edges);
-        }
-        return result.flow;
-      });
+      applyInputCascade(window.MobKitFlowController.inputParamDeleteCascadePatch({
+        flow,
+        edges: studio?.edges || [],
+      }, step.id, id, contract));
     };
     const renameParam = (id, rawName, previousName) => {
-      setFlow(current => {
-        const result = window.MobKitFlowController.inputParamRenameCascadePatch({
-          flow: current,
-          edges: studio?.edges || [],
-        }, step.id, id, rawName, previousName, contract);
-        if (result.edges !== studio?.edges && studio?.setEdges) {
-          if (studio?.snap) studio.snap();
-          studio.setEdges(result.edges);
-        }
-        return result.flow;
-      });
+      applyInputCascade(window.MobKitFlowController.inputParamRenameCascadePatch({
+        flow,
+        edges: studio?.edges || [],
+      }, step.id, id, rawName, previousName, contract));
     };
     const addParam = () => {
       const result = window.MobKitFlowController.inputParamAddPatch(params, contract);

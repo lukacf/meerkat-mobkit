@@ -151,7 +151,7 @@ function useStudioState(initial, onDirty, authoring = {}) {
   };
 }
 
-function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [] }) {
+function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [], applyAuthoringReplacement = null }) {
   const hostRef = React.useRef(null);
   const [drag, setDrag] = React.useState(null);
   const [conn, setConn] = React.useState(null);
@@ -309,14 +309,21 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const w = screenToWorld(e.clientX, e.clientY);
         const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
         if (cell && (cell.col !== drag.origCol || cell.row !== drag.origRow)) {
-          state.snap();
           const next = window.MobKitFlowController.studioMoveInstancePatch({
             instances: state.instances,
           }, drag.instId, cell, {
             col: drag.origCol,
             row: drag.origRow,
           });
-          state.setInstances(next.instances);
+          if (applyAuthoringReplacement) {
+            applyAuthoringReplacement({
+              studio: { instances: next.instances },
+              selection: { kind: "instance", id: drag.instId },
+            });
+          } else {
+            state.snap();
+            state.setInstances(next.instances);
+          }
         }
         setDrag(null); setHoverCell(null);
       }
@@ -332,8 +339,15 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
             contract,
           });
           if (result.ok && result.edge) {
-            state.setEdges(result.edges);
-            selectEdge(result.selectId);
+            if (applyAuthoringReplacement) {
+              applyAuthoringReplacement({
+                studio: { edges: result.edges },
+                selection: { kind: "edge", id: result.selectId },
+              }).then(() => selectEdge(result.selectId));
+            } else {
+              state.setEdges(result.edges);
+              selectEdge(result.selectId);
+            }
           }
         }
         setConn(null); setHoverInId(null);

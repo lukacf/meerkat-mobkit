@@ -2827,6 +2827,17 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
         .ok_or_else(|| "mobkit/mobpacks/apply_operation requires operation.type".to_string())?;
     let selection = match operation_type {
         "add_agent_definition" => apply_add_agent_definition_operation(&mut document, operation)?,
+        "update_member" => apply_update_member_operation(&mut document, operation)?,
+        "add_member_tool" => apply_member_tool_operation(&mut document, operation, true)?,
+        "remove_member_tool" => apply_member_tool_operation(&mut document, operation, false)?,
+        "toggle_member_skill" => {
+            apply_member_skill_operation(&mut document, operation, SkillOperation::Toggle)?
+        }
+        "remove_member_skill" => {
+            apply_member_skill_operation(&mut document, operation, SkillOperation::Remove)?
+        }
+        "create_inline_skill" => apply_create_inline_skill_operation(&mut document, operation)?,
+        "replace_authoring_document" => apply_replace_authoring_document_operation(operation)?,
         other => {
             return Err(format!(
                 "mobkit/mobpacks/apply_operation unsupported operation.type: {other}"
@@ -2842,6 +2853,15 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
         "selection": selection,
         "validation": validation,
     }))
+}
+
+fn apply_replace_authoring_document_operation(
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    Ok(operation
+        .get("selection")
+        .cloned()
+        .unwrap_or_else(|| json!({ "kind": null, "id": null })))
 }
 
 fn apply_add_agent_definition_operation(
@@ -2873,6 +2893,460 @@ fn apply_add_agent_definition_operation(
     members.push(member.clone());
     document.members = Value::Array(members);
     Ok(json!({ "kind": "agent", "id": member_id }))
+}
+
+fn operation_member_id(operation: &serde_json::Map<String, Value>) -> Result<String, String> {
+    operation
+        .get("member_id")
+        .or_else(|| operation.get("memberId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| "MobKit authoring operation requires member_id".to_string())
+}
+
+fn operation_string(
+    operation: &serde_json::Map<String, Value>,
+    snake_field: &str,
+    camel_field: &str,
+) -> Result<String, String> {
+    operation
+        .get(snake_field)
+        .or_else(|| operation.get(camel_field))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("MobKit authoring operation requires {snake_field}"))
+}
+
+fn string_list_from_member_field(member: &Value, field: &str) -> Vec<String> {
+    string_vec(member.get(field))
+}
+
+fn set_member_string_list_field(member: &mut Value, field: &str, items: Vec<String>) {
+    member[field] = Value::Array(items.into_iter().map(Value::String).collect());
+}
+
+fn member_index_by_id(members: &[Value], member_id: &str) -> Option<usize> {
+    members.iter().position(|member| {
+        member
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == member_id)
+    })
+}
+
+fn apply_update_member_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let member_id = operation_member_id(operation)?;
+    let patch = operation
+        .get("patch")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "update_member requires patch object".to_string())?;
+    let mut members = document
+        .members
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let index = member_index_by_id(&members, &member_id)
+        .ok_or_else(|| format!("member not found: {member_id}"))?;
+    let member = members[index]
+        .as_object_mut()
+        .ok_or_else(|| format!("member is not an object: {member_id}"))?;
+    for (key, value) in patch {
+        if key == "id" {
+            return Err("update_member cannot change member id".to_string());
+        }
+        member.insert(key.clone(), value.clone());
+    }
+    document.members = Value::Array(members);
+    reconcile_document_after_member_change(document);
+    Ok(json!({ "kind": "agent", "id": member_id }))
+}
+
+fn apply_member_tool_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+    add: bool,
+) -> Result<Value, String> {
+    let member_id = operation_member_id(operation)?;
+    let tool_id = operation_string(operation, "tool_id", "toolId")?;
+    if add && !tool_catalog_by_id(&tool_catalog_response()).contains_key(&tool_id) {
+        return Err(format!("unknown MobKit tool: {tool_id}"));
+    }
+    let mut members = document
+        .members
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let index = member_index_by_id(&members, &member_id)
+        .ok_or_else(|| format!("member not found: {member_id}"))?;
+    let member = &mut members[index];
+    let mut tools = string_list_from_member_field(member, "tools");
+    if add {
+        if !tools.iter().any(|tool| tool == &tool_id) {
+            tools.push(tool_id);
+        }
+    } else {
+        tools.retain(|tool| tool != &tool_id);
+    }
+    set_member_string_list_field(member, "tools", tools);
+    document.members = Value::Array(members);
+    reconcile_document_after_member_change(document);
+    Ok(json!({ "kind": "agent", "id": member_id }))
+}
+
+enum SkillOperation {
+    Toggle,
+    Remove,
+}
+
+fn apply_member_skill_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+    mode: SkillOperation,
+) -> Result<Value, String> {
+    let member_id = operation_member_id(operation)?;
+    let skill_id = operation_string(operation, "skill_id", "skillId")?;
+    let mut members = document
+        .members
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let index = member_index_by_id(&members, &member_id)
+        .ok_or_else(|| format!("member not found: {member_id}"))?;
+    let member = &mut members[index];
+    let mut skills = string_list_from_member_field(member, "skills");
+    let selected = skills.iter().any(|skill| skill == &skill_id);
+    match mode {
+        SkillOperation::Toggle if selected => skills.retain(|skill| skill != &skill_id),
+        SkillOperation::Toggle => {
+            ensure_skill_definition_in_document(document, &skill_id)?;
+            skills.push(skill_id);
+        }
+        SkillOperation::Remove => skills.retain(|skill| skill != &skill_id),
+    }
+    set_member_string_list_field(member, "skills", skills);
+    document.members = Value::Array(members);
+    Ok(json!({ "kind": "agent", "id": member_id }))
+}
+
+fn apply_create_inline_skill_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let member_id = operation_member_id(operation)?;
+    let label = operation_string(operation, "label", "label")?;
+    let content = operation_string(operation, "content", "content")?;
+    let explicit_id = operation
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let skill_id = insert_inline_skill_definition(document, explicit_id, &label, &content)?;
+    let mut members = document
+        .members
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let index = member_index_by_id(&members, &member_id)
+        .ok_or_else(|| format!("member not found: {member_id}"))?;
+    let member = &mut members[index];
+    let mut skills = string_list_from_member_field(member, "skills");
+    if !skills.iter().any(|skill| skill == &skill_id) {
+        skills.push(skill_id.clone());
+    }
+    set_member_string_list_field(member, "skills", skills);
+    document.members = Value::Array(members);
+    Ok(json!({ "kind": "agent", "id": member_id, "skill_id": skill_id }))
+}
+
+fn ensure_skill_definition_in_document(
+    document: &mut MobpackDocument,
+    skill_id: &str,
+) -> Result<(), String> {
+    if skill_ids_from_realms(&document.skill_realms).contains(skill_id) {
+        return Ok(());
+    }
+    let catalogs = mobpack_catalogs_response();
+    let skills = skill_catalog_by_id(&catalogs["skill_realms"]);
+    let skill = skills
+        .get(skill_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown MobKit skill: {skill_id}"))?;
+    let realm_id = skill
+        .get("realm")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("mobkit/catalog");
+    let realm_label = skill
+        .get("realmLabel")
+        .and_then(Value::as_str)
+        .unwrap_or(realm_id);
+    let mut realms = document
+        .skill_realms
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let realm_index = realms.iter().position(|realm| {
+        realm
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == realm_id)
+    });
+    if realm_index.is_none() {
+        realms.push(json!({
+            "id": realm_id,
+            "label": realm_label,
+            "default": realms.is_empty(),
+            "source": skill.get("source").and_then(Value::as_str).unwrap_or("mobkit/mobpacks/catalogs"),
+            "sourceDocumentPath": "mobkit/mobpacks/catalogs.skill_realms[]",
+            "skills": []
+        }));
+    }
+    let index = realm_index.unwrap_or(realms.len() - 1);
+    let Some(skills) = realms[index]
+        .get_mut("skills")
+        .and_then(Value::as_array_mut)
+    else {
+        return Err(format!(
+            "skill realm {realm_id} does not contain skills array"
+        ));
+    };
+    if !skills.iter().any(|skill| {
+        skill
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == skill_id)
+    }) {
+        skills.push(skill);
+    }
+    document.skill_realms = Value::Array(realms);
+    Ok(())
+}
+
+fn normalize_inline_skill_id(raw: &str) -> String {
+    let mut out = String::new();
+    let mut previous_dot = false;
+    for ch in raw.trim().to_ascii_lowercase().chars() {
+        let next = if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            Some(ch)
+        } else if ch == '.' {
+            Some('.')
+        } else {
+            Some('.')
+        };
+        if let Some(ch) = next {
+            if ch == '.' {
+                if !previous_dot {
+                    out.push(ch);
+                }
+                previous_dot = true;
+            } else {
+                out.push(ch);
+                previous_dot = false;
+            }
+        }
+    }
+    out.trim_matches(['.', '_', '-']).to_string()
+}
+
+fn insert_inline_skill_definition(
+    document: &mut MobpackDocument,
+    explicit_id: Option<&str>,
+    label: &str,
+    content: &str,
+) -> Result<String, String> {
+    let identity = explicit_id.unwrap_or(label).trim();
+    let raw_id = explicit_id.map(ToString::to_string).unwrap_or_else(|| {
+        if label.contains('.') {
+            label.to_string()
+        } else {
+            format!("mob.{label}")
+        }
+    });
+    let base_id = normalize_inline_skill_id(&raw_id);
+    if identity.is_empty() || base_id.is_empty() {
+        return Err("inline skill id or label must contain letters or numbers".to_string());
+    }
+    let used = skill_ids_from_realms(&document.skill_realms);
+    let mut skill_id = base_id.clone();
+    let mut index = 2;
+    while used.contains(&skill_id) {
+        skill_id = format!("{base_id}.{index}");
+        index += 1;
+    }
+    let mut realms = document
+        .skill_realms
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let realm_id = "mobkit/editor-inline";
+    let realm_index = realms.iter().position(|realm| {
+        realm
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == realm_id)
+    });
+    if realm_index.is_none() {
+        realms.insert(
+            0,
+            json!({
+                "id": realm_id,
+                "label": "This mobpack",
+                "source": "mobkit/editor",
+                "default": realms.is_empty(),
+                "skills": []
+            }),
+        );
+    }
+    let index = realm_index.unwrap_or(0);
+    let Some(skills) = realms[index]
+        .get_mut("skills")
+        .and_then(Value::as_array_mut)
+    else {
+        return Err("inline skill realm does not contain skills array".to_string());
+    };
+    skills.push(json!({
+        "id": skill_id,
+        "label": label,
+        "source": "inline",
+        "content": content,
+        "desc": "Inline MobKit skill stored in this mobpack."
+    }));
+    document.skill_realms = Value::Array(realms);
+    Ok(skill_id)
+}
+
+fn reconcile_document_after_member_change(document: &mut MobpackDocument) {
+    let members = document
+        .members
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let member_ids = members
+        .iter()
+        .filter_map(|member| member.get("id").and_then(Value::as_str))
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>();
+    prune_flow_steps_for_members(&mut document.flow, &members, &member_ids);
+    prune_graph_instances_for_members(&mut document.instances, &members, &member_ids);
+}
+
+fn member_tool_set(members: &[Value], member_id: &str) -> BTreeSet<String> {
+    members
+        .iter()
+        .find(|member| {
+            member
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == member_id)
+        })
+        .map(|member| string_vec(member.get("tools")).into_iter().collect())
+        .unwrap_or_default()
+}
+
+fn prune_tool_scope_fields(value: &mut Value, allowed_tools: &BTreeSet<String>) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    for field in [
+        "allowedTools",
+        "allowed_tools",
+        "blockedTools",
+        "blocked_tools",
+    ] {
+        if let Some(list) = object.get_mut(field).and_then(Value::as_array_mut) {
+            list.retain(|tool| {
+                tool.as_str()
+                    .map(str::trim)
+                    .is_some_and(|tool| allowed_tools.contains(tool))
+            });
+        }
+    }
+}
+
+fn prune_flow_steps_for_members(
+    flow: &mut Value,
+    members: &[Value],
+    member_ids: &BTreeSet<String>,
+) {
+    let Some(steps) = flow.get_mut("steps").and_then(Value::as_array_mut) else {
+        return;
+    };
+    prune_step_array_for_members(steps, members, member_ids);
+}
+
+fn prune_step_array_for_members(
+    steps: &mut Vec<Value>,
+    members: &[Value],
+    member_ids: &BTreeSet<String>,
+) {
+    steps.retain(|step| {
+        step.get("type").and_then(Value::as_str) != Some("member")
+            || step
+                .get("role")
+                .and_then(Value::as_str)
+                .is_some_and(|role| member_ids.contains(role))
+    });
+    for step in steps {
+        match step.get("type").and_then(Value::as_str) {
+            Some("member") => {
+                let role = step.get("role").and_then(Value::as_str).unwrap_or_default();
+                let allowed_tools = member_tool_set(members, role);
+                prune_tool_scope_fields(step, &allowed_tools);
+            }
+            Some("repeat") => {
+                if let Some(nested) = step.get_mut("steps").and_then(Value::as_array_mut) {
+                    prune_step_array_for_members(nested, members, member_ids);
+                }
+            }
+            Some("branch") | Some("parallel") => {
+                if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+                    for branch in branches {
+                        if let Some(branch_steps) =
+                            branch.get_mut("steps").and_then(Value::as_array_mut)
+                        {
+                            prune_step_array_for_members(branch_steps, members, member_ids);
+                        }
+                    }
+                }
+                if let Some(fallback) = step.get_mut("fallback").and_then(Value::as_array_mut) {
+                    prune_step_array_for_members(fallback, members, member_ids);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn prune_graph_instances_for_members(
+    instances: &mut Value,
+    members: &[Value],
+    member_ids: &BTreeSet<String>,
+) {
+    let Some(instances) = instances.as_array_mut() else {
+        return;
+    };
+    instances.retain(|instance| {
+        instance
+            .get("memberId")
+            .and_then(Value::as_str)
+            .map(|member_id| member_ids.contains(member_id))
+            .unwrap_or(true)
+    });
+    for instance in instances {
+        let Some(member_id) = instance.get("memberId").and_then(Value::as_str) else {
+            continue;
+        };
+        let allowed_tools = member_tool_set(members, member_id);
+        prune_tool_scope_fields(instance, &allowed_tools);
+    }
 }
 
 fn mobpack_agent_definition_by_id(definition_id: &str) -> Option<Value> {
@@ -17156,6 +17630,178 @@ model = "gpt-5.5"
                             .as_str()
                             .is_some_and(|content| content.contains("MobKit-owned contracts"))
                 })
+        );
+    }
+
+    #[test]
+    fn apply_operation_updates_member_tools_skills_and_replaces_document() {
+        let catalogs = mobpack_catalogs_response();
+        let document: MobpackDocument =
+            serde_json::from_value(catalogs["blank_mobpack"]["document"].clone())
+                .expect("blank document");
+
+        let added = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "add_agent_definition",
+                "definition_id": "mobkit_authoring_profiles__01_implementer",
+            }
+        }))
+        .expect("add implementer");
+        let mut document = added["document"].clone();
+        let member_id = added["selection"]["id"]
+            .as_str()
+            .expect("member id")
+            .to_string();
+
+        let updated = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "update_member",
+                "member_id": member_id,
+                "patch": {
+                    "name": "Edited implementer",
+                    "systemPrompt": "Updated through MobKit apply_operation.",
+                    "maxInlinePeerNotifications": 3
+                }
+            }
+        }))
+        .expect("update member");
+        assert_eq!(
+            updated["selection"],
+            json!({ "kind": "agent", "id": member_id })
+        );
+        assert!(updated["validation"]["ok"].as_bool().unwrap_or(false));
+        assert_eq!(
+            updated["document"]["members"]
+                .as_array()
+                .expect("members")
+                .iter()
+                .find(|member| member["id"] == member_id)
+                .expect("updated member")["name"],
+            json!("Edited implementer")
+        );
+        document = updated["document"].clone();
+
+        let rejected = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "update_member",
+                "member_id": member_id,
+                "patch": { "id": "renamed" }
+            }
+        }));
+        assert!(
+            rejected
+                .expect_err("renaming member id must fail")
+                .contains("cannot change member id")
+        );
+
+        let removed_tool = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "remove_member_tool",
+                "member_id": member_id,
+                "tool_id": "shell"
+            }
+        }))
+        .expect("remove shell");
+        let tools = removed_tool["document"]["members"]
+            .as_array()
+            .expect("members")
+            .iter()
+            .find(|member| member["id"] == member_id)
+            .expect("tool member")["tools"]
+            .as_array()
+            .expect("tools");
+        assert!(!tools.iter().any(|tool| tool == "shell"));
+        document = removed_tool["document"].clone();
+
+        let added_tool = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "add_member_tool",
+                "member_id": member_id,
+                "tool_id": "shell"
+            }
+        }))
+        .expect("add shell");
+        assert!(added_tool["validation"]["ok"].as_bool().unwrap_or(false));
+        document = added_tool["document"].clone();
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": document,
+                "operation": {
+                    "type": "add_member_tool",
+                    "member_id": member_id,
+                    "tool_id": "not-a-real-tool"
+                }
+            }))
+            .expect_err("unknown tool rejected")
+            .contains("unknown MobKit tool")
+        );
+
+        let toggled_skill = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "toggle_member_skill",
+                "member_id": member_id,
+                "skill_id": "mob.authoring.review"
+            }
+        }))
+        .expect("toggle skill");
+        assert!(
+            toggled_skill["document"]["skill_realms"]
+                .as_array()
+                .expect("skill realms")
+                .iter()
+                .flat_map(|realm| realm["skills"].as_array().into_iter().flatten())
+                .any(|skill| skill["id"] == "mob.authoring.review")
+        );
+        document = toggled_skill["document"].clone();
+
+        let inline_skill = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "create_inline_skill",
+                "member_id": member_id,
+                "label": "Editor proof",
+                "content": "Prove the editor operation path."
+            }
+        }))
+        .expect("create inline skill");
+        assert_eq!(
+            inline_skill["selection"]["skill_id"],
+            json!("mob.editor.proof")
+        );
+        assert!(
+            inline_skill["document"]["skill_realms"]
+                .as_array()
+                .expect("skill realms")
+                .iter()
+                .any(|realm| realm["id"] == "mobkit/editor-inline"
+                    && realm["skills"]
+                        .as_array()
+                        .expect("inline skills")
+                        .iter()
+                        .any(|skill| skill["id"] == "mob.editor.proof"
+                            && skill["content"] == "Prove the editor operation path."))
+        );
+        document = inline_skill["document"].clone();
+
+        document["name"] = json!("Replacement accepted");
+        let replaced = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "replace_authoring_document",
+                "selection": { "kind": "schema", "id": "PlanArtifact" }
+            }
+        }))
+        .expect("replace document");
+        assert_eq!(replaced["document"]["name"], json!("Replacement accepted"));
+        assert_eq!(
+            replaced["selection"],
+            json!({ "kind": "schema", "id": "PlanArtifact" })
         );
     }
 

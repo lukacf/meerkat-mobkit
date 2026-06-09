@@ -16,18 +16,18 @@
 //   { kind: "schema", id }  → SchemaEditor (visual, field-by-field)
 //   null                    → empty hint
 
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAuthoringOperation = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAuthoringOperation = null, applyAuthoringReplacement = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   return (
     <div className="agents-view">
-      <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} agentDefinitions={agentDefinitions} applyAuthoringOperation={applyAuthoringOperation} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} />
+      <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} agentDefinitions={agentDefinitions} applyAuthoringOperation={applyAuthoringOperation} applyAuthoringReplacement={applyAuthoringReplacement} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} />
       <div className="agents-view__main">
-        <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} agentDetailView={agentDetailView} agentAccessView={agentAccessView} schemaView={schemaView} />
+        <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} applyAuthoringOperation={applyAuthoringOperation} applyAuthoringReplacement={applyAuthoringReplacement} agentView={agentView} agentDetailView={agentDetailView} agentAccessView={agentAccessView} schemaView={schemaView} />
       </div>
     </div>
   );
 }
 
-function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAuthoringOperation = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
+function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAuthoringOperation = null, applyAuthoringReplacement = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const [schemaAddResult, setSchemaAddResult] = React.useState(null);
   const listState = window.MobKitFlowController.agentListState({
     members: studio.members,
@@ -91,8 +91,15 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
             const result = window.MobKitFlowController.schemaDefinitionAddTransition(studio.schemas, contract);
             setSchemaAddResult(result);
             if (result.ok === false) return;
-            if (studio.snap) studio.snap();
-            studio.setSchemas(result.schemas);
+            if (applyAuthoringReplacement) {
+              applyAuthoringReplacement({
+                studio: { schemas: result.schemas },
+                selection: result.selection,
+              });
+            } else {
+              if (studio.snap) studio.snap();
+              studio.setSchemas(result.schemas);
+            }
             setSchemaAddResult(null);
             setAgentSel(result.selection);
           }}
@@ -176,7 +183,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAuth
   );
 }
 
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAuthoringOperation = null, applyAuthoringReplacement = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
     selection: agentSel,
     members: studio.members,
@@ -195,41 +202,44 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
   }
   if (selectionState.kind === "schema") {
     if (!selectionState.schema) return <div className="agents-empty">{selectionState.missingSchemaLabel}</div>;
-    return <SchemaEditor studio={studio} schema={selectionState.schema} setAgentSel={setAgentSel} contract={contract} flow={flow} setFlow={setFlow} schemaView={schemaView} />;
+    return <SchemaEditor studio={studio} schema={selectionState.schema} setAgentSel={setAgentSel} contract={contract} flow={flow} setFlow={setFlow} schemaView={schemaView} applyAuthoringReplacement={applyAuthoringReplacement} />;
   }
   if (!selectionState.member) return <div className="agents-empty">{selectionState.missingAgentLabel}</div>;
-  return <AgentEditor studio={studio} member={selectionState.member} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentDetailView={agentDetailView} agentAccessView={agentAccessView} />;
+  return <AgentEditor studio={studio} member={selectionState.member} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} applyAuthoringOperation={applyAuthoringOperation} applyAuthoringReplacement={applyAuthoringReplacement} agentDetailView={agentDetailView} agentAccessView={agentAccessView} />;
 }
 
 // ── Agent editor ────────────────────────────────────────────────────
-function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDetailView = null, agentAccessView = null }) {
+function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAuthoringOperation = null, applyAuthoringReplacement = null, agentDetailView = null, agentAccessView = null }) {
   const [memberEditError, setMemberEditError] = React.useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
   React.useEffect(() => {
     setDeleteConfirmOpen(false);
   }, [member.id]);
-  const change = (patch) => {
+  const mobKitOperationError = (result, fallback) => {
+    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
+    return result?.error || fallback;
+  };
+  const change = async (patch) => {
     if (!patch || typeof patch !== "object" || !Object.keys(patch).length) return;
-    const result = window.MobKitFlowController.memberUpdateCascadePatch({
-      memberId: member.id,
-      members: studio.members,
-      flow,
-      instances: studio.instances,
-      edges: studio.edges,
-      mobSettings,
-      contract,
-    }, patch);
-    if (!result.ok) {
-      setMemberEditError(result.error || "");
+    if (!applyAuthoringOperation) {
+      setMemberEditError("MobKit authoring operation API is unavailable");
       return;
     }
-    if (studio.snap) studio.snap();
-    studio.setMembers(result.members);
-    if (result.flow !== flow && setFlow) setFlow(result.flow);
-    if (result.instances !== studio.instances) studio.setInstances(result.instances);
-    if (result.edges !== studio.edges) studio.setEdges(result.edges);
-    if (result.mobSettings !== mobSettings && setMobSettings) setMobSettings(result.mobSettings);
-    setMemberEditError("");
+    try {
+      if (studio.snap) studio.snap();
+      const result = await applyAuthoringOperation({
+        type: "update_member",
+        member_id: member.id,
+        patch,
+      });
+      if (!result?.ok) {
+        setMemberEditError(mobKitOperationError(result, "MobKit member update failed"));
+        return;
+      }
+      setMemberEditError("");
+    } catch (error) {
+      setMemberEditError(error?.message || "MobKit member update failed");
+    }
   };
   const [toolDraft, setToolDraft] = React.useState("");
   const [toolDraftError, setToolDraftError] = React.useState("");
@@ -245,38 +255,53 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     agentDetailView,
   });
   const schemaErrorState = window.MobKitFlowController.memberSchemaChangeErrorState(schemaChangeResult);
-  const addToolAccess = (raw) => {
-    const result = window.MobKitFlowController.memberToolAccessCascadePatch({
-      memberId: member.id,
-      members: studio.members,
-      flow,
-      instances: studio.instances,
-    }, raw, toolCatalog, agentAccessView);
-    if (!result.ok) {
-      setToolDraftError(result.error || "");
+  const addToolAccess = async (raw) => {
+    const toolId = String(raw || "").trim();
+    if (!toolId) {
+      setToolDraftError(toolAccessState.emptyToolError || "Choose a tool first.");
       return;
     }
-    if (result.patch) {
-      if (studio.snap) studio.snap();
-      studio.setMembers(result.members);
-      if (result.flow !== flow && setFlow) setFlow(result.flow);
-      if (result.instances !== studio.instances) studio.setInstances(result.instances);
+    if (!applyAuthoringOperation) {
+      setToolDraftError("MobKit authoring operation API is unavailable");
+      return;
     }
-    setToolDraft("");
-    setToolDraftError("");
+    try {
+      if (studio.snap) studio.snap();
+      const result = await applyAuthoringOperation({
+        type: "add_member_tool",
+        member_id: member.id,
+        tool_id: toolId,
+      });
+      if (!result?.ok) {
+        setToolDraftError(mobKitOperationError(result, "MobKit tool update failed"));
+        return;
+      }
+      setToolDraft("");
+      setToolDraftError("");
+    } catch (error) {
+      setToolDraftError(error?.message || "MobKit tool update failed");
+    }
   };
-  const removeToolAccess = (toolId) => {
-    const result = window.MobKitFlowController.memberToolRemoveCascadePatch({
-      memberId: member.id,
-      members: studio.members,
-      flow,
-      instances: studio.instances,
-    }, toolId);
-    if (!result.ok || !result.patch) return;
-    if (studio.snap) studio.snap();
-    studio.setMembers(result.members);
-    if (result.flow !== flow && setFlow) setFlow(result.flow);
-    if (result.instances !== studio.instances) studio.setInstances(result.instances);
+  const removeToolAccess = async (toolId) => {
+    if (!applyAuthoringOperation) {
+      setToolDraftError("MobKit authoring operation API is unavailable");
+      return;
+    }
+    try {
+      if (studio.snap) studio.snap();
+      const result = await applyAuthoringOperation({
+        type: "remove_member_tool",
+        member_id: member.id,
+        tool_id: toolId,
+      });
+      if (!result?.ok) {
+        setToolDraftError(mobKitOperationError(result, "MobKit tool update failed"));
+        return;
+      }
+      setToolDraftError("");
+    } catch (error) {
+      setToolDraftError(error?.message || "MobKit tool update failed");
+    }
   };
   const changeSchema = (rawSchema) => {
     const result = window.MobKitFlowController.memberSchemaCascadePatch({
@@ -289,11 +314,23 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     }, rawSchema);
     setSchemaChangeResult(result);
     if (!result.ok) return;
-    if (studio.snap) studio.snap();
-    studio.setMembers(result.members);
-    if (result.flow !== flow && setFlow) setFlow(result.flow);
-    if (result.instances !== studio.instances) studio.setInstances(result.instances);
-    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    if (applyAuthoringReplacement) {
+      applyAuthoringReplacement({
+        flow: result.flow,
+        studio: {
+          members: result.members,
+          instances: result.instances,
+          edges: result.edges,
+        },
+        selection: { kind: "agent", id: member.id },
+      });
+    } else {
+      if (studio.snap) studio.snap();
+      studio.setMembers(result.members);
+      if (result.flow !== flow && setFlow) setFlow(result.flow);
+      if (result.instances !== studio.instances) studio.setInstances(result.instances);
+      if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    }
     setSchemaChangeResult(null);
   };
   const deleteConfirmState = window.MobKitFlowController.agentDeleteConfirmationState(editorState, deleteConfirmOpen);
@@ -307,12 +344,25 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       mobSettings,
     });
     if (!result.ok) return;
-    if (studio.snap) studio.snap();
-    studio.setMembers(result.members);
-    studio.setInstances(result.instances);
-    studio.setEdges(result.edges);
-    if (setFlow) setFlow(result.flow);
-    if (setMobSettings) setMobSettings(result.mobSettings);
+    if (applyAuthoringReplacement) {
+      applyAuthoringReplacement({
+        flow: result.flow,
+        mobSettings: result.mobSettings,
+        studio: {
+          members: result.members,
+          instances: result.instances,
+          edges: result.edges,
+        },
+        selection: result.selection,
+      });
+    } else {
+      if (studio.snap) studio.snap();
+      studio.setMembers(result.members);
+      studio.setInstances(result.instances);
+      studio.setEdges(result.edges);
+      if (setFlow) setFlow(result.flow);
+      if (setMobSettings) setMobSettings(result.mobSettings);
+    }
     setAgentSel(result.selection);
     setDeleteConfirmOpen(false);
   };
@@ -548,7 +598,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
             </div>
 
             <div className="section">
-              <SkillAccess studio={studio} member={member} agentAccessView={agentAccessView} />
+              <SkillAccess studio={studio} member={member} agentAccessView={agentAccessView} applyAuthoringOperation={applyAuthoringOperation} />
             </div>
               </>
             )}
@@ -575,7 +625,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
 }
 
 // ── Schema editor (visual, field-by-field) ──────────────────────────
-function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null }) {
+function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null, applyAuthoringReplacement = null }) {
   const change = (patch) => studio.updateSchema(schema.id, patch);
   const [fieldAddResult, setFieldAddResult] = React.useState(null);
   React.useEffect(() => setFieldAddResult(null), [schema?.id]);
@@ -585,6 +635,25 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     schemaView,
   });
   const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult);
+  const applySchemaCascade = (result, selection = { kind: "schema", id: schema.id }) => {
+    if (applyAuthoringReplacement) {
+      applyAuthoringReplacement({
+        flow: result.flow || flow,
+        studio: {
+          schemas: result.schemas,
+          members: result.members || studio.members,
+          edges: result.edges || studio.edges,
+        },
+        selection,
+      });
+      return;
+    }
+    if (studio.snap) studio.snap();
+    if (result.schemas) studio.setSchemas(result.schemas);
+    if (result.members) studio.setMembers(result.members);
+    if (result.flow !== flow && setFlow) setFlow(result.flow);
+    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+  };
 
   const renameField = (fieldId, oldName, newName) => {
     const result = window.MobKitFlowController.schemaFieldRenameCascadePatch({
@@ -595,12 +664,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       members: studio.members,
       instances: studio.instances,
     }, fieldId, newName, oldName, contract);
-    const flowChanged = result.flow !== flow;
-    const edgesChanged = result.edges !== studio.edges;
-    if (studio.snap) studio.snap();
-    studio.setSchemas(result.schemas);
-    if (flowChanged && setFlow) setFlow(result.flow);
-    if (edgesChanged) studio.setEdges(result.edges);
+    applySchemaCascade(result);
   };
 
   const updateField = (fieldId, patch) => {
@@ -612,12 +676,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       members: studio.members,
       instances: studio.instances,
     }, fieldId, patch, contract);
-    const flowChanged = result.flow !== flow;
-    const edgesChanged = result.edges !== studio.edges;
-    if (studio.snap) studio.snap();
-    studio.setSchemas(result.schemas);
-    if (flowChanged && setFlow) setFlow(result.flow);
-    if (edgesChanged) studio.setEdges(result.edges);
+    applySchemaCascade(result);
   };
 
   const deleteField = (fieldId) => {
@@ -629,10 +688,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       members: studio.members,
       instances: studio.instances,
     }, fieldId);
-    if (studio.snap) studio.snap();
-    studio.setSchemas(result.schemas);
-    if (result.flow !== flow && setFlow) setFlow(result.flow);
-    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    applySchemaCascade(result);
   };
 
   const addField = () => {
@@ -651,11 +707,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       edges: studio.edges,
       instances: studio.instances,
     }, schema.id);
-    if (studio.snap) studio.snap();
-    studio.setSchemas(result.schemas);
-    studio.setMembers(result.members);
-    if (result.flow !== flow && setFlow) setFlow(result.flow);
-    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    applySchemaCascade(result, result.selection);
     setAgentSel(result.selection);
   };
 
@@ -666,10 +718,10 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       flow,
     }, schema.id, newId);
     if (!result.renamed) return;
-    if (studio.snap) studio.snap();
-    studio.setSchemas(result.schemas);
-    studio.setMembers(result.members);
-    if (result.flow !== flow && setFlow) setFlow(result.flow);
+    applySchemaCascade({
+      ...result,
+      edges: studio.edges,
+    }, result.selection);
     setAgentSel(result.selection);
   };
 
@@ -893,7 +945,7 @@ function ProviderParamsEditor({ member, change, agentDetailView = null }) {
 }
 
 // ── Skill access (realm picker + per-skill toggles, baked into the pack) ──
-function SkillAccess({ studio, member, agentAccessView = null }) {
+function SkillAccess({ studio, member, agentAccessView = null, applyAuthoringOperation = null }) {
   const realms = studio.skillRealms || [];
   const initialSkillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, accessView: agentAccessView });
   const [realmId, setRealmId] = React.useState(initialSkillState.realmId);
@@ -905,46 +957,53 @@ function SkillAccess({ studio, member, agentAccessView = null }) {
   React.useEffect(() => {
     if (skillState.realmId !== realmId) setRealmId(skillState.realmId);
   }, [skillState.realmId, realmId]);
-  const applySkillCascade = (result) => {
-    if (!result.ok || !result.patch) return false;
-    if (studio.snap) studio.snap();
-    studio.setMembers(result.members);
-    if (result.skillRealms !== realms) studio.setSkillRealms(result.skillRealms || []);
-    return true;
+  const applySkillOperation = async (operation, fallback = skillState.inlineErrorFallback) => {
+    if (!applyAuthoringOperation) {
+      setInlineError("MobKit authoring operation API is unavailable");
+      return false;
+    }
+    try {
+      if (studio.snap) studio.snap();
+      const result = await applyAuthoringOperation({
+        member_id: member.id,
+        ...operation,
+      });
+      if (!result?.ok) {
+        const validationError = result?.validation?.display_rows?.length ? result.validation.display_rows[0].head : "";
+        setInlineError(validationError || result?.error || fallback);
+        return false;
+      }
+      setInlineError("");
+      return true;
+    } catch (err) {
+      setInlineError(err?.message || fallback);
+      return false;
+    }
   };
   const toggle = (sid) => {
-    applySkillCascade(window.MobKitFlowController.memberSkillToggleCascadePatch({
-      memberId: member.id,
-      members: studio.members,
-      skillRealms: realms,
-    }, sid));
+    applySkillOperation({
+      type: "toggle_member_skill",
+      skill_id: sid,
+    });
   };
   const removeSkill = (sid) => {
-    applySkillCascade(window.MobKitFlowController.memberSkillRemoveCascadePatch({
-      memberId: member.id,
-      members: studio.members,
-      skillRealms: realms,
-    }, sid));
+    applySkillOperation({
+      type: "remove_member_skill",
+      skill_id: sid,
+    });
   };
-  const addInlineSkill = () => {
-    try {
-      const result = window.MobKitFlowController.memberInlineSkillCascadePatch({
-        memberId: member.id,
-        members: studio.members,
-        skillRealms: realms,
-      }, {
-        label: inlineLabel,
-        content: inlineContent,
-      }, agentAccessView);
-      if (!applySkillCascade(result)) return;
-      const inlineForm = result.inlineForm || {};
-      setRealmId(inlineForm.realmId || result.realmId);
-      setInlineLabel(inlineForm.label || "");
-      setInlineContent(inlineForm.content || "");
-      setInlineError(inlineForm.error || "");
-      setInlineOpen(!!inlineForm.open);
-    } catch (err) {
-      setInlineError(err?.message || skillState.inlineErrorFallback);
+  const addInlineSkill = async () => {
+    const ok = await applySkillOperation({
+      type: "create_inline_skill",
+      label: inlineLabel,
+      content: inlineContent,
+    }, skillState.inlineErrorFallback);
+    if (ok) {
+      setRealmId("mobkit/editor-inline");
+      setInlineLabel("");
+      setInlineContent("");
+      setInlineError("");
+      setInlineOpen(false);
     }
   };
   return (

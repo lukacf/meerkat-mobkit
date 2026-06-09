@@ -6807,6 +6807,7 @@
     if (!projection || typeof projection !== "object") return { ok: false };
     const studio = current?.studio && typeof current.studio === "object" ? current.studio : {};
     const members = Array.isArray(projection.members) ? projection.members : [];
+    const skillRealms = Array.isArray(projection.skillRealms) ? projection.skillRealms : [];
     const schemas = Array.isArray(projection.schemas) ? projection.schemas : [];
     const instances = Array.isArray(projection.instances) ? projection.instances : [];
     const edges = Array.isArray(projection.edges) ? projection.edges : [];
@@ -6827,6 +6828,10 @@
       members: {
         changed: !jsonEquivalent(members, studio.members || []),
         value: members,
+      },
+      skillRealms: {
+        changed: !jsonEquivalent(skillRealms, studio.skillRealms || []),
+        value: skillRealms,
       },
       schemas: {
         changed: !jsonEquivalent(schemas, studio.schemas || []),
@@ -8732,6 +8737,7 @@
       flow,
       members: Array.isArray(source.members) ? source.members : [],
       schemas: Array.isArray(source.schemas) ? source.schemas : [],
+      skillRealms: Array.isArray(source.skill_realms) ? source.skill_realms : [],
       instances: Array.isArray(source.instances) ? source.instances : [],
       edges: Array.isArray(source.edges) ? source.edges : [],
       frames: Array.isArray(source.frames) ? source.frames : [],

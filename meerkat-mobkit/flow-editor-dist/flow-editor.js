@@ -6840,6 +6840,7 @@ window.MOBKIT_BOOT = {
     if (!projection || typeof projection !== "object") return { ok: false };
     const studio = current?.studio && typeof current.studio === "object" ? current.studio : {};
     const members = Array.isArray(projection.members) ? projection.members : [];
+    const skillRealms = Array.isArray(projection.skillRealms) ? projection.skillRealms : [];
     const schemas = Array.isArray(projection.schemas) ? projection.schemas : [];
     const instances = Array.isArray(projection.instances) ? projection.instances : [];
     const edges = Array.isArray(projection.edges) ? projection.edges : [];
@@ -6860,6 +6861,10 @@ window.MOBKIT_BOOT = {
       members: {
         changed: !jsonEquivalent(members, studio.members || []),
         value: members,
+      },
+      skillRealms: {
+        changed: !jsonEquivalent(skillRealms, studio.skillRealms || []),
+        value: skillRealms,
       },
       schemas: {
         changed: !jsonEquivalent(schemas, studio.schemas || []),
@@ -8765,6 +8770,7 @@ window.MOBKIT_BOOT = {
       flow,
       members: Array.isArray(source.members) ? source.members : [],
       schemas: Array.isArray(source.schemas) ? source.schemas : [],
+      skillRealms: Array.isArray(source.skill_realms) ? source.skill_realms : [],
       instances: Array.isArray(source.instances) ? source.instances : [],
       edges: Array.isArray(source.edges) ? source.edges : [],
       frames: Array.isArray(source.frames) ? source.frames : [],
@@ -12628,7 +12634,7 @@ function useStudioState(initial, onDirty, authoring = {}) {
     updateSkillRealms
   };
 }
-function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [] }) {
+function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [], applyAuthoringReplacement = null }) {
   const hostRef = React.useRef(null);
   const [drag, setDrag] = React.useState(null);
   const [conn, setConn] = React.useState(null);
@@ -12770,14 +12776,21 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const w = screenToWorld(e.clientX, e.clientY);
         const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
         if (cell && (cell.col !== drag.origCol || cell.row !== drag.origRow)) {
-          state.snap();
           const next = window.MobKitFlowController.studioMoveInstancePatch({
             instances: state.instances
           }, drag.instId, cell, {
             col: drag.origCol,
             row: drag.origRow
           });
-          state.setInstances(next.instances);
+          if (applyAuthoringReplacement) {
+            applyAuthoringReplacement({
+              studio: { instances: next.instances },
+              selection: { kind: "instance", id: drag.instId }
+            });
+          } else {
+            state.snap();
+            state.setInstances(next.instances);
+          }
         }
         setDrag(null);
         setHoverCell(null);
@@ -12794,8 +12807,15 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
             contract
           });
           if (result.ok && result.edge) {
-            state.setEdges(result.edges);
-            selectEdge(result.selectId);
+            if (applyAuthoringReplacement) {
+              applyAuthoringReplacement({
+                studio: { edges: result.edges },
+                selection: { kind: "edge", id: result.selectId }
+              }).then(() => selectEdge(result.selectId));
+            } else {
+              state.setEdges(result.edges);
+              selectEdge(result.selectId);
+            }
           }
         }
         setConn(null);
@@ -13315,10 +13335,10 @@ window.InlineSourceEditor = InlineSourceEditor;
 /* agents.jsx */
 
 {
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAuthoringOperation = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAuthoringOperation, toolCatalog, modelCatalog, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView, agentDetailView, agentAccessView, schemaView })));
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAuthoringOperation = null, applyAuthoringReplacement = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAuthoringOperation, applyAuthoringReplacement, toolCatalog, modelCatalog, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAuthoringOperation, applyAuthoringReplacement, agentView, agentDetailView, agentAccessView, schemaView })));
 }
-function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAuthoringOperation = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
+function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAuthoringOperation = null, applyAuthoringReplacement = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const [schemaAddResult, setSchemaAddResult] = React.useState(null);
   const listState = window.MobKitFlowController.agentListState({
     members: studio.members,
@@ -13359,8 +13379,15 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
         const result = window.MobKitFlowController.schemaDefinitionAddTransition(studio.schemas, contract);
         setSchemaAddResult(result);
         if (result.ok === false) return;
-        if (studio.snap) studio.snap();
-        studio.setSchemas(result.schemas);
+        if (applyAuthoringReplacement) {
+          applyAuthoringReplacement({
+            studio: { schemas: result.schemas },
+            selection: result.selection
+          });
+        } else {
+          if (studio.snap) studio.snap();
+          studio.setSchemas(result.schemas);
+        }
         setSchemaAddResult(null);
         setAgentSel(result.selection);
       }
@@ -13428,7 +13455,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAuth
     row.skills && /* @__PURE__ */ React.createElement("span", { className: "agent-def-card__meta" }, /* @__PURE__ */ React.createElement("strong", null, row.skillsLabel), row.skills)
   )) : /* @__PURE__ */ React.createElement("div", { className: "agent-def-catalog__empty" }, catalogState.empty)), definitionErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, definitionErrorState.text));
 }
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAuthoringOperation = null, applyAuthoringReplacement = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
     selection: agentSel,
     members: studio.members,
@@ -13440,39 +13467,42 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
   }
   if (selectionState.kind === "schema") {
     if (!selectionState.schema) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingSchemaLabel);
-    return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow, schemaView });
+    return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow, schemaView, applyAuthoringReplacement });
   }
   if (!selectionState.member) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingAgentLabel);
-  return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentDetailView, agentAccessView });
+  return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAuthoringOperation, applyAuthoringReplacement, agentDetailView, agentAccessView });
 }
-function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDetailView = null, agentAccessView = null }) {
+function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAuthoringOperation = null, applyAuthoringReplacement = null, agentDetailView = null, agentAccessView = null }) {
   const [memberEditError, setMemberEditError] = React.useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
   React.useEffect(() => {
     setDeleteConfirmOpen(false);
   }, [member.id]);
-  const change = (patch) => {
+  const mobKitOperationError = (result, fallback) => {
+    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
+    return result?.error || fallback;
+  };
+  const change = async (patch) => {
     if (!patch || typeof patch !== "object" || !Object.keys(patch).length) return;
-    const result = window.MobKitFlowController.memberUpdateCascadePatch({
-      memberId: member.id,
-      members: studio.members,
-      flow,
-      instances: studio.instances,
-      edges: studio.edges,
-      mobSettings,
-      contract
-    }, patch);
-    if (!result.ok) {
-      setMemberEditError(result.error || "");
+    if (!applyAuthoringOperation) {
+      setMemberEditError("MobKit authoring operation API is unavailable");
       return;
     }
-    if (studio.snap) studio.snap();
-    studio.setMembers(result.members);
-    if (result.flow !== flow && setFlow) setFlow(result.flow);
-    if (result.instances !== studio.instances) studio.setInstances(result.instances);
-    if (result.edges !== studio.edges) studio.setEdges(result.edges);
-    if (result.mobSettings !== mobSettings && setMobSettings) setMobSettings(result.mobSettings);
-    setMemberEditError("");
+    try {
+      if (studio.snap) studio.snap();
+      const result = await applyAuthoringOperation({
+        type: "update_member",
+        member_id: member.id,
+        patch
+      });
+      if (!result?.ok) {
+        setMemberEditError(mobKitOperationError(result, "MobKit member update failed"));
+        return;
+      }
+      setMemberEditError("");
+    } catch (error) {
+      setMemberEditError(error?.message || "MobKit member update failed");
+    }
   };
   const [toolDraft, setToolDraft] = React.useState("");
   const [toolDraftError, setToolDraftError] = React.useState("");
@@ -13488,38 +13518,53 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     agentDetailView
   });
   const schemaErrorState = window.MobKitFlowController.memberSchemaChangeErrorState(schemaChangeResult);
-  const addToolAccess = (raw) => {
-    const result = window.MobKitFlowController.memberToolAccessCascadePatch({
-      memberId: member.id,
-      members: studio.members,
-      flow,
-      instances: studio.instances
-    }, raw, toolCatalog, agentAccessView);
-    if (!result.ok) {
-      setToolDraftError(result.error || "");
+  const addToolAccess = async (raw) => {
+    const toolId = String(raw || "").trim();
+    if (!toolId) {
+      setToolDraftError(toolAccessState.emptyToolError || "Choose a tool first.");
       return;
     }
-    if (result.patch) {
-      if (studio.snap) studio.snap();
-      studio.setMembers(result.members);
-      if (result.flow !== flow && setFlow) setFlow(result.flow);
-      if (result.instances !== studio.instances) studio.setInstances(result.instances);
+    if (!applyAuthoringOperation) {
+      setToolDraftError("MobKit authoring operation API is unavailable");
+      return;
     }
-    setToolDraft("");
-    setToolDraftError("");
+    try {
+      if (studio.snap) studio.snap();
+      const result = await applyAuthoringOperation({
+        type: "add_member_tool",
+        member_id: member.id,
+        tool_id: toolId
+      });
+      if (!result?.ok) {
+        setToolDraftError(mobKitOperationError(result, "MobKit tool update failed"));
+        return;
+      }
+      setToolDraft("");
+      setToolDraftError("");
+    } catch (error) {
+      setToolDraftError(error?.message || "MobKit tool update failed");
+    }
   };
-  const removeToolAccess = (toolId) => {
-    const result = window.MobKitFlowController.memberToolRemoveCascadePatch({
-      memberId: member.id,
-      members: studio.members,
-      flow,
-      instances: studio.instances
-    }, toolId);
-    if (!result.ok || !result.patch) return;
-    if (studio.snap) studio.snap();
-    studio.setMembers(result.members);
-    if (result.flow !== flow && setFlow) setFlow(result.flow);
-    if (result.instances !== studio.instances) studio.setInstances(result.instances);
+  const removeToolAccess = async (toolId) => {
+    if (!applyAuthoringOperation) {
+      setToolDraftError("MobKit authoring operation API is unavailable");
+      return;
+    }
+    try {
+      if (studio.snap) studio.snap();
+      const result = await applyAuthoringOperation({
+        type: "remove_member_tool",
+        member_id: member.id,
+        tool_id: toolId
+      });
+      if (!result?.ok) {
+        setToolDraftError(mobKitOperationError(result, "MobKit tool update failed"));
+        return;
+      }
+      setToolDraftError("");
+    } catch (error) {
+      setToolDraftError(error?.message || "MobKit tool update failed");
+    }
   };
   const changeSchema = (rawSchema) => {
     const result = window.MobKitFlowController.memberSchemaCascadePatch({
@@ -13532,11 +13577,23 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     }, rawSchema);
     setSchemaChangeResult(result);
     if (!result.ok) return;
-    if (studio.snap) studio.snap();
-    studio.setMembers(result.members);
-    if (result.flow !== flow && setFlow) setFlow(result.flow);
-    if (result.instances !== studio.instances) studio.setInstances(result.instances);
-    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    if (applyAuthoringReplacement) {
+      applyAuthoringReplacement({
+        flow: result.flow,
+        studio: {
+          members: result.members,
+          instances: result.instances,
+          edges: result.edges
+        },
+        selection: { kind: "agent", id: member.id }
+      });
+    } else {
+      if (studio.snap) studio.snap();
+      studio.setMembers(result.members);
+      if (result.flow !== flow && setFlow) setFlow(result.flow);
+      if (result.instances !== studio.instances) studio.setInstances(result.instances);
+      if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    }
     setSchemaChangeResult(null);
   };
   const deleteConfirmState = window.MobKitFlowController.agentDeleteConfirmationState(editorState, deleteConfirmOpen);
@@ -13550,12 +13607,25 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       mobSettings
     });
     if (!result.ok) return;
-    if (studio.snap) studio.snap();
-    studio.setMembers(result.members);
-    studio.setInstances(result.instances);
-    studio.setEdges(result.edges);
-    if (setFlow) setFlow(result.flow);
-    if (setMobSettings) setMobSettings(result.mobSettings);
+    if (applyAuthoringReplacement) {
+      applyAuthoringReplacement({
+        flow: result.flow,
+        mobSettings: result.mobSettings,
+        studio: {
+          members: result.members,
+          instances: result.instances,
+          edges: result.edges
+        },
+        selection: result.selection
+      });
+    } else {
+      if (studio.snap) studio.snap();
+      studio.setMembers(result.members);
+      studio.setInstances(result.instances);
+      studio.setEdges(result.edges);
+      if (setFlow) setFlow(result.flow);
+      if (setMobSettings) setMobSettings(result.mobSettings);
+    }
     setAgentSel(result.selection);
     setDeleteConfirmOpen(false);
   };
@@ -13645,9 +13715,9 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       onChange: (e) => changeSchema(e.target.value)
     },
     editorState.schemaOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value || "none", value: option.value }, option.label))
-  ), schemaErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaErrorState.text), editorState.hasOutputSchema ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("ul", { className: "schema-fields schema-fields--preview" }, editorState.schemaPreviewRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => setAgentSel(editorState.editSchemaSelection) }, editorState.editSchemaLabel)) : /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, editorState.emptySchemaHint)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement(SkillAccess, { studio, member, agentAccessView }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.usageTitle), editorState.placedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.emptyUsageHint), editorState.usageRows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.id, className: "usage-row usage-row--ro" }, /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.cellLabel), /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.laneLabel))))))));
+  ), schemaErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaErrorState.text), editorState.hasOutputSchema ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("ul", { className: "schema-fields schema-fields--preview" }, editorState.schemaPreviewRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => setAgentSel(editorState.editSchemaSelection) }, editorState.editSchemaLabel)) : /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, editorState.emptySchemaHint)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement(SkillAccess, { studio, member, agentAccessView, applyAuthoringOperation }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.usageTitle), editorState.placedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.emptyUsageHint), editorState.usageRows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.id, className: "usage-row usage-row--ro" }, /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.cellLabel), /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.laneLabel))))))));
 }
-function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null }) {
+function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null, applyAuthoringReplacement = null }) {
   const change = (patch) => studio.updateSchema(schema.id, patch);
   const [fieldAddResult, setFieldAddResult] = React.useState(null);
   React.useEffect(() => setFieldAddResult(null), [schema?.id]);
@@ -13657,6 +13727,25 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     schemaView
   });
   const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult);
+  const applySchemaCascade = (result, selection = { kind: "schema", id: schema.id }) => {
+    if (applyAuthoringReplacement) {
+      applyAuthoringReplacement({
+        flow: result.flow || flow,
+        studio: {
+          schemas: result.schemas,
+          members: result.members || studio.members,
+          edges: result.edges || studio.edges
+        },
+        selection
+      });
+      return;
+    }
+    if (studio.snap) studio.snap();
+    if (result.schemas) studio.setSchemas(result.schemas);
+    if (result.members) studio.setMembers(result.members);
+    if (result.flow !== flow && setFlow) setFlow(result.flow);
+    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+  };
   const renameField = (fieldId, oldName, newName) => {
     const result = window.MobKitFlowController.schemaFieldRenameCascadePatch({
       schema,
@@ -13666,12 +13755,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       members: studio.members,
       instances: studio.instances
     }, fieldId, newName, oldName, contract);
-    const flowChanged = result.flow !== flow;
-    const edgesChanged = result.edges !== studio.edges;
-    if (studio.snap) studio.snap();
-    studio.setSchemas(result.schemas);
-    if (flowChanged && setFlow) setFlow(result.flow);
-    if (edgesChanged) studio.setEdges(result.edges);
+    applySchemaCascade(result);
   };
   const updateField = (fieldId, patch) => {
     const result = window.MobKitFlowController.schemaFieldUpdateCascadePatch({
@@ -13682,12 +13766,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       members: studio.members,
       instances: studio.instances
     }, fieldId, patch, contract);
-    const flowChanged = result.flow !== flow;
-    const edgesChanged = result.edges !== studio.edges;
-    if (studio.snap) studio.snap();
-    studio.setSchemas(result.schemas);
-    if (flowChanged && setFlow) setFlow(result.flow);
-    if (edgesChanged) studio.setEdges(result.edges);
+    applySchemaCascade(result);
   };
   const deleteField = (fieldId) => {
     const result = window.MobKitFlowController.schemaFieldDeleteCascadePatch({
@@ -13698,10 +13777,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       members: studio.members,
       instances: studio.instances
     }, fieldId);
-    if (studio.snap) studio.snap();
-    studio.setSchemas(result.schemas);
-    if (result.flow !== flow && setFlow) setFlow(result.flow);
-    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    applySchemaCascade(result);
   };
   const addField = () => {
     const result = window.MobKitFlowController.schemaFieldAddPatch(schema, contract);
@@ -13718,11 +13794,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       edges: studio.edges,
       instances: studio.instances
     }, schema.id);
-    if (studio.snap) studio.snap();
-    studio.setSchemas(result.schemas);
-    studio.setMembers(result.members);
-    if (result.flow !== flow && setFlow) setFlow(result.flow);
-    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    applySchemaCascade(result, result.selection);
     setAgentSel(result.selection);
   };
   const renameSchema = (newId) => {
@@ -13732,10 +13804,10 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       flow
     }, schema.id, newId);
     if (!result.renamed) return;
-    if (studio.snap) studio.snap();
-    studio.setSchemas(result.schemas);
-    studio.setMembers(result.members);
-    if (result.flow !== flow && setFlow) setFlow(result.flow);
+    applySchemaCascade({
+      ...result,
+      edges: studio.edges
+    }, result.selection);
     setAgentSel(result.selection);
   };
   return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, schemaState.eyebrow), /* @__PURE__ */ React.createElement(
@@ -13909,7 +13981,7 @@ function ProviderParamsEditor({ member, change, agentDetailView = null }) {
     }
   ), error && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, error));
 }
-function SkillAccess({ studio, member, agentAccessView = null }) {
+function SkillAccess({ studio, member, agentAccessView = null, applyAuthoringOperation = null }) {
   const realms = studio.skillRealms || [];
   const initialSkillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, accessView: agentAccessView });
   const [realmId, setRealmId] = React.useState(initialSkillState.realmId);
@@ -13921,46 +13993,53 @@ function SkillAccess({ studio, member, agentAccessView = null }) {
   React.useEffect(() => {
     if (skillState.realmId !== realmId) setRealmId(skillState.realmId);
   }, [skillState.realmId, realmId]);
-  const applySkillCascade = (result) => {
-    if (!result.ok || !result.patch) return false;
-    if (studio.snap) studio.snap();
-    studio.setMembers(result.members);
-    if (result.skillRealms !== realms) studio.setSkillRealms(result.skillRealms || []);
-    return true;
+  const applySkillOperation = async (operation, fallback = skillState.inlineErrorFallback) => {
+    if (!applyAuthoringOperation) {
+      setInlineError("MobKit authoring operation API is unavailable");
+      return false;
+    }
+    try {
+      if (studio.snap) studio.snap();
+      const result = await applyAuthoringOperation({
+        member_id: member.id,
+        ...operation
+      });
+      if (!result?.ok) {
+        const validationError = result?.validation?.display_rows?.length ? result.validation.display_rows[0].head : "";
+        setInlineError(validationError || result?.error || fallback);
+        return false;
+      }
+      setInlineError("");
+      return true;
+    } catch (err) {
+      setInlineError(err?.message || fallback);
+      return false;
+    }
   };
   const toggle = (sid) => {
-    applySkillCascade(window.MobKitFlowController.memberSkillToggleCascadePatch({
-      memberId: member.id,
-      members: studio.members,
-      skillRealms: realms
-    }, sid));
+    applySkillOperation({
+      type: "toggle_member_skill",
+      skill_id: sid
+    });
   };
   const removeSkill = (sid) => {
-    applySkillCascade(window.MobKitFlowController.memberSkillRemoveCascadePatch({
-      memberId: member.id,
-      members: studio.members,
-      skillRealms: realms
-    }, sid));
+    applySkillOperation({
+      type: "remove_member_skill",
+      skill_id: sid
+    });
   };
-  const addInlineSkill = () => {
-    try {
-      const result = window.MobKitFlowController.memberInlineSkillCascadePatch({
-        memberId: member.id,
-        members: studio.members,
-        skillRealms: realms
-      }, {
-        label: inlineLabel,
-        content: inlineContent
-      }, agentAccessView);
-      if (!applySkillCascade(result)) return;
-      const inlineForm = result.inlineForm || {};
-      setRealmId(inlineForm.realmId || result.realmId);
-      setInlineLabel(inlineForm.label || "");
-      setInlineContent(inlineForm.content || "");
-      setInlineError(inlineForm.error || "");
-      setInlineOpen(!!inlineForm.open);
-    } catch (err) {
-      setInlineError(err?.message || skillState.inlineErrorFallback);
+  const addInlineSkill = async () => {
+    const ok = await applySkillOperation({
+      type: "create_inline_skill",
+      label: inlineLabel,
+      content: inlineContent
+    }, skillState.inlineErrorFallback);
+    if (ok) {
+      setRealmId("mobkit/editor-inline");
+      setInlineLabel("");
+      setInlineContent("");
+      setInlineError("");
+      setInlineOpen(false);
     }
   };
   return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "section__title section__title--row" }, /* @__PURE__ */ React.createElement("span", null, skillState.sectionTitle), /* @__PURE__ */ React.createElement("button", { className: "ghost-btn", onClick: () => setInlineOpen((open) => !open) }, skillState.inlineToggleLabel)), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginBottom: 8 } }, skillState.hint), inlineOpen && /* @__PURE__ */ React.createElement("div", { className: "inline-skill" }, /* @__PURE__ */ React.createElement(
@@ -14083,7 +14162,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
   });
   return /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card" }, /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card__head" }, conditionState.rowTitle), !conditionState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, conditionState.emptyHint) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bld-cond" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.stepId || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionSourcePatch(options, e.target.value, { includeNamespace: true })) }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.sourcePlaceholder), conditionState.sourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.field || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, conditionState.fieldOptions)), disabled: !conditionState.fields.length }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.fieldPlaceholder), conditionState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: conditionState.operatorValue, onChange: (e) => onChange(window.MobKitFlowController.basicConditionOperatorPatch(e.target.value, contract)) }, conditionState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(CondValue, { field: conditionState.field, value: conditionState.cond.val, conditionView, onChange: (v) => onChange(window.MobKitFlowController.basicConditionValuePatch(v)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-cond__preview" }, conditionState.previewPrefix, " ", /* @__PURE__ */ React.createElement("code", null, conditionState.previewLabel))));
 }
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null }) {
+function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringReplacement = null }) {
   const members = studio?.members || [];
   const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [selLocal, setSelLocal] = React.useState(null);
@@ -14098,7 +14177,14 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const isFlow = mode === "flow";
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   const canvasView = Math.abs(view.ty) > 1200 ? { ...view, ty: 0 } : view;
-  const update = (id, patch) => setFlow((f) => window.MobKitFlowController.flowStepUpdatePatch(f, id, patch, { members }));
+  const commitFlow = (nextFlow, studioPatch = {}) => {
+    if (applyAuthoringReplacement) {
+      applyAuthoringReplacement({ flow: nextFlow, studio: studioPatch });
+    } else {
+      setFlow(nextFlow);
+    }
+  };
+  const update = (id, patch) => commitFlow(window.MobKitFlowController.flowStepUpdatePatch(flow, id, patch, { members }));
   const selStep = findStep(flow.steps, sel);
   const applyBasicInteraction = (result) => {
     if (!result) return;
@@ -14110,13 +14196,13 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     if (!newStep) return;
     const result = window.MobKitFlowController.flowStepInsertTransition(flow, laneRef, newStep, { members });
     if (!result.ok) return;
-    setFlow(result.flow);
+    commitFlow(result.flow);
     setSel(result.selection);
     setPicker(result.picker);
   };
   const removeStep = (id) => {
     const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
-    setFlow(result.flow);
+    commitFlow(result.flow);
     setSel(result.selection);
     setPicker(result.picker);
   };
@@ -14189,7 +14275,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       onPick: (pick) => insertAt(picker.at, pick),
       onClose: () => applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition())
     }
-  ) : selStep ? /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, setFlow, step: selStep, update, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, launchView, conditionView }) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
+  ) : selStep ? /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, setFlow, step: selStep, update, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, launchView, conditionView, applyAuthoringReplacement }) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
 }
 function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract, basicView = null }) {
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
@@ -14241,7 +14327,7 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
   }
   return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-search" }, /* @__PURE__ */ React.createElement("span", { className: "bld-search__icon" }, pickerState.searchIcon), /* @__PURE__ */ React.createElement("input", { className: "bld-search__input", placeholder: pickerState.searchPlaceholder, value: q, onChange: (e) => setQ(e.target.value), autoFocus: true })), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.membersLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.iconTint }, row.icon), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub)))), !pickerState.hasConfiguredMembers && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { padding: "4px 8px" } }, pickerState.emptyMembersHint)), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.flowLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.primitiveRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.tint }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.label, row.isNew && /* @__PURE__ */ React.createElement("span", { className: "bld-opt__new" }, pickerState.newBadgeLabel)), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub))))));
 }
-function StepInspector({ studio, members, flow, setFlow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null }) {
+function StepInspector({ studio, members, flow, setFlow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null, applyAuthoringReplacement = null }) {
   const [paramAddResult, setParamAddResult] = React.useState(null);
   React.useEffect(() => setParamAddResult(null), [step?.id]);
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
@@ -14249,47 +14335,40 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
     const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult);
+    const applyInputCascade = (result) => {
+      if (applyAuthoringReplacement) {
+        applyAuthoringReplacement({
+          flow: result.flow,
+          studio: { edges: result.edges }
+        });
+        return;
+      }
+      if (result.edges !== studio?.edges && studio?.setEdges) {
+        if (studio?.snap) studio.snap();
+        studio.setEdges(result.edges);
+      }
+      setFlow(result.flow);
+    };
     const updateParam = (id, patch) => {
-      setFlow((current) => {
-        const result = window.MobKitFlowController.inputParamUpdateCascadePatch({
-          flow: current,
-          edges: studio?.edges || [],
-          members: studio?.members || [],
-          instances: studio?.instances || [],
-          schemas: studio?.schemas || []
-        }, step.id, id, patch, contract);
-        if (result.edges !== studio?.edges && studio?.setEdges) {
-          if (studio?.snap) studio.snap();
-          studio.setEdges(result.edges);
-        }
-        return result.flow;
-      });
+      applyInputCascade(window.MobKitFlowController.inputParamUpdateCascadePatch({
+        flow,
+        edges: studio?.edges || [],
+        members: studio?.members || [],
+        instances: studio?.instances || [],
+        schemas: studio?.schemas || []
+      }, step.id, id, patch, contract));
     };
     const deleteParam = (id) => {
-      setFlow((current) => {
-        const result = window.MobKitFlowController.inputParamDeleteCascadePatch({
-          flow: current,
-          edges: studio?.edges || []
-        }, step.id, id, contract);
-        if (result.edges !== studio?.edges && studio?.setEdges) {
-          if (studio?.snap) studio.snap();
-          studio.setEdges(result.edges);
-        }
-        return result.flow;
-      });
+      applyInputCascade(window.MobKitFlowController.inputParamDeleteCascadePatch({
+        flow,
+        edges: studio?.edges || []
+      }, step.id, id, contract));
     };
     const renameParam = (id, rawName, previousName) => {
-      setFlow((current) => {
-        const result = window.MobKitFlowController.inputParamRenameCascadePatch({
-          flow: current,
-          edges: studio?.edges || []
-        }, step.id, id, rawName, previousName, contract);
-        if (result.edges !== studio?.edges && studio?.setEdges) {
-          if (studio?.snap) studio.snap();
-          studio.setEdges(result.edges);
-        }
-        return result.flow;
-      });
+      applyInputCascade(window.MobKitFlowController.inputParamRenameCascadePatch({
+        flow,
+        edges: studio?.edges || []
+      }, step.id, id, rawName, previousName, contract));
     };
     const addParam = () => {
       const result = window.MobKitFlowController.inputParamAddPatch(params, contract);
@@ -14747,11 +14826,20 @@ function App() {
       if (tg.tagName === "INPUT" || tg.tagName === "TEXTAREA" || tg.tagName === "SELECT") return;
       if (e.key === "Backspace" || e.key === "Delete") {
         if (selection.kind === "instance") {
-          const result = studio.deleteInstance(selection.id);
-          clearSelection(result?.selection);
+          const result = window.MobKitFlowController.studioDeleteInstancePatch({
+            instances: studio.instances,
+            edges: studio.edges
+          }, selection.id);
+          applyMobKitAuthoringReplacement({
+            studio: { instances: result.instances, edges: result.edges },
+            selection: result.selection
+          }).then(() => clearSelection(result.selection));
         } else if (selection.kind === "edge") {
-          const result = studio.deleteEdge(selection.id);
-          clearSelection(result?.selection);
+          const result = window.MobKitFlowController.studioDeleteEdgePatch({ edges: studio.edges }, selection.id);
+          applyMobKitAuthoringReplacement({
+            studio: { edges: result.edges },
+            selection: result.selection
+          }).then(() => clearSelection(result.selection));
         }
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
@@ -14791,11 +14879,16 @@ function App() {
       graphView: catalogs.graphView
     });
     if (inserted.ok) {
-      if (inserted.snap) studio.snap();
-      if (inserted.flow !== flow) setAuthoringFlow(inserted.flow);
-      if (inserted.instances !== studio.instances) studio.setInstances(inserted.instances);
-      if (inserted.edges !== studio.edges) studio.setEdges(inserted.edges);
-      if (inserted.selectId) selectInstance(inserted.selectId);
+      applyMobKitAuthoringReplacement({
+        flow: inserted.flow,
+        studio: {
+          instances: inserted.instances,
+          edges: inserted.edges
+        },
+        selection: inserted.selectId ? { kind: "instance", id: inserted.selectId } : null
+      }).then(() => {
+        if (inserted.selectId) selectInstance(inserted.selectId);
+      });
     }
     setAddAt(inserted.addAt);
   };
@@ -14827,7 +14920,8 @@ function App() {
         instances: studio.instances,
         edges: studio.edges,
         frames: studio.frames,
-        schemas: studio.schemas
+        schemas: studio.schemas,
+        skillRealms: studio.skillRealms
       },
       deploySettings,
       mobSettings,
@@ -14836,6 +14930,7 @@ function App() {
     if (!plan.ok) return;
     if (plan.flow.changed) setFlow(plan.flow.value);
     if (plan.members.changed) studio.setMembers(plan.members.value);
+    if (plan.skillRealms.changed) studio.setSkillRealms(plan.skillRealms.value);
     if (plan.schemas.changed) studio.setSchemas(plan.schemas.value);
     if (plan.graph.changed) {
       graphProjectionSig.current = plan.graph.signature;
@@ -14848,25 +14943,29 @@ function App() {
   };
   const currentFlowSelection = window.MobKitFlowController.flowRegistrySelectionState(flows, currentFlowId);
   const currentFlow = currentFlowSelection.row;
-  const buildAuthoringProjection = () => window.MobKitFlowController.authoringDocumentFromState({
-    editorMode,
-    flow,
-    studio: {
+  const buildAuthoringProjection = (overrides = {}) => {
+    const nextStudio = {
       members: studio.members,
       schemas: studio.schemas,
       instances: studio.instances,
       edges: studio.edges,
       frames: studio.frames,
-      skillRealms: studio.skillRealms
-    },
-    currentFlow,
-    deploySettings,
-    mobSettings,
-    contract,
-    modelCatalog: catalogs.models,
-    toolCatalog: catalogs.toolCatalog,
-    contractLoaded: !!catalogs.contractMeta.loaded
-  });
+      skillRealms: studio.skillRealms,
+      ...overrides.studio || {}
+    };
+    return window.MobKitFlowController.authoringDocumentFromState({
+      editorMode,
+      flow: overrides.flow || flow,
+      studio: nextStudio,
+      currentFlow,
+      deploySettings: overrides.deploySettings || deploySettings,
+      mobSettings: overrides.mobSettings || mobSettings,
+      contract,
+      modelCatalog: catalogs.models,
+      toolCatalog: catalogs.toolCatalog,
+      contractLoaded: !!catalogs.contractMeta.loaded
+    });
+  };
   const buildDocument = () => {
     const projection = buildAuthoringProjection();
     beginProjectionSync();
@@ -14889,6 +14988,114 @@ function App() {
     applyAuthoringDocumentProjection(projection);
     markDraft();
     return result;
+  };
+  const applyMobKitAuthoringReplacement = async (overrides = {}) => {
+    const requestToken = currentAuthoringRevision();
+    const replacement = buildAuthoringProjection(overrides);
+    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(replacement.document, {
+      type: "replace_authoring_document",
+      selection: overrides.selection || null
+    });
+    if (!authoringRevisionIsCurrent(requestToken)) {
+      return { ok: false, error: "stale authoring operation" };
+    }
+    const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
+      deployDefaults: catalogs.deployDefaults,
+      mobDefaults: catalogs.mobDefaults
+    });
+    if (!projection) return { ok: false, error: "MobKit authoring operation did not return a document" };
+    beginProjectionSync();
+    applyAuthoringDocumentProjection(projection);
+    markDraft();
+    return result;
+  };
+  const mobKitStudio = {
+    ...studio,
+    addInstance: (instance) => {
+      const next = window.MobKitFlowController.studioAddInstancePatch({
+        instances: studio.instances,
+        members: studio.members
+      }, instance);
+      applyMobKitAuthoringReplacement({ studio: { instances: next.instances } });
+      return next;
+    },
+    updateInstance: (id, patch) => {
+      const next = window.MobKitFlowController.studioUpdateInstancePatch({
+        instances: studio.instances,
+        members: studio.members
+      }, id, patch);
+      applyMobKitAuthoringReplacement({
+        studio: { instances: next.instances },
+        selection: { kind: "instance", id }
+      });
+      return next;
+    },
+    deleteInstance: (id) => {
+      const next = window.MobKitFlowController.studioDeleteInstancePatch({
+        instances: studio.instances,
+        edges: studio.edges
+      }, id);
+      applyMobKitAuthoringReplacement({
+        studio: { instances: next.instances, edges: next.edges },
+        selection: next.selection
+      });
+      return next;
+    },
+    addEdge: (edge) => {
+      const next = window.MobKitFlowController.studioAddEdgePatch({
+        edges: studio.edges,
+        instances: studio.instances
+      }, edge);
+      applyMobKitAuthoringReplacement({ studio: { edges: next.edges } });
+      return next;
+    },
+    updateEdge: (id, patch) => {
+      const next = window.MobKitFlowController.studioUpdateEdgePatch({
+        edges: studio.edges,
+        instances: studio.instances
+      }, id, patch);
+      applyMobKitAuthoringReplacement({
+        studio: { edges: next.edges },
+        selection: { kind: "edge", id }
+      });
+      return next;
+    },
+    deleteEdge: (id) => {
+      const next = window.MobKitFlowController.studioDeleteEdgePatch({ edges: studio.edges }, id);
+      applyMobKitAuthoringReplacement({
+        studio: { edges: next.edges },
+        selection: next.selection
+      });
+      return next;
+    },
+    addSchema: (schema) => {
+      const next = window.MobKitFlowController.studioAddSchemaPatch({ schemas: studio.schemas }, schema);
+      applyMobKitAuthoringReplacement({ studio: { schemas: next.schemas } });
+      return next;
+    },
+    updateSchema: (id, patch) => {
+      const next = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas: studio.schemas }, id, patch);
+      applyMobKitAuthoringReplacement({
+        studio: { schemas: next.schemas },
+        selection: { kind: "schema", id }
+      });
+      return next;
+    },
+    deleteSchema: (id) => {
+      const next = window.MobKitFlowController.studioDeleteSchemaPatch({
+        schemas: studio.schemas,
+        members: studio.members,
+        flow,
+        edges: studio.edges,
+        instances: studio.instances
+      }, id);
+      applyMobKitAuthoringReplacement({
+        flow: next.flow,
+        studio: { schemas: next.schemas, members: next.members, edges: next.edges },
+        selection: next.selection
+      });
+      return next;
+    }
   };
   const saveRegistryDocument = (rowPatch) => {
     if (!rowPatch?.document) return;
@@ -15317,7 +15524,7 @@ function App() {
   } }, /* @__PURE__ */ React.createElement(
     GraphEditor,
     {
-      state: studio,
+      state: mobKitStudio,
       selection,
       selectInstance,
       selectEdge,
@@ -15331,7 +15538,8 @@ function App() {
       grid: catalogs.grid,
       contract,
       graphView: catalogs.graphView,
-      toolCatalog: catalogs.toolCatalog
+      toolCatalog: catalogs.toolCatalog,
+      applyAuthoringReplacement: applyMobKitAuthoringReplacement
     }
   ), /* @__PURE__ */ React.createElement(
     InlineSourceEditor,
@@ -15357,7 +15565,7 @@ function App() {
   ), /* @__PURE__ */ React.createElement("aside", { className: "inspector" }, /* @__PURE__ */ React.createElement(
     Inspector,
     {
-      studio,
+      studio: mobKitStudio,
       selection,
       flow,
       template: currentFlow,
@@ -15375,7 +15583,7 @@ function App() {
   ))), view === "editor" && editorMode === "basic" && /* @__PURE__ */ React.createElement(
     BuilderView,
     {
-      studio,
+      studio: mobKitStudio,
       mode: "build",
       flow,
       setFlow: setAuthoringFlow,
@@ -15391,12 +15599,13 @@ function App() {
       sourceView: catalogs.sourceView,
       basicView: catalogs.basicView,
       launchView: catalogs.launchView,
-      conditionView: catalogs.conditionView
+      conditionView: catalogs.conditionView,
+      applyAuthoringReplacement: applyMobKitAuthoringReplacement
     }
   ), view === "agents" && /* @__PURE__ */ React.createElement(
     AgentsView,
     {
-      studio,
+      studio: mobKitStudio,
       agentSel,
       setAgentSel,
       contract,
@@ -15409,6 +15618,7 @@ function App() {
       modelCatalog: catalogs.models,
       agentDefinitions: catalogs.agentDefinitions,
       applyAuthoringOperation: applyMobKitAuthoringOperation,
+      applyAuthoringReplacement: applyMobKitAuthoringReplacement,
       agentView: catalogs.agentView,
       agentDetailView: catalogs.agentDetailView,
       agentAccessView: catalogs.agentAccessView,
@@ -15455,6 +15665,7 @@ function App() {
       contract,
       deployCommandPreview,
       settingsView: catalogs.settingsView,
+      applyAuthoringReplacement: applyMobKitAuthoringReplacement,
       onLoadFlow: (id) => {
         const selection2 = window.MobKitFlowController.flowRegistrySelectionState(flows, id);
         openFlowRegistrySelection(selection2);
@@ -15534,13 +15745,23 @@ function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlow
 function ModeToggle({ mode, onSelectMode, railState }) {
   return /* @__PURE__ */ React.createElement("div", { className: "modetoggle" }, /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "basic" ? " is-active" : ""), onClick: () => onSelectMode("basic"), title: railState.basicModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "2.2", width: "10", height: "2.2" }), /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "6.6", width: "10", height: "2.2" })), /* @__PURE__ */ React.createElement("span", null, railState.basicModeLabel)), /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "advanced" ? " is-active" : ""), onClick: () => onSelectMode("advanced"), title: railState.graphModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1", y: "4.5", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "1", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "8", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("path", { d: "M5 6.5h1.6M6.6 6.5V3h1.4M6.6 6.5V10h1.4" })), /* @__PURE__ */ React.createElement("span", null, railState.graphModeLabel)));
 }
-function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, onLoadFlow }) {
-  const setDeployField = (field, value) => setDeploySettings(
-    (current) => window.MobKitFlowController.deploySettingsFieldPatch(current, field, value, { contract, modelCatalog })
-  );
-  const setMobField = (field, value) => setMobSettings(
-    (current) => window.MobKitFlowController.mobSettingsFieldPatch(current, field, value, { contract })
-  );
+function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, applyAuthoringReplacement = null, onLoadFlow }) {
+  const setDeployField = (field, value) => {
+    const next = window.MobKitFlowController.deploySettingsFieldPatch(deploySettings, field, value, { contract, modelCatalog });
+    if (applyAuthoringReplacement) {
+      applyAuthoringReplacement({ deploySettings: next });
+    } else {
+      setDeploySettings(next);
+    }
+  };
+  const setMobField = (field, value) => {
+    const next = window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, field, value, { contract });
+    if (applyAuthoringReplacement) {
+      applyAuthoringReplacement({ mobSettings: next });
+    } else {
+      setMobSettings(next);
+    }
+  };
   const controlState = window.MobKitFlowController.tweaksControlState({
     flows,
     deploySettings,
