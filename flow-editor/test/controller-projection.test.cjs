@@ -7439,6 +7439,25 @@ assert.deepEqual(controller.graphJoinCollectionPatch({ controllerRole: "m_existi
   quorum: null,
   controllerRole: "",
 });
+assert.deepEqual(controller.graphJoinCollectionPatch({}, "quorum", {
+  incomingCount: 2,
+  firstMemberId: "m_joiner",
+  contract: {
+    mob_definition: {
+      ...graphShapeContract.mob_definition,
+      editor_graph_draft: {
+        ...testEditorGraphDraft,
+        join_label_prefix: "schema join: ",
+        parallel_missing_collection_label: "schema missing collection",
+      },
+    },
+  },
+}), {
+  collection: "quorum",
+  label: "schema join: quorum",
+  quorum: { n: 2, m: 2 },
+  controllerRole: "m_joiner",
+});
 assert.deepEqual(controller.graphJoinCollectionPatch({ controllerRole: "m_existing" }, "lottery", {
   incomingCount: 3,
   firstMemberId: "m_joiner",

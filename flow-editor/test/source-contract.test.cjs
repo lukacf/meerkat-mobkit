@@ -317,6 +317,7 @@ assert.match(inspector, /graphTerminalKindPatch\(e\.target\.value,\s*contract\)/
 assert.match(controller, /function graphTerminalKindAllowed/, "controller plane must validate Graph terminal-kind writes against MobKit graph_terminal_kinds");
 assert.match(inspector, /MobKitFlowController\.graphJoinCollectionPatch/, "Graph Inspector must update join collection through the controller plane");
 assert.match(inspector, /graphJoinCollectionPatch\(inst, e\.target\.value,[\s\S]{0,140}contract/, "Graph join collection edits must pass the MobKit contract into controller validation");
+assert.match(controller, /graphJoinCollectionPatch[\s\S]*editorGraphDraftContract\(contract\)[\s\S]*label:\s*`\$\{draft\.joinLabelPrefix\}\$\{next \|\| draft\.parallelMissingCollectionLabel\}`/, "Graph join collection edits must label joins from MobKit editor_graph_draft metadata");
 assert.match(inspector, /MobKitFlowController\.graphJoinQuorumPatch/, "Graph Inspector must update join quorum through the controller plane");
 assert.match(inspector, /MobKitFlowController\.graphJoinControllerRolePatch/, "Graph Inspector must update join controller role through the controller plane");
 assert.match(inspector, /graphJoinControllerRolePatch\(e\.target\.value,\s*studio\.members\)/, "Graph join controller-role edits must pass real MobKit members into controller validation");

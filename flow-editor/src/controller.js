@@ -5811,10 +5811,11 @@
   function graphJoinCollectionPatch(inst, collection, { incomingCount = 0, firstMemberId = "", contract } = {}) {
     const next = String(collection || "").trim();
     if (!collectionPolicyAllowed(contract, next)) return {};
+    const draft = editorGraphDraftContract(contract) || emptyGraphDraftContract();
     const count = Math.max(1, Number(incomingCount) || 0);
     return {
       collection: next,
-      label: next ? `join · ${next}` : "join · missing collection",
+      label: `${draft.joinLabelPrefix}${next || draft.parallelMissingCollectionLabel}`,
       quorum: next === "quorum"
         ? { ...(inst?.quorum || {}), n: inst?.quorum?.n || count, m: count }
         : null,
