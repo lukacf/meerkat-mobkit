@@ -120,7 +120,9 @@ function App() {
       setFlows((rows) => window.MobKitFlowController.flowRegistryMarkDraftPatch(rows, currentFlowId));
     }
   }, [clearSourceProjection, currentFlowId]);
-  const showAuthoringFailure = React.useCallback((resultOrError, fallbackHead = "MobKit authoring operation failed") => {
+  const showAuthoringFailure = React.useCallback((resultOrError, fallbackHead = "") => {
+    const errorView = catalogs.errorView || {};
+    const authoringHead = fallbackHead || errorView.authoringOperationFailedHead;
     const validation = resultOrError?.validation || null;
     const validationRows = validation
       ? window.MobKitFlowController.diagnosticsToRows(validation)
@@ -128,10 +130,10 @@ function App() {
     const outcome = validationRows?.length
       ? { validationRows, stage: "draft" }
       : window.MobKitFlowController.criticalErrorOutcome({
-          head: fallbackHead,
+          head: authoringHead,
           error: resultOrError?.error || resultOrError,
-          meta: "MobKit authoring",
-          errorView: catalogs.errorView,
+          meta: errorView.authoringOperationMeta,
+          errorView,
         });
     setValidationResults(outcome.validationRows);
     setStage(outcome.stage);

@@ -88,6 +88,13 @@
     return controllerConfig.rpcUrl || "/flow-editor/rpc";
   }
 
+  function operationErrorText(result = null, fallback = "") {
+    const validationHead = String(result?.validation?.display_rows?.[0]?.head || "").trim();
+    if (validationHead) return validationHead;
+    const error = String(result?.error || "").trim();
+    return error || String(fallback || "").trim();
+  }
+
   function rpcMethod(name) {
     return controllerConfig.rpcMethods?.[name] || RPC_METHODS[name] || "";
   }
@@ -315,6 +322,8 @@
       sourceLabel: view.toolSourceLabel,
       sourcePlaceholder: view.toolSourcePlaceholder,
       addButtonLabel: view.toolAddButtonLabel,
+      emptyToolError: view.toolEmptyError,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
     };
   }
 
@@ -510,6 +519,7 @@
       inlineCreateHint: view.skillInlineCreateHint,
       inlineAddLabel: view.skillInlineAddLabel,
       inlineErrorFallback: view.skillInlineErrorFallback,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
       noRealmsMessage: view.skillNoRealmsMessage,
       realmLabel: view.skillRealmLabel,
       hasRealms: realms.length > 0,
@@ -583,6 +593,8 @@
       agentsHeading: view.agentsHeading,
       schemasHeading: view.schemasHeading,
       addSchemaLabel: view.addSchemaLabel,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
+      schemaAddFallbackError: view.schemaAddFallbackError,
       emptyTitle: view.emptyTitle,
       emptyLines: view.emptyLines,
       missingSchemaLabel: view.missingSchemaLabel,
@@ -606,6 +618,11 @@
       addAgentUnavailableLabel: String(view.add_agent_unavailable_label || "").trim(),
       addAgentPlaceholderLabel: String(view.add_agent_placeholder_label || "").trim(),
       addAgentErrorPrefix: String(view.add_agent_error_prefix || "").trim(),
+      authoringOperationUnavailableError: String(view.authoring_operation_unavailable_error || "").trim(),
+      memberUpdateFallbackError: String(view.member_update_fallback_error || "").trim(),
+      toolUpdateFallbackError: String(view.tool_update_fallback_error || "").trim(),
+      schemaAssignmentFallbackError: String(view.schema_assignment_fallback_error || "").trim(),
+      schemaAddFallbackError: String(view.schema_add_fallback_error || "").trim(),
       definitionCatalogTitle: String(view.definition_catalog_title || "").trim(),
       definitionCatalogEmpty: String(view.definition_catalog_empty || "").trim(),
       definitionCatalogSourceLabel: String(view.definition_catalog_source_label || "").trim(),
@@ -628,6 +645,9 @@
     return out.agentsHeading && out.schemasHeading && out.addSchemaLabel
       && out.addAgentTitle && out.addAgentUnavailableTitle
       && out.addAgentUnavailableLabel && out.addAgentPlaceholderLabel
+      && out.authoringOperationUnavailableError && out.memberUpdateFallbackError
+      && out.toolUpdateFallbackError && out.schemaAssignmentFallbackError
+      && out.schemaAddFallbackError
       && out.definitionCatalogTitle && out.definitionCatalogEmpty
       && out.definitionCatalogSourceLabel && out.definitionCatalogToolsLabel && out.definitionCatalogSkillsLabel
       && out.memberSubLabelTemplate && out.memberPlacedEmptyLabel && out.memberPlacedCountTemplate
@@ -649,6 +669,11 @@
       addAgentUnavailableLabel: String(view?.addAgentUnavailableLabel || ""),
       addAgentPlaceholderLabel: String(view?.addAgentPlaceholderLabel || ""),
       addAgentErrorPrefix: String(view?.addAgentErrorPrefix || ""),
+      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
+      memberUpdateFallbackError: String(view?.memberUpdateFallbackError || ""),
+      toolUpdateFallbackError: String(view?.toolUpdateFallbackError || ""),
+      schemaAssignmentFallbackError: String(view?.schemaAssignmentFallbackError || ""),
+      schemaAddFallbackError: String(view?.schemaAddFallbackError || ""),
       definitionCatalogTitle: String(view?.definitionCatalogTitle || ""),
       definitionCatalogEmpty: String(view?.definitionCatalogEmpty || ""),
       definitionCatalogSourceLabel: String(view?.definitionCatalogSourceLabel || ""),
@@ -760,6 +785,9 @@
       fieldsTitlePrefix: String(view.fields_title_prefix || "").trim(),
       fieldsTitleTemplate: String(view.fields_title_template || "").trim(),
       addFieldLabel: String(view.add_field_label || "").trim(),
+      authoringOperationUnavailableError: String(view.authoring_operation_unavailable_error || "").trim(),
+      schemaOperationFallbackError: String(view.schema_operation_fallback_error || "").trim(),
+      fieldAddFallbackError: String(view.field_add_fallback_error || "").trim(),
       headerLabels: {
         name: String(headers.name || "").trim(),
         type: String(headers.type || "").trim(),
@@ -783,6 +811,7 @@
       fieldEnumAddValue: String(view.field_enum_add_value || "").trim(),
     };
     return out.eyebrow && out.descriptionTitle && out.fieldsTitlePrefix && out.fieldsTitleTemplate && out.addFieldLabel
+      && out.authoringOperationUnavailableError && out.schemaOperationFallbackError && out.fieldAddFallbackError
       && out.headerLabels.name && out.headerLabels.type && out.headerLabels.required && out.headerLabels.description
       && out.emptyFieldsHint && out.usedByPrefix && out.usedByTitleTemplate
       && out.usageSingularTemplate && out.usagePluralTemplate && out.emptyUsedByHint && out.deleteLabel && out.deleteBlockedTitle
@@ -801,6 +830,9 @@
       fieldsTitlePrefix: String(view?.fieldsTitlePrefix || ""),
       fieldsTitleTemplate: String(view?.fieldsTitleTemplate || ""),
       addFieldLabel: String(view?.addFieldLabel || ""),
+      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
+      schemaOperationFallbackError: String(view?.schemaOperationFallbackError || ""),
+      fieldAddFallbackError: String(view?.fieldAddFallbackError || ""),
       headerLabels: {
         name: String(view?.headerLabels?.name || ""),
         type: String(view?.headerLabels?.type || ""),
@@ -965,6 +997,8 @@
     if (!view || typeof view !== "object") return null;
     const out = {
       toolInvalidError: String(view.tool_invalid_error || "").trim(),
+      toolEmptyError: String(view.tool_empty_error || "").trim(),
+      authoringOperationUnavailableError: String(view.authoring_operation_unavailable_error || "").trim(),
       toolTitle: String(view.tool_title || "").trim(),
       toolHint: String(view.tool_hint || "").trim(),
       toolMissingDescription: String(view.tool_missing_description || "").trim(),
@@ -1009,6 +1043,8 @@
     const view = agentAccessView && typeof agentAccessView === "object" ? agentAccessView : null;
     return {
       toolInvalidError: String(view?.toolInvalidError || ""),
+      toolEmptyError: String(view?.toolEmptyError || ""),
+      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
       toolTitle: String(view?.toolTitle || ""),
       toolHint: String(view?.toolHint || ""),
       toolMissingDescription: String(view?.toolMissingDescription || ""),
@@ -1284,6 +1320,8 @@
       emptyPanelTitle: String(view.empty_panel_title || "").trim(),
       emptyPanelSubtitleParts: basicViewPartsFromSchema(view.empty_panel_subtitle_parts),
       sourceToggleLabel: String(view.source_toggle_label || "").trim(),
+      authoringOperationUnavailableError: String(view.authoring_operation_unavailable_error || "").trim(),
+      authoringOperationFallbackError: String(view.authoring_operation_fallback_error || "").trim(),
       memberStepPanelTitleFallback: String(view.member_step_panel_title_fallback || "").trim(),
       memberStepPanelSubFallback: String(view.member_step_panel_sub_fallback || "").trim(),
       memberStepMemberLabel: String(view.member_step_member_label || "").trim(),
@@ -1472,6 +1510,8 @@
         ? view.emptyPanelSubtitleParts
         : [],
       sourceToggleLabel: String(view?.sourceToggleLabel || ""),
+      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
+      authoringOperationFallbackError: String(view?.authoringOperationFallbackError || ""),
       memberStepPanelTitleFallback: String(view?.memberStepPanelTitleFallback || ""),
       memberStepPanelSubFallback: String(view?.memberStepPanelSubFallback || ""),
       memberStepMemberLabel: String(view?.memberStepMemberLabel || ""),
@@ -1747,6 +1787,8 @@
       addNodeEmptyPrefix: String(view.add_node_empty_prefix || ""),
       addNodeEmptySuffix: String(view.add_node_empty_suffix || ""),
       addNodeJumpLabel: String(view.add_node_jump_label || "").trim(),
+      authoringOperationUnavailableError: String(view.authoring_operation_unavailable_error || "").trim(),
+      authoringOperationFallbackError: String(view.authoring_operation_fallback_error || "").trim(),
       gatePaletteRows: graphGatePaletteRowsFromSchema(view.gate_palette_rows),
       gateKindLabels: viewStringMapFromSchema(view.graph_gate_kind_labels),
       terminalKindLabels: viewStringMapFromSchema(view.graph_terminal_kind_labels),
@@ -1829,6 +1871,7 @@
       && out.addNodeSearchIcon && out.addNodeSearchPlaceholder && out.addNodeCloseLabel
       && out.addNodeCloseTitle && out.addNodeAgentsLabel && out.addNodeControlsLabel
       && out.addNodeEmptyPrefix && out.addNodeEmptySuffix && out.addNodeJumpLabel
+      && out.authoringOperationUnavailableError && out.authoringOperationFallbackError
       && out.gatePaletteRows.length
       && Object.keys(out.gateKindLabels).length
       && Object.keys(out.terminalKindLabels).length
@@ -1900,6 +1943,8 @@
       addNodeEmptyPrefix: String(view?.addNodeEmptyPrefix || ""),
       addNodeEmptySuffix: String(view?.addNodeEmptySuffix || ""),
       addNodeJumpLabel: String(view?.addNodeJumpLabel || ""),
+      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
+      authoringOperationFallbackError: String(view?.authoringOperationFallbackError || ""),
       gatePaletteRows: Array.isArray(view?.gatePaletteRows) ? view.gatePaletteRows : [],
       gateKindLabels: view?.gateKindLabels && typeof view.gateKindLabels === "object" ? view.gateKindLabels : {},
       terminalKindLabels: view?.terminalKindLabels && typeof view.terminalKindLabels === "object" ? view.terminalKindLabels : {},
@@ -2027,7 +2072,8 @@
     return null;
   }
 
-  function agentEditorControlState({ member, instances = [], schemas = [], contract, deploySettings, modelCatalog = [], agentDetailView = null } = {}) {
+  function agentEditorControlState({ member, instances = [], schemas = [], contract, deploySettings, modelCatalog = [], agentView = null, agentDetailView = null } = {}) {
+    const agentUiView = agentViewForState(agentView);
     const view = agentDetailViewForState(agentDetailView);
     const placedAt = (Array.isArray(instances) ? instances : []).filter((instance) => instance?.memberId === member?.id);
     const placedCount = placedAt.length;
@@ -2082,6 +2128,10 @@
     return {
       placedAt,
       placedCount,
+      authoringOperationUnavailableError: agentUiView.authoringOperationUnavailableError,
+      memberUpdateFallbackError: agentUiView.memberUpdateFallbackError,
+      toolUpdateFallbackError: agentUiView.toolUpdateFallbackError,
+      schemaAssignmentFallbackError: agentUiView.schemaAssignmentFallbackError,
       eyebrow: [view.agentEyebrowPrefix, member?.role || ""].filter(Boolean).join(" · "),
       idLine: `${member?.id || ""} · ${view.usedInLabel} ${placedCount} ${instanceNoun}`,
       deleteLabel: view.deleteLabel,
@@ -2227,6 +2277,7 @@
         ? view.addAgentTitle
         : view.addAgentUnavailableTitle,
       unavailableLabel: view.addAgentUnavailableLabel,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
       placeholderOption: { value: "", label: view.addAgentPlaceholderLabel },
       value: "",
     };
@@ -2234,7 +2285,7 @@
 
   function agentDefinitionAddErrorState(result = null, agentView = null) {
     const view = agentViewForState(agentView);
-    const error = String(result?.error || "").trim();
+    const error = operationErrorText(result, "");
     const prefix = view.addAgentErrorPrefix
       ? `${view.addAgentErrorPrefix}${/\s$/.test(view.addAgentErrorPrefix) ? "" : " "}`
       : "";
@@ -2279,8 +2330,8 @@
     };
   }
 
-  function memberSchemaChangeErrorState(result = null) {
-    const error = String(result?.error || "").trim();
+  function memberSchemaChangeErrorState(result = null, fallback = "") {
+    const error = operationErrorText(result, fallback);
     return {
       hasError: !!error,
       text: error,
@@ -2288,16 +2339,16 @@
     };
   }
 
-  function schemaDefinitionAddErrorState(result = null) {
-    return memberSchemaChangeErrorState(result);
+  function schemaDefinitionAddErrorState(result = null, fallback = "") {
+    return memberSchemaChangeErrorState(result, fallback);
   }
 
-  function schemaFieldAddErrorState(result = null) {
-    return memberSchemaChangeErrorState(result);
+  function schemaFieldAddErrorState(result = null, fallback = "") {
+    return memberSchemaChangeErrorState(result, fallback);
   }
 
-  function inputParamAddErrorState(result = null) {
-    return memberSchemaChangeErrorState(result);
+  function inputParamAddErrorState(result = null, fallback = "") {
+    return memberSchemaChangeErrorState(result, fallback);
   }
 
   function schemaEditorControlState({ schema, members = [], schemaView = null } = {}) {
@@ -2326,6 +2377,9 @@
         count: fields.length,
       }),
       addFieldLabel: view.addFieldLabel,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
+      schemaOperationFallbackError: view.schemaOperationFallbackError,
+      fieldAddFallbackError: view.fieldAddFallbackError,
       headerLabels: view.headerLabels,
       fieldRows,
       emptyFieldsHint: view.emptyFieldsHint,
@@ -3995,6 +4049,8 @@
       sourceErrorMeta: String(view.source_error_meta || "").trim(),
       validationApiFailedHead: String(view.validation_api_failed_head || "").trim(),
       rpcErrorMeta: String(view.rpc_error_meta || "").trim(),
+      authoringOperationFailedHead: String(view.authoring_operation_failed_head || "").trim(),
+      authoringOperationMeta: String(view.authoring_operation_meta || "").trim(),
       exportFailedHead: String(view.export_failed_head || "").trim(),
       importFailedHead: String(view.import_failed_head || "").trim(),
       missingEditorFlowHead: String(view.missing_editor_flow_head || "").trim(),
@@ -4016,6 +4072,8 @@
       sourceErrorMeta: String(view?.sourceErrorMeta || ""),
       validationApiFailedHead: String(view?.validationApiFailedHead || ""),
       rpcErrorMeta: String(view?.rpcErrorMeta || ""),
+      authoringOperationFailedHead: String(view?.authoringOperationFailedHead || ""),
+      authoringOperationMeta: String(view?.authoringOperationMeta || ""),
       exportFailedHead: String(view?.exportFailedHead || ""),
       importFailedHead: String(view?.importFailedHead || ""),
       missingEditorFlowHead: String(view?.missingEditorFlowHead || ""),
@@ -10400,12 +10458,8 @@
 
   function flowCatalogBootstrapState(catalogPayload, options = {}) {
     const sampleFlows = sampleFlowsFromCatalogs(catalogPayload);
-    const blank = blankMobpackFromCatalogs(catalogPayload);
-    const blankFlow = blank
-      ? { ...blank, stage: "draft", validation: null }
-      : null;
     const registryFlows = flowRegistryRowsFromBackend(options.registryRows || options.registryResult?.rows);
-    const flows = registryFlows.length ? registryFlows : (blankFlow ? [blankFlow] : []);
+    const flows = registryFlows;
     const first = flows[0] || null;
     return {
       templates: sampleFlows,
@@ -11413,6 +11467,7 @@
     configure,
     authoringOperationsFromSchema,
     authoringOperationAvailability,
+    operationErrorText,
     buildDocument,
     authoringFlowForDocument,
     authoringDocumentFromState,

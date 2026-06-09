@@ -73,27 +73,24 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   const g = gridState.grid;
   const totalW = gridState.totalW;
   const totalH = gridState.totalH;
-  const graphOperationErrorText = (result, fallback) => {
-    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
-    return result?.error || fallback;
-  };
   const applyGraphOperation = async (payload, fallback) => {
+    const fallbackText = fallback || canvasView.authoringOperationFallbackError;
     if (!applyAuthoringReplacement) {
-      const result = { ok: false, error: "MobKit authoring operation API is unavailable" };
-      setOperationError(graphOperationErrorText(result, fallback));
+      const result = { ok: false, error: canvasView.authoringOperationUnavailableError };
+      setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
       return result;
     }
     try {
       const result = await applyAuthoringReplacement(payload);
       if (result?.ok === false) {
-        setOperationError(graphOperationErrorText(result, fallback));
+        setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
       } else {
         setOperationError("");
       }
       return result;
     } catch (error) {
-      const result = { ok: false, error: error?.message || String(error || fallback) };
-      setOperationError(graphOperationErrorText(result, fallback));
+      const result = { ok: false, error: error?.message || String(error || fallbackText) };
+      setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
       return result;
     }
   };

@@ -1440,6 +1440,8 @@ pub fn mobpack_schema_response() -> Value {
         "add_node_empty_prefix": "No matches for “",
         "add_node_empty_suffix": "”",
         "add_node_jump_label": "+ New agent in Agents →",
+        "authoring_operation_unavailable_error": "MobKit authoring operation API is unavailable",
+        "authoring_operation_fallback_error": "MobKit graph operation failed",
         "gate_palette_rows": [
             {
                 "id": "branch",
@@ -1575,6 +1577,8 @@ pub fn mobpack_schema_response() -> Value {
         "source_error_meta": "mobkit/mobpacks/source",
         "validation_api_failed_head": "MobKit API unavailable",
         "rpc_error_meta": "/flow-editor/rpc",
+        "authoring_operation_failed_head": "MobKit authoring operation failed",
+        "authoring_operation_meta": "MobKit authoring",
         "export_failed_head": "Export failed",
         "import_failed_head": "Import failed",
         "missing_editor_flow_head": "Imported mobpack is missing a MobKit editor flow",
@@ -1590,6 +1594,11 @@ pub fn mobpack_schema_response() -> Value {
         "add_agent_unavailable_label": "agents unavailable",
         "add_agent_placeholder_label": "+ new agent...",
         "add_agent_error_prefix": "Agent definition unavailable: ",
+        "authoring_operation_unavailable_error": "MobKit authoring operation API is unavailable",
+        "member_update_fallback_error": "MobKit member update failed",
+        "tool_update_fallback_error": "MobKit tool update failed",
+        "schema_assignment_fallback_error": "MobKit schema assignment failed",
+        "schema_add_fallback_error": "add_schema failed",
         "definition_catalog_title": "DEFINITION CATALOG",
         "definition_catalog_empty": "No MobKit profile-member definitions available.",
         "definition_catalog_source_label": "source",
@@ -1617,6 +1626,9 @@ pub fn mobpack_schema_response() -> Value {
         "fields_title_prefix": "FIELDS",
         "fields_title_template": "{prefix} · {count}",
         "add_field_label": "+ field",
+        "authoring_operation_unavailable_error": "MobKit authoring operation API is unavailable",
+        "schema_operation_fallback_error": "MobKit schema operation failed",
+        "field_add_fallback_error": "add_schema_field failed",
         "header_labels": {
             "name": "NAME",
             "type": "TYPE",
@@ -1695,6 +1707,8 @@ pub fn mobpack_schema_response() -> Value {
     editor_agent_detail_view["source_skills_label"] = json!("Skill refs");
     let editor_agent_access_view = json!({
         "tool_invalid_error": "Use a MobKit-listed runtime tool or configured MCP/Rust source.",
+        "tool_empty_error": "Choose a tool first.",
+        "authoring_operation_unavailable_error": "MobKit authoring operation API is unavailable",
         "tool_title": "TOOL ACCESS",
         "tool_hint": "Authority is calculated from this allowlist. Reviewed once here.",
         "tool_missing_description": "—",
@@ -1919,6 +1933,10 @@ pub fn mobpack_schema_response() -> Value {
         ],
         "source_toggle_label": "{ } mob.toml"
     });
+    editor_basic_view["authoring_operation_unavailable_error"] =
+        json!("MobKit authoring operation API is unavailable");
+    editor_basic_view["authoring_operation_fallback_error"] =
+        json!("MobKit authoring operation failed");
     editor_basic_view["member_step_panel_title_fallback"] = json!("Member step");
     editor_basic_view["member_step_panel_sub_fallback"] = json!("Assign a member to run this step");
     editor_basic_view["member_step_member_label"] = json!("Member (profile)");

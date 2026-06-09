@@ -36,7 +36,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
     selection: agentSel,
     agentView,
   });
-  const schemaAddErrorState = window.MobKitFlowController.schemaDefinitionAddErrorState(schemaAddResult);
+  const schemaAddErrorState = window.MobKitFlowController.schemaDefinitionAddErrorState(schemaAddResult, listState.schemaAddFallbackError);
   return (
     <aside className="agents-list">
       <div className="agents-list__head">
@@ -89,7 +89,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
           className="agents-list__add"
           onClick={() => {
             if (!applyAuthoringReplacement) {
-              setSchemaAddResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+              setSchemaAddResult({ ok: false, error: listState.authoringOperationUnavailableError });
               return;
             }
             setSchemaAddResult(null);
@@ -107,7 +107,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
             }).catch((error) => {
               setSchemaAddResult({
                 ok: false,
-                error: error?.message || String(error || "add_schema failed"),
+                error: error?.message || String(error || listState.schemaAddFallbackError),
               });
             });
           }}
@@ -125,7 +125,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAuth
   const definitionErrorState = window.MobKitFlowController.agentDefinitionAddErrorState(lastAddResult, agentView);
   const createFromDefinition = async (definitionId) => {
     if (!applyAuthoringOperation) {
-      setLastAddResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      setLastAddResult({ ok: false, error: definitionState.authoringOperationUnavailableError });
       return;
     }
     if (studio.snap) studio.snap();
@@ -213,24 +213,34 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
     return <SchemaEditor studio={studio} schema={selectionState.schema} setAgentSel={setAgentSel} contract={contract} flow={flow} setFlow={setFlow} schemaView={schemaView} applyAuthoringReplacement={applyAuthoringReplacement} />;
   }
   if (!selectionState.member) return <div className="agents-empty">{selectionState.missingAgentLabel}</div>;
-  return <AgentEditor studio={studio} member={selectionState.member} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} applyAuthoringOperation={applyAuthoringOperation} applyAuthoringReplacement={applyAuthoringReplacement} agentDetailView={agentDetailView} agentAccessView={agentAccessView} />;
+  return <AgentEditor studio={studio} member={selectionState.member} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} applyAuthoringOperation={applyAuthoringOperation} applyAuthoringReplacement={applyAuthoringReplacement} agentView={agentView} agentDetailView={agentDetailView} agentAccessView={agentAccessView} />;
 }
 
 // ── Agent editor ────────────────────────────────────────────────────
-function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAuthoringOperation = null, applyAuthoringReplacement = null, agentDetailView = null, agentAccessView = null }) {
+function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAuthoringOperation = null, applyAuthoringReplacement = null, agentView = null, agentDetailView = null, agentAccessView = null }) {
   const [memberEditError, setMemberEditError] = React.useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
   React.useEffect(() => {
     setDeleteConfirmOpen(false);
   }, [member.id]);
   const mobKitOperationError = (result, fallback) => {
-    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
-    return result?.error || fallback;
+    return window.MobKitFlowController.operationErrorText(result, fallback);
   };
+  const editorState = window.MobKitFlowController.agentEditorControlState({
+    member,
+    instances: studio.instances,
+    schemas: studio.schemas,
+    contract,
+    deploySettings,
+    modelCatalog,
+    agentDetailView,
+    agentView,
+  });
+  const unavailableError = editorState.authoringOperationUnavailableError;
   const change = async (patch) => {
     if (!patch || typeof patch !== "object" || !Object.keys(patch).length) return;
     if (!applyAuthoringOperation) {
-      setMemberEditError("MobKit authoring operation API is unavailable");
+      setMemberEditError(unavailableError);
       return;
     }
     try {
@@ -241,36 +251,27 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
         patch,
       });
       if (!result?.ok) {
-        setMemberEditError(mobKitOperationError(result, "MobKit member update failed"));
+        setMemberEditError(mobKitOperationError(result, editorState.memberUpdateFallbackError));
         return;
       }
       setMemberEditError("");
     } catch (error) {
-      setMemberEditError(error?.message || "MobKit member update failed");
+      setMemberEditError(error?.message || editorState.memberUpdateFallbackError);
     }
   };
   const [toolDraft, setToolDraft] = React.useState("");
   const [toolDraftError, setToolDraftError] = React.useState("");
   const [schemaChangeResult, setSchemaChangeResult] = React.useState(null);
   const toolAccessState = window.MobKitFlowController.memberToolAccessState(member, toolCatalog, agentAccessView);
-  const editorState = window.MobKitFlowController.agentEditorControlState({
-    member,
-    instances: studio.instances,
-    schemas: studio.schemas,
-    contract,
-    deploySettings,
-    modelCatalog,
-    agentDetailView,
-  });
   const schemaErrorState = window.MobKitFlowController.memberSchemaChangeErrorState(schemaChangeResult);
   const addToolAccess = async (raw) => {
     const toolId = String(raw || "").trim();
     if (!toolId) {
-      setToolDraftError(toolAccessState.emptyToolError || "Choose a tool first.");
+      setToolDraftError(toolAccessState.emptyToolError);
       return;
     }
     if (!applyAuthoringOperation) {
-      setToolDraftError("MobKit authoring operation API is unavailable");
+      setToolDraftError(toolAccessState.authoringOperationUnavailableError);
       return;
     }
     try {
@@ -281,18 +282,18 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
         tool_id: toolId,
       });
       if (!result?.ok) {
-        setToolDraftError(mobKitOperationError(result, "MobKit tool update failed"));
+        setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
         return;
       }
       setToolDraft("");
       setToolDraftError("");
     } catch (error) {
-      setToolDraftError(error?.message || "MobKit tool update failed");
+      setToolDraftError(error?.message || editorState.toolUpdateFallbackError);
     }
   };
   const removeToolAccess = async (toolId) => {
     if (!applyAuthoringOperation) {
-      setToolDraftError("MobKit authoring operation API is unavailable");
+      setToolDraftError(toolAccessState.authoringOperationUnavailableError);
       return;
     }
     try {
@@ -303,17 +304,17 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
         tool_id: toolId,
       });
       if (!result?.ok) {
-        setToolDraftError(mobKitOperationError(result, "MobKit tool update failed"));
+        setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
         return;
       }
       setToolDraftError("");
     } catch (error) {
-      setToolDraftError(error?.message || "MobKit tool update failed");
+      setToolDraftError(error?.message || editorState.toolUpdateFallbackError);
     }
   };
   const changeSchema = (rawSchema) => {
     if (!applyAuthoringReplacement) {
-      setSchemaChangeResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      setSchemaChangeResult({ ok: false, error: unavailableError });
       return;
     }
     applyAuthoringReplacement({
@@ -323,7 +324,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     }).then((result) => {
       setSchemaChangeResult(result?.ok === false ? result : null);
     }).catch((error) => {
-      setSchemaChangeResult({ ok: false, error: error?.message || "MobKit schema assignment failed" });
+      setSchemaChangeResult({ ok: false, error: error?.message || editorState.schemaAssignmentFallbackError });
     });
   };
   const deleteConfirmState = window.MobKitFlowController.agentDeleteConfirmationState(editorState, deleteConfirmOpen);
@@ -611,15 +612,12 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     members: studio.members,
     schemaView,
   });
-  const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult);
-  const schemaOperationErrorText = (result, fallback) => {
-    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
-    return result?.error || fallback;
-  };
+  const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult, schemaState.fieldAddFallbackError);
   const applySchemaOperation = async (selection = { kind: "schema", id: schema.id }, operationType = "update_schema", operation = {}) => {
+    const fallback = schemaState.schemaOperationFallbackError;
     if (!applyAuthoringReplacement) {
-      const result = { ok: false, error: "MobKit authoring operation API is unavailable" };
-      setSchemaOperationError(schemaOperationErrorText(result, "MobKit schema operation failed"));
+      const result = { ok: false, error: schemaState.authoringOperationUnavailableError };
+      setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       return result;
     }
     try {
@@ -629,14 +627,14 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
         selection,
       });
       if (result?.ok === false) {
-        setSchemaOperationError(schemaOperationErrorText(result, "MobKit schema operation failed"));
+        setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       } else {
         setSchemaOperationError("");
       }
       return result;
     } catch (error) {
-      const result = { ok: false, error: error?.message || String(error || "MobKit schema operation failed") };
-      setSchemaOperationError(schemaOperationErrorText(result, "MobKit schema operation failed"));
+      const result = { ok: false, error: error?.message || String(error || fallback) };
+      setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       return result;
     }
   };
@@ -673,7 +671,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
 
   const addField = () => {
     if (!applyAuthoringReplacement) {
-      setFieldAddResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      setFieldAddResult({ ok: false, error: schemaState.authoringOperationUnavailableError });
       return;
     }
     setFieldAddResult(null);
@@ -690,7 +688,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     }).catch((error) => {
       setFieldAddResult({
         ok: false,
-        error: error?.message || String(error || "add_schema_field failed"),
+        error: error?.message || String(error || schemaState.fieldAddFallbackError),
       });
     });
   };

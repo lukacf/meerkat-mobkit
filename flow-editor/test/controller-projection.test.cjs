@@ -91,6 +91,8 @@ const TEST_DEPLOY_VIEW = {
 };
 const TEST_AGENT_ACCESS_VIEW_SCHEMA = {
   tool_invalid_error: "Use a MobKit-listed runtime tool or configured MCP/Rust source.",
+  tool_empty_error: "Choose a tool first.",
+  authoring_operation_unavailable_error: "MobKit authoring operation API is unavailable",
   tool_title: "TOOL ACCESS",
   tool_hint: "Authority is calculated from this allowlist. Reviewed once here.",
   tool_missing_description: "—",
@@ -128,6 +130,8 @@ const TEST_AGENT_ACCESS_VIEW_SCHEMA = {
 };
 const TEST_AGENT_ACCESS_VIEW = {
   toolInvalidError: "Use a MobKit-listed runtime tool or configured MCP/Rust source.",
+  toolEmptyError: "Choose a tool first.",
+  authoringOperationUnavailableError: "MobKit authoring operation API is unavailable",
   toolTitle: "TOOL ACCESS",
   toolHint: "Authority is calculated from this allowlist. Reviewed once here.",
   toolMissingDescription: "—",
@@ -346,6 +350,8 @@ const TEST_ERROR_VIEW_SCHEMA = {
   source_error_meta: "mobkit/mobpacks/source",
   validation_api_failed_head: "MobKit API unavailable",
   rpc_error_meta: "/flow-editor/rpc",
+  authoring_operation_failed_head: "MobKit authoring operation failed",
+  authoring_operation_meta: "MobKit authoring",
   export_failed_head: "Export failed",
   import_failed_head: "Import failed",
   missing_editor_flow_head: "Imported mobpack is missing a MobKit editor flow",
@@ -362,6 +368,8 @@ const TEST_ERROR_VIEW = {
   sourceErrorMeta: "mobkit/mobpacks/source",
   validationApiFailedHead: "MobKit API unavailable",
   rpcErrorMeta: "/flow-editor/rpc",
+  authoringOperationFailedHead: "MobKit authoring operation failed",
+  authoringOperationMeta: "MobKit authoring",
   exportFailedHead: "Export failed",
   importFailedHead: "Import failed",
   missingEditorFlowHead: "Imported mobpack is missing a MobKit editor flow",
@@ -1200,6 +1208,11 @@ const hydratedContractAndCatalogFixture = {
       add_agent_unavailable_label: "agents unavailable",
       add_agent_placeholder_label: "+ new agent...",
       add_agent_error_prefix: "Agent definition unavailable: ",
+      authoring_operation_unavailable_error: "MobKit authoring operation API is unavailable",
+      member_update_fallback_error: "MobKit member update failed",
+      tool_update_fallback_error: "MobKit tool update failed",
+      schema_assignment_fallback_error: "MobKit schema assignment failed",
+      schema_add_fallback_error: "add_schema failed",
       definition_catalog_title: "DEFINITION CATALOG",
       definition_catalog_empty: "No MobKit profile-member definitions available.",
       definition_catalog_source_label: "source",
@@ -1285,6 +1298,9 @@ const hydratedContractAndCatalogFixture = {
       fields_title_prefix: "FIELDS",
       fields_title_template: "{prefix} · {count}",
       add_field_label: "+ field",
+      authoring_operation_unavailable_error: "MobKit authoring operation API is unavailable",
+      schema_operation_fallback_error: "MobKit schema operation failed",
+      field_add_fallback_error: "add_schema_field failed",
       header_labels: {
         name: "NAME",
         type: "TYPE",
@@ -1320,6 +1336,8 @@ const hydratedContractAndCatalogFixture = {
         { kind: "text", text: " flow." },
       ],
       source_toggle_label: "{ } mob.toml",
+      authoring_operation_unavailable_error: "MobKit authoring operation API is unavailable",
+      authoring_operation_fallback_error: "MobKit authoring operation failed",
       member_step_panel_title_fallback: "Member step",
       member_step_panel_sub_fallback: "Assign a member to run this step",
       member_step_member_label: "Member (profile)",
@@ -1498,6 +1516,8 @@ const hydratedContractAndCatalogFixture = {
       add_node_empty_prefix: "No matches for “",
       add_node_empty_suffix: "”",
       add_node_jump_label: "+ New agent in Agents →",
+      authoring_operation_unavailable_error: "MobKit authoring operation API is unavailable",
+      authoring_operation_fallback_error: "MobKit graph operation failed",
       gate_palette_rows: [
         { id: "branch", glyph: "⑂", label: "Branch gate", meta: "conditional split" },
         { id: "fork", glyph: "‖", label: "Parallel fork", meta: "fan_out lanes" },
@@ -1691,6 +1711,11 @@ assert.deepEqual(hydratedCatalogs.agentView, {
   addAgentUnavailableLabel: "agents unavailable",
   addAgentPlaceholderLabel: "+ new agent...",
   addAgentErrorPrefix: "Agent definition unavailable:",
+  authoringOperationUnavailableError: "MobKit authoring operation API is unavailable",
+  memberUpdateFallbackError: "MobKit member update failed",
+  toolUpdateFallbackError: "MobKit tool update failed",
+  schemaAssignmentFallbackError: "MobKit schema assignment failed",
+  schemaAddFallbackError: "add_schema failed",
   definitionCatalogTitle: "DEFINITION CATALOG",
   definitionCatalogEmpty: "No MobKit profile-member definitions available.",
   definitionCatalogSourceLabel: "source",
@@ -1775,6 +1800,9 @@ assert.deepEqual(hydratedCatalogs.schemaView, {
   fieldsTitlePrefix: "FIELDS",
   fieldsTitleTemplate: "{prefix} · {count}",
   addFieldLabel: "+ field",
+  authoringOperationUnavailableError: "MobKit authoring operation API is unavailable",
+  schemaOperationFallbackError: "MobKit schema operation failed",
+  fieldAddFallbackError: "add_schema_field failed",
   headerLabels: {
     name: "NAME",
     type: "TYPE",
@@ -1810,6 +1838,8 @@ assert.deepEqual(hydratedCatalogs.basicView, {
     { key: "text-4", kind: "text", text: " flow." },
   ],
   sourceToggleLabel: "{ } mob.toml",
+  authoringOperationUnavailableError: "MobKit authoring operation API is unavailable",
+  authoringOperationFallbackError: "MobKit authoring operation failed",
   memberStepPanelTitleFallback: "Member step",
   memberStepPanelSubFallback: "Assign a member to run this step",
   memberStepMemberLabel: "Member (profile)",
@@ -1985,6 +2015,8 @@ assert.deepEqual(controller.basicEditorViewState(null), {
   emptyPanelTitle: "",
   emptyPanelSubtitleParts: [],
   sourceToggleLabel: "",
+  authoringOperationUnavailableError: "",
+  authoringOperationFallbackError: "",
   memberStepPanelTitleFallback: "",
   memberStepPanelSubFallback: "",
   memberStepMemberLabel: "",
@@ -2130,6 +2162,8 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   addNodeEmptyPrefix: "No matches for “",
   addNodeEmptySuffix: "”",
   addNodeJumpLabel: "+ New agent in Agents →",
+  authoringOperationUnavailableError: "MobKit authoring operation API is unavailable",
+  authoringOperationFallbackError: "MobKit graph operation failed",
   gatePaletteRows: [
     { id: "branch", glyph: "⑂", label: "Branch gate", meta: "conditional split" },
     { id: "fork", glyph: "‖", label: "Parallel fork", meta: "fan_out lanes" },
@@ -2243,6 +2277,8 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   addNodeEmptyPrefix: "",
   addNodeEmptySuffix: "",
   addNodeJumpLabel: "",
+  authoringOperationUnavailableError: "",
+  authoringOperationFallbackError: "",
   gatePaletteRows: [],
   gateKindLabels: {},
   terminalKindLabels: {},
@@ -2454,6 +2490,8 @@ assert.deepEqual(controller.memberToolAccessState(
   sourceLabel: "Configured tool source",
   sourcePlaceholder: "choose from MobKit tool catalog",
   addButtonLabel: "ADD",
+  emptyToolError: "Choose a tool first.",
+  authoringOperationUnavailableError: "MobKit authoring operation API is unavailable",
 });
 assert.deepEqual(controller.memberToolRemovePatch(
   { tools: ["builtins", "shell", "shell"] },
@@ -2493,6 +2531,7 @@ assert.deepEqual(controller.memberSkillAccessState({
   inlineCreateHint: "Creates an inline skill definition in this mobpack.",
   inlineAddLabel: "ADD SKILL",
   inlineErrorFallback: "Could not create inline skill.",
+  authoringOperationUnavailableError: "MobKit authoring operation API is unavailable",
   noRealmsMessage: "MobKit did not provide skill realms for this document.",
   realmLabel: "Realm",
   hasRealms: true,
@@ -2787,17 +2826,8 @@ const bootstrapProjection = controller.flowCatalogBootstrapState({
   mobDefaults: { backend: "session" },
 });
 assert.deepEqual(bootstrapProjection.templates.map((row) => row.id), ["starter", "second"]);
-assert.deepEqual(bootstrapProjection.flows.map((row) => row.id), ["blank"]);
-assert.equal(bootstrapProjection.flows[0].stage, "draft");
-assert.equal(bootstrapProjection.flows[0].validation, null);
-assert.equal(bootstrapProjection.initialHydration.result.document.mob_id, "blank");
-assert.equal(bootstrapProjection.initialHydration.result.validation, null);
-assert.equal(bootstrapProjection.initialHydration.options.id, "blank");
-assert.equal(bootstrapProjection.initialHydration.options.flowRow.id, "blank");
-assert.equal(bootstrapProjection.initialHydration.options.addToRegistry, false);
-assert.equal(bootstrapProjection.initialHydration.options.openEditor, true);
-assert.deepEqual(bootstrapProjection.initialHydration.options.deployDefaults, { surface: "local" });
-assert.deepEqual(bootstrapProjection.initialHydration.options.mobDefaults, { backend: "session" });
+assert.deepEqual(bootstrapProjection.flows, []);
+assert.equal(bootstrapProjection.initialHydration, null);
 
 const savedRegistryBootstrap = controller.flowCatalogBootstrapState({
   blank_mobpack: {
@@ -4897,6 +4927,8 @@ assert.deepEqual(controller.agentListState({
   agentsHeading: "AGENTS",
   schemasHeading: "SCHEMAS",
   addSchemaLabel: "+ new schema",
+  authoringOperationUnavailableError: "MobKit authoring operation API is unavailable",
+  schemaAddFallbackError: "add_schema failed",
   emptyTitle: "AGENT LIBRARY",
   emptyLines: [
     "Select an agent or schema on the left.",
@@ -4992,6 +5024,8 @@ assert.deepEqual(controller.agentListState({}), {
   agentsHeading: "",
   schemasHeading: "",
   addSchemaLabel: "",
+  authoringOperationUnavailableError: "",
+  schemaAddFallbackError: "",
   emptyTitle: "",
   emptyLines: [],
   missingSchemaLabel: "",
@@ -5347,6 +5381,7 @@ assert.deepEqual(controller.agentDefinitionAddControlState([], hydratedCatalogs.
   disabled: true,
   title: "MobKit schema contract has not provided agent definitions yet.",
   unavailableLabel: "agents unavailable",
+  authoringOperationUnavailableError: "MobKit authoring operation API is unavailable",
   placeholderOption: { value: "", label: "+ new agent..." },
   value: "",
 });
@@ -5388,6 +5423,7 @@ assert.deepEqual(controller.agentDefinitionAddControlState([{
   disabled: false,
   title: "Create an agent from a MobKit profile-member definition.",
   unavailableLabel: "agents unavailable",
+  authoringOperationUnavailableError: "MobKit authoring operation API is unavailable",
   placeholderOption: { value: "", label: "+ new agent..." },
   value: "",
 });
@@ -5423,6 +5459,9 @@ assert.deepEqual(controller.schemaEditorControlState({
   descriptionPlaceholder: "Describe emitted data.",
   fieldsTitle: "COLUMNS · 2",
   addFieldLabel: "+ column",
+  authoringOperationUnavailableError: "",
+  schemaOperationFallbackError: "",
+  fieldAddFallbackError: "",
   headerLabels: {
     name: "FIELD",
     type: "KIND",

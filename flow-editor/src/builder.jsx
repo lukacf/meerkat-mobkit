@@ -178,20 +178,17 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     ? { ...view, ty: 0 }
     : view;
 
-  const operationErrorText = (result, fallback) => {
-    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
-    return result?.error || fallback;
-  };
   const commitFlow = async (operationType = "update_flow_step", operation = {}) => {
+    const fallback = viewState.authoringOperationFallbackError;
     if (!applyAuthoringReplacement) {
-      const result = { ok: false, error: "MobKit authoring operation API is unavailable" };
-      setOperationError(operationErrorText(result, "MobKit authoring operation failed"));
+      const result = { ok: false, error: viewState.authoringOperationUnavailableError };
+      setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       return result;
     }
     try {
       const result = await applyAuthoringReplacement({ operationType, operation });
       if (result?.ok === false) {
-        setOperationError(operationErrorText(result, "MobKit authoring operation failed"));
+        setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       } else {
         setOperationError("");
       }
@@ -199,9 +196,9 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     } catch (error) {
       const result = {
         ok: false,
-        error: error?.message || String(error || "MobKit authoring operation failed"),
+        error: error?.message || String(error || fallback),
       };
-      setOperationError(operationErrorText(result, "MobKit authoring operation failed"));
+      setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       return result;
     }
   };
@@ -512,9 +509,9 @@ function StepInspector({ studio, members, flow, setFlow, step, update, editStep,
   if (step.type === "input") {
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
-    const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult);
+    const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult, viewState.authoringOperationFallbackError);
     const applyInputOperation = (operationType, operation = {}) => {
-      if (!update) return Promise.resolve({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      if (!update) return Promise.resolve({ ok: false, error: viewState.authoringOperationUnavailableError });
       return update(step.id, {}, operationType, operation);
     };
     const updateParam = (id, patch) => {
