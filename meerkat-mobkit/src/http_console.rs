@@ -1223,6 +1223,7 @@ fn is_console_mutating_rpc_method(method: &str) -> bool {
             | "mobkit/respawn_member"
             | "mobkit/force_cancel_member"
             | "mobkit/cancel_flow"
+            | "mobkit/collect_completed"
             | "mobkit/run_flow"
             | "mobkit/spawn_helper"
             | "mobkit/fork_helper"
@@ -3441,7 +3442,6 @@ async fn handle_console_runtime_rpc_with_visibility(
                 "mobkit/get_member",
                 "mobkit/find_members",
                 "mobkit/member_status",
-                "mobkit/collect_completed",
                 "mobkit/blob/get",
                 "mobkit/wait_ready",
                 "mobkit/flow_status",
@@ -3490,6 +3490,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     "mobkit/respawn_member",
                     "mobkit/force_cancel_member",
                     "mobkit/cancel_flow",
+                    "mobkit/collect_completed",
                     "mobkit/run_flow",
                     "mobkit/spawn_helper",
                     "mobkit/fork_helper",
@@ -7266,6 +7267,13 @@ comms = true
         assert_eq!(response["result"], Value::Null);
         assert_eq!(response["error"]["code"], json!(-32010));
         assert_eq!(response["error"]["data"]["kind"], json!("read_only"));
+    }
+
+    #[test]
+    fn read_only_mutating_methods_include_state_draining_collect_completed() {
+        assert!(super::is_console_mutating_rpc_method(
+            "mobkit/collect_completed"
+        ));
     }
 
     #[test]
