@@ -894,6 +894,9 @@ pub fn mobpack_schema_response() -> Value {
     editor_graph_view["branch_condition_mode_condition_label"] = json!("condition");
     editor_graph_view["branch_condition_mode_fallback_label"] = json!("fallback");
     editor_graph_view["branch_condition_target_prefix"] = json!("→");
+    editor_graph_view["graph_condition_target_missing_label"] = json!("?");
+    editor_graph_view["graph_condition_owner_option_template"] = json!("{name}");
+    editor_graph_view["graph_condition_field_option_template"] = json!("{name} · {type}");
     editor_graph_view["branch_input_param_source_label"] = json!("Input params");
     editor_graph_view["source_file_label"] = json!("mob.toml");
     editor_graph_view["source_file_aria_label"] = json!("Open mob.toml read-only source editor");
@@ -16765,6 +16768,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_view"]["edge_field_no_schema_placeholder"],
             json!("(no schema)")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["graph_condition_target_missing_label"],
+            json!("?")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["graph_condition_owner_option_template"],
+            json!("{name}")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["graph_condition_field_option_template"],
+            json!("{name} · {type}")
         );
     }
 

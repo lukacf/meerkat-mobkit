@@ -1742,6 +1742,9 @@
       branchConditionModeConditionLabel: String(view.branch_condition_mode_condition_label || "").trim(),
       branchConditionModeFallbackLabel: String(view.branch_condition_mode_fallback_label || "").trim(),
       branchConditionTargetPrefix: String(view.branch_condition_target_prefix || "").trim(),
+      graphConditionTargetMissingLabel: String(view.graph_condition_target_missing_label || "").trim(),
+      graphConditionOwnerOptionTemplate: String(view.graph_condition_owner_option_template || "").trim(),
+      graphConditionFieldOptionTemplate: String(view.graph_condition_field_option_template || "").trim(),
       graphInputParamSourceLabel: String(view.branch_input_param_source_label || "").trim(),
       sourceFileLabel: String(view.source_file_label || "").trim(),
       sourceFileAriaLabel: String(view.source_file_aria_label || "").trim(),
@@ -1786,6 +1789,8 @@
       && out.gateEmptyBranchHint && out.gateWiringTitle && out.gateIncomingLabel
       && out.gateOutgoingLabel && out.branchConditionModeConditionLabel
       && out.branchConditionModeFallbackLabel && out.branchConditionTargetPrefix
+      && out.graphConditionTargetMissingLabel && out.graphConditionOwnerOptionTemplate
+      && out.graphConditionFieldOptionTemplate
       && out.graphInputParamSourceLabel && out.sourceFileLabel
       && out.sourceFileAriaLabel && out.sourceFileGlyph && out.sourceFileRoleLabel
       && out.branchConditionFieldPlaceholder && out.branchConditionNoOptionsHint
@@ -1877,6 +1882,9 @@
       branchConditionModeConditionLabel: String(view?.branchConditionModeConditionLabel || ""),
       branchConditionModeFallbackLabel: String(view?.branchConditionModeFallbackLabel || ""),
       branchConditionTargetPrefix: String(view?.branchConditionTargetPrefix || ""),
+      graphConditionTargetMissingLabel: String(view?.graphConditionTargetMissingLabel || ""),
+      graphConditionOwnerOptionTemplate: String(view?.graphConditionOwnerOptionTemplate || ""),
+      graphConditionFieldOptionTemplate: String(view?.graphConditionFieldOptionTemplate || ""),
       graphInputParamSourceLabel: String(view?.graphInputParamSourceLabel || ""),
       sourceFileLabel: String(view?.sourceFileLabel || ""),
       sourceFileAriaLabel: String(view?.sourceFileAriaLabel || ""),
@@ -5735,12 +5743,15 @@
           target,
           targetLabel: target?.isTerminal
             ? target.label
-            : (targetMember?.name || target?.label || "?"),
+            : (targetMember?.name || target?.label || view.graphConditionTargetMissingLabel),
           condRef,
           conditionOptions,
           ownerOptions: conditionOptions.map((option) => ({
             value: option.inst.id,
-            label: option.member.name,
+            label: graphTemplateText(view.graphConditionOwnerOptionTemplate, {
+              id: option.inst.id,
+              name: option.member.name,
+            }),
             option,
           })),
           ownerValue: condRef.instanceId || conditionOptions[0]?.inst.id || "",
@@ -5748,7 +5759,11 @@
           fields,
           fieldOptions: fields.map((field) => ({
             value: field.name,
-            label: `${field.name} · ${field.type}`,
+            label: graphTemplateText(view.graphConditionFieldOptionTemplate, {
+              id: field.id || field.name,
+              name: field.name,
+              type: field.type,
+            }),
             field,
           })),
           fieldValue: condRef.field || "",
@@ -5851,14 +5866,21 @@
       condField,
       ownerOptions: conditionOptions.map((option) => ({
         value: option.inst.id,
-        label: option.member.name,
+        label: graphTemplateText(view.graphConditionOwnerOptionTemplate, {
+          id: option.inst.id,
+          name: option.member.name,
+        }),
         option,
       })),
       ownerValue: condRef.instanceId || "",
       fields,
       fieldOptions: fields.map((field) => ({
         value: field.name,
-        label: `${field.name} · ${field.type}`,
+        label: graphTemplateText(view.graphConditionFieldOptionTemplate, {
+          id: field.id || field.name,
+          name: field.name,
+          type: field.type,
+        }),
         field,
       })),
       fieldValue: condRef.field || "",

@@ -1392,6 +1392,9 @@ const hydratedContractAndCatalogFixture = {
       branch_condition_mode_condition_label: "condition",
       branch_condition_mode_fallback_label: "fallback",
       branch_condition_target_prefix: "→",
+      graph_condition_target_missing_label: "?",
+      graph_condition_owner_option_template: "{name}",
+      graph_condition_field_option_template: "{name} · {type}",
       branch_input_param_source_label: "Input params",
       source_file_label: "mob.toml",
       source_file_aria_label: "Open mob.toml read-only source editor",
@@ -1980,6 +1983,9 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   branchConditionModeConditionLabel: "condition",
   branchConditionModeFallbackLabel: "fallback",
   branchConditionTargetPrefix: "→",
+  graphConditionTargetMissingLabel: "?",
+  graphConditionOwnerOptionTemplate: "{name}",
+  graphConditionFieldOptionTemplate: "{name} · {type}",
   graphInputParamSourceLabel: "Input params",
   sourceFileLabel: "mob.toml",
   sourceFileAriaLabel: "Open mob.toml read-only source editor",
@@ -2062,6 +2068,9 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   branchConditionModeConditionLabel: "",
   branchConditionModeFallbackLabel: "",
   branchConditionTargetPrefix: "",
+  graphConditionTargetMissingLabel: "",
+  graphConditionOwnerOptionTemplate: "",
+  graphConditionFieldOptionTemplate: "",
   graphInputParamSourceLabel: "",
   sourceFileLabel: "",
   sourceFileAriaLabel: "",
@@ -7581,6 +7590,32 @@ assert.deepEqual({
 });
 assert.deepEqual(branchConditionRows[0].ownerOptions.map((option) => [option.value, option.label]), [["n_writer", "Writer"]]);
 assert.deepEqual(branchConditionRows[0].fieldOptions.map((option) => [option.value, option.label]), [["body", "body · string"]]);
+const reskinnedBranchConditionRows = controller.graphBranchConditionRows({
+  inst: { id: "branch_1", isGate: true, gateKind: "branch", col: 0, row: 0 },
+  edges: [{
+    id: "e_missing",
+    from: "branch_1",
+    to: "missing_target",
+    kind: "cond",
+    cond: { var: "steps.n_writer.body", op: "==", val: "ok" },
+  }],
+  instances: [
+    { id: "branch_1", isGate: true, gateKind: "branch", col: 0, row: 0 },
+    { id: "n_writer", memberId: "m_writer", col: 0, row: 1 },
+  ],
+  members: graphProjectionMembers,
+  schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
+  contract: graphShapeContract,
+  graphView: {
+    ...hydratedCatalogs.graphView,
+    graphConditionTargetMissingLabel: "missing node",
+    graphConditionOwnerOptionTemplate: "{id}: {name}",
+    graphConditionFieldOptionTemplate: "{type}/{name}",
+  },
+});
+assert.equal(reskinnedBranchConditionRows[0].targetLabel, "missing node");
+assert.deepEqual(reskinnedBranchConditionRows[0].ownerOptions.map((option) => option.label), ["n_writer: Writer"]);
+assert.deepEqual(reskinnedBranchConditionRows[0].fieldOptions.map((option) => option.label), ["string/body"]);
 assert.deepEqual(branchConditionRows[0].modeOptions, [
   { value: "cond", label: "condition" },
   { value: "fallback", label: "fallback" },
@@ -7682,12 +7717,27 @@ const reskinnedEdgeInspectorState = controller.graphEdgeInspectorState({
     edgeTitleTemplate: "{from} to {to}",
     edgeIdLineTemplate: "edge:{id}",
     edgeFieldNoSchemaPlaceholder: "no fields",
+    graphConditionOwnerOptionTemplate: "{id}: {name}",
+    graphConditionFieldOptionTemplate: "{type}/{name}",
   },
 });
 assert.equal(reskinnedEdgeInspectorState.eyebrow, "WIRE cond");
 assert.equal(reskinnedEdgeInspectorState.title, "Writer to Reviewer");
 assert.equal(reskinnedEdgeInspectorState.idLine, "edge:e_cond");
 assert.equal(reskinnedEdgeInspectorState.fieldPlaceholder, "no fields");
+assert.deepEqual(reskinnedEdgeInspectorState.ownerOptions.map((option) => option.label), []);
+assert.deepEqual(controller.graphEdgeInspectorState({
+  edge: { id: "e_cond", from: "n_writer", to: "n_review", kind: "cond", cond: { var: "steps.n_writer.body", op: "==", val: "ok" } },
+  instances: graphProjectionInstances,
+  members: graphProjectionMembers,
+  schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
+  contract: graphShapeContract,
+  graphView: {
+    ...hydratedCatalogs.graphView,
+    graphConditionOwnerOptionTemplate: "{id}: {name}",
+    graphConditionFieldOptionTemplate: "{type}/{name}",
+  },
+}).fieldOptions.map((option) => option.label), ["string/body"]);
 assert.equal(edgeInspectorState.deleteLabel, "DELETE");
 assert.equal(edgeInspectorState.kindTitle, "KIND");
 assert.equal(edgeInspectorState.labelTitle, "LABEL");
