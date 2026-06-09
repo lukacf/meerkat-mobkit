@@ -523,7 +523,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
     return (
       <div className="bld-panel__inner">
         <PanelHead icon={inputState.panelIcon} iconTint="member" title={inputState.panelTitle} sub={inputState.panelSub} onClose={onDelete} deleteMode />
-        <Field label={inputState.taskLabel}><textarea className="field__textarea" rows={3} placeholder={inputState.taskPlaceholder} value={step.task || ""} onChange={e => update(step.id, window.MobKitFlowController.flowStepTaskPatch(e.target.value))} /></Field>
+        <Field label={inputState.taskLabel}><textarea className="field__textarea" rows={3} placeholder={inputState.taskPlaceholder} value={step.task || ""} onChange={e => editStep(step.id, "set_task", { value: e.target.value })} /></Field>
         <div className="section">
           <div className="row row--between" style={{ marginBottom: 6 }}>
             <div className="section__title">{inputState.paramsTitle}</div>
@@ -578,7 +578,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
       <div className="bld-panel__inner">
         <PanelHead icon={branchState.panelIcon} iconTint="member" title={branchState.panelTitle} sub={branchState.panelSub} onClose={onDelete} deleteMode />
         <Field label={branchState.controllerLabel}>
-          <select className="field__select" value={branchState.controllerRole} onChange={e => update(step.id, window.MobKitFlowController.flowStepControllerRolePatch(e.target.value, members))}>
+          <select className="field__select" value={branchState.controllerRole} onChange={e => editStep(step.id, "set_controller_role", { role: e.target.value })}>
             <option value="">{branchState.controllerPlaceholderLabel}</option>
             {branchState.memberOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
@@ -604,24 +604,24 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
           <div className="bld-branch-card bld-branch-card--fallback"><div className="bld-branch-card__head">{branchState.fallbackTitle}</div><div className="bld-hint">{branchState.fallbackHint}</div></div>
         </>}
         {branchState.isParallel && <>
-          <Field label={branchState.dispatchLabel}><select className="field__select" value={branchState.dispatchValue} onChange={e => update(step.id, window.MobKitFlowController.flowStepParallelDispatchPatch(e.target.value, contract))}>
+          <Field label={branchState.dispatchLabel}><select className="field__select" value={branchState.dispatchValue} onChange={e => editStep(step.id, "set_parallel_dispatch", { dispatch: e.target.value })}>
             {branchState.dispatchOptions.map(option => (
               <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
             ))}
           </select></Field>
           {branchState.selectedDispatch?.reason && <div className="bld-hint" style={{ color: "var(--warn)" }}>{branchState.selectedDispatch.reason}</div>}
-          <Field label={branchState.collectionLabel}><select className="field__select" value={branchState.collectionValue} onChange={e => update(step.id, window.MobKitFlowController.flowStepCollectionPatch(e.target.value, contract))}>
+          <Field label={branchState.collectionLabel}><select className="field__select" value={branchState.collectionValue} onChange={e => editStep(step.id, "set_collection", { collection: e.target.value })}>
             {branchState.collectionOptions.map(option => (
               <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
             ))}
           </select></Field>
           {branchState.selectedCollection?.reason && <div className="bld-hint" style={{ color: "var(--warn)" }}>{branchState.selectedCollection.reason}</div>}
           {branchState.showQuorum && (
-            <Field label={branchState.quorumLabel}><input className="field__input" type="number" min="1" value={step.quorum ?? ""} placeholder={branchState.quorumPlaceholder} onChange={e => update(step.id, window.MobKitFlowController.flowStepQuorumPatch(e.target.value))} /></Field>
+            <Field label={branchState.quorumLabel}><input className="field__input" type="number" min="1" value={step.quorum ?? ""} placeholder={branchState.quorumPlaceholder} onChange={e => editStep(step.id, "set_quorum", { value: e.target.value })} /></Field>
           )}
           <button className="bld-add-row" onClick={addBranch}>{branchState.addBranchLabel}</button>
         </>}
-        <Field label={branchState.dependencyLabel}><select className="field__select" value={branchState.dependencyValue} onChange={e => update(step.id, window.MobKitFlowController.flowStepDependencyModePatch(e.target.value, contract))}>
+        <Field label={branchState.dependencyLabel}><select className="field__select" value={branchState.dependencyValue} onChange={e => editStep(step.id, "set_dependency_mode", { value: e.target.value })}>
           {branchState.dependencyOptions.map(option => (
             <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
           ))}
@@ -639,11 +639,11 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
       contract,
       basicView,
     });
-    const setCond = (patch) => update(step.id, window.MobKitFlowController.flowStepRepeatConditionPatch(step, patch));
+    const setCond = (patch) => editStep(step.id, "set_repeat_condition", window.MobKitFlowController.flowStepRepeatConditionPatch(step, patch));
     return (
       <div className="bld-panel__inner">
         <PanelHead icon={repeatState.panelIcon} iconTint="member" title={repeatState.panelTitle} sub={repeatState.panelSub} onClose={onDelete} deleteMode />
-        <Field label={repeatState.loopIdLabel}><input className="field__input field__input--mono" value={step.loopId || ""} placeholder={repeatState.loopIdPlaceholder} onChange={e => update(step.id, window.MobKitFlowController.flowStepLoopIdPatch(e.target.value))} /></Field>
+        <Field label={repeatState.loopIdLabel}><input className="field__input field__input--mono" value={step.loopId || ""} placeholder={repeatState.loopIdPlaceholder} onChange={e => editStep(step.id, "set_loop_id", { value: e.target.value })} /></Field>
 
         <div className="bld-section-label" style={{ marginTop: 16 }}>{repeatState.conditionTitle}</div>
         <div className="bld-hint">{repeatState.conditionIntro}</div>
@@ -670,7 +670,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
         <div className="bld-cond__preview">{repeatState.previewLabel} <code>{repeatState.repeatUntilExpression || repeatState.previewFallback}</code></div>
 
         <Field label={repeatState.iterationInputLabel}>
-          <select className="field__select" value={repeatState.iterationInputValue} onChange={e => update(step.id, window.MobKitFlowController.flowStepIterationInputPatch(e.target.value, contract))}>
+          <select className="field__select" value={repeatState.iterationInputValue} onChange={e => editStep(step.id, "set_iteration_input", { value: e.target.value })}>
             {repeatState.iterationInputOptions.map(option => (
               <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
             ))}
@@ -678,7 +678,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
         </Field>
         {repeatState.selectedIterationInput?.reason && <div className="bld-hint" style={{ color: "var(--warn)" }}>{repeatState.selectedIterationInput.reason}</div>}
 
-        <Field label={repeatState.maxIterationsLabel}><input className="field__input" type="number" min="1" placeholder={repeatState.maxIterationsPlaceholder} value={step.maxIterations ?? ""} onChange={e => update(step.id, window.MobKitFlowController.flowStepMaxIterationsPatch(e.target.value))} /></Field>
+        <Field label={repeatState.maxIterationsLabel}><input className="field__input" type="number" min="1" placeholder={repeatState.maxIterationsPlaceholder} value={step.maxIterations ?? ""} onChange={e => editStep(step.id, "set_max_iterations", { value: e.target.value })} /></Field>
         <PanelTips title={viewState.tipsTitle} items={repeatState.tips} />
       </div>
     );
@@ -698,7 +698,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
   return (
     <div className="bld-panel__inner">
       <PanelHead icon="◆" iconTint="accent" title={memberStepState.panelTitle} sub={memberStepState.panelSub} onClose={onDelete} deleteMode />
-      <Field label={memberStepState.memberFieldLabel}><select className="field__select" value={step.role || ""} onChange={e => update(step.id, window.MobKitFlowController.flowStepMemberRolePatch(e.target.value, members))}>
+      <Field label={memberStepState.memberFieldLabel}><select className="field__select" value={step.role || ""} onChange={e => editStep(step.id, "set_member_role", { role: e.target.value })}>
         <option value="">{memberStepState.memberPlaceholderLabel}</option>
         {memberStepState.memberOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select></Field>
@@ -747,9 +747,9 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
           <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => editStep(step.id, "set_launch_budget_limit", { limit: Number(e.target.value) || 1 })} />
         </Field>
       )}
-      <Field label={memberStepState.instructionLabel}><textarea className="field__textarea" rows={4} placeholder={memberStepState.instructionPlaceholder} value={step.instruction || ""} onChange={e => update(step.id, window.MobKitFlowController.flowStepInstructionPatch(e.target.value))} /></Field>
+      <Field label={memberStepState.instructionLabel}><textarea className="field__textarea" rows={4} placeholder={memberStepState.instructionPlaceholder} value={step.instruction || ""} onChange={e => editStep(step.id, "set_instruction", { value: e.target.value })} /></Field>
       <Field label={memberStepState.dispatchLabel}>
-        <select className="field__select" value={memberStepState.dispatchValue} onChange={e => update(step.id, window.MobKitFlowController.flowStepDispatchModePatch(e.target.value, contract))}>
+        <select className="field__select" value={memberStepState.dispatchValue} onChange={e => editStep(step.id, "set_dispatch_mode", { dispatch: e.target.value })}>
           {memberStepState.dispatchOptions.map(option => (
             <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
           ))}
@@ -757,7 +757,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
       </Field>
       {memberStepState.selectedDispatch?.reason && <div className="bld-hint" style={{ color: "var(--warn)" }}>{memberStepState.selectedDispatch.reason}</div>}
       <Field label={memberStepState.collectionLabel}>
-        <select className="field__select" value={memberStepState.collectionValue} onChange={e => update(step.id, window.MobKitFlowController.flowStepCollectionPatch(e.target.value, contract))}>
+        <select className="field__select" value={memberStepState.collectionValue} onChange={e => editStep(step.id, "set_collection", { collection: e.target.value })}>
           {memberStepState.collectionOptions.map(option => (
             <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
           ))}
@@ -766,14 +766,14 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
       {memberStepState.selectedCollection?.reason && <div className="bld-hint" style={{ color: "var(--warn)" }}>{memberStepState.selectedCollection.reason}</div>}
       {memberStepState.showQuorum && (
         <Field label={memberStepState.quorumLabel}>
-          <input className="field__input" type="number" min="1" step="1" value={step.quorum ?? ""} placeholder={memberStepState.quorumPlaceholder} onChange={e => update(step.id, window.MobKitFlowController.flowStepQuorumPatch(e.target.value))} />
+          <input className="field__input" type="number" min="1" step="1" value={step.quorum ?? ""} placeholder={memberStepState.quorumPlaceholder} onChange={e => editStep(step.id, "set_quorum", { value: e.target.value })} />
         </Field>
       )}
       <Field label={memberStepState.timeoutLabel}>
-        <input className="field__input" type="number" min="1" step="1" placeholder={memberStepState.timeoutPlaceholder} value={step.timeoutMs ?? ""} onChange={e => update(step.id, window.MobKitFlowController.flowStepTimeoutPatch(e.target.value))} />
+        <input className="field__input" type="number" min="1" step="1" placeholder={memberStepState.timeoutPlaceholder} value={step.timeoutMs ?? ""} onChange={e => editStep(step.id, "set_timeout_ms", { value: e.target.value })} />
       </Field>
       <Field label={memberStepState.outputFormatLabel}>
-        <select className="field__select" value={memberStepState.outputValue} onChange={e => update(step.id, window.MobKitFlowController.flowStepOutputFormatPatch(e.target.value, contract))}>
+        <select className="field__select" value={memberStepState.outputValue} onChange={e => editStep(step.id, "set_output_format", { value: e.target.value })}>
           {memberStepState.outputOptions.map(option => (
             <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
           ))}
@@ -785,7 +785,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
         emptyLabel={memberStepState.allowedToolsEmptyLabel}
         member={m}
         selected={step.allowedTools || []}
-        onChange={tools => update(step.id, window.MobKitFlowController.flowStepAllowedToolsPatch(tools, { member: m, toolCatalog }))}
+        onChange={tools => editStep(step.id, "set_allowed_tools", { tools })}
         mode="member"
         toolCatalog={toolCatalog}
         basicView={basicView}
@@ -795,7 +795,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
         emptyLabel={memberStepState.blockedToolsEmptyLabel}
         member={m}
         selected={step.blockedTools || []}
-        onChange={tools => update(step.id, window.MobKitFlowController.flowStepBlockedToolsPatch(tools, { toolCatalog }))}
+        onChange={tools => editStep(step.id, "set_blocked_tools", { tools })}
         mode="catalog"
         toolCatalog={toolCatalog}
         basicView={basicView}
@@ -809,7 +809,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
           ))}
         </div>
       )}
-      <Field label={memberStepState.dependencyLabel}><select className="field__select" value={memberStepState.dependencyValue} onChange={e => update(step.id, window.MobKitFlowController.flowStepDependencyModePatch(e.target.value, contract))}>
+      <Field label={memberStepState.dependencyLabel}><select className="field__select" value={memberStepState.dependencyValue} onChange={e => editStep(step.id, "set_dependency_mode", { value: e.target.value })}>
         {memberStepState.dependencyOptions.map(option => (
           <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
         ))}

@@ -5911,6 +5911,215 @@ fn apply_flow_step_edit_operation(
             .as_object_mut()
             .ok_or_else(|| format!("flow step is not an object: {step_id}"))?;
         match action.as_str() {
+            "set_task" => {
+                object.insert(
+                    "task".to_string(),
+                    Value::String(operation_string_value(operation, &["task", "value"])),
+                );
+            }
+            "set_instruction" => {
+                object.insert(
+                    "instruction".to_string(),
+                    Value::String(operation_string_value(operation, &["instruction", "value"])),
+                );
+            }
+            "set_loop_id" => {
+                object.insert(
+                    "loopId".to_string(),
+                    Value::String(operation_string_value(
+                        operation,
+                        &["loop_id", "loopId", "value"],
+                    )),
+                );
+            }
+            "set_quorum" => {
+                let value = operation
+                    .get("quorum")
+                    .or_else(|| operation.get("n"))
+                    .or_else(|| operation.get("value"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                object.insert(
+                    "quorum".to_string(),
+                    positive_integer_or_null(&value, "quorum")?,
+                );
+            }
+            "set_timeout_ms" => {
+                let value = operation
+                    .get("timeout_ms")
+                    .or_else(|| operation.get("timeoutMs"))
+                    .or_else(|| operation.get("value"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                object.insert(
+                    "timeoutMs".to_string(),
+                    positive_integer_or_null(&value, "timeoutMs")?,
+                );
+            }
+            "set_max_iterations" => {
+                let value = operation
+                    .get("max_iterations")
+                    .or_else(|| operation.get("maxIterations"))
+                    .or_else(|| operation.get("value"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                object.insert(
+                    "maxIterations".to_string(),
+                    positive_integer_or_null(&value, "maxIterations")?,
+                );
+            }
+            "set_repeat_condition" => {
+                let value = operation
+                    .get("cond")
+                    .or_else(|| operation.get("condition"))
+                    .or_else(|| operation.get("value"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                if !value.is_null() && !value.is_object() {
+                    return Err("flow step repeat condition must be an object or null".to_string());
+                }
+                object.insert("cond".to_string(), value);
+            }
+            "set_iteration_input" => {
+                let value = operation_string_value(
+                    operation,
+                    &["iteration_input", "iterationInput", "value"],
+                );
+                if !value.is_empty() && !REPEAT_ITERATION_INPUTS.contains(&value.as_str()) {
+                    return Err(format!("unsupported repeat iteration input: {value}"));
+                }
+                object.insert("iterationInput".to_string(), Value::String(value));
+            }
+            "set_controller_role" => {
+                let role = operation_string_value(
+                    operation,
+                    &["controller_role", "controllerRole", "role", "value"],
+                );
+                if !role.is_empty() && !graph_member_ids(&document.members).contains(&role) {
+                    return Err(format!(
+                        "flow step controller role must reference an existing member: {role}"
+                    ));
+                }
+                object.insert("controllerRole".to_string(), Value::String(role));
+            }
+            "set_member_role" => {
+                let role =
+                    operation_string_value(operation, &["role", "member_id", "memberId", "value"]);
+                if !role.is_empty() && !graph_member_ids(&document.members).contains(&role) {
+                    return Err(format!(
+                        "flow step member role must reference an existing member: {role}"
+                    ));
+                }
+                object.insert("role".to_string(), Value::String(role));
+            }
+            "set_dispatch_mode" => {
+                let value = operation
+                    .get("dispatch_mode")
+                    .or_else(|| operation.get("dispatchMode"))
+                    .or_else(|| operation.get("dispatch"))
+                    .or_else(|| operation.get("value"))
+                    .cloned()
+                    .unwrap_or_else(|| Value::String(String::new()));
+                object.insert(
+                    "dispatchMode".to_string(),
+                    allowed_flow_option_value(&value, "dispatch mode", &dispatch_mode_values())?,
+                );
+            }
+            "set_parallel_dispatch" => {
+                let value = operation
+                    .get("dispatch")
+                    .or_else(|| operation.get("value"))
+                    .cloned()
+                    .unwrap_or_else(|| Value::String(String::new()));
+                object.insert(
+                    "dispatch".to_string(),
+                    allowed_flow_option_value(&value, "dispatch mode", &dispatch_mode_values())?,
+                );
+            }
+            "set_collection" => {
+                let value = operation
+                    .get("collection")
+                    .or_else(|| operation.get("value"))
+                    .cloned()
+                    .unwrap_or_else(|| Value::String(String::new()));
+                object.insert(
+                    "collection".to_string(),
+                    allowed_flow_option_value(
+                        &value,
+                        "collection policy",
+                        &collection_policy_values(),
+                    )?,
+                );
+            }
+            "set_dependency_mode" => {
+                let value = operation
+                    .get("depends_mode")
+                    .or_else(|| operation.get("dependsMode"))
+                    .or_else(|| operation.get("value"))
+                    .cloned()
+                    .unwrap_or_else(|| Value::String(String::new()));
+                object.insert(
+                    "dependsMode".to_string(),
+                    allowed_flow_option_value(
+                        &value,
+                        "dependency mode",
+                        &dependency_mode_values(),
+                    )?,
+                );
+            }
+            "set_output_format" => {
+                let value = operation
+                    .get("output_format")
+                    .or_else(|| operation.get("outputFormat"))
+                    .or_else(|| operation.get("value"))
+                    .cloned()
+                    .unwrap_or_else(|| Value::String(String::new()));
+                object.insert(
+                    "outputFormat".to_string(),
+                    allowed_flow_option_value(
+                        &value,
+                        "step output format",
+                        &step_output_format_values(),
+                    )?,
+                );
+            }
+            "set_allowed_tools" => {
+                let value = operation
+                    .get("tools")
+                    .or_else(|| operation.get("allowed_tools"))
+                    .or_else(|| operation.get("allowedTools"))
+                    .or_else(|| operation.get("value"))
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new()));
+                object.insert(
+                    "allowedTools".to_string(),
+                    Value::Array(normalize_flow_step_tool_scope(
+                        &value,
+                        &member_tool_scope_for_step(
+                            &Value::Object(object.clone()),
+                            &document.members,
+                        ),
+                        "allowedTools",
+                    )?),
+                );
+            }
+            "set_blocked_tools" => {
+                let value = operation
+                    .get("tools")
+                    .or_else(|| operation.get("blocked_tools"))
+                    .or_else(|| operation.get("blockedTools"))
+                    .or_else(|| operation.get("value"))
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new()));
+                object.insert(
+                    "blockedTools".to_string(),
+                    Value::Array(normalize_flow_step_tool_scope(
+                        &value,
+                        &tool_catalog_id_set(),
+                        "blockedTools",
+                    )?),
+                );
+            }
             "set_launch_kind" => {
                 let kind = canonical_graph_launch_kind(&operation_string_value(
                     operation,
@@ -25081,9 +25290,50 @@ model = "gpt-5.5"
             normalized_update["document"]["flow"]["steps"][2]["allowedTools"],
             json!(["shell"])
         );
+        let semantic_field_update = apply_mobpack_authoring_operation(&json!({
+            "document": normalized_update["document"],
+            "operation": {
+                "type": "apply_flow_step_edit",
+                "step_id": "review",
+                "action": "set_instruction",
+                "value": "Review semantically."
+            }
+        }))
+        .expect("semantic instruction edit");
+        assert_eq!(
+            semantic_field_update["document"]["flow"]["steps"][2]["instruction"],
+            json!("Review semantically.")
+        );
+        let semantic_options_update = apply_mobpack_authoring_operation(&json!({
+            "document": semantic_field_update["document"],
+            "operation": {
+                "type": "apply_flow_step_edit",
+                "step_id": "review",
+                "action": "set_allowed_tools",
+                "tools": ["shell", "shell"]
+            }
+        }))
+        .expect("semantic allowed tools edit");
+        assert_eq!(
+            semantic_options_update["document"]["flow"]["steps"][2]["allowedTools"],
+            json!(["shell"])
+        );
         assert!(
             apply_mobpack_authoring_operation(&json!({
-                "document": normalized_update["document"],
+                "document": semantic_options_update["document"],
+                "operation": {
+                    "type": "apply_flow_step_edit",
+                    "step_id": "review",
+                    "action": "set_dispatch_mode",
+                    "value": "broadcast"
+                }
+            }))
+            .expect_err("unsupported semantic dispatch mode")
+            .contains("unsupported dispatch mode")
+        );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": semantic_options_update["document"],
                 "operation": {
                     "type": "update_flow_step",
                     "step_id": "review",

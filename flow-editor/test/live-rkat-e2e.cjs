@@ -1808,9 +1808,10 @@ async function validateFlowStepOperations(catalogs) {
   const authoredReview = await rpc("mobkit/mobpacks/apply_operation", {
     document: inserted.document,
     operation: {
-      type: "update_flow_step",
+      type: "apply_flow_step_edit",
       step_id: semanticStepId,
-      patch: { instruction: "Review." },
+      action: "set_instruction",
+      value: "Review.",
     },
   });
   const nested = await rpc("mobkit/mobpacks/apply_operation", {
@@ -1827,13 +1828,14 @@ async function validateFlowStepOperations(catalogs) {
   const updated = await rpc("mobkit/mobpacks/apply_operation", {
     document: nested.document,
     operation: {
-      type: "update_flow_step",
+      type: "apply_flow_step_edit",
       step_id: semanticStepId,
-      patch: { instruction: "Review carefully." },
+      action: "set_instruction",
+      value: "Review carefully.",
     },
   });
   if (updated.document.flow.steps[1]?.instruction !== "Review carefully.") {
-    throw new Error(`flow step update did not apply patch: ${JSON.stringify(updated.document.flow.steps)}`);
+    throw new Error(`semantic flow step edit did not apply instruction: ${JSON.stringify(updated.document.flow.steps)}`);
   }
   const deleted = await rpc("mobkit/mobpacks/apply_operation", {
     document: updated.document,
@@ -1853,7 +1855,7 @@ async function validateFlowStepOperations(catalogs) {
     nested: nested.document.flow.steps[2].branches[0].steps[0].id,
     updatedInstruction: updated.document.flow.steps[1].instruction,
     remainingSteps: deleted.document.flow.steps.map((step) => step.id),
-    operations: [inserted.operation, nested.operation, updated.operation, deleted.operation],
+    operations: [inserted.operation, authoredReview.operation, nested.operation, updated.operation, deleted.operation],
   };
 }
 

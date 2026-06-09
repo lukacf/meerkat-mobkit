@@ -592,7 +592,7 @@ assert.match(builder, /applyAuthoringReplacement\(\{[\s\S]*operationType:\s*"ins
 assert(!/flowStepTemplate\(pick/.test(builder), "Basic editor must not draft flow-step templates locally before MobKit insert_flow_step");
 assert(!/flowStepInsertTransition\(flow,\s*laneRef/.test(builder), "Basic editor must not locally insert flow steps before MobKit insert_flow_step");
 assert.match(builder, /if \(!commitFlow\("delete_flow_step",\s*\{\s*step_id:\s*id\s*\}\)\) return;[\s\S]*setSel\(result\.selection\);[\s\S]*setPicker\(result\.picker\)/, "Basic flow step deletes must send step_id payloads before applying UI-only selection and picker transitions");
-assert.match(builder, /operationType === "update_flow_step"[\s\S]*\{ step_id:\s*id,\s*patch \}/, "Basic flow step updates must send step_id and patch payloads to MobKit");
+assert.match(builder, /operationType === "update_flow_step"[\s\S]*\{ step_id:\s*id,\s*patch \}/, "Complex Basic flow step branch updates may still send step_id and patch payloads to MobKit");
 assert.match(mobpackRust, /fn normalize_flow_step_update_patch\([\s\S]*unsupported update_flow_step patch field/, "MobKit apply_operation must reject unsupported Basic flow-step patch keys server-side");
 assert.match(mobpackRust, /fn normalize_flow_step_update_patch\([\s\S]*dispatch_mode_values\(\)[\s\S]*collection_policy_values\(\)[\s\S]*dependency_mode_values\(\)[\s\S]*step_output_format_values\(\)/, "MobKit apply_operation must validate Basic flow-step option values server-side");
 assert.match(mobpackRust, /fn normalize_flow_step_tool_scope\([\s\S]*unknown MobKit tool for \{key\}/, "MobKit flow-step updates must validate tool scope refs against real member or catalog tools");
@@ -625,33 +625,30 @@ assert.match(controller, /flowPrimitiveRows:\s*basicFlowPrimitiveRowsFromSchema\
 assert.match(builderMemberStepControlBlock, /basicMemberStepControlState\(\{[\s\S]*basicView/, "Basic member-step controls must pass schema-backed Basic view into controller projection");
 assert.match(builder, /stepToolScopeState\(\{[\s\S]*basicView/, "Basic tool-scope controls must pass schema-backed Basic view into controller projection");
 assert(!/>START<|>LOOP<|>Tips<|Build your mob flow|Pick a node to configure|member turn or flow primitive/.test(builder), "Basic editor chrome copy must not be composed locally");
-assert.match(builder, /MobKitFlowController\.flowStepTaskPatch/, "Basic editor must update input task text through the controller plane");
-assert.match(builder, /MobKitFlowController\.flowStepInstructionPatch/, "Basic editor must update member instruction text through the controller plane");
-assert.match(builder, /MobKitFlowController\.flowStepQuorumPatch/, "Basic editor must update quorum through the controller plane");
-assert.match(builder, /MobKitFlowController\.flowStepTimeoutPatch/, "Basic editor must update member-step timeout through the controller plane");
-assert.match(builder, /MobKitFlowController\.flowStepMaxIterationsPatch/, "Basic editor must update repeat max_iterations through the controller plane");
-assert.match(builder, /MobKitFlowController\.flowStepLoopIdPatch/, "Basic editor must update repeat loop_id through the controller plane");
-assert.match(builder, /MobKitFlowController\.flowStepRepeatConditionPatch/, "Basic editor must update repeat condition through the controller plane");
-assert.match(builder, /MobKitFlowController\.flowStepIterationInputPatch/, "Basic editor must update repeat iteration input through the controller plane");
-assert.match(builder, /flowStepIterationInputPatch\(e\.target\.value,\s*contract\)/, "Basic repeat iteration-input edits must pass the MobKit contract into controller validation");
-assert.match(builder, /MobKitFlowController\.flowStepControllerRolePatch/, "Basic editor must update branch/parallel control roles through the controller plane");
-assert.match(builder, /flowStepControllerRolePatch\(e\.target\.value,\s*members\)/, "Basic branch/parallel control-role edits must pass real MobKit members into controller validation");
-assert.match(builder, /MobKitFlowController\.flowStepMemberRolePatch/, "Basic editor must update member profile refs through the controller plane");
-assert.match(builder, /flowStepMemberRolePatch\(e\.target\.value,\s*members\)/, "Basic member profile-ref edits must pass real MobKit members into controller validation");
-assert.match(builder, /MobKitFlowController\.flowStepDispatchModePatch/, "Basic editor must update member dispatch mode through the controller plane");
-assert.match(builder, /flowStepDispatchModePatch\(e\.target\.value, contract\)/, "Basic member dispatch edits must pass the MobKit contract into controller validation");
-assert.match(builder, /MobKitFlowController\.flowStepParallelDispatchPatch/, "Basic editor must update parallel dispatch mode through the controller plane");
-assert.match(builder, /flowStepParallelDispatchPatch\(e\.target\.value, contract\)/, "Basic parallel dispatch edits must pass the MobKit contract into controller validation");
-assert.match(builder, /MobKitFlowController\.flowStepCollectionPatch/, "Basic editor must update collection policy through the controller plane");
-assert.match(builder, /flowStepCollectionPatch\(e\.target\.value, contract\)/, "Basic collection edits must pass the MobKit contract into controller validation");
-assert.match(builder, /MobKitFlowController\.flowStepDependencyModePatch/, "Basic editor must update dependency mode through the controller plane");
-assert.match(builder, /flowStepDependencyModePatch\(e\.target\.value, contract\)/, "Basic dependency edits must pass the MobKit contract into controller validation");
-assert.match(builder, /MobKitFlowController\.flowStepOutputFormatPatch/, "Basic editor must update output format through the controller plane");
-assert.match(builder, /flowStepOutputFormatPatch\(e\.target\.value, contract\)/, "Basic output-format edits must pass the MobKit contract into controller validation");
-assert.match(builder, /MobKitFlowController\.flowStepAllowedToolsPatch/, "Basic editor must update step allowed-tools scope through the controller plane");
-assert.match(builder, /flowStepAllowedToolsPatch\(tools,\s*\{\s*member:\s*m,\s*toolCatalog\s*\}\)/, "Basic allowed-tools bulk edits must pass the selected real profile and MobKit tool catalog into controller validation");
-assert.match(builder, /MobKitFlowController\.flowStepBlockedToolsPatch/, "Basic editor must update step blocked-tools scope through the controller plane");
-assert.match(builder, /flowStepBlockedToolsPatch\(tools,\s*\{\s*toolCatalog\s*\}\)/, "Basic blocked-tools bulk edits must pass the MobKit tool catalog into controller validation");
+for (const action of [
+  "set_task",
+  "set_instruction",
+  "set_quorum",
+  "set_timeout_ms",
+  "set_max_iterations",
+  "set_loop_id",
+  "set_repeat_condition",
+  "set_iteration_input",
+  "set_controller_role",
+  "set_member_role",
+  "set_dispatch_mode",
+  "set_parallel_dispatch",
+  "set_collection",
+  "set_dependency_mode",
+  "set_output_format",
+  "set_allowed_tools",
+  "set_blocked_tools",
+]) {
+  assert.match(builder, new RegExp(`editStep\\(step\\.id,\\s*"${action}"`), `Basic editor must send ${action} as a semantic MobKit flow-step edit`);
+}
+assert.doesNotMatch(builder, /flowStep(?:Task|Instruction|Quorum|Timeout|MaxIterations|LoopId|IterationInput|ControllerRole|MemberRole|DispatchMode|ParallelDispatch|Collection|DependencyMode|OutputFormat|AllowedTools|BlockedTools)Patch/, "Basic scalar/member/tool controls must not use browser-side flow-step patch helpers");
+assert.match(builder, /MobKitFlowController\.flowStepRepeatConditionPatch/, "Basic repeat condition UI may still ask the controller for condition payload projection before semantic MobKit submission");
+assert.match(mobpackRust, /"set_task"[\s\S]*"set_instruction"[\s\S]*"set_allowed_tools"[\s\S]*"set_blocked_tools"/, "MobKit semantic Basic flow-step edits must own scalar, member, option, repeat, and tool-scope writes");
 assert.match(controller, /function flowStepUpdatePatch/, "controller plane must own Basic flow step updates");
 assert.match(controller, /function flowStepInsertPatch/, "controller plane must own Basic flow step insertion");
 assert.match(controller, /function flowStepInsertTransition[\s\S]*flowStepInsertPatch\(flow,\s*laneRef,\s*newStep,\s*options\)[\s\S]*selection:\s*newStep\.id[\s\S]*picker:\s*\{\s*open:\s*false\s*\}/, "controller plane must own Basic flow step insert selection and picker transitions");
