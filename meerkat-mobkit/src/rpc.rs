@@ -80,6 +80,7 @@ pub(crate) fn mobpack_authoring_capabilities() -> Value {
         "runtime_mutation": false,
         "deploy_command": "rkat mob deploy",
         "methods": MOBPACK_AUTHORING_METHODS,
+        "operations": crate::mobpack::mobpack_authoring_operations(),
     })
 }
 

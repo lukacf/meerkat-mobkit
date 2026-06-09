@@ -132,9 +132,41 @@ window.MOBKIT_BOOT = {
     return out;
   }
 
+  function authoringOperationsFromSchema(schema) {
+    const operations = Array.isArray(schema?.operations) ? schema.operations : [];
+    const out = {};
+    for (const operation of operations) {
+      if (!operation || typeof operation !== "object") continue;
+      const type = String(operation.type || "").trim();
+      if (!type) continue;
+      out[type] = {
+        type,
+        plane: String(operation.plane || ""),
+        authority: String(operation.authority || ""),
+        requires: Array.isArray(operation.requires) ? operation.requires.map((item) => String(item || "")).filter(Boolean) : [],
+        mutates: Array.isArray(operation.mutates) ? operation.mutates.map((item) => String(item || "")).filter(Boolean) : [],
+        projectionDocumentSupported: !!operation.projection_document_supported || !!operation.projectionDocumentSupported,
+        raw: operation,
+      };
+    }
+    return out;
+  }
+
+  function authoringOperationAvailability(operations, type) {
+    const operationType = String(type || "").trim();
+    const entry = operations && typeof operations === "object" ? operations[operationType] : null;
+    return {
+      type: operationType,
+      supported: !!entry,
+      operation: entry || null,
+      error: entry || !operationType ? "" : `MobKit authoring operation unavailable: ${operationType}`,
+    };
+  }
+
   function configureAuthoringMethodsFromSchema(schema) {
     const methods = authoringRpcMethodsFromSchema(schema);
     controllerConfig.rpcMethods = { ...RPC_METHODS, ...methods };
+    controllerConfig.authoringOperations = authoringOperationsFromSchema(schema);
     return { ...controllerConfig.rpcMethods };
   }
 
@@ -8561,6 +8593,7 @@ window.MOBKIT_BOOT = {
       graphTemplateView: null,
       conditionView: null,
       errorView: null,
+      authoringOperations: {},
       validationSource: "",
       contractMeta: {
         loaded: false,
@@ -8604,6 +8637,7 @@ window.MOBKIT_BOOT = {
       graphTemplateView: graphTemplateViewFromSchema(schema),
       conditionView: conditionViewFromSchema(schema),
       errorView: errorViewFromSchema(schema),
+      authoringOperations: authoringOperationsFromSchema(schema),
       validationSource: schema?.validation_source || "",
       contractMeta: {
         loaded: true,
@@ -11590,6 +11624,8 @@ window.MOBKIT_BOOT = {
     SCHEMA_VERSION,
     RPC_METHODS,
     configure,
+    authoringOperationsFromSchema,
+    authoringOperationAvailability,
     buildDocument,
     authoringFlowForDocument,
     authoringDocumentFromState,
@@ -14989,6 +15025,8 @@ function App() {
     return projection.document;
   };
   const applyMobKitAuthoringOperation = async (operation) => {
+    const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operation?.type);
+    if (!availability.supported) return { ok: false, error: availability.error };
     const requestToken = currentAuthoringRevision();
     const document2 = buildDocument();
     const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, operation);
@@ -15006,11 +15044,14 @@ function App() {
     return result;
   };
   const applyMobKitAuthoringReplacement = async (overrides = {}) => {
+    const operationType = overrides.operationType || "replace_authoring_document";
+    const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operationType);
+    if (!availability.supported) return { ok: false, error: availability.error };
     const requestToken = currentAuthoringRevision();
     const document2 = buildDocument();
     const replacement = buildAuthoringProjection(overrides);
     const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, {
-      type: overrides.operationType || "replace_authoring_document",
+      type: operationType,
       document: replacement.document,
       selection: overrides.selection || null
     });

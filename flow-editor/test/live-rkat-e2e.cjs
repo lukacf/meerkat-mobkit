@@ -70,6 +70,16 @@ async function assertAuthoringCapabilities() {
   if (authoring.deploy_command !== "rkat mob deploy") {
     throw new Error(`flow editor deploy command must be rkat mob deploy: ${JSON.stringify(authoring)}`);
   }
+  const operations = array(authoring.operations, "authoring.operations");
+  for (const operationType of ["delete_member", "rename_schema_field", "delete_schema", "update_deploy_settings"]) {
+    const operation = operations.find((candidate) => candidate?.type === operationType);
+    if (!operation) {
+      throw new Error(`flow editor authoring capabilities missing operation ${operationType}: ${JSON.stringify(operations)}`);
+    }
+    if (operation.authority !== "mobkit") {
+      throw new Error(`flow editor operation ${operationType} must be MobKit-authoritative: ${JSON.stringify(operation)}`);
+    }
+  }
   for (const method of expectedMethods) {
     if (!array(authoring.methods, "authoring.methods").includes(method)) {
       throw new Error(`flow editor authoring capabilities missing ${method}: ${JSON.stringify(authoring.methods)}`);
@@ -88,6 +98,7 @@ async function assertAuthoringCapabilities() {
     domain: authoring.domain,
     deployCommand: authoring.deploy_command,
     methods: authoring.methods,
+    operations: operations.map((operation) => operation.type).filter(Boolean),
   };
 }
 

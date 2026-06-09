@@ -971,6 +971,29 @@ assert.deepEqual(controller.authoringRpcMethodsFromSchema({
   deploy: "mobkit/editor/deploy",
 });
 assert.deepEqual(controller.authoringRpcMethodsFromSchema({ commands: { catalogs: "" } }), {});
+const authoringOperations = controller.authoringOperationsFromSchema({
+  operations: [
+    {
+      type: "rename_schema_field",
+      plane: "agent",
+      authority: "mobkit",
+      requires: ["schema_id", "field_id", "new_name"],
+      mutates: ["document.schemas", "document.flow", "document.edges"],
+      projection_document_supported: true,
+    },
+    { type: "", plane: "ignored" },
+    null,
+  ],
+});
+assert.equal(authoringOperations.rename_schema_field.type, "rename_schema_field");
+assert.equal(authoringOperations.rename_schema_field.plane, "agent");
+assert.equal(authoringOperations.rename_schema_field.authority, "mobkit");
+assert.equal(authoringOperations.rename_schema_field.projectionDocumentSupported, true);
+assert.deepEqual(authoringOperations.rename_schema_field.requires, ["schema_id", "field_id", "new_name"]);
+assert.deepEqual(authoringOperations.rename_schema_field.mutates, ["document.schemas", "document.flow", "document.edges"]);
+assert.equal(controller.authoringOperationAvailability(authoringOperations, "rename_schema_field").supported, true);
+assert.equal(controller.authoringOperationAvailability(authoringOperations, "missing_operation").supported, false);
+assert.match(controller.authoringOperationAvailability(authoringOperations, "missing_operation").error, /missing_operation/);
 
 assert.deepEqual(controller.modelCatalogFromCatalogs({
   models: [

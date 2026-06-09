@@ -830,6 +830,211 @@ pub fn mobpack_catalogs_response() -> Value {
     })
 }
 
+pub fn mobpack_authoring_operations() -> Value {
+    json!([
+        {
+            "type": "add_agent_definition",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["definition_id"],
+            "mutates": ["document.members", "document.schemas", "document.skill_realms"],
+            "projection_document_supported": false
+        },
+        {
+            "type": "update_member",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["member_id", "patch"],
+            "mutates": ["document.members", "document.flow", "document.instances"],
+            "projection_document_supported": false
+        },
+        {
+            "type": "delete_member",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["member_id"],
+            "mutates": ["document.members", "document.flow", "document.instances", "document.edges", "document.mob_settings"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "assign_member_schema",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["member_id", "schema_id"],
+            "mutates": ["document.members", "document.flow", "document.edges"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "add_schema",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["schema"],
+            "mutates": ["document.schemas"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "update_schema",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["schema_id", "patch"],
+            "mutates": ["document.schemas"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "rename_schema",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["schema_id", "new_id"],
+            "mutates": ["document.schemas", "document.members"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "delete_schema",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["schema_id"],
+            "mutates": ["document.schemas", "document.members", "document.flow", "document.edges"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "add_schema_field",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["schema_id", "field"],
+            "mutates": ["document.schemas"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "update_schema_field",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["schema_id", "field_id", "patch"],
+            "mutates": ["document.schemas", "document.flow", "document.edges"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "rename_schema_field",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["schema_id", "field_id", "new_name"],
+            "mutates": ["document.schemas", "document.flow", "document.edges"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "delete_schema_field",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["schema_id", "field_id"],
+            "mutates": ["document.schemas", "document.flow", "document.edges"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "update_deploy_settings",
+            "plane": "deploy",
+            "authority": "mobkit",
+            "requires": ["deploy"],
+            "mutates": ["document.deploy"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "update_mob_settings",
+            "plane": "deploy",
+            "authority": "mobkit",
+            "requires": ["mob_settings"],
+            "mutates": ["document.mob_settings"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "update_role_wiring",
+            "plane": "deploy",
+            "authority": "mobkit",
+            "requires": ["role_wiring"],
+            "mutates": ["document.mob_settings.roleWiring"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "insert_flow_step",
+            "plane": "basic",
+            "authority": "mobkit_projection",
+            "requires": ["document"],
+            "mutates": ["document.flow", "document.instances", "document.edges", "document.frames"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "update_flow_step",
+            "plane": "basic",
+            "authority": "mobkit_projection",
+            "requires": ["document"],
+            "mutates": ["document.flow", "document.instances", "document.edges", "document.frames"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "delete_flow_step",
+            "plane": "basic",
+            "authority": "mobkit_projection",
+            "requires": ["document"],
+            "mutates": ["document.flow", "document.instances", "document.edges", "document.frames"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "insert_graph_node",
+            "plane": "graph",
+            "authority": "mobkit_projection",
+            "requires": ["document"],
+            "mutates": ["document.instances", "document.edges", "document.frames", "document.flow"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "update_graph_node",
+            "plane": "graph",
+            "authority": "mobkit_projection",
+            "requires": ["document"],
+            "mutates": ["document.instances", "document.edges", "document.frames", "document.flow"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "move_graph_node",
+            "plane": "graph",
+            "authority": "mobkit_projection",
+            "requires": ["document"],
+            "mutates": ["document.instances"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "delete_graph_node",
+            "plane": "graph",
+            "authority": "mobkit_projection",
+            "requires": ["document"],
+            "mutates": ["document.instances", "document.edges", "document.frames", "document.flow"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "connect_graph_nodes",
+            "plane": "graph",
+            "authority": "mobkit_projection",
+            "requires": ["document"],
+            "mutates": ["document.edges", "document.flow"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "update_graph_edge",
+            "plane": "graph",
+            "authority": "mobkit_projection",
+            "requires": ["document"],
+            "mutates": ["document.edges", "document.flow"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "delete_graph_edge",
+            "plane": "graph",
+            "authority": "mobkit_projection",
+            "requires": ["document"],
+            "mutates": ["document.edges", "document.flow"],
+            "projection_document_supported": true
+        }
+    ])
+}
+
 pub fn mobpack_schema_response() -> Value {
     let mob_settings_defaults = json!({
         "orchestrator": "",
@@ -1780,6 +1985,7 @@ pub fn mobpack_schema_response() -> Value {
             "deploy_cli": "rkat mob deploy <pack.mobpack> <prompt>"
         },
         "deploy_settings": deploy_settings,
+        "operations": mobpack_authoring_operations(),
         "mob_definition": mob_definition,
         "validation_source": MOBPACK_VALIDATION_SOURCE
     })
@@ -2837,17 +3043,22 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
             apply_member_skill_operation(&mut document, operation, SkillOperation::Remove)?
         }
         "create_inline_skill" => apply_create_inline_skill_operation(&mut document, operation)?,
-        "delete_member"
-        | "assign_member_schema"
-        | "add_schema"
-        | "update_schema"
-        | "rename_schema"
-        | "delete_schema"
-        | "add_schema_field"
-        | "update_schema_field"
-        | "rename_schema_field"
-        | "delete_schema_field"
-        | "insert_flow_step"
+        "delete_member" => apply_delete_member_operation(&mut document, operation)?,
+        "assign_member_schema" => apply_assign_member_schema_operation(&mut document, operation)?,
+        "add_schema" => apply_add_schema_operation(&mut document, operation)?,
+        "update_schema" => apply_update_schema_operation(&mut document, operation)?,
+        "rename_schema" => apply_rename_schema_operation(&mut document, operation)?,
+        "delete_schema" => apply_delete_schema_operation(&mut document, operation)?,
+        "add_schema_field" => apply_add_schema_field_operation(&mut document, operation)?,
+        "update_schema_field" => apply_update_schema_field_operation(&mut document, operation)?,
+        "rename_schema_field" => apply_rename_schema_field_operation(&mut document, operation)?,
+        "delete_schema_field" => apply_delete_schema_field_operation(&mut document, operation)?,
+        "update_deploy_settings" => {
+            apply_update_deploy_settings_operation(&mut document, operation)?
+        }
+        "update_mob_settings" => apply_update_mob_settings_operation(&mut document, operation)?,
+        "update_role_wiring" => apply_update_role_wiring_operation(&mut document, operation)?,
+        "insert_flow_step"
         | "update_flow_step"
         | "delete_flow_step"
         | "add_input_param"
@@ -2861,9 +3072,6 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
         | "connect_graph_nodes"
         | "update_graph_edge"
         | "delete_graph_edge"
-        | "update_deploy_settings"
-        | "update_mob_settings"
-        | "update_role_wiring"
         | "replace_authoring_document" => {
             apply_projected_authoring_document_operation(&mut document, operation)?
         }
@@ -2933,6 +3141,423 @@ fn apply_projected_authoring_document_operation(
         .unwrap_or_else(|| json!({ "kind": null, "id": null })))
 }
 
+fn apply_delete_member_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("member_id")
+            .or_else(|| operation.get("memberId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let member_id = operation_member_id(operation)?;
+    let mut members = document
+        .members
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let index = member_index_by_id(&members, &member_id)
+        .ok_or_else(|| format!("member not found: {member_id}"))?;
+    let removed = members.remove(index);
+    let removed_names = member_identity_values(&removed);
+    document.members = Value::Array(members);
+    prune_mob_settings_for_removed_member(&mut document.mob_settings, &removed_names);
+    reconcile_document_after_member_change(document);
+    Ok(json!({ "kind": null, "id": null }))
+}
+
+fn apply_assign_member_schema_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("member_id")
+            .or_else(|| operation.get("memberId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let member_id = operation_member_id(operation)?;
+    let schema_id = operation
+        .get("schema_id")
+        .or_else(|| operation.get("schemaId"))
+        .or_else(|| operation.get("schema"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if !schema_id.is_empty() && schema_index_by_id(&document.schemas, &schema_id).is_none() {
+        return Err(format!("schema not found: {schema_id}"));
+    }
+    let mut members = document
+        .members
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let index = member_index_by_id(&members, &member_id)
+        .ok_or_else(|| format!("member not found: {member_id}"))?;
+    let old_schema = members[index]
+        .get("schema")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if old_schema != schema_id {
+        for field_name in schema_field_names(&document.schemas, &old_schema) {
+            rewrite_schema_field_references(document, &old_schema, &field_name, "");
+        }
+    }
+    members[index]["schema"] = Value::String(schema_id);
+    document.members = Value::Array(members);
+    Ok(json!({ "kind": "agent", "id": member_id }))
+}
+
+fn apply_add_schema_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some() && operation.get("schema").is_none() {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let schema = operation
+        .get("schema")
+        .cloned()
+        .ok_or_else(|| "add_schema requires schema object".to_string())?;
+    let schema_id = schema
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "add_schema requires schema.id".to_string())?
+        .to_string();
+    let mut schemas = document
+        .schemas
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    if schemas.iter().any(|schema| {
+        schema
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == schema_id)
+    }) {
+        return Err(format!("schema already exists: {schema_id}"));
+    }
+    schemas.push(schema);
+    document.schemas = Value::Array(schemas);
+    Ok(json!({ "kind": "schema", "id": schema_id }))
+}
+
+fn apply_update_schema_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("schema_id")
+            .or_else(|| operation.get("schemaId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let schema_id = operation_schema_id(operation)?;
+    let patch = operation
+        .get("patch")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "update_schema requires patch object".to_string())?;
+    let mut schemas = document
+        .schemas
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let index = schema_index_in_slice(&schemas, &schema_id)
+        .ok_or_else(|| format!("schema not found: {schema_id}"))?;
+    let schema = schemas[index]
+        .as_object_mut()
+        .ok_or_else(|| format!("schema is not an object: {schema_id}"))?;
+    for (key, value) in patch {
+        if key == "id" {
+            return Err("update_schema cannot change schema id".to_string());
+        }
+        schema.insert(key.clone(), value.clone());
+    }
+    document.schemas = Value::Array(schemas);
+    Ok(json!({ "kind": "schema", "id": schema_id }))
+}
+
+fn apply_rename_schema_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("schema_id")
+            .or_else(|| operation.get("schemaId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let schema_id = operation_schema_id(operation)?;
+    let new_id = operation
+        .get("new_id")
+        .or_else(|| operation.get("newId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "rename_schema requires new_id".to_string())?
+        .to_string();
+    let mut schemas = document
+        .schemas
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    if schema_index_in_slice(&schemas, &new_id).is_some() {
+        return Err(format!("schema already exists: {new_id}"));
+    }
+    let index = schema_index_in_slice(&schemas, &schema_id)
+        .ok_or_else(|| format!("schema not found: {schema_id}"))?;
+    schemas[index]["id"] = Value::String(new_id.clone());
+    document.schemas = Value::Array(schemas);
+    rewrite_member_schema_references(&mut document.members, &schema_id, &new_id);
+    Ok(json!({ "kind": "schema", "id": new_id }))
+}
+
+fn apply_delete_schema_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("schema_id")
+            .or_else(|| operation.get("schemaId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let schema_id = operation_schema_id(operation)?;
+    let removed_fields = schema_field_names(&document.schemas, &schema_id);
+    let mut schemas = document
+        .schemas
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let before = schemas.len();
+    schemas.retain(|schema| {
+        schema
+            .get("id")
+            .and_then(Value::as_str)
+            .is_none_or(|id| id != schema_id)
+    });
+    if before == schemas.len() {
+        return Err(format!("schema not found: {schema_id}"));
+    }
+    document.schemas = Value::Array(schemas);
+    rewrite_member_schema_references(&mut document.members, &schema_id, "");
+    for field_name in removed_fields {
+        rewrite_schema_field_references(document, &schema_id, &field_name, "");
+    }
+    Ok(json!({ "kind": null, "id": null }))
+}
+
+fn apply_add_schema_field_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("schema_id")
+            .or_else(|| operation.get("schemaId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let schema_id = operation_schema_id(operation)?;
+    let field = operation
+        .get("field")
+        .cloned()
+        .ok_or_else(|| "add_schema_field requires field object".to_string())?;
+    let mut schemas = document
+        .schemas
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let index = schema_index_in_slice(&schemas, &schema_id)
+        .ok_or_else(|| format!("schema not found: {schema_id}"))?;
+    let schema = schemas[index]
+        .as_object_mut()
+        .ok_or_else(|| format!("schema is not an object: {schema_id}"))?;
+    let fields = schema
+        .entry("fields")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| format!("schema fields is not an array: {schema_id}"))?;
+    let field_id = field
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "add_schema_field requires field.id".to_string())?
+        .to_string();
+    if fields.iter().any(|field| {
+        field
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == field_id)
+    }) {
+        return Err(format!("schema field already exists: {field_id}"));
+    }
+    fields.push(field);
+    document.schemas = Value::Array(schemas);
+    Ok(json!({ "kind": "schema", "id": schema_id, "field_id": field_id }))
+}
+
+fn apply_update_schema_field_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("schema_id")
+            .or_else(|| operation.get("schemaId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let schema_id = operation_schema_id(operation)?;
+    let field_id = operation_field_id(operation)?;
+    let patch = operation
+        .get("patch")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "update_schema_field requires patch object".to_string())?;
+    update_schema_field(document, &schema_id, &field_id, patch)
+}
+
+fn apply_rename_schema_field_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("schema_id")
+            .or_else(|| operation.get("schemaId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let schema_id = operation_schema_id(operation)?;
+    let field_id = operation_field_id(operation)?;
+    let new_name = operation
+        .get("new_name")
+        .or_else(|| operation.get("newName"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "rename_schema_field requires new_name".to_string())?;
+    let mut patch = serde_json::Map::new();
+    patch.insert("name".to_string(), Value::String(new_name.to_string()));
+    update_schema_field(document, &schema_id, &field_id, &patch)
+}
+
+fn apply_delete_schema_field_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("schema_id")
+            .or_else(|| operation.get("schemaId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let schema_id = operation_schema_id(operation)?;
+    let field_id = operation_field_id(operation)?;
+    let mut schemas = document
+        .schemas
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let schema_index = schema_index_in_slice(&schemas, &schema_id)
+        .ok_or_else(|| format!("schema not found: {schema_id}"))?;
+    let fields = schemas[schema_index]
+        .get_mut("fields")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| format!("schema fields is not an array: {schema_id}"))?;
+    let field_index = field_index_in_slice(fields, &field_id)
+        .ok_or_else(|| format!("schema field not found: {field_id}"))?;
+    let old_name = fields[field_index]
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    fields.remove(field_index);
+    document.schemas = Value::Array(schemas);
+    if !old_name.is_empty() {
+        rewrite_schema_field_references(document, &schema_id, &old_name, "");
+    }
+    Ok(json!({ "kind": "schema", "id": schema_id }))
+}
+
+fn apply_update_deploy_settings_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let Some(deploy) = operation.get("deploy") else {
+        return apply_projected_authoring_document_operation(document, operation);
+    };
+    document.deploy = deploy.clone();
+    Ok(operation
+        .get("selection")
+        .cloned()
+        .unwrap_or_else(|| json!({ "kind": null, "id": null })))
+}
+
+fn apply_update_mob_settings_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let Some(settings) = operation
+        .get("mob_settings")
+        .or_else(|| operation.get("mobSettings"))
+    else {
+        return apply_projected_authoring_document_operation(document, operation);
+    };
+    document.mob_settings = settings.clone();
+    Ok(operation
+        .get("selection")
+        .cloned()
+        .unwrap_or_else(|| json!({ "kind": null, "id": null })))
+}
+
+fn apply_update_role_wiring_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if let Some(settings) = operation
+        .get("mob_settings")
+        .or_else(|| operation.get("mobSettings"))
+    {
+        document.mob_settings = settings.clone();
+    } else if let Some(role_wiring) = operation
+        .get("role_wiring")
+        .or_else(|| operation.get("roleWiring"))
+    {
+        if !document.mob_settings.is_object() {
+            document.mob_settings = json!({});
+        }
+        document.mob_settings["roleWiring"] = role_wiring.clone();
+    } else {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    Ok(operation
+        .get("selection")
+        .cloned()
+        .unwrap_or_else(|| json!({ "kind": null, "id": null })))
+}
+
 fn apply_add_agent_definition_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
@@ -2988,6 +3613,452 @@ fn operation_string(
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
         .ok_or_else(|| format!("MobKit authoring operation requires {snake_field}"))
+}
+
+fn operation_schema_id(operation: &serde_json::Map<String, Value>) -> Result<String, String> {
+    operation
+        .get("schema_id")
+        .or_else(|| operation.get("schemaId"))
+        .or_else(|| operation.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| "MobKit authoring operation requires schema_id".to_string())
+}
+
+fn operation_field_id(operation: &serde_json::Map<String, Value>) -> Result<String, String> {
+    operation
+        .get("field_id")
+        .or_else(|| operation.get("fieldId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| "MobKit authoring operation requires field_id".to_string())
+}
+
+fn schema_index_by_id(schemas: &Value, schema_id: &str) -> Option<usize> {
+    schemas
+        .as_array()
+        .and_then(|schemas| schema_index_in_slice(schemas, schema_id))
+}
+
+fn schema_index_in_slice(schemas: &[Value], schema_id: &str) -> Option<usize> {
+    schemas.iter().position(|schema| {
+        schema
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == schema_id)
+    })
+}
+
+fn field_index_in_slice(fields: &[Value], field_id: &str) -> Option<usize> {
+    fields.iter().position(|field| {
+        field
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == field_id)
+    })
+}
+
+fn schema_field_names(schemas: &Value, schema_id: &str) -> Vec<String> {
+    schemas
+        .as_array()
+        .and_then(|schemas| {
+            schemas.iter().find(|schema| {
+                schema
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| id == schema_id)
+            })
+        })
+        .and_then(|schema| schema.get("fields").and_then(Value::as_array))
+        .map(|fields| {
+            fields
+                .iter()
+                .filter_map(|field| field.get("name").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn update_schema_field(
+    document: &mut MobpackDocument,
+    schema_id: &str,
+    field_id: &str,
+    patch: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let mut schemas = document
+        .schemas
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let schema_index = schema_index_in_slice(&schemas, schema_id)
+        .ok_or_else(|| format!("schema not found: {schema_id}"))?;
+    let fields = schemas[schema_index]
+        .get_mut("fields")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| format!("schema fields is not an array: {schema_id}"))?;
+    let field_index = field_index_in_slice(fields, field_id)
+        .ok_or_else(|| format!("schema field not found: {field_id}"))?;
+    let old_name = fields[field_index]
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let field = fields[field_index]
+        .as_object_mut()
+        .ok_or_else(|| format!("schema field is not an object: {field_id}"))?;
+    for (key, value) in patch {
+        if key == "id" {
+            return Err("update_schema_field cannot change field id".to_string());
+        }
+        field.insert(key.clone(), value.clone());
+    }
+    let new_name = field
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    document.schemas = Value::Array(schemas);
+    if !old_name.is_empty() && old_name != new_name {
+        rewrite_schema_field_references(document, schema_id, &old_name, &new_name);
+    }
+    Ok(json!({ "kind": "schema", "id": schema_id, "field_id": field_id }))
+}
+
+fn member_identity_values(member: &Value) -> BTreeSet<String> {
+    ["id", "name", "role"]
+        .into_iter()
+        .filter_map(|key| member.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn prune_mob_settings_for_removed_member(settings: &mut Value, removed_names: &BTreeSet<String>) {
+    let Some(object) = settings.as_object_mut() else {
+        return;
+    };
+    for key in ["orchestrator", "orchestratorRole"] {
+        let matches_removed = object
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| removed_names.contains(value.trim()));
+        if matches_removed {
+            object.insert(key.to_string(), Value::String(String::new()));
+        }
+    }
+    if let Some(wiring) = object.get_mut("roleWiring").and_then(Value::as_array_mut) {
+        wiring.retain(|row| {
+            let a = row
+                .get("a")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            let b = row
+                .get("b")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            !removed_names.contains(a) && !removed_names.contains(b)
+        });
+    }
+}
+
+fn rewrite_member_schema_references(members: &mut Value, old_schema: &str, new_schema: &str) {
+    let Some(members) = members.as_array_mut() else {
+        return;
+    };
+    for member in members {
+        let current = member
+            .get("schema")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if current == old_schema {
+            member["schema"] = Value::String(new_schema.to_string());
+        }
+    }
+}
+
+fn member_schema_index(members: &Value) -> BTreeMap<String, String> {
+    members
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|member| {
+            let id = member.get("id").and_then(Value::as_str)?.trim();
+            let schema = member
+                .get("schema")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            if id.is_empty() {
+                None
+            } else {
+                Some((id.to_string(), schema.to_string()))
+            }
+        })
+        .collect()
+}
+
+fn graph_step_schema_index(
+    instances: &Value,
+    member_schemas: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    instances
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|instance| {
+            let id = instance.get("id").and_then(Value::as_str)?.trim();
+            let member_id = instance
+                .get("memberId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            let schema = member_schemas.get(member_id).cloned().unwrap_or_default();
+            if id.is_empty() {
+                None
+            } else {
+                Some((id.to_string(), schema))
+            }
+        })
+        .collect()
+}
+
+fn flow_step_schema_index(
+    flow: &Value,
+    member_schemas: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if let Some(steps) = flow.get("steps").and_then(Value::as_array) {
+        collect_flow_step_schemas(steps, member_schemas, &mut out);
+    }
+    out
+}
+
+fn collect_flow_step_schemas(
+    steps: &[Value],
+    member_schemas: &BTreeMap<String, String>,
+    out: &mut BTreeMap<String, String>,
+) {
+    for step in steps {
+        if step.get("type").and_then(Value::as_str) == Some("member") {
+            if let Some(step_id) = step.get("id").and_then(Value::as_str) {
+                let role = step.get("role").and_then(Value::as_str).unwrap_or_default();
+                out.insert(
+                    step_id.to_string(),
+                    member_schemas.get(role).cloned().unwrap_or_default(),
+                );
+            }
+        }
+        if let Some(nested) = step.get("steps").and_then(Value::as_array) {
+            collect_flow_step_schemas(nested, member_schemas, out);
+        }
+        if let Some(branches) = step.get("branches").and_then(Value::as_array) {
+            for branch in branches {
+                if let Some(branch_steps) = branch.get("steps").and_then(Value::as_array) {
+                    collect_flow_step_schemas(branch_steps, member_schemas, out);
+                }
+            }
+        }
+        if let Some(fallback) = step.get("fallback").and_then(Value::as_array) {
+            collect_flow_step_schemas(fallback, member_schemas, out);
+        }
+    }
+}
+
+fn rewrite_schema_field_references(
+    document: &mut MobpackDocument,
+    schema_id: &str,
+    old_name: &str,
+    new_name: &str,
+) {
+    let member_schemas = member_schema_index(&document.members);
+    let flow_step_schemas = flow_step_schema_index(&document.flow, &member_schemas);
+    if let Some(steps) = document.flow.get_mut("steps").and_then(Value::as_array_mut) {
+        rewrite_schema_field_references_in_steps(
+            steps,
+            &flow_step_schemas,
+            schema_id,
+            old_name,
+            new_name,
+        );
+    }
+    let graph_step_schemas = graph_step_schema_index(&document.instances, &member_schemas);
+    rewrite_schema_field_references_in_edges(
+        &mut document.edges,
+        &graph_step_schemas,
+        schema_id,
+        old_name,
+        new_name,
+    );
+}
+
+fn rewrite_schema_field_references_in_steps(
+    steps: &mut [Value],
+    step_schemas: &BTreeMap<String, String>,
+    schema_id: &str,
+    old_name: &str,
+    new_name: &str,
+) {
+    for step in steps {
+        match step.get("type").and_then(Value::as_str) {
+            Some("repeat") => {
+                if let Some(cond) = step.get_mut("cond") {
+                    rewrite_editor_condition(cond, step_schemas, schema_id, old_name, new_name);
+                }
+                if let Some(nested) = step.get_mut("steps").and_then(Value::as_array_mut) {
+                    rewrite_schema_field_references_in_steps(
+                        nested,
+                        step_schemas,
+                        schema_id,
+                        old_name,
+                        new_name,
+                    );
+                }
+            }
+            Some("branch") => {
+                if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+                    for branch in branches {
+                        if let Some(cond) = branch.get_mut("cond") {
+                            rewrite_editor_condition(
+                                cond,
+                                step_schemas,
+                                schema_id,
+                                old_name,
+                                new_name,
+                            );
+                        }
+                        if let Some(branch_steps) =
+                            branch.get_mut("steps").and_then(Value::as_array_mut)
+                        {
+                            rewrite_schema_field_references_in_steps(
+                                branch_steps,
+                                step_schemas,
+                                schema_id,
+                                old_name,
+                                new_name,
+                            );
+                        }
+                    }
+                }
+                if let Some(fallback) = step.get_mut("fallback").and_then(Value::as_array_mut) {
+                    rewrite_schema_field_references_in_steps(
+                        fallback,
+                        step_schemas,
+                        schema_id,
+                        old_name,
+                        new_name,
+                    );
+                }
+            }
+            Some("parallel") => {
+                if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+                    for branch in branches {
+                        if let Some(branch_steps) =
+                            branch.get_mut("steps").and_then(Value::as_array_mut)
+                        {
+                            rewrite_schema_field_references_in_steps(
+                                branch_steps,
+                                step_schemas,
+                                schema_id,
+                                old_name,
+                                new_name,
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_editor_condition(
+    cond: &mut Value,
+    step_schemas: &BTreeMap<String, String>,
+    schema_id: &str,
+    old_name: &str,
+    new_name: &str,
+) {
+    let Some(object) = cond.as_object_mut() else {
+        return;
+    };
+    let step_id = object
+        .get("stepId")
+        .or_else(|| object.get("step_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let field = object
+        .get("field")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if step_schemas
+        .get(&step_id)
+        .is_some_and(|schema| schema == schema_id)
+        && field == old_name
+    {
+        if new_name.is_empty() {
+            *cond = json!({});
+        } else {
+            object.insert("field".to_string(), Value::String(new_name.to_string()));
+            object.insert("stepId".to_string(), Value::String(step_id));
+        }
+    }
+}
+
+fn rewrite_schema_field_references_in_edges(
+    edges: &mut Value,
+    step_schemas: &BTreeMap<String, String>,
+    schema_id: &str,
+    old_name: &str,
+    new_name: &str,
+) {
+    let Some(edges) = edges.as_array_mut() else {
+        return;
+    };
+    for edge in edges {
+        let Some(cond) = edge.get_mut("cond") else {
+            continue;
+        };
+        let Some(cond_object) = cond.as_object_mut() else {
+            continue;
+        };
+        let path = cond_object
+            .get("var")
+            .or_else(|| cond_object.get("path"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let mut parts = path.split('.');
+        let namespace = parts.next().unwrap_or_default();
+        let step_id = parts.next().unwrap_or_default();
+        let field = parts.next().unwrap_or_default();
+        if namespace != "steps"
+            || parts.next().is_some()
+            || !step_schemas
+                .get(step_id)
+                .is_some_and(|schema| schema == schema_id)
+            || field != old_name
+        {
+            continue;
+        }
+        if new_name.is_empty() {
+            edge["cond"] = Value::Null;
+            edge["label"] = Value::String(String::new());
+        } else {
+            let next_path = format!("steps.{step_id}.{new_name}");
+            cond_object.insert("var".to_string(), Value::String(next_path));
+        }
+    }
 }
 
 fn string_list_from_member_field(member: &Value, field: &str) -> Vec<String> {
@@ -3305,6 +4376,7 @@ fn reconcile_document_after_member_change(document: &mut MobpackDocument) {
         .collect::<BTreeSet<_>>();
     prune_flow_steps_for_members(&mut document.flow, &members, &member_ids);
     prune_graph_instances_for_members(&mut document.instances, &members, &member_ids);
+    prune_graph_edges_for_instances(&mut document.edges, &document.instances);
 }
 
 fn member_tool_set(members: &[Value], member_id: &str) -> BTreeSet<String> {
@@ -3416,6 +4488,27 @@ fn prune_graph_instances_for_members(
         let allowed_tools = member_tool_set(members, member_id);
         prune_tool_scope_fields(instance, &allowed_tools);
     }
+}
+
+fn prune_graph_edges_for_instances(edges: &mut Value, instances: &Value) {
+    let instance_ids = instances
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|instance| instance.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>();
+    let Some(edges) = edges.as_array_mut() else {
+        return;
+    };
+    edges.retain(|edge| {
+        let from = edge.get("from").and_then(Value::as_str).unwrap_or_default();
+        let to = edge.get("to").and_then(Value::as_str).unwrap_or_default();
+        (from.trim().is_empty() || instance_ids.contains(from.trim()))
+            && (to.trim().is_empty() || instance_ids.contains(to.trim()))
+    });
 }
 
 fn mobpack_agent_definition_by_id(definition_id: &str) -> Option<Value> {
@@ -17893,6 +18986,223 @@ model = "gpt-5.5"
         assert_eq!(
             settings["document"]["deploy"]["prompt"],
             json!("Payload section prompt.")
+        );
+    }
+
+    #[test]
+    fn authoring_schema_and_capabilities_expose_operation_catalog() {
+        let schema = mobpack_schema_response();
+        let operations = schema["operations"].as_array().expect("schema operations");
+        for operation_type in [
+            "add_agent_definition",
+            "delete_member",
+            "rename_schema_field",
+            "delete_schema",
+            "update_deploy_settings",
+            "move_graph_node",
+        ] {
+            assert!(
+                operations
+                    .iter()
+                    .any(|operation| operation["type"] == operation_type),
+                "missing schema operation {operation_type}"
+            );
+        }
+        let capabilities = crate::rpc::mobpack_authoring_capabilities();
+        assert_eq!(
+            capabilities["operations"]
+                .as_array()
+                .expect("capability operations")
+                .len(),
+            operations.len()
+        );
+        assert_eq!(capabilities["deploy_command"], json!("rkat mob deploy"));
+    }
+
+    #[test]
+    fn apply_operation_mutates_schema_fields_without_projected_document() {
+        let mut document = valid_document();
+        document.mob_toml = None;
+        document.schemas = json!([{
+            "id": "Review",
+            "description": "Review result",
+            "fields": [
+                { "id": "f1", "name": "verdict", "type": "enum", "required": true, "description": "", "enumValues": ["red", "green"] },
+                { "id": "f2", "name": "notes", "type": "string", "required": false, "description": "", "enumValues": [] }
+            ]
+        }]);
+        document.members = json!([{
+            "id": "reviewer",
+            "name": "reviewer",
+            "role": "reviewer",
+            "schema": "Review",
+            "profileBinding": "inline",
+            "runtimeMode": "turn_driven",
+            "model": "gpt-5.5",
+            "tools": []
+        }]);
+        document.instances = json!([
+            { "id": "n_review", "memberId": "reviewer", "kind": "member" },
+            { "id": "n_done", "kind": "terminal" }
+        ]);
+        document.edges = json!([{
+            "id": "e_review",
+            "from": "n_review",
+            "to": "n_done",
+            "kind": "cond",
+            "cond": { "var": "steps.n_review.verdict", "op": "==", "val": "green" },
+            "label": "steps.n_review.verdict == green"
+        }]);
+        document.flow = json!({
+            "id": "main",
+            "steps": [
+                { "type": "member", "id": "s_review", "role": "reviewer" },
+                {
+                    "type": "branch",
+                    "id": "branch_review",
+                    "branches": [{
+                        "cond": { "stepId": "s_review", "field": "verdict", "op": "==", "val": "green" },
+                        "steps": [{ "type": "member", "id": "s_again", "role": "reviewer" }]
+                    }]
+                }
+            ]
+        });
+
+        let renamed = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "rename_schema_field",
+                "schema_id": "Review",
+                "field_id": "f1",
+                "new_name": "status"
+            }
+        }))
+        .expect("rename field from operation payload");
+        assert_eq!(
+            renamed["document"]["schemas"][0]["fields"][0]["name"],
+            json!("status")
+        );
+        assert_eq!(
+            renamed["document"]["edges"][0]["cond"]["var"],
+            json!("steps.n_review.status")
+        );
+        assert_eq!(
+            renamed["document"]["flow"]["steps"][1]["branches"][0]["cond"]["field"],
+            json!("status")
+        );
+
+        let deleted = apply_mobpack_authoring_operation(&json!({
+            "document": renamed["document"],
+            "operation": {
+                "type": "delete_schema_field",
+                "schema_id": "Review",
+                "field_id": "f1"
+            }
+        }))
+        .expect("delete field from operation payload");
+        assert_eq!(deleted["document"]["edges"][0]["cond"], Value::Null);
+        assert_eq!(
+            deleted["document"]["flow"]["steps"][1]["branches"][0]["cond"],
+            json!({})
+        );
+        assert_eq!(
+            deleted["document"]["schemas"][0]["fields"]
+                .as_array()
+                .expect("fields")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn apply_operation_deletes_members_and_schemas_without_projected_document() {
+        let mut document = valid_document();
+        document.mob_toml = None;
+        document.schemas = json!([{
+            "id": "Review",
+            "description": "",
+            "fields": [{ "id": "f1", "name": "verdict", "type": "string", "required": true }]
+        }]);
+        document.members = json!([
+            {
+                "id": "reviewer",
+                "name": "reviewer",
+                "role": "reviewer",
+                "schema": "Review",
+                "profileBinding": "inline",
+                "runtimeMode": "turn_driven",
+                "model": "gpt-5.5",
+                "tools": []
+            },
+            {
+                "id": "planner",
+                "name": "planner",
+                "role": "planner",
+                "profileBinding": "inline",
+                "runtimeMode": "turn_driven",
+                "model": "gpt-5.5",
+                "tools": []
+            }
+        ]);
+        document.instances = json!([
+            { "id": "n_reviewer", "memberId": "reviewer", "kind": "member" },
+            { "id": "n_planner", "memberId": "planner", "kind": "member" }
+        ]);
+        document.edges = json!([{ "id": "e1", "from": "n_reviewer", "to": "n_planner" }]);
+        document.flow = json!({
+            "id": "main",
+            "steps": [
+                { "type": "member", "id": "s_review", "role": "reviewer" },
+                { "type": "member", "id": "s_plan", "role": "planner" }
+            ]
+        });
+        document.mob_settings = json!({
+            "orchestrator": "reviewer",
+            "roleWiring": [{ "a": "reviewer", "b": "planner" }]
+        });
+
+        let deleted_member = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": { "type": "delete_member", "member_id": "reviewer" }
+        }))
+        .expect("delete member");
+        assert!(
+            !deleted_member["document"]["members"]
+                .as_array()
+                .expect("members")
+                .iter()
+                .any(|member| member["id"] == "reviewer")
+        );
+        assert_eq!(
+            deleted_member["document"]["instances"]
+                .as_array()
+                .expect("instances")
+                .len(),
+            1
+        );
+        assert_eq!(
+            deleted_member["document"]["edges"]
+                .as_array()
+                .expect("edges")
+                .len(),
+            0
+        );
+        assert_eq!(
+            deleted_member["document"]["mob_settings"]["orchestrator"],
+            json!("")
+        );
+
+        let deleted_schema = apply_mobpack_authoring_operation(&json!({
+            "document": deleted_member["document"],
+            "operation": { "type": "delete_schema", "schema_id": "Review" }
+        }))
+        .expect("delete schema");
+        assert_eq!(
+            deleted_schema["document"]["schemas"]
+                .as_array()
+                .expect("schemas")
+                .len(),
+            0
         );
     }
 

@@ -469,6 +469,8 @@ function App() {
     return projection.document;
   };
   const applyMobKitAuthoringOperation = async (operation) => {
+    const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operation?.type);
+    if (!availability.supported) return { ok: false, error: availability.error };
     const requestToken = currentAuthoringRevision();
     const document = buildDocument();
     const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, operation);
@@ -486,11 +488,14 @@ function App() {
     return result;
   };
   const applyMobKitAuthoringReplacement = async (overrides = {}) => {
+    const operationType = overrides.operationType || "replace_authoring_document";
+    const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operationType);
+    if (!availability.supported) return { ok: false, error: availability.error };
     const requestToken = currentAuthoringRevision();
     const document = buildDocument();
     const replacement = buildAuthoringProjection(overrides);
     const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, {
-      type: overrides.operationType || "replace_authoring_document",
+      type: operationType,
       document: replacement.document,
       selection: overrides.selection || null,
     });
