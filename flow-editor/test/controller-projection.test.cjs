@@ -7931,6 +7931,12 @@ assert.deepEqual(controller.flowStepDependencyModePatch(" maybe ", memberStepCon
 assert.deepEqual(controller.flowStepOutputFormatPatch(" json ", memberStepControlContract), { outputFormat: "json" });
 assert.deepEqual(controller.flowStepOutputFormatPatch(" xml ", memberStepControlContract), {});
 assert.deepEqual(controller.flowStepOutputFormatPatch("", memberStepControlContract), { outputFormat: "" });
+assert.deepEqual(controller.flowStepOutputFormatPatch(" yaml ", {
+  mob_definition: {
+    ...memberStepControlContract.mob_definition,
+    step_output_formats: ["json", "yaml"],
+  },
+}), { outputFormat: "yaml" });
 assert.deepEqual(controller.flowStepAllowedToolsPatch([" shell ", "", "git", "shell"], {
   member: { tools: ["shell", "builtins", "unknown"] },
   toolCatalog: [{ id: "shell" }, { id: "builtins" }, { id: "memory" }],

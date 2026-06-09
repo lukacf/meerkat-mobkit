@@ -849,7 +849,9 @@ assert(!/function\s+canonicalLaunchModeKind[\s\S]{0,220}\|\|\s*["']Fresh["']/.te
 assert(!/function\s+normalizeForkContext[\s\S]{0,180}\|\|\s*["']full_history["']/.test(controller), "fork-context normalization must not invent full_history when context is missing");
 assert(!/function\s+normalizeDispatchMode[\s\S]{0,120}\|\|\s*["']fan_out["']/.test(controller), "dispatch normalization must not turn absent values into fan_out");
 assert(!/function\s+normalizeCollectionMode[\s\S]{0,180}\|\|\s*["']all["']/.test(controller), "collection normalization must not turn absent values into all");
-assert.match(controller, /function\s+normalizeOutputFormat[\s\S]{0,180}raw === ["']json["'][\s\S]{0,120}return ["']["']/, "output format normalization must preserve explicit json but return blank for absent values");
+const normalizeOutputFormatBlock = (controller.match(/function\s+normalizeOutputFormat[\s\S]*?function\s+normalizeProviderParams/) || [""])[0];
+assert.match(normalizeOutputFormatBlock, /String\(value \|\| ["']["']\)\.trim\(\)/, "output format normalization must preserve authored schema values without local enum coercion");
+assert(!/raw\s*===\s*["'](?:json|text)["']/.test(normalizeOutputFormatBlock), "output format normalization must not hardcode the MobKit step_output_formats enum");
 assert(!/outputFormat:\s*normalizeOutputFormat\([^)]*\)/.test(controller), "Graph-to-Basic projection must omit absent outputFormat instead of emitting a normalized default");
 assert(!/const\s+default(?:Output|IterationInput)[\s\S]{0,140}const\s+(?:outputValue|iterationInputValue)\s*=\s*step\.(?:outputFormat|iterationInput)\s*\|\|\s*default/.test(builder), "Basic editor optional metadata controls must display blank runtime-default state instead of selected MobKit defaults");
 assert(!/const\s+default(?:Dispatch|Collection|Dependency)[\s\S]{0,180}const\s+(?:dispatchValue|collectionValue|dependencyValue)\s*=\s*step\.(?:dispatchMode|collection|dependsMode)\s*\|\|\s*default/.test(builderMemberBlock), "Basic member optional metadata controls must not display schema defaults as selected authored state");

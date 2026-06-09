@@ -2216,8 +2216,6 @@ window.MOBKIT_BOOT = {
   }
 
   function flowStepOutputFormatPatch(rawFormat, contract) {
-    const raw = String(rawFormat || "").trim();
-    if (raw && !normalizeOutputFormat(raw)) return {};
     const format = normalizeOutputFormat(rawFormat);
     return outputFormatAllowed(contract, format) ? { outputFormat: format } : {};
   }
@@ -10049,10 +10047,7 @@ window.MOBKIT_BOOT = {
   }
 
   function normalizeOutputFormat(value) {
-    const raw = String(value || "").trim().toLowerCase();
-    if (raw === "text") return "text";
-    if (raw === "json") return "json";
-    return "";
+    return String(value || "").trim();
   }
 
   function normalizeProviderParams(value) {
