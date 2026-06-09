@@ -223,6 +223,7 @@ function buildGraphBranchShapeDocument() {
     members,
     instances,
     edges,
+    contract: contractSchema,
   });
   const branch = flow.steps.find((step) => step.type === "branch");
   if (!branch) throw new Error("graph branch shape did not compile to a branch step");
@@ -241,6 +242,7 @@ function buildGraphBranchShapeDocument() {
     },
     currentFlow: { name: "graph-branch-shape" },
     deploySettings: testDeploySettings(),
+    contract: contractSchema,
   });
 }
 
@@ -340,6 +342,7 @@ function buildGraphParallelShapeDocument() {
     members,
     instances,
     edges,
+    contract: contractSchema,
   });
   const parallel = flow.steps.find((step) => step.type === "parallel");
   if (!parallel) throw new Error("graph parallel shape did not compile to a parallel step");
@@ -359,6 +362,7 @@ function buildGraphParallelShapeDocument() {
     },
     currentFlow: { name: "graph-parallel-shape" },
     deploySettings: testDeploySettings(),
+    contract: contractSchema,
   });
 }
 
@@ -476,6 +480,7 @@ function buildGraphLoopShapeDocument() {
     members,
     instances,
     edges,
+    contract: contractSchema,
   });
   const repeat = flow.steps.find((step) => step.type === "repeat");
   if (!repeat) throw new Error("graph loop shape did not compile to a repeat step");
@@ -499,6 +504,7 @@ function buildGraphLoopShapeDocument() {
     },
     currentFlow: { name: "graph-loop-shape" },
     deploySettings: testDeploySettings(),
+    contract: contractSchema,
   });
 }
 
@@ -619,6 +625,7 @@ function buildEditedAgentDefinitionDocument() {
     },
     currentFlow: { name: "edited-agent-definition" },
     deploySettings: testDeploySettings(),
+    contract: contractSchema,
   });
 }
 
@@ -750,6 +757,7 @@ function buildFilesystemSkillDocument(skillPath) {
     },
     currentFlow: { name: "filesystem-skill-definition" },
     deploySettings: testDeploySettings(),
+    contract: contractSchema,
   });
 }
 
@@ -982,6 +990,7 @@ function buildUnifiedProjectionDocument(schema) {
     members: [coder, reviewer],
     instances,
     edges,
+    contract: contractSchema,
   });
   const branch = flow.steps.find((step) => step.type === "branch");
   if (!branch || branch.branches?.length !== 1 || branch.fallback?.length !== 1) {
@@ -1001,6 +1010,7 @@ function buildUnifiedProjectionDocument(schema) {
     },
     currentFlow: { name: "unified-projection-proof" },
     deploySettings: testDeploySettings(),
+    contract: contractSchema,
   });
 }
 
@@ -1116,6 +1126,7 @@ function buildRealmProfileDefinitionDocument() {
     },
     currentFlow: { name: "realm-profile-definition" },
     deploySettings: testDeploySettings(),
+    contract: contractSchema,
   });
 }
 

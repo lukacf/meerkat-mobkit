@@ -1107,6 +1107,7 @@ assert.match(controller, /id:\s*id\s*\|\|\s*uniqueGraphEdgeId\(from\.id,\s*to\.i
 assert.match(controller, /id:\s*uniqueFlowStepId\("input",\s*prior\)/, "graph-to-flow fallback input steps must use controller-owned deterministic flow-step IDs");
 assert.match(controller, /function graphIsConditionEdge/, "controller plane must own graph condition edge classification");
 assert.match(controller, /graphSegmentsToFlowSteps\(\{[\s\S]*contract,[\s\S]*\}\)/, "graph-to-flow reconstruction must pass the MobKit graph contract into segment classification");
+assert.match(app, /effectiveAuthoringFlow[\s\S]*graphToFlow\(\{[\s\S]*instances: studio\.instances,[\s\S]*edges: studio\.edges,[\s\S]*members: studio\.members,[\s\S]*previousFlow: flow,[\s\S]*contract,/, "Graph-mode export/validate/deploy must reconstruct the authoritative flow through the MobKit schema contract");
 assert(!/Math\.random\(\)|Date\.now\(\)/.test(controller), "controller authoring state must not depend on random or wall-clock IDs");
 assert(!/function\s+insertGraphControlShape|function\s+ensureGraphBranchInputParam|launchMode:\s*\{\s*kind:\s*["']Fresh["']\s*\}|dispatch:\s*["']fan_out["']|collection:\s*["']all["']/.test(app), "App shell must not hard-code graph launch/branch/fork semantics");
 assert(!/studio\.setInstances\(current => \[\.\.\.current, \.\.\.\(inserted\.instances \|\| \[\]\)\]\)|studio\.setEdges\(current => \[\.\.\.current, \.\.\.\(inserted\.edges \|\| \[\]\)\]\)/.test(app), "App quick graph insertion must not append graph rows locally");

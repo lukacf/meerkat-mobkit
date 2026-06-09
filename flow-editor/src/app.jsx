@@ -423,6 +423,7 @@ function App() {
       edges: studio.edges,
       members: studio.members,
       previousFlow: flow,
+      contract,
     });
   };
   const buildDocument = () => window.MobKitFlowController.buildDocument({

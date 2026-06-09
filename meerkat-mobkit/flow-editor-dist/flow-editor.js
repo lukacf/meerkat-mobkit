@@ -12617,7 +12617,8 @@ function App() {
       instances: studio.instances,
       edges: studio.edges,
       members: studio.members,
-      previousFlow: flow
+      previousFlow: flow,
+      contract
     });
   };
   const buildDocument = () => window.MobKitFlowController.buildDocument({
