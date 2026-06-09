@@ -37,6 +37,28 @@ function CondValue({ field, value, onChange, conditionView = null }) {
   return <input className="field__input bld-cond__val" placeholder={control.placeholder} value={control.value} onChange={e => onChange(e.target.value)} />;
 }
 
+function InputEnumValueChip({ field, value, index, onChange }) {
+  const [draftValue, setDraftValue] = React.useState(value || "");
+  React.useEffect(() => {
+    setDraftValue(value || "");
+  }, [index, value]);
+  return (
+    <span className="chip">
+      <input
+        className="chip__input"
+        value={draftValue}
+        onChange={e => setDraftValue(e.target.value)}
+        onBlur={e => {
+          const patch = window.MobKitFlowController.enumValueCommitPatch(field, index, e.target.value);
+          setDraftValue(patch.enumValues?.[index] || "");
+          onChange(patch);
+        }}
+      />
+      <button className="chip__x" onClick={() => onChange(window.MobKitFlowController.enumValueDeletePatch(field, index))}>×</button>
+    </span>
+  );
+}
+
 function InputParamField({ param, normalizeName, onRename, onChange, onDelete, contract, basicView = null }) {
   const fieldState = window.MobKitFlowController.inputParamFieldControlState(param, contract, basicView);
   const values = fieldState.enumValues;
@@ -89,17 +111,9 @@ function InputParamField({ param, normalizeName, onRename, onChange, onDelete, c
           <span className="sb-enum__label">{fieldState.enumLabel}</span>
           <div className="sb-enum__chips">
             {values.map((value, index) => (
-              <span key={index} className="chip">
-                <input
-	                  className="chip__input"
-	                  value={value}
-	                  onChange={e => onChange(window.MobKitFlowController.enumValueDraftPatch(param, index, e.target.value))}
-	                  onBlur={e => onChange(window.MobKitFlowController.enumValueCommitPatch(param, index, e.target.value))}
-	                />
-	                <button className="chip__x" onClick={() => onChange(window.MobKitFlowController.enumValueDeletePatch(param, index))}>×</button>
-	              </span>
-	            ))}
-	            <button className="chip chip--add" onClick={() => onChange(window.MobKitFlowController.enumValueAddPatch(param, fieldState.enumAddValue))}>{fieldState.enumAddLabel}</button>
+              <InputEnumValueChip key={index} field={param} value={value} index={index} onChange={onChange} />
+            ))}
+            <button className="chip chip--add" onClick={() => onChange(window.MobKitFlowController.enumValueAddPatch(param, fieldState.enumAddValue))}>{fieldState.enumAddLabel}</button>
           </div>
         </div>
       )}

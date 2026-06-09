@@ -727,6 +727,31 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   );
 }
 
+function SchemaEnumValueChip({ field, value, index, onChange }) {
+  const [draftValue, setDraftValue] = React.useState(value || "");
+  React.useEffect(() => {
+    setDraftValue(value || "");
+  }, [index, value]);
+  return (
+    <span className="chip">
+      <input
+        className="chip__input"
+        value={draftValue}
+        onChange={e => setDraftValue(e.target.value)}
+        onBlur={e => {
+          const patch = window.MobKitFlowController.enumValueCommitPatch(field, index, e.target.value);
+          setDraftValue(patch.enumValues?.[index] || "");
+          onChange(patch);
+        }}
+      />
+      <button
+        className="chip__x"
+        onClick={() => onChange(window.MobKitFlowController.enumValueDeletePatch(field, index))}
+      >×</button>
+    </span>
+  );
+}
+
 function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contract, schemaView = null }) {
   const nameBeforeEdit = React.useRef(field.name);
   const [draftName, setDraftName] = React.useState(field.name || "");
@@ -787,18 +812,7 @@ function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contr
           <span className="sb-enum__label">{fieldState.enumLabel}</span>
           <div className="sb-enum__chips">
             {values.map((v, i) => (
-              <span key={i} className="chip">
-                <input
-                  className="chip__input"
-                  value={v}
-                  onChange={e => onChange(window.MobKitFlowController.enumValueDraftPatch(field, i, e.target.value))}
-                  onBlur={e => onChange(window.MobKitFlowController.enumValueCommitPatch(field, i, e.target.value))}
-                />
-                <button
-                  className="chip__x"
-                  onClick={() => onChange(window.MobKitFlowController.enumValueDeletePatch(field, i))}
-                >×</button>
-              </span>
+              <SchemaEnumValueChip key={i} field={field} value={v} index={i} onChange={onChange} />
             ))}
             <button
               className="chip chip--add"

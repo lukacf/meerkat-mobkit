@@ -12993,6 +12993,32 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.model)
   )))));
 }
+function SchemaEnumValueChip({ field, value, index, onChange }) {
+  const [draftValue, setDraftValue] = React.useState(value || "");
+  React.useEffect(() => {
+    setDraftValue(value || "");
+  }, [index, value]);
+  return /* @__PURE__ */ React.createElement("span", { className: "chip" }, /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "chip__input",
+      value: draftValue,
+      onChange: (e) => setDraftValue(e.target.value),
+      onBlur: (e) => {
+        const patch = window.MobKitFlowController.enumValueCommitPatch(field, index, e.target.value);
+        setDraftValue(patch.enumValues?.[index] || "");
+        onChange(patch);
+      }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      className: "chip__x",
+      onClick: () => onChange(window.MobKitFlowController.enumValueDeletePatch(field, index))
+    },
+    "\xD7"
+  ));
+}
 function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contract, schemaView = null }) {
   const nameBeforeEdit = React.useRef(field.name);
   const [draftName, setDraftName] = React.useState(field.name || "");
@@ -13048,22 +13074,7 @@ function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contr
       onChange: (e) => onChange({ description: e.target.value }),
       placeholder: fieldState.descriptionPlaceholder
     }
-  ), /* @__PURE__ */ React.createElement("button", { className: "sb-del", onClick: onDelete, title: fieldState.removeTitle }, "\xD7"), field.type === "enum" && /* @__PURE__ */ React.createElement("div", { className: "sb-enum" }, /* @__PURE__ */ React.createElement("span", { className: "sb-enum__label" }, fieldState.enumLabel), /* @__PURE__ */ React.createElement("div", { className: "sb-enum__chips" }, values.map((v, i) => /* @__PURE__ */ React.createElement("span", { key: i, className: "chip" }, /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "chip__input",
-      value: v,
-      onChange: (e) => onChange(window.MobKitFlowController.enumValueDraftPatch(field, i, e.target.value)),
-      onBlur: (e) => onChange(window.MobKitFlowController.enumValueCommitPatch(field, i, e.target.value))
-    }
-  ), /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      className: "chip__x",
-      onClick: () => onChange(window.MobKitFlowController.enumValueDeletePatch(field, i))
-    },
-    "\xD7"
-  ))), /* @__PURE__ */ React.createElement(
+  ), /* @__PURE__ */ React.createElement("button", { className: "sb-del", onClick: onDelete, title: fieldState.removeTitle }, "\xD7"), field.type === "enum" && /* @__PURE__ */ React.createElement("div", { className: "sb-enum" }, /* @__PURE__ */ React.createElement("span", { className: "sb-enum__label" }, fieldState.enumLabel), /* @__PURE__ */ React.createElement("div", { className: "sb-enum__chips" }, values.map((v, i) => /* @__PURE__ */ React.createElement(SchemaEnumValueChip, { key: i, field, value: v, index: i, onChange })), /* @__PURE__ */ React.createElement(
     "button",
     {
       className: "chip chip--add",
@@ -13198,6 +13209,25 @@ function CondValue({ field, value, onChange, conditionView = null }) {
   }
   return /* @__PURE__ */ React.createElement("input", { className: "field__input bld-cond__val", placeholder: control.placeholder, value: control.value, onChange: (e) => onChange(e.target.value) });
 }
+function InputEnumValueChip({ field, value, index, onChange }) {
+  const [draftValue, setDraftValue] = React.useState(value || "");
+  React.useEffect(() => {
+    setDraftValue(value || "");
+  }, [index, value]);
+  return /* @__PURE__ */ React.createElement("span", { className: "chip" }, /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "chip__input",
+      value: draftValue,
+      onChange: (e) => setDraftValue(e.target.value),
+      onBlur: (e) => {
+        const patch = window.MobKitFlowController.enumValueCommitPatch(field, index, e.target.value);
+        setDraftValue(patch.enumValues?.[index] || "");
+        onChange(patch);
+      }
+    }
+  ), /* @__PURE__ */ React.createElement("button", { className: "chip__x", onClick: () => onChange(window.MobKitFlowController.enumValueDeletePatch(field, index)) }, "\xD7"));
+}
 function InputParamField({ param, normalizeName, onRename, onChange, onDelete, contract, basicView = null }) {
   const fieldState = window.MobKitFlowController.inputParamFieldControlState(param, contract, basicView);
   const values = fieldState.enumValues;
@@ -13243,15 +13273,7 @@ function InputParamField({ param, normalizeName, onRename, onChange, onDelete, c
       onChange: (e) => onChange({ description: e.target.value }),
       placeholder: fieldState.descriptionPlaceholder
     }
-  ), /* @__PURE__ */ React.createElement("button", { className: "sb-del", onClick: onDelete, title: fieldState.removeTitle }, "\xD7"), param.type === "enum" && /* @__PURE__ */ React.createElement("div", { className: "sb-enum" }, /* @__PURE__ */ React.createElement("span", { className: "sb-enum__label" }, fieldState.enumLabel), /* @__PURE__ */ React.createElement("div", { className: "sb-enum__chips" }, values.map((value, index) => /* @__PURE__ */ React.createElement("span", { key: index, className: "chip" }, /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "chip__input",
-      value,
-      onChange: (e) => onChange(window.MobKitFlowController.enumValueDraftPatch(param, index, e.target.value)),
-      onBlur: (e) => onChange(window.MobKitFlowController.enumValueCommitPatch(param, index, e.target.value))
-    }
-  ), /* @__PURE__ */ React.createElement("button", { className: "chip__x", onClick: () => onChange(window.MobKitFlowController.enumValueDeletePatch(param, index)) }, "\xD7"))), /* @__PURE__ */ React.createElement("button", { className: "chip chip--add", onClick: () => onChange(window.MobKitFlowController.enumValueAddPatch(param, fieldState.enumAddValue)) }, fieldState.enumAddLabel))));
+  ), /* @__PURE__ */ React.createElement("button", { className: "sb-del", onClick: onDelete, title: fieldState.removeTitle }, "\xD7"), param.type === "enum" && /* @__PURE__ */ React.createElement("div", { className: "sb-enum" }, /* @__PURE__ */ React.createElement("span", { className: "sb-enum__label" }, fieldState.enumLabel), /* @__PURE__ */ React.createElement("div", { className: "sb-enum__chips" }, values.map((value, index) => /* @__PURE__ */ React.createElement(InputEnumValueChip, { key: index, field: param, value, index, onChange })), /* @__PURE__ */ React.createElement("button", { className: "chip chip--add", onClick: () => onChange(window.MobKitFlowController.enumValueAddPatch(param, fieldState.enumAddValue)) }, fieldState.enumAddLabel))));
 }
 function BranchConditionEditor({ index, branch, options, schemas, onChange, contract, basicView = null, conditionView = null }) {
   const conditionState = window.MobKitFlowController.basicBranchConditionControlState({
