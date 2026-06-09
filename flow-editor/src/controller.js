@@ -9096,8 +9096,12 @@
   }
 
   function sourceDocumentFromExport(document, result, options = {}) {
-    const exportedToml = String(result?.mob_toml || "").trim();
-    if (!exportedToml) throw new Error("mobkit/mobpacks/export did not return mob_toml");
+    const files = Array.isArray(result?.source_files) ? result.source_files : [];
+    if (!files.length) throw new Error("mobkit/mobpacks/export did not return source_files");
+    const mobTomlFile = files.find((file) => String(file?.path || "") === "mobkit/mob.toml");
+    if (!mobTomlFile) throw new Error("mobkit/mobpacks/export did not return mobkit/mob.toml source file");
+    const exportedToml = String(mobTomlFile.text || "").trim();
+    if (!exportedToml) throw new Error("mobkit/mobpacks/export did not return mobkit/mob.toml text");
     const filename = String(result?.filename || "").trim();
     if (!filename) throw new Error("mobkit/mobpacks/export did not return filename");
     const mediaType = String(result?.media_type || "").trim();
@@ -9116,6 +9120,9 @@
         validation,
         filename,
         media_type: mediaType,
+        sourcePath: mobTomlFile.path,
+        sourceFile: mobTomlFile,
+        sourceFiles: files,
         source: "mobkit/mobpacks/export",
         sourceView,
       },
@@ -9130,6 +9137,7 @@
     const view = sourceViewForState(sourceDocument, options.sourceView);
     const sourceLabel = [
       sourceDocument?.source || "",
+      sourceDocument?.sourcePath || "",
       sourceDocument?.filename || "",
       sourceDocument?.media_type || "",
     ].filter(Boolean).join(" · ");

@@ -5381,6 +5381,13 @@ const sourceProjection = controller.sourceDocumentFromExport({
   mob_toml: "[stale]",
 }, {
   mob_toml: "[mob]\nid = \"source_proof\"\n",
+  source_files: [{
+    path: "mobkit/mob.toml",
+    media_type: "text/toml",
+    size_bytes: 26,
+    content_base64: "unused",
+    text: "[mob]\nid = \"source_proof\"\n",
+  }],
   filename: "source-proof.mobpack",
   media_type: "application/vnd.mobkit.mobpack",
   validation: {
@@ -5400,6 +5407,9 @@ assert.equal(sourceProjection.document.name, "Source Proof");
 assert.equal(sourceProjection.document.mob_toml, "[mob]\nid = \"source_proof\"\n");
 assert.equal(sourceProjection.sourceDocument.filename, "source-proof.mobpack");
 assert.equal(sourceProjection.sourceDocument.media_type, "application/vnd.mobkit.mobpack");
+assert.equal(sourceProjection.sourceDocument.sourcePath, "mobkit/mob.toml");
+assert.equal(sourceProjection.sourceDocument.sourceFile.media_type, "text/toml");
+assert.equal(sourceProjection.sourceDocument.sourceFiles.length, 1);
 assert.equal(sourceProjection.sourceDocument.source, "mobkit/mobpacks/export");
 assert.deepEqual(sourceProjection.sourceDocument.sourceView, hydratedCatalogs.sourceView);
 assert.equal(sourceProjection.sourceDocument.validation.ok, true);
@@ -5409,7 +5419,7 @@ assert.deepEqual(controller.sourceEditorState(sourceProjection.sourceDocument), 
   source: "[mob]\nid = \"source_proof\"\n",
   drawerEyebrow: "SOURCE · mob.toml",
   inlineTitle: "mob.toml",
-  sourceLabel: "mobkit/mobpacks/export · source-proof.mobpack · application/vnd.mobkit.mobpack",
+  sourceLabel: "mobkit/mobpacks/export · mobkit/mob.toml · source-proof.mobpack · application/vnd.mobkit.mobpack",
   validationSource: "",
   bodyClass: "source-drawer__body",
   showLoading: false,
@@ -5445,12 +5455,25 @@ assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true 
   copyDisabled: true,
 });
 assert.throws(
-  () => controller.sourceDocumentFromExport({ name: "No TOML" }, { mob_toml: "" }),
-  /mobkit\/mobpacks\/export did not return mob_toml/,
+  () => controller.sourceDocumentFromExport({ name: "No files" }, { source_files: [] }),
+  /mobkit\/mobpacks\/export did not return source_files/,
+);
+assert.throws(
+  () => controller.sourceDocumentFromExport({ name: "No TOML file" }, {
+    source_files: [{ path: "manifest.toml", text: "name = \"missing\"" }],
+  }),
+  /mobkit\/mobpacks\/export did not return mobkit\/mob\.toml source file/,
+);
+assert.throws(
+  () => controller.sourceDocumentFromExport({ name: "No TOML text" }, {
+    source_files: [{ path: "mobkit/mob.toml", text: "" }],
+  }),
+  /mobkit\/mobpacks\/export did not return mobkit\/mob\.toml text/,
 );
 assert.throws(
   () => controller.sourceDocumentFromExport({ name: "No filename" }, {
     mob_toml: "[mob]\nid = \"no_filename\"\n",
+    source_files: [{ path: "mobkit/mob.toml", text: "[mob]\nid = \"no_filename\"\n" }],
     media_type: "application/vnd.mobkit.mobpack",
   }),
   /mobkit\/mobpacks\/export did not return filename/,
@@ -5458,6 +5481,7 @@ assert.throws(
 assert.throws(
   () => controller.sourceDocumentFromExport({ name: "No media" }, {
     mob_toml: "[mob]\nid = \"no_media\"\n",
+    source_files: [{ path: "mobkit/mob.toml", text: "[mob]\nid = \"no_media\"\n" }],
     filename: "no-media.mobpack",
   }),
   /mobkit\/mobpacks\/export did not return media_type/,

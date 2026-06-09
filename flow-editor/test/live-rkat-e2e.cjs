@@ -1331,6 +1331,16 @@ async function validateCustomDeploySettings(dir) {
   if (!exported.validation?.ok) {
     throw new Error(`export validation rejected ${sample.id}: ${JSON.stringify(exported.validation?.diagnostics)}`);
   }
+  const sourceFiles = array(exported.source_files, "exported.source_files");
+  for (const requiredPath of ["manifest.toml", "definition.json", "mobkit/editor.json", "mobkit/mob.toml"]) {
+    if (!sourceFiles.some((file) => file.path === requiredPath)) {
+      throw new Error(`export did not expose archive source file ${requiredPath}: ${JSON.stringify(sourceFiles)}`);
+    }
+  }
+  const sourceMobToml = sourceFiles.find((file) => file.path === "mobkit/mob.toml");
+  if (sourceMobToml?.text !== exported.mob_toml || sourceMobToml?.media_type !== "text/toml") {
+    throw new Error(`exported mob.toml source file does not match MobKit-rendered TOML: ${JSON.stringify(sourceMobToml)}`);
+  }
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mobkit-flow-editor-e2e."));
   const packPath = path.join(dir, exported.filename || `${sample.id || "flow-editor-e2e"}.mobpack`);
@@ -1353,6 +1363,7 @@ async function validateCustomDeploySettings(dir) {
     packPath,
     inspect,
     validate,
+    sourceFiles: sourceFiles.map((file) => ({ path: file.path, media_type: file.media_type, size_bytes: file.size_bytes })),
     roundTrip,
     graphBranchShape: await validateGraphBranchShape(dir),
     graphParallelShape: await validateGraphParallelShape(dir),

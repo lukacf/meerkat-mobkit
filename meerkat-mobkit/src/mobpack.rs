@@ -219,7 +219,18 @@ pub struct MobpackExportResult {
     pub media_type: String,
     pub content_base64: String,
     pub mob_toml: String,
+    pub source_files: Vec<MobpackSourceFile>,
     pub validation: MobpackValidationResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MobpackSourceFile {
+    pub path: String,
+    pub media_type: String,
+    pub size_bytes: u64,
+    pub content_base64: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2160,12 +2171,14 @@ pub fn export_mobpack(params: &Value) -> Result<MobpackExportResult, String> {
     )
     .or_else(|| sanitize_slug(document.mob_id.trim()))
     .unwrap_or_else(|| "mobpack".to_string());
-    let bytes = create_deployable_mobpack_archive(&slug, &document, &mob_toml)?;
+    let files = deployable_mobpack_archive_files(&slug, &document, &mob_toml)?;
+    let bytes = encode_deployable_mobpack_archive(&files)?;
     Ok(MobpackExportResult {
         filename: format!("{slug}.mobpack"),
         media_type: MOBPACK_MEDIA_TYPE.to_string(),
         content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
         mob_toml,
+        source_files: source_files_from_archive_files(&files),
         validation,
     })
 }
@@ -2736,11 +2749,11 @@ fn backend_kind_string(backend: &MobBackendKind) -> &'static str {
     }
 }
 
-fn create_deployable_mobpack_archive(
+fn deployable_mobpack_archive_files(
     slug: &str,
     document: &MobpackDocument,
     mob_toml: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let definition = meerkat_mob::MobDefinition::from_toml(mob_toml)
         .map_err(|err| format!("failed to parse mob.toml for archive export: {err}"))?;
     let expected_schema_files =
@@ -2779,24 +2792,32 @@ description = "{}"
     }))
     .map_err(|err| format!("failed to encode mobkit/editor.json: {err}"))?;
 
-    let encoder = GzEncoder::new(Vec::new(), Compression::default());
-    let mut archive = Builder::new(encoder);
-    append_archive_file(&mut archive, "manifest.toml", manifest.as_bytes())?;
-    append_archive_file(&mut archive, "definition.json", &definition_json)?;
-    append_archive_file(&mut archive, "mobkit/editor.json", &editor_json)?;
-    append_archive_file(&mut archive, "mobkit/mob.toml", mob_toml.as_bytes())?;
+    let mut files = BTreeMap::<String, Vec<u8>>::new();
+    files.insert("manifest.toml".to_string(), manifest.into_bytes());
+    files.insert("definition.json".to_string(), definition_json);
+    files.insert("mobkit/editor.json".to_string(), editor_json);
+    files.insert("mobkit/mob.toml".to_string(), mob_toml.as_bytes().to_vec());
     for (path, bytes) in selected_path_skill_files(document)? {
-        append_archive_file(&mut archive, &path, &bytes)?;
+        files.insert(path, bytes);
     }
     for (path, schema) in expected_schema_files {
         let schema_json = serde_json::to_vec_pretty(&schema)
             .map_err(|err| format!("failed to encode {path}: {err}"))?;
-        append_archive_file(&mut archive, &path, &schema_json)?;
+        files.insert(path, schema_json);
     }
     for (path, schema) in editor_input_schema_files(document) {
         let schema_json = serde_json::to_vec_pretty(&schema)
             .map_err(|err| format!("failed to encode {path}: {err}"))?;
-        append_archive_file(&mut archive, &path, &schema_json)?;
+        files.insert(path, schema_json);
+    }
+    Ok(files)
+}
+
+fn encode_deployable_mobpack_archive(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, String> {
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut archive = Builder::new(encoder);
+    for (path, bytes) in files {
+        append_archive_file(&mut archive, path, bytes)?;
     }
     let encoder = archive
         .into_inner()
@@ -2804,6 +2825,31 @@ description = "{}"
     encoder
         .finish()
         .map_err(|err| format!("failed to finish mobpack gzip stream: {err}"))
+}
+
+fn source_files_from_archive_files(files: &BTreeMap<String, Vec<u8>>) -> Vec<MobpackSourceFile> {
+    files
+        .iter()
+        .map(|(path, bytes)| MobpackSourceFile {
+            path: path.clone(),
+            media_type: source_file_media_type(path).to_string(),
+            size_bytes: bytes.len() as u64,
+            content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            text: String::from_utf8(bytes.clone()).ok(),
+        })
+        .collect()
+}
+
+fn source_file_media_type(path: &str) -> &'static str {
+    if path.ends_with(".toml") {
+        "text/toml"
+    } else if path.ends_with(".json") {
+        "application/json"
+    } else if path.ends_with(".md") {
+        "text/markdown"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 fn append_archive_file<W: Write>(
@@ -14404,6 +14450,27 @@ message = "Plan the work"
         assert!(validation.ok, "{:?}", validation.diagnostics);
         let result = export_mobpack(&json!({ "document": document })).expect("export");
         assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+        let exported_paths = result
+            .source_files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
+        assert!(exported_paths.contains(&"manifest.toml"));
+        assert!(exported_paths.contains(&"definition.json"));
+        assert!(exported_paths.contains(&"mobkit/editor.json"));
+        assert!(exported_paths.contains(&"mobkit/mob.toml"));
+        assert!(exported_paths.contains(&"schemas/reviewer.json"));
+        assert!(exported_paths.contains(&"schemas/main-input.json"));
+        let exported_mob_toml = result
+            .source_files
+            .iter()
+            .find(|file| file.path == "mobkit/mob.toml")
+            .expect("mob.toml source file");
+        assert_eq!(exported_mob_toml.media_type, "text/toml");
+        assert_eq!(
+            exported_mob_toml.text.as_deref(),
+            Some(result.mob_toml.as_str())
+        );
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&result.content_base64)
             .unwrap();
@@ -14478,6 +14545,16 @@ message = "Plan the work"
             !result
                 .mob_toml
                 .contains(dir.path().to_string_lossy().as_ref())
+        );
+        let exported_skill = result
+            .source_files
+            .iter()
+            .find(|file| file.path == "skills/mob-platform.md")
+            .expect("packed skill source file");
+        assert_eq!(exported_skill.media_type, "text/markdown");
+        assert_eq!(
+            exported_skill.text.as_deref(),
+            Some("Use the real MobKit platform contract.")
         );
 
         let bytes = base64::engine::general_purpose::STANDARD

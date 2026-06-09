@@ -700,8 +700,9 @@ assert.match(src("overlays.jsx"), /traceState\.eyebrow/, "Plan Trace overlay hea
 assert.match(src("overlays.jsx"), /traceState\.firstLabel/, "Plan Trace first action label must render through controller state");
 assert.match(src("overlays.jsx"), /traceState\.stepLabel/, "Plan Trace progress label must render through controller state");
 assert(!/plan\?\.plan_trace|plan\?\.command|document\?\.deploy_command|plan\?\.pack_path|mobkit\/mobpacks\/deploy did not return plan_trace|const title = document\?/.test(src("overlays.jsx")), "Plan Trace overlay must not inspect MobKit deploy results or invent fallback labels locally");
-assert.match(controller, /mobkit\/mobpacks\/export did not return mob_toml/, "Source drawer must fail closed when MobKit export omits mob_toml");
-assert.match(controller, /function sourceDocumentFromExport[\s\S]*did not return mob_toml[\s\S]*did not return filename[\s\S]*did not return media_type/, "Source drawer must fail closed when MobKit export omits source archive metadata");
+assert.match(controller, /mobkit\/mobpacks\/export did not return source_files/, "Source drawer must fail closed when MobKit export omits archive member metadata");
+assert.match(controller, /mobkit\/mobpacks\/export did not return mobkit\/mob\.toml source file/, "Source drawer must fail closed when MobKit export omits the real mob.toml archive member");
+assert.match(controller, /function sourceDocumentFromExport[\s\S]*did not return source_files[\s\S]*did not return mobkit\/mob\.toml source file[\s\S]*did not return mobkit\/mob\.toml text[\s\S]*did not return filename[\s\S]*did not return media_type/, "Source drawer must fail closed when MobKit export omits source archive metadata");
 assert.match(controller, /function sourceDocumentFromExport/, "controller plane must own export result to source-document projection");
 assert.match(controller, /function sourceEditorState/, "controller plane must own source editor display projection");
 assert.match(controller, /mob_definition\?\.editor_source_view/, "controller plane must hydrate source editor labels from MobKit schema");
@@ -717,7 +718,7 @@ assert.match(src("overlays.jsx"), /editorState\.inlineTitle/, "inline source tit
 assert.match(src("overlays.jsx"), /editorState\.copyLabel/, "source copy action label must render through controller state");
 assert(!/function sourceMeta|state\?\.mob_toml|state\?\.source|state\?\.filename|state\?\.media_type|state\?\.validation\?\.validation_source/.test(src("overlays.jsx")), "source editor overlays must not derive MobKit export/source metadata locally");
 assert.match(app, /MobKitFlowController\.sourceDocumentFromExport\(document, result, \{\s*sourceView:\s*catalogs\.sourceView,\s*\}\)/, "app shell must project MobKit export results through the controller plane with the schema-backed source-view contract");
-assert.match(controller, /sourceDocument:\s*\{[\s\S]*source:\s*"mobkit\/mobpacks\/export"[\s\S]*sourceView,/, "controller-projected source documents must carry the MobKit source-view contract");
+assert.match(controller, /sourceDocument:\s*\{[\s\S]*sourcePath:\s*mobTomlFile\.path[\s\S]*sourceFile:\s*mobTomlFile[\s\S]*sourceFiles:\s*files[\s\S]*source:\s*"mobkit\/mobpacks\/export"[\s\S]*sourceView,/, "controller-projected source documents must carry the MobKit archive member and source-view contracts");
 assert(!/const renderedDocument = \{ \.\.\.document, mob_toml: result\.mob_toml \}|filename:\s*result\.filename|media_type:\s*result\.media_type|source:\s*["']mobkit\/mobpacks\/export["']/.test(app), "app shell must not assemble export-backed source documents locally");
 assert(!/mob_toml:\s*result\.mob_toml\s*\|\||result\.mob_toml\s*\|\|\s*document\.mob_toml/.test(app), "Source drawer must not fall back to stale document.mob_toml; previewed TOML must come from mobkit/mobpacks/export");
 assert.match(app, /exportCurrentSourceDocument[\s\S]*MobKitFlowController\.exportDocument\(document\)/, "source-file views must render mob.toml through the MobKit export API");
