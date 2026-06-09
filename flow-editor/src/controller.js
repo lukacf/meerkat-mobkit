@@ -8409,6 +8409,56 @@
     };
   }
 
+  function graphQuickInsertProjection({ pick, at, members, instances, edges, flow, contract, graphView = null } = {}) {
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    const sourceEdges = Array.isArray(edges) ? edges : [];
+    const sourceFlow = flow;
+    const kind = String(pick?.kind || "").trim();
+    if (!pick || !at) {
+      return { ok: false, error: "", flow: sourceFlow, instances: sourceInstances, edges: sourceEdges, selectId: "", snap: false };
+    }
+    if (kind === "memberInstance") {
+      const instance = graphMemberInstanceShape({
+        memberId: pick.memberId,
+        at,
+        instances: sourceInstances,
+        contract,
+      });
+      const next = studioAddInstancePatch({ instances: sourceInstances, members }, instance);
+      if (!next.ok) {
+        return { ok: false, error: next.error, flow: sourceFlow, instances: sourceInstances, edges: sourceEdges, selectId: "", snap: false };
+      }
+      return { ok: true, error: "", flow: sourceFlow, instances: next.instances, edges: sourceEdges, selectId: next.instance?.id || "", snap: true };
+    }
+    if (kind === "gate") {
+      const inserted = graphControlShape({
+        gateKind: pick.gateKind,
+        at,
+        members,
+        instances: sourceInstances,
+        edges: sourceEdges,
+        flow: sourceFlow,
+        contract,
+        graphView,
+      });
+      if (!inserted) {
+        return { ok: false, error: "", flow: sourceFlow, instances: sourceInstances, edges: sourceEdges, selectId: "", snap: false };
+      }
+      const instancesPatch = studioAppendInstancesPatch({ instances: sourceInstances, members }, inserted.instances);
+      const edgesPatch = studioAppendEdgesPatch({ edges: sourceEdges, instances: instancesPatch.instances }, inserted.edges);
+      return {
+        ok: true,
+        error: "",
+        flow: inserted.flow || sourceFlow,
+        instances: instancesPatch.instances,
+        edges: edgesPatch.edges,
+        selectId: inserted.selectId || "",
+        snap: true,
+      };
+    }
+    return { ok: false, error: "", flow: sourceFlow, instances: sourceInstances, edges: sourceEdges, selectId: "", snap: false };
+  }
+
   function flowStepTemplate(pick, contract, options = {}) {
     const kind = String(pick?.kind || "").trim();
     const id = uniqueFlowStepId("s", options.flow);
@@ -9902,6 +9952,7 @@
     basicStepPickerState,
     graphControlShape,
     graphMemberInstanceShape,
+    graphQuickInsertProjection,
     flowStepTemplate,
     graphFirstConditionPatch,
     graphEdgeConditionOwnerPatch,

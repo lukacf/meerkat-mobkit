@@ -340,42 +340,22 @@ function App() {
 
   const handlePick = (pick) => {
     if (!addAt) return;
-    if (pick.kind === "memberInstance") {
-      const instance = window.MobKitFlowController.graphMemberInstanceShape({
-        memberId: pick.memberId,
-        at: addAt,
-        instances: studio.instances,
-        contract,
-      });
-      if (instance) {
-        studio.addInstance(instance);
-        selectInstance(instance.id);
-      }
-    }
-    if (pick.kind === "gate") {
-      const inserted = window.MobKitFlowController.graphControlShape({
-        gateKind: pick.gateKind,
-        at: addAt,
-        members: studio.members,
-        instances: studio.instances,
-        edges: studio.edges,
-        flow,
-        contract,
-        graphView: catalogs.graphView,
-      });
-      if (inserted) {
-        studio.snap();
-        if (inserted.flow && inserted.flow !== flow) setAuthoringFlow(inserted.flow);
-        studio.setInstances(current => window.MobKitFlowController.studioAppendInstancesPatch({
-          instances: current,
-          members: studio.members,
-        }, inserted.instances).instances);
-        studio.setEdges(current => window.MobKitFlowController.studioAppendEdgesPatch({
-          edges: current,
-          instances: [...studio.instances, ...inserted.instances],
-        }, inserted.edges).edges);
-        if (inserted.selectId) selectInstance(inserted.selectId);
-      }
+    const inserted = window.MobKitFlowController.graphQuickInsertProjection({
+      pick,
+      at: addAt,
+      members: studio.members,
+      instances: studio.instances,
+      edges: studio.edges,
+      flow,
+      contract,
+      graphView: catalogs.graphView,
+    });
+    if (inserted.ok) {
+      if (inserted.snap) studio.snap();
+      if (inserted.flow !== flow) setAuthoringFlow(inserted.flow);
+      if (inserted.instances !== studio.instances) studio.setInstances(inserted.instances);
+      if (inserted.edges !== studio.edges) studio.setEdges(inserted.edges);
+      if (inserted.selectId) selectInstance(inserted.selectId);
     }
     setAddAt(null);
   };

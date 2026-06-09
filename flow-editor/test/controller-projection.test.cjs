@@ -8133,6 +8133,66 @@ assert.deepEqual(memberInstanceShape.launchMode, { kind: "Fresh" });
 assert.equal(memberInstanceShape.col, 2);
 assert.equal(memberInstanceShape.row, 3);
 
+const quickMemberInsert = controller.graphQuickInsertProjection({
+  pick: { kind: "memberInstance", memberId: "m_left" },
+  at: { col: 4, row: 5 },
+  members: graphMembers.slice(0, 2),
+  instances: [{ id: "i_m_left", memberId: "m_left" }],
+  edges: [{ id: "keep_edge", from: "i_m_left", to: "i_other" }],
+  flow: previousFlow,
+  contract: graphShapeContract,
+});
+assert.equal(quickMemberInsert.ok, true);
+assert.equal(quickMemberInsert.snap, true);
+assert.equal(quickMemberInsert.flow, previousFlow);
+assert.deepEqual(quickMemberInsert.edges, [{ id: "keep_edge", from: "i_m_left", to: "i_other" }]);
+assert.equal(quickMemberInsert.instances[1].id, "i_m_left_2");
+assert.equal(quickMemberInsert.instances[1].memberId, "m_left");
+assert.equal(quickMemberInsert.selectId, "i_m_left_2");
+
+const quickMissingMemberInsert = controller.graphQuickInsertProjection({
+  pick: { kind: "memberInstance", memberId: "m_missing" },
+  at: { col: 4, row: 5 },
+  members: graphMembers.slice(0, 2),
+  instances: [],
+  edges: [],
+  flow: previousFlow,
+  contract: graphShapeContract,
+});
+assert.equal(quickMissingMemberInsert.ok, false);
+assert.deepEqual(quickMissingMemberInsert.instances, []);
+assert.deepEqual(quickMissingMemberInsert.edges, []);
+
+const quickBranchInsert = controller.graphQuickInsertProjection({
+  pick: { kind: "gate", gateKind: "branch" },
+  at: { col: 0, row: 0 },
+  members: graphMembers.slice(0, 2),
+  instances: [{ id: "existing", memberId: "m_left", col: 0, row: 0 }],
+  edges: [],
+  flow: previousFlow,
+  contract: graphShapeContract,
+  graphView: hydratedCatalogs.graphView,
+});
+assert.equal(quickBranchInsert.ok, true);
+assert.equal(quickBranchInsert.snap, true);
+assert.equal(quickBranchInsert.flow, previousFlow);
+assert.equal(quickBranchInsert.selectId, "g_branch_1");
+assert.deepEqual(quickBranchInsert.instances.map((instance) => instance.id), [
+  "existing",
+  "g_branch_1",
+  "g_branch_1_a",
+  "g_branch_1_b",
+  "j_branch_1",
+]);
+assert.deepEqual(quickBranchInsert.edges.map((edge) => edge.id), [
+  "e_g_branch_1_g_branch_1_a",
+  "e_g_branch_1_g_branch_1_b",
+  "e_g_branch_1_a_j_branch_1",
+  "e_g_branch_1_b_j_branch_1",
+]);
+assert.equal(quickBranchInsert.edges[0].kind, "cond");
+assert.equal(quickBranchInsert.edges[1].label, "fallback");
+
 assert.equal(controller.flowStepTemplate({ kind: "parallel" }, {
   mob_definition: {
     editor_flow_step_types: ["parallel"],

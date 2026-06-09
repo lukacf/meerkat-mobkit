@@ -150,12 +150,12 @@ assert.match(agents, /MobKitFlowController\.memberDeleteCascadePatch/, "Agent Ed
 assert.match(agentEditorBlock, /memberDeleteCascadePatch\(\{[\s\S]*memberId:\s*member\.id,[\s\S]*members:\s*studio\.members,[\s\S]*instances:\s*studio\.instances,[\s\S]*edges:\s*studio\.edges,[\s\S]*flow,[\s\S]*mobSettings/, "Agent delete cascade must pass Basic, Graph, Agent, and mob settings state to the controller plane");
 assert.match(agentEditorBlock, /studio\.setMembers\(result\.members\)[\s\S]*studio\.setInstances\(result\.instances\)[\s\S]*studio\.setEdges\(result\.edges\)[\s\S]*setFlow\(result\.flow\)[\s\S]*setMobSettings\(result\.mobSettings\)/, "Agent delete cascade must apply all controller-projected mobpack state together");
 assert.match(graph, /MobKitFlowController\.studioAddInstancePatch/, "Graph state hook must ask controller plane to add instances");
-assert.match(app, /MobKitFlowController\.studioAppendInstancesPatch/, "App quick graph insertion must ask controller plane to append instances");
+assert.match(app, /MobKitFlowController\.graphQuickInsertProjection/, "App quick graph insertion must ask controller plane to project inserted graph state");
 assert.match(graph, /MobKitFlowController\.studioUpdateInstancePatch/, "Graph state hook must ask controller plane to update instances");
 assert.match(graph, /MobKitFlowController\.studioMoveInstancePatch/, "Graph editor must ask controller plane to move/swap instance layout");
 assert.match(graph, /MobKitFlowController\.studioDeleteInstancePatch/, "Graph state hook must ask controller plane to cascade instance deletes");
 assert.match(graph, /MobKitFlowController\.studioAddEdgePatch/, "Graph state hook must ask controller plane to add edges");
-assert.match(app, /MobKitFlowController\.studioAppendEdgesPatch/, "App quick graph insertion must ask controller plane to append edges");
+assert.match(controller, /function graphQuickInsertProjection/, "controller plane must own quick graph insertion projection");
 assert.match(graph, /MobKitFlowController\.studioUpdateEdgePatch/, "Graph state hook must ask controller plane to update edges");
 assert.match(graph, /MobKitFlowController\.studioDeleteEdgePatch/, "Graph state hook must ask controller plane to delete edges");
 assert.match(graph, /MobKitFlowController\.studioAddSchemaPatch/, "Graph state hook must ask controller plane to add schemas");
@@ -187,7 +187,9 @@ assert.match(controller, /function graphInstanceValidation/, "controller plane m
 assert.match(controller, /member graph node must reference an existing member/, "controller plane must reject graph member nodes that point at missing Agent definitions");
 assert.match(graph, /studioAddInstancePatch\(\{ instances, members \}/, "Graph state hook must pass Agent definitions into graph-node add validation");
 assert.match(graph, /studioUpdateInstancePatch\(\{ instances, members \}/, "Graph state hook must pass Agent definitions into graph-node update validation");
-assert.match(app, /studioAppendInstancesPatch\(\{\s*instances: current,\s*members: studio\.members/, "App quick graph insertion must pass Agent definitions into graph-node append validation");
+assert.match(app, /graphQuickInsertProjection\(\{[\s\S]*members:\s*studio\.members,[\s\S]*instances:\s*studio\.instances/, "App quick graph insertion must pass Agent definitions and current graph nodes into controller projection");
+assert.match(controller, /graphQuickInsertProjection[\s\S]*studioAddInstancePatch\(\{ instances: sourceInstances, members \}/, "controller quick graph insertion must validate member-instance additions against Agent definitions");
+assert.match(controller, /graphQuickInsertProjection[\s\S]*studioAppendInstancesPatch\(\{ instances: sourceInstances, members \}/, "controller quick graph insertion must validate generated control nodes against Agent definitions");
 assert.match(controller, /function studioMoveInstancePatch/, "controller plane must own instance move/swap semantics");
 assert.match(controller, /function studioDeleteInstancePatch/, "controller plane must own instance delete cascade semantics");
 assert.match(controller, /function clearDeletedGraphConditionEdges/, "controller plane must clear graph edge conditions that point at deleted graph nodes");
@@ -198,7 +200,7 @@ assert.match(controller, /function studioUpdateEdgePatch/, "controller plane mus
 assert.match(controller, /function graphEdgeValidation/, "controller plane must validate graph edge endpoints against the current document graph");
 assert.match(graph, /studioAddEdgePatch\(\{ edges, instances \}/, "Graph state hook must pass graph nodes into edge-add validation");
 assert.match(graph, /studioUpdateEdgePatch\(\{ edges, instances \}/, "Graph state hook must pass graph nodes into edge-update validation");
-assert.match(app, /studioAppendEdgesPatch\(\{\s*edges: current,\s*instances: \[\.\.\.studio\.instances, \.\.\.inserted\.instances\]/, "App quick graph insertion must validate appended edges against existing and inserted graph nodes");
+assert.match(controller, /graphQuickInsertProjection[\s\S]*studioAppendEdgesPatch\(\{ edges: sourceEdges, instances: instancesPatch\.instances \}/, "controller quick graph insertion must validate generated edges against existing and inserted graph nodes");
 assert.match(controller, /function studioAddSchemaPatch/, "controller plane must own schema add semantics");
 assert.match(controller, /function studioUpdateSchemaPatch/, "controller plane must own schema update semantics");
 assert.match(controller, /schema id already exists/, "controller plane must reject duplicate schema collection additions");
@@ -1144,11 +1146,9 @@ assert(!/deploy_settings\?\.(surfaces|trust_policies|realm_backends)\s*\|\|\s*\[
 assert(!/mob_definition\?\.[\w?.]+\s*\|\|\s*\[/.test(controller), "Mob definition option lists must come from MobKit schema, not controller-local catalogs");
 assert(!/function\s+deployCommand\s*\(|args\s*=\s*\[\s*["']rkat["']\s*,\s*["']mob["']\s*,\s*["']deploy["']/.test(controller), "Deploy command previews must come from mobkit/mobpacks/deploy_command, not a controller-local shell renderer");
 assert.match(controller, /mobkit\/mobpacks\/deploy_command/, "controller must use MobKit deploy command preview RPC");
-assert.match(app, /MobKitFlowController\.graphControlShape/, "Graph editor quick gate insertion must ask the controller for MobKit-backed graph shapes");
-assert.match(app, /MobKitFlowController\.graphMemberInstanceShape/, "Graph editor quick member insertion must ask the controller for MobKit-backed member-instance shapes");
-assert.match(app, /graphMemberInstanceShape\(\{[\s\S]*instances:\s*studio\.instances/, "Graph quick member insertion must pass current graph nodes into controller ID creation");
-assert.match(app, /graphControlShape\(\{[\s\S]*instances:\s*studio\.instances,[\s\S]*edges:\s*studio\.edges/, "Graph quick control insertion must pass current graph nodes and edges into controller ID creation");
-assert.match(app, /graphControlShape\(\{[\s\S]*graphView:\s*catalogs\.graphView/, "Graph quick control insertion must pass schema-backed Graph view into controller projection");
+assert.match(app, /graphQuickInsertProjection\(\{[\s\S]*pick,[\s\S]*at:\s*addAt,[\s\S]*members:\s*studio\.members,[\s\S]*instances:\s*studio\.instances,[\s\S]*edges:\s*studio\.edges,[\s\S]*flow,[\s\S]*contract,[\s\S]*graphView:\s*catalogs\.graphView/, "Graph quick insertion must pass Basic, Graph, Agent, contract, and schema-backed view context into controller projection");
+assert.match(controller, /graphQuickInsertProjection[\s\S]*graphControlShape\(\{[\s\S]*instances:\s*sourceInstances,[\s\S]*edges:\s*sourceEdges,[\s\S]*graphView/, "controller quick insertion must derive MobKit-backed Graph control shapes");
+assert.match(controller, /graphQuickInsertProjection[\s\S]*graphMemberInstanceShape\(\{[\s\S]*instances:\s*sourceInstances/, "controller quick insertion must derive MobKit-backed member-instance shapes with current graph IDs");
 assert.match(controller, /function uniqueGraphControlSuffix/, "controller plane must own graph control ID collision handling");
 assert(!/graphControlShape[\s\S]{0,1400}lane:\s*isBranch \? ["']condition["'] : ["']lane 1["']|graphControlShape[\s\S]{0,1800}label:\s*isBranch \? ["']join · branch paths["']/.test(controller), "Graph quick control insertion must not own local lane or join labels");
 assert.match(controller, /function uniqueGraphInstanceId/, "controller plane must own graph member-instance ID collision handling");
@@ -1160,7 +1160,7 @@ assert.match(controller, /graphSegmentsToFlowSteps\(\{[\s\S]*contract,[\s\S]*\}\
 assert.match(app, /effectiveAuthoringFlow[\s\S]*graphToFlow\(\{[\s\S]*instances: studio\.instances,[\s\S]*edges: studio\.edges,[\s\S]*members: studio\.members,[\s\S]*previousFlow: flow,[\s\S]*contract,/, "Graph-mode export/validate/deploy must reconstruct the authoritative flow through the MobKit schema contract");
 assert(!/Math\.random\(\)|Date\.now\(\)/.test(controller), "controller authoring state must not depend on random or wall-clock IDs");
 assert(!/function\s+insertGraphControlShape|function\s+ensureGraphBranchInputParam|launchMode:\s*\{\s*kind:\s*["']Fresh["']\s*\}|dispatch:\s*["']fan_out["']|collection:\s*["']all["']/.test(app), "App shell must not hard-code graph launch/branch/fork semantics");
-assert(!/studio\.setInstances\(current => \[\.\.\.current, \.\.\.\(inserted\.instances \|\| \[\]\)\]\)|studio\.setEdges\(current => \[\.\.\.current, \.\.\.\(inserted\.edges \|\| \[\]\)\]\)/.test(app), "App quick graph insertion must not append graph rows locally");
+assert(!/studioAppendInstancesPatch|studioAppendEdgesPatch|graphControlShape|graphMemberInstanceShape/.test(app), "App quick graph insertion must not assemble or append graph rows locally");
 assert.match(app, /MobKitFlowController\.flowRegistryMarkDraftPatch/, "app shell must mark registry rows draft through the controller plane");
 assert.match(app, /MobKitFlowController\.flowRegistryRememberDocumentPatch/, "app shell must persist document snapshots through the controller plane");
 assert.match(app, /MobKitFlowController\.flowRegistryDocumentPersistence/, "app shell must derive registry persistence signatures and stage transitions through the controller plane");

@@ -8442,6 +8442,56 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function graphQuickInsertProjection({ pick, at, members, instances, edges, flow, contract, graphView = null } = {}) {
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    const sourceEdges = Array.isArray(edges) ? edges : [];
+    const sourceFlow = flow;
+    const kind = String(pick?.kind || "").trim();
+    if (!pick || !at) {
+      return { ok: false, error: "", flow: sourceFlow, instances: sourceInstances, edges: sourceEdges, selectId: "", snap: false };
+    }
+    if (kind === "memberInstance") {
+      const instance = graphMemberInstanceShape({
+        memberId: pick.memberId,
+        at,
+        instances: sourceInstances,
+        contract,
+      });
+      const next = studioAddInstancePatch({ instances: sourceInstances, members }, instance);
+      if (!next.ok) {
+        return { ok: false, error: next.error, flow: sourceFlow, instances: sourceInstances, edges: sourceEdges, selectId: "", snap: false };
+      }
+      return { ok: true, error: "", flow: sourceFlow, instances: next.instances, edges: sourceEdges, selectId: next.instance?.id || "", snap: true };
+    }
+    if (kind === "gate") {
+      const inserted = graphControlShape({
+        gateKind: pick.gateKind,
+        at,
+        members,
+        instances: sourceInstances,
+        edges: sourceEdges,
+        flow: sourceFlow,
+        contract,
+        graphView,
+      });
+      if (!inserted) {
+        return { ok: false, error: "", flow: sourceFlow, instances: sourceInstances, edges: sourceEdges, selectId: "", snap: false };
+      }
+      const instancesPatch = studioAppendInstancesPatch({ instances: sourceInstances, members }, inserted.instances);
+      const edgesPatch = studioAppendEdgesPatch({ edges: sourceEdges, instances: instancesPatch.instances }, inserted.edges);
+      return {
+        ok: true,
+        error: "",
+        flow: inserted.flow || sourceFlow,
+        instances: instancesPatch.instances,
+        edges: edgesPatch.edges,
+        selectId: inserted.selectId || "",
+        snap: true,
+      };
+    }
+    return { ok: false, error: "", flow: sourceFlow, instances: sourceInstances, edges: sourceEdges, selectId: "", snap: false };
+  }
+
   function flowStepTemplate(pick, contract, options = {}) {
     const kind = String(pick?.kind || "").trim();
     const id = uniqueFlowStepId("s", options.flow);
@@ -9935,6 +9985,7 @@ window.MOBKIT_BOOT = {
     basicStepPickerState,
     graphControlShape,
     graphMemberInstanceShape,
+    graphQuickInsertProjection,
     flowStepTemplate,
     graphFirstConditionPatch,
     graphEdgeConditionOwnerPatch,
@@ -12858,42 +12909,22 @@ function App() {
   };
   const handlePick = (pick) => {
     if (!addAt) return;
-    if (pick.kind === "memberInstance") {
-      const instance = window.MobKitFlowController.graphMemberInstanceShape({
-        memberId: pick.memberId,
-        at: addAt,
-        instances: studio.instances,
-        contract
-      });
-      if (instance) {
-        studio.addInstance(instance);
-        selectInstance(instance.id);
-      }
-    }
-    if (pick.kind === "gate") {
-      const inserted = window.MobKitFlowController.graphControlShape({
-        gateKind: pick.gateKind,
-        at: addAt,
-        members: studio.members,
-        instances: studio.instances,
-        edges: studio.edges,
-        flow,
-        contract,
-        graphView: catalogs.graphView
-      });
-      if (inserted) {
-        studio.snap();
-        if (inserted.flow && inserted.flow !== flow) setAuthoringFlow(inserted.flow);
-        studio.setInstances((current) => window.MobKitFlowController.studioAppendInstancesPatch({
-          instances: current,
-          members: studio.members
-        }, inserted.instances).instances);
-        studio.setEdges((current) => window.MobKitFlowController.studioAppendEdgesPatch({
-          edges: current,
-          instances: [...studio.instances, ...inserted.instances]
-        }, inserted.edges).edges);
-        if (inserted.selectId) selectInstance(inserted.selectId);
-      }
+    const inserted = window.MobKitFlowController.graphQuickInsertProjection({
+      pick,
+      at: addAt,
+      members: studio.members,
+      instances: studio.instances,
+      edges: studio.edges,
+      flow,
+      contract,
+      graphView: catalogs.graphView
+    });
+    if (inserted.ok) {
+      if (inserted.snap) studio.snap();
+      if (inserted.flow !== flow) setAuthoringFlow(inserted.flow);
+      if (inserted.instances !== studio.instances) studio.setInstances(inserted.instances);
+      if (inserted.edges !== studio.edges) studio.setEdges(inserted.edges);
+      if (inserted.selectId) selectInstance(inserted.selectId);
     }
     setAddAt(null);
   };
