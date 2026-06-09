@@ -1151,6 +1151,7 @@ const hydratedContractAndCatalogFixture = {
       delete_label: "DELETE",
       delete_confirm_intro: "Delete agent",
       delete_confirm_placed_prefix: "It is placed in",
+      delete_cancel_label: "CANCEL",
       cell_singular: "cell",
       cell_plural: "cells",
       delete_confirm_cells_suffix: "those nodes will be removed.",
@@ -1621,6 +1622,7 @@ assert.deepEqual(hydratedCatalogs.agentDetailView, {
   deleteLabel: "DELETE",
   deleteConfirmIntro: "Delete agent",
   deleteConfirmPlacedPrefix: "It is placed in",
+  deleteCancelLabel: "CANCEL",
   cellSingular: "cell",
   cellPlural: "cells",
   deleteConfirmCellsSuffix: "those nodes will be removed.",
@@ -4949,6 +4951,7 @@ const agentEditorState = controller.agentEditorControlState({
     deleteLabel: "REMOVE",
     deleteConfirmIntro: "Remove agent",
     deleteConfirmPlacedPrefix: "It appears in",
+    deleteCancelLabel: "KEEP",
     cellSingular: "cell",
     cellPlural: "cells",
     deleteConfirmCellsSuffix: "graph placements will be removed.",
@@ -5015,8 +5018,23 @@ assert.equal(agentEditorState.placedAt.length, 2);
 assert.equal(agentEditorState.placedCount, 2);
 assert.equal(agentEditorState.idLine, "m_reviewer · placed in 2 slots");
 assert.equal(agentEditorState.deleteLabel, "REMOVE");
+assert.equal(agentEditorState.deleteCancelLabel, "KEEP");
 assert.equal(agentEditorState.deleteNeedsConfirmation, true);
 assert.equal(agentEditorState.deleteConfirmMessage, "Remove agent \"Reviewer\"? It appears in 2 cells - graph placements will be removed.");
+assert.deepEqual(controller.agentDeleteConfirmationState(agentEditorState, false), {
+  open: false,
+  needsConfirmation: true,
+  message: "Remove agent \"Reviewer\"? It appears in 2 cells - graph placements will be removed.",
+  confirmLabel: "REMOVE",
+  cancelLabel: "KEEP",
+});
+assert.deepEqual(controller.agentDeleteConfirmationState(agentEditorState, true), {
+  open: true,
+  needsConfirmation: true,
+  message: "Remove agent \"Reviewer\"? It appears in 2 cells - graph placements will be removed.",
+  confirmLabel: "REMOVE",
+  cancelLabel: "KEEP",
+});
 assert.equal(agentEditorState.usageTitle, "PLACEMENTS · 2");
 assert.equal(agentEditorState.emptyUsageHint, "No graph placements.");
 assert.equal(agentEditorState.eyebrow, "PROFILE · reviewer");

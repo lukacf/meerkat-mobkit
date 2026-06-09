@@ -1568,6 +1568,24 @@ a.node {
   border-bottom: 1px solid var(--hair);
 }
 .agent-editor__head .row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.agent-editor__confirm {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-radius: var(--r-xs);
+  background: color-mix(in oklab, var(--warn) 10%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink);
+}
+.agent-editor__confirm span {
+  flex: 1;
+  min-width: 0;
+}
 .agent-editor__title-input {
   display: block;
   font-size: 28px; font-weight: 500; letter-spacing: -0.02em;

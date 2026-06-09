@@ -839,6 +839,7 @@
       deleteLabel: String(view.delete_label || "").trim(),
       deleteConfirmIntro: String(view.delete_confirm_intro || "").trim(),
       deleteConfirmPlacedPrefix: String(view.delete_confirm_placed_prefix || "").trim(),
+      deleteCancelLabel: String(view.delete_cancel_label || "").trim(),
       cellSingular: String(view.cell_singular || "").trim(),
       cellPlural: String(view.cell_plural || "").trim(),
       deleteConfirmCellsSuffix: String(view.delete_confirm_cells_suffix || "").trim(),
@@ -886,7 +887,7 @@
       sourceSkillsLabel: String(view.source_skills_label || "").trim(),
     };
     return out.usedInLabel && out.instanceSingular && out.instancePlural && out.deleteLabel
-      && out.deleteConfirmIntro && out.deleteConfirmPlacedPrefix && out.cellSingular && out.cellPlural
+      && out.deleteConfirmIntro && out.deleteConfirmPlacedPrefix && out.deleteCancelLabel && out.cellSingular && out.cellPlural
       && out.deleteConfirmCellsSuffix && out.usageTitlePrefix
       && out.emptyUsageHint && out.agentEyebrowPrefix && out.identityTitle && out.profileBindingLabel && out.missingProfileBindingLabel
       && out.realmProfileLabel && out.realmProfilePlaceholder && out.realmProfileImportHintFallback
@@ -914,6 +915,7 @@
       deleteLabel: String(view?.deleteLabel || ""),
       deleteConfirmIntro: String(view?.deleteConfirmIntro || ""),
       deleteConfirmPlacedPrefix: String(view?.deleteConfirmPlacedPrefix || ""),
+      deleteCancelLabel: String(view?.deleteCancelLabel || ""),
       cellSingular: String(view?.cellSingular || ""),
       cellPlural: String(view?.cellPlural || ""),
       deleteConfirmCellsSuffix: String(view?.deleteConfirmCellsSuffix || ""),
@@ -2043,6 +2045,7 @@
       eyebrow: [view.agentEyebrowPrefix, member?.role || ""].filter(Boolean).join(" · "),
       idLine: `${member?.id || ""} · ${view.usedInLabel} ${placedCount} ${instanceNoun}`,
       deleteLabel: view.deleteLabel,
+      deleteCancelLabel: view.deleteCancelLabel,
       deleteNeedsConfirmation: placedCount > 0,
       deleteConfirmMessage: placedCount > 0
         ? `${view.deleteConfirmIntro} "${memberName}"? ${view.deleteConfirmPlacedPrefix} ${placedCount} ${cellNoun} - ${view.deleteConfirmCellsSuffix}`
@@ -2095,6 +2098,17 @@
       emptySchemaHint: view.emptySchemaHint,
       modelOptions,
       sourceProvenance: agentSourceProvenanceState(member, agentDetailView),
+    };
+  }
+
+  function agentDeleteConfirmationState(editorState, open = false) {
+    const needsConfirmation = !!editorState?.deleteNeedsConfirmation;
+    return {
+      open: needsConfirmation && !!open,
+      needsConfirmation,
+      message: String(editorState?.deleteConfirmMessage || ""),
+      confirmLabel: String(editorState?.deleteLabel || ""),
+      cancelLabel: String(editorState?.deleteCancelLabel || ""),
     };
   }
 
@@ -11674,6 +11688,7 @@
     cloneDocument,
     agentDefinitionsFromCatalogs,
     agentDefinitionCatalogState,
+    agentDeleteConfirmationState,
     memberFromAgentDefinition,
     agentDefinitionAddPatch,
     agentDefinitionAddByIdPatch,

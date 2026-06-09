@@ -207,6 +207,10 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
 // ── Agent editor ────────────────────────────────────────────────────
 function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDetailView = null, agentAccessView = null }) {
   const [memberEditError, setMemberEditError] = React.useState("");
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
+  React.useEffect(() => {
+    setDeleteConfirmOpen(false);
+  }, [member.id]);
   const change = (patch) => {
     if (!patch || typeof patch !== "object" || !Object.keys(patch).length) return;
     const result = window.MobKitFlowController.memberUpdateCascadePatch({
@@ -295,6 +299,26 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     if (result.edges !== studio.edges) studio.setEdges(result.edges);
     setSchemaChangeResult(null);
   };
+  const deleteConfirmState = window.MobKitFlowController.agentDeleteConfirmationState(editorState, deleteConfirmOpen);
+  const deleteMember = () => {
+    const result = window.MobKitFlowController.memberDeleteCascadePatch({
+      memberId: member.id,
+      members: studio.members,
+      instances: studio.instances,
+      edges: studio.edges,
+      flow,
+      mobSettings,
+    });
+    if (!result.ok) return;
+    if (studio.snap) studio.snap();
+    studio.setMembers(result.members);
+    studio.setInstances(result.instances);
+    studio.setEdges(result.edges);
+    if (setFlow) setFlow(result.flow);
+    if (setMobSettings) setMobSettings(result.mobSettings);
+    setAgentSel(result.selection);
+    setDeleteConfirmOpen(false);
+  };
 
   return (
     <div className="agent-editor">
@@ -311,27 +335,20 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
             {memberEditError && <div className="hint__line" style={{ color: "var(--danger)" }}>{memberEditError}</div>}
           </div>
           <button className="btn btn--ghost btn--sm" onClick={() => {
-            if (editorState.deleteNeedsConfirmation) {
-              if (!confirm(editorState.deleteConfirmMessage)) return;
+            if (deleteConfirmState.needsConfirmation) {
+              setDeleteConfirmOpen(true);
+              return;
             }
-            const result = window.MobKitFlowController.memberDeleteCascadePatch({
-              memberId: member.id,
-              members: studio.members,
-              instances: studio.instances,
-              edges: studio.edges,
-              flow,
-              mobSettings,
-            });
-            if (!result.ok) return;
-            if (studio.snap) studio.snap();
-            studio.setMembers(result.members);
-            studio.setInstances(result.instances);
-            studio.setEdges(result.edges);
-            if (setFlow) setFlow(result.flow);
-            if (setMobSettings) setMobSettings(result.mobSettings);
-            setAgentSel(result.selection);
+            deleteMember();
           }}>{editorState.deleteLabel}</button>
         </div>
+        {deleteConfirmState.open && (
+          <div className="agent-editor__confirm">
+            <span>{deleteConfirmState.message}</span>
+            <button className="btn btn--ghost btn--sm" onClick={() => setDeleteConfirmOpen(false)}>{deleteConfirmState.cancelLabel}</button>
+            <button className="btn btn--primary btn--sm" onClick={deleteMember}>{deleteConfirmState.confirmLabel}</button>
+          </div>
+        )}
       </div>
 
       <div className="agent-editor__body">

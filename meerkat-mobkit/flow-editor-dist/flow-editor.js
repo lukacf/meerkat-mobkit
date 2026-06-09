@@ -872,6 +872,7 @@ window.MOBKIT_BOOT = {
       deleteLabel: String(view.delete_label || "").trim(),
       deleteConfirmIntro: String(view.delete_confirm_intro || "").trim(),
       deleteConfirmPlacedPrefix: String(view.delete_confirm_placed_prefix || "").trim(),
+      deleteCancelLabel: String(view.delete_cancel_label || "").trim(),
       cellSingular: String(view.cell_singular || "").trim(),
       cellPlural: String(view.cell_plural || "").trim(),
       deleteConfirmCellsSuffix: String(view.delete_confirm_cells_suffix || "").trim(),
@@ -919,7 +920,7 @@ window.MOBKIT_BOOT = {
       sourceSkillsLabel: String(view.source_skills_label || "").trim(),
     };
     return out.usedInLabel && out.instanceSingular && out.instancePlural && out.deleteLabel
-      && out.deleteConfirmIntro && out.deleteConfirmPlacedPrefix && out.cellSingular && out.cellPlural
+      && out.deleteConfirmIntro && out.deleteConfirmPlacedPrefix && out.deleteCancelLabel && out.cellSingular && out.cellPlural
       && out.deleteConfirmCellsSuffix && out.usageTitlePrefix
       && out.emptyUsageHint && out.agentEyebrowPrefix && out.identityTitle && out.profileBindingLabel && out.missingProfileBindingLabel
       && out.realmProfileLabel && out.realmProfilePlaceholder && out.realmProfileImportHintFallback
@@ -947,6 +948,7 @@ window.MOBKIT_BOOT = {
       deleteLabel: String(view?.deleteLabel || ""),
       deleteConfirmIntro: String(view?.deleteConfirmIntro || ""),
       deleteConfirmPlacedPrefix: String(view?.deleteConfirmPlacedPrefix || ""),
+      deleteCancelLabel: String(view?.deleteCancelLabel || ""),
       cellSingular: String(view?.cellSingular || ""),
       cellPlural: String(view?.cellPlural || ""),
       deleteConfirmCellsSuffix: String(view?.deleteConfirmCellsSuffix || ""),
@@ -2076,6 +2078,7 @@ window.MOBKIT_BOOT = {
       eyebrow: [view.agentEyebrowPrefix, member?.role || ""].filter(Boolean).join(" · "),
       idLine: `${member?.id || ""} · ${view.usedInLabel} ${placedCount} ${instanceNoun}`,
       deleteLabel: view.deleteLabel,
+      deleteCancelLabel: view.deleteCancelLabel,
       deleteNeedsConfirmation: placedCount > 0,
       deleteConfirmMessage: placedCount > 0
         ? `${view.deleteConfirmIntro} "${memberName}"? ${view.deleteConfirmPlacedPrefix} ${placedCount} ${cellNoun} - ${view.deleteConfirmCellsSuffix}`
@@ -2128,6 +2131,17 @@ window.MOBKIT_BOOT = {
       emptySchemaHint: view.emptySchemaHint,
       modelOptions,
       sourceProvenance: agentSourceProvenanceState(member, agentDetailView),
+    };
+  }
+
+  function agentDeleteConfirmationState(editorState, open = false) {
+    const needsConfirmation = !!editorState?.deleteNeedsConfirmation;
+    return {
+      open: needsConfirmation && !!open,
+      needsConfirmation,
+      message: String(editorState?.deleteConfirmMessage || ""),
+      confirmLabel: String(editorState?.deleteLabel || ""),
+      cancelLabel: String(editorState?.deleteCancelLabel || ""),
     };
   }
 
@@ -11707,6 +11721,7 @@ window.MOBKIT_BOOT = {
     cloneDocument,
     agentDefinitionsFromCatalogs,
     agentDefinitionCatalogState,
+    agentDeleteConfirmationState,
     memberFromAgentDefinition,
     agentDefinitionAddPatch,
     agentDefinitionAddByIdPatch,
@@ -13186,6 +13201,10 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
 }
 function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDetailView = null, agentAccessView = null }) {
   const [memberEditError, setMemberEditError] = React.useState("");
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
+  React.useEffect(() => {
+    setDeleteConfirmOpen(false);
+  }, [member.id]);
   const change = (patch) => {
     if (!patch || typeof patch !== "object" || !Object.keys(patch).length) return;
     const result = window.MobKitFlowController.memberUpdateCascadePatch({
@@ -13274,17 +13293,8 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     if (result.edges !== studio.edges) studio.setEdges(result.edges);
     setSchemaChangeResult(null);
   };
-  return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.eyebrow), /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "agent-editor__title-input",
-      value: member.name,
-      onChange: (e) => change(window.MobKitFlowController.memberNamePatch(e.target.value))
-    }
-  ), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.idLine), memberEditError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, memberEditError)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
-    if (editorState.deleteNeedsConfirmation) {
-      if (!confirm(editorState.deleteConfirmMessage)) return;
-    }
+  const deleteConfirmState = window.MobKitFlowController.agentDeleteConfirmationState(editorState, deleteConfirmOpen);
+  const deleteMember = () => {
     const result = window.MobKitFlowController.memberDeleteCascadePatch({
       memberId: member.id,
       members: studio.members,
@@ -13301,7 +13311,22 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     if (setFlow) setFlow(result.flow);
     if (setMobSettings) setMobSettings(result.mobSettings);
     setAgentSel(result.selection);
-  } }, editorState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__body" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__cols" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__col" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.identityTitle), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.profileBindingLabel), /* @__PURE__ */ React.createElement(
+    setDeleteConfirmOpen(false);
+  };
+  return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.eyebrow), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "agent-editor__title-input",
+      value: member.name,
+      onChange: (e) => change(window.MobKitFlowController.memberNamePatch(e.target.value))
+    }
+  ), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.idLine), memberEditError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, memberEditError)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
+    if (deleteConfirmState.needsConfirmation) {
+      setDeleteConfirmOpen(true);
+      return;
+    }
+    deleteMember();
+  } }, editorState.deleteLabel)), deleteConfirmState.open && /* @__PURE__ */ React.createElement("div", { className: "agent-editor__confirm" }, /* @__PURE__ */ React.createElement("span", null, deleteConfirmState.message), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setDeleteConfirmOpen(false) }, deleteConfirmState.cancelLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: deleteMember }, deleteConfirmState.confirmLabel))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__body" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__cols" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__col" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.identityTitle), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.profileBindingLabel), /* @__PURE__ */ React.createElement(
     "select",
     {
       className: "field__select",

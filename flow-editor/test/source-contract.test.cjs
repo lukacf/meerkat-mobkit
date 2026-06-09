@@ -1299,7 +1299,10 @@ assert.match(addAgentControlBlock, /MobKitFlowController\.agentDefinitionAddById
 assert.match(agentsMainBlock, /MobKitFlowController\.agentSelectionState/, "Agent main pane must resolve selected agents/schemas through the controller plane");
 assert.match(agentEditorBlock, /MobKitFlowController\.agentEditorControlState/, "Agent detail pane must render profile/runtime/backend/schema/usage state through the controller plane");
 assert.match(agentEditorBlock, /agentEditorControlState\(\{[\s\S]*agentDetailView/, "Agent detail pane must pass schema-backed view state into controller projection");
-assert.match(agentEditorBlock, /editorState\.deleteConfirmMessage/, "Agent detail pane must use controller-projected delete confirmation copy");
+assert.match(agentEditorBlock, /MobKitFlowController\.agentDeleteConfirmationState\(editorState,\s*deleteConfirmOpen\)/, "Agent detail pane must render delete confirmation through controller-projected state");
+assert.match(agentEditorBlock, /deleteConfirmState\.message/, "Agent detail pane must use controller-projected delete confirmation copy");
+assert.match(agentEditorBlock, /deleteConfirmState\.cancelLabel/, "Agent detail pane must use controller-projected delete cancel copy");
+assert(!/confirm\(/.test(agentEditorBlock), "Agent detail pane must not use browser-native confirm for destructive MobKit model edits");
 assert.match(agentEditorBlock, /editorState\.usageTitle/, "Agent detail pane must use controller-projected usage title");
 assert.match(agentEditorBlock, /editorState\.identityTitle/, "Agent detail pane must use controller-projected identity title");
 assert.match(agentEditorBlock, /editorState\.profileBindingLabel/, "Agent detail pane must use controller-projected profile binding label");
@@ -1339,6 +1342,7 @@ assert.match(controller, /function agentEditorControlState/, "controller plane m
 assert.match(controller, /backendDefinitionDefaultLabel:\s*String\(view\.backend_definition_default_label/, "controller plane must hydrate Agent backend default label from MobKit schema");
 assert.match(controller, /profileBackendOptions\([\s\S]*view\.backendDefinitionDefaultLabel/, "Agent backend default option must render through schema-backed Agent detail view state");
 assert(!/definition default/.test(controller), "controller plane must not keep Agent backend default copy as a local literal");
+assert.match(controller, /function agentDeleteConfirmationState/, "controller plane must own Agent delete confirmation render state");
 assert.match(controller, /deleteConfirmMessage/, "controller plane must own Agent delete confirmation semantics");
 assert.match(controller, /systemPromptPlaceholder/, "controller plane must own Agent detail presentation labels and placeholders");
 assert.match(controller, /schemaPreviewRows/, "controller plane must own Agent output-schema preview row projection");
