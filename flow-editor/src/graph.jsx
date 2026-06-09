@@ -77,12 +77,12 @@ function useStudioState(initial, onDirty, authoring = {}) {
   // Mutations (each takes a snapshot)
   const addMember = (m) => {
     snap();
-    const next = window.MobKitFlowController.studioAddMemberPatch({ members }, m);
+    const next = window.MobKitFlowController.studioAddMemberPatch({ members, contract: authoring.contract }, m);
     setMembers(next.members);
   };
   const updateMember = (id, patch) => {
     snap();
-    const next = window.MobKitFlowController.studioUpdateMemberPatch({ members }, id, patch);
+    const next = window.MobKitFlowController.studioUpdateMemberPatch({ members, contract: authoring.contract }, id, patch);
     setMembers(next.members);
   };
   const deleteMember = (id) => {

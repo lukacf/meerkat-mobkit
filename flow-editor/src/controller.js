@@ -3898,7 +3898,7 @@
     return { field, patch: { fields: [...fields, field] } };
   }
 
-  function directMemberAddValidation(member, members = []) {
+  function directMemberAddValidation(member, members = [], contract = null) {
     if (!member || typeof member !== "object") {
       return { ok: false, error: "member must be an object" };
     }
@@ -3913,11 +3913,17 @@
     if ((Array.isArray(members) ? members : []).some((candidate) => String(candidate?.id || "").trim() === id)) {
       return { ok: false, error: "member id already exists" };
     }
+    if (!deployableInlineProfileBindingAllowed(contract)) {
+      return { ok: false, error: "MobKit schema contract must allow deployable inline profileBinding" };
+    }
     if (profileBinding !== "inline") {
       return { ok: false, error: "direct member adds must use an inline deployable profileBinding" };
     }
     if (!runtimeMode) {
       return { ok: false, error: "member must include runtimeMode" };
+    }
+    if (!contractStringValues(contract?.mob_definition?.runtime_modes).includes(runtimeMode)) {
+      return { ok: false, error: "member runtimeMode must be allowed by mob_definition.runtime_modes" };
     }
     if (!model) {
       return { ok: false, error: "inline member definitions must include a model" };
@@ -3925,22 +3931,22 @@
     return { ok: true, error: "" };
   }
 
-  function studioAddMemberPatch({ members } = {}, member) {
+  function studioAddMemberPatch({ members, contract } = {}, member) {
     const list = Array.isArray(members) ? members : [];
-    const validation = directMemberAddValidation(member, list);
+    const validation = directMemberAddValidation(member, list, contract);
     if (!validation.ok) {
       return { ok: false, error: validation.error, members: list, member: null };
     }
     return { ok: true, error: "", members: [...list, member], member };
   }
 
-  function studioUpdateMemberPatch({ members } = {}, id, patch = {}) {
+  function studioUpdateMemberPatch({ members, contract } = {}, id, patch = {}) {
     const target = String(id || "");
     const list = Array.isArray(members) ? members : [];
     const current = list.find((member) => member?.id === target) || null;
     if (!current) return { ok: false, error: "member not found", members: list };
     const nextMember = { ...current, ...(patch && typeof patch === "object" ? patch : {}) };
-    const validation = memberUpdateValidation(current, nextMember, patch);
+    const validation = memberUpdateValidation(current, nextMember, patch, contract);
     if (!validation.ok) {
       return { ok: false, error: validation.error, members: list };
     }
@@ -3952,7 +3958,7 @@
     };
   }
 
-  function memberUpdateValidation(current, nextMember, patch = {}) {
+  function memberUpdateValidation(current, nextMember, patch = {}, contract = null) {
     const touched = patch && typeof patch === "object" ? new Set(Object.keys(patch)) : new Set();
     const exportCritical = [
       "id",
@@ -3979,6 +3985,10 @@
     const binding = String(nextMember.profileBinding || nextMember.profile_binding || "").trim();
     const runtimeMode = String(nextMember.runtimeMode || nextMember.runtime_mode || "").trim();
     const model = String(nextMember.model || "").trim();
+    if ((touched.has("profileBinding") || touched.has("profile_binding") || touched.has("runtimeMode") || touched.has("runtime_mode"))
+      && !deployableInlineProfileBindingAllowed(contract)) {
+      return { ok: false, error: "MobKit schema contract must allow deployable inline profileBinding" };
+    }
     if (binding && binding !== "inline") {
       return { ok: false, error: "member updates must keep deployable inline profileBinding" };
     }
@@ -3988,8 +3998,9 @@
     if (!runtimeMode && (touched.has("runtimeMode") || touched.has("runtime_mode"))) {
       return { ok: false, error: "member updates must keep runtimeMode explicit" };
     }
-    if ((touched.has("runtimeMode") || touched.has("runtime_mode")) && !knownMobKitRuntimeMode(runtimeMode)) {
-      return { ok: false, error: "member updates must use a MobKit runtime_mode value" };
+    if ((touched.has("runtimeMode") || touched.has("runtime_mode"))
+      && !contractStringValues(contract?.mob_definition?.runtime_modes).includes(runtimeMode)) {
+      return { ok: false, error: "member updates must use a mob_definition.runtime_modes value" };
     }
     if ((binding || current?.profileBinding === "inline" || current?.profile_binding === "inline") && !model && touched.has("model")) {
       return { ok: false, error: "inline member updates must keep a model" };
@@ -4012,8 +4023,10 @@
     return { ok: true, error: "" };
   }
 
-  function knownMobKitRuntimeMode(runtimeMode) {
-    return runtimeMode === "turn_driven" || runtimeMode === "autonomous_host";
+  function deployableInlineProfileBindingAllowed(contract) {
+    const bindings = contractStringValues(contract?.mob_definition?.profile_binding);
+    const restriction = profileBindingRestriction(contract, "inline");
+    return bindings.includes("inline") && restriction.deployable !== false;
   }
 
   function stringListPatchValueIsValid(value) {

@@ -4627,6 +4627,16 @@ assert.equal(renamedSchemaFieldCascade.flow.steps[1].branches[0].condition, "ste
 assert.deepEqual(renamedSchemaFieldCascade.edges[0].cond, { var: "steps.review_inst.outcome", op: "==", val: "green" });
 assert.equal(renamedSchemaFieldCascade.edges[0].label, "steps.review_inst.outcome == \"green\"");
 
+const directMemberContract = {
+  mob_definition: {
+    profile_binding: ["inline"],
+    profile_binding_restrictions: {
+      inline: { deployable: true },
+    },
+    runtime_modes: ["turn_driven", "autonomous_host"],
+  },
+};
+
 assert.deepEqual(controller.studioAddMemberPatch({
   members: [{ id: "m_old" }],
 }, { id: "m_new" }), {
@@ -4637,6 +4647,7 @@ assert.deepEqual(controller.studioAddMemberPatch({
 });
 assert.deepEqual(controller.studioAddMemberPatch({
   members: [{ id: "m_old" }],
+  contract: directMemberContract,
 }, {
   id: "m_new",
   name: "New",
@@ -4675,6 +4686,7 @@ assert.deepEqual(controller.studioAddMemberPatch({
 });
 assert.deepEqual(controller.studioAddMemberPatch({
   members: [{ id: "m_old" }],
+  contract: directMemberContract,
 }, {
   id: "m_old",
   name: "Duplicate",
@@ -4685,6 +4697,43 @@ assert.deepEqual(controller.studioAddMemberPatch({
 }), {
   ok: false,
   error: "member id already exists",
+  members: [{ id: "m_old" }],
+  member: null,
+});
+assert.deepEqual(controller.studioAddMemberPatch({
+  members: [{ id: "m_old" }],
+}, {
+  id: "m_new",
+  name: "New",
+  role: "new",
+  model: "gpt-5.5",
+  profileBinding: "inline",
+  runtimeMode: "turn_driven",
+}), {
+  ok: false,
+  error: "MobKit schema contract must allow deployable inline profileBinding",
+  members: [{ id: "m_old" }],
+  member: null,
+});
+assert.deepEqual(controller.studioAddMemberPatch({
+  members: [{ id: "m_old" }],
+  contract: {
+    mob_definition: {
+      profile_binding: ["inline"],
+      profile_binding_restrictions: { inline: { deployable: true } },
+      runtime_modes: ["turn_driven"],
+    },
+  },
+}, {
+  id: "m_new",
+  name: "New",
+  role: "new",
+  model: "gpt-5.5",
+  profileBinding: "inline",
+  runtimeMode: "autonomous_host",
+}), {
+  ok: false,
+  error: "member runtimeMode must be allowed by mob_definition.runtime_modes",
   members: [{ id: "m_old" }],
   member: null,
 });
@@ -4705,6 +4754,7 @@ assert.deepEqual(controller.studioUpdateMemberPatch({
 });
 assert.deepEqual(controller.studioUpdateMemberPatch({
   members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
+  contract: directMemberContract,
 }, "m_real", { model: "" }), {
   ok: false,
   error: "inline member updates must keep a model",
@@ -4712,6 +4762,7 @@ assert.deepEqual(controller.studioUpdateMemberPatch({
 });
 assert.deepEqual(controller.studioUpdateMemberPatch({
   members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
+  contract: directMemberContract,
 }, "m_real", { profileBinding: "realm_profile" }), {
   ok: false,
   error: "member updates must keep deployable inline profileBinding",
@@ -4719,13 +4770,22 @@ assert.deepEqual(controller.studioUpdateMemberPatch({
 });
 assert.deepEqual(controller.studioUpdateMemberPatch({
   members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
+  contract: directMemberContract,
 }, "m_real", { runtimeMode: "daemon" }), {
   ok: false,
-  error: "member updates must use a MobKit runtime_mode value",
+  error: "member updates must use a mob_definition.runtime_modes value",
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
+});
+assert.deepEqual(controller.studioUpdateMemberPatch({
+  members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
+}, "m_real", { runtimeMode: "turn_driven" }), {
+  ok: false,
+  error: "MobKit schema contract must allow deployable inline profileBinding",
   members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
 });
 assert.equal(controller.studioUpdateMemberPatch({
   members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven" }],
+  contract: directMemberContract,
 }, "m_real", { runtimeMode: "autonomous_host" }).ok, true);
 assert.deepEqual(controller.studioUpdateMemberPatch({
   members: [{ id: "m_real", name: "Real", role: "real", model: "gpt-5.5", profileBinding: "inline", runtimeMode: "turn_driven", tools: [] }],

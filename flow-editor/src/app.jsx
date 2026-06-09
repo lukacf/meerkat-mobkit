@@ -95,6 +95,7 @@ function App() {
   }, markDraft, {
     flow,
     setFlow: setAuthoringFlow,
+    contract,
   });
   const setAuthoringDeploySettings = React.useCallback((next) => {
     markDraft();
