@@ -7230,15 +7230,14 @@
 
   function normalizeBudgetSplitPolicy(policy) {
     if (!policy || typeof policy !== "object") return null;
-    const rawKind = String(policy.kind || policy.type || "").trim().toLowerCase();
+    const rawKind = String(policy.kind || policy.type || "").trim();
     if (!rawKind) return null;
-    if (rawKind === "fixed") {
+    const kind = canonicalBudgetSplitPolicyKind(rawKind);
+    if (kind === "Fixed") {
       const limit = numberOrNull(policy?.limit ?? policy?.value ?? policy?.tokens);
       return { kind: "Fixed", limit: limit && limit > 0 ? limit : 4096 };
     }
-    if (rawKind === "proportional") return { kind: "Proportional" };
-    if (rawKind === "remaining") return { kind: "Remaining" };
-    return { kind: "Equal" };
+    return { kind };
   }
 
   function canonicalBudgetSplitPolicyKind(value) {

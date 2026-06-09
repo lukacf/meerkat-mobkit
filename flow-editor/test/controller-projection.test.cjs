@@ -484,6 +484,8 @@ assert.equal(controller.normalizeDeploySettings(controller.deployDefaultsFromSch
 assert.equal(controller.mobDefaultsFromSchema(null).backendDefault, "");
 assert.equal(controller.normalizeBudgetSplitPolicy(null), null);
 assert.equal(controller.normalizeBudgetSplitPolicy(undefined), null);
+assert.deepEqual(controller.normalizeBudgetSplitPolicy({ kind: "adaptive_pool" }), { kind: "adaptive_pool" });
+assert.deepEqual(controller.normalizeBudgetSplitPolicy({ type: "AdaptivePool" }), { kind: "AdaptivePool" });
 assert.deepEqual(controller.topRailState({
   contract: null,
   deploySettings: controller.deployDefaultsFromSchema(null),
@@ -7481,6 +7483,18 @@ assert.deepEqual(controller.launchBudgetFixedLimitPatch({
 assert.deepEqual(controller.launchBudgetKindPatch({
   launchMode: { kind: "Fresh", budgetSplitPolicy: { kind: "Fixed", limit: 1024 } },
 }, "lottery", launchControlContract), {});
+assert.deepEqual(controller.launchBudgetKindPatch({
+  launchMode: { kind: "Fresh" },
+}, "adaptive_pool", {
+  mob_definition: {
+    ...launchControlContract.mob_definition,
+    defaults: {
+      ...launchControlContract.mob_definition.defaults,
+      budget_split_policy: "adaptive_pool",
+    },
+    budget_split_policies: ["adaptive_pool"],
+  },
+}), { launchMode: { kind: "Fresh", budgetSplitPolicy: { kind: "adaptive_pool" } } });
 assert.deepEqual(controller.launchBudgetFixedLimitPatch({
   launchMode: { kind: "Fresh" },
 }, 1024, {

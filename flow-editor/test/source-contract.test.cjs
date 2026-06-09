@@ -859,6 +859,8 @@ assert(!/dispatchMode:\s*normalizeDispatchMode\(|collection:\s*normalizeCollecti
 assert(!/budget_split_policy:\s*launchMode\s*\?\s*mobKitBudgetSplitPolicy\(launchMode\.budgetSplitPolicy\)/.test(controller), "launch budget export must not invent equal when a launch mode has no authored budget split policy");
 assert(!/budget_split_policy:\s*null/.test(controller), "launch budget export must omit absent budget_split_policy instead of emitting null");
 assert(!/policy\?\.(?:kind|type)[\s\S]{0,80}["']Equal["']/.test(controller), "budget split normalization must not default absent policy to Equal");
+const normalizeBudgetSplitPolicyBlock = (controller.match(/function\s+normalizeBudgetSplitPolicy[\s\S]*?function\s+canonicalBudgetSplitPolicyKind/) || [""])[0];
+assert(!/return\s*\{\s*kind:\s*["']Equal["']\s*\}/.test(normalizeBudgetSplitPolicyBlock), "budget split normalization must preserve schema-declared policy kinds instead of coercing unknown values to Equal");
 assert.match(controller, /function launchModeControlState/, "controller plane must own shared launch-control display state");
 assert.match(controller, /mob_definition\?\.editor_launch_view/, "controller plane must hydrate launch-control chrome from MobKit schema");
 assert.match(app, /<BuilderView[\s\S]*launchView=\{catalogs\.launchView\}/, "app shell must inject schema-backed launch view into Basic editor");
