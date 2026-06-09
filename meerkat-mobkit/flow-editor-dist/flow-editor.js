@@ -4084,6 +4084,7 @@ window.MOBKIT_BOOT = {
       rpcErrorMeta: String(view.rpc_error_meta || "").trim(),
       authoringOperationFailedHead: String(view.authoring_operation_failed_head || "").trim(),
       authoringOperationMeta: String(view.authoring_operation_meta || "").trim(),
+      authoringOperationFallbackHeads: viewStringMapFromSchema(view.authoring_operation_fallback_heads),
       authoringOperationStaleError: String(view.authoring_operation_stale_error || "").trim(),
       authoringOperationMissingDocumentError: String(view.authoring_operation_missing_document_error || "").trim(),
       exportFailedHead: String(view.export_failed_head || "").trim(),
@@ -4109,6 +4110,9 @@ window.MOBKIT_BOOT = {
       rpcErrorMeta: String(view?.rpcErrorMeta || ""),
       authoringOperationFailedHead: String(view?.authoringOperationFailedHead || ""),
       authoringOperationMeta: String(view?.authoringOperationMeta || ""),
+      authoringOperationFallbackHeads: view?.authoringOperationFallbackHeads && typeof view.authoringOperationFallbackHeads === "object"
+        ? view.authoringOperationFallbackHeads
+        : {},
       authoringOperationStaleError: String(view?.authoringOperationStaleError || ""),
       authoringOperationMissingDocumentError: String(view?.authoringOperationMissingDocumentError || ""),
       exportFailedHead: String(view?.exportFailedHead || ""),
@@ -14440,6 +14444,10 @@ function App() {
     applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
     return outcome;
   }, [applyApiOverlayPatch, catalogs.errorView]);
+  const authoringFailureHead = React.useCallback(
+    (key) => catalogs.errorView.authoringOperationFallbackHeads?.[key] || catalogs.errorView.authoringOperationFailedHead,
+    [catalogs.errorView]
+  );
   const setAuthoringFlow = React.useCallback((next) => {
     markDraft();
     setFlow(next);
@@ -14553,7 +14561,7 @@ function App() {
       studio.setFrames(projection.frames || []);
     }).catch((error) => {
       if (cancelled) return;
-      showAuthoringFailure(error, "MobKit graph projection failed");
+      showAuthoringFailure(error, authoringFailureHead("graph_projection"));
     });
     return () => {
       cancelled = true;
@@ -14569,8 +14577,8 @@ function App() {
       operationType: "sync_graph_to_flow",
       operation: { reason: "advanced_graph_changed" }
     }).then((result) => {
-      if (result?.ok === false) showAuthoringFailure(result, "MobKit graph sync failed");
-    }).catch((error) => showAuthoringFailure(error, "MobKit graph sync failed"));
+      if (result?.ok === false) showAuthoringFailure(result, authoringFailureHead("graph_sync"));
+    }).catch((error) => showAuthoringFailure(error, authoringFailureHead("graph_sync")));
   }, [editorMode, studio.instances, studio.edges, studio.members, flow, contract]);
   React.useEffect(() => {
     const previousMembers = previousMembersRef.current || [];
@@ -14710,13 +14718,13 @@ function App() {
       operation: { pick, cell: addAt }
     }).then((result) => {
       if (result?.ok === false) {
-        showAuthoringFailure(result, "MobKit graph node insert failed");
+        showAuthoringFailure(result, authoringFailureHead("graph_node_insert"));
         return;
       }
       const id = result?.selection?.id;
       if (id) selectInstance(id);
       setAddAt(nextMenu.addAt);
-    }).catch((error) => showAuthoringFailure(error, "MobKit graph node insert failed"));
+    }).catch((error) => showAuthoringFailure(error, authoringFailureHead("graph_node_insert")));
   };
   const handleAgentNavigation = (id) => {
     const next = window.MobKitFlowController.agentNavigationProjection(id);
@@ -14991,7 +14999,7 @@ function App() {
       if (result?.row) {
         setFlows((rows) => window.MobKitFlowController.flowRegistryUpsertRowPatch(rows, result.row));
       }
-    }).catch((error) => showAuthoringFailure(error, "MobKit draft save failed"));
+    }).catch((error) => showAuthoringFailure(error, authoringFailureHead("draft_save")));
   };
   React.useEffect(() => {
     let cancelled = false;
@@ -15345,7 +15353,7 @@ function App() {
         hydratingDocumentRef.current = false;
       });
     }).catch((error) => {
-      showAuthoringFailure(error, "MobKit graph projection failed");
+      showAuthoringFailure(error, authoringFailureHead("graph_projection"));
     });
   };
   const hydrateImportedDocument = (result) => {

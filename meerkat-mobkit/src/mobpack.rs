@@ -1601,6 +1601,12 @@ pub fn mobpack_schema_response() -> Value {
         "rpc_error_meta": "/flow-editor/rpc",
         "authoring_operation_failed_head": "MobKit authoring operation failed",
         "authoring_operation_meta": "MobKit authoring",
+        "authoring_operation_fallback_heads": {
+            "graph_projection": "MobKit graph projection failed",
+            "graph_sync": "MobKit graph sync failed",
+            "graph_node_insert": "MobKit graph node insert failed",
+            "draft_save": "MobKit draft save failed"
+        },
         "authoring_operation_stale_error": "stale authoring operation",
         "authoring_operation_missing_document_error": "MobKit authoring operation did not return a document",
         "export_failed_head": "Export failed",
@@ -28145,6 +28151,10 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_error_view"]["deploy_plan_failed_head"],
             json!("Deploy plan failed")
+        );
+        assert_eq!(
+            mob_definition["editor_error_view"]["authoring_operation_fallback_heads"]["graph_projection"],
+            json!("MobKit graph projection failed")
         );
         assert_eq!(
             mob_definition["editor_error_view"]["missing_editor_flow_meta"],

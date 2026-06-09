@@ -140,6 +140,9 @@ function App() {
     applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
     return outcome;
   }, [applyApiOverlayPatch, catalogs.errorView]);
+  const authoringFailureHead = React.useCallback((key) =>
+    catalogs.errorView.authoringOperationFallbackHeads?.[key] || catalogs.errorView.authoringOperationFailedHead,
+  [catalogs.errorView]);
   const setAuthoringFlow = React.useCallback((next) => {
     markDraft();
     setFlow(next);
@@ -261,7 +264,7 @@ function App() {
       })
       .catch((error) => {
         if (cancelled) return;
-        showAuthoringFailure(error, "MobKit graph projection failed");
+        showAuthoringFailure(error, authoringFailureHead("graph_projection"));
       });
     return () => {
       cancelled = true;
@@ -278,8 +281,8 @@ function App() {
       operationType: "sync_graph_to_flow",
       operation: { reason: "advanced_graph_changed" },
     }).then((result) => {
-      if (result?.ok === false) showAuthoringFailure(result, "MobKit graph sync failed");
-    }).catch((error) => showAuthoringFailure(error, "MobKit graph sync failed"));
+      if (result?.ok === false) showAuthoringFailure(result, authoringFailureHead("graph_sync"));
+    }).catch((error) => showAuthoringFailure(error, authoringFailureHead("graph_sync")));
   }, [editorMode, studio.instances, studio.edges, studio.members, flow, contract]);
 
   React.useEffect(() => {
@@ -428,13 +431,13 @@ function App() {
       operation: { pick, cell: addAt },
     }).then((result) => {
       if (result?.ok === false) {
-        showAuthoringFailure(result, "MobKit graph node insert failed");
+        showAuthoringFailure(result, authoringFailureHead("graph_node_insert"));
         return;
       }
       const id = result?.selection?.id;
       if (id) selectInstance(id);
       setAddAt(nextMenu.addAt);
-    }).catch((error) => showAuthoringFailure(error, "MobKit graph node insert failed"));
+    }).catch((error) => showAuthoringFailure(error, authoringFailureHead("graph_node_insert")));
   };
 
   const handleAgentNavigation = (id) => {
@@ -717,7 +720,7 @@ function App() {
           setFlows((rows) => window.MobKitFlowController.flowRegistryUpsertRowPatch(rows, result.row));
         }
       })
-      .catch((error) => showAuthoringFailure(error, "MobKit draft save failed"));
+      .catch((error) => showAuthoringFailure(error, authoringFailureHead("draft_save")));
   };
   React.useEffect(() => {
     let cancelled = false;
@@ -1087,7 +1090,7 @@ function App() {
         });
       })
       .catch((error) => {
-        showAuthoringFailure(error, "MobKit graph projection failed");
+        showAuthoringFailure(error, authoringFailureHead("graph_projection"));
       });
   };
 

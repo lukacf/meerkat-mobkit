@@ -4051,6 +4051,7 @@
       rpcErrorMeta: String(view.rpc_error_meta || "").trim(),
       authoringOperationFailedHead: String(view.authoring_operation_failed_head || "").trim(),
       authoringOperationMeta: String(view.authoring_operation_meta || "").trim(),
+      authoringOperationFallbackHeads: viewStringMapFromSchema(view.authoring_operation_fallback_heads),
       authoringOperationStaleError: String(view.authoring_operation_stale_error || "").trim(),
       authoringOperationMissingDocumentError: String(view.authoring_operation_missing_document_error || "").trim(),
       exportFailedHead: String(view.export_failed_head || "").trim(),
@@ -4076,6 +4077,9 @@
       rpcErrorMeta: String(view?.rpcErrorMeta || ""),
       authoringOperationFailedHead: String(view?.authoringOperationFailedHead || ""),
       authoringOperationMeta: String(view?.authoringOperationMeta || ""),
+      authoringOperationFallbackHeads: view?.authoringOperationFallbackHeads && typeof view.authoringOperationFallbackHeads === "object"
+        ? view.authoringOperationFallbackHeads
+        : {},
       authoringOperationStaleError: String(view?.authoringOperationStaleError || ""),
       authoringOperationMissingDocumentError: String(view?.authoringOperationMissingDocumentError || ""),
       exportFailedHead: String(view?.exportFailedHead || ""),
