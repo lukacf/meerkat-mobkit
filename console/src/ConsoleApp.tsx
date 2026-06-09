@@ -46,6 +46,7 @@ import {
 import { errorMessage } from "./lib/errors";
 import {
   DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
+  callConsoleRpc,
 } from "./lib/network";
 import {
   CONSOLE_COMMAND_NAMES,
@@ -57,6 +58,9 @@ import { findPaneResizeRoot } from "./lib/pane-resize";
 import { resolveConsoleReadOnlyOverride } from "./lib/read-only-override";
 import { Icon, SpriteSheet } from "./icon";
 import type {
+  ConsoleAccessConfig,
+  ConsoleAccessRule,
+  ConsoleAccessStatus,
   ConsoleActionsUiConfig,
   ConsoleAgent,
   ConsoleExperience,
@@ -69,6 +73,7 @@ import type {
 import { TopologyPanel } from "./panels/TopologyPanel";
 import { TimelinePanel } from "./panels/TimelinePanel";
 import { GatingInboxPanel } from "./panels/GatingInboxPanel";
+import { AccessPanel, type AccessPreviewResult } from "./panels/AccessPanel";
 import { RosterPanel } from "./panels/RosterPanel";
 import { RoutingPanel } from "./panels/RoutingPanel";
 import { LogsPanel } from "./panels/LogsPanel";
@@ -97,6 +102,11 @@ interface ConsoleAppProps {
 
 type RoutingPanelData = ReturnType<typeof buildRoutingSectionView>;
 type GatingPanelData = { pending: unknown[]; audit: unknown[] };
+type AccessPanelData = {
+  status: ConsoleAccessStatus | null;
+  config: ConsoleAccessConfig | null;
+  error: string | null;
+};
 type DockPresetId = "single" | "two_columns" | "two_rows" | "grid";
 
 interface IdentityLog {
@@ -522,6 +532,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [gatingData, setGatingData] = React.useState<GatingPanelData>({
     pending: [],
     audit: [],
+  });
+  const [accessData, setAccessData] = React.useState<AccessPanelData>({
+    status: null,
+    config: null,
+    error: null,
   });
   const [activeActivityPresetId, setActiveActivityPresetId] =
     React.useState("");
@@ -1753,14 +1768,23 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       .filter(
         (kind): kind is NavKind => Boolean(kind) && allowedByRuntime.has(kind),
       );
-    if (configuredVisible.length > 0) return configuredVisible;
+    if (configuredVisible.length > 0) {
+      if (experience?.access?.can_administer === true) {
+        return [...configuredVisible, "access"];
+      }
+      return configuredVisible;
+    }
     const hidden = new Set(
       (sidebarConfig?.hidden_controls || [])
         .map(normalizeNavKind)
         .filter((kind): kind is NavKind => Boolean(kind)),
     );
-    return runtimeControls.filter((kind) => !hidden.has(kind));
-  }, [experience?.console_config?.sidebar, hasMobControlSurface]);
+    const controls = runtimeControls.filter((kind) => !hidden.has(kind));
+    // The Access admin surface is gated server-side per principal, never by
+    // view config: administrators always get it, nobody else ever does.
+    if (experience?.access?.can_administer === true) controls.push("access");
+    return controls;
+  }, [experience?.console_config?.sidebar, experience?.access?.can_administer, hasMobControlSurface]);
 
   // =========================================================================
   // OPEN INITIAL TARGET
@@ -1828,6 +1852,43 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // REFRESH PANEL DATA (inspect, routing, gating)
   // =========================================================================
 
+  const refreshAccessData = React.useCallback(async () => {
+    try {
+      const status = (await callConsoleRpc<ConsoleAccessStatus>(
+        baseUrl,
+        "mobkit/access/status",
+        {},
+      )) || null;
+      let config: ConsoleAccessConfig | null = null;
+      if (status?.available && status?.can_administer) {
+        const result = await callConsoleRpc<{ config?: ConsoleAccessConfig }>(
+          baseUrl,
+          "mobkit/access/get",
+          {},
+        );
+        config = result?.config || null;
+      }
+      setAccessData({ status, config, error: null });
+    } catch (err) {
+      setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+    }
+  }, [baseUrl]);
+
+  const runAccessMutation = React.useCallback(
+    async (method: string, params: Record<string, unknown>) => {
+      try {
+        await callConsoleRpc<unknown>(baseUrl, method, params);
+        setAccessData((current) => ({ ...current, error: null }));
+      } catch (err) {
+        setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+      }
+      await refreshAccessData();
+      // Enforcement may have changed what this caller can see.
+      await loadExperience().catch(() => {});
+    },
+    [baseUrl, refreshAccessData, loadExperience],
+  );
+
   const refreshPanelData = React.useCallback(async () => {
     const openPanels = dock.viewState.panels
       .map((p) => p.target)
@@ -1858,6 +1919,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         }),
       );
     }
+    if (openPanels.some((t) => t.kind === "access")) {
+      await refreshAccessData();
+    }
     if (
       hasMobControlSurface &&
       openPanels.some((t) => t.kind === "gating" || t.kind === "gates")
@@ -1874,7 +1938,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         audit: Array.isArray(audit.entries) ? audit.entries : [],
       });
     }
-  }, [baseUrl, dock.viewState.panels, hasMobControlSurface]);
+  }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData]);
 
   React.useEffect(() => {
     void refreshPanelData().catch(() => {});
@@ -3113,6 +3177,56 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       );
     if (target.kind === "logs")
       return <LogsPanel frames={activityRef.current} />;
+    if (target.kind === "access")
+      return (
+        <AccessPanel
+          status={accessData.status}
+          config={accessData.config}
+          error={accessData.error}
+          readOnly={frontendReadOnly || experience?.console_policy?.read_only === true}
+          agents={agents.map((agent) => ({
+            identity: agent.identity || agent.member_id,
+            label: agent.label,
+          }))}
+          onRefresh={() => void refreshAccessData()}
+          onSetEnabled={(enabled) =>
+            void runAccessMutation("mobkit/access/enable", { enabled })
+          }
+          onSaveAdmins={(admins) => {
+            const config = {
+              ...(accessData.config || {}),
+              admins,
+            };
+            void runAccessMutation("mobkit/access/set", { config });
+          }}
+          onUpsertRule={(rule) =>
+            void runAccessMutation("mobkit/access/rules/upsert", { rule })
+          }
+          onDeleteRule={(id) =>
+            void runAccessMutation("mobkit/access/rules/delete", { id })
+          }
+          onSaveGroup={(name, group) =>
+            void runAccessMutation("mobkit/access/groups/set", { name, group })
+          }
+          onDeleteGroup={(name) =>
+            void runAccessMutation("mobkit/access/groups/delete", { name })
+          }
+          onPreview={async (subject, action, identity) => {
+            try {
+              return (
+                (await callConsoleRpc<AccessPreviewResult>(
+                  baseUrl,
+                  "mobkit/access/preview",
+                  identity ? { subject, action, identity } : { subject, action },
+                )) || null
+              );
+            } catch (err) {
+              setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+              return null;
+            }
+          }}
+        />
+      );
     return <div className="console-panel">Unsupported panel</div>;
   }
 

@@ -102,6 +102,7 @@ pub struct UnifiedRuntimeBuilder {
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
     contact_directory: Option<ContactDirectory>,
     persistent_metadata: Option<Arc<dyn PersistentMetadataStore>>,
+    access_controller: Option<crate::access::AccessController>,
 }
 
 impl UnifiedRuntimeBuilder {
@@ -378,6 +379,25 @@ impl UnifiedRuntimeBuilder {
     pub fn persistent_metadata(mut self, store: Arc<dyn PersistentMetadataStore>) -> Self {
         self.persistent_metadata = Some(store);
         self
+    }
+
+    /// Install a pre-built access controller (ABAC enforcement for the
+    /// console and SSE surfaces). Absent — the default — access control is
+    /// off and every surface behaves exactly as before.
+    pub fn access_controller(mut self, controller: crate::access::AccessController) -> Self {
+        self.access_controller = Some(controller);
+        self
+    }
+
+    /// Enable access control backed by a TOML file (conventionally
+    /// `config/access.toml`). A missing file starts disabled; admin edits
+    /// from the console persist back to the same path.
+    pub fn access_control_file(
+        mut self,
+        path: impl Into<PathBuf>,
+    ) -> Result<Self, crate::access::AccessConfigError> {
+        self.access_controller = Some(crate::access::AccessController::load_or_default(path)?);
+        Ok(self)
     }
 
     // -----------------------------------------------------------------------
@@ -726,6 +746,7 @@ impl UnifiedRuntimeBuilder {
 
         // Set immutable outer fields by rebuilding the struct
         let runtime = UnifiedRuntime {
+            access_controller: self.access_controller,
             post_spawn_hook: self.post_spawn_hook,
             post_reconcile_hook: self.post_reconcile_hook,
             error_hook: self.error_hook,

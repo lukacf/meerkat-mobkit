@@ -8168,3 +8168,46 @@ svg[data-svg=fit],
 .pane__body .composer {
   padding: 10px 16px 12px;
 }
+.access-panel__body {
+  padding-bottom: 12px;
+}
+.access-panel__form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 0 2px;
+}
+.access-panel__form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--ink-dim);
+}
+.access-panel__form input,
+.access-panel__form select {
+  background: var(--bg-elev-2, var(--bg-elev-1));
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+.access-panel__form-actions {
+  display: flex;
+  gap: 8px;
+}
+.access-panel__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.access-panel__chips .chip {
+  cursor: pointer;
+  opacity: 0.55;
+}
+.access-panel__chips .chip.is-active {
+  opacity: 1;
+  outline: 1px solid var(--ok);
+}

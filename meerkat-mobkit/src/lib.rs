@@ -2,6 +2,7 @@
 
 pub mod identity_first;
 
+pub mod access;
 pub mod auth;
 pub mod baseline;
 pub mod blob_store;
@@ -24,6 +25,11 @@ pub mod runtime;
 pub mod types;
 pub mod unified_runtime;
 
+pub use access::{
+    ACCESS_ACTIONS, AccessConfigError, AccessControlConfig, AccessController, AccessDecision,
+    AccessEffect, AccessGroup, AccessPrincipal, AccessResource, AccessRule, AccessView,
+    AgentResourceAttributes, evaluate_access, validate_access_config,
+};
 pub use auth::{
     GATEWAY_PEER_KEY_FILE, GatewayPeerKeyError, GatewayPeerKeys, Jwk, JwksCache, JwksCacheConfig,
     JwksCacheError, JwksDocument, JwtHeaderView, JwtValidationConfig, JwtValidationError,
@@ -81,11 +87,13 @@ pub use http_auth::{auth_middleware, with_auth_layer};
 pub use http_console::{
     ConsoleJsonState, console_frontend_app_js_handler, console_frontend_index_handler,
     console_frontend_router, console_json_handler, console_json_router,
-    console_json_router_with_aggregator, console_json_router_with_runtime,
+    console_json_router_with_aggregator, console_json_router_with_aggregator_and_access,
+    console_json_router_with_runtime,
 };
 pub use http_sse::{
     AgentEventSubscribeFn, MobEventSubscribeFn, agent_event_sse, agent_events_sse_router,
-    mob_events_sse_router, mob_structural_events_sse_router,
+    agent_events_sse_router_with_access, mob_events_sse_router, mob_events_sse_router_with_access,
+    mob_structural_events_sse_router, mob_structural_events_sse_router_with_access,
 };
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,
@@ -123,7 +131,8 @@ pub use runtime::{
     SessionStoreKind, SqliteMetadataStore, SubscribeRequest, SubscribeResponse, SubscribeScope,
     SupervisorReport, TrustedOidcRuntimeConfig, WILDCARD_ROUTE, build_runtime_decision_state,
     evaluate_schedules_at_tick, handle_console_rest_json_route,
-    handle_console_rest_json_route_with_snapshot, materialize_latest_session_rows,
+    handle_console_rest_json_route_with_snapshot,
+    handle_console_rest_json_route_with_snapshot_and_access, materialize_latest_session_rows,
     materialize_live_session_rows, normalize_event_line, route_module_call,
     route_module_call_rpc_json, route_module_call_rpc_subprocess, run_discovered_module_once,
     run_meerkat_baseline_verification_once, run_module_boundary_once,

@@ -70,6 +70,7 @@ struct GatewayRuntimeOptions {
     console_require_app_auth: Option<bool>,
     console_read_only: Option<bool>,
     console_fetch_timeout_ms: Option<u64>,
+    access: Option<meerkat_mobkit::AccessController>,
     demo_llm: bool,
 }
 
@@ -87,6 +88,7 @@ impl Default for GatewayRuntimeOptions {
             console_require_app_auth: None,
             console_read_only: None,
             console_fetch_timeout_ms: None,
+            access: None,
             demo_llm: false,
         }
     }
@@ -399,6 +401,56 @@ group_by = ["labels.console_group", "group"]
     }
 
     #[test]
+    fn gateway_runtime_options_parse_access_config_path() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("access.toml");
+        std::fs::write(
+            &path,
+            r#"
+enabled = true
+admins = ["root@example.test"]
+
+[[rules]]
+id = "everyone-views"
+actions = ["agent.view"]
+"#,
+        )
+        .expect("write access config");
+        let params = json!({
+            "runtime_options": {
+                "access_config_path": path.to_string_lossy()
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+
+        let access = options.access.expect("access controller");
+        assert!(access.enabled());
+        let (config, _) = access.snapshot();
+        assert_eq!(config.admins, vec!["root@example.test".to_string()]);
+        assert_eq!(config.rules.len(), 1);
+    }
+
+    #[test]
+    fn gateway_runtime_options_reject_invalid_access_config() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("access.toml");
+        // Enabled without admins would lock everyone out — must fail closed.
+        std::fs::write(&path, "enabled = true").expect("write access config");
+        let params = json!({
+            "runtime_options": {
+                "access_config_path": path.to_string_lossy()
+            }
+        });
+
+        let err = match parse_gateway_runtime_options(&params, None) {
+            Ok(_) => panic!("invalid access config must be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.contains("access_config_path"), "{err}");
+    }
+
+    #[test]
     fn gateway_runtime_options_can_disable_console_auth_for_local_console() {
         let params = json!({
             "runtime_options": {
@@ -525,6 +577,7 @@ fn parse_gateway_runtime_options(
         "scheduling_files",
         "gating_config_path",
         "auth_config",
+        "access_config_path",
         "console_config_path",
         "console_require_app_auth",
         "console_read_only",
@@ -578,6 +631,15 @@ fn parse_gateway_runtime_options(
     {
         parsed.console_ui = load_console_ui_config_from_path_for_realm(path, None)
             .map_err(|err| format!("runtime_options.console_config_path is invalid: {err}"))?;
+    }
+    if let Some(path) = runtime_options
+        .get("access_config_path")
+        .and_then(Value::as_str)
+    {
+        parsed.access = Some(
+            meerkat_mobkit::AccessController::load_or_default(path)
+                .map_err(|err| format!("runtime_options.access_config_path is invalid: {err}"))?,
+        );
     }
     if let Some(value) = runtime_options.get("console_require_app_auth") {
         parsed.console_require_app_auth = Some(value.as_bool().ok_or_else(|| {
@@ -2002,6 +2064,10 @@ external_addressable = true
 
     if let Some(event_log_config) = gateway_options.event_log.take() {
         runtime.start_event_log(event_log_config);
+    }
+
+    if let Some(access) = gateway_options.access.take() {
+        runtime.set_access_controller(access);
     }
 
     // 5b. Wire error hook — forwards ErrorEvents to Python as JSON-RPC notifications
