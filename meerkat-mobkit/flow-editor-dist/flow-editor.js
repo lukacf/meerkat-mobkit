@@ -1752,9 +1752,15 @@ window.MOBKIT_BOOT = {
       instanceOutputOpenMemberLabel: String(view.instance_output_open_member_label || "").trim(),
       gateEyebrowTemplate: String(view.gate_eyebrow_template || "").trim(),
       gateIdLineTemplate: String(view.gate_id_line_template || "").trim(),
+      gateQuorumIncomingTemplate: String(view.gate_quorum_incoming_template || "").trim(),
+      gateMemberOptionTemplate: String(view.gate_member_option_template || "").trim(),
       terminalEyebrowTemplate: String(view.terminal_eyebrow_template || "").trim(),
       terminalIdLineTemplate: String(view.terminal_id_line_template || "").trim(),
       edgeEyebrowTemplate: String(view.edge_eyebrow_template || "").trim(),
+      edgeTitleTemplate: String(view.edge_title_template || "").trim(),
+      edgeIdLineTemplate: String(view.edge_id_line_template || "").trim(),
+      edgeFieldPlaceholder: String(view.edge_field_placeholder || "").trim(),
+      edgeFieldNoSchemaPlaceholder: String(view.edge_field_no_schema_placeholder || "").trim(),
       gateCollectionTitle: String(view.gate_collection_title || "").trim(),
       gateJoinMemberLabel: String(view.gate_join_member_label || "").trim(),
       gateJoinMemberPlaceholder: String(view.gate_join_member_placeholder || "").trim(),
@@ -1803,7 +1809,10 @@ window.MOBKIT_BOOT = {
       && out.instancePositionTitle && out.instancePositionStageLabel && out.instancePositionSlotLabel
       && out.instanceOutputTitleTemplate && out.instanceOutputRequiredLabel && out.instanceOutputHint
       && out.instanceOutputOpenMemberLabel && out.gateEyebrowTemplate && out.gateIdLineTemplate
+      && out.gateQuorumIncomingTemplate && out.gateMemberOptionTemplate
       && out.terminalEyebrowTemplate && out.terminalIdLineTemplate && out.edgeEyebrowTemplate
+      && out.edgeTitleTemplate && out.edgeIdLineTemplate && out.edgeFieldPlaceholder
+      && out.edgeFieldNoSchemaPlaceholder
       && out.gateCollectionTitle
       && out.gateJoinMemberLabel && out.gateJoinMemberPlaceholder && out.gateJoinMemberHint
       && out.gateDispatchTitle && out.gateDispatchHint && out.gateConditionsTitle
@@ -1878,9 +1887,15 @@ window.MOBKIT_BOOT = {
       instanceOutputOpenMemberLabel: String(view?.instanceOutputOpenMemberLabel || ""),
       gateEyebrowTemplate: String(view?.gateEyebrowTemplate || ""),
       gateIdLineTemplate: String(view?.gateIdLineTemplate || ""),
+      gateQuorumIncomingTemplate: String(view?.gateQuorumIncomingTemplate || ""),
+      gateMemberOptionTemplate: String(view?.gateMemberOptionTemplate || ""),
       terminalEyebrowTemplate: String(view?.terminalEyebrowTemplate || ""),
       terminalIdLineTemplate: String(view?.terminalIdLineTemplate || ""),
       edgeEyebrowTemplate: String(view?.edgeEyebrowTemplate || ""),
+      edgeTitleTemplate: String(view?.edgeTitleTemplate || ""),
+      edgeIdLineTemplate: String(view?.edgeIdLineTemplate || ""),
+      edgeFieldPlaceholder: String(view?.edgeFieldPlaceholder || ""),
+      edgeFieldNoSchemaPlaceholder: String(view?.edgeFieldNoSchemaPlaceholder || ""),
       gateCollectionTitle: String(view?.gateCollectionTitle || ""),
       gateJoinMemberLabel: String(view?.gateJoinMemberLabel || ""),
       gateJoinMemberPlaceholder: String(view?.gateJoinMemberPlaceholder || ""),
@@ -5681,7 +5696,7 @@ window.MOBKIT_BOOT = {
       collection,
       collectionOptions,
       selectedCollection: collectionOptions.find((option) => option.value === collection),
-      quorumIncomingLabel: `of ${incoming.length} incoming`,
+      quorumIncomingLabel: graphTemplateText(view.gateQuorumIncomingTemplate, { count: incoming.length }),
       joinMemberLabel: view.gateJoinMemberLabel,
       joinMemberPlaceholderOption: { value: "", label: view.gateJoinMemberPlaceholder },
       joinMemberHint: view.gateJoinMemberHint,
@@ -5700,7 +5715,11 @@ window.MOBKIT_BOOT = {
         .filter((member) => member?.id)
         .map((member) => ({
           value: member.id,
-          label: `${member.name || member.id} · ${member.role || "profile"}`,
+          label: graphTemplateText(view.gateMemberOptionTemplate, {
+            id: member.id,
+            name: member.name || member.id,
+            role: member.role || "profile",
+          }),
           member,
         })),
       incomingCount: incoming.length,
@@ -5836,8 +5855,11 @@ window.MOBKIT_BOOT = {
       fromMember,
       toMember,
       eyebrow: graphTemplateText(view.edgeEyebrowTemplate, { kind: edgeKind }),
-      title: `${fromMember?.name || fromInstance?.label || view.edgeRowMissingValue} → ${toMember?.name || toInstance?.label || view.edgeRowMissingValue}`,
-      idLine: String(edge?.id || ""),
+      title: graphTemplateText(view.edgeTitleTemplate, {
+        from: fromMember?.name || fromInstance?.label || view.edgeRowMissingValue,
+        to: toMember?.name || toInstance?.label || view.edgeRowMissingValue,
+      }),
+      idLine: graphTemplateText(view.edgeIdLineTemplate, { id: edge?.id || "" }),
       deleteLabel: view.inspectorDeleteLabel,
       kindTitle: view.inspectorKindTitle,
       labelTitle: view.inspectorLabelTitle,
@@ -5873,7 +5895,7 @@ window.MOBKIT_BOOT = {
         field,
       })),
       fieldValue: condRef.field || "",
-      fieldPlaceholder: condOwner ? "— field —" : "(no schema)",
+      fieldPlaceholder: condOwner ? view.edgeFieldPlaceholder : view.edgeFieldNoSchemaPlaceholder,
       defaultOperator,
       operatorValue,
       operatorOptions: conditionOperatorOptions(contract, operatorValue),

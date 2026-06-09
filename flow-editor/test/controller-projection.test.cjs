@@ -1369,9 +1369,15 @@ const hydratedContractAndCatalogFixture = {
       instance_output_open_member_label: "Open member →",
       gate_eyebrow_template: "GATE · {kind}",
       gate_id_line_template: "{id} · cell ({col},{row})",
+      gate_quorum_incoming_template: "of {count} incoming",
+      gate_member_option_template: "{name} · {role}",
       terminal_eyebrow_template: "TERMINAL · {kind}",
       terminal_id_line_template: "{id} · cell ({col},{row})",
       edge_eyebrow_template: "EDGE · {kind}",
+      edge_title_template: "{from} → {to}",
+      edge_id_line_template: "{id}",
+      edge_field_placeholder: "— field —",
+      edge_field_no_schema_placeholder: "(no schema)",
       gate_collection_title: "COLLECTION POLICY",
       gate_join_member_label: "Join member",
       gate_join_member_placeholder: "— select member —",
@@ -1951,9 +1957,15 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   instanceOutputOpenMemberLabel: "Open member →",
   gateEyebrowTemplate: "GATE · {kind}",
   gateIdLineTemplate: "{id} · cell ({col},{row})",
+  gateQuorumIncomingTemplate: "of {count} incoming",
+  gateMemberOptionTemplate: "{name} · {role}",
   terminalEyebrowTemplate: "TERMINAL · {kind}",
   terminalIdLineTemplate: "{id} · cell ({col},{row})",
   edgeEyebrowTemplate: "EDGE · {kind}",
+  edgeTitleTemplate: "{from} → {to}",
+  edgeIdLineTemplate: "{id}",
+  edgeFieldPlaceholder: "— field —",
+  edgeFieldNoSchemaPlaceholder: "(no schema)",
   gateCollectionTitle: "COLLECTION POLICY",
   gateJoinMemberLabel: "Join member",
   gateJoinMemberPlaceholder: "— select member —",
@@ -2027,9 +2039,15 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   instanceOutputOpenMemberLabel: "",
   gateEyebrowTemplate: "",
   gateIdLineTemplate: "",
+  gateQuorumIncomingTemplate: "",
+  gateMemberOptionTemplate: "",
   terminalEyebrowTemplate: "",
   terminalIdLineTemplate: "",
   edgeEyebrowTemplate: "",
+  edgeTitleTemplate: "",
+  edgeIdLineTemplate: "",
+  edgeFieldPlaceholder: "",
+  edgeFieldNoSchemaPlaceholder: "",
   gateCollectionTitle: "",
   gateJoinMemberLabel: "",
   gateJoinMemberPlaceholder: "",
@@ -7000,10 +7018,13 @@ const reskinnedGateState = controller.graphGateControlState({
     ...hydratedCatalogs.graphView,
     gateEyebrowTemplate: "CONTROL {kind}",
     gateIdLineTemplate: "{id} @ {col}/{row}",
+    gateQuorumIncomingTemplate: "{count} upstream wires",
+    gateMemberOptionTemplate: "{role}: {name}",
   },
 });
 assert.equal(reskinnedGateState.eyebrow, "CONTROL join");
 assert.equal(reskinnedGateState.idLine, "join_1 @ 1/1");
+assert.equal(reskinnedGateState.quorumIncomingLabel, "0 upstream wires");
 assert.equal(gateState.dispatchTitle, "DISPATCH MODE");
 assert.equal(gateState.dispatchHint, "Exports as the MobKit parallel flow dispatch mode.");
 assert.equal(gateState.conditionsTitle, "CONDITIONS");
@@ -7022,6 +7043,17 @@ assert.deepEqual(gateState.memberOptions, [{
   label: "m_joiner · profile",
   member: { id: "m_joiner" },
 }]);
+assert.deepEqual(controller.graphGateControlState({
+  id: "join_1",
+  gateKind: "join",
+}, {
+  members: [{ id: "m_joiner", name: "Joiner", role: "arbiter" }],
+  contract: graphShapeContract,
+  graphView: {
+    ...hydratedCatalogs.graphView,
+    gateMemberOptionTemplate: "{role}: {name}",
+  },
+}).memberOptions.map((option) => option.label), ["arbiter: Joiner"]);
 const graphProjectionMembers = [
   { id: "m_writer", name: "Writer", role: "writer", schema: "Draft", tools: ["builtins", "shell", "git", "comms"] },
   { id: "m_review", name: "Reviewer", role: "reviewer", schema: "", tools: [] },
@@ -7637,7 +7669,8 @@ const edgeInspectorState = controller.graphEdgeInspectorState({
 assert.equal(edgeInspectorState.title, "Writer → Reviewer");
 assert.equal(edgeInspectorState.eyebrow, "EDGE · cond");
 assert.equal(edgeInspectorState.idLine, "e_cond");
-assert.equal(controller.graphEdgeInspectorState({
+assert.equal(edgeInspectorState.fieldPlaceholder, "— field —");
+const reskinnedEdgeInspectorState = controller.graphEdgeInspectorState({
   edge: { id: "e_cond", from: "n_writer", to: "n_review", kind: "cond" },
   instances: graphProjectionInstances,
   members: graphProjectionMembers,
@@ -7646,8 +7679,15 @@ assert.equal(controller.graphEdgeInspectorState({
   graphView: {
     ...hydratedCatalogs.graphView,
     edgeEyebrowTemplate: "WIRE {kind}",
+    edgeTitleTemplate: "{from} to {to}",
+    edgeIdLineTemplate: "edge:{id}",
+    edgeFieldNoSchemaPlaceholder: "no fields",
   },
-}).eyebrow, "WIRE cond");
+});
+assert.equal(reskinnedEdgeInspectorState.eyebrow, "WIRE cond");
+assert.equal(reskinnedEdgeInspectorState.title, "Writer to Reviewer");
+assert.equal(reskinnedEdgeInspectorState.idLine, "edge:e_cond");
+assert.equal(reskinnedEdgeInspectorState.fieldPlaceholder, "no fields");
 assert.equal(edgeInspectorState.deleteLabel, "DELETE");
 assert.equal(edgeInspectorState.kindTitle, "KIND");
 assert.equal(edgeInspectorState.labelTitle, "LABEL");

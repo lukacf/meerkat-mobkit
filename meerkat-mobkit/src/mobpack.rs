@@ -868,9 +868,15 @@ pub fn mobpack_schema_response() -> Value {
     editor_graph_view["instance_output_open_member_label"] = json!("Open member →");
     editor_graph_view["gate_eyebrow_template"] = json!("GATE · {kind}");
     editor_graph_view["gate_id_line_template"] = json!("{id} · cell ({col},{row})");
+    editor_graph_view["gate_quorum_incoming_template"] = json!("of {count} incoming");
+    editor_graph_view["gate_member_option_template"] = json!("{name} · {role}");
     editor_graph_view["terminal_eyebrow_template"] = json!("TERMINAL · {kind}");
     editor_graph_view["terminal_id_line_template"] = json!("{id} · cell ({col},{row})");
     editor_graph_view["edge_eyebrow_template"] = json!("EDGE · {kind}");
+    editor_graph_view["edge_title_template"] = json!("{from} → {to}");
+    editor_graph_view["edge_id_line_template"] = json!("{id}");
+    editor_graph_view["edge_field_placeholder"] = json!("— field —");
+    editor_graph_view["edge_field_no_schema_placeholder"] = json!("(no schema)");
     editor_graph_view["gate_collection_title"] = json!("COLLECTION POLICY");
     editor_graph_view["gate_join_member_label"] = json!("Join member");
     editor_graph_view["gate_join_member_placeholder"] = json!("— select member —");
@@ -16729,12 +16735,36 @@ model = "gpt-5.5"
             json!("GATE · {kind}")
         );
         assert_eq!(
+            mob_definition["editor_graph_view"]["gate_quorum_incoming_template"],
+            json!("of {count} incoming")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["gate_member_option_template"],
+            json!("{name} · {role}")
+        );
+        assert_eq!(
             mob_definition["editor_graph_view"]["terminal_eyebrow_template"],
             json!("TERMINAL · {kind}")
         );
         assert_eq!(
             mob_definition["editor_graph_view"]["edge_eyebrow_template"],
             json!("EDGE · {kind}")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["edge_title_template"],
+            json!("{from} → {to}")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["edge_id_line_template"],
+            json!("{id}")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["edge_field_placeholder"],
+            json!("— field —")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["edge_field_no_schema_placeholder"],
+            json!("(no schema)")
         );
     }
 
