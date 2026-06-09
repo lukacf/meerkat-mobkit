@@ -797,13 +797,13 @@ function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contr
         <input
           type="checkbox"
           checked={!!field.required}
-          onChange={e => onChange({ required: e.target.checked })}
+          onChange={e => onChange(window.MobKitFlowController.schemaLikeFieldRequiredPatch(e.target.checked))}
         />
       </label>
       <input
         className="sb-input sb-col--desc"
         value={field.description || ""}
-        onChange={e => onChange({ description: e.target.value })}
+        onChange={e => onChange(window.MobKitFlowController.schemaLikeFieldDescriptionPatch(e.target.value))}
         placeholder={fieldState.descriptionPlaceholder}
       />
       <button className="sb-del" onClick={onDelete} title={fieldState.removeTitle}>×</button>

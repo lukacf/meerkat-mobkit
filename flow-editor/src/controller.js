@@ -3940,6 +3940,14 @@
     };
   }
 
+  function schemaLikeFieldRequiredPatch(rawValue) {
+    return { required: !!rawValue };
+  }
+
+  function schemaLikeFieldDescriptionPatch(rawValue) {
+    return { description: String(rawValue ?? "") };
+  }
+
   function normalizeSchemaLikeFieldPatch(current, patch = {}, contract) {
     const source = current && typeof current === "object" ? current : {};
     const rawPatch = patch && typeof patch === "object" ? patch : {};
@@ -11048,6 +11056,8 @@
     schemaFieldRowControlState,
     inputParamFieldControlState,
     schemaLikeFieldTypePatch,
+    schemaLikeFieldRequiredPatch,
+    schemaLikeFieldDescriptionPatch,
     enumValueDraftPatch,
     enumValueCommitPatch,
     enumValueDeletePatch,

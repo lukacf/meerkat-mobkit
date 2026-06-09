@@ -1472,6 +1472,8 @@ assert.match(builderInputParamBlock, /schemaLikeFieldTypePatch\(param, e\.target
 assert.match(builderInputParamBlock, /MobKitFlowController\.inputParamFieldControlState/, "Basic input-param row display must render through the controller plane");
 assert.match(builderInputParamBlock, /inputParamFieldControlState\(param, contract, basicView\)/, "Basic input-param row projection must receive schema-backed Basic view state");
 assert.match(builderInputParamBlock, /fieldState\.typeState/, "Basic input-param type options must come from row controller state");
+assert.match(builderInputParamBlock, /MobKitFlowController\.schemaLikeFieldRequiredPatch/, "Basic input-param required edits must use controller schema-like semantics");
+assert.match(builderInputParamBlock, /MobKitFlowController\.schemaLikeFieldDescriptionPatch/, "Basic input-param description edits must use controller schema-like semantics");
 assert.match(builderInputParamBlock, /<InputEnumValueChip key=\{index\} field=\{param\} value=\{value\} index=\{index\} onChange=\{onChange\} \/>/, "Basic input-param enum value rows must use the UI-plane enum draft component");
 assert.match(builderEnumValueChipBlock, /React\.useState\(value \|\| ""\)/, "Basic input-param enum text must be drafted in UI component state");
 assert.match(builderEnumValueChipBlock, /onChange=\{e => setDraftValue\(e\.target\.value\)\}/, "Basic input-param enum keystrokes must not mutate deployable schema state");
@@ -1484,6 +1486,8 @@ assert.match(agentsSchemaFieldBlock, /schemaLikeFieldTypePatch\(field, e\.target
 assert.match(agentsSchemaFieldBlock, /MobKitFlowController\.schemaFieldRowControlState/, "Agent schema-field row display must render through the controller plane");
 assert.match(agentsSchemaFieldBlock, /schemaFieldRowControlState\(field, contract, schemaView\)/, "Agent schema-field row projection must receive schema-backed Schema view state");
 assert.match(agentsSchemaFieldBlock, /fieldState\.typeState/, "Agent schema-field type options must come from row controller state");
+assert.match(agentsSchemaFieldBlock, /MobKitFlowController\.schemaLikeFieldRequiredPatch/, "Agent schema-field required edits must use controller schema-like semantics");
+assert.match(agentsSchemaFieldBlock, /MobKitFlowController\.schemaLikeFieldDescriptionPatch/, "Agent schema-field description edits must use controller schema-like semantics");
 assert.match(agentsSchemaFieldBlock, /<SchemaEnumValueChip key=\{i\} field=\{field\} value=\{v\} index=\{i\} onChange=\{onChange\} \/>/, "Agent schema-field enum value rows must use the UI-plane enum draft component");
 assert.match(agentsEnumValueChipBlock, /React\.useState\(value \|\| ""\)/, "Agent schema-field enum text must be drafted in UI component state");
 assert.match(agentsEnumValueChipBlock, /onChange=\{e => setDraftValue\(e\.target\.value\)\}/, "Agent schema-field enum keystrokes must not mutate deployable schema state");
@@ -1492,6 +1496,8 @@ assert.match(agentsEnumValueChipBlock, /MobKitFlowController\.enumValueDeletePat
 assert.match(agentsSchemaFieldBlock, /MobKitFlowController\.enumValueAddPatch/, "Agent schema-field enum adds must use controller semantics");
 assert(!/MobKitFlowController\.enumValueDraftPatch/.test(agentsSchemaFieldBlock + "\n" + agentsEnumValueChipBlock), "Agent schema-field enum keystrokes must not call deployable enum draft patches");
 assert.match(controller, /function schemaLikeFieldTypePatch/, "controller plane must own schema-like type/enum initialization semantics");
+assert.match(controller, /function schemaLikeFieldRequiredPatch/, "controller plane must own schema-like required patch semantics");
+assert.match(controller, /function schemaLikeFieldDescriptionPatch/, "controller plane must own schema-like description patch semantics");
 assert.match(controller, /function schemaFieldTypeAllowedSet/, "controller plane must derive schema field type validation from MobKit schema");
 assert.match(controller, /function schemaLikeFieldTypeControlState/, "controller plane must own schema-like type option projection");
 assert.match(controller, /function schemaFieldRowControlState/, "controller plane must own Agent schema-field row display projection");
@@ -1503,6 +1509,7 @@ assert.match(controller, /function enumValueCommitPatch/, "controller plane must
 assert.match(controller, /function enumValueDeletePatch/, "controller plane must own enum value delete semantics");
 assert.match(controller, /function enumValueAddPatch/, "controller plane must own enum value add semantics");
 assert(!/const\s+next\s*=\s*\[\.\.\.(?:values|\(field\.enumValues\s*\|\|\s*\[\]\))\]|enumValues:\s*\[\.\.\.(?:values|\(field\.enumValues\s*\|\|\s*\[\]\))|enumValues:\s*(?:values|field\.enumValues|\(field\.enumValues\s*\|\|\s*\[\]\))\.filter/.test(builderInputParamBlock + "\n" + agentsSchemaFieldBlock), "Basic/Agent schema enum editors must not locally clone/filter enum value arrays");
+assert(!/onChange=\{e => onChange\(\{\s*(?:required|description):/.test(builderInputParamBlock + "\n" + agentsSchemaFieldBlock), "Basic/Agent schema-like field editors must not assemble required or description patches locally");
 assert(!/contractDefaultValue\(contract,\s*["']schema_field_type["']\)|schemaFieldTypeOptions\(|typeOptions\.find/.test(builderInputParamBlock + "\n" + agentsSchemaFieldBlock), "Basic/Agent schema field editors must not assemble schema type defaults or options locally");
 assert(!/placeholder=["']param_name["']|placeholder=["']—["']|title=["']Remove param["']|>VALUES<\/span>|>\\+ value<\/button>|enumValueAddPatch\(param,\s*["']value["']\)|param\.enumValues\s*\|\|\s*\[\]/.test(builderInputParamBlock), "Basic input-param row must not compose placeholders, enum labels, add seed, or enum values locally");
 assert(!/placeholder=["']field_name["']|placeholder=["']—["']|title=["']Remove field["']|>VALUES<\/span>|>\\+ value<\/button>|enumValueAddPatch\(field,\s*["']value["']\)|field\.enumValues\s*\|\|\s*\[\]/.test(agentsSchemaFieldBlock), "Agent schema-field row must not compose placeholders, enum labels, add seed, or enum values locally");

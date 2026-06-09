@@ -97,12 +97,12 @@ function InputParamField({ param, normalizeName, onRename, onChange, onDelete, c
       </select>
       {typeState.selectedType?.reason && <div className="hint__line" style={{ color: "var(--warn)" }}>{typeState.selectedType.reason}</div>}
       <label className="sb-col--req sb-checkbox">
-        <input type="checkbox" checked={param.required !== false} onChange={e => onChange({ required: e.target.checked })} />
+        <input type="checkbox" checked={param.required !== false} onChange={e => onChange(window.MobKitFlowController.schemaLikeFieldRequiredPatch(e.target.checked))} />
       </label>
       <input
         className="sb-input sb-col--desc"
         value={param.description || ""}
-        onChange={e => onChange({ description: e.target.value })}
+        onChange={e => onChange(window.MobKitFlowController.schemaLikeFieldDescriptionPatch(e.target.value))}
         placeholder={fieldState.descriptionPlaceholder}
       />
       <button className="sb-del" onClick={onDelete} title={fieldState.removeTitle}>×</button>

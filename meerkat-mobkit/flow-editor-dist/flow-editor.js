@@ -3973,6 +3973,14 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function schemaLikeFieldRequiredPatch(rawValue) {
+    return { required: !!rawValue };
+  }
+
+  function schemaLikeFieldDescriptionPatch(rawValue) {
+    return { description: String(rawValue ?? "") };
+  }
+
   function normalizeSchemaLikeFieldPatch(current, patch = {}, contract) {
     const source = current && typeof current === "object" ? current : {};
     const rawPatch = patch && typeof patch === "object" ? patch : {};
@@ -11081,6 +11089,8 @@ window.MOBKIT_BOOT = {
     schemaFieldRowControlState,
     inputParamFieldControlState,
     schemaLikeFieldTypePatch,
+    schemaLikeFieldRequiredPatch,
+    schemaLikeFieldDescriptionPatch,
     enumValueDraftPatch,
     enumValueCommitPatch,
     enumValueDeletePatch,
@@ -13114,14 +13124,14 @@ function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contr
     {
       type: "checkbox",
       checked: !!field.required,
-      onChange: (e) => onChange({ required: e.target.checked })
+      onChange: (e) => onChange(window.MobKitFlowController.schemaLikeFieldRequiredPatch(e.target.checked))
     }
   )), /* @__PURE__ */ React.createElement(
     "input",
     {
       className: "sb-input sb-col--desc",
       value: field.description || "",
-      onChange: (e) => onChange({ description: e.target.value }),
+      onChange: (e) => onChange(window.MobKitFlowController.schemaLikeFieldDescriptionPatch(e.target.value)),
       placeholder: fieldState.descriptionPlaceholder
     }
   ), /* @__PURE__ */ React.createElement("button", { className: "sb-del", onClick: onDelete, title: fieldState.removeTitle }, "\xD7"), field.type === "enum" && /* @__PURE__ */ React.createElement("div", { className: "sb-enum" }, /* @__PURE__ */ React.createElement("span", { className: "sb-enum__label" }, fieldState.enumLabel), /* @__PURE__ */ React.createElement("div", { className: "sb-enum__chips" }, values.map((v, i) => /* @__PURE__ */ React.createElement(SchemaEnumValueChip, { key: i, field, value: v, index: i, onChange })), /* @__PURE__ */ React.createElement(
@@ -13315,12 +13325,12 @@ function InputParamField({ param, normalizeName, onRename, onChange, onDelete, c
       }
     },
     typeState.typeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
-  ), typeState.selectedType?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, typeState.selectedType.reason), /* @__PURE__ */ React.createElement("label", { className: "sb-col--req sb-checkbox" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: param.required !== false, onChange: (e) => onChange({ required: e.target.checked }) })), /* @__PURE__ */ React.createElement(
+  ), typeState.selectedType?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, typeState.selectedType.reason), /* @__PURE__ */ React.createElement("label", { className: "sb-col--req sb-checkbox" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: param.required !== false, onChange: (e) => onChange(window.MobKitFlowController.schemaLikeFieldRequiredPatch(e.target.checked)) })), /* @__PURE__ */ React.createElement(
     "input",
     {
       className: "sb-input sb-col--desc",
       value: param.description || "",
-      onChange: (e) => onChange({ description: e.target.value }),
+      onChange: (e) => onChange(window.MobKitFlowController.schemaLikeFieldDescriptionPatch(e.target.value)),
       placeholder: fieldState.descriptionPlaceholder
     }
   ), /* @__PURE__ */ React.createElement("button", { className: "sb-del", onClick: onDelete, title: fieldState.removeTitle }, "\xD7"), param.type === "enum" && /* @__PURE__ */ React.createElement("div", { className: "sb-enum" }, /* @__PURE__ */ React.createElement("span", { className: "sb-enum__label" }, fieldState.enumLabel), /* @__PURE__ */ React.createElement("div", { className: "sb-enum__chips" }, values.map((value, index) => /* @__PURE__ */ React.createElement(InputEnumValueChip, { key: index, field: param, value, index, onChange })), /* @__PURE__ */ React.createElement("button", { className: "chip chip--add", onClick: () => onChange(window.MobKitFlowController.enumValueAddPatch(param, fieldState.enumAddValue)) }, fieldState.enumAddLabel))));
