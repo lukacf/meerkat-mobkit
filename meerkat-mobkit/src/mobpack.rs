@@ -453,22 +453,49 @@ fn skill_catalog_dirs() -> Vec<(String, String, PathBuf)> {
             "meerkat-mob/source".to_string(),
             home.join("src/meerkat/meerkat-mob/skills"),
         ));
-        let registry_root = home.join(".cargo/registry/src");
-        if let Ok(entries) = std::fs::read_dir(&registry_root) {
-            for entry in entries.flatten() {
-                let candidate = entry.path().join("meerkat-mob-0.6.34/skills");
-                out.push((
-                    "meerkat-mob/crate".to_string(),
-                    "meerkat-mob/crate".to_string(),
-                    candidate,
-                ));
-            }
-        }
+        out.extend(meerkat_mob_registry_skill_dirs(
+            &home.join(".cargo/registry/src"),
+        ));
     }
     let mut seen = BTreeSet::new();
     out.into_iter()
         .filter(|(_, _, path)| seen.insert(path.clone()))
         .collect()
+}
+
+fn meerkat_mob_registry_skill_dirs(registry_root: &Path) -> Vec<(String, String, PathBuf)> {
+    let Ok(registries) = std::fs::read_dir(registry_root) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for registry in registries.flatten() {
+        let Ok(crates) = std::fs::read_dir(registry.path()) else {
+            continue;
+        };
+        for crate_entry in crates.flatten() {
+            let path = crate_entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let Some(version) = name.strip_prefix("meerkat-mob-") else {
+                continue;
+            };
+            if !version.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+                continue;
+            }
+            let skills_dir = path.join("skills");
+            if !skills_dir.is_dir() {
+                continue;
+            }
+            out.push((
+                format!("meerkat-mob/crate/{version}"),
+                format!("meerkat-mob/crate/{version}"),
+                skills_dir,
+            ));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2)));
+    out
 }
 
 fn tool_catalog_response() -> Vec<Value> {
@@ -17105,6 +17132,31 @@ url = "https://example.invalid/mcp"
         assert!(env_sources.contains("custom-b"));
         assert!(env_sources.contains("custom-c"));
         assert_eq!(env_sources.len(), 3);
+    }
+
+    #[test]
+    fn discovers_meerkat_mob_registry_skill_dirs_without_pinned_version() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = dir.path().join("index.crates.io-abc");
+        std::fs::create_dir_all(registry.join("meerkat-mob-0.6.34/skills"))
+            .expect("old skills dir");
+        std::fs::create_dir_all(registry.join("meerkat-mob-0.6.58/skills"))
+            .expect("new skills dir");
+        std::fs::create_dir_all(registry.join("meerkat-mob-mcp-0.6.58/skills"))
+            .expect("adjacent crate skills dir");
+        std::fs::create_dir_all(registry.join("meerkat-mob-not-a-version/skills"))
+            .expect("non-version skills dir");
+
+        let dirs = meerkat_mob_registry_skill_dirs(dir.path());
+        let ids = dirs
+            .iter()
+            .map(|(id, _, _)| id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec!["meerkat-mob/crate/0.6.34", "meerkat-mob/crate/0.6.58"]
+        );
+        assert!(dirs.iter().all(|(_, _, path)| path.ends_with("skills")));
     }
 
     #[test]
