@@ -1156,6 +1156,7 @@ const hydratedContractAndCatalogFixture = {
       delete_confirm_cells_suffix: "those nodes will be removed.",
       usage_title_prefix: "USED IN",
       empty_usage_hint: "Not yet placed in any cell. Switch to Topology to add.",
+      agent_eyebrow_prefix: "AGENT",
       identity_title: "IDENTITY",
       profile_binding_label: "Profile binding",
       missing_profile_binding_label: "missing profile binding",
@@ -1625,6 +1626,7 @@ assert.deepEqual(hydratedCatalogs.agentDetailView, {
   deleteConfirmCellsSuffix: "those nodes will be removed.",
   usageTitlePrefix: "USED IN",
   emptyUsageHint: "Not yet placed in any cell. Switch to Topology to add.",
+  agentEyebrowPrefix: "AGENT",
   identityTitle: "IDENTITY",
   profileBindingLabel: "Profile binding",
   missingProfileBindingLabel: "missing profile binding",
@@ -4952,6 +4954,7 @@ const agentEditorState = controller.agentEditorControlState({
     deleteConfirmCellsSuffix: "graph placements will be removed.",
     usageTitlePrefix: "PLACEMENTS",
     emptyUsageHint: "No graph placements.",
+    agentEyebrowPrefix: "PROFILE",
     identityTitle: "PROFILE",
     profileBindingLabel: "Binding",
     missingProfileBindingLabel: "missing binding",
@@ -5016,6 +5019,7 @@ assert.equal(agentEditorState.deleteNeedsConfirmation, true);
 assert.equal(agentEditorState.deleteConfirmMessage, "Remove agent \"Reviewer\"? It appears in 2 cells - graph placements will be removed.");
 assert.equal(agentEditorState.usageTitle, "PLACEMENTS · 2");
 assert.equal(agentEditorState.emptyUsageHint, "No graph placements.");
+assert.equal(agentEditorState.eyebrow, "PROFILE · reviewer");
 assert.deepEqual(agentEditorState.usageRows.map((row) => [row.id, row.cellLabel, row.laneLabel]), [
   ["n_review_1", "cell (2,3)", "main"],
   ["n_review_2", "cell (3,4)", "—"],

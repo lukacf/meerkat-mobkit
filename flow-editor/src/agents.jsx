@@ -301,7 +301,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       <div className="agent-editor__head">
         <div className="row row--between">
           <div>
-            <div className="inspector__eyebrow">AGENT · {member.role}</div>
+            <div className="inspector__eyebrow">{editorState.eyebrow}</div>
             <input
               className="agent-editor__title-input"
               value={member.name}

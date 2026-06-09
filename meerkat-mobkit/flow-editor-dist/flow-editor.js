@@ -877,6 +877,7 @@ window.MOBKIT_BOOT = {
       deleteConfirmCellsSuffix: String(view.delete_confirm_cells_suffix || "").trim(),
       usageTitlePrefix: String(view.usage_title_prefix || "").trim(),
       emptyUsageHint: String(view.empty_usage_hint || "").trim(),
+      agentEyebrowPrefix: String(view.agent_eyebrow_prefix || "").trim(),
       identityTitle: String(view.identity_title || "").trim(),
       profileBindingLabel: String(view.profile_binding_label || "").trim(),
       missingProfileBindingLabel: String(view.missing_profile_binding_label || "").trim(),
@@ -920,7 +921,7 @@ window.MOBKIT_BOOT = {
     return out.usedInLabel && out.instanceSingular && out.instancePlural && out.deleteLabel
       && out.deleteConfirmIntro && out.deleteConfirmPlacedPrefix && out.cellSingular && out.cellPlural
       && out.deleteConfirmCellsSuffix && out.usageTitlePrefix
-      && out.emptyUsageHint && out.identityTitle && out.profileBindingLabel && out.missingProfileBindingLabel
+      && out.emptyUsageHint && out.agentEyebrowPrefix && out.identityTitle && out.profileBindingLabel && out.missingProfileBindingLabel
       && out.realmProfileLabel && out.realmProfilePlaceholder && out.realmProfileImportHintFallback
       && out.realmProfileTitle && out.realmProfileReferenceHintBefore && out.realmProfileReferenceHintAfterFallback
       && out.modelLabel && out.runtimeModeLabel && out.missingRuntimeModeLabel && out.backendLabel
@@ -951,6 +952,7 @@ window.MOBKIT_BOOT = {
       deleteConfirmCellsSuffix: String(view?.deleteConfirmCellsSuffix || ""),
       usageTitlePrefix: String(view?.usageTitlePrefix || ""),
       emptyUsageHint: String(view?.emptyUsageHint || ""),
+      agentEyebrowPrefix: String(view?.agentEyebrowPrefix || ""),
       identityTitle: String(view?.identityTitle || ""),
       profileBindingLabel: String(view?.profileBindingLabel || ""),
       missingProfileBindingLabel: String(view?.missingProfileBindingLabel || ""),
@@ -2071,6 +2073,7 @@ window.MOBKIT_BOOT = {
     return {
       placedAt,
       placedCount,
+      eyebrow: [view.agentEyebrowPrefix, member?.role || ""].filter(Boolean).join(" · "),
       idLine: `${member?.id || ""} · ${view.usedInLabel} ${placedCount} ${instanceNoun}`,
       deleteLabel: view.deleteLabel,
       deleteNeedsConfirmation: placedCount > 0,
@@ -13271,7 +13274,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     if (result.edges !== studio.edges) studio.setEdges(result.edges);
     setSchemaChangeResult(null);
   };
-  return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, "AGENT \xB7 ", member.role), /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.eyebrow), /* @__PURE__ */ React.createElement(
     "input",
     {
       className: "agent-editor__title-input",

@@ -844,6 +844,7 @@
       deleteConfirmCellsSuffix: String(view.delete_confirm_cells_suffix || "").trim(),
       usageTitlePrefix: String(view.usage_title_prefix || "").trim(),
       emptyUsageHint: String(view.empty_usage_hint || "").trim(),
+      agentEyebrowPrefix: String(view.agent_eyebrow_prefix || "").trim(),
       identityTitle: String(view.identity_title || "").trim(),
       profileBindingLabel: String(view.profile_binding_label || "").trim(),
       missingProfileBindingLabel: String(view.missing_profile_binding_label || "").trim(),
@@ -887,7 +888,7 @@
     return out.usedInLabel && out.instanceSingular && out.instancePlural && out.deleteLabel
       && out.deleteConfirmIntro && out.deleteConfirmPlacedPrefix && out.cellSingular && out.cellPlural
       && out.deleteConfirmCellsSuffix && out.usageTitlePrefix
-      && out.emptyUsageHint && out.identityTitle && out.profileBindingLabel && out.missingProfileBindingLabel
+      && out.emptyUsageHint && out.agentEyebrowPrefix && out.identityTitle && out.profileBindingLabel && out.missingProfileBindingLabel
       && out.realmProfileLabel && out.realmProfilePlaceholder && out.realmProfileImportHintFallback
       && out.realmProfileTitle && out.realmProfileReferenceHintBefore && out.realmProfileReferenceHintAfterFallback
       && out.modelLabel && out.runtimeModeLabel && out.missingRuntimeModeLabel && out.backendLabel
@@ -918,6 +919,7 @@
       deleteConfirmCellsSuffix: String(view?.deleteConfirmCellsSuffix || ""),
       usageTitlePrefix: String(view?.usageTitlePrefix || ""),
       emptyUsageHint: String(view?.emptyUsageHint || ""),
+      agentEyebrowPrefix: String(view?.agentEyebrowPrefix || ""),
       identityTitle: String(view?.identityTitle || ""),
       profileBindingLabel: String(view?.profileBindingLabel || ""),
       missingProfileBindingLabel: String(view?.missingProfileBindingLabel || ""),
@@ -2038,6 +2040,7 @@
     return {
       placedAt,
       placedCount,
+      eyebrow: [view.agentEyebrowPrefix, member?.role || ""].filter(Boolean).join(" · "),
       idLine: `${member?.id || ""} · ${view.usedInLabel} ${placedCount} ${instanceNoun}`,
       deleteLabel: view.deleteLabel,
       deleteNeedsConfirmation: placedCount > 0,

@@ -108,6 +108,8 @@ assert.match(controller, /memberFromAgentDefinition[\s\S]*sourceMobpack contract
 assert.match(agents, /MobKitFlowController\.agentDefinitionCatalogState\(agentDefinitions,\s*agentView\)/, "Agent definition catalog rows must be projected by the controller plane");
 assert.match(controller, /function agentDefinitionCatalogState[\s\S]*toolDefinitions[\s\S]*skillDefinitions[\s\S]*definitionCatalogSourceLabel/, "Agent definition catalog must preserve MobKit tool, skill, and source provenance");
 assert(!/sourceMobpackName|sourceOrigin|toolDefinitions|skillDefinitions/.test((agents.match(/function AddAgentControl[\s\S]*?function AgentsMain/) || [""])[0]), "Agent add UI must not locally compose MobKit definition provenance");
+assert.match(agents, /editorState\.eyebrow/, "Agent editor header must render the controller-projected MobKit label");
+assert(!/AGENT\s*·/.test(agents), "Agent editor header must not hardcode selected-agent chrome in the UI plane");
 assert.match(app, /<GraphEditor[\s\S]*grid=\{catalogs\.grid\}/, "app shell must inject layout data into Graph editor");
 assert.match(app, /<GraphEditor[\s\S]*contract=\{contract\}/, "app shell must inject the MobKit graph contract into Graph editor");
 assert.match(app, /<GraphEditor[\s\S]*graphView=\{catalogs\.graphView\}/, "app shell must inject schema-backed Graph canvas view state");
