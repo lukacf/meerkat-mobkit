@@ -2326,6 +2326,23 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function basicStepPickerOpenTransition(laneRef) {
+    return { picker: { open: true, at: laneRef || null } };
+  }
+
+  function basicStepPickerCloseTransition() {
+    return { picker: { open: false } };
+  }
+
+  function basicCanvasClearTransition() {
+    return { selection: null, picker: { open: false } };
+  }
+
+  function basicStepSelectionTransition(id) {
+    const selection = String(id || "").trim() || null;
+    return { selection, picker: { open: false } };
+  }
+
   function flowStepTaskPatch(rawTask) {
     return { task: String(rawTask || "") };
   }
@@ -11318,6 +11335,10 @@ window.MOBKIT_BOOT = {
     flowStepInsertTransition,
     flowStepDeletePatch,
     flowStepDeleteTransition,
+    basicStepPickerOpenTransition,
+    basicStepPickerCloseTransition,
+    basicCanvasClearTransition,
+    basicStepSelectionTransition,
     flowStepTaskPatch,
     flowStepInstructionPatch,
     flowStepQuorumPatch,
@@ -13563,6 +13584,11 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const canvasView = Math.abs(view.ty) > 1200 ? { ...view, ty: 0 } : view;
   const update = (id, patch) => setFlow((f) => window.MobKitFlowController.flowStepUpdatePatch(f, id, patch, { members }));
   const selStep = findStep(flow.steps, sel);
+  const applyBasicInteraction = (result) => {
+    if (!result) return;
+    if ("selection" in result) setSel(result.selection);
+    if ("picker" in result) setPicker(result.picker);
+  };
   const insertAt = (laneRef, pick) => {
     const newStep = window.MobKitFlowController.flowStepTemplate(pick, contract, { flow, basicView });
     if (!newStep) return;
@@ -13578,7 +13604,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     setSel(result.selection);
     setPicker(result.picker);
   };
-  const openPicker = (laneRef) => setPicker({ open: true, at: laneRef });
+  const openPicker = (laneRef) => applyBasicInteraction(window.MobKitFlowController.basicStepPickerOpenTransition(laneRef));
   const onWheel = (e) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
@@ -13612,8 +13638,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       };
       window.addEventListener("mousemove", move);
       window.addEventListener("mouseup", up);
-      setSel(null);
-      setPicker({ open: false });
+      applyBasicInteraction(window.MobKitFlowController.basicCanvasClearTransition());
     }
   };
   return /* @__PURE__ */ React.createElement("div", { className: "builder" + (isFlow ? " builder--flow" : "") }, /* @__PURE__ */ React.createElement("div", { className: "bld-stage", ref: hostRef, onMouseDown: onHostDown }, /* @__PURE__ */ React.createElement("div", { className: "bld-canvas", style: { transform: `translate(calc(-50% + ${canvasView.tx}px), ${canvasView.ty}px) scale(${canvasView.scale})` } }, /* @__PURE__ */ React.createElement("div", { className: "bld-start" }, viewState.startLabel), /* @__PURE__ */ React.createElement(
@@ -13626,10 +13651,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       sel,
       contract,
       basicView,
-      setSel: (id) => {
-        setSel(id);
-        setPicker({ open: false });
-      },
+      setSel: (id) => applyBasicInteraction(window.MobKitFlowController.basicStepSelectionTransition(id)),
       openPicker
     }
   )), /* @__PURE__ */ React.createElement("button", { className: "bld-toml-toggle", onMouseDown: (e) => e.stopPropagation(), onClick: () => onShowSource && onShowSource() }, viewState.sourceToggleLabel), /* @__PURE__ */ React.createElement(
@@ -13649,7 +13671,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       contract,
       basicView,
       onPick: (pick) => insertAt(picker.at, pick),
-      onClose: () => setPicker({ open: false })
+      onClose: () => applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition())
     }
   ) : selStep ? /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, setFlow, step: selStep, update, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, launchView, conditionView }) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
 }

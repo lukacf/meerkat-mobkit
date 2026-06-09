@@ -9443,6 +9443,24 @@ assert.deepEqual(controller.flowStepDeleteTransition(treeFlow, "left"), {
   selection: null,
   picker: { open: false },
 });
+assert.deepEqual(controller.basicStepPickerOpenTransition({ lane: "main", index: 2 }), {
+  picker: { open: true, at: { lane: "main", index: 2 } },
+});
+assert.deepEqual(controller.basicStepPickerCloseTransition(), {
+  picker: { open: false },
+});
+assert.deepEqual(controller.basicCanvasClearTransition(), {
+  selection: null,
+  picker: { open: false },
+});
+assert.deepEqual(controller.basicStepSelectionTransition("left"), {
+  selection: "left",
+  picker: { open: false },
+});
+assert.deepEqual(controller.basicStepSelectionTransition(" "), {
+  selection: null,
+  picker: { open: false },
+});
 const deletedRefFlow = controller.flowStepDeletePatch({
   name: "delete-refs",
   steps: [

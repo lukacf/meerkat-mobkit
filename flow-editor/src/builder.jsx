@@ -180,6 +180,11 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const update = (id, patch) =>
     setFlow(f => window.MobKitFlowController.flowStepUpdatePatch(f, id, patch, { members }));
   const selStep = findStep(flow.steps, sel);
+  const applyBasicInteraction = (result) => {
+    if (!result) return;
+    if ("selection" in result) setSel(result.selection);
+    if ("picker" in result) setPicker(result.picker);
+  };
 
   const insertAt = (laneRef, pick) => {
     const newStep = window.MobKitFlowController.flowStepTemplate(pick, contract, { flow, basicView });
@@ -196,7 +201,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     setSel(result.selection);
     setPicker(result.picker);
   };
-  const openPicker = (laneRef) => setPicker({ open: true, at: laneRef });
+  const openPicker = (laneRef) => applyBasicInteraction(window.MobKitFlowController.basicStepPickerOpenTransition(laneRef));
 
   // pan / zoom
   const onWheel = (e) => {
@@ -227,7 +232,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       const move = (ev) => setView(v => ({ ...v, tx: panRef.current.tx + (ev.clientX - panRef.current.sx), ty: panRef.current.ty + (ev.clientY - panRef.current.sy) }));
       const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
       window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
-      setSel(null); setPicker({ open: false });
+      applyBasicInteraction(window.MobKitFlowController.basicCanvasClearTransition());
     }
   };
 
@@ -239,7 +244,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
           <Lane studio={studio} mode={mode} steps={flow.steps} laneRef={{ lane: "main" }} sel={sel}
             contract={contract}
             basicView={basicView}
-            setSel={(id) => { setSel(id); setPicker({ open: false }); }}
+            setSel={(id) => applyBasicInteraction(window.MobKitFlowController.basicStepSelectionTransition(id))}
             openPicker={openPicker} />
         </div>
 
@@ -269,7 +274,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
             contract={contract}
             basicView={basicView}
             onPick={(pick) => insertAt(picker.at, pick)}
-            onClose={() => setPicker({ open: false })}
+            onClose={() => applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition())}
           />
         ) : selStep ? (
           <StepInspector studio={studio} members={members} flow={flow} setFlow={setFlow} step={selStep} update={update} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} launchView={launchView} conditionView={conditionView} />

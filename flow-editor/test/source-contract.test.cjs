@@ -525,6 +525,13 @@ assert.match(builder, /setFlow\(result\.flow\);[\s\S]*setSel\(result\.selection\
 assert(!/setSel\(newStep\.id\)|setSel\(null\);\s*setPicker\(\{\s*open:\s*false\s*\}\)/.test(builderMutationBlock), "Basic flow step insert/delete must not derive selection or picker transitions locally");
 assert.match(builder, /MobKitFlowController\.flowStepDeleteTransition/, "Basic editor must delete flow steps through the controller transition plane");
 assert.match(builder, /flowStepDeleteTransition\(flow,\s*id\)/, "Basic flow step deletes must ask the controller for flow, selection, and picker transitions");
+assert.match(builder, /MobKitFlowController\.basicStepPickerOpenTransition\(laneRef\)/, "Basic editor must open the step picker through the controller transition plane");
+assert.match(builder, /MobKitFlowController\.basicStepPickerCloseTransition\(\)/, "Basic editor must close the step picker through the controller transition plane");
+assert.match(builder, /MobKitFlowController\.basicCanvasClearTransition\(\)/, "Basic editor must clear canvas selection through the controller transition plane");
+assert.match(builder, /MobKitFlowController\.basicStepSelectionTransition\(id\)/, "Basic editor must select steps through the controller transition plane");
+assert.match(controller, /function basicStepPickerOpenTransition/, "controller plane must own Basic picker-open transitions");
+assert.match(controller, /function basicStepSelectionTransition/, "controller plane must own Basic step selection transitions");
+assert(!/setPicker\(\{\s*open:\s*(?:true|false)[\s\S]{0,60}\}\)/.test(builderMutationBlock), "Basic mutation handlers must not assemble picker state locally");
 assert.match(controller, /mob_definition\?\.editor_basic_view/, "controller plane must hydrate Basic editor chrome from MobKit schema");
 assert.match(app, /<BuilderView[\s\S]*basicView=\{catalogs\.basicView\}/, "app shell must inject schema-backed Basic editor view state");
 assert.match(builder, /MobKitFlowController\.basicEditorViewState\(basicView\)/, "Basic editor must render chrome through controller-projected Basic view state");

@@ -2293,6 +2293,23 @@
     };
   }
 
+  function basicStepPickerOpenTransition(laneRef) {
+    return { picker: { open: true, at: laneRef || null } };
+  }
+
+  function basicStepPickerCloseTransition() {
+    return { picker: { open: false } };
+  }
+
+  function basicCanvasClearTransition() {
+    return { selection: null, picker: { open: false } };
+  }
+
+  function basicStepSelectionTransition(id) {
+    const selection = String(id || "").trim() || null;
+    return { selection, picker: { open: false } };
+  }
+
   function flowStepTaskPatch(rawTask) {
     return { task: String(rawTask || "") };
   }
@@ -11285,6 +11302,10 @@
     flowStepInsertTransition,
     flowStepDeletePatch,
     flowStepDeleteTransition,
+    basicStepPickerOpenTransition,
+    basicStepPickerCloseTransition,
+    basicCanvasClearTransition,
+    basicStepSelectionTransition,
     flowStepTaskPatch,
     flowStepInstructionPatch,
     flowStepQuorumPatch,
