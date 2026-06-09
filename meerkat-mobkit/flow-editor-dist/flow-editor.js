@@ -9336,6 +9336,8 @@ window.MOBKIT_BOOT = {
     if (!filename) throw new Error("mobkit/mobpacks/export did not return filename");
     const mediaType = String(result?.media_type || "").trim();
     if (!mediaType) throw new Error("mobkit/mobpacks/export did not return media_type");
+    const sourceDigest = String(mobTomlFile.sha256 || "").trim();
+    if (!sourceDigest) throw new Error("mobkit/mobpacks/export did not return mobkit/mob.toml sha256");
     const sourceView = sourceViewForState(null, options.sourceView);
     const renderedDocument = {
       ...(document && typeof document === "object" ? document : {}),
@@ -9353,6 +9355,7 @@ window.MOBKIT_BOOT = {
         sourcePath: mobTomlFile.path,
         sourceFile: mobTomlFile,
         sourceFiles: files,
+        sourceDigest,
         source: "mobkit/mobpacks/export",
         sourceView,
       },

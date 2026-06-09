@@ -5657,6 +5657,7 @@ const sourceProjection = controller.sourceDocumentFromExport({
     media_type: "text/toml",
     size_bytes: 26,
     content_base64: "unused",
+    sha256: "2496e694a40dca7b5f535d6cb5969d867b6989aa9fa258535c048947073086fa",
     text: "[mob]\nid = \"source_proof\"\n",
   }],
   filename: "source-proof.mobpack",
@@ -5682,6 +5683,7 @@ assert.equal(sourceProjection.sourceDocument.media_type, "application/vnd.mobkit
 assert.equal(sourceProjection.sourceDocument.sourcePath, "mobkit/mob.toml");
 assert.equal(sourceProjection.sourceDocument.sourceFile.media_type, "text/toml");
 assert.equal(sourceProjection.sourceDocument.sourceFiles.length, 1);
+assert.equal(sourceProjection.sourceDocument.sourceDigest, "2496e694a40dca7b5f535d6cb5969d867b6989aa9fa258535c048947073086fa");
 assert.equal(sourceProjection.sourceDocument.source, "mobkit/mobpacks/export");
 assert.deepEqual(sourceProjection.sourceDocument.sourceView, hydratedCatalogs.sourceView);
 assert.equal(sourceProjection.sourceDocument.validation.ok, true);
@@ -5757,6 +5759,15 @@ assert.throws(
     filename: "no-media.mobpack",
   }),
   /mobkit\/mobpacks\/export did not return media_type/,
+);
+assert.throws(
+  () => controller.sourceDocumentFromExport({ name: "No sha" }, {
+    mob_toml: "[mob]\nid = \"no_sha\"\n",
+    source_files: [{ path: "mobkit/mob.toml", text: "[mob]\nid = \"no_sha\"\n" }],
+    filename: "no-sha.mobpack",
+    media_type: "application/vnd.mobkit.mobpack",
+  }),
+  /mobkit\/mobpacks\/export did not return mobkit\/mob.toml sha256/,
 );
 
 assert.deepEqual(controller.importParamsFromDecodedFile({

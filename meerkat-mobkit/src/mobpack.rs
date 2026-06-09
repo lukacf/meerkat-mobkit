@@ -16,6 +16,7 @@ use meerkat_mob::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -265,6 +266,8 @@ pub struct MobpackSourceFile {
     pub media_type: String,
     pub size_bytes: u64,
     pub content_base64: String,
+    #[serde(default)]
+    pub sha256: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
 }
@@ -3062,9 +3065,14 @@ fn source_files_from_archive_files(files: &BTreeMap<String, Vec<u8>>) -> Vec<Mob
             media_type: source_file_media_type(path).to_string(),
             size_bytes: bytes.len() as u64,
             content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            sha256: source_file_sha256(bytes),
             text: String::from_utf8(bytes.clone()).ok(),
         })
         .collect()
+}
+
+fn source_file_sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn source_file_media_type(path: &str) -> &'static str {
@@ -14941,6 +14949,10 @@ message = "Plan the work"
         assert_eq!(
             exported_mob_toml.text.as_deref(),
             Some(result.mob_toml.as_str())
+        );
+        assert_eq!(
+            exported_mob_toml.sha256,
+            source_file_sha256(result.mob_toml.as_bytes())
         );
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&result.content_base64)
