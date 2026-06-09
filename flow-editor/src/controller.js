@@ -7602,6 +7602,7 @@
   }
 
   function dispatchModeOptions(contract, currentMode) {
+    const contractLabel = "dispatch_modes";
     const contractModes = Array.isArray(contract?.mob_definition?.dispatch_modes) && contract.mob_definition.dispatch_modes.length
       ? contract.mob_definition.dispatch_modes.map(String)
       : [];
@@ -7613,9 +7614,9 @@
       const supported = contractModes.includes(mode);
       return {
         value: mode,
-        label: labels[mode] || `${mode} — not in MobKit dispatch_modes`,
+        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
         disabled: !supported,
-        reason: supported ? "" : "Unsupported by the MobKit dispatch_modes contract.",
+        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel),
       };
     });
   }
@@ -7637,6 +7638,7 @@
   }
 
   function dependencyModeOptions(contract, currentMode) {
+    const contractLabel = "dependency_modes";
     const contractModes = Array.isArray(contract?.mob_definition?.dependency_modes) && contract.mob_definition.dependency_modes.length
       ? contract.mob_definition.dependency_modes.map(String)
       : [];
@@ -7648,9 +7650,9 @@
       const supported = contractModes.includes(mode);
       return {
         value: mode,
-        label: labels[mode] || `${mode} — not in MobKit dependency_modes`,
+        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
         disabled: !supported,
-        reason: supported ? "" : "Unsupported by the MobKit dependency_modes contract.",
+        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel),
       };
     });
   }
@@ -7665,6 +7667,7 @@
   }
 
   function collectionPolicyOptions(contract, currentPolicy) {
+    const contractLabel = "collection_policies";
     const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies) && contract.mob_definition.collection_policies.length
       ? contract.mob_definition.collection_policies.map(String)
       : [];
@@ -7676,11 +7679,22 @@
       const supported = contractPolicies.includes(policy);
       return {
         value: policy,
-        label: labels[policy] || `${policy} — not in MobKit collection_policies`,
+        label: labels[policy] || mobDefinitionUnsupportedOptionLabel(contract, policy, contractLabel),
         disabled: !supported,
-        reason: supported ? "" : "Unsupported by the MobKit collection_policies contract.",
+        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel),
       };
     });
+  }
+
+  function mobDefinitionUnsupportedOptionLabel(contract, value, contractLabel) {
+    const separator = String(contract?.mob_definition?.option_unsupported_label_separator || " ");
+    return `${value}${separator}${contractLabel}`;
+  }
+
+  function mobDefinitionUnsupportedOptionReason(contract, contractLabel) {
+    const prefix = String(contract?.mob_definition?.option_unsupported_reason_prefix || "");
+    const suffix = String(contract?.mob_definition?.option_unsupported_reason_suffix || "");
+    return `${prefix}${contractLabel}${suffix}`;
   }
 
   function collectionPolicyAllowed(contract, policy) {

@@ -1647,6 +1647,9 @@ pub fn mobpack_schema_response() -> Value {
     mob_definition["dispatch_mode_labels"] = dispatch_mode_labels();
     mob_definition["collection_policy_labels"] = collection_policy_labels();
     mob_definition["dependency_mode_labels"] = dependency_mode_labels();
+    mob_definition["option_unsupported_label_separator"] = json!(" — not in MobKit ");
+    mob_definition["option_unsupported_reason_prefix"] = json!("Unsupported by the MobKit ");
+    mob_definition["option_unsupported_reason_suffix"] = json!(" contract.");
     json!({
         "schema_version": MOBPACK_SCHEMA_VERSION,
         "media_type": MOBPACK_MEDIA_TYPE,
@@ -16610,6 +16613,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["dependency_mode_labels"]["any"],
             json!("any — any upstream node")
+        );
+        assert_eq!(
+            mob_definition["option_unsupported_label_separator"],
+            json!(" — not in MobKit ")
+        );
+        assert_eq!(
+            mob_definition["option_unsupported_reason_prefix"],
+            json!("Unsupported by the MobKit ")
+        );
+        assert_eq!(
+            mob_definition["option_unsupported_reason_suffix"],
+            json!(" contract.")
         );
         assert_eq!(
             mob_definition["profile_backends"],

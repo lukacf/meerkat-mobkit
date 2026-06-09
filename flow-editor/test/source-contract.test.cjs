@@ -555,7 +555,11 @@ assert.match(controller, /function flowStepDispatchModePatch/, "controller plane
 assert.match(controller, /function flowStepParallelDispatchPatch/, "controller plane must own Basic parallel dispatch patch semantics");
 assert.match(controller, /function dispatchModeAllowed/, "controller plane must validate dispatch writes against MobKit dispatch_modes");
 assert.match(controller, /dispatch_mode_labels/, "dispatch-mode labels must hydrate from the MobKit schema contract");
+assert.match(controller, /option_unsupported_label_separator/, "unsupported option labels must hydrate separator copy from the MobKit schema contract");
+assert.match(controller, /option_unsupported_reason_prefix/, "unsupported option reasons must hydrate prefix copy from the MobKit schema contract");
+assert.match(controller, /option_unsupported_reason_suffix/, "unsupported option reasons must hydrate suffix copy from the MobKit schema contract");
 assert(!/fan_out:\s*["']fan_out[^"']*broadcast to every lane|one_to_one:\s*["']one_to_one[^"']*pair inputs with lanes|fan_in:\s*["']fan_in[^"']*gather upstream outputs/.test(controller), "controller plane must not hard-code dispatch-mode display labels");
+assert(!/not in MobKit (?:dispatch_modes|dependency_modes|collection_policies)|Unsupported by the MobKit (?:dispatch_modes|dependency_modes|collection_policies) contract/.test(controller), "controller plane must not hard-code Basic flow option unsupported copy");
 assert.match(controller, /function flowStepCollectionPatch/, "controller plane must own Basic collection-policy patch semantics");
 assert.match(controller, /function collectionPolicyAllowed/, "controller plane must validate collection writes against MobKit collection_policies");
 assert.match(controller, /collection_policy_labels/, "collection-policy labels must hydrate from the MobKit schema contract");

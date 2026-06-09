@@ -7345,6 +7345,9 @@ const graphShapeContract = {
       all: "all — every upstream node",
       any: "any — any upstream node",
     },
+    option_unsupported_label_separator: " — not in MobKit ",
+    option_unsupported_reason_prefix: "Unsupported by the MobKit ",
+    option_unsupported_reason_suffix: " contract.",
     condition_operators: ["==", ">", "<"],
     editor_schema_field_types: ["string", "enum"],
     editor_input_param_draft: {
@@ -9261,6 +9264,8 @@ assert.equal(branchParallelControlState.dependencyLabel, "depends_on mode");
 assert.equal(branchParallelControlState.dependencyValue, "custom_dependency");
 assert.equal(branchParallelControlState.dependencyOptions[1].label, "any — any upstream node");
 assert.equal(branchParallelControlState.selectedDependency.disabled, true);
+assert.equal(branchParallelControlState.selectedDependency.label, "custom_dependency — not in MobKit dependency_modes");
+assert.equal(branchParallelControlState.selectedDependency.reason, "Unsupported by the MobKit dependency_modes contract.");
 assert.match(branchParallelControlState.selectedDependency.reason, /dependency_modes/);
 const basicBranchControlState = controller.basicBranchParallelControlState({
   step: { id: "branch_1", type: "branch", branches: [{ id: "br1", condition: "", steps: [] }] },
