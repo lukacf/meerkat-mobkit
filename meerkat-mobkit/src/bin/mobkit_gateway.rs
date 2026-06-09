@@ -44,6 +44,7 @@ struct InitParams {
     isolated: Option<bool>,
     surface: Option<String>,
     runtime_profile: Option<String>,
+    console_read_only: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -151,6 +152,7 @@ fn config_fingerprint(
     isolated: bool,
     runtime_profile: &str,
     persistent_sessions: bool,
+    console_read_only: bool,
     runtime_root: &Path,
     store_path: &Path,
     project_root: &Path,
@@ -170,6 +172,8 @@ fn config_fingerprint(
     hasher.update(runtime_profile.as_bytes());
     hasher.update(b"\n");
     hasher.update(if persistent_sessions { b"1" } else { b"0" });
+    hasher.update(b"\n");
+    hasher.update(if console_read_only { b"1" } else { b"0" });
     hasher.update(b"\n");
     hasher.update(runtime_root.to_string_lossy().as_bytes());
     hasher.update(b"\n");
@@ -437,7 +441,11 @@ fn build_persistent_session_service(
     Ok((service, adapter, binary_blob_store))
 }
 
-fn runtime_decision_state(runtime_id: &str, console_ui: ConsoleUiConfig) -> RuntimeDecisionState {
+fn runtime_decision_state(
+    runtime_id: &str,
+    console_ui: ConsoleUiConfig,
+    console_read_only: bool,
+) -> RuntimeDecisionState {
     RuntimeDecisionState {
         bigquery: BigQueryNaming {
             dataset: "tux_local".to_string(),
@@ -452,6 +460,7 @@ fn runtime_decision_state(runtime_id: &str, console_ui: ConsoleUiConfig) -> Runt
         },
         console: ConsolePolicy {
             require_app_auth: false,
+            read_only: console_read_only,
             fetch_timeout_ms: None,
             ui: console_ui,
         },
@@ -483,6 +492,19 @@ fn parse_init_request(line: &str) -> anyhow::Result<(Value, InitParams)> {
     let params = raw.get("params").cloned().unwrap_or_else(|| json!({}));
     let parsed: InitParams = serde_json::from_value(params).context("invalid init params")?;
     Ok((raw.get("id").cloned().unwrap_or(Value::Null), parsed))
+}
+
+fn env_bool(name: &str) -> anyhow::Result<Option<bool>> {
+    let Ok(value) = std::env::var(name) else {
+        return Ok(None);
+    };
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "" => Ok(None),
+        "1" | "true" | "yes" | "on" => Ok(Some(true)),
+        "0" | "false" | "no" | "off" => Ok(Some(false)),
+        _ => Err(anyhow!("{name} must be a boolean value")),
+    }
 }
 
 fn init_response(
@@ -566,6 +588,10 @@ async fn run() -> anyhow::Result<()> {
     let runtime_profile = params
         .runtime_profile
         .unwrap_or_else(|| "tux-auto".to_string());
+    let console_read_only = match params.console_read_only {
+        Some(value) => value,
+        None => env_bool("MOBKIT_CONSOLE_READ_ONLY")?.unwrap_or(false),
+    };
 
     let paths = conventional_paths(&workspace_root);
     let key = config_fingerprint(
@@ -574,6 +600,7 @@ async fn run() -> anyhow::Result<()> {
         isolated,
         &runtime_profile,
         persistent_sessions,
+        console_read_only,
         &runtime_root,
         &store_path,
         &project_root,
@@ -752,7 +779,7 @@ async fn run() -> anyhow::Result<()> {
         "created",
     ));
 
-    let decisions = runtime_decision_state(&runtime_id, console_ui);
+    let decisions = runtime_decision_state(&runtime_id, console_ui, console_read_only);
     axum::serve(listener, runtime.build_reference_app_router(decisions))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
@@ -764,4 +791,70 @@ async fn run() -> anyhow::Result<()> {
     registry.entries.retain(|entry| entry.key != key);
     save_registry(&registry_file, &registry)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn init_params_parse_console_read_only() -> anyhow::Result<()> {
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "mobkit/init",
+            "params": {
+                "console_read_only": true
+            }
+        })
+        .to_string();
+
+        let (_id, params) = parse_init_request(&line)?;
+
+        assert_eq!(params.console_read_only, Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_decision_state_projects_console_read_only() {
+        let state = runtime_decision_state("test-runtime", ConsoleUiConfig::default(), true);
+
+        assert!(state.console.read_only);
+    }
+
+    #[test]
+    fn config_fingerprint_changes_with_console_read_only() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = conventional_paths(temp.path());
+
+        let writable = config_fingerprint(
+            temp.path(),
+            None,
+            false,
+            "tux-auto",
+            false,
+            false,
+            temp.path(),
+            temp.path(),
+            temp.path(),
+            None,
+            &paths,
+        )?;
+        let read_only = config_fingerprint(
+            temp.path(),
+            None,
+            false,
+            "tux-auto",
+            false,
+            true,
+            temp.path(),
+            temp.path(),
+            temp.path(),
+            None,
+            &paths,
+        )?;
+
+        assert_ne!(writable, read_only);
+        Ok(())
+    }
 }

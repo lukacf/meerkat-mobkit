@@ -4,6 +4,7 @@ interface GatingInboxPanelProps {
   pending: unknown[];
   audit: unknown[];
   onDecide: (pendingId: string, decision: "approve" | "reject" | "escalate") => void;
+  readOnly?: boolean;
 }
 
 type Tab = "pending" | "auto" | "audit" | "policies";
@@ -80,7 +81,12 @@ function derivePolicies(audit: unknown[]): GatePolicy[] {
   }));
 }
 
-export function GatingInboxPanel({ pending, audit, onDecide }: GatingInboxPanelProps): React.JSX.Element {
+export function GatingInboxPanel({
+  pending,
+  audit,
+  onDecide,
+  readOnly = false,
+}: GatingInboxPanelProps): React.JSX.Element {
   const [tab, setTab] = React.useState<Tab>("pending");
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const policies = React.useMemo(() => derivePolicies(audit), [audit]);
@@ -176,7 +182,7 @@ export function GatingInboxPanel({ pending, audit, onDecide }: GatingInboxPanelP
           const payload = payloadSummary(r);
 
           const selected = selectedId === pid;
-          const showActions = tab === "pending";
+          const showActions = tab === "pending" && !readOnly;
 
           return (
             <div

@@ -54,6 +54,7 @@ import {
 } from "./lib/headless";
 import { createConsoleId } from "./lib/id";
 import { findPaneResizeRoot } from "./lib/pane-resize";
+import { resolveConsoleReadOnlyOverride } from "./lib/read-only-override";
 import { Icon, SpriteSheet } from "./icon";
 import type {
   ConsoleActionsUiConfig,
@@ -1726,6 +1727,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }, [experience?.console_config?.rail?.collapsed]);
 
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
+  const frontendReadOnly = React.useMemo(() => resolveConsoleReadOnlyOverride(), []);
+  const consoleReadOnly =
+    frontendReadOnly ||
+    experience?.console_policy?.read_only === true ||
+    experience?.runtime_capabilities?.can_send_messages === false;
+  const consoleReadOnlyRef = React.useRef(false);
+  consoleReadOnlyRef.current = consoleReadOnly;
   const visibleControls = React.useMemo<NavKind[]>(() => {
     const runtimeControls: NavKind[] = hasMobControlSurface
       ? [
@@ -2153,6 +2161,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     attachments: File[] = [],
   ): Promise<boolean> {
     if (target.kind !== "agent-chat") return false;
+    if (consoleReadOnlyRef.current) return false;
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
 
@@ -2255,6 +2264,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     attachments: File[] = [],
   ): Promise<boolean> {
     if (!target || target.kind !== "agent-chat") return false;
+    if (consoleReadOnly) return false;
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
     const rawDraft = draftByKey[panelKey] || "";
@@ -2367,12 +2377,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }
 
   function onStackSteer(identity: string, id: string) {
+    if (consoleReadOnlyRef.current) return;
     setPendingStack(identity, (prev) =>
       prev.map((it) =>
         it.id === id ? { ...it, status: "promoting", editing: false } : it,
       ),
     );
     window.setTimeout(() => {
+      if (consoleReadOnlyRef.current) return;
       const stack = getPendingStack(identity);
       const item = stack.find((it) => it.id === id);
       if (!item) return;
@@ -2464,6 +2476,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   /// AND has pending items. Pops the head, plays the drain animation,
   /// then submits via `submitMessageNow` with normal queue handling.
   function maybeDrainHead(identity: string) {
+    if (consoleReadOnlyRef.current) return;
     const stack = getPendingStack(identity);
     if (stack.length === 0) return;
     const target = findChatTargetFor(identity);
@@ -2485,6 +2498,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       ),
     );
     window.setTimeout(() => {
+      if (consoleReadOnlyRef.current) return;
       const persistedHead = loadPendingStack(identity, {
         preserveFreshDraining: true,
       }).find((it) => it.id === head.id);
@@ -2522,6 +2536,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     identity: string,
     method: "mobkit/retire" | "mobkit/respawn" | "mobkit/reset",
   ) {
+    if (consoleReadOnly) return;
     const command =
       method === "mobkit/retire"
         ? CONSOLE_COMMAND_NAMES.retireIdentity
@@ -2552,6 +2567,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     pendingId: string,
     decision: "approve" | "reject" | "escalate",
   ) {
+    if (consoleReadOnly) return;
     const gatingTarget = controlWorkbenchTarget("gating");
     await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.decideGating, gatingTarget, {
       pending_id: pendingId,
@@ -2777,9 +2793,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       serverPhase: agent?.response_phase ?? null,
     });
     const canRespawn =
+      !consoleReadOnly &&
       configuredActionVisibility.respawn &&
       agent?.affordances?.can_respawn === true;
     const canRetire =
+      !consoleReadOnly &&
       configuredActionVisibility.retire &&
       agent?.affordances?.can_retire === true;
 
@@ -2813,6 +2831,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         phase={phase}
         draft={draft}
         sending={isSending}
+        readOnly={consoleReadOnly}
         staged={staged}
         onDraftChange={(v) => setDraftByKey((c) => ({ ...c, [panelKey]: v }))}
         onStagedChange={(action) =>
@@ -2866,12 +2885,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         candidate.member_id === target.identity,
     );
     const canRespawn =
+      !consoleReadOnly &&
       configuredActionVisibility.respawn &&
       agent?.affordances?.can_respawn === true;
     const canRetire =
+      !consoleReadOnly &&
       configuredActionVisibility.retire &&
       agent?.affordances?.can_retire === true;
     const canReset =
+      !consoleReadOnly &&
       configuredActionVisibility.reset &&
       experience?.runtime_capabilities?.can_retire_members === true;
     return (
@@ -3042,6 +3064,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           pending={gatingData.pending}
           audit={gatingData.audit}
           onDecide={(pid, decision) => void onGatingDecision(pid, decision)}
+          readOnly={consoleReadOnly}
         />
       );
     if (target.kind === "topology")
@@ -3069,9 +3092,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           onLifecycle={(identity, method) =>
             void onLifecycleAction(identity, method)
           }
-          canResetLifecycle={hasMobControlSurface}
+          canResetLifecycle={!consoleReadOnly && hasMobControlSurface}
           actionLabels={configuredActionLabels}
-          actionVisibility={configuredActionVisibility}
+          actionVisibility={{
+            ...configuredActionVisibility,
+            respawn: !consoleReadOnly && configuredActionVisibility.respawn,
+            retire: !consoleReadOnly && configuredActionVisibility.retire,
+            reset: !consoleReadOnly && configuredActionVisibility.reset,
+          }}
         />
       );
     if (target.kind === "gates")
@@ -3080,6 +3108,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           pending={gatingData.pending}
           audit={gatingData.audit}
           onDecide={(pid, decision) => void onGatingDecision(pid, decision)}
+          readOnly={consoleReadOnly}
         />
       );
     if (target.kind === "logs")

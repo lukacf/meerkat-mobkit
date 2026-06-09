@@ -355,10 +355,22 @@ Console access is governed by `ConsolePolicy`:
 ```rust
 ConsolePolicy {
     require_app_auth: false,  // set true for production
+    read_only: false,         // set true for view-only deployments
 }
 ```
 
 When `require_app_auth` is `true`, every request is checked against the `AuthPolicy`. See [authentication](/guides/authentication) for details.
+When `read_only` is `true`, the console can inspect identities, timelines,
+logs, and topology, but chat sends, uploads, lifecycle controls, and other write
+RPCs are denied server-side.
+
+Upstream hosts that already know a user's ACL can also force the stock console UI
+into view-only mode without changing MobKit auth: set
+`window.__MOBKIT_CONSOLE_READ_ONLY__ = true` before loading the console bundle,
+or append `?console_read_only=true` (also accepted:
+`mobkit_console_read_only=true` or `view_only=true`) to the console URL. This is
+a frontend-only affordance for per-user UX; direct RPC calls are still governed
+by the server-side `ConsolePolicy.read_only` setting.
 
 Console mutation endpoints assume non-ambient credentials: pass bearer tokens
 explicitly in the `Authorization` header or `auth_token` query parameter for

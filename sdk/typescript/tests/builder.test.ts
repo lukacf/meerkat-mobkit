@@ -103,6 +103,13 @@ describe("MobKitBuilder chainable methods", () => {
     assert.equal(builder._config.consoleRequireAppAuth, false);
   });
 
+  it("consoleReadOnly() sets consoleReadOnly and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.consoleReadOnly();
+    assert.equal(result, builder);
+    assert.equal(builder._config.consoleReadOnly, true);
+  });
+
   it("consoleFetchTimeoutMs() sets consoleFetchTimeoutMs and returns this", () => {
     const builder = MobKit.builder();
     const result = builder.consoleFetchTimeoutMs(120_000);
@@ -247,6 +254,7 @@ describe("MobKitBuilder default config", () => {
     assert.equal(cfg.eventLog, null);
     assert.equal(cfg.consoleConfigPath, null);
     assert.equal(cfg.consoleRequireAppAuth, null);
+    assert.equal(cfg.consoleReadOnly, null);
     assert.equal(cfg.consoleFetchTimeoutMs, null);
     assert.equal(cfg.demoLlm, false);
     assert.equal(cfg.gatingConfigPath, null);
@@ -290,6 +298,7 @@ describe("MobKitBuilder method chaining", () => {
       .gateway("/bin/gw")
       .consoleConfig("console.toml")
       .consoleAuthRequired(false)
+      .consoleReadOnly(true)
       .consoleFetchTimeoutMs(120_000)
       .demoLlm()
       .gating("gating.toml")
@@ -304,6 +313,7 @@ describe("MobKitBuilder method chaining", () => {
     assert.equal(builder._config.gatewayBin, "/bin/gw");
     assert.equal(builder._config.consoleConfigPath, "console.toml");
     assert.equal(builder._config.consoleRequireAppAuth, false);
+    assert.equal(builder._config.consoleReadOnly, true);
     assert.equal(builder._config.consoleFetchTimeoutMs, 120_000);
     assert.equal(builder._config.demoLlm, true);
     assert.equal(builder._config.gatingConfigPath, "gating.toml");

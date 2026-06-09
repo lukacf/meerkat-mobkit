@@ -25,6 +25,7 @@ interface ChatPaneProps {
   phase: "waiting" | "tool-executing" | "generating" | null;
   draft: string;
   sending: boolean;
+  readOnly?: boolean;
   staged: StagedAttachment[];
   onDraftChange: (value: string) => void;
   onStagedChange: React.Dispatch<React.SetStateAction<StagedAttachment[]>>;
@@ -481,6 +482,7 @@ export function ChatPane({
   phase,
   draft,
   sending,
+  readOnly = false,
   staged,
   onDraftChange,
   onStagedChange,
@@ -563,13 +565,13 @@ export function ChatPane({
   const transcriptText = React.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
-  const canAttachImages = agent?.model_capabilities?.image_input === true;
+  const canAttachImages = !readOnly && agent?.model_capabilities?.image_input === true;
   const [dragActive, setDragActive] = React.useState(false);
   const [attachmentError, setAttachmentError] = React.useState<string | null>(null);
   const resolvedDraftBlobRefs = React.useRef("");
 
   function addFiles(fileList: FileList | File[]) {
-    if (!canAttachImages) return;
+    if (readOnly || !canAttachImages) return;
     const files = dedupeComposerImageFiles(Array.from(fileList));
     const accepted: StagedAttachment[] = [];
     let error: string | null = null;
@@ -659,6 +661,9 @@ export function ChatPane({
   async function submitComposer() {
     if (staged.length > 0 && !canAttachImages) {
       setAttachmentError("model cannot see images");
+      return;
+    }
+    if (readOnly) {
       return;
     }
     if (!draft.trim() && staged.length === 0) {
@@ -827,9 +832,12 @@ export function ChatPane({
             </div>
           )}
           <textarea
-            placeholder={`Message ${agentLabel}…`}
+            placeholder={readOnly ? "View-only console" : `Message ${agentLabel}…`}
             value={draft}
-            onChange={(e) => onDraftChange(e.target.value)}
+            disabled={readOnly}
+            onChange={(e) => {
+              if (!readOnly) onDraftChange(e.target.value);
+            }}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitComposer(); } }}
             rows={2}
             data-testid={`chat-composer:${identity}`}
@@ -841,6 +849,7 @@ export function ChatPane({
               className="composer__send"
               disabled={
                 (!draft.trim() && staged.length === 0)
+                || readOnly
                 || (staged.length > 0 && !canAttachImages)
                 || (staged.length > 0 && sending)
               }
@@ -867,7 +876,8 @@ export function ChatPane({
           }} />
           <span>{state}</span>
           {phase && <><span>·</span><span style={{ color: "var(--accent)" }}>{phase}</span></>}
-          {!canAttachImages && <><span>·</span><span>model cannot see images</span></>}
+          {readOnly && <><span>·</span><span>view only</span></>}
+          {!readOnly && !canAttachImages && <><span>·</span><span>model cannot see images</span></>}
           {attachmentError && <><span>·</span><span style={{ color: "var(--bad)" }}>{attachmentError}</span></>}
         </div>
       </div>

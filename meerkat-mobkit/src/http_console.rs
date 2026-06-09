@@ -494,8 +494,9 @@ pub async fn console_rpc_handler(
 
     // Auth enforcement:
     // - When require_app_auth is true: validate bearer token (OIDC + allowlist)
-    // - When require_app_auth is false: only allow read-only methods
-    //   (mutating operations require auth to be configured)
+    // - When require_app_auth is false: allow requests without a token.
+    // - When console.read_only is true: deny mutating methods even for
+    //   otherwise authorized callers.
     let auth_context = match console_request_auth_context(&state, &headers, &uri) {
         Some(context) => context,
         None => {
@@ -512,20 +513,18 @@ pub async fn console_rpc_handler(
             );
         }
     };
-    // No auth configured: all methods allowed. The operator has explicitly
-    // opted out of authentication (require_app_auth = false), so the console
-    // is an open local deployment where every RPC method should work.
-
     // By this point the request is always authorized:
     // - require_app_auth=true: an invalid token already returned 401 above.
     // - require_app_auth=false: all methods are permitted unconditionally.
-    // Either way, capabilities should reflect that all methods are available.
+    // Mutating methods may still be blocked by console.read_only.
     let is_authenticated = true;
+    let read_only = state.decisions.console.read_only;
     let Some(runtime) = &state.runtime else {
         let response_value = Box::pin(handle_console_aggregator_rpc(
             state.console_aggregator.clone(),
             parsed_request,
             is_authenticated,
+            read_only,
         ))
         .await;
         return (StatusCode::OK, Json::<Value>(response_value));
@@ -544,6 +543,7 @@ pub async fn console_rpc_handler(
         state.visibility_policy.as_ref(),
         parsed_request,
         is_authenticated,
+        read_only,
         auth_context.principal.as_deref(),
     ))
     .await;
@@ -648,6 +648,9 @@ async fn console_send_handler(
             "unauthorized",
             "console send requires a valid auth token",
         );
+    }
+    if state.decisions.console.read_only {
+        return console_json_error(StatusCode::FORBIDDEN, "read_only", "console is read-only");
     }
     let Some(aggregator) = &state.console_aggregator else {
         return console_json_error(
@@ -1208,6 +1211,49 @@ fn console_json_error(status: StatusCode, error: &str, message: &str) -> axum::r
         .into_response()
 }
 
+fn is_console_mutating_rpc_method(method: &str) -> bool {
+    matches!(
+        method,
+        "mobkit/retire"
+            | "mobkit/reset_all"
+            | "mobkit/console/send"
+            | "mobkit/blob/upload"
+            | "mobkit/ensure_member"
+            | "mobkit/retire_member"
+            | "mobkit/respawn_member"
+            | "mobkit/force_cancel_member"
+            | "mobkit/cancel_flow"
+            | "mobkit/collect_completed"
+            | "mobkit/run_flow"
+            | "mobkit/spawn_helper"
+            | "mobkit/fork_helper"
+            | "mobkit/attach_existing_session"
+            | "mobkit/reconcile_edges"
+            | "mobkit/cross_mob/wire_local"
+            | "mobkit/cross_mob/unwire_local"
+            | "mobkit/respawn"
+            | "mobkit/reset"
+            | "mobkit/delete_identity"
+            | "mobkit/gating/decide"
+            | "mobkit/mob_labels/set"
+            | "mobkit/mob_labels/delete"
+            | "mobkit/run_labels/set"
+            | "mobkit/run_labels/delete"
+    )
+}
+
+fn console_read_only_rpc_error(response_id: Value) -> Value {
+    response_value(
+        response_id,
+        None,
+        Some(JsonRpcError {
+            code: -32010,
+            message: "console is read-only".to_string(),
+            data: Some(json!({ "kind": "read_only" })),
+        }),
+    )
+}
+
 fn console_send_error_response(err: ConsoleSendError) -> axum::response::Response {
     let (status, code) = match &err {
         ConsoleSendError::UnknownIdentity(_) => (StatusCode::NOT_FOUND, "unknown_identity"),
@@ -1513,6 +1559,12 @@ pub async fn console_rpc_multipart_handler(
         }
     };
     let response_id = parsed_request.id.clone().unwrap_or(Value::Null);
+    if state.decisions.console.read_only && is_console_mutating_rpc_method(&parsed_request.method) {
+        return (
+            StatusCode::OK,
+            Json::<Value>(console_read_only_rpc_error(response_id)),
+        );
+    }
     match parsed_request.method.as_str() {
         "mobkit/console/send" => {
             let Some(aggregator) = &state.console_aggregator else {
@@ -1623,6 +1675,7 @@ pub async fn console_rpc_multipart_handler(
                 state.console_aggregator.clone(),
                 parsed_request,
                 true,
+                state.decisions.console.read_only,
             ))
             .await
         } else {
@@ -1649,6 +1702,7 @@ pub async fn console_rpc_multipart_handler(
                 state.visibility_policy.as_ref(),
                 parsed_request,
                 true,
+                state.decisions.console.read_only,
                 auth_context.principal.as_deref(),
             ))
             .await
@@ -3114,28 +3168,43 @@ async fn handle_console_aggregator_rpc(
     console_aggregator: Option<MobKitConsoleAggregator>,
     request: JsonRpcRequest,
     is_authenticated: bool,
+    read_only: bool,
 ) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
+    let can_mutate = is_authenticated && !read_only;
+    if is_console_mutating_rpc_method(request.method.as_str()) && !can_mutate {
+        return console_read_only_rpc_error(response_id);
+    }
     match request.method.as_str() {
-        "mobkit/capabilities" => response_value(
-            response_id,
-            Some(json!({
-                "methods": [
-                    "mobkit/capabilities",
-                    "mobkit/console/list_identities",
-                    "mobkit/console/inspect_identity",
-                    "mobkit/console/query_timeline",
-                    "mobkit/retire",
-                    "mobkit/console/send",
-                ],
-                "authenticated": is_authenticated,
-                "features": {
-                    "console_aggregator": console_aggregator.is_some(),
-                    "multi_runtime_console": console_aggregator.is_some(),
-                }
-            })),
-            None,
-        ),
+        "mobkit/capabilities" => {
+            let mut methods = vec![
+                "mobkit/capabilities",
+                "mobkit/console/list_identities",
+                "mobkit/console/inspect_identity",
+                "mobkit/console/query_timeline",
+            ];
+            if can_mutate {
+                methods.extend_from_slice(&["mobkit/retire", "mobkit/console/send"]);
+            }
+            response_value(
+                response_id,
+                Some(json!({
+                    "methods": methods,
+                    "authenticated": is_authenticated,
+                    "read_only": read_only,
+                    "runtime_capabilities": {
+                        "can_send_messages": can_mutate,
+                        "can_retire_members": can_mutate,
+                        "can_spawn_members": false,
+                    },
+                    "features": {
+                        "console_aggregator": console_aggregator.is_some(),
+                        "multi_runtime_console": console_aggregator.is_some(),
+                    }
+                })),
+                None,
+            )
+        }
         "mobkit/console/list_identities" => {
             let Some(aggregator) = &console_aggregator else {
                 return console_aggregator_unavailable(response_id);
@@ -3335,6 +3404,7 @@ async fn handle_console_runtime_rpc(
         &crate::console_aggregator::AllowAllConsoleVisibilityPolicy,
         request,
         is_authenticated,
+        false,
         None,
     )
     .await
@@ -3354,9 +3424,14 @@ async fn handle_console_runtime_rpc_with_visibility(
     visibility_policy: &dyn ConsoleVisibilityPolicy,
     request: JsonRpcRequest,
     is_authenticated: bool,
+    read_only: bool,
     authenticated_principal: Option<&str>,
 ) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
+    let can_mutate = is_authenticated && !read_only;
+    if is_console_mutating_rpc_method(request.method.as_str()) && !can_mutate {
+        return console_read_only_rpc_error(response_id);
+    }
 
     match request.method.as_str() {
         "mobkit/capabilities" => {
@@ -3367,7 +3442,6 @@ async fn handle_console_runtime_rpc_with_visibility(
                 "mobkit/get_member",
                 "mobkit/find_members",
                 "mobkit/member_status",
-                "mobkit/collect_completed",
                 "mobkit/blob/get",
                 "mobkit/wait_ready",
                 "mobkit/flow_status",
@@ -3383,13 +3457,14 @@ async fn handle_console_runtime_rpc_with_visibility(
                 "mobkit/peer_pubkey",
             ];
             if identity_runtime.is_some() {
-                methods.extend_from_slice(&[
-                    "mobkit/status_identity",
-                    "mobkit/inspect_identity",
-                    "mobkit/respawn",
-                    "mobkit/reset",
-                    "mobkit/delete_identity",
-                ]);
+                methods.extend_from_slice(&["mobkit/status_identity", "mobkit/inspect_identity"]);
+                if can_mutate {
+                    methods.extend_from_slice(&[
+                        "mobkit/respawn",
+                        "mobkit/reset",
+                        "mobkit/delete_identity",
+                    ]);
+                }
             } else if console_aggregator.is_some() {
                 methods.extend_from_slice(&["mobkit/status_identity", "mobkit/inspect_identity"]);
             }
@@ -3399,10 +3474,12 @@ async fn handle_console_runtime_rpc_with_visibility(
                     "mobkit/delivery/history",
                     "mobkit/gating/pending",
                     "mobkit/gating/audit",
-                    "mobkit/gating/decide",
                 ]);
+                if can_mutate {
+                    methods.push("mobkit/gating/decide");
+                }
             }
-            if is_authenticated {
+            if can_mutate {
                 methods.extend_from_slice(&[
                     "mobkit/retire",
                     "mobkit/reset_all",
@@ -3413,6 +3490,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     "mobkit/respawn_member",
                     "mobkit/force_cancel_member",
                     "mobkit/cancel_flow",
+                    "mobkit/collect_completed",
                     "mobkit/run_flow",
                     "mobkit/spawn_helper",
                     "mobkit/fork_helper",
@@ -3424,7 +3502,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             if metadata_table.is_some() {
                 methods.extend_from_slice(&["mobkit/mob_labels/get", "mobkit/run_labels/get"]);
-                if is_authenticated {
+                if can_mutate {
                     methods.extend_from_slice(&[
                         "mobkit/mob_labels/set",
                         "mobkit/mob_labels/delete",
@@ -3438,13 +3516,14 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Some(serde_json::json!({
                     "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
                     "methods": methods,
+                    "read_only": read_only,
                     // The console routes to MobRuntime directly and has no
                     // access to the module runtime, so loaded_modules is always [].
                     "loaded_modules": serde_json::json!([]),
                     "runtime_capabilities": {
-                        "can_send_messages": is_authenticated,
-                        "can_retire_members": is_authenticated,
-                        "can_spawn_members": is_authenticated,
+                        "can_send_messages": can_mutate,
+                        "can_retire_members": can_mutate,
+                        "can_spawn_members": can_mutate,
                     }
                 })),
                 None,
@@ -7147,6 +7226,56 @@ comms = true
         }
     }
 
+    #[tokio::test]
+    async fn read_only_aggregator_capabilities_omit_mutating_methods() {
+        let response =
+            handle_console_aggregator_rpc(None, rpc_request("mobkit/capabilities"), true, true)
+                .await;
+
+        let methods = response["result"]["methods"]
+            .as_array()
+            .expect("capabilities methods");
+        assert!(
+            methods.iter().all(|method| method != "mobkit/console/send"),
+            "read-only capabilities must omit send: {methods:#?}"
+        );
+        assert_eq!(response["result"]["read_only"], json!(true));
+        assert_eq!(
+            response["result"]["runtime_capabilities"]["can_send_messages"],
+            json!(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn read_only_aggregator_denies_direct_mutating_rpc() {
+        let response = handle_console_aggregator_rpc(
+            None,
+            rpc_request_with_params(
+                "mobkit/console/send",
+                json!({
+                    "identity": "worker",
+                    "content": "hello",
+                    "origin": "test",
+                    "idempotency_key": "read-only-send",
+                }),
+            ),
+            true,
+            true,
+        )
+        .await;
+
+        assert_eq!(response["result"], Value::Null);
+        assert_eq!(response["error"]["code"], json!(-32010));
+        assert_eq!(response["error"]["data"]["kind"], json!("read_only"));
+    }
+
+    #[test]
+    fn read_only_mutating_methods_include_state_draining_collect_completed() {
+        assert!(super::is_console_mutating_rpc_method(
+            "mobkit/collect_completed"
+        ));
+    }
+
     #[test]
     fn authenticated_gating_approver_comes_from_console_principal() {
         let forged_params = json!({ "approver_id": "forged-browser-value" });
@@ -7819,6 +7948,7 @@ comms = true
                 &HideIdentityPolicy("review:singleton"),
                 rpc_request_with_params(method, json!({ "identity": "review:singleton" })),
                 true,
+                false,
                 None,
             ))
             .await;
@@ -7922,6 +8052,7 @@ comms = true
                     &HideOnlyMemberPolicy("rt:review:singleton:0"),
                     rpc_request_with_params(method, json!({ "identity": requested_identity })),
                     true,
+                    false,
                     None,
                 ))
                 .await;
@@ -7990,6 +8121,7 @@ comms = true
                 &HideMemberPolicy("rt:review:singleton:0"),
                 rpc_request_with_params(method, json!({ "identity": "review:singleton" })),
                 true,
+                false,
                 None,
             ))
             .await;
@@ -8238,6 +8370,7 @@ comms = true
             &HideMemberPolicy("hidden:singleton"),
             rpc_request("mobkit/reset_all"),
             true,
+            false,
             None,
         ))
         .await;
@@ -8329,6 +8462,7 @@ comms = true
             &HideOnlyMemberPolicy("rt:review:singleton:0"),
             rpc_request("mobkit/reset_all"),
             true,
+            false,
             None,
         ))
         .await;
@@ -8442,6 +8576,7 @@ comms = true
             &HideOnlyMemberPolicy("rt:review:singleton:1"),
             rpc_request_with_params("mobkit/retire", json!({ "identity": "review:singleton" })),
             true,
+            false,
             None,
         ))
         .await;
@@ -9337,6 +9472,7 @@ comms = true
             Some(aggregator),
             rpc_request("mobkit/reset_all"),
             true,
+            false,
         ))
         .await;
 

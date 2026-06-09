@@ -256,6 +256,7 @@ fn build_console_experience_contract(
     console_policy: &ConsolePolicy,
 ) -> Value {
     let console_config = &console_policy.ui;
+    let is_read_only = console_policy.read_only;
     let is_aggregate_console = live_snapshot.runtime_id.as_deref() == Some("console-aggregator");
     fn has_extended_agent_contract(agent: &ConsoleAgentLiveSnapshot) -> bool {
         agent.role.is_some()
@@ -311,6 +312,7 @@ fn build_console_experience_contract(
                         .get("addressable")
                         .map(|v| v != "false")
                         .unwrap_or(true);
+                    let can_send_message = addressable && !is_read_only;
                     let watched = member
                         .labels
                         .get("console_watched")
@@ -355,9 +357,9 @@ fn build_console_experience_contract(
                         "degradedReason": degraded_reason,
                         "affordances": {
                             "addressable": addressable,
-                            "can_send_message": addressable,
-                            "can_retire": is_active && !is_aggregate_console && !singleton,
-                            "can_respawn": !is_aggregate_console,
+                            "can_send_message": can_send_message,
+                            "can_retire": is_active && !is_read_only && !is_aggregate_console && !singleton,
+                            "can_respawn": !is_read_only && !is_aggregate_console,
                             "runtime_mode": if is_aggregate_console { "console_aggregator" } else { "mob_agent" },
                         },
                     })
@@ -424,7 +426,7 @@ fn build_console_experience_contract(
                         "affordances".to_string(),
                         serde_json::json!({
                             "addressable": true,
-                            "can_send_message": true,
+                            "can_send_message": !is_read_only,
                             "can_retire": false,
                             "can_respawn": false,
                             "runtime_mode": "console_aggregator",
@@ -454,10 +456,10 @@ fn build_console_experience_contract(
     };
 
     let has_mob = live_snapshot.has_mob_runtime && !is_aggregate_console;
-    let can_send_messages = has_mob || is_aggregate_console;
-    let can_spawn_members = has_mob && !is_aggregate_console;
-    let can_wire_members = has_mob && !is_aggregate_console;
-    let can_retire_members = has_mob && !is_aggregate_console;
+    let can_send_messages = !is_read_only && (has_mob || is_aggregate_console);
+    let can_spawn_members = !is_read_only && has_mob && !is_aggregate_console;
+    let can_wire_members = !is_read_only && has_mob && !is_aggregate_console;
+    let can_retire_members = !is_read_only && has_mob && !is_aggregate_console;
     let identity_status_rows = build_identity_status_rows(&sidebar_agents);
 
     // P3: Build per-profile capability hints from roster data.
@@ -776,6 +778,12 @@ fn build_console_experience_contract(
         body["console_policy"] = serde_json::json!({
             "fetch_timeout_ms": fetch_timeout_ms,
         });
+    }
+    if is_read_only && let Some(object) = body.as_object_mut() {
+        let policy = object
+            .entry("console_policy")
+            .or_insert_with(|| serde_json::json!({}));
+        policy["read_only"] = Value::Bool(true);
     }
     body
 }
