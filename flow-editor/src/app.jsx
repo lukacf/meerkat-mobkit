@@ -383,7 +383,14 @@ function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
         e.preventDefault();
-        if (e.shiftKey) studio.redo(); else studio.undo();
+        const result = e.shiftKey ? studio.redo() : studio.undo();
+        if (result?.state) {
+          applyMobKitAuthoringReplacement({
+            operationType: "replace_authoring_document",
+            operation: { reason: e.shiftKey ? "redo" : "undo" },
+            studio: result.state,
+          });
+        }
       }
       if (e.key === "Escape") {
         clearSelection(); closeGraphAddMenu();

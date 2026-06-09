@@ -21,15 +21,6 @@ function useStudioState(initial, onDirty, authoring = {}) {
     skillRealms,
   }), [members, instances, edges, frames, schemas, skillRealms]);
 
-  const applyStudioState = React.useCallback((state) => {
-    setMembers(state.members);
-    setInstances(state.instances);
-    setEdges(state.edges);
-    setFrames(state.frames);
-    setSchemas(state.schemas);
-    setSkillRealms(state.skillRealms || []);
-  }, []);
-
   const snap = React.useCallback(() => {
     if (onDirty) onDirty();
     const next = window.MobKitFlowController.studioHistorySnapshotPatch({
@@ -44,18 +35,16 @@ function useStudioState(initial, onDirty, authoring = {}) {
   const undo = () => {
     const next = window.MobKitFlowController.studioUndoPatch({ history, future, state: studioState() });
     if (!next) return;
-    if (onDirty) onDirty();
     setHistory(next.history);
     setFuture(next.future);
-    applyStudioState(next.state);
+    return next;
   };
   const redo = () => {
     const next = window.MobKitFlowController.studioRedoPatch({ history, future, state: studioState() });
     if (!next) return;
-    if (onDirty) onDirty();
     setHistory(next.history);
     setFuture(next.future);
-    applyStudioState(next.state);
+    return next;
   };
 
   // Mutations (each takes a snapshot)

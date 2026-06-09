@@ -246,6 +246,8 @@ assert.match(app, /useStudioState\(\{[\s\S]*skillRealms:\s*\[\],[\s\S]*\}, markD
 assert.match(graph, /MobKitFlowController\.studioHistorySnapshotPatch/, "Graph state hook must ask controller plane to snapshot undo history");
 assert.match(graph, /MobKitFlowController\.studioUndoPatch/, "Graph state hook must ask controller plane to compute undo transitions");
 assert.match(graph, /MobKitFlowController\.studioRedoPatch/, "Graph state hook must ask controller plane to compute redo transitions");
+assert.match(app, /const result = e\.shiftKey \? studio\.redo\(\) : studio\.undo\(\);[\s\S]*applyMobKitAuthoringReplacement\(\{[\s\S]*operationType:\s*"replace_authoring_document"[\s\S]*reason:\s*e\.shiftKey \? "redo" : "undo"[\s\S]*studio:\s*result\.state/, "app shell must commit undo/redo transitions through MobKit replacement");
+assert(!/applyStudioState|applyStudioState\(next\.state\)/.test(graph), "Graph state hook must not restore undo/redo state locally");
 assert.match(controller, /function studioAddMemberPatch/, "controller plane must own member add semantics");
 assert.match(controller, /function directMemberAddValidation/, "controller plane must validate direct studio member additions");
 assert.match(controller, /contract\?\.mob_definition\?\.runtime_modes/, "direct member validation must read runtime modes from the MobKit schema contract");

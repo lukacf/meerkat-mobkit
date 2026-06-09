@@ -12529,14 +12529,6 @@ function useStudioState(initial, onDirty, authoring = {}) {
     schemas,
     skillRealms
   }), [members, instances, edges, frames, schemas, skillRealms]);
-  const applyStudioState = React.useCallback((state) => {
-    setMembers(state.members);
-    setInstances(state.instances);
-    setEdges(state.edges);
-    setFrames(state.frames);
-    setSchemas(state.schemas);
-    setSkillRealms(state.skillRealms || []);
-  }, []);
   const snap = React.useCallback(() => {
     if (onDirty) onDirty();
     const next = window.MobKitFlowController.studioHistorySnapshotPatch({
@@ -12550,18 +12542,16 @@ function useStudioState(initial, onDirty, authoring = {}) {
   const undo = () => {
     const next = window.MobKitFlowController.studioUndoPatch({ history, future, state: studioState() });
     if (!next) return;
-    if (onDirty) onDirty();
     setHistory(next.history);
     setFuture(next.future);
-    applyStudioState(next.state);
+    return next;
   };
   const redo = () => {
     const next = window.MobKitFlowController.studioRedoPatch({ history, future, state: studioState() });
     if (!next) return;
-    if (onDirty) onDirty();
     setHistory(next.history);
     setFuture(next.future);
-    applyStudioState(next.state);
+    return next;
   };
   const addMember = (m) => {
     snap();
@@ -14942,8 +14932,14 @@ function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
         e.preventDefault();
-        if (e.shiftKey) studio.redo();
-        else studio.undo();
+        const result = e.shiftKey ? studio.redo() : studio.undo();
+        if (result?.state) {
+          applyMobKitAuthoringReplacement({
+            operationType: "replace_authoring_document",
+            operation: { reason: e.shiftKey ? "redo" : "undo" },
+            studio: result.state
+          });
+        }
       }
       if (e.key === "Escape") {
         clearSelection();
