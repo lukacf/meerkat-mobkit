@@ -597,8 +597,8 @@ assert.equal(controller.blankMobpackFromSchema({
 }), null);
 
 assert.deepEqual(controller.newFlowTemplateOptions([
-  { id: "docs", name: "Docs", trigger: "label · docs", validation: { ok: true } },
-  { id: "needs_source", name: "Needs Source", source: "mobkit://samples/needs-source", validation: { ok: false } },
+  { id: "docs", name: "Docs", trigger: "label · docs", stage: "valid", validation: { ok: true } },
+  { id: "needs_source", name: "Needs Source", source: "mobkit://samples/needs-source", stage: "draft", validation: { ok: false } },
   { id: "", name: "Missing Id", validation: { ok: true } },
   { id: "missing_name", name: "", validation: { ok: true } },
 ], { canCreateBlank: false, blankTemplate: schemaBlankMobpack }), [
@@ -625,6 +625,17 @@ assert.deepEqual(controller.newFlowTemplateOptions([
   },
 ]);
 assert.equal(controller.newFlowTemplateOptions([], { canCreateBlank: true })[0].disabled, true);
+assert.equal(controller.newFlowTemplateOptions([
+  { id: "validated_no_stage", name: "Validated no stage", trigger: "label · no-stage", validation: { ok: true } },
+], { canCreateBlank: true, blankTemplate: {
+  id: "blank",
+  name: "Blank",
+  document: { mob_id: "blank_mob" },
+  validation: { ok: true },
+} })[0].tier, "");
+assert.equal(controller.newFlowTemplateOptions([
+  { id: "validated_no_stage", name: "Validated no stage", trigger: "label · no-stage", validation: { ok: true } },
+], { canCreateBlank: true, blankTemplate: schemaBlankMobpack })[1].tier, "");
 assert.equal(controller.newFlowTemplateOptions([], { canCreateBlank: true, blankTemplate: schemaBlankMobpack })[0].disabled, false);
 assert.equal(controller.newFlowTemplateOptions([], {
   canCreateBlank: true,
@@ -653,7 +664,7 @@ assert.deepEqual(controller.newFlowModalState({
   trigger: "label · docs",
   template: "docs",
 }, controller.newFlowTemplateOptions([
-  { id: "docs", name: "Docs", trigger: "label · docs", validation: { ok: true } },
+  { id: "docs", name: "Docs", trigger: "label · docs", stage: "valid", validation: { ok: true } },
 ], { canCreateBlank: false, blankTemplate: schemaBlankMobpack }), TEST_NEW_FLOW_VIEW), {
   step: 2,
   eyebrow: "CREATE MOB · STEP 2 / 2",

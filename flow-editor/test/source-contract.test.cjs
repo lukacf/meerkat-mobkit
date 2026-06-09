@@ -808,6 +808,7 @@ assert(!/sample\.source\s*\|\|\s*["']mobkit\/sample-mobpack["']/.test(controller
 assert(!/["']mobkit · sample["']/.test(controller), "sample rows must not invent local trigger provenance when MobKit omits sample source metadata");
 assert(!/`sample_\$\{index \+ 1\}`|`sample-\$\{index \+ 1\}`/.test(controller), "sample rows must not synthesize local sample identities when MobKit omits id/name metadata");
 assert(!/sample\.trigger\s*\|\|\s*sample\.source\s*\|\|\s*["']MobKit sample mobpack["']/.test(app), "sample template rows must not invent local sample provenance labels");
+assert(!/newFlowTemplateOptions[\s\S]*tier:\s*sample\.validation\?\.ok \? ["']valid["'] : ["']draft["']/.test(controller), "New-flow sample template tiers must use MobKit catalog stage metadata, not validation-derived local tiers");
 assert(!/options\.flowRow\?\.trigger\s*\|\|\s*["']mobpack · import["']|options\.flowRow\?\.source\s*\|\|\s*["']mobkit\/import["']/.test(app), "imported flow rows must use mobkit/mobpacks/import provenance instead of local import labels");
 assert.match(controller, /function importParamsFromDecodedFile/, "controller plane must own decoded file to MobKit import params projection");
 assert.match(app, /MobKitFlowController\.importParamsFromDecodedFile/, "app shell must project decoded imports through the controller plane");

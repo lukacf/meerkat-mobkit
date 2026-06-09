@@ -9720,7 +9720,7 @@ window.MOBKIT_BOOT = {
       sub: hasBlankDocument
         ? String(blankTemplate.trigger || blankTemplate.source || "")
         : "Waiting for MobKit blank mobpack",
-      tier: hasBlankDocument ? String(blankTemplate.stage || "draft") : "draft",
+      tier: hasBlankDocument ? String(blankTemplate.stage || "") : "",
       disabled: !canCreateBlank || !hasBlankDocument,
     }];
     for (const sample of Array.isArray(templates) ? templates : []) {
@@ -9732,7 +9732,7 @@ window.MOBKIT_BOOT = {
         id,
         label,
         sub: String(sample.trigger || sample.source || ""),
-        tier: sample.validation?.ok ? "valid" : "draft",
+        tier: String(sample.stage || ""),
         disabled: false,
       });
     }
