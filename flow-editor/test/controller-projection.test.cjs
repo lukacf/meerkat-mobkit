@@ -10301,6 +10301,14 @@ assert.deepEqual(
   [{ a: "planner", b: "coder" }, { a: "coder", b: "planner" }],
 );
 assert.deepEqual(
+  controller.mobRoleWiringSourcePatch(roleRules, 1, "reviewer", roleOptions),
+  [{ a: "planner", b: "coder" }, { a: "reviewer", b: "reviewer" }],
+);
+assert.deepEqual(
+  controller.mobRoleWiringTargetPatch(roleRules, 0, "reviewer", roleOptions),
+  [{ a: "planner", b: "reviewer" }, { a: "coder", b: "reviewer" }],
+);
+assert.deepEqual(
   controller.mobRoleWiringUpdatePatch(roleRules, 1, { b: "ghost_profile" }, roleOptions),
   [{ a: "planner", b: "coder" }],
 );

@@ -9553,6 +9553,14 @@ window.MOBKIT_BOOT = {
     );
   }
 
+  function mobRoleWiringSourcePatch(wiring, index, rawValue, profileOptions) {
+    return mobRoleWiringUpdatePatch(wiring, index, { a: String(rawValue || "").trim() }, profileOptions);
+  }
+
+  function mobRoleWiringTargetPatch(wiring, index, rawValue, profileOptions) {
+    return mobRoleWiringUpdatePatch(wiring, index, { b: String(rawValue || "").trim() }, profileOptions);
+  }
+
   function mobRoleWiringDeletePatch(wiring, index) {
     const rules = normalizeRoleWiring(wiring);
     const ruleIndex = Number(index);
@@ -11257,6 +11265,8 @@ window.MOBKIT_BOOT = {
     normalizeRoleWiring,
     mobRoleWiringEditorState,
     mobRoleWiringUpdatePatch,
+    mobRoleWiringSourcePatch,
+    mobRoleWiringTargetPatch,
     mobRoleWiringDeletePatch,
     mobRoleWiringAddPatch,
     advancedMobSettingsEditorState,
@@ -14863,8 +14873,11 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
 }
 function RoleWiringEditor({ value, profileOptions, settingsView, onChange }) {
   const wiringState = window.MobKitFlowController.mobRoleWiringEditorState(value, profileOptions, settingsView);
-  const updateRule = (index, patch) => {
-    onChange(window.MobKitFlowController.mobRoleWiringUpdatePatch(wiringState.wiring, index, patch, wiringState.options));
+  const updateSource = (index, value2) => {
+    onChange(window.MobKitFlowController.mobRoleWiringSourcePatch(wiringState.wiring, index, value2, wiringState.options));
+  };
+  const updateTarget = (index, value2) => {
+    onChange(window.MobKitFlowController.mobRoleWiringTargetPatch(wiringState.wiring, index, value2, wiringState.options));
   };
   const removeRule = (index) => {
     onChange(window.MobKitFlowController.mobRoleWiringDeletePatch(wiringState.wiring, index));
@@ -14872,7 +14885,7 @@ function RoleWiringEditor({ value, profileOptions, settingsView, onChange }) {
   const addRule = () => {
     onChange(window.MobKitFlowController.mobRoleWiringAddPatch(wiringState.wiring, wiringState.options));
   };
-  return /* @__PURE__ */ React.createElement("div", { className: "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, wiringState.label), /* @__PURE__ */ React.createElement("span", null, wiringState.countLabel)), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 6 } }, wiringState.wiring.map((rule, index) => /* @__PURE__ */ React.createElement("div", { key: `${rule.a}:${rule.b}:${index}`, style: { display: "grid", gridTemplateColumns: "1fr 1fr 26px", gap: 6 } }, /* @__PURE__ */ React.createElement("select", { className: "twk-field", value: rule.a, onChange: (e) => updateRule(index, { a: e.target.value }) }, wiringState.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "twk-field", value: rule.b, onChange: (e) => updateRule(index, { b: e.target.value }) }, wiringState.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("button", { className: "twk-field", style: { padding: 0 }, type: "button", onClick: () => removeRule(index) }, "\xD7"))), /* @__PURE__ */ React.createElement("button", { className: "twk-field", type: "button", disabled: wiringState.addDisabled, onClick: addRule }, wiringState.addLabel)));
+  return /* @__PURE__ */ React.createElement("div", { className: "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, wiringState.label), /* @__PURE__ */ React.createElement("span", null, wiringState.countLabel)), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 6 } }, wiringState.wiring.map((rule, index) => /* @__PURE__ */ React.createElement("div", { key: `${rule.a}:${rule.b}:${index}`, style: { display: "grid", gridTemplateColumns: "1fr 1fr 26px", gap: 6 } }, /* @__PURE__ */ React.createElement("select", { className: "twk-field", value: rule.a, onChange: (e) => updateSource(index, e.target.value) }, wiringState.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "twk-field", value: rule.b, onChange: (e) => updateTarget(index, e.target.value) }, wiringState.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("button", { className: "twk-field", style: { padding: 0 }, type: "button", onClick: () => removeRule(index) }, "\xD7"))), /* @__PURE__ */ React.createElement("button", { className: "twk-field", type: "button", disabled: wiringState.addDisabled, onClick: addRule }, wiringState.addLabel)));
 }
 function AdvancedMobSettingsEditor({ value, settingsView, onChange }) {
   const advancedState = window.MobKitFlowController.advancedMobSettingsEditorState(value, settingsView);

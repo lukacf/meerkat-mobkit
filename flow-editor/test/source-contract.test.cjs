@@ -1434,8 +1434,10 @@ assert.match(controller, /advancedObjectRequiredError:\s*String\(view\.advanced_
 assert(!/const loadableFlows|const profileOptions|const profileChoices|modelCatalog\s*\|\|\s*\[\]|profileName\(member\)|flows\.filter\(\(flow\) => flow\.document\)/.test(tweaksBlock), "Tweaks controls must not assemble MobKit authoring option state locally");
 assert(!/<TweaksPanel title=["']Tweaks["']|aria-label=["']Close tweaks["']|<TweakSection title=["'](?:Load mob|Canvas|Theme|Mob|Deploy|Inspector)["']|label=["'](?:Mobpack|Edges|Density|Mode|Orchestrator|Auto wire|Default backend|External base|Surface|Trust|Model|Duration|Tool calls|Tokens|Realm|Realm ID|Backend|Prompt|Layout)["']|placeholder=["'](?:http:\/\/127\.0\.0\.1:9000|30s|realm id|Deploy prompt)["']|options=\{\[\{value: ["'](?:text|compact|light|no|isolated|right)["']|min=\{0\}|max=\{(?:999|200000)\}|deployCommandPreview \|\| ["']--["']/.test(tweaksBlock), "Tweaks controls must not compose panel labels, local option sets, placeholders, numeric bounds, or command fallback locally");
 assert.match(tweaksBlock, /settingsView=\{settingsView\}/, "Tweaks must pass MobKit settings view into nested settings editors");
-assert.match(roleWiringBlock, /MobKitFlowController\.mobRoleWiringUpdatePatch/, "role wiring editor must update rules through the controller plane");
-assert.match(roleWiringBlock, /mobRoleWiringUpdatePatch\(wiringState\.wiring,\s*index,\s*patch,\s*wiringState\.options\)/, "role wiring updates must pass real profile options into controller validation");
+assert.match(roleWiringBlock, /MobKitFlowController\.mobRoleWiringSourcePatch/, "role wiring source edits must update through the controller plane");
+assert.match(roleWiringBlock, /mobRoleWiringSourcePatch\(wiringState\.wiring,\s*index,\s*value,\s*wiringState\.options\)/, "role wiring source updates must pass real profile options into controller validation");
+assert.match(roleWiringBlock, /MobKitFlowController\.mobRoleWiringTargetPatch/, "role wiring target edits must update through the controller plane");
+assert.match(roleWiringBlock, /mobRoleWiringTargetPatch\(wiringState\.wiring,\s*index,\s*value,\s*wiringState\.options\)/, "role wiring target updates must pass real profile options into controller validation");
 assert.match(roleWiringBlock, /MobKitFlowController\.mobRoleWiringDeletePatch/, "role wiring editor must delete rules through the controller plane");
 assert.match(roleWiringBlock, /MobKitFlowController\.mobRoleWiringAddPatch/, "role wiring editor must add rules through the controller plane");
 assert.match(roleWiringBlock, /MobKitFlowController\.mobRoleWiringEditorState/, "role wiring editor must render wiring rows and labels through the controller plane");
@@ -1457,6 +1459,8 @@ assert.match(controller, /key === "model"[\s\S]*catalogValueAllowed\(modelIds,\s
 assert.match(controller, /key === "backendDefault"[\s\S]*profile_backends/, "mob settings patch must validate backendDefault writes against MobKit profile_backends");
 assert.match(controller, /function tweaksControlState/, "controller plane must own Tweaks option-state projection");
 assert.match(controller, /function mobRoleWiringUpdatePatch/, "controller plane must own role wiring update semantics");
+assert.match(controller, /function mobRoleWiringSourcePatch/, "controller plane must own role wiring source patch semantics");
+assert.match(controller, /function mobRoleWiringTargetPatch/, "controller plane must own role wiring target patch semantics");
 assert.match(controller, /function normalizeRoleWiringForOptions/, "controller plane must filter role wiring through real profile options");
 assert.match(controller, /function mobRoleWiringDeletePatch/, "controller plane must own role wiring delete semantics");
 assert.match(controller, /function mobRoleWiringAddPatch/, "controller plane must own role wiring add semantics");
@@ -1465,7 +1469,7 @@ assert.match(controller, /function advancedMobSettingsEditorState/, "controller 
 assert.match(controller, /function advancedMobSettingsDraftPatch/, "controller plane must own advanced mob settings parse semantics");
 assert(!/label:\s*["']Role wiring["']|addLabel:\s*["']\+ rule["']|label:\s*["']Advanced["']|error:\s*["']object required["']/.test(controller), "settings editor labels and errors must not be controller-local strings");
 assert(!/\{\s*\.\.\.current,\s*\.\.\.patch\s*\}|\{\s*\.\.\.current,\s*\.\.\.\{\s*\[field\]/.test(tweaksBlock), "Tweaks must not locally spread exported deploy/mob settings patches");
-assert(!/normalizeRoleWiring|const\s+options\s*=\s*profileOptions|wiring\.length|>Role wiring<\/span>|>\+ rule<\/button>|onChange\(\s*wiring\.(?:map|filter)\(|onChange\(\s*\[\.\.\.wiring/.test(roleWiringBlock), "role wiring editor must not locally normalize, label, count, or transform exported wiring arrays");
+assert(!/normalizeRoleWiring|const\s+options\s*=\s*profileOptions|wiring\.length|>Role wiring<\/span>|>\+ rule<\/button>|onChange\(\s*wiring\.(?:map|filter)\(|onChange\(\s*\[\.\.\.wiring|updateRule\(index,\s*\{\s*[ab]:/.test(roleWiringBlock), "role wiring editor must not locally normalize, label, count, or transform exported wiring arrays");
 assert(!/JSON\.parse|JSON\.stringify|const\s+serialized|>Advanced<\/span>/.test(advancedMobSettingsBlock), "advanced mob settings editor must not serialize, parse, or label exported settings JSON locally");
 assert.match(builderInputParamBlock, /MobKitFlowController\.schemaLikeFieldTypePatch/, "Basic input-param type changes must use controller enum/type semantics");
 assert.match(builderInputParamBlock, /schemaLikeFieldTypePatch\(param, e\.target\.value, contract\)/, "Basic input-param type changes must pass the MobKit schema contract into controller validation");

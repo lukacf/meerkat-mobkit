@@ -1259,8 +1259,11 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
 
 function RoleWiringEditor({ value, profileOptions, settingsView, onChange }) {
   const wiringState = window.MobKitFlowController.mobRoleWiringEditorState(value, profileOptions, settingsView);
-  const updateRule = (index, patch) => {
-    onChange(window.MobKitFlowController.mobRoleWiringUpdatePatch(wiringState.wiring, index, patch, wiringState.options));
+  const updateSource = (index, value) => {
+    onChange(window.MobKitFlowController.mobRoleWiringSourcePatch(wiringState.wiring, index, value, wiringState.options));
+  };
+  const updateTarget = (index, value) => {
+    onChange(window.MobKitFlowController.mobRoleWiringTargetPatch(wiringState.wiring, index, value, wiringState.options));
   };
   const removeRule = (index) => {
     onChange(window.MobKitFlowController.mobRoleWiringDeletePatch(wiringState.wiring, index));
@@ -1277,10 +1280,10 @@ function RoleWiringEditor({ value, profileOptions, settingsView, onChange }) {
       <div style={{ display: "grid", gap: 6 }}>
         {wiringState.wiring.map((rule, index) => (
           <div key={`${rule.a}:${rule.b}:${index}`} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 26px", gap: 6 }}>
-            <select className="twk-field" value={rule.a} onChange={e => updateRule(index, { a: e.target.value })}>
+            <select className="twk-field" value={rule.a} onChange={e => updateSource(index, e.target.value)}>
               {wiringState.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
-            <select className="twk-field" value={rule.b} onChange={e => updateRule(index, { b: e.target.value })}>
+            <select className="twk-field" value={rule.b} onChange={e => updateTarget(index, e.target.value)}>
               {wiringState.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
             <button className="twk-field" style={{ padding: 0 }} type="button" onClick={() => removeRule(index)}>×</button>

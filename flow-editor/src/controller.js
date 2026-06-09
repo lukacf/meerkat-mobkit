@@ -9520,6 +9520,14 @@
     );
   }
 
+  function mobRoleWiringSourcePatch(wiring, index, rawValue, profileOptions) {
+    return mobRoleWiringUpdatePatch(wiring, index, { a: String(rawValue || "").trim() }, profileOptions);
+  }
+
+  function mobRoleWiringTargetPatch(wiring, index, rawValue, profileOptions) {
+    return mobRoleWiringUpdatePatch(wiring, index, { b: String(rawValue || "").trim() }, profileOptions);
+  }
+
   function mobRoleWiringDeletePatch(wiring, index) {
     const rules = normalizeRoleWiring(wiring);
     const ruleIndex = Number(index);
@@ -11224,6 +11232,8 @@
     normalizeRoleWiring,
     mobRoleWiringEditorState,
     mobRoleWiringUpdatePatch,
+    mobRoleWiringSourcePatch,
+    mobRoleWiringTargetPatch,
     mobRoleWiringDeletePatch,
     mobRoleWiringAddPatch,
     advancedMobSettingsEditorState,
