@@ -12877,10 +12877,6 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     if (edgesChanged) studio.setEdges(result.edges);
   };
   const updateField = (fieldId, patch) => {
-    if (Object.prototype.hasOwnProperty.call(patch || {}, "name")) {
-      change(window.MobKitFlowController.schemaFieldUpdatePatch(schema, fieldId, patch, contract));
-      return;
-    }
     const result = window.MobKitFlowController.schemaFieldUpdateCascadePatch({
       schema,
       schemas: studio.schemas,
@@ -12999,6 +12995,10 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
 }
 function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contract, schemaView = null }) {
   const nameBeforeEdit = React.useRef(field.name);
+  const [draftName, setDraftName] = React.useState(field.name || "");
+  React.useEffect(() => {
+    setDraftName(field.name || "");
+  }, [field.id, field.name]);
   const fieldState = window.MobKitFlowController.schemaFieldRowControlState(field, contract, schemaView);
   const typeState = fieldState.typeState;
   const values = fieldState.enumValues;
@@ -13006,16 +13006,20 @@ function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contr
     "input",
     {
       className: "sb-input sb-col--name",
-      value: field.name,
+      value: draftName,
       onFocus: () => {
         nameBeforeEdit.current = field.name;
       },
-      onChange: (e) => onChange({ name: e.target.value }),
+      onChange: (e) => setDraftName(e.target.value),
       onBlur: (e) => {
         const normalized = normalizeName(e.target.value);
         const previous = String(nameBeforeEdit.current || "").trim();
-        onChange({ name: normalized });
-        if (previous && previous !== normalized && onRename) onRename(previous, normalized);
+        setDraftName(normalized);
+        if (previous && previous !== normalized && onRename) {
+          onRename(previous, normalized);
+          return;
+        }
+        if (!onRename && previous !== normalized) onChange({ name: normalized });
       },
       placeholder: fieldState.namePlaceholder
     }
