@@ -2224,15 +2224,21 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
         .unwrap_or(false);
 
     let (status_code, stdout, stderr) = if execute {
-        let output = std::process::Command::new(&argv[0])
+        match std::process::Command::new(&argv[0])
             .args(&argv[1..])
             .output()
-            .map_err(|err| format!("failed to run rkat mob deploy: {err}"))?;
-        (
-            output.status.code(),
-            Some(String::from_utf8_lossy(&output.stdout).to_string()),
-            Some(String::from_utf8_lossy(&output.stderr).to_string()),
-        )
+        {
+            Ok(output) => (
+                output.status.code(),
+                Some(String::from_utf8_lossy(&output.stdout).to_string()),
+                Some(String::from_utf8_lossy(&output.stderr).to_string()),
+            ),
+            Err(err) => (
+                None,
+                None,
+                Some(format!("failed to run rkat mob deploy: {err}")),
+            ),
+        }
     } else {
         (None, None, None)
     };
@@ -15716,6 +15722,50 @@ model = "gpt-5.5"
                 .contains("deploy-failed")
         );
         assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+    }
+
+    #[test]
+    fn reports_missing_rkat_mob_deploy_as_deploy_result() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing_rkat = dir.path().join("missing-rkat");
+
+        let result = deploy_mobpack(&json!({
+            "document": valid_document(),
+            "output_dir": dir.path(),
+            "prompt": "Reply with exactly OK.",
+            "rkat_bin": missing_rkat,
+            "execute": true
+        }))
+        .expect("deploy result");
+
+        assert!(result.executed);
+        assert!(!result.success);
+        assert_eq!(result.status_code, None);
+        assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+        assert!(std::path::Path::new(&result.pack_path).exists());
+        assert!(
+            result
+                .stderr
+                .as_deref()
+                .unwrap_or_default()
+                .contains("failed to run rkat mob deploy")
+        );
+        assert!(result.plan_trace.iter().any(|row| {
+            row["head"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("MOBPACK ·")
+        }));
+        assert!(result.display_rows.iter().any(|row| {
+            row.kind == "crit"
+                && row.head == "rkat mob deploy failed"
+                && row.sub.contains("rkat mob deploy")
+        }));
+        assert!(result.display_rows.iter().any(|row| {
+            row.kind == "warn"
+                && row.head == "rkat output"
+                && row.sub.contains("failed to run rkat mob deploy")
+        }));
     }
 
     #[test]
