@@ -8323,6 +8323,8 @@
         id: String(model.id),
         label: String(model.label),
         vendor: String(model.vendor || model.provider),
+        ...(model.deployability ? { deployability: model.deployability } : {}),
+        ...(model.provenance ? { provenance: model.provenance } : {}),
         profile: model.profile || null,
       }));
   }
@@ -8349,6 +8351,7 @@
       sampleAgentDefinitions: [],
       skillRealms: [],
       blankMobpack: null,
+      catalogSnapshot: null,
       deployDefaults: deployDefaultsFromSchema(null),
       mobDefaults: mobDefaultsFromSchema(null),
       mobDefinition: null,
@@ -8393,6 +8396,7 @@
       sampleAgentDefinitions,
       skillRealms: skillRealmsFromCatalogs(catalogSource),
       blankMobpack,
+      catalogSnapshot: catalogSource.catalog_snapshot || null,
       deployDefaults: deployDefaultsFromSchema(schema),
       mobDefaults: mobDefaultsFromSchema(schema),
       mobDefinition: schema?.mob_definition || null,
@@ -10387,6 +10391,8 @@
           source,
           document: sample.document,
           validation: sample.validation || null,
+          ...(sample.deployability ? { deployability: sample.deployability } : {}),
+          ...(sample.provenance ? { provenance: sample.provenance } : {}),
         };
       })
       .filter(Boolean);
@@ -10457,6 +10463,8 @@
       source,
       document: blank.document,
       validation: blank.validation || null,
+      ...(blank.deployability ? { deployability: blank.deployability } : {}),
+      ...(blank.provenance ? { provenance: blank.provenance } : {}),
     };
   }
 
@@ -10988,6 +10996,8 @@
           sourceMobpackName: template.sourceMobpackName || template.source_mobpack_name || "",
           sourceOrigin: template.sourceOrigin || template.source_origin || "",
           sourceDocumentPath: template.sourceDocumentPath || template.source_document_path || "",
+          ...(template.deployability ? { deployability: template.deployability } : {}),
+          ...(template.provenance ? { provenance: template.provenance } : {}),
         };
       })
       .filter(Boolean);

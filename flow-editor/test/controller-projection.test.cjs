@@ -617,6 +617,18 @@ assert.equal(schemaBlankMobpack.id, "blank");
 assert.equal(schemaBlankMobpack.source, "mobkit/blank-mobpack");
 assert.equal(controller.blankMobpackFromCatalogs({
   blank_mobpack: {
+    id: "blank",
+    name: "Blank",
+    source: "mobkit/blank-mobpack",
+    version: "0.1.0",
+    stage: "valid",
+    document: { mob_id: "blank_mob" },
+    deployability: { deployable: true },
+    provenance: { catalog: "mobkit/mobpacks/templates" },
+  },
+}).deployability.deployable, true);
+assert.equal(controller.blankMobpackFromCatalogs({
+  blank_mobpack: {
     source: "mobkit/blank-mobpack",
     document: { mob_id: "blank_mob" },
   },
@@ -1022,6 +1034,17 @@ assert.deepEqual(controller.modelCatalogFromCatalogs({
   vendor: "openai",
   profile: { temperature: 0 },
 }]);
+assert.deepEqual(controller.modelCatalogFromCatalogs({
+  models: [
+    {
+      id: "openai/gpt-5.5",
+      label: "GPT-5.5",
+      vendor: "openai",
+      deployability: { deployable: true },
+      provenance: { catalog: "mobkit/mobpacks/catalogs" },
+    },
+  ],
+})[0].provenance, { catalog: "mobkit/mobpacks/catalogs" });
 
 assert.deepEqual(controller.toolCatalogFromCatalogs({
   tool_config: [{

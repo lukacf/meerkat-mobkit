@@ -108,6 +108,10 @@ assert.match(app, /<BuilderView[\s\S]*conditionView=\{catalogs\.conditionView\}/
 assert.match(app, /<AgentsView[\s\S]*agentDefinitions=\{catalogs\.agentDefinitions\}/, "app shell must inject MobKit agent definitions into Agent editor");
 assert.match(controller, /sampleAgentDefinitionsFromCatalogs[\s\S]*sample_agent_definitions/, "controller plane must keep sample-derived agent definitions separate from Agent Editor definitions");
 assert.match(controller, /agentDefinitionsFromCatalogs[\s\S]*sourceMobpack:[\s\S]*template\.sourceMobpack \|\| template\.source_mobpack[\s\S]*sourceOrigin:[\s\S]*template\.sourceOrigin \|\| template\.source_origin/, "Agent Editor definitions must preserve MobKit source mobpack and source-origin provenance");
+assert.match(controller, /agentDefinitionsFromCatalogs[\s\S]*deployability:\s*template\.deployability[\s\S]*provenance:\s*template\.provenance/, "Agent Editor definitions must preserve MobKit deployability and provenance metadata");
+assert.match(controller, /mobKitCatalogsFromSchema[\s\S]*catalogSnapshot:\s*catalogSource\.catalog_snapshot/, "controller catalog projection must preserve the MobKit catalog snapshot contract");
+assert.match(mobpackRust, /fn catalog_deployability[\s\S]*"command":\s*"rkat mob deploy"/, "MobKit catalogs must expose deployability metadata tied to rkat mob deploy");
+assert.match(mobpackRust, /fn with_catalog_snapshot[\s\S]*"deploy_command":\s*"rkat mob deploy"/, "MobKit catalogs must expose deterministic snapshot metadata for deploy-context provenance");
 assert.match(controller, /memberFromAgentDefinition[\s\S]*sourceMobpack contract[\s\S]*sourceOrigin contract/, "Agent Editor add flow must reject profile-member definitions without MobKit source provenance");
 assert.match(agents, /MobKitFlowController\.agentDefinitionCatalogState\(agentDefinitions,\s*agentView\)/, "Agent definition catalog rows must be projected by the controller plane");
 assert.match(controller, /function agentDefinitionCatalogState[\s\S]*toolDefinitions[\s\S]*skillDefinitions[\s\S]*definitionCatalogSourceLabel/, "Agent definition catalog must preserve MobKit tool, skill, and source provenance");

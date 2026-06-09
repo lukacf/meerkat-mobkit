@@ -475,6 +475,21 @@ fn mobpack_source_skill_realm(
                         "sourceDocumentPath".to_string(),
                         Value::String(skill_source_document_path.to_string()),
                     );
+                    projected.insert(
+                        "deployability".to_string(),
+                        catalog_deployability(
+                            true,
+                            "inline/path skill definition is packable into the deployable mobpack",
+                        ),
+                    );
+                    projected.insert(
+                        "provenance".to_string(),
+                        catalog_provenance(
+                            "mobkit/skills/catalog",
+                            mobpack_source,
+                            &skill_source_document_path,
+                        ),
+                    );
                     Value::Object(projected)
                 });
             }
@@ -586,6 +601,8 @@ fn tool_catalog_response() -> Vec<Value> {
                 "source": "meerkat_mob::ToolConfig",
                 "desc": tool_config_field_desc(&field),
                 "tag_class": tool_config_field_tag_class(&field),
+                "deployability": catalog_deployability(true, "ToolConfig flag is deployable through mob.toml profile tool settings"),
+                "provenance": catalog_provenance("mobkit/tools/catalog", "meerkat_mob::ToolConfig", &format!("ToolConfig.{field}")),
             })
         })
         .collect::<Vec<_>>();
@@ -597,6 +614,8 @@ fn tool_catalog_response() -> Vec<Value> {
             "source": source,
             "desc": "Configured host MCP source allowlist entry",
             "tag_class": "is-write",
+            "deployability": catalog_deployability(true, "MCP source is discovered from the current authoring host configuration"),
+            "provenance": catalog_provenance("mobkit/tools/catalog", "host_mcp_config", &source),
         }));
     }
     for bundle in discover_rust_tool_bundles() {
@@ -607,6 +626,8 @@ fn tool_catalog_response() -> Vec<Value> {
             "source": bundle,
             "desc": "Host-registered Rust tool bundle name",
             "tag_class": "",
+            "deployability": catalog_deployability(true, "Rust tool bundle is discovered from the current authoring host configuration"),
+            "provenance": catalog_provenance("mobkit/tools/catalog", "host_rust_tool_bundles", &bundle),
         }));
     }
     tools
@@ -763,6 +784,8 @@ fn skill_catalog_entry_from_markdown(path: &Path, content: &str) -> Option<Value
         "path": path.to_string_lossy(),
         "desc": desc,
         "requires_capabilities": capabilities,
+        "deployability": catalog_deployability(true, "filesystem skill can be packed into the deployable mobpack"),
+        "provenance": catalog_provenance("mobkit/skills/catalog", "filesystem", &path.to_string_lossy()),
     }))
 }
 
@@ -786,6 +809,40 @@ fn parse_skill_frontmatter(content: &str) -> BTreeMap<String, String> {
     out
 }
 
+fn catalog_deployability(deployable: bool, reason: &str) -> Value {
+    json!({
+        "deployable": deployable,
+        "command": "rkat mob deploy",
+        "reason": reason,
+    })
+}
+
+fn catalog_provenance(catalog: &str, source: &str, path: &str) -> Value {
+    json!({
+        "catalog": catalog,
+        "source": source,
+        "path": path,
+    })
+}
+
+fn with_catalog_snapshot(mut value: Value, source: &str, runtime_backed: bool) -> Value {
+    let snapshot_id = serde_json::to_vec(&value)
+        .map(|bytes| source_file_sha256(&bytes))
+        .unwrap_or_default();
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "catalog_snapshot".to_string(),
+            json!({
+                "id": snapshot_id,
+                "source": source,
+                "runtime_backed": runtime_backed,
+                "deploy_command": "rkat mob deploy",
+            }),
+        );
+    }
+    value
+}
+
 fn model_catalog_response() -> Vec<Value> {
     meerkat_models::catalog()
         .iter()
@@ -795,6 +852,8 @@ fn model_catalog_response() -> Vec<Value> {
                 "label": entry.display_name,
                 "vendor": entry.provider,
                 "provider": entry.provider,
+                "deployability": catalog_deployability(true, "model is present in the MobKit model catalog used for deploy settings"),
+                "provenance": catalog_provenance("mobkit/mobpacks/catalogs", "meerkat_models::catalog", entry.id),
                 "profile": meerkat_core::Provider::parse_strict(entry.provider)
                     .and_then(|provider| meerkat_models::profile_for(provider, entry.id))
                     .and_then(|profile| serde_json::to_value(profile).ok()),
@@ -816,23 +875,31 @@ fn authoring_skill_realms_response() -> Value {
 }
 
 pub fn mobpack_tools_catalog_response() -> Value {
-    json!({
-        "schema_version": MOBPACK_SCHEMA_VERSION,
-        "runtime_backed": false,
-        "source": "mobkit/tool-config",
-        "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle",
-        "tool_catalog": tool_catalog_response(),
-    })
+    with_catalog_snapshot(
+        json!({
+            "schema_version": MOBPACK_SCHEMA_VERSION,
+            "runtime_backed": false,
+            "source": "mobkit/tool-config",
+            "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle",
+            "tool_catalog": tool_catalog_response(),
+        }),
+        "mobkit/tools/catalog",
+        false,
+    )
 }
 
 pub fn mobpack_skills_catalog_response() -> Value {
-    json!({
-        "schema_version": MOBPACK_SCHEMA_VERSION,
-        "runtime_backed": false,
-        "source": "mobkit/authoring-skill-realms",
-        "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle",
-        "skill_realms": authoring_skill_realms_response(),
-    })
+    with_catalog_snapshot(
+        json!({
+            "schema_version": MOBPACK_SCHEMA_VERSION,
+            "runtime_backed": false,
+            "source": "mobkit/authoring-skill-realms",
+            "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle",
+            "skill_realms": authoring_skill_realms_response(),
+        }),
+        "mobkit/skills/catalog",
+        false,
+    )
 }
 
 pub fn mobpack_agent_definitions_response() -> Value {
@@ -845,13 +912,17 @@ pub fn mobpack_agent_definitions_response() -> Value {
         &skill_realms,
         "authoring",
     );
-    json!({
-        "schema_version": MOBPACK_SCHEMA_VERSION,
-        "runtime_backed": false,
-        "source": "mobkit/authoring-agent-definitions",
-        "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle",
-        "agent_definitions": agent_definitions,
-    })
+    with_catalog_snapshot(
+        json!({
+            "schema_version": MOBPACK_SCHEMA_VERSION,
+            "runtime_backed": false,
+            "source": "mobkit/authoring-agent-definitions",
+            "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle",
+            "agent_definitions": agent_definitions,
+        }),
+        "mobkit/agent_definitions/list",
+        false,
+    )
 }
 
 pub fn mobpack_templates_response() -> Value {
@@ -867,17 +938,22 @@ pub fn mobpack_templates_response() -> Value {
         &sample_skill_realms,
         "sample",
     );
-    json!({
-        "schema_version": MOBPACK_SCHEMA_VERSION,
-        "source": "mobkit/mobpack-templates",
-        "blank_mobpack": blank_mobpack,
-        "sample_mobpacks": sample_mobpacks,
-        "sample_agent_definitions": sample_agent_definitions,
-        "templates": {
+    with_catalog_snapshot(
+        json!({
+            "schema_version": MOBPACK_SCHEMA_VERSION,
+            "source": "mobkit/mobpack-templates",
+            "runtime_backed": false,
             "blank_mobpack": blank_mobpack,
             "sample_mobpacks": sample_mobpacks,
-        },
-    })
+            "sample_agent_definitions": sample_agent_definitions,
+            "templates": {
+                "blank_mobpack": blank_mobpack,
+                "sample_mobpacks": sample_mobpacks,
+            },
+        }),
+        "mobkit/mobpacks/templates",
+        false,
+    )
 }
 
 pub fn mobpack_catalogs_response() -> Value {
@@ -885,28 +961,32 @@ pub fn mobpack_catalogs_response() -> Value {
     let skills = mobpack_skills_catalog_response();
     let agents = mobpack_agent_definitions_response();
     let templates = mobpack_templates_response();
-    json!({
-        "schema_version": MOBPACK_SCHEMA_VERSION,
-        "runtime_backed": false,
-        "sources": {
-            "catalog": "mobkit/mobpacks/catalogs",
-            "tools": "mobkit/tools/catalog",
-            "skills": "mobkit/skills/catalog",
-            "agent_definitions": "mobkit/agent_definitions/list",
-            "templates": "mobkit/mobpacks/templates",
-            "runtime": "standalone_authoring",
-            "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle"
-        },
-        "templates": templates["templates"].clone(),
-        "tool_catalog": tools["tool_catalog"].clone(),
-        "skill_realms": skills["skill_realms"].clone(),
-        "blank_mobpack": templates["blank_mobpack"].clone(),
-        "sample_mobpacks": templates["sample_mobpacks"].clone(),
-        "agent_definitions": agents["agent_definitions"].clone(),
-        "sample_agent_definitions": templates["sample_agent_definitions"].clone(),
-        "models": model_catalog_response(),
-        "provider_defaults": provider_defaults_response(),
-    })
+    with_catalog_snapshot(
+        json!({
+            "schema_version": MOBPACK_SCHEMA_VERSION,
+            "runtime_backed": false,
+            "sources": {
+                "catalog": "mobkit/mobpacks/catalogs",
+                "tools": "mobkit/tools/catalog",
+                "skills": "mobkit/skills/catalog",
+                "agent_definitions": "mobkit/agent_definitions/list",
+                "templates": "mobkit/mobpacks/templates",
+                "runtime": "standalone_authoring",
+                "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle"
+            },
+            "templates": templates["templates"].clone(),
+            "tool_catalog": tools["tool_catalog"].clone(),
+            "skill_realms": skills["skill_realms"].clone(),
+            "blank_mobpack": templates["blank_mobpack"].clone(),
+            "sample_mobpacks": templates["sample_mobpacks"].clone(),
+            "agent_definitions": agents["agent_definitions"].clone(),
+            "sample_agent_definitions": templates["sample_agent_definitions"].clone(),
+            "models": model_catalog_response(),
+            "provider_defaults": provider_defaults_response(),
+        }),
+        "mobkit/mobpacks/catalogs",
+        false,
+    )
 }
 
 pub fn mobpack_authoring_operations() -> Value {
@@ -2421,6 +2501,12 @@ fn agent_definition_catalog(
                         "sourceMobpackName": source_name,
                         "sourceOrigin": source_origin,
                         "sourceDocumentPath": format!("document.members[{member_index}]"),
+                        "deployability": catalog_deployability(true, "profile-member definition is projected from a deployable MobKit mobpack member"),
+                        "provenance": catalog_provenance(
+                            "mobkit/agent_definitions/list",
+                            &source_origin,
+                            &format!("{source_mobpack}:document.members[{member_index}]")
+                        ),
                     })
                 });
             }
@@ -2603,6 +2689,8 @@ fn sample_mobpack_catalog() -> Value {
                     "stage": if validation.ok { "valid" } else { "draft" },
                     "trigger": trigger,
                     "source": "mobkit/sample-mobpack",
+                    "deployability": catalog_deployability(validation.ok, "sample mobpack template validates as a deployable MobKit mobpack"),
+                    "provenance": catalog_provenance("mobkit/mobpacks/templates", "mobkit/sample-mobpack", id),
                     "document": document,
                     "validation": validation,
                 }))
@@ -2632,6 +2720,8 @@ fn blank_mobpack_template() -> Value {
         "stage": if validation.ok { "valid" } else { "draft" },
         "trigger": "label · small-fix",
         "source": "mobkit/blank-mobpack",
+        "deployability": catalog_deployability(validation.ok, "blank template validates as a deployable MobKit mobpack"),
+        "provenance": catalog_provenance("mobkit/mobpacks/templates", "mobkit/blank-mobpack", "blank"),
         "document": document,
         "validation": validation,
     })
@@ -27468,6 +27558,15 @@ model = "gpt-5.5"
             "dynamic agent definitions must be loaded through mobkit/mobpacks/catalogs"
         );
         let tool_catalog = catalogs["tool_catalog"].as_array().expect("tool_catalog");
+        assert_eq!(
+            catalogs["catalog_snapshot"]["source"],
+            json!("mobkit/mobpacks/catalogs")
+        );
+        assert!(
+            catalogs["catalog_snapshot"]["id"]
+                .as_str()
+                .is_some_and(|id| id.len() == 64)
+        );
 
         let tool_config_fields = serde_json::to_value(ToolConfig::default())
             .expect("ToolConfig serializes")
@@ -27482,6 +27581,9 @@ model = "gpt-5.5"
             .filter(|tool| tool["kind"] == "runtime")
             .map(|tool| {
                 assert_eq!(tool["source"], "meerkat_mob::ToolConfig");
+                assert_eq!(tool["deployability"]["command"], "rkat mob deploy");
+                assert_eq!(tool["deployability"]["deployable"], json!(true));
+                assert_eq!(tool["provenance"]["catalog"], "mobkit/tools/catalog");
                 let id = tool["id"].as_str().expect("tool id");
                 assert_eq!(tool["field"], id);
                 id.to_string()
@@ -27516,7 +27618,19 @@ model = "gpt-5.5"
                     .as_str()
                     .is_some_and(|label| !label.is_empty())
                 && tool.get("tag_class").is_some_and(Value::is_string)
+                && tool["deployability"]["deployable"].is_boolean()
+                && tool["provenance"]["catalog"].is_string()
         }));
+        assert!(
+            catalogs["models"]
+                .as_array()
+                .expect("models")
+                .iter()
+                .all(|model| {
+                    model["deployability"]["command"] == "rkat mob deploy"
+                        && model["provenance"]["catalog"] == "mobkit/mobpacks/catalogs"
+                })
+        );
     }
 
     #[test]
@@ -28440,6 +28554,8 @@ model = "gpt-5.5"
                     && definition["sourceDocumentPath"]
                         .as_str()
                         .is_some_and(|path| path.starts_with("document.members["))
+                    && definition["deployability"]["deployable"] == json!(true)
+                    && definition["provenance"]["catalog"] == "mobkit/agent_definitions/list"
                     && definition["sourceMobpack"]
                         .as_str()
                         .is_some_and(|value| value.starts_with("sample_"))
@@ -28477,6 +28593,8 @@ model = "gpt-5.5"
                         })
                     })
                 && definition["schemaDefinition"]["id"] == "ReviewerOutput"
+                && definition["deployability"]["command"] == "rkat mob deploy"
+                && definition["provenance"]["source"] == "mobkit/authoring-agent-definitions"
         }));
         for definition in &sample_agent_definitions {
             let source_mobpack = definition["sourceMobpack"]
