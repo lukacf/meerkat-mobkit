@@ -9014,6 +9014,31 @@ window.MOBKIT_BOOT = {
       .filter(Boolean);
   }
 
+  function flowCatalogBootstrapState(catalogPayload, options = {}) {
+    const sampleFlows = sampleFlowsFromSchema(catalogPayload);
+    const first = sampleFlows[0] || null;
+    return {
+      templates: sampleFlows,
+      flows: sampleFlows,
+      initialHydration: first
+        ? {
+          result: {
+            document: first.document,
+            validation: first.validation,
+          },
+          options: {
+            id: first.id,
+            flowRow: first,
+            addToRegistry: false,
+            openEditor: !!options.openEditor,
+            deployDefaults: options.deployDefaults,
+            mobDefaults: options.mobDefaults,
+          },
+        }
+        : null,
+    };
+  }
+
   function blankMobpackFromSchema(schema) {
     const blank = schema?.blank_mobpack;
     if (!blank || typeof blank !== "object" || !blank.document) return null;
@@ -10004,6 +10029,7 @@ window.MOBKIT_BOOT = {
     sourceDocumentFromExport,
     sourceEditorState,
     sampleFlowsFromSchema,
+    flowCatalogBootstrapState,
     flowRegistryMarkDraftPatch,
     flowRegistryViewState,
     flowRegistrySelectionState,
@@ -12444,7 +12470,6 @@ const TWEAK_DEFAULTS = (
     "inspectorLayout": "right"
   }
 );
-const STARTER_FLOWS = [];
 const CATALOG_BOOT = {
   grid: MOBKIT_BOOT.GRID,
   cellXY: MOBKIT_BOOT.cellXY,
@@ -12456,7 +12481,7 @@ function App() {
   const [stepSel, setStepSel] = React.useState(null);
   const [editorMode, setEditorMode] = React.useState("basic");
   const [view, setView] = React.useState("editor");
-  const [flows, setFlows] = React.useState(STARTER_FLOWS);
+  const [flows, setFlows] = React.useState([]);
   const [currentFlowId, setCurrentFlowId] = React.useState("");
   const [templates, setTemplates] = React.useState([]);
   const [creating, setCreating] = React.useState(null);
@@ -12584,21 +12609,15 @@ function App() {
       setMobSettings(nextCatalogs.mobDefaults);
       contractSkillRealms.current = nextCatalogs.skillRealms;
       studio.setSkillRealms(nextCatalogs.skillRealms);
-      const sampleFlows = window.MobKitFlowController.sampleFlowsFromSchema(catalogPayload);
-      if (sampleFlows.length) {
-        setTemplates(sampleFlows);
-        setFlows(sampleFlows);
-        hydrateMobpackDocument({
-          document: sampleFlows[0].document,
-          validation: sampleFlows[0].validation
-        }, {
-          id: sampleFlows[0].id,
-          flowRow: sampleFlows[0],
-          addToRegistry: false,
-          openEditor: view === "editor",
-          deployDefaults: nextCatalogs.deployDefaults,
-          mobDefaults: nextCatalogs.mobDefaults
-        });
+      const bootstrap = window.MobKitFlowController.flowCatalogBootstrapState(catalogPayload, {
+        openEditor: view === "editor",
+        deployDefaults: nextCatalogs.deployDefaults,
+        mobDefaults: nextCatalogs.mobDefaults
+      });
+      setTemplates(bootstrap.templates);
+      setFlows(bootstrap.flows);
+      if (bootstrap.initialHydration) {
+        hydrateMobpackDocument(bootstrap.initialHydration.result, bootstrap.initialHydration.options);
       }
       setContract(schema);
     }).catch((error) => {

@@ -2425,6 +2425,45 @@ assert.deepEqual(sampleRows.map((row) => ({
   },
 ]);
 
+const bootstrapProjection = controller.flowCatalogBootstrapState({
+  sample_mobpacks: [
+    {
+      id: "starter",
+      name: "Starter",
+      source: "mobkit/sample-mobpack",
+      trigger: "label · starter",
+      document: { mob_id: "starter", schema_version: "0.1" },
+      validation: { ok: true },
+    },
+    {
+      id: "second",
+      name: "Second",
+      source: "mobkit/sample-mobpack",
+      document: { mob_id: "second", schema_version: "0.1" },
+      validation: { ok: false },
+    },
+  ],
+}, {
+  openEditor: true,
+  deployDefaults: { surface: "local" },
+  mobDefaults: { backend: "session" },
+});
+assert.deepEqual(bootstrapProjection.templates.map((row) => row.id), ["starter", "second"]);
+assert.deepEqual(bootstrapProjection.flows.map((row) => row.id), ["starter", "second"]);
+assert.equal(bootstrapProjection.initialHydration.result.document.mob_id, "starter");
+assert.equal(bootstrapProjection.initialHydration.result.validation.ok, true);
+assert.equal(bootstrapProjection.initialHydration.options.id, "starter");
+assert.equal(bootstrapProjection.initialHydration.options.flowRow.id, "starter");
+assert.equal(bootstrapProjection.initialHydration.options.addToRegistry, false);
+assert.equal(bootstrapProjection.initialHydration.options.openEditor, true);
+assert.deepEqual(bootstrapProjection.initialHydration.options.deployDefaults, { surface: "local" });
+assert.deepEqual(bootstrapProjection.initialHydration.options.mobDefaults, { backend: "session" });
+assert.deepEqual(controller.flowCatalogBootstrapState({ sample_mobpacks: [] }), {
+  templates: [],
+  flows: [],
+  initialHydration: null,
+});
+
 global.window.treeToGraph = () => {
   throw new Error("controller exports must not call the UI graph renderer");
 };

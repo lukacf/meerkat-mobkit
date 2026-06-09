@@ -7,8 +7,6 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "inspectorLayout": "right"
 }/*EDITMODE-END*/;
 
-// Populated from MobKit schema sample_mobpacks. Empty until the contract loads.
-const STARTER_FLOWS = [];
 const CATALOG_BOOT = {
   grid: MOBKIT_BOOT.GRID,
   cellXY: MOBKIT_BOOT.cellXY,
@@ -26,7 +24,7 @@ function App() {
 
   // view: "flows" (registry) | "editor" | "agents"
   const [view, setView] = React.useState("editor");
-  const [flows, setFlows] = React.useState(STARTER_FLOWS);
+  const [flows, setFlows] = React.useState([]);
   const [currentFlowId, setCurrentFlowId] = React.useState("");
   const [templates, setTemplates] = React.useState([]);
   const [creating, setCreating] = React.useState(null); // { step, name, trigger } | null
@@ -164,21 +162,15 @@ function App() {
         setMobSettings(nextCatalogs.mobDefaults);
         contractSkillRealms.current = nextCatalogs.skillRealms;
         studio.setSkillRealms(nextCatalogs.skillRealms);
-        const sampleFlows = window.MobKitFlowController.sampleFlowsFromSchema(catalogPayload);
-        if (sampleFlows.length) {
-          setTemplates(sampleFlows);
-          setFlows(sampleFlows);
-          hydrateMobpackDocument({
-            document: sampleFlows[0].document,
-            validation: sampleFlows[0].validation,
-          }, {
-            id: sampleFlows[0].id,
-            flowRow: sampleFlows[0],
-            addToRegistry: false,
-            openEditor: view === "editor",
-            deployDefaults: nextCatalogs.deployDefaults,
-            mobDefaults: nextCatalogs.mobDefaults,
-          });
+        const bootstrap = window.MobKitFlowController.flowCatalogBootstrapState(catalogPayload, {
+          openEditor: view === "editor",
+          deployDefaults: nextCatalogs.deployDefaults,
+          mobDefaults: nextCatalogs.mobDefaults,
+        });
+        setTemplates(bootstrap.templates);
+        setFlows(bootstrap.flows);
+        if (bootstrap.initialHydration) {
+          hydrateMobpackDocument(bootstrap.initialHydration.result, bootstrap.initialHydration.options);
         }
         setContract(schema);
       })

@@ -68,7 +68,8 @@ for (const [name, source] of [
 assert.match(data, /window\.MOBKIT_BOOT\s*=/, "boot file should expose static layout metadata only");
 assert(!/\b(MEMBERS|INSTANCES|TOOL_CATALOG|AGENT_DEFINITIONS|SKILL_REALMS|MODELS|SCHEMAS|DEPLOY_DEFAULTS|CONTRACT_META)\b/.test(data), "boot data file must not define live MobKit catalogs");
 assert(!/TEMPLATE_META|template:\s*TEMPLATE_META|untitled-mob|mob\.toml/.test(data), "boot data file must not define local template summary metadata");
-assert.match(app, /const STARTER_FLOWS = \[\];/, "flow registry must hydrate samples from MobKit schema, not local seed flows");
+assert.match(app, /MobKitFlowController\.flowCatalogBootstrapState\(catalogPayload,/, "flow registry must hydrate samples through the MobKit controller bootstrap projection");
+assert(!/STARTER_FLOWS/.test(app), "flow registry must not keep local seed-flow state");
 assert.equal(packageJson.scripts?.["test:visual-contract"], "node test/handoff-visual-contract.test.cjs", "package scripts must expose the handoff visual fidelity contract directly");
 
 assert(!/\bconst\s+PRESETS\b/.test(builder), "builder must not expose local preset flows");
@@ -118,7 +119,7 @@ assert.match(controller, /function configureAuthoringMethodsFromSchema[\s\S]*aut
 assert.match(app, /loadSchema\(\)[\s\S]*configureAuthoringMethodsFromSchema\(schema\)[\s\S]*loadCatalogs\(\)/, "app shell must load schema first, then use schema.commands to request dynamic catalogs");
 assert.match(app, /MobKitFlowController\.loadCatalogs\(\)/, "app shell must hydrate dynamic catalogs through mobkit/mobpacks/catalogs");
 assert.match(app, /mobKitCatalogsFromSchema\(schema,\s*CATALOG_BOOT,\s*catalogPayload\)/, "app shell must combine schema contracts with catalog RPC data through the controller plane");
-assert.match(app, /sampleFlowsFromSchema\(catalogPayload\)/, "sample flow templates must hydrate from the MobKit catalogs RPC payload");
+assert.match(app, /flowCatalogBootstrapState\(catalogPayload,/, "sample flow templates must hydrate from the MobKit catalogs RPC payload through the controller bootstrap projection");
 assert.match(controller, /const catalogSource = catalogPayload && typeof catalogPayload === "object" \? catalogPayload : \{\};/, "controller plane must not fall back to schema for dynamic MobKit catalogs");
 assert.match(controller, /mob_definition\?\.editor_deploy_view/, "controller plane must hydrate deploy/top-rail chrome from MobKit schema");
 assert.match(app, /MobKitFlowController\.reconcileFlowMemberSchemas/, "app shell must keep Basic/Graph member-step schema metadata synchronized with Agent definitions");
@@ -778,6 +779,11 @@ assert(!/const sourceMeta = \{[\s\S]*source_name|document:\s*parsed|content_base
 assert(!(/JSON\.parse|kind:\s*["'](?:toml|json|binary)["']|\.toml|\.json/.test(importParamsFromFileBlock)), "app import adapter must not infer MobKit import kind or parse JSON locally");
 assert.match(app, /hydrateMobpackDocument\(result,\s*\{\s*existingRows:\s*flows\s*\}\)/, "imported mobpack registry identity must be derived by the controller with current registry rows");
 assert.match(app, /hydrateMobpackDocumentState\(result,\s*\{[\s\S]*existingRows:\s*options\.existingRows/, "app hydration wrapper must forward registry rows into the controller import-id derivation");
+assert.match(app, /MobKitFlowController\.flowCatalogBootstrapState\(catalogPayload,\s*\{[\s\S]*deployDefaults:\s*nextCatalogs\.deployDefaults,[\s\S]*mobDefaults:\s*nextCatalogs\.mobDefaults/, "app catalog bootstrap must ask the controller plane for initial sample registry/template rows and hydration options");
+assert.match(app, /setTemplates\(bootstrap\.templates\);[\s\S]*setFlows\(bootstrap\.flows\);[\s\S]*hydrateMobpackDocument\(bootstrap\.initialHydration\.result,\s*bootstrap\.initialHydration\.options\)/, "app bootstrap must apply controller-projected catalog rows and hydration instead of assembling sample rows locally");
+assert.match(controller, /function flowCatalogBootstrapState\(catalogPayload, options = \{\}\)/, "controller plane must own sample catalog bootstrap projection");
+assert(!/const sampleFlows = window\.MobKitFlowController\.sampleFlowsFromSchema\(catalogPayload\)|sampleFlows\[0\]\.document|sampleFlows\[0\]\.validation|setTemplates\(sampleFlows\)|setFlows\(sampleFlows\)/.test(app), "app shell must not assemble initial sample flow registry or hydration locally");
+assert(!/STARTER_FLOWS/.test(app), "app shell must not keep a local starter-flow catalog");
 assert.match(controller, /function flowImportedIdFromDocument[\s\S]*flowDraftIdFromSpec/, "controller plane must derive imported mobpack registry ids from document/source metadata");
 assert(!/id:\s*["']f_imported["']/.test(app + "\n" + controller), "Flow Editor must not assign every imported mobpack the same local f_imported registry id");
 assert(!/sampleSkillRealm\?\.source\s*\|\|\s*["']mobkit\/sample-mobpack["']/.test(testSrc("live-rkat-e2e.cjs")), "live projection tests must require sample skill realm source metadata from MobKit");

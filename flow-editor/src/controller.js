@@ -8981,6 +8981,31 @@
       .filter(Boolean);
   }
 
+  function flowCatalogBootstrapState(catalogPayload, options = {}) {
+    const sampleFlows = sampleFlowsFromSchema(catalogPayload);
+    const first = sampleFlows[0] || null;
+    return {
+      templates: sampleFlows,
+      flows: sampleFlows,
+      initialHydration: first
+        ? {
+          result: {
+            document: first.document,
+            validation: first.validation,
+          },
+          options: {
+            id: first.id,
+            flowRow: first,
+            addToRegistry: false,
+            openEditor: !!options.openEditor,
+            deployDefaults: options.deployDefaults,
+            mobDefaults: options.mobDefaults,
+          },
+        }
+        : null,
+    };
+  }
+
   function blankMobpackFromSchema(schema) {
     const blank = schema?.blank_mobpack;
     if (!blank || typeof blank !== "object" || !blank.document) return null;
@@ -9971,6 +9996,7 @@
     sourceDocumentFromExport,
     sourceEditorState,
     sampleFlowsFromSchema,
+    flowCatalogBootstrapState,
     flowRegistryMarkDraftPatch,
     flowRegistryViewState,
     flowRegistrySelectionState,
