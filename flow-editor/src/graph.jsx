@@ -401,7 +401,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       </div>
 
       {/* Zoom controls — fixed in the corner, outside the scaled canvas. */}
-      {operationError && <div className="hint__line graph-operation-error" style={{ color: "var(--danger)" }}>{operationError}</div>}
+      {operationError && <div className="hint__line" style={{ color: "var(--danger)" }}>{operationError}</div>}
       <div className="zoom-controls" onMouseDown={e => e.stopPropagation()}>
         <button className="zoom-btn" title={canvasView.zoomOutTitle} onClick={() => {
           const r = hostRef.current.getBoundingClientRect();

@@ -1459,6 +1459,7 @@ assert.match(controller, /inlineToggleLabel: inlineOpen \? view\.skillInlineCanc
 assert.match(controller, /function agentListState/, "controller plane must own Agent sidebar projection");
 assert.match(controller, /function agentSelectionState/, "controller plane must own Agent selection projection");
 assert.match(controller, /function agentListSelectionProjection/, "controller plane must own Agent sidebar selection projection");
+assert.match(controller, /function agentDefaultSelectionProjection/, "controller plane must own Agent default selection projection");
 assert.match(controller, /function agentEditorControlState/, "controller plane must own Agent detail projection");
 assert.match(controller, /backendDefinitionDefaultLabel:\s*String\(view\.backend_definition_default_label/, "controller plane must hydrate Agent backend default label from MobKit schema");
 assert.match(controller, /profileBackendOptions\([\s\S]*view\.backendDefinitionDefaultLabel/, "Agent backend default option must render through schema-backed Agent detail view state");
@@ -1472,6 +1473,8 @@ assert.match(controller, /labelCounts[\s\S]*sourceMobpackName[\s\S]*sourceMobpac
 assert.match(controller, /function agentDefinitionAddControlState/, "controller plane must own Agent add-control presentation state");
 assert.match(controller, /mob_definition\?\.editor_agent_view/, "controller plane must hydrate Agent sidebar view labels from MobKit schema");
 assert.match(app, /<AgentsView[\s\S]*agentView=\{catalogs\.agentView\}/, "app shell must inject MobKit Agent sidebar view state");
+assert.match(app, /MobKitFlowController\.agentDefaultSelectionProjection\(\{[\s\S]*selection:\s*agentSel,[\s\S]*members:\s*studio\.members,[\s\S]*schemas:\s*studio\.schemas,[\s\S]*setAgentSel\(next\)/, "Agents tab must default to a real selected agent through the controller projection instead of opening an empty placeholder");
+assert(!/view !== "agents"[\s\S]{0,700}setAgentSel\(\{\s*kind:\s*"agent"/.test(app), "Agents tab default selection must not assemble agent selections locally");
 assert.match(app, /<AgentsView[\s\S]*agentDetailView=\{catalogs\.agentDetailView\}/, "app shell must inject MobKit Agent detail view state");
 assert.match(app, /<AgentsView[\s\S]*agentAccessView=\{catalogs\.agentAccessView\}/, "app shell must inject MobKit Agent tool/skill access view state");
 assert.match(agentsListBlock, /agentView(?:\s*=\s*null)?[\s\S]*MobKitFlowController\.agentListState\(\{[\s\S]*agentView/, "Agent sidebar must pass schema-backed view state into controller projection");

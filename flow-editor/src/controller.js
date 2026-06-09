@@ -2002,6 +2002,23 @@
     return { kind: selectionKind, id: selectionId };
   }
 
+  function agentDefaultSelectionProjection({
+    selection = null,
+    members = [],
+    schemas = [],
+    agentView = null,
+  } = {}) {
+    const current = agentSelectionState({ selection, members, schemas, agentView });
+    if ((current.kind === "agent" || current.kind === "schema") && !current.missing) {
+      return selection;
+    }
+    const firstMember = (Array.isArray(members) ? members : []).find((member) => member?.id);
+    if (firstMember) return agentListSelectionProjection("agent", firstMember.id);
+    const firstSchema = (Array.isArray(schemas) ? schemas : []).find((schema) => schema?.id);
+    if (firstSchema) return agentListSelectionProjection("schema", firstSchema.id);
+    return null;
+  }
+
   function agentEditorControlState({ member, instances = [], schemas = [], contract, deploySettings, modelCatalog = [], agentDetailView = null } = {}) {
     const view = agentDetailViewForState(agentDetailView);
     const placedAt = (Array.isArray(instances) ? instances : []).filter((instance) => instance?.memberId === member?.id);
@@ -11401,6 +11418,7 @@
     agentListState,
     agentSelectionState,
     agentListSelectionProjection,
+    agentDefaultSelectionProjection,
     agentEditorControlState,
     agentSourceProvenanceState,
     agentDefinitionOptions,

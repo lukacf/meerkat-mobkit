@@ -4992,6 +4992,48 @@ assert.equal(controller.agentSelectionState({
   schemas: agentSchemasForProjection,
   agentView: hydratedCatalogs.agentView,
 }).missingAgentLabel, "Agent not found.");
+assert.deepEqual(controller.agentDefaultSelectionProjection({
+  selection: null,
+  members: agentMembersForProjection,
+  schemas: agentSchemasForProjection,
+  agentView: hydratedCatalogs.agentView,
+}), {
+  kind: "agent",
+  id: "m_planner",
+});
+assert.deepEqual(controller.agentDefaultSelectionProjection({
+  selection: { kind: "agent", id: "m_reviewer" },
+  members: agentMembersForProjection,
+  schemas: agentSchemasForProjection,
+  agentView: hydratedCatalogs.agentView,
+}), {
+  kind: "agent",
+  id: "m_reviewer",
+});
+assert.deepEqual(controller.agentDefaultSelectionProjection({
+  selection: { kind: "agent", id: "missing" },
+  members: agentMembersForProjection,
+  schemas: agentSchemasForProjection,
+  agentView: hydratedCatalogs.agentView,
+}), {
+  kind: "agent",
+  id: "m_planner",
+});
+assert.deepEqual(controller.agentDefaultSelectionProjection({
+  selection: null,
+  members: [],
+  schemas: agentSchemasForProjection,
+  agentView: hydratedCatalogs.agentView,
+}), {
+  kind: "schema",
+  id: "PlanArtifact",
+});
+assert.equal(controller.agentDefaultSelectionProjection({
+  selection: null,
+  members: [],
+  schemas: [],
+  agentView: hydratedCatalogs.agentView,
+}), null);
 assert.deepEqual(controller.agentListSelectionProjection("agent", "m_reviewer"), {
   kind: "agent",
   id: "m_reviewer",

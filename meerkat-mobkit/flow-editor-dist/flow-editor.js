@@ -2035,6 +2035,23 @@ window.MOBKIT_BOOT = {
     return { kind: selectionKind, id: selectionId };
   }
 
+  function agentDefaultSelectionProjection({
+    selection = null,
+    members = [],
+    schemas = [],
+    agentView = null,
+  } = {}) {
+    const current = agentSelectionState({ selection, members, schemas, agentView });
+    if ((current.kind === "agent" || current.kind === "schema") && !current.missing) {
+      return selection;
+    }
+    const firstMember = (Array.isArray(members) ? members : []).find((member) => member?.id);
+    if (firstMember) return agentListSelectionProjection("agent", firstMember.id);
+    const firstSchema = (Array.isArray(schemas) ? schemas : []).find((schema) => schema?.id);
+    if (firstSchema) return agentListSelectionProjection("schema", firstSchema.id);
+    return null;
+  }
+
   function agentEditorControlState({ member, instances = [], schemas = [], contract, deploySettings, modelCatalog = [], agentDetailView = null } = {}) {
     const view = agentDetailViewForState(agentDetailView);
     const placedAt = (Array.isArray(instances) ? instances : []).filter((instance) => instance?.memberId === member?.id);
@@ -11434,6 +11451,7 @@ window.MOBKIT_BOOT = {
     agentListState,
     agentSelectionState,
     agentListSelectionProjection,
+    agentDefaultSelectionProjection,
     agentEditorControlState,
     agentSourceProvenanceState,
     agentDefinitionOptions,
@@ -12641,7 +12659,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       }
     },
     /* @__PURE__ */ React.createElement("div", { className: "canvas", style: { width: totalW, height: totalH, transform: `translate(${fit.tx}px, ${fit.ty}px) scale(${fit.scale})`, transformOrigin: "0 0" } }, colHeads, rowHeads, frameEls, cells, /* @__PURE__ */ React.createElement("svg", { className: "edges-svg", width: totalW, height: totalH }, /* @__PURE__ */ React.createElement("defs", null, /* @__PURE__ */ React.createElement("marker", { id: "arr", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--ink)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-red", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--danger)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-acc", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--accent)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-dim", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--subtle)" }))), edgeEls, conn && /* @__PURE__ */ React.createElement("path", { d: window.MobKitFlowController.graphEdgePath(conn.from, conn.to), className: "edge-line is-ghost", markerEnd: "url(#arr-acc)" })), nodeEls),
-    operationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line graph-operation-error", style: { color: "var(--danger)" } }, operationError),
+    operationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, operationError),
     /* @__PURE__ */ React.createElement("div", { className: "zoom-controls", onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", title: canvasView.zoomOutTitle, onClick: () => {
       const r = hostRef.current.getBoundingClientRect();
       zoomAt(1 / 1.2, r.left + r.width / 2, r.top + r.height / 2);
@@ -14617,6 +14635,19 @@ function App() {
     if (!next) return;
     setView(next.view);
   };
+  React.useEffect(() => {
+    if (view !== "agents") return;
+    const next = window.MobKitFlowController.agentDefaultSelectionProjection({
+      selection: agentSel,
+      members: studio.members,
+      schemas: studio.schemas,
+      agentView: catalogs.agentView
+    });
+    if ((next?.kind || null) === (agentSel?.kind || null) && (next?.id || null) === (agentSel?.id || null)) {
+      return;
+    }
+    setAgentSel(next);
+  }, [view, agentSel, studio.members, studio.schemas, catalogs.agentView]);
   const handleEditorModeSelection = (target) => {
     const next = window.MobKitFlowController.editorModeTransition(target);
     if (!next) return;

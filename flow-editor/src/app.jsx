@@ -437,6 +437,19 @@ function App() {
     if (!next) return;
     setView(next.view);
   };
+  React.useEffect(() => {
+    if (view !== "agents") return;
+    const next = window.MobKitFlowController.agentDefaultSelectionProjection({
+      selection: agentSel,
+      members: studio.members,
+      schemas: studio.schemas,
+      agentView: catalogs.agentView,
+    });
+    if ((next?.kind || null) === (agentSel?.kind || null) && (next?.id || null) === (agentSel?.id || null)) {
+      return;
+    }
+    setAgentSel(next);
+  }, [view, agentSel, studio.members, studio.schemas, catalogs.agentView]);
   const handleEditorModeSelection = (target) => {
     const next = window.MobKitFlowController.editorModeTransition(target);
     if (!next) return;

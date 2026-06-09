@@ -11,7 +11,7 @@ NC     := \033[0m
 
 # ── meta ──────────────────────────────────────────────────────
 
-.PHONY: all build release test test-python test-all lint fmt fmt-check \
+.PHONY: all build release test test-python test-flow-editor test-all lint fmt fmt-check \
         audit ci ci-smoke check doc doc-open coverage clean \
         install-hooks uninstall-hooks pre-commit-all update outdated \
         verify-version-parity bump-sdk-versions publish-dry-run-python \
@@ -43,7 +43,13 @@ test-python: ## Run Python SDK tests
 	PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -q
 	@echo "$(GREEN)Python SDK tests passed.$(NC)"
 
-test-all: test test-python ## Run all tests (Rust + Python)
+test-flow-editor: ## Run Flow Editor source, projection, visual, and embedded freshness contracts
+	@echo "$(YELLOW)Running Flow Editor tests…$(NC)"
+	npm --prefix flow-editor run test:controller --silent
+	npm --prefix flow-editor run test:visual-contract --silent
+	@echo "$(GREEN)Flow Editor tests passed.$(NC)"
+
+test-all: test test-python test-flow-editor ## Run all tests (Rust + Python + Flow Editor)
 
 # ── lint / format ─────────────────────────────────────────────
 
