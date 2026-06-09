@@ -1058,6 +1058,7 @@ assert.match(app, /React\.useEffect\(\(\) => \{[\s\S]*let cancelled = false;[\s\
 assert(!/deployCommandPreview\(deploySettings[\s\S]{0,220}(?:<pack\.mobpack>|<prompt>)/.test(app), "app shell must not inject placeholder pack or prompt values into deploy command preview");
 assert.match(controller, /function deployCommandPreviewForDocument[\s\S]*document:[\s\S]*sourceDocument[\s\S]*deploy/, "controller plane must own document-backed deploy preview requests");
 assert.match(controller, /function deployCommandPreviewForDocument[\s\S]*if \(String\(options\.packPath \|\| ""\)\.trim\(\)\) request\.pack_path/, "document-backed deploy preview must only include pack_path when a real caller supplies one");
+assert.match(liveRkatE2eTest, /function validateDocumentBackedDeployPreview[\s\S]*mobkit\/mobpacks\/deploy_command[\s\S]*document[\s\S]*<pack\.mobpack>[\s\S]*documentBackedDeployPreview/, "live rkat proof must assert document-backed deploy preview derives a real pack path without placeholder copy");
 assert(!/schema\?\.profile_templates|profile_templates\s*\|\|/.test(controller), "Agent Editor definitions must hydrate from mobkit/mobpacks/catalogs agent_definitions, not compatibility profile_templates");
 assert(!/profileTemplatesFromSchema|memberFromProfileTemplate|profileTemplates:/.test(controller + "\n" + app), "Flow Editor frontend must not expose profile-template compatibility aliases");
 assert.match(controller, /definitionType[\s\S]*mobkit\/profile-member/, "Agent Editor definitions must require explicit MobKit profile-member contracts");

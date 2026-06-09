@@ -1304,6 +1304,31 @@ async function validateCustomDeploySettings(dir) {
   };
 }
 
+async function validateDocumentBackedDeployPreview(document) {
+  const preview = await rpc("mobkit/mobpacks/deploy_command", { document });
+  const argv = array(preview.argv, "documentBackedDeployPreview.argv");
+  const expectedPackName = `${String(document?.name || document?.mob_id || "mobpack")
+    .trim()
+    .replace(/\.mobpack$/i, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "mobpack"}.mobpack`;
+  if (argv.at(-2) !== expectedPackName) {
+    throw new Error(`document-backed deploy preview did not derive pack filename ${expectedPackName}: ${JSON.stringify(preview)}`);
+  }
+  if (preview.command.includes("<pack.mobpack>") || preview.command.includes("<prompt>")) {
+    throw new Error(`document-backed deploy preview leaked placeholder copy: ${JSON.stringify(preview)}`);
+  }
+  if (preview.deploy_command !== "rkat mob deploy") {
+    throw new Error(`document-backed deploy preview used the wrong deploy command: ${JSON.stringify(preview)}`);
+  }
+  return {
+    command: preview.command,
+    argvTail: argv.slice(-2),
+    source: preview.source,
+  };
+}
+
 (async () => {
   run("rkat", ["mob", "--help"]);
 
@@ -1398,6 +1423,7 @@ async function validateCustomDeploySettings(dir) {
     realmProfileDefinition: await rejectRealmProfileDefinition(),
     blankMobpackTemplate: await validateBlankMobpackTemplate(dir, catalogs),
     customDeploySettings: await validateCustomDeploySettings(dir),
+    documentBackedDeployPreview: await validateDocumentBackedDeployPreview(sample.document),
     deploy: null,
   };
 
