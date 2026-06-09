@@ -6389,13 +6389,7 @@
       const id = String(frame?.id || "");
       const canonical = canonicalFrames.get(id);
       if (id && canonical) {
-        byId.set(id, {
-          ...canonical,
-          colStart: frame.colStart ?? canonical.colStart,
-          colEnd: frame.colEnd ?? canonical.colEnd,
-          rowStart: frame.rowStart ?? canonical.rowStart,
-          rowEnd: frame.rowEnd ?? canonical.rowEnd,
-        });
+        byId.set(id, canonical);
       }
     }
     for (const frame of projected) {

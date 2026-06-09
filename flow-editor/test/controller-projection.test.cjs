@@ -6261,7 +6261,8 @@ const branchDocumentWithStaleFrame = controller.buildDocument({
 assert.deepEqual(branchDocumentWithStaleFrame.frames.map((frame) => frame.id), ["frame_branch_route"]);
 assert.equal(branchDocumentWithStaleFrame.frames[0].kind, "Branch");
 assert.equal(branchDocumentWithStaleFrame.frames[0].label, "BRANCH · 2 paths");
-assert.equal(branchDocumentWithStaleFrame.frames[0].colStart, 9);
+assert.equal(branchDocumentWithStaleFrame.frames[0].colStart, 0);
+assert.equal(branchDocumentWithStaleFrame.frames[0].colEnd, 2);
 assert.deepEqual(branchDocumentWithStaleFrame.instances.map((instance) => instance.id), ["g_branch_route", "left", "right", "j_branch_route"]);
 const exportedBranchGate = branchDocumentWithStaleFrame.instances.find((instance) => instance.id === "g_branch_route");
 assert.equal(exportedBranchGate.gateKind, "branch");
