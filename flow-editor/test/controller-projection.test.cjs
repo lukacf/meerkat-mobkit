@@ -159,6 +159,7 @@ const TEST_AGENT_ACCESS_VIEW = {
 };
 const TEST_SETTINGS_VIEW_SCHEMA = {
   panel_title: "Tweaks",
+  panel_close_label: "Close tweaks",
   load_mob_title: "Load mob",
   load_mob_label: "Mobpack",
   flow_stage_fallback: "draft",
@@ -213,6 +214,7 @@ const TEST_SETTINGS_VIEW_SCHEMA = {
 };
 const TEST_SETTINGS_VIEW = {
   panelTitle: "Tweaks",
+  panelCloseLabel: "Close tweaks",
   loadMobTitle: "Load mob",
   loadMobLabel: "Mobpack",
   flowStageFallback: "draft",
@@ -4172,6 +4174,7 @@ assert.deepEqual(tweaksState.loadableFlowOptions, [
   { value: "f_valid", label: "Valid Mob · valid" },
 ]);
 assert.equal(tweaksState.panelTitle, "Tweaks");
+assert.equal(tweaksState.panelCloseLabel, "Close tweaks");
 assert.equal(tweaksState.loadMobTitle, "Load mob");
 assert.equal(tweaksState.loadMobLabel, "Mobpack");
 assert.equal(tweaksState.canvasTitle, "Canvas");

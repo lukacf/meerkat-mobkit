@@ -1154,7 +1154,7 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     settingsView,
   });
   return (
-    <TweaksPanel title={controlState.panelTitle}>
+    <TweaksPanel title={controlState.panelTitle} closeLabel={controlState.panelCloseLabel}>
       <TweakSection title={controlState.loadMobTitle}>
         <TweakSelect
           label={controlState.loadMobLabel}

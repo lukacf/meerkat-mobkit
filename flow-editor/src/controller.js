@@ -1104,6 +1104,7 @@
     if (!view || typeof view !== "object") return null;
     const out = {
       panelTitle: String(view.panel_title || "").trim(),
+      panelCloseLabel: String(view.panel_close_label || "").trim(),
       loadMobTitle: String(view.load_mob_title || "").trim(),
       loadMobLabel: String(view.load_mob_label || "").trim(),
       flowStageFallback: String(view.flow_stage_fallback || "").trim(),
@@ -1170,6 +1171,7 @@
     const view = settingsView && typeof settingsView === "object" ? settingsView : null;
     return {
       panelTitle: String(view?.panelTitle || ""),
+      panelCloseLabel: String(view?.panelCloseLabel || ""),
       loadMobTitle: String(view?.loadMobTitle || ""),
       loadMobLabel: String(view?.loadMobLabel || ""),
       flowStageFallback: String(view?.flowStageFallback || ""),
@@ -8361,6 +8363,7 @@
     ];
     return {
       panelTitle: view.panelTitle,
+      panelCloseLabel: view.panelCloseLabel,
       loadMobTitle: view.loadMobTitle,
       loadMobLabel: view.loadMobLabel,
       canvasTitle: view.canvasTitle,

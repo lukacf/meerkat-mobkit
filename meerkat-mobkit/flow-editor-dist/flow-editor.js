@@ -1137,6 +1137,7 @@ window.MOBKIT_BOOT = {
     if (!view || typeof view !== "object") return null;
     const out = {
       panelTitle: String(view.panel_title || "").trim(),
+      panelCloseLabel: String(view.panel_close_label || "").trim(),
       loadMobTitle: String(view.load_mob_title || "").trim(),
       loadMobLabel: String(view.load_mob_label || "").trim(),
       flowStageFallback: String(view.flow_stage_fallback || "").trim(),
@@ -1203,6 +1204,7 @@ window.MOBKIT_BOOT = {
     const view = settingsView && typeof settingsView === "object" ? settingsView : null;
     return {
       panelTitle: String(view?.panelTitle || ""),
+      panelCloseLabel: String(view?.panelCloseLabel || ""),
       loadMobTitle: String(view?.loadMobTitle || ""),
       loadMobLabel: String(view?.loadMobLabel || ""),
       flowStageFallback: String(view?.flowStageFallback || ""),
@@ -8394,6 +8396,7 @@ window.MOBKIT_BOOT = {
     ];
     return {
       panelTitle: view.panelTitle,
+      panelCloseLabel: view.panelCloseLabel,
       loadMobTitle: view.loadMobTitle,
       loadMobLabel: view.loadMobLabel,
       canvasTitle: view.canvasTitle,
@@ -11132,7 +11135,7 @@ function useTweaks(defaults) {
   }, []);
   return [values, setTweak];
 }
-function TweaksPanel({ title = "Tweaks", noDeckControls = false, children }) {
+function TweaksPanel({ title = "Tweaks", closeLabel = "Close", noDeckControls = false, children }) {
   const [open, setOpen] = React.useState(false);
   const dragRef = React.useRef(null);
   const hasDeckStage = React.useMemo(
@@ -11235,7 +11238,7 @@ function TweaksPanel({ title = "Tweaks", noDeckControls = false, children }) {
       "button",
       {
         className: "twk-x",
-        "aria-label": "Close tweaks",
+        "aria-label": closeLabel,
         onMouseDown: (e) => e.stopPropagation(),
         onClick: dismiss
       },
@@ -14386,7 +14389,7 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     contract,
     settingsView
   });
-  return /* @__PURE__ */ React.createElement(TweaksPanel, { title: controlState.panelTitle }, /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.loadMobTitle }, /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement(TweaksPanel, { title: controlState.panelTitle, closeLabel: controlState.panelCloseLabel }, /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.loadMobTitle }, /* @__PURE__ */ React.createElement(
     TweakSelect,
     {
       label: controlState.loadMobLabel,

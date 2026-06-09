@@ -1216,6 +1216,7 @@ pub fn mobpack_schema_response() -> Value {
     ]);
     editor_settings_view["role_wiring_label"] = json!("Role wiring");
     editor_settings_view["role_wiring_add_label"] = json!("+ rule");
+    editor_settings_view["panel_close_label"] = json!("Close tweaks");
     editor_settings_view["advanced_label"] = json!("Advanced");
     editor_settings_view["advanced_object_required_error"] = json!("object required");
     editor_settings_view["advanced_invalid_json_error"] = json!("invalid JSON");
@@ -16837,6 +16838,10 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_settings_view"]["panel_title"],
             json!("Tweaks")
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["panel_close_label"],
+            json!("Close tweaks")
         );
         assert_eq!(
             mob_definition["editor_settings_view"]["duration_placeholder"],
