@@ -7608,11 +7608,7 @@
     const modes = [...contractModes];
     const current = String(currentMode || contractDefaultValue(contract, "dispatch_mode") || "").trim();
     if (!modes.includes(current)) modes.push(current);
-    const labels = {
-      fan_out: "fan_out — broadcast to every lane",
-      one_to_one: "one_to_one — pair inputs with lanes",
-      fan_in: "fan_in — gather upstream outputs",
-    };
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.dispatch_mode_labels);
     return modes.map((mode) => {
       const supported = contractModes.includes(mode);
       return {
@@ -7647,10 +7643,7 @@
     const modes = [...contractModes];
     const current = String(currentMode || contractDefaultValue(contract, "dependency_mode") || "").trim();
     if (!modes.includes(current)) modes.push(current);
-    const labels = {
-      all: "all — every upstream node",
-      any: "any — any upstream node",
-    };
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.dependency_mode_labels);
     return modes.map((mode) => {
       const supported = contractModes.includes(mode);
       return {
@@ -7678,11 +7671,7 @@
     const policies = [...contractPolicies];
     const current = String(currentPolicy || contractDefaultValue(contract, "collection_policy") || "").trim();
     if (!policies.includes(current)) policies.push(current);
-    const labels = {
-      all: "all — wait for every branch",
-      any: "any — accept the first completed branch",
-      quorum: "quorum — require N branches",
-    };
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.collection_policy_labels);
     return policies.map((policy) => {
       const supported = contractPolicies.includes(policy);
       return {

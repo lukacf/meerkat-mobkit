@@ -169,6 +169,14 @@ fn dispatch_mode_values() -> Vec<String> {
     ])
 }
 
+fn dispatch_mode_labels() -> Value {
+    json!({
+        "fan_out": "fan_out — broadcast to every lane",
+        "one_to_one": "one_to_one — pair inputs with lanes",
+        "fan_in": "fan_in — gather upstream outputs"
+    })
+}
+
 fn collection_policy_values() -> Vec<String> {
     serialized_tag_values::<CollectionPolicy>(
         "type",
@@ -180,8 +188,23 @@ fn collection_policy_values() -> Vec<String> {
     )
 }
 
+fn collection_policy_labels() -> Value {
+    json!({
+        "all": "all — wait for every branch",
+        "any": "any — accept the first completed branch",
+        "quorum": "quorum — require N branches"
+    })
+}
+
 fn dependency_mode_values() -> Vec<String> {
     serialized_string_values(vec![DependencyMode::All, DependencyMode::Any])
+}
+
+fn dependency_mode_labels() -> Value {
+    json!({
+        "all": "all — every upstream node",
+        "any": "any — any upstream node"
+    })
 }
 
 fn step_output_format_values() -> Vec<String> {
@@ -1621,6 +1644,9 @@ pub fn mobpack_schema_response() -> Value {
     mob_definition["editor_input_step_draft"] = editor_input_step_draft_contract();
     mob_definition["deploy_runtime_mode_compatibility"] = deploy_runtime_mode_compatibility();
     mob_definition["runtime_mode_labels"] = runtime_mode_labels();
+    mob_definition["dispatch_mode_labels"] = dispatch_mode_labels();
+    mob_definition["collection_policy_labels"] = collection_policy_labels();
+    mob_definition["dependency_mode_labels"] = dependency_mode_labels();
     json!({
         "schema_version": MOBPACK_SCHEMA_VERSION,
         "media_type": MOBPACK_MEDIA_TYPE,
@@ -16572,6 +16598,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["dispatch_modes"],
             json!(dispatch_mode_values())
+        );
+        assert_eq!(
+            mob_definition["dispatch_mode_labels"]["fan_out"],
+            json!("fan_out — broadcast to every lane")
+        );
+        assert_eq!(
+            mob_definition["collection_policy_labels"]["quorum"],
+            json!("quorum — require N branches")
+        );
+        assert_eq!(
+            mob_definition["dependency_mode_labels"]["any"],
+            json!("any — any upstream node")
         );
         assert_eq!(
             mob_definition["profile_backends"],

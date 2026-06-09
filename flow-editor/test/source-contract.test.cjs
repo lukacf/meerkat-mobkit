@@ -554,10 +554,16 @@ assert.match(controller, /function flowStepMemberRolePatch/, "controller plane m
 assert.match(controller, /function flowStepDispatchModePatch/, "controller plane must own Basic member dispatch-mode patch semantics");
 assert.match(controller, /function flowStepParallelDispatchPatch/, "controller plane must own Basic parallel dispatch patch semantics");
 assert.match(controller, /function dispatchModeAllowed/, "controller plane must validate dispatch writes against MobKit dispatch_modes");
+assert.match(controller, /dispatch_mode_labels/, "dispatch-mode labels must hydrate from the MobKit schema contract");
+assert(!/fan_out:\s*["']fan_out[^"']*broadcast to every lane|one_to_one:\s*["']one_to_one[^"']*pair inputs with lanes|fan_in:\s*["']fan_in[^"']*gather upstream outputs/.test(controller), "controller plane must not hard-code dispatch-mode display labels");
 assert.match(controller, /function flowStepCollectionPatch/, "controller plane must own Basic collection-policy patch semantics");
 assert.match(controller, /function collectionPolicyAllowed/, "controller plane must validate collection writes against MobKit collection_policies");
+assert.match(controller, /collection_policy_labels/, "collection-policy labels must hydrate from the MobKit schema contract");
+assert(!/quorum:\s*["']quorum[^"']*require N branches|any:\s*["']any[^"']*accept the first completed branch/.test(controller), "controller plane must not hard-code collection-policy display labels");
 assert.match(controller, /function flowStepDependencyModePatch/, "controller plane must own Basic dependency-mode patch semantics");
 assert.match(controller, /function dependencyModeAllowed/, "controller plane must validate dependency writes against MobKit dependency_modes");
+assert.match(controller, /dependency_mode_labels/, "dependency-mode labels must hydrate from the MobKit schema contract");
+assert(!/all:\s*["']all[^"']*every upstream node|any:\s*["']any[^"']*any upstream node/.test(controller), "controller plane must not hard-code dependency-mode display labels");
 assert.match(controller, /function flowStepOutputFormatPatch/, "controller plane must own Basic output-format patch semantics");
 assert.match(controller, /function outputFormatAllowed/, "controller plane must validate output-format writes against MobKit step_output_formats");
 assert.match(controller, /function flowStepAllowedToolsPatch/, "controller plane must own Basic allowed-tools patch semantics");

@@ -7329,8 +7329,22 @@ const graphShapeContract = {
     launch_modes: ["fresh", "resume", "fork"],
     runtime_modes: ["autonomous_host", "turn_driven"],
     dispatch_modes: ["fan_out", "one_to_one", "fan_in"],
+    dispatch_mode_labels: {
+      fan_out: "fan_out — broadcast to every lane",
+      one_to_one: "one_to_one — pair inputs with lanes",
+      fan_in: "fan_in — gather upstream outputs",
+    },
     collection_policies: ["all", "any", "quorum"],
+    collection_policy_labels: {
+      all: "all — wait for every branch",
+      any: "any — accept the first completed branch",
+      quorum: "quorum — require N branches",
+    },
     dependency_modes: ["all", "any"],
+    dependency_mode_labels: {
+      all: "all — every upstream node",
+      any: "any — any upstream node",
+    },
     condition_operators: ["==", ">", "<"],
     editor_schema_field_types: ["string", "enum"],
     editor_input_param_draft: {
@@ -9236,13 +9250,16 @@ assert.equal(branchParallelControlState.branchConditionTitle, "Branch conditions
 assert.equal(branchParallelControlState.fallbackTitle, "Fallback");
 assert.equal(branchParallelControlState.dispatchLabel, "Dispatch mode");
 assert.equal(branchParallelControlState.dispatchValue, "fan_out");
+assert.equal(branchParallelControlState.dispatchOptions[0].label, "fan_out — broadcast to every lane");
 assert.equal(branchParallelControlState.collectionLabel, "Collection policy (fan_in)");
 assert.equal(branchParallelControlState.collectionValue, "quorum");
+assert.equal(branchParallelControlState.collectionOptions[2].label, "quorum — require N branches");
 assert.equal(branchParallelControlState.showQuorum, true);
 assert.equal(branchParallelControlState.quorumLabel, "Quorum (N)");
 assert.equal(branchParallelControlState.quorumPlaceholder, "required");
 assert.equal(branchParallelControlState.dependencyLabel, "depends_on mode");
 assert.equal(branchParallelControlState.dependencyValue, "custom_dependency");
+assert.equal(branchParallelControlState.dependencyOptions[1].label, "any — any upstream node");
 assert.equal(branchParallelControlState.selectedDependency.disabled, true);
 assert.match(branchParallelControlState.selectedDependency.reason, /dependency_modes/);
 const basicBranchControlState = controller.basicBranchParallelControlState({
