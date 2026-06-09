@@ -1512,6 +1512,16 @@ pub fn mobpack_schema_response() -> Value {
     mob_definition["editor_deploy_view"] = editor_deploy_view;
     mob_definition["editor_settings_view"] = editor_settings_view;
     mob_definition["editor_launch_view"] = editor_launch_view;
+    mob_definition["editor_input_step_draft"] = json!({
+        "document_path": "document.flow.steps[type=input]",
+        "default_step": {
+            "id": "input",
+            "type": "input",
+            "task": "Run the mobpack flow.",
+            "fields": "",
+            "inputParams": []
+        }
+    });
     json!({
         "schema_version": MOBPACK_SCHEMA_VERSION,
         "media_type": MOBPACK_MEDIA_TYPE,
@@ -16166,6 +16176,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_input_param_draft"]["document_path"],
             json!("document.flow.steps[type=input].inputParams")
+        );
+        assert_eq!(
+            mob_definition["editor_input_step_draft"]["document_path"],
+            json!("document.flow.steps[type=input]")
+        );
+        assert_eq!(
+            mob_definition["editor_input_step_draft"]["default_step"]["id"],
+            json!("input")
+        );
+        assert_eq!(
+            mob_definition["editor_input_step_draft"]["default_step"]["task"],
+            json!("Run the mobpack flow.")
         );
         assert_eq!(
             mob_definition["editor_input_param_draft"]["archive_path"],

@@ -6585,13 +6585,7 @@
   function graphToFlow({ instances, edges, members, previousFlow, contract }) {
     const edgeKinds = graphProjectionEdgeKinds(contract);
     const prior = previousFlow || {};
-    const inputStep = (prior.steps || []).find((step) => step.type === "input") || {
-      id: uniqueFlowStepId("input", prior),
-      type: "input",
-      task: "Run the mobpack flow.",
-      fields: "",
-      inputParams: [],
-    };
+    const inputStep = (prior.steps || []).find((step) => step.type === "input") || inputStepDraft(contract, prior);
     const priorStepById = new Map();
     collectVisualSteps(prior.steps || [], (step) => {
       if (step?.id) priorStepById.set(step.id, step);
@@ -8365,6 +8359,31 @@
     const addedField = editorSchemaDraftField(draft.added_field);
     if (!schemaFieldType || !addedField) return null;
     return { schemaFieldType, addedField };
+  }
+
+  function editorInputStepDraftContract(contract) {
+    const draft = contract?.mob_definition?.editor_input_step_draft;
+    const step = draft?.default_step;
+    if (!step || typeof step !== "object") return null;
+    const idPrefix = String(step.id || "").trim();
+    if (!idPrefix) return null;
+    return {
+      idPrefix,
+      task: String(step.task || ""),
+      fields: String(step.fields || ""),
+      inputParams: Array.isArray(step.inputParams) ? JSON.parse(JSON.stringify(step.inputParams)) : [],
+    };
+  }
+
+  function inputStepDraft(contract, flow) {
+    const draft = editorInputStepDraftContract(contract);
+    return {
+      id: uniqueFlowStepId(draft?.idPrefix || "input", flow),
+      type: "input",
+      task: draft?.task || "",
+      fields: draft?.fields || "",
+      inputParams: Array.isArray(draft?.inputParams) ? JSON.parse(JSON.stringify(draft.inputParams)) : [],
+    };
   }
 
   function editorSchemaFieldNameFallback(contract) {

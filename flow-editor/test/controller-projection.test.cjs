@@ -2640,7 +2640,7 @@ const flowWithoutPriorInput = controller.graphToFlow({
 assert.deepEqual(flowWithoutPriorInput.steps, [{
   id: "input_2",
   type: "input",
-  task: "Run the mobpack flow.",
+  task: "",
   fields: "",
   inputParams: [],
 }]);
@@ -6671,6 +6671,15 @@ const graphShapeContract = {
     graph_terminal_kinds: ["success", "failed", "human"],
     graph_edge_kinds: ["next", "fanout", "cond"],
     editor_graph_draft: testEditorGraphDraft,
+    editor_input_step_draft: {
+      default_step: {
+        id: "input",
+        type: "input",
+        task: "Run the mobpack flow.",
+        fields: "",
+        inputParams: [],
+      },
+    },
     editor_flow_step_types: ["repeat", "branch", "parallel"],
     launch_modes: ["fresh", "resume", "fork"],
     runtime_modes: ["autonomous_host", "turn_driven"],
@@ -6702,6 +6711,23 @@ assert.equal(controller.contractDefaultValue(graphShapeContract, "graph_conditio
 assert.equal(controller.contractDefaultValue(graphShapeContract, "graph_fanout_edge_kind"), "fanout");
 assert.equal(controller.contractDefaultValue(graphShapeContract, "graph_terminal_kind"), "success");
 assert.equal(controller.contractDefaultValue(graphShapeContract, "runtime_mode"), "turn_driven");
+const schemaDraftInputFlow = controller.graphToFlow({
+  previousFlow: {
+    name: "schema-input",
+    steps: [{ id: "input_1", type: "member", role: "m_reviewer" }],
+  },
+  members,
+  instances: [],
+  edges: [],
+  contract: graphShapeContract,
+});
+assert.deepEqual(schemaDraftInputFlow.steps, [{
+  id: "input_2",
+  type: "input",
+  task: "Run the mobpack flow.",
+  fields: "",
+  inputParams: [],
+}]);
 
 const customProjectionContract = {
   mob_definition: {

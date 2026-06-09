@@ -511,6 +511,9 @@ assert.match(builder, /MobKitFlowController\.inputParamDeleteCascadePatch/, "Bas
 assert.match(builder, /MobKitFlowController\.inputParamRenameCascadePatch/, "Basic editor must rename input params through the controller cascade plane");
 assert.match(builder, /MobKitFlowController\.inputParamAddPatch/, "Basic editor must add input params through the controller plane");
 assert.match(controller, /function inputParamAddPatch/, "controller plane must own schema-backed input-param creation");
+assert.match(controller, /function editorInputStepDraftContract/, "controller plane must hydrate missing input-step drafts from MobKit schema");
+assert.match(controller, /graphToFlow[\s\S]*inputStepDraft\(contract,\s*prior\)/, "Graph-to-Basic projection must create missing input steps from MobKit schema draft state");
+assert(!/Run the mobpack flow\./.test(controller), "controller plane must not own the local input task draft string");
 assert.match(controller, /function inputParamRenameCascadePatch/, "controller plane must own input-param rename cascade semantics");
 assert.match(controller, /function inputParamDeleteCascadePatch/, "controller plane must own input-param delete cascade semantics");
 assert.match(controller, /inputParamRenameCascadePatch[\s\S]*flowStepUpdatePatch\(flow,\s*stepId,\s*renamed\.patch\)[\s\S]*reconcileInputParamReferences\(\{/, "input-param rename cascade must update the input step and rewrite Basic/Graph references together");
@@ -1185,7 +1188,7 @@ assert(!/graphControlShape[\s\S]{0,1400}lane:\s*isBranch \? ["']condition["'] : 
 assert.match(controller, /function uniqueGraphInstanceId/, "controller plane must own graph member-instance ID collision handling");
 assert.match(controller, /function uniqueGraphEdgeId/, "controller plane must own graph edge ID collision handling");
 assert.match(controller, /id:\s*id\s*\|\|\s*uniqueGraphEdgeId\(from\.id,\s*to\.id,\s*edges\)/, "Graph connection drafts must use deterministic collision-safe edge IDs");
-assert.match(controller, /id:\s*uniqueFlowStepId\("input",\s*prior\)/, "graph-to-flow fallback input steps must use controller-owned deterministic flow-step IDs");
+assert.match(controller, /function inputStepDraft[\s\S]*id:\s*uniqueFlowStepId\(draft\?\.idPrefix \|\| "input",\s*flow\)/, "graph-to-flow fallback input steps must use controller-owned deterministic flow-step IDs from the MobKit draft");
 assert.match(controller, /function graphIsConditionEdge/, "controller plane must own graph condition edge classification");
 assert.match(controller, /graphSegmentsToFlowSteps\(\{[\s\S]*contract,[\s\S]*\}\)/, "graph-to-flow reconstruction must pass the MobKit graph contract into segment classification");
 assert.match(controller, /collection = isBranch \? "any" : collectionModeFromStepSource\(step\)/, "flow-to-graph branch joins must project MobKit branch convergence as any-collection joins");
