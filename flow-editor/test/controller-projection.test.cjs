@@ -2636,6 +2636,27 @@ const document = controller.buildDocument({
   deploySettings: testDeploySettings(),
 });
 
+const graphModeDocumentProjection = controller.authoringDocumentFromState({
+  editorMode: "advanced",
+  flow: { name: "graph-mode-doc", steps: [] },
+  studio: {
+    members,
+    schemas: [],
+    instances: [{ id: "review_step", memberId: "m_reviewer", col: 0, row: 0 }],
+    edges: [],
+    frames: [],
+    skillRealms: [],
+  },
+  currentFlow: { name: "graph-mode-doc" },
+  deploySettings: testDeploySettings(),
+  mobSettings: { backendDefault: "session" },
+});
+assert.equal(graphModeDocumentProjection.flow.steps[1].id, "review_step");
+assert.equal(graphModeDocumentProjection.flow.steps[1].role, "m_reviewer");
+assert.equal(graphModeDocumentProjection.document.flow.steps[1].id, "review_step");
+assert.equal(graphModeDocumentProjection.document.instances[0].id, "review_step");
+assert.equal(graphModeDocumentProjection.document.mob_settings.backendDefault, "session");
+
 const prunedSkillDocument = controller.buildDocument({
   flow,
   studio: {

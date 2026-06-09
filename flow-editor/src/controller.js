@@ -5896,6 +5896,48 @@
     };
   }
 
+  function authoringFlowForDocument({ editorMode, flow, instances, edges, members, contract } = {}) {
+    if (String(editorMode || "") !== "advanced") return flow;
+    return graphToFlow({
+      instances,
+      edges,
+      members,
+      previousFlow: flow,
+      contract,
+    });
+  }
+
+  function authoringDocumentFromState({ editorMode, flow, studio, currentFlow, deploySettings, mobSettings, contract } = {}) {
+    const sourceStudio = studio && typeof studio === "object" ? studio : {};
+    const effectiveFlow = authoringFlowForDocument({
+      editorMode,
+      flow,
+      instances: sourceStudio.instances,
+      edges: sourceStudio.edges,
+      members: sourceStudio.members,
+      contract,
+    });
+    const document = buildDocument({
+      flow: effectiveFlow,
+      studio: {
+        members: sourceStudio.members,
+        schemas: sourceStudio.schemas,
+        instances: sourceStudio.instances,
+        edges: sourceStudio.edges,
+        frames: sourceStudio.frames,
+        skillRealms: sourceStudio.skillRealms,
+        mobSettings,
+      },
+      currentFlow,
+      deploySettings,
+      contract,
+    });
+    return {
+      flow: effectiveFlow,
+      document,
+    };
+  }
+
   function flowForDocument(flow) {
     const source = flow && typeof flow === "object" ? flow : {};
     return {
@@ -9914,6 +9956,8 @@
     RPC_METHODS,
     configure,
     buildDocument,
+    authoringFlowForDocument,
+    authoringDocumentFromState,
     createFlowDraftFromSpec,
     flowDraftIdFromSpec,
     newFlowTemplateOptions,

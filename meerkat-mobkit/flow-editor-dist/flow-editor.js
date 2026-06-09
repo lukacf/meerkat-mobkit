@@ -5929,6 +5929,48 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function authoringFlowForDocument({ editorMode, flow, instances, edges, members, contract } = {}) {
+    if (String(editorMode || "") !== "advanced") return flow;
+    return graphToFlow({
+      instances,
+      edges,
+      members,
+      previousFlow: flow,
+      contract,
+    });
+  }
+
+  function authoringDocumentFromState({ editorMode, flow, studio, currentFlow, deploySettings, mobSettings, contract } = {}) {
+    const sourceStudio = studio && typeof studio === "object" ? studio : {};
+    const effectiveFlow = authoringFlowForDocument({
+      editorMode,
+      flow,
+      instances: sourceStudio.instances,
+      edges: sourceStudio.edges,
+      members: sourceStudio.members,
+      contract,
+    });
+    const document = buildDocument({
+      flow: effectiveFlow,
+      studio: {
+        members: sourceStudio.members,
+        schemas: sourceStudio.schemas,
+        instances: sourceStudio.instances,
+        edges: sourceStudio.edges,
+        frames: sourceStudio.frames,
+        skillRealms: sourceStudio.skillRealms,
+        mobSettings,
+      },
+      currentFlow,
+      deploySettings,
+      contract,
+    });
+    return {
+      flow: effectiveFlow,
+      document,
+    };
+  }
+
   function flowForDocument(flow) {
     const source = flow && typeof flow === "object" ? flow : {};
     return {
@@ -9947,6 +9989,8 @@ window.MOBKIT_BOOT = {
     RPC_METHODS,
     configure,
     buildDocument,
+    authoringFlowForDocument,
+    authoringDocumentFromState,
     createFlowDraftFromSpec,
     flowDraftIdFromSpec,
     newFlowTemplateOptions,
@@ -12980,23 +13024,22 @@ function App() {
   };
   const currentFlowSelection = window.MobKitFlowController.flowRegistrySelectionState(flows, currentFlowId);
   const currentFlow = currentFlowSelection.row;
-  const effectiveAuthoringFlow = () => {
-    if (editorMode !== "advanced" || !window.MobKitFlowController?.graphToFlow) return flow;
-    return window.MobKitFlowController.graphToFlow({
+  const buildDocument = () => window.MobKitFlowController.authoringDocumentFromState({
+    editorMode,
+    flow,
+    studio: {
+      members: studio.members,
+      schemas: studio.schemas,
       instances: studio.instances,
       edges: studio.edges,
-      members: studio.members,
-      previousFlow: flow,
-      contract
-    });
-  };
-  const buildDocument = () => window.MobKitFlowController.buildDocument({
-    flow: effectiveAuthoringFlow(),
-    studio: { ...studio, mobSettings },
+      frames: studio.frames,
+      skillRealms: studio.skillRealms
+    },
     currentFlow,
     deploySettings,
+    mobSettings,
     contract
-  });
+  }).document;
   const rememberCurrentDocument = (document2, validation, nextStage = stage) => {
     const persistence = window.MobKitFlowController.flowRegistryDocumentPersistence({
       currentFlowId,

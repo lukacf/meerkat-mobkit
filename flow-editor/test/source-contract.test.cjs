@@ -378,7 +378,8 @@ assert.match(controller, /function flowFromHydratedDocument/, "controller plane 
 assert.match(controller, /function graphProjectionForDocument/, "controller plane must own hydrated graph projection semantics");
 assert.match(app, /graphProjectionForFlow\(flow,\s*studio\.members,\s*contract\)/, "Basic-to-Graph live projection must use the loaded MobKit graph contract");
 assert.match(app, /graphToFlow\(\{[\s\S]*previousFlow:\s*current,[\s\S]*contract/, "Graph-to-Basic live projection must use the loaded MobKit graph contract");
-assert.match(app, /buildDocument\(\{[\s\S]*deploySettings,[\s\S]*contract/, "Mobpack document export must pass the loaded MobKit contract into controller projection");
+assert.match(app, /authoringDocumentFromState\(\{[\s\S]*editorMode,[\s\S]*flow,[\s\S]*studio:\s*\{[\s\S]*members:\s*studio\.members,[\s\S]*instances:\s*studio\.instances,[\s\S]*edges:\s*studio\.edges,[\s\S]*deploySettings,[\s\S]*mobSettings,[\s\S]*contract/, "Mobpack document export must pass Basic, Graph, Agent, deploy, mob, and contract context into controller projection");
+assert.match(controller, /function authoringDocumentFromState/, "controller plane must own current editor state to deployable mobpack document projection");
 assert.match(app, /hydrateMobpackDocumentState\(result,\s*\{[\s\S]*contractSkillRealms:[\s\S]*contract/, "Mobpack import hydration must pass the loaded MobKit contract into graph projection");
 assert.match(controller, /graphProjectionForDocument\(document,\s*members,\s*contract\)/, "controller hydration graph projection must accept the MobKit graph contract");
 assert.match(controller, /errorView\.missingEditorFlowMeta/, "controller hydration must reject MobKit documents that do not include document.flow.steps using schema-backed error metadata");
@@ -1159,7 +1160,8 @@ assert.match(controller, /id:\s*id\s*\|\|\s*uniqueGraphEdgeId\(from\.id,\s*to\.i
 assert.match(controller, /id:\s*uniqueFlowStepId\("input",\s*prior\)/, "graph-to-flow fallback input steps must use controller-owned deterministic flow-step IDs");
 assert.match(controller, /function graphIsConditionEdge/, "controller plane must own graph condition edge classification");
 assert.match(controller, /graphSegmentsToFlowSteps\(\{[\s\S]*contract,[\s\S]*\}\)/, "graph-to-flow reconstruction must pass the MobKit graph contract into segment classification");
-assert.match(app, /effectiveAuthoringFlow[\s\S]*graphToFlow\(\{[\s\S]*instances: studio\.instances,[\s\S]*edges: studio\.edges,[\s\S]*members: studio\.members,[\s\S]*previousFlow: flow,[\s\S]*contract,/, "Graph-mode export/validate/deploy must reconstruct the authoritative flow through the MobKit schema contract");
+assert.match(controller, /authoringFlowForDocument[\s\S]*graphToFlow\(\{[\s\S]*instances,[\s\S]*edges,[\s\S]*members,[\s\S]*previousFlow:\s*flow,[\s\S]*contract/, "Graph-mode export/validate/deploy must reconstruct the authoritative flow through the MobKit schema contract in the controller plane");
+assert(!/function\s+effectiveAuthoringFlow|const\s+effectiveAuthoringFlow/.test(app), "app shell must not own effective flow selection for deployable mobpack documents");
 assert(!/Math\.random\(\)|Date\.now\(\)/.test(controller), "controller authoring state must not depend on random or wall-clock IDs");
 assert(!/function\s+insertGraphControlShape|function\s+ensureGraphBranchInputParam|launchMode:\s*\{\s*kind:\s*["']Fresh["']\s*\}|dispatch:\s*["']fan_out["']|collection:\s*["']all["']/.test(app), "App shell must not hard-code graph launch/branch/fork semantics");
 assert(!/studioAppendInstancesPatch|studioAppendEdgesPatch|graphControlShape|graphMemberInstanceShape/.test(app), "App quick graph insertion must not assemble or append graph rows locally");
