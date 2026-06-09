@@ -1323,6 +1323,7 @@ assert.match(controller, /function memberToolRemoveCascadePatch/, "controller pl
 assert.match(controller, /memberToolRemoveCascadePatch[\s\S]*reconcileFlowStepToolScopes\(flow, updated\.members\)[\s\S]*reconcileGraphStepToolScopes\(instances, updated\.members\)/, "member tool removals must clear stale Basic and Graph tool scopes inside the controller plane");
 assert.match(controller, /function memberToolAccessState/, "controller plane must own Agent Editor tool-access row projection");
 assert.match(controller, /optionLabel: `\$\{label\} — \$\{desc\}`/, "controller plane must own Agent tool-add option display labels");
+assert.match(controller, /function memberToolAccessState[\s\S]*const catalogSet = new Set[\s\S]*unavailable = !catalogSet\.has\(id\)[\s\S]*tool-row--invalid/, "Agent Editor selected tool rows must mark stale non-catalog refs invalid through the controller plane");
 assert.match(controller, /function memberSkillAccessState/, "controller plane must own Agent Editor skill-access row projection");
 assert.match(controller, /function memberSkillToggleCascadePatch/, "controller plane must own member skill-toggle cascade semantics");
 assert.match(controller, /function memberSkillRemoveCascadePatch/, "controller plane must own member skill-remove cascade semantics");

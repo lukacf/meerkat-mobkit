@@ -265,14 +265,18 @@
     const metaById = new Map(catalog.map((tool) => [String(tool.id), tool]));
     const selectedTools = normalizeStringList(member?.tools);
     const selectedSet = new Set(selectedTools);
+    const catalogSet = new Set(catalog.map((tool) => String(tool.id)));
     const toolRow = (id) => {
       const meta = metaById.get(id) || null;
+      const unavailable = !catalogSet.has(id);
       return {
         id,
         name: id,
-        description: meta?.desc || view.toolMissingDescription,
+        unavailable,
+        reason: unavailable ? view.toolInvalidError : "",
+        description: unavailable ? view.toolMissingDescription : (meta?.desc || view.toolMissingDescription),
         meta,
-        className: "tool-row",
+        className: `tool-row${unavailable ? " tool-row--invalid" : ""}`,
         removeLabel: view.toolRemoveLabel,
       };
     };
