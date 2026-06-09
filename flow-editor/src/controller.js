@@ -10327,6 +10327,16 @@
     };
   }
 
+  function flowRegistryFallbackOpenTransition(selection) {
+    const fallback = selection?.fallback || null;
+    if (!fallback) return null;
+    return {
+      currentFlowId: String(fallback.currentFlowId || ""),
+      stage: fallback.stage || "draft",
+      view: fallback.view || "editor",
+    };
+  }
+
   function flowRegistryRowFromDocument({
     id,
     document,
@@ -11446,6 +11456,7 @@
     flowRegistryMarkDraftPatch,
     flowRegistryViewState,
     flowRegistrySelectionState,
+    flowRegistryFallbackOpenTransition,
     flowRegistryRowFromDocument,
     flowImportedIdFromDocument,
     flowRegistryRememberDocumentPatch,

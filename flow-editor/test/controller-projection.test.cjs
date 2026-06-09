@@ -10196,6 +10196,21 @@ assert.deepEqual(fallbackSelection.fallback, {
   stage: "draft",
   view: "editor",
 });
+assert.deepEqual(controller.flowRegistryFallbackOpenTransition(fallbackSelection), {
+  currentFlowId: "f_draft",
+  stage: "draft",
+  view: "editor",
+});
+assert.deepEqual(controller.flowRegistryFallbackOpenTransition({
+  fallback: {
+    currentFlowId: "f_partial",
+  },
+}), {
+  currentFlowId: "f_partial",
+  stage: "draft",
+  view: "editor",
+});
+assert.equal(controller.flowRegistryFallbackOpenTransition(documentSelection), null);
 
 const missingSelection = controller.flowRegistrySelectionState(selectionRows, "missing");
 assert.equal(missingSelection.found, false);

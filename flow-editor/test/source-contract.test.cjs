@@ -1460,6 +1460,10 @@ assert.match(app, /flowRegistryPersistDocumentProjection\(flows,\s*\{[\s\S]*curr
 assert.match(app, /flowRegistryPersistDocumentProjection\(flows,\s*\{[\s\S]*previousSignature:\s*persistedDocumentSig\.current,[\s\S]*skipIfUnchanged:\s*true/, "autosave persistence must let the controller projection suppress unchanged document snapshots");
 assert(!/flowRegistryRememberDocumentPatch/.test(app), "app shell must not apply flow registry document row patches locally");
 assert.match(app, /MobKitFlowController\.flowRegistrySelectionState/, "app shell must select and load registry rows through the controller plane");
+assert.match(app, /MobKitFlowController\.flowRegistryFallbackOpenTransition\(selection\)/, "app shell must apply fallback registry opens through a controller transition");
+assert.match(controller, /function flowRegistryFallbackOpenTransition/, "controller plane must own fallback registry open transitions");
+assert.match(app, /setCurrentFlowId\(transition\.currentFlowId\)[\s\S]*setStage\(transition\.stage\)[\s\S]*setView\(transition\.view\)/, "app shell must only apply the controller-projected fallback registry transition");
+assert(!/setCurrentFlowId\(selection\.fallback\.currentFlowId\)|setStage\(selection\.fallback\.stage\)|setView\(selection\.fallback\.view\)/.test(app), "app shell must not read fallback registry transition fields directly");
 assert.match(app, /MobKitFlowController\.flowRegistryCreateDraftProjection/, "app shell must derive new-flow registry rows and hydration payload through one controller projection");
 assert.match(app, /MobKitFlowController\.hydrateMobpackDocumentState/, "app shell must derive imported registry rows through controller hydration");
 assert.match(app, /const hydrationPersistence = window\.MobKitFlowController\.flowRegistryDocumentPersistence\(\{[\s\S]*currentFlowId: hydration\.id,[\s\S]*document: hydration\.document,[\s\S]*validation: hydration\.validation,[\s\S]*stage: hydration\.stage,[\s\S]*persistedDocumentSig\.current = hydrationPersistence\.signature/, "hydrated registry documents must seed the controller-owned persistence signature before UI effects can clear validation");

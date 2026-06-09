@@ -754,6 +754,19 @@ function App() {
     hydrateMobpackDocument(result, { existingRows: flows });
   };
 
+  const openFlowRegistrySelection = (selection) => {
+    if (selection?.hydration) {
+      hydrateMobpackDocument(selection.hydration.result, selection.hydration.options);
+      return true;
+    }
+    const transition = window.MobKitFlowController.flowRegistryFallbackOpenTransition(selection);
+    if (!transition) return false;
+    setCurrentFlowId(transition.currentFlowId);
+    setStage(transition.stage);
+    setView(transition.view);
+    return true;
+  };
+
   const handleImportFile = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -809,14 +822,7 @@ function App() {
           currentFlowId={currentFlowId}
           onOpen={(id) => {
             const selection = window.MobKitFlowController.flowRegistrySelectionState(flows, id);
-            if (selection.hydration) {
-              hydrateMobpackDocument(selection.hydration.result, selection.hydration.options);
-              return;
-            }
-            if (!selection.fallback) return;
-            setCurrentFlowId(selection.fallback.currentFlowId);
-            setStage(selection.fallback.stage);
-            setView(selection.fallback.view);
+            openFlowRegistrySelection(selection);
           }}
           canCreate={canCreateAuthoring}
           flowRegistryView={catalogs.flowRegistryView}
@@ -975,8 +981,7 @@ function App() {
         settingsView={catalogs.settingsView}
         onLoadFlow={(id) => {
           const selection = window.MobKitFlowController.flowRegistrySelectionState(flows, id);
-          if (!selection.hydration) return;
-          hydrateMobpackDocument(selection.hydration.result, selection.hydration.options);
+          openFlowRegistrySelection(selection);
         }}
       />
     </div>

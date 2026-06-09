@@ -10360,6 +10360,16 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function flowRegistryFallbackOpenTransition(selection) {
+    const fallback = selection?.fallback || null;
+    if (!fallback) return null;
+    return {
+      currentFlowId: String(fallback.currentFlowId || ""),
+      stage: fallback.stage || "draft",
+      view: fallback.view || "editor",
+    };
+  }
+
   function flowRegistryRowFromDocument({
     id,
     document,
@@ -11479,6 +11489,7 @@ window.MOBKIT_BOOT = {
     flowRegistryMarkDraftPatch,
     flowRegistryViewState,
     flowRegistrySelectionState,
+    flowRegistryFallbackOpenTransition,
     flowRegistryRowFromDocument,
     flowImportedIdFromDocument,
     flowRegistryRememberDocumentPatch,
@@ -14696,6 +14707,18 @@ function App() {
   const hydrateImportedDocument = (result) => {
     hydrateMobpackDocument(result, { existingRows: flows });
   };
+  const openFlowRegistrySelection = (selection2) => {
+    if (selection2?.hydration) {
+      hydrateMobpackDocument(selection2.hydration.result, selection2.hydration.options);
+      return true;
+    }
+    const transition = window.MobKitFlowController.flowRegistryFallbackOpenTransition(selection2);
+    if (!transition) return false;
+    setCurrentFlowId(transition.currentFlowId);
+    setStage(transition.stage);
+    setView(transition.view);
+    return true;
+  };
   const handleImportFile = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -14754,14 +14777,7 @@ function App() {
       currentFlowId,
       onOpen: (id) => {
         const selection2 = window.MobKitFlowController.flowRegistrySelectionState(flows, id);
-        if (selection2.hydration) {
-          hydrateMobpackDocument(selection2.hydration.result, selection2.hydration.options);
-          return;
-        }
-        if (!selection2.fallback) return;
-        setCurrentFlowId(selection2.fallback.currentFlowId);
-        setStage(selection2.fallback.stage);
-        setView(selection2.fallback.view);
+        openFlowRegistrySelection(selection2);
       },
       canCreate: canCreateAuthoring,
       flowRegistryView: catalogs.flowRegistryView,
@@ -14913,8 +14929,7 @@ function App() {
       settingsView: catalogs.settingsView,
       onLoadFlow: (id) => {
         const selection2 = window.MobKitFlowController.flowRegistrySelectionState(flows, id);
-        if (!selection2.hydration) return;
-        hydrateMobpackDocument(selection2.hydration.result, selection2.hydration.options);
+        openFlowRegistrySelection(selection2);
       }
     }
   ));
