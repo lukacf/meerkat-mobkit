@@ -2284,11 +2284,39 @@ window.MOBKIT_BOOT = {
     return { ...(flow || {}), steps };
   }
 
+  function flowStepInsertTransition(flow, laneRef, newStep, options = {}) {
+    const validation = flowStepValidation(newStep, { flow, members: options.members });
+    if (!validation.ok) {
+      return {
+        ok: false,
+        error: validation.error || "",
+        flow: flow || {},
+        selection: null,
+        picker: { open: false },
+      };
+    }
+    return {
+      ok: true,
+      error: "",
+      flow: flowStepInsertPatch(flow, laneRef, newStep, options),
+      selection: newStep.id,
+      picker: { open: false },
+    };
+  }
+
   function flowStepDeletePatch(flow, id) {
     const target = String(id || "").trim();
     const steps = flowStepRemoveFromTree(flow?.steps || [], target);
     const nextFlow = { ...(flow || {}), steps };
     return target ? reconcileDeletedFlowStepReferences(nextFlow, target) : nextFlow;
+  }
+
+  function flowStepDeleteTransition(flow, id) {
+    return {
+      flow: flowStepDeletePatch(flow, id),
+      selection: null,
+      picker: { open: false },
+    };
   }
 
   function flowStepTaskPatch(rawTask) {
@@ -11248,7 +11276,9 @@ window.MOBKIT_BOOT = {
     emptyAuthoringFlowState,
     flowStepUpdatePatch,
     flowStepInsertPatch,
+    flowStepInsertTransition,
     flowStepDeletePatch,
+    flowStepDeleteTransition,
     flowStepTaskPatch,
     flowStepInstructionPatch,
     flowStepQuorumPatch,
@@ -13497,14 +13527,17 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const insertAt = (laneRef, pick) => {
     const newStep = window.MobKitFlowController.flowStepTemplate(pick, contract, { flow, basicView });
     if (!newStep) return;
-    setFlow((f) => window.MobKitFlowController.flowStepInsertPatch(f, laneRef, newStep, { members }));
-    setSel(newStep.id);
-    setPicker({ open: false });
+    const result = window.MobKitFlowController.flowStepInsertTransition(flow, laneRef, newStep, { members });
+    if (!result.ok) return;
+    setFlow(result.flow);
+    setSel(result.selection);
+    setPicker(result.picker);
   };
   const removeStep = (id) => {
-    setFlow((f) => window.MobKitFlowController.flowStepDeletePatch(f, id));
-    setSel(null);
-    setPicker({ open: false });
+    const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
+    setFlow(result.flow);
+    setSel(result.selection);
+    setPicker(result.picker);
   };
   const openPicker = (laneRef) => setPicker({ open: true, at: laneRef });
   const onWheel = (e) => {

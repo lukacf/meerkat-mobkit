@@ -184,13 +184,17 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const insertAt = (laneRef, pick) => {
     const newStep = window.MobKitFlowController.flowStepTemplate(pick, contract, { flow, basicView });
     if (!newStep) return;
-    setFlow(f => window.MobKitFlowController.flowStepInsertPatch(f, laneRef, newStep, { members }));
-    setSel(newStep.id);
-    setPicker({ open: false });
+    const result = window.MobKitFlowController.flowStepInsertTransition(flow, laneRef, newStep, { members });
+    if (!result.ok) return;
+    setFlow(result.flow);
+    setSel(result.selection);
+    setPicker(result.picker);
   };
   const removeStep = (id) => {
-    setFlow(f => window.MobKitFlowController.flowStepDeletePatch(f, id));
-    setSel(null); setPicker({ open: false });
+    const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
+    setFlow(result.flow);
+    setSel(result.selection);
+    setPicker(result.picker);
   };
   const openPicker = (laneRef) => setPicker({ open: true, at: laneRef });
 

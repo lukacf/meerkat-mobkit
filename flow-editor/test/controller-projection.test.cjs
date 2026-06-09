@@ -9386,9 +9386,37 @@ assert.deepEqual(controller.flowStepInsertPatch(treeFlow, {
   "branch",
   "loop",
 ]);
+assert.deepEqual(controller.flowStepInsertTransition(treeFlow, {
+  lane: "main",
+  index: 1,
+}, { id: "main_member", type: "member", role: "m_main" }), {
+  ok: true,
+  error: "",
+  flow: controller.flowStepInsertPatch(treeFlow, {
+    lane: "main",
+    index: 1,
+  }, { id: "main_member", type: "member", role: "m_main" }),
+  selection: "main_member",
+  picker: { open: false },
+});
+assert.deepEqual(controller.flowStepInsertTransition(treeFlow, {
+  lane: "main",
+  index: 1,
+}, { id: "left", type: "member", role: "m_main" }), {
+  ok: false,
+  error: "flow step id already exists",
+  flow: treeFlow,
+  selection: null,
+  picker: { open: false },
+});
 assert.deepEqual(controller.flowStepDeletePatch(treeFlow, "left").steps[1].branches[0].steps, []);
 assert.deepEqual(controller.flowStepDeletePatch(treeFlow, "fallback_step").steps[1].fallback, []);
 assert.deepEqual(controller.flowStepDeletePatch(treeFlow, "loop_step").steps[2].steps, []);
+assert.deepEqual(controller.flowStepDeleteTransition(treeFlow, "left"), {
+  flow: controller.flowStepDeletePatch(treeFlow, "left"),
+  selection: null,
+  picker: { open: false },
+});
 const deletedRefFlow = controller.flowStepDeletePatch({
   name: "delete-refs",
   steps: [
