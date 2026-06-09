@@ -12954,7 +12954,7 @@ function App() {
     studio.setInstances(instances);
     studio.setEdges(edges);
     studio.setFrames(frames || []);
-  }, [flow, editorMode, contract]);
+  }, [flow, editorMode, contract, studio.members]);
   React.useEffect(() => {
     if (editorMode !== "advanced") return;
     if (!window.MobKitFlowController?.graphToFlow) return;

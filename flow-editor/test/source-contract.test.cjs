@@ -380,6 +380,7 @@ assert.match(controller, /function hydrateMobpackDocumentState/, "controller pla
 assert.match(controller, /function flowFromHydratedDocument/, "controller plane must own hydrated flow reset semantics");
 assert.match(controller, /function graphProjectionForDocument/, "controller plane must own hydrated graph projection semantics");
 assert.match(app, /graphProjectionForFlow\(flow,\s*studio\.members,\s*contract\)/, "Basic-to-Graph live projection must use the loaded MobKit graph contract");
+assert.match(app, /graphProjectionForFlow\(flow,\s*studio\.members,\s*contract\)[\s\S]*\},\s*\[flow,\s*editorMode,\s*contract,\s*studio\.members\]\);/, "Basic-to-Graph live projection must rerun when Agent editor member definitions change");
 assert.match(app, /graphToFlow\(\{[\s\S]*previousFlow:\s*current,[\s\S]*contract/, "Graph-to-Basic live projection must use the loaded MobKit graph contract");
 assert.match(app, /authoringDocumentFromState\(\{[\s\S]*editorMode,[\s\S]*flow,[\s\S]*studio:\s*\{[\s\S]*members:\s*studio\.members,[\s\S]*instances:\s*studio\.instances,[\s\S]*edges:\s*studio\.edges,[\s\S]*deploySettings,[\s\S]*mobSettings,[\s\S]*contract/, "Mobpack document export must pass Basic, Graph, Agent, deploy, mob, and contract context into controller projection");
 assert.match(controller, /function authoringDocumentFromState/, "controller plane must own current editor state to deployable mobpack document projection");
