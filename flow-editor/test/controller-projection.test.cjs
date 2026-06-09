@@ -6184,6 +6184,19 @@ const invalidOutcome = controller.validationOutcome({ mob_id: "validate_me" }, {
 });
 assert.equal(invalidOutcome.stage, "draft");
 assert.equal(invalidOutcome.validationRows[0].kind, "crit");
+assert.deepEqual(controller.validationSheetOpenTransition(), { validate: true });
+assert.deepEqual(controller.validationSheetCloseTransition(), { validate: false });
+assert.deepEqual(controller.deployPlanTraceReadyTransition({ mob_id: "trace_me" }, { plan_trace: [] }), {
+  drySim: true,
+  drySimDocument: { mob_id: "trace_me" },
+  drySimPlan: { plan_trace: [] },
+  incrementDrySimKey: true,
+});
+assert.deepEqual(controller.deployPlanTraceCloseTransition(), { drySim: false });
+assert.deepEqual(controller.apiOverlayClearTransition(), {
+  drySim: false,
+  validate: false,
+});
 
 const publishOutcome = controller.exportOutcome({ mob_id: "publish_me" }, {
   content_base64: "cGFjaw==",

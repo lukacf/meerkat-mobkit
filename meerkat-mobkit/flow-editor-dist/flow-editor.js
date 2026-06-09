@@ -9986,6 +9986,34 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function validationSheetOpenTransition() {
+    return { validate: true };
+  }
+
+  function validationSheetCloseTransition() {
+    return { validate: false };
+  }
+
+  function deployPlanTraceReadyTransition(document, plan) {
+    return {
+      drySim: true,
+      drySimDocument: document || null,
+      drySimPlan: plan || null,
+      incrementDrySimKey: true,
+    };
+  }
+
+  function deployPlanTraceCloseTransition() {
+    return { drySim: false };
+  }
+
+  function apiOverlayClearTransition() {
+    return {
+      drySim: false,
+      validate: false,
+    };
+  }
+
   function errorMessage(error) {
     return error?.message || String(error || "");
   }
@@ -11558,6 +11586,11 @@ window.MOBKIT_BOOT = {
     validationOutcome,
     exportOutcome,
     deployOutcome,
+    validationSheetOpenTransition,
+    validationSheetCloseTransition,
+    deployPlanTraceReadyTransition,
+    deployPlanTraceCloseTransition,
+    apiOverlayClearTransition,
     criticalErrorOutcome,
     deployErrorOutcome,
     sourceErrorOutcome,
@@ -14158,6 +14191,14 @@ function App() {
     if (Object.prototype.hasOwnProperty.call(next, "inlineSourceDocument")) setInlineSourceDocument(next.inlineSourceDocument);
     if (Object.prototype.hasOwnProperty.call(next, "inlineSourceBusy")) setInlineSourceBusy(next.inlineSourceBusy);
   }, []);
+  const applyApiOverlayPatch = React.useCallback((patch) => {
+    const next = patch && typeof patch === "object" ? patch : {};
+    if (Object.prototype.hasOwnProperty.call(next, "drySim")) setDrySim(next.drySim);
+    if (Object.prototype.hasOwnProperty.call(next, "drySimDocument")) setDrySimDocument(next.drySimDocument);
+    if (Object.prototype.hasOwnProperty.call(next, "drySimPlan")) setDrySimPlan(next.drySimPlan);
+    if (next.incrementDrySimKey) setDrySimKey((k) => k + 1);
+    if (Object.prototype.hasOwnProperty.call(next, "validate")) setValidate(next.validate);
+  }, []);
   const clearSourceProjection = React.useCallback(() => {
     sourceProjectionVersion.current += 1;
     applySourceProjectionPatch(window.MobKitFlowController.sourceProjectionClearTransition());
@@ -14381,8 +14422,7 @@ function App() {
       if (e.key === "Escape") {
         clearSelection();
         closeGraphAddMenu();
-        setDrySim(false);
-        setValidate(false);
+        applyApiOverlayPatch(window.MobKitFlowController.apiOverlayClearTransition());
         clearSourceProjection();
         if (creating) setCreating(null);
       }
@@ -14589,18 +14629,15 @@ function App() {
       const outcome = window.MobKitFlowController.deployOutcome(document2, plan, { execute: false });
       window.__mobkitFlowLastDocument = document2;
       window.__mobkitFlowLastDeployPlanTrace = plan;
-      setDrySimDocument(document2);
-      setDrySimPlan(plan);
       persistCurrentOutcome(outcome);
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
-      setDrySim(true);
-      setDrySimKey((k) => k + 1);
+      applyApiOverlayPatch(window.MobKitFlowController.deployPlanTraceReadyTransition(document2, plan));
     } catch (error) {
       if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.deployErrorOutcome(error, { execute: false, errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
-      setValidate(true);
+      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
       setStage(outcome.stage);
     } finally {
       setApiBusy(false);
@@ -14637,7 +14674,7 @@ function App() {
       if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
-      setValidate(true);
+      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
       setStage(outcome.stage);
     } finally {
       setApiBusy(false);
@@ -14661,7 +14698,7 @@ function App() {
       if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
-      setValidate(true);
+      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
       setStage(outcome.stage);
     } finally {
       applySourceProjectionPatch(window.MobKitFlowController.inlineSourceBusyTransition(false));
@@ -14699,7 +14736,7 @@ function App() {
       setStage(outcome.stage);
     } finally {
       if (requestToken === null || authoringRevisionIsCurrent(requestToken)) {
-        setValidate(true);
+        applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
       }
       setApiBusy(false);
     }
@@ -14721,12 +14758,12 @@ function App() {
       }
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
-      setValidate(false);
+      applyApiOverlayPatch(window.MobKitFlowController.validationSheetCloseTransition());
     } catch (error) {
       if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.exportErrorOutcome(error, { errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
-      setValidate(true);
+      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
       setStage(outcome.stage);
     } finally {
       setApiBusy(false);
@@ -14746,12 +14783,12 @@ function App() {
       persistCurrentOutcome(outcome);
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
-      setValidate(true);
+      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
     } catch (error) {
       if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.deployErrorOutcome(error, { execute, errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
-      setValidate(true);
+      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
       setStage(outcome.stage);
     } finally {
       setApiBusy(false);
@@ -14775,7 +14812,7 @@ function App() {
     if (hydration.ok === false) {
       setValidationResults(hydration.validationRows || []);
       setStage(hydration.stage || "draft");
-      setValidate(true);
+      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
       return;
     }
     const hydrationPersistence = window.MobKitFlowController.flowRegistryDocumentPersistence({
@@ -14837,7 +14874,7 @@ function App() {
     } catch (error) {
       const outcome = window.MobKitFlowController.importErrorOutcome(error, { filename: file.name, errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
-      setValidate(true);
+      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
       setStage(outcome.stage);
     } finally {
       setApiBusy(false);
@@ -15014,7 +15051,7 @@ function App() {
         setCreating(null);
       }
     }
-  ), /* @__PURE__ */ React.createElement(DrySim, { open: drySim, onClose: () => setDrySim(false), onActiveStep: setActiveStepId, runKey: drySimKey, document: drySimDocument, plan: drySimPlan, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(ValidateSheet, { open: validate, onClose: () => setValidate(false), onPublish: handlePublish, onDeployPlan: handleDeployPlan, onDeployRun: handleDeployRun, results: validationResults, stage, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(SourceDrawer, { open: sourceOpen, onClose: clearSourceProjection, state: sourceDocument, sourceView: catalogs.sourceView }), /* @__PURE__ */ React.createElement(
+  ), /* @__PURE__ */ React.createElement(DrySim, { open: drySim, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.deployPlanTraceCloseTransition()), onActiveStep: setActiveStepId, runKey: drySimKey, document: drySimDocument, plan: drySimPlan, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(ValidateSheet, { open: validate, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.validationSheetCloseTransition()), onPublish: handlePublish, onDeployPlan: handleDeployPlan, onDeployRun: handleDeployRun, results: validationResults, stage, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(SourceDrawer, { open: sourceOpen, onClose: clearSourceProjection, state: sourceDocument, sourceView: catalogs.sourceView }), /* @__PURE__ */ React.createElement(
     Tweaks,
     {
       t,

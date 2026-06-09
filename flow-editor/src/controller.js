@@ -9953,6 +9953,34 @@
     };
   }
 
+  function validationSheetOpenTransition() {
+    return { validate: true };
+  }
+
+  function validationSheetCloseTransition() {
+    return { validate: false };
+  }
+
+  function deployPlanTraceReadyTransition(document, plan) {
+    return {
+      drySim: true,
+      drySimDocument: document || null,
+      drySimPlan: plan || null,
+      incrementDrySimKey: true,
+    };
+  }
+
+  function deployPlanTraceCloseTransition() {
+    return { drySim: false };
+  }
+
+  function apiOverlayClearTransition() {
+    return {
+      drySim: false,
+      validate: false,
+    };
+  }
+
   function errorMessage(error) {
     return error?.message || String(error || "");
   }
@@ -11525,6 +11553,11 @@
     validationOutcome,
     exportOutcome,
     deployOutcome,
+    validationSheetOpenTransition,
+    validationSheetCloseTransition,
+    deployPlanTraceReadyTransition,
+    deployPlanTraceCloseTransition,
+    apiOverlayClearTransition,
     criticalErrorOutcome,
     deployErrorOutcome,
     sourceErrorOutcome,
