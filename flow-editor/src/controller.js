@@ -2228,6 +2228,19 @@
     return out;
   }
 
+  function flowStepById(steps, id) {
+    const target = String(id || "").trim();
+    if (!target) return null;
+    for (const step of steps || []) {
+      if (String(step?.id || "").trim() === target) return step;
+      for (const lane of childLanes(step || {})) {
+        const found = flowStepById(lane.steps || [], target);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
   function flowStepMap(steps, id, fn) {
     return (steps || []).map((step) => {
       if (step?.id === id) return fn(step);
@@ -4460,6 +4473,48 @@
     const nextName = uniqueInputParamName(params, rawName, id, editorInputParamNameFallback(contract));
     const next = (params || []).map((param) => param?.id === id ? { ...param, name: nextName } : param);
     return { name: nextName, patch: { inputParams: next, fields: inputParamSummary(next, contract) } };
+  }
+
+  function inputParamRenameCascadePatch({ flow, edges } = {}, stepId, paramId, rawName, previousName, contract) {
+    const step = flowStepById(flow?.steps || [], stepId);
+    const params = inputParamsForStep(step || {});
+    const oldName = String(previousName || params.find((param) => param?.id === paramId)?.name || "").trim();
+    const renamed = inputParamRenamePatch(params, paramId, rawName, contract);
+    const updatedFlow = flowStepUpdatePatch(flow, stepId, renamed.patch);
+    const reconciled = oldName && oldName !== renamed.name
+      ? reconcileInputParamReferences({
+        flow: updatedFlow,
+        edges,
+        oldName,
+        newName: renamed.name,
+      })
+      : { flow: updatedFlow, edges };
+    return {
+      ...renamed,
+      flow: reconciled.flow,
+      edges: reconciled.edges,
+    };
+  }
+
+  function inputParamDeleteCascadePatch({ flow, edges } = {}, stepId, paramId, contract) {
+    const step = flowStepById(flow?.steps || [], stepId);
+    const params = inputParamsForStep(step || {});
+    const deleted = inputParamDeletePatch(params, paramId, contract);
+    const updatedFlow = flowStepUpdatePatch(flow, stepId, deleted.patch);
+    const oldName = String(deleted.removed?.name || "").trim();
+    const reconciled = oldName
+      ? reconcileInputParamReferences({
+        flow: updatedFlow,
+        edges,
+        oldName,
+        newName: "",
+      })
+      : { flow: updatedFlow, edges };
+    return {
+      ...deleted,
+      flow: reconciled.flow,
+      edges: reconciled.edges,
+    };
   }
 
   function inputParamAddPatch(params, contract) {
@@ -9931,6 +9986,8 @@
     inputParamUpdatePatch,
     inputParamDeletePatch,
     inputParamRenamePatch,
+    inputParamRenameCascadePatch,
+    inputParamDeleteCascadePatch,
     inputParamAddPatch,
     parseGraphConditionVar,
     graphConditionRefForEdge,

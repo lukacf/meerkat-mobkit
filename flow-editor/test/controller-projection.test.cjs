@@ -5626,6 +5626,30 @@ assert.equal(deletedParamReferences.flow.steps[1].branches[1].condition, "");
 assert.deepEqual(deletedParamReferences.edges.map(edge => edge.cond), [null, null]);
 assert.deepEqual(deletedParamReferences.edges.map(edge => edge.label), ["", ""]);
 
+const renamedParamCascade = controller.inputParamRenameCascadePatch({
+  flow: paramReferenceFlow,
+  edges: paramReferenceEdges,
+}, "input_1", "p1", "category", "kind", null);
+assert.equal(renamedParamCascade.name, "category");
+assert.equal(renamedParamCascade.flow.steps[0].inputParams[0].name, "category");
+assert.equal(renamedParamCascade.flow.steps[0].fields, "category: string");
+assert.equal(renamedParamCascade.flow.steps[1].branches[0].cond.field, "category");
+assert.equal(renamedParamCascade.flow.steps[1].branches[0].condition, "params.category == \"docs\"");
+assert.deepEqual(renamedParamCascade.edges[0].cond, { var: "params.category", op: "==", val: "docs" });
+assert.equal(renamedParamCascade.edges[0].label, "params.category == \"docs\"");
+
+const deletedParamCascade = controller.inputParamDeleteCascadePatch({
+  flow: renamedParamCascade.flow,
+  edges: renamedParamCascade.edges,
+}, "input_1", "p1", null);
+assert.equal(deletedParamCascade.removed.name, "category");
+assert.deepEqual(deletedParamCascade.flow.steps[0].inputParams, []);
+assert.equal(deletedParamCascade.flow.steps[0].fields, "");
+assert.deepEqual(deletedParamCascade.flow.steps[1].branches[0].cond, {});
+assert.equal(deletedParamCascade.flow.steps[1].branches[0].condition, "");
+assert.deepEqual(deletedParamCascade.edges[0].cond, null);
+assert.equal(deletedParamCascade.edges[0].label, "");
+
 const generatedConditionEdge = {
   id: "e_generated_condition",
   from: "review",

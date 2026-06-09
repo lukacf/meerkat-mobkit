@@ -2261,6 +2261,19 @@ window.MOBKIT_BOOT = {
     return out;
   }
 
+  function flowStepById(steps, id) {
+    const target = String(id || "").trim();
+    if (!target) return null;
+    for (const step of steps || []) {
+      if (String(step?.id || "").trim() === target) return step;
+      for (const lane of childLanes(step || {})) {
+        const found = flowStepById(lane.steps || [], target);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
   function flowStepMap(steps, id, fn) {
     return (steps || []).map((step) => {
       if (step?.id === id) return fn(step);
@@ -4493,6 +4506,48 @@ window.MOBKIT_BOOT = {
     const nextName = uniqueInputParamName(params, rawName, id, editorInputParamNameFallback(contract));
     const next = (params || []).map((param) => param?.id === id ? { ...param, name: nextName } : param);
     return { name: nextName, patch: { inputParams: next, fields: inputParamSummary(next, contract) } };
+  }
+
+  function inputParamRenameCascadePatch({ flow, edges } = {}, stepId, paramId, rawName, previousName, contract) {
+    const step = flowStepById(flow?.steps || [], stepId);
+    const params = inputParamsForStep(step || {});
+    const oldName = String(previousName || params.find((param) => param?.id === paramId)?.name || "").trim();
+    const renamed = inputParamRenamePatch(params, paramId, rawName, contract);
+    const updatedFlow = flowStepUpdatePatch(flow, stepId, renamed.patch);
+    const reconciled = oldName && oldName !== renamed.name
+      ? reconcileInputParamReferences({
+        flow: updatedFlow,
+        edges,
+        oldName,
+        newName: renamed.name,
+      })
+      : { flow: updatedFlow, edges };
+    return {
+      ...renamed,
+      flow: reconciled.flow,
+      edges: reconciled.edges,
+    };
+  }
+
+  function inputParamDeleteCascadePatch({ flow, edges } = {}, stepId, paramId, contract) {
+    const step = flowStepById(flow?.steps || [], stepId);
+    const params = inputParamsForStep(step || {});
+    const deleted = inputParamDeletePatch(params, paramId, contract);
+    const updatedFlow = flowStepUpdatePatch(flow, stepId, deleted.patch);
+    const oldName = String(deleted.removed?.name || "").trim();
+    const reconciled = oldName
+      ? reconcileInputParamReferences({
+        flow: updatedFlow,
+        edges,
+        oldName,
+        newName: "",
+      })
+      : { flow: updatedFlow, edges };
+    return {
+      ...deleted,
+      flow: reconciled.flow,
+      edges: reconciled.edges,
+    };
   }
 
   function inputParamAddPatch(params, contract) {
@@ -9964,6 +10019,8 @@ window.MOBKIT_BOOT = {
     inputParamUpdatePatch,
     inputParamDeletePatch,
     inputParamRenamePatch,
+    inputParamRenameCascadePatch,
+    inputParamDeleteCascadePatch,
     inputParamAddPatch,
     parseGraphConditionVar,
     graphConditionRefForEdge,
@@ -12133,22 +12190,6 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   const canvasView = Math.abs(view.ty) > 1200 ? { ...view, ty: 0 } : view;
   const update = (id, patch) => setFlow((f) => window.MobKitFlowController.flowStepUpdatePatch(f, id, patch, { members }));
-  const reconcileInputParamReferences = (oldName, newName) => {
-    if (!window.MobKitFlowController?.reconcileInputParamReferences) return;
-    setFlow((current) => {
-      const reconciled = window.MobKitFlowController.reconcileInputParamReferences({
-        flow: current,
-        edges: studio?.edges || [],
-        oldName,
-        newName
-      });
-      if (reconciled.edges !== studio?.edges && studio?.setEdges) {
-        if (studio?.snap) studio.snap();
-        studio.setEdges(reconciled.edges);
-      }
-      return reconciled.flow;
-    });
-  };
   const selStep = findStep(flow.steps, sel);
   const insertAt = (laneRef, pick) => {
     const newStep = window.MobKitFlowController.flowStepTemplate(pick, contract, { flow, basicView });
@@ -12235,7 +12276,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       onPick: (pick) => insertAt(picker.at, pick),
       onClose: () => setPicker({ open: false })
     }
-  ) : selStep ? /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, step: selStep, update, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, launchView, conditionView, onInputParamReferenceChange: reconcileInputParamReferences }) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
+  ) : selStep ? /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, setFlow, step: selStep, update, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, launchView, conditionView }) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
 }
 function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract, basicView = null }) {
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
@@ -12287,23 +12328,37 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
   }
   return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-search" }, /* @__PURE__ */ React.createElement("span", { className: "bld-search__icon" }, pickerState.searchIcon), /* @__PURE__ */ React.createElement("input", { className: "bld-search__input", placeholder: pickerState.searchPlaceholder, value: q, onChange: (e) => setQ(e.target.value), autoFocus: true })), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.membersLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.iconTint }, row.icon), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub)))), !pickerState.hasConfiguredMembers && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { padding: "4px 8px" } }, pickerState.emptyMembersHint)), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.flowLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.primitiveRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.tint }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.label, row.isNew && /* @__PURE__ */ React.createElement("span", { className: "bld-opt__new" }, pickerState.newBadgeLabel)), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub))))));
 }
-function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null, onInputParamReferenceChange }) {
+function StepInspector({ studio, members, flow, setFlow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null }) {
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   if (step.type === "input") {
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
     const updateParam = (id, patch) => update(step.id, window.MobKitFlowController.inputParamUpdatePatch(params, id, patch, contract));
     const deleteParam = (id) => {
-      const result = window.MobKitFlowController.inputParamDeletePatch(params, id, contract);
-      update(step.id, result.patch);
-      if (result.removed?.name) onInputParamReferenceChange?.(result.removed.name, "");
+      setFlow((current) => {
+        const result = window.MobKitFlowController.inputParamDeleteCascadePatch({
+          flow: current,
+          edges: studio?.edges || []
+        }, step.id, id, contract);
+        if (result.edges !== studio?.edges && studio?.setEdges) {
+          if (studio?.snap) studio.snap();
+          studio.setEdges(result.edges);
+        }
+        return result.flow;
+      });
     };
     const renameParam = (id, rawName, previousName) => {
-      const result = window.MobKitFlowController.inputParamRenamePatch(params, id, rawName, contract);
-      update(step.id, result.patch);
-      if (String(previousName || "").trim() !== result.name) {
-        onInputParamReferenceChange?.(previousName, result.name);
-      }
+      setFlow((current) => {
+        const result = window.MobKitFlowController.inputParamRenameCascadePatch({
+          flow: current,
+          edges: studio?.edges || []
+        }, step.id, id, rawName, previousName, contract);
+        if (result.edges !== studio?.edges && studio?.setEdges) {
+          if (studio?.snap) studio.snap();
+          studio.setEdges(result.edges);
+        }
+        return result.flow;
+      });
     };
     const addParam = () => {
       const result = window.MobKitFlowController.inputParamAddPatch(params, contract);

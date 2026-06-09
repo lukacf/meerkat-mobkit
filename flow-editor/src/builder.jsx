@@ -159,22 +159,6 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
 
   const update = (id, patch) =>
     setFlow(f => window.MobKitFlowController.flowStepUpdatePatch(f, id, patch, { members }));
-  const reconcileInputParamReferences = (oldName, newName) => {
-    if (!window.MobKitFlowController?.reconcileInputParamReferences) return;
-    setFlow(current => {
-      const reconciled = window.MobKitFlowController.reconcileInputParamReferences({
-        flow: current,
-        edges: studio?.edges || [],
-        oldName,
-        newName,
-      });
-      if (reconciled.edges !== studio?.edges && studio?.setEdges) {
-        if (studio?.snap) studio.snap();
-        studio.setEdges(reconciled.edges);
-      }
-      return reconciled.flow;
-    });
-  };
   const selStep = findStep(flow.steps, sel);
 
   const insertAt = (laneRef, pick) => {
@@ -264,7 +248,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
             onClose={() => setPicker({ open: false })}
           />
         ) : selStep ? (
-          <StepInspector studio={studio} members={members} flow={flow} step={selStep} update={update} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} launchView={launchView} conditionView={conditionView} onInputParamReferenceChange={reconcileInputParamReferences} />
+          <StepInspector studio={studio} members={members} flow={flow} setFlow={setFlow} step={selStep} update={update} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} launchView={launchView} conditionView={conditionView} />
         ) : (
           <EmptyPanel state={viewState} />
         )}
@@ -453,23 +437,37 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
 }
 
 // ── Inspector ──
-function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null, onInputParamReferenceChange }) {
+function StepInspector({ studio, members, flow, setFlow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null }) {
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   if (step.type === "input") {
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
     const updateParam = (id, patch) => update(step.id, window.MobKitFlowController.inputParamUpdatePatch(params, id, patch, contract));
     const deleteParam = (id) => {
-      const result = window.MobKitFlowController.inputParamDeletePatch(params, id, contract);
-      update(step.id, result.patch);
-      if (result.removed?.name) onInputParamReferenceChange?.(result.removed.name, "");
+      setFlow(current => {
+        const result = window.MobKitFlowController.inputParamDeleteCascadePatch({
+          flow: current,
+          edges: studio?.edges || [],
+        }, step.id, id, contract);
+        if (result.edges !== studio?.edges && studio?.setEdges) {
+          if (studio?.snap) studio.snap();
+          studio.setEdges(result.edges);
+        }
+        return result.flow;
+      });
     };
     const renameParam = (id, rawName, previousName) => {
-      const result = window.MobKitFlowController.inputParamRenamePatch(params, id, rawName, contract);
-      update(step.id, result.patch);
-      if (String(previousName || "").trim() !== result.name) {
-        onInputParamReferenceChange?.(previousName, result.name);
-      }
+      setFlow(current => {
+        const result = window.MobKitFlowController.inputParamRenameCascadePatch({
+          flow: current,
+          edges: studio?.edges || [],
+        }, step.id, id, rawName, previousName, contract);
+        if (result.edges !== studio?.edges && studio?.setEdges) {
+          if (studio?.snap) studio.snap();
+          studio.setEdges(result.edges);
+        }
+        return result.flow;
+      });
     };
     const addParam = () => {
       const result = window.MobKitFlowController.inputParamAddPatch(params, contract);
