@@ -755,6 +755,7 @@ assert.match(controller, /newFlowTemplateOptions[\s\S]*label: hasBlankDocument \
 assert(!/blankTemplate\.trigger \|\| blankTemplate\.source \|\| ["']mobkit\/blank-mobpack["']/.test(controller), "New-flow blank option must not invent blank mobpack provenance when MobKit omits source metadata");
 assert.match(controller, /function newFlowTemplateOptions/, "controller plane must own new-flow template option projection");
 assert.match(controller, /function newFlowModalState/, "controller plane must own new-flow modal template selection and action enablement");
+assert.match(controller, /createDisabled:\s*!selectedTemplate \|\| !!selectedTemplate\.disabled/, "New flow creation must be disabled until the controller projection has a selected MobKit template row");
 assert.match(app, /newFlowView=\{catalogs\.newFlowView\}/, "New flow modal must receive schema-backed modal view chrome");
 assert.match(app, /MobKitFlowController\.newFlowModalState\(state, templateOptions, newFlowView\)/, "New flow modal must render controller-projected modal state with MobKit view chrome");
 assert.match(app, /MobKitFlowController\.flowRegistryCreateDraftProjection\(flows,\s*\{[\s\S]*blankTemplate: catalogs\.blankMobpack/, "New flow creation must pass the MobKit schema blank mobpack and registry rows into the controller plane");

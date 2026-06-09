@@ -707,6 +707,12 @@ assert.equal(controller.newFlowModalState({ step: 1, name: "   ", template: "bla
 assert.equal(controller.newFlowModalState({ step: 2, name: "Draft", template: "blank" }, [
   { id: "blank", disabled: true },
 ]).createDisabled, true);
+assert.equal(controller.newFlowModalState({ step: 2, name: "Draft", template: "" }, [
+  { id: "blank", disabled: false },
+], TEST_NEW_FLOW_VIEW).createDisabled, true);
+assert.equal(controller.newFlowModalState({ step: 2, name: "Draft", template: "ghost" }, [
+  { id: "blank", disabled: false },
+], TEST_NEW_FLOW_VIEW).createDisabled, true);
 assert.deepEqual(controller.flowRegistryViewState([
   { id: "f_existing", name: "Existing", trigger: "label · docs", version: "0.1", stage: "valid" },
   { id: "f_draft", name: "Draft", trigger: "", version: "", stage: "" },

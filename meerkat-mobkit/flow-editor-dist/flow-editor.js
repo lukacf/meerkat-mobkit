@@ -10228,7 +10228,7 @@ window.MOBKIT_BOOT = {
       trigger,
       template,
       options,
-      createDisabled: !!selectedTemplate?.disabled,
+      createDisabled: !selectedTemplate || !!selectedTemplate.disabled,
       nextDisabled: !name.trim(),
     };
   }
