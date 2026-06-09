@@ -9720,7 +9720,7 @@ window.MOBKIT_BOOT = {
       id: "blank",
       label: hasBlankDocument ? String(blankTemplate.name || "") : "Blank",
       sub: hasBlankDocument
-        ? String(blankTemplate.trigger || blankTemplate.source || "mobkit/blank-mobpack")
+        ? String(blankTemplate.trigger || blankTemplate.source || "")
         : "Waiting for MobKit blank mobpack",
       tier: hasBlankDocument ? String(blankTemplate.stage || "draft") : "draft",
       disabled: !canCreateBlank || !hasBlankDocument,

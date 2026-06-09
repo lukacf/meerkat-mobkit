@@ -626,6 +626,15 @@ assert.deepEqual(controller.newFlowTemplateOptions([
 ]);
 assert.equal(controller.newFlowTemplateOptions([], { canCreateBlank: true })[0].disabled, true);
 assert.equal(controller.newFlowTemplateOptions([], { canCreateBlank: true, blankTemplate: schemaBlankMobpack })[0].disabled, false);
+assert.equal(controller.newFlowTemplateOptions([], {
+  canCreateBlank: true,
+  blankTemplate: {
+    id: "blank",
+    name: "Blank",
+    document: { mob_id: "blank_mob" },
+    validation: { ok: true },
+  },
+})[0].sub, "");
 assert.deepEqual(controller.newFlowInitialState({ blankTemplate: schemaBlankMobpack }), {
   step: 1,
   name: "",
