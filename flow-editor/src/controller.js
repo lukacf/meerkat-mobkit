@@ -4314,6 +4314,46 @@
     return { members: nextMembers, instances: nextInstances, edges: nextEdges };
   }
 
+  function memberUpdateCascadePatch({ memberId, members, flow, instances, edges, mobSettings, contract } = {}, patch = {}) {
+    const sourceMembers = Array.isArray(members) ? members : [];
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    const sourceEdges = Array.isArray(edges) ? edges : [];
+    const normalizedMobSettings = normalizeMobSettings(mobSettings);
+    const updated = studioUpdateMemberPatch({ members: sourceMembers, contract }, memberId, patch);
+    if (!updated.ok) {
+      return {
+        ok: false,
+        error: updated.error || "",
+        patch: null,
+        member: null,
+        members: sourceMembers,
+        flow,
+        instances: sourceInstances,
+        edges: sourceEdges,
+        mobSettings: normalizedMobSettings,
+      };
+    }
+    const reconciled = reconcileAuthoringForMembers({
+      flow,
+      instances: sourceInstances,
+      edges: sourceEdges,
+      mobSettings: normalizedMobSettings,
+      previousMembers: sourceMembers,
+      members: updated.members,
+    });
+    return {
+      ok: true,
+      error: "",
+      patch,
+      member: updated.member,
+      members: updated.members,
+      flow: reconciled.flow,
+      instances: reconciled.instances,
+      edges: reconciled.edges,
+      mobSettings: reconciled.mobSettings,
+    };
+  }
+
   function memberDeleteCascadePatch({ memberId, members, instances, edges, flow, mobSettings } = {}) {
     const target = String(memberId || "").trim();
     const sourceMembers = Array.isArray(members) ? members : [];
@@ -10970,6 +11010,7 @@
     schemaFieldDeleteCascadePatch,
     studioAddMemberPatch,
     studioUpdateMemberPatch,
+    memberUpdateCascadePatch,
     studioDeleteMemberPatch,
     memberDeleteCascadePatch,
     studioAddInstancePatch,

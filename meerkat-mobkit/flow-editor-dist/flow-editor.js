@@ -4347,6 +4347,46 @@ window.MOBKIT_BOOT = {
     return { members: nextMembers, instances: nextInstances, edges: nextEdges };
   }
 
+  function memberUpdateCascadePatch({ memberId, members, flow, instances, edges, mobSettings, contract } = {}, patch = {}) {
+    const sourceMembers = Array.isArray(members) ? members : [];
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    const sourceEdges = Array.isArray(edges) ? edges : [];
+    const normalizedMobSettings = normalizeMobSettings(mobSettings);
+    const updated = studioUpdateMemberPatch({ members: sourceMembers, contract }, memberId, patch);
+    if (!updated.ok) {
+      return {
+        ok: false,
+        error: updated.error || "",
+        patch: null,
+        member: null,
+        members: sourceMembers,
+        flow,
+        instances: sourceInstances,
+        edges: sourceEdges,
+        mobSettings: normalizedMobSettings,
+      };
+    }
+    const reconciled = reconcileAuthoringForMembers({
+      flow,
+      instances: sourceInstances,
+      edges: sourceEdges,
+      mobSettings: normalizedMobSettings,
+      previousMembers: sourceMembers,
+      members: updated.members,
+    });
+    return {
+      ok: true,
+      error: "",
+      patch,
+      member: updated.member,
+      members: updated.members,
+      flow: reconciled.flow,
+      instances: reconciled.instances,
+      edges: reconciled.edges,
+      mobSettings: reconciled.mobSettings,
+    };
+  }
+
   function memberDeleteCascadePatch({ memberId, members, instances, edges, flow, mobSettings } = {}) {
     const target = String(memberId || "").trim();
     const sourceMembers = Array.isArray(members) ? members : [];
@@ -11003,6 +11043,7 @@ window.MOBKIT_BOOT = {
     schemaFieldDeleteCascadePatch,
     studioAddMemberPatch,
     studioUpdateMemberPatch,
+    memberUpdateCascadePatch,
     studioDeleteMemberPatch,
     memberDeleteCascadePatch,
     studioAddInstancePatch,
@@ -12618,7 +12659,30 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
   return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentDetailView, agentAccessView });
 }
 function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDetailView = null, agentAccessView = null }) {
-  const change = (patch) => studio.updateMember(member.id, patch);
+  const [memberEditError, setMemberEditError] = React.useState("");
+  const change = (patch) => {
+    if (!patch || typeof patch !== "object" || !Object.keys(patch).length) return;
+    const result = window.MobKitFlowController.memberUpdateCascadePatch({
+      memberId: member.id,
+      members: studio.members,
+      flow,
+      instances: studio.instances,
+      edges: studio.edges,
+      mobSettings,
+      contract
+    }, patch);
+    if (!result.ok) {
+      setMemberEditError(result.error || "");
+      return;
+    }
+    if (studio.snap) studio.snap();
+    studio.setMembers(result.members);
+    if (result.flow !== flow && setFlow) setFlow(result.flow);
+    if (result.instances !== studio.instances) studio.setInstances(result.instances);
+    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    if (result.mobSettings !== mobSettings && setMobSettings) setMobSettings(result.mobSettings);
+    setMemberEditError("");
+  };
   const [toolDraft, setToolDraft] = React.useState("");
   const [toolDraftError, setToolDraftError] = React.useState("");
   const [schemaChangeResult, setSchemaChangeResult] = React.useState(null);
@@ -12691,7 +12755,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       value: member.name,
       onChange: (e) => change(window.MobKitFlowController.memberNamePatch(e.target.value))
     }
-  ), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
+  ), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.idLine), memberEditError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, memberEditError)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
     if (editorState.deleteNeedsConfirmation) {
       if (!confirm(editorState.deleteConfirmMessage)) return;
     }

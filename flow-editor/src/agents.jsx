@@ -186,7 +186,30 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
 
 // ── Agent editor ────────────────────────────────────────────────────
 function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDetailView = null, agentAccessView = null }) {
-  const change = (patch) => studio.updateMember(member.id, patch);
+  const [memberEditError, setMemberEditError] = React.useState("");
+  const change = (patch) => {
+    if (!patch || typeof patch !== "object" || !Object.keys(patch).length) return;
+    const result = window.MobKitFlowController.memberUpdateCascadePatch({
+      memberId: member.id,
+      members: studio.members,
+      flow,
+      instances: studio.instances,
+      edges: studio.edges,
+      mobSettings,
+      contract,
+    }, patch);
+    if (!result.ok) {
+      setMemberEditError(result.error || "");
+      return;
+    }
+    if (studio.snap) studio.snap();
+    studio.setMembers(result.members);
+    if (result.flow !== flow && setFlow) setFlow(result.flow);
+    if (result.instances !== studio.instances) studio.setInstances(result.instances);
+    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    if (result.mobSettings !== mobSettings && setMobSettings) setMobSettings(result.mobSettings);
+    setMemberEditError("");
+  };
   const [toolDraft, setToolDraft] = React.useState("");
   const [toolDraftError, setToolDraftError] = React.useState("");
   const [schemaChangeResult, setSchemaChangeResult] = React.useState(null);
@@ -265,6 +288,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
               onChange={e => change(window.MobKitFlowController.memberNamePatch(e.target.value))}
             />
             <div className="inspector__id">{editorState.idLine}</div>
+            {memberEditError && <div className="hint__line" style={{ color: "var(--danger)" }}>{memberEditError}</div>}
           </div>
           <button className="btn btn--ghost btn--sm" onClick={() => {
             if (editorState.deleteNeedsConfirmation) {

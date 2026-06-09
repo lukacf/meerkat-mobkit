@@ -3590,6 +3590,73 @@ assert.deepEqual(aggregateMemberReconcile.edges.map((edge) => edge.id), ["keep_j
 assert.equal(aggregateMemberReconcile.mobSettings.orchestrator, "reviewer");
 assert.deepEqual(aggregateMemberReconcile.mobSettings.roleWiring, []);
 
+const memberUpdateCascade = controller.memberUpdateCascadePatch({
+  memberId: "m_reviewer",
+  members: [
+    { id: "m_reviewer", name: "Review Lead", role: "reviewer", tools: ["shell", "git"], schema: "ReviewArtifact" },
+  ],
+  flow: {
+    name: "member-update-cascade-proof",
+    steps: [
+      { id: "review_step", type: "member", role: "m_reviewer", allowedTools: ["shell", "git"], schema: "ReviewArtifact" },
+    ],
+  },
+  instances: [
+    { id: "review_inst", memberId: "m_reviewer", allowedTools: ["shell", "git"], schema: "ReviewArtifact" },
+  ],
+  edges: [],
+  mobSettings: {
+    orchestrator: "review_lead",
+    roleWiring: [{ a: "review_lead", b: "review_lead" }],
+  },
+}, {
+  name: "Reviewer",
+  tools: ["shell"],
+});
+assert.equal(memberUpdateCascade.ok, true);
+assert.deepEqual(memberUpdateCascade.members[0], {
+  id: "m_reviewer",
+  name: "Reviewer",
+  role: "reviewer",
+  tools: ["shell"],
+  schema: "ReviewArtifact",
+});
+assert.deepEqual(memberUpdateCascade.flow.steps[0].allowedTools, ["shell"]);
+assert.deepEqual(memberUpdateCascade.instances[0].allowedTools, ["shell"]);
+assert.equal(memberUpdateCascade.mobSettings.orchestrator, "reviewer");
+assert.deepEqual(memberUpdateCascade.mobSettings.roleWiring, [{ a: "reviewer", b: "reviewer" }]);
+assert.deepEqual(controller.memberUpdateCascadePatch({
+  memberId: "missing",
+  members: [{ id: "m_reviewer" }],
+  flow: aggregateMemberReconcile.flow,
+  instances: aggregateMemberReconcile.instances,
+  edges: aggregateMemberReconcile.edges,
+  mobSettings: { orchestrator: "reviewer" },
+}, { name: "Nope" }), {
+  ok: false,
+  error: "member not found",
+  patch: null,
+  member: null,
+  members: [{ id: "m_reviewer" }],
+  flow: aggregateMemberReconcile.flow,
+  instances: aggregateMemberReconcile.instances,
+  edges: aggregateMemberReconcile.edges,
+  mobSettings: {
+    orchestrator: "reviewer",
+    autoWireOrchestrator: false,
+    roleWiring: [],
+    backendDefault: "",
+    externalAddressBase: "",
+    advanced: {
+      topology: null,
+      supervisor: null,
+      limits: null,
+      spawnPolicy: null,
+      eventRouter: null,
+    },
+  },
+});
+
 const aggregateContractReconcile = controller.reconcileAuthoringWithContract({
   contractLoaded: true,
   contract: {
