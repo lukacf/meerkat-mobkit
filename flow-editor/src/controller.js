@@ -9861,6 +9861,20 @@
     };
   }
 
+  function topRailNavigationTransition(currentView, target) {
+    const view = String(currentView || "editor");
+    switch (String(target || "")) {
+      case "flows-tab":
+        return { view: view === "editor" ? "flows" : "editor" };
+      case "agents-tab":
+        return { view: "agents" };
+      case "flows-crumb":
+        return { view: "flows" };
+      default:
+        return null;
+    }
+  }
+
   function validationOutcome(document, result) {
     const validation = result || null;
     return {
@@ -11434,6 +11448,7 @@
     validationSheetState,
     deployPlanTraceState,
     topRailState,
+    topRailNavigationTransition,
     validationOutcome,
     exportOutcome,
     deployOutcome,

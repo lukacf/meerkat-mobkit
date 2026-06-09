@@ -563,6 +563,11 @@ assert.equal(controller.topRailState({
   view: "editor",
   deployView: TEST_DEPLOY_VIEW,
 }).contractState, "api error");
+assert.deepEqual(controller.topRailNavigationTransition("editor", "flows-tab"), { view: "flows" });
+assert.deepEqual(controller.topRailNavigationTransition("flows", "flows-tab"), { view: "editor" });
+assert.deepEqual(controller.topRailNavigationTransition("agents", "agents-tab"), { view: "agents" });
+assert.deepEqual(controller.topRailNavigationTransition("editor", "flows-crumb"), { view: "flows" });
+assert.equal(controller.topRailNavigationTransition("editor", "missing"), null);
 
 assert.equal(controller.buildBlankDocument, undefined, "blank mobpack documents must come from MobKit schema, not a local builder");
 

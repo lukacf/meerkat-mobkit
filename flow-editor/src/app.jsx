@@ -359,6 +359,11 @@ function App() {
     setView(next.view);
     setAgentSel(next.selection);
   };
+  const handleTopRailNavigation = (target) => {
+    const next = window.MobKitFlowController.topRailNavigationTransition(view, target);
+    if (!next) return;
+    setView(next.view);
+  };
 
   const applyAuthoringDocumentProjection = (projection) => {
     const plan = window.MobKitFlowController.authoringProjectionApplyPlan(projection, {
@@ -791,9 +796,9 @@ function App() {
   return (
     <div className={"app density--" + t.density + " inspector--" + t.inspectorLayout + " view--" + view}>
       <TopRail
-        studio={studio} stage={stage}
-        view={view} setView={setView}
-        editorMode={editorMode} setEditorMode={setEditorMode}
+        stage={stage}
+        view={view}
+        onNavigate={handleTopRailNavigation}
         currentFlowName={currentFlow?.name || "—"}
         contract={contract}
         theme={t.theme}
@@ -1022,7 +1027,7 @@ async function importParamsFromFile(file) {
   });
 }
 
-function TopRail({ studio, stage, view, setView, editorMode, setEditorMode, currentFlowName, theme, railState, onToggleTheme, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDrySim, onYaml, contract, deploySettings }) {
+function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, onToggleTheme, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDrySim, onYaml, contract, deploySettings }) {
   return (
     <header className="toprail">
       <div className="brand">
@@ -1030,8 +1035,8 @@ function TopRail({ studio, stage, view, setView, editorMode, setEditorMode, curr
         <span>{railState.brandLabel}</span>
       </div>
       <nav className="viewtabs">
-        <button className={"viewtab" + (view === "flows" || view === "editor" ? " is-current" : "")} onClick={() => setView(view === "editor" ? "flows" : "editor")}>{railState.flowsTabLabel}</button>
-        <button className={"viewtab" + (view === "agents" ? " is-current" : "")} onClick={() => setView("agents")}>{railState.agentsTabLabel}</button>
+        <button className={"viewtab" + (view === "flows" || view === "editor" ? " is-current" : "")} onClick={() => onNavigate("flows-tab")}>{railState.flowsTabLabel}</button>
+        <button className={"viewtab" + (view === "agents" ? " is-current" : "")} onClick={() => onNavigate("agents-tab")}>{railState.agentsTabLabel}</button>
       </nav>
       <div className="mob-status" title={railState.mobStatusTitle}>
         <span className="glyph" />
@@ -1045,7 +1050,7 @@ function TopRail({ studio, stage, view, setView, editorMode, setEditorMode, curr
       <nav className="crumbs">
         {railState.inEditor && (
           <>
-            <button className="crumb crumb--link" onClick={() => setView("flows")}>{railState.flowsCrumbLabel}</button>
+            <button className="crumb crumb--link" onClick={() => onNavigate("flows-crumb")}>{railState.flowsCrumbLabel}</button>
             <span className="crumb crumb--sep">{railState.crumbSeparator}</span>
             <span className="crumb is-current">{currentFlowName}</span>
           </>

@@ -9894,6 +9894,20 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function topRailNavigationTransition(currentView, target) {
+    const view = String(currentView || "editor");
+    switch (String(target || "")) {
+      case "flows-tab":
+        return { view: view === "editor" ? "flows" : "editor" };
+      case "agents-tab":
+        return { view: "agents" };
+      case "flows-crumb":
+        return { view: "flows" };
+      default:
+        return null;
+    }
+  }
+
   function validationOutcome(document, result) {
     const validation = result || null;
     return {
@@ -11467,6 +11481,7 @@ window.MOBKIT_BOOT = {
     validationSheetState,
     deployPlanTraceState,
     topRailState,
+    topRailNavigationTransition,
     validationOutcome,
     exportOutcome,
     deployOutcome,
@@ -14328,6 +14343,11 @@ function App() {
     setView(next.view);
     setAgentSel(next.selection);
   };
+  const handleTopRailNavigation = (target) => {
+    const next = window.MobKitFlowController.topRailNavigationTransition(view, target);
+    if (!next) return;
+    setView(next.view);
+  };
   const applyAuthoringDocumentProjection = (projection) => {
     const plan = window.MobKitFlowController.authoringProjectionApplyPlan(projection, {
       flow,
@@ -14741,12 +14761,9 @@ function App() {
   return /* @__PURE__ */ React.createElement("div", { className: "app density--" + t.density + " inspector--" + t.inspectorLayout + " view--" + view }, /* @__PURE__ */ React.createElement(
     TopRail,
     {
-      studio,
       stage,
       view,
-      setView,
-      editorMode,
-      setEditorMode,
+      onNavigate: handleTopRailNavigation,
       currentFlowName: currentFlow?.name || "\u2014",
       contract,
       theme: t.theme,
@@ -14965,8 +14982,8 @@ async function importParamsFromFile(file) {
     contentBase64: btoa(binary)
   });
 }
-function TopRail({ studio, stage, view, setView, editorMode, setEditorMode, currentFlowName, theme, railState, onToggleTheme, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDrySim, onYaml, contract, deploySettings }) {
-  return /* @__PURE__ */ React.createElement("header", { className: "toprail" }, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "dot" }), /* @__PURE__ */ React.createElement("span", null, railState.brandLabel)), /* @__PURE__ */ React.createElement("nav", { className: "viewtabs" }, /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "flows" || view === "editor" ? " is-current" : ""), onClick: () => setView(view === "editor" ? "flows" : "editor") }, railState.flowsTabLabel), /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "agents" ? " is-current" : ""), onClick: () => setView("agents") }, railState.agentsTabLabel)), /* @__PURE__ */ React.createElement("div", { className: "mob-status", title: railState.mobStatusTitle }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.mobFileLabel), /* @__PURE__ */ React.createElement("span", { className: "env" }, "\xB7 ", railState.contractState)), /* @__PURE__ */ React.createElement("div", { className: "mob-status mob-status--env", title: railState.deployCommand }, /* @__PURE__ */ React.createElement("span", { className: "env" }, railState.deployPrefixLabel), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.deploySurface)), /* @__PURE__ */ React.createElement("nav", { className: "crumbs" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "crumb crumb--link", onClick: () => setView("flows") }, railState.flowsCrumbLabel), /* @__PURE__ */ React.createElement("span", { className: "crumb crumb--sep" }, railState.crumbSeparator), /* @__PURE__ */ React.createElement("span", { className: "crumb is-current" }, currentFlowName))), /* @__PURE__ */ React.createElement("div", { className: "actions" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), stage), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onDrySim }, railState.planTraceLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onImport }, railState.importLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onValidate }, railState.validateLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: railState.deployActionsDisabled, onClick: onPublish }, railState.publishLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", disabled: railState.deployActionsDisabled, onClick: onDeployPlan }, railState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: railState.deployActionsDisabled, onClick: onDeployRun }, railState.deployLabel)), /* @__PURE__ */ React.createElement(
+function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, onToggleTheme, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDrySim, onYaml, contract, deploySettings }) {
+  return /* @__PURE__ */ React.createElement("header", { className: "toprail" }, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "dot" }), /* @__PURE__ */ React.createElement("span", null, railState.brandLabel)), /* @__PURE__ */ React.createElement("nav", { className: "viewtabs" }, /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "flows" || view === "editor" ? " is-current" : ""), onClick: () => onNavigate("flows-tab") }, railState.flowsTabLabel), /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "agents" ? " is-current" : ""), onClick: () => onNavigate("agents-tab") }, railState.agentsTabLabel)), /* @__PURE__ */ React.createElement("div", { className: "mob-status", title: railState.mobStatusTitle }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.mobFileLabel), /* @__PURE__ */ React.createElement("span", { className: "env" }, "\xB7 ", railState.contractState)), /* @__PURE__ */ React.createElement("div", { className: "mob-status mob-status--env", title: railState.deployCommand }, /* @__PURE__ */ React.createElement("span", { className: "env" }, railState.deployPrefixLabel), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.deploySurface)), /* @__PURE__ */ React.createElement("nav", { className: "crumbs" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "crumb crumb--link", onClick: () => onNavigate("flows-crumb") }, railState.flowsCrumbLabel), /* @__PURE__ */ React.createElement("span", { className: "crumb crumb--sep" }, railState.crumbSeparator), /* @__PURE__ */ React.createElement("span", { className: "crumb is-current" }, currentFlowName))), /* @__PURE__ */ React.createElement("div", { className: "actions" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), stage), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onDrySim }, railState.planTraceLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onImport }, railState.importLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onValidate }, railState.validateLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: railState.deployActionsDisabled, onClick: onPublish }, railState.publishLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", disabled: railState.deployActionsDisabled, onClick: onDeployPlan }, railState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: railState.deployActionsDisabled, onClick: onDeployRun }, railState.deployLabel)), /* @__PURE__ */ React.createElement(
     "button",
     {
       className: "btn btn--ghost btn--sm theme-toggle",
