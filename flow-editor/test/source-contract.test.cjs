@@ -1216,6 +1216,7 @@ assert(!/MobKitFlowController\.flowRegistryAppendRowPatch/.test(app), "app shell
 assert.match(app, /MobKitFlowController\.flowRegistryUpsertRowPatch/, "app shell must upsert flow registry rows through the controller plane");
 assert(!/const\s+id\s*=\s*["']f_["']\s*\+\s*Math\.random|Math\.random\(\)[\s\S]{0,80}createFlowDraftFromSpec/.test(app), "app shell must not mint deployable new-flow ids locally");
 assert(!/const flowRegistryDraftRow|flowRegistryRowFromDocument\(\{[\s\S]{0,180}fallbackVersion:\s*["']draft["']/.test(app), "app shell must not assemble new-flow draft registry rows locally");
+assert(!/createFlowDraftFromSpec[\s\S]{0,900}fallbackVersion:\s*["']draft["']/.test(controller), "controller new-flow draft rows must not invent a draft version when MobKit document metadata omits schema_version");
 assert(!/JSON\.stringify\(document\)|stage === ["']published["']/.test(app), "app shell must not derive registry document signatures or published-to-draft transitions locally");
 assert.match(controller, /function flowRegistryMarkDraftPatch/, "controller plane must own flow registry draft semantics");
 assert.match(controller, /function flowRegistryRememberDocumentPatch/, "controller plane must own flow registry document persistence semantics");

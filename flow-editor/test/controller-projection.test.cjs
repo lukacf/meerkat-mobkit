@@ -783,6 +783,23 @@ assert.equal(templateDraft.row.trigger, "label · docs");
 assert.equal(templateDraft.row.source, "mobkit://samples/docs");
 assert.equal(templateDraft.row.document, templateDraft.document);
 
+const versionlessTemplateDraft = controller.createFlowDraftFromSpec({
+  id: "f_versionless",
+  spec: { name: "Versionless Template", trigger: "label · versionless", template: "versionless" },
+  templates: [{
+    id: "versionless",
+    name: "Versionless",
+    source: "mobkit://samples/versionless",
+    document: {
+      name: "Versionless",
+      mob_id: "versionless",
+      flow: { name: "Versionless", steps: [{ id: "input_1", type: "input", task: "", fields: "", inputParams: [] }] },
+      members: [{ id: "writer", name: "Writer", role: "writer", profileBinding: "inline", runtimeMode: "turn_driven" }],
+    },
+  }],
+});
+assert.equal(versionlessTemplateDraft.row.version, "");
+
 const blankDraft = controller.createFlowDraftFromSpec({
   id: "f_blank",
   spec: { name: "Blank Created", trigger: "label · blank", template: "blank" },

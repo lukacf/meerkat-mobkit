@@ -9666,7 +9666,6 @@ window.MOBKIT_BOOT = {
       trigger,
       source,
       validation: null,
-      fallbackVersion: "draft",
     });
     return { id: rowId, document, row, template: template || null };
   }
