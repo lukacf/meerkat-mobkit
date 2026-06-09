@@ -269,25 +269,26 @@ mod tests {
     }
 
     #[test]
-    fn flow_editor_rpc_previews_deploy_command_without_exporting_pack() {
-        let response = super::handle_flow_editor_rpc(JsonRpcRequest {
+    fn flow_editor_rpc_previews_document_backed_deploy_command() {
+        let catalogs = super::handle_flow_editor_rpc(JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(1)),
+            method: "mobkit/mobpacks/catalogs".to_string(),
+            params: Value::Null,
+        });
+        let sample = catalogs["result"]["sample_mobpacks"]
+            .as_array()
+            .expect("sample mobpacks")
+            .iter()
+            .find(|sample| sample["id"] == "sample_docs_only")
+            .expect("docs sample");
+        let response = super::handle_flow_editor_rpc(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(2)),
             method: "mobkit/mobpacks/deploy_command".to_string(),
             params: json!({
-                "deploy": {
-                    "command": "rkat mob deploy",
-                    "surface": "cli",
-                    "trust_policy": "strict",
-                    "realm_backend": "sqlite",
-                    "model": "gpt-5.5",
-                    "max_total_tokens": 128,
-                    "max_duration": "45s",
-                    "max_tool_calls": 3,
-                    "isolated": true,
-                    "prompt": "Preview prompt."
-                },
-                "pack_path": "<pack.mobpack>"
+                "document": sample["document"].clone(),
+                "prompt": "Preview prompt."
             }),
         });
 
@@ -300,13 +301,30 @@ mod tests {
             response["result"]["source"],
             json!("meerkat_mobkit::mobpack::deploy_argv")
         );
+        assert_eq!(response["result"]["filename"], json!("docs-only.mobpack"));
+        assert_eq!(response["result"]["validation"]["ok"], json!(true));
         assert!(
             response["result"]["command"]
                 .as_str()
-                .is_some_and(|command| command.contains("--trust-policy strict")
-                    && command.contains("--realm-backend sqlite")
+                .is_some_and(|command| command.contains("docs-only.mobpack")
                     && command.contains("Preview prompt.")),
             "{response:#?}"
+        );
+
+        let rejected = super::handle_flow_editor_rpc(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(3)),
+            method: "mobkit/mobpacks/deploy_command".to_string(),
+            params: json!({
+                "deploy": { "command": "rkat mob deploy" },
+                "pack_path": "<pack.mobpack>"
+            }),
+        });
+        assert!(
+            rejected["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("requires document")),
+            "{rejected:#?}"
         );
     }
 

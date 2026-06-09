@@ -336,6 +336,8 @@ pub struct MobpackDeployCommandResult {
     pub command: String,
     pub argv: Vec<String>,
     pub deploy_command: String,
+    pub filename: String,
+    pub validation: MobpackValidationResult,
     pub source: String,
 }
 
@@ -10020,13 +10022,17 @@ pub fn validate_mobpack(params: &Value) -> Result<MobpackValidationResult, Strin
 pub fn deploy_command_preview(params: &Value) -> Result<MobpackDeployCommandResult, String> {
     let document = params
         .get("document")
-        .map(document_from_value)
-        .transpose()?;
-    let deploy = params
-        .get("deploy")
-        .cloned()
-        .or_else(|| document.as_ref().map(|document| document.deploy.clone()))
-        .unwrap_or(Value::Null);
+        .ok_or_else(|| "mobkit/mobpacks/deploy_command requires document".to_string())
+        .and_then(document_from_value)?;
+    let rendered =
+        render_mobpack_source(&json!({ "document": document.clone() })).map_err(|err| {
+            if err == "cannot render source for invalid mobpack document" {
+                "cannot preview deploy command for invalid mobpack document".to_string()
+            } else {
+                err
+            }
+        })?;
+    let deploy = document.deploy.clone();
     let prompt = params
         .get("prompt")
         .and_then(Value::as_str)
@@ -10046,8 +10052,7 @@ pub fn deploy_command_preview(params: &Value) -> Result<MobpackDeployCommandResu
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
-        .or_else(|| document.as_ref().map(document_export_filename))
-        .unwrap_or_else(|| "<pack.mobpack>".to_string());
+        .unwrap_or_else(|| rendered.filename.clone());
     let rkat_bin = deploy_rkat_bin(params);
     let argv = deploy_argv(&rkat_bin, &deploy, Path::new(&pack_path), prompt);
     let command = shell_command(&argv);
@@ -10055,6 +10060,8 @@ pub fn deploy_command_preview(params: &Value) -> Result<MobpackDeployCommandResu
         command,
         argv,
         deploy_command: "rkat mob deploy".to_string(),
+        filename: rendered.filename,
+        validation: rendered.validation,
         source: "meerkat_mobkit::mobpack::deploy_argv".to_string(),
     })
 }
@@ -23830,6 +23837,12 @@ model = "gpt-5.5"
         assert_eq!(preview.command, result.command);
         assert_eq!(preview.deploy_command, "rkat mob deploy");
         assert_eq!(preview.source, "meerkat_mobkit::mobpack::deploy_argv");
+        assert_eq!(preview.filename, "review-pack.mobpack");
+        assert!(
+            preview.validation.ok,
+            "{:?}",
+            preview.validation.diagnostics
+        );
         assert!(result.command.contains("rkat mob deploy"));
         assert!(result.command.contains("Reply with exactly OK."));
         assert!(result.display_rows.iter().any(|row| {
@@ -23869,6 +23882,20 @@ model = "gpt-5.5"
             !preview.command.contains("<pack.mobpack>"),
             "{}",
             preview.command
+        );
+        assert_eq!(preview.filename, "review-pack.mobpack");
+        assert!(
+            preview.validation.ok,
+            "{:?}",
+            preview.validation.diagnostics
+        );
+        assert!(
+            deploy_command_preview(&json!({
+                "deploy": { "command": "rkat mob deploy" },
+                "pack_path": "<pack.mobpack>"
+            }))
+            .expect_err("deploy command preview requires document")
+            .contains("mobkit/mobpacks/deploy_command requires document")
         );
     }
 

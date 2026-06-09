@@ -1325,7 +1325,7 @@ async function validateCustomDeploySettings(dir) {
   });
   const packPath = path.join(dir, "custom-deploy-settings.mobpack");
   const preview = await rpc("mobkit/mobpacks/deploy_command", {
-    deploy: document.deploy,
+    document,
     pack_path: packPath,
     prompt: "Custom deploy proof prompt.",
   });
@@ -1345,6 +1345,9 @@ async function validateCustomDeploySettings(dir) {
   }
   if (preview.source !== "meerkat_mobkit::mobpack::deploy_argv") {
     throw new Error(`deploy command preview did not report MobKit deploy_argv source: ${JSON.stringify(preview)}`);
+  }
+  if (!preview.validation?.ok || preview.filename !== "custom-deploy-settings.mobpack") {
+    throw new Error(`deploy command preview was not document-backed: ${JSON.stringify(preview)}`);
   }
   const expectedPairs = [
     ["--model", "gpt-5.5"],
@@ -1411,6 +1414,9 @@ async function validateDocumentBackedDeployPreview(document) {
   }
   if (preview.deploy_command !== "rkat mob deploy") {
     throw new Error(`document-backed deploy preview used the wrong deploy command: ${JSON.stringify(preview)}`);
+  }
+  if (!preview.validation?.ok || preview.filename !== expectedPackName) {
+    throw new Error(`document-backed deploy preview did not validate/render source metadata: ${JSON.stringify(preview)}`);
   }
   return {
     command: preview.command,

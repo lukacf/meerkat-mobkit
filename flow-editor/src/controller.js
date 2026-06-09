@@ -8140,15 +8140,6 @@
     return callRpc(rpcMethod("deploy"), { document, ...(options || {}) });
   }
 
-  async function deployCommandPreview(settings, options) {
-    const deploy = normalizeDeploySettings(settings);
-    return callRpc(rpcMethod("deployCommand"), {
-      deploy,
-      pack_path: options?.packPath || "<pack.mobpack>",
-      prompt: options?.prompt || deploy.prompt || "<prompt>",
-    });
-  }
-
   async function deployCommandPreviewForDocument(document, options = {}) {
     const sourceDocument = document && typeof document === "object" ? document : {};
     const deploy = normalizeDeploySettings(sourceDocument.deploy || options.deploySettings);
@@ -11602,7 +11593,6 @@
     normalizeDeploySettings,
     deploySettingsPatch,
     deploySettingsFieldPatch,
-    deployCommandPreview,
     deployCommandPreviewForDocument,
     callRpc,
     loadSchema,
