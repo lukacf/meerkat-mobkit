@@ -2667,6 +2667,22 @@ window.MOBKIT_BOOT = {
     return changed ? next : members;
   }
 
+  function reconcileMemberSchemaRefs(members, schemas, options = {}) {
+    const knownSchemas = new Set((Array.isArray(schemas) ? schemas : [])
+      .map((schema) => String(schema?.id || "").trim())
+      .filter(Boolean));
+    if (knownSchemas.size === 0 && !options.strictEmpty) return members;
+    let changed = false;
+    const next = (members || []).map((member) => {
+      if (!member || typeof member !== "object") return member;
+      const schema = String(member.schema || "").trim();
+      if (!schema || knownSchemas.has(schema)) return member;
+      changed = true;
+      return { ...member, schema: "" };
+    });
+    return changed ? next : members;
+  }
+
   function reconcileDeploySettingsWithContract(settings, contract, modelCatalog, options = {}) {
     const source = deploySettingsForUi(settings);
     let next = source;
@@ -2790,6 +2806,7 @@ window.MOBKIT_BOOT = {
   function reconcileAuthoringWithContract({
     members,
     skillRealms,
+    schemas,
     deploySettings,
     mobSettings,
     flow,
@@ -2804,6 +2821,11 @@ window.MOBKIT_BOOT = {
     let nextMembers = reconcileMemberSkillRefs(
       members,
       skillRealms,
+      { strictEmpty },
+    );
+    nextMembers = reconcileMemberSchemaRefs(
+      nextMembers,
+      schemas,
       { strictEmpty },
     );
     const nextDeploySettings = reconcileDeploySettingsWithContract(
@@ -13012,6 +13034,7 @@ function App() {
     const result = window.MobKitFlowController.reconcileAuthoringWithContract({
       members: studio.members,
       skillRealms: studio.skillRealms,
+      schemas: studio.schemas,
       deploySettings,
       mobSettings,
       flow,
@@ -13031,6 +13054,7 @@ function App() {
   }, [
     studio.members,
     studio.skillRealms,
+    studio.schemas,
     deploySettings,
     mobSettings,
     flow,

@@ -270,6 +270,7 @@ function App() {
     const result = window.MobKitFlowController.reconcileAuthoringWithContract({
       members: studio.members,
       skillRealms: studio.skillRealms,
+      schemas: studio.schemas,
       deploySettings,
       mobSettings,
       flow,
@@ -289,6 +290,7 @@ function App() {
   }, [
     studio.members,
     studio.skillRealms,
+    studio.schemas,
     deploySettings,
     mobSettings,
     flow,

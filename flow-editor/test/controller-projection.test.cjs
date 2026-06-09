@@ -3288,6 +3288,7 @@ const aggregateContractReconcile = controller.reconcileAuthoringWithContract({
   modelCatalog: [{ id: "gpt-5.5", label: "GPT-5.5" }],
   toolCatalog: [{ id: "shell", label: "Shell" }],
   skillRealms: [{ id: "main", skills: [{ id: "mob.review" }] }],
+  schemas: [{ id: "ReviewArtifact", fields: [] }],
   deploySettings: {
     command: "wrong",
     surface: "desktop",
@@ -3305,6 +3306,7 @@ const aggregateContractReconcile = controller.reconcileAuthoringWithContract({
     model: "bad-model",
     tools: ["shell", "git"],
     skills: ["mob.review", "missing.skill"],
+    schema: "MissingArtifact",
   }],
   mobSettings: {
     orchestrator: "worker",
@@ -3313,7 +3315,15 @@ const aggregateContractReconcile = controller.reconcileAuthoringWithContract({
   },
   flow: {
     name: "contract-reconcile",
-    steps: [{ id: "work", type: "member", role: "m_worker", allowedTools: ["shell", "git"], blockedTools: ["git"] }],
+    steps: [{
+      id: "work",
+      type: "member",
+      role: "m_worker",
+      schema: "MissingArtifact",
+      expectedSchemaRef: "schemas/MissingArtifact.json",
+      allowedTools: ["shell", "git"],
+      blockedTools: ["git"],
+    }],
   },
   instances: [{ id: "i_worker", memberId: "m_worker", allowedTools: ["shell", "git"], blockedTools: ["git"] }],
   edges: [],
@@ -3337,12 +3347,15 @@ assert.deepEqual(aggregateContractReconcile.deploySettings, {
 });
 assert.deepEqual(aggregateContractReconcile.members[0].skills, ["mob.review"]);
 assert.deepEqual(aggregateContractReconcile.members[0].tools, ["shell"]);
+assert.equal(aggregateContractReconcile.members[0].schema, "");
 assert.equal(aggregateContractReconcile.members[0].profileBinding, "");
 assert.equal(aggregateContractReconcile.members[0].runtimeMode, "");
 assert.equal(aggregateContractReconcile.members[0].backend, "");
 assert.equal(aggregateContractReconcile.members[0].model, "");
 assert.deepEqual(aggregateContractReconcile.flow.steps[0].allowedTools, ["shell"]);
 assert.deepEqual(aggregateContractReconcile.flow.steps[0].blockedTools, []);
+assert(!("schema" in aggregateContractReconcile.flow.steps[0]));
+assert(!("expectedSchemaRef" in aggregateContractReconcile.flow.steps[0]));
 assert.deepEqual(aggregateContractReconcile.instances[0].allowedTools, ["shell"]);
 assert.deepEqual(aggregateContractReconcile.instances[0].blockedTools, []);
 assert.equal(aggregateContractReconcile.mobSettings.backendDefault, "");
