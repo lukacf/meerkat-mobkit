@@ -911,6 +911,7 @@ class MobpackToolsCatalogResult:
     schema_version: str
     runtime_backed: bool
     source: str
+    authoring_provider: dict[str, Any]
     runtime_unavailable_reason: str | None
     tool_catalog: list[dict[str, Any]]
 
@@ -920,6 +921,7 @@ class MobpackToolsCatalogResult:
             schema_version=str(data.get("schema_version", "")),
             runtime_backed=bool(data.get("runtime_backed", False)),
             source=str(data.get("source", "")),
+            authoring_provider=dict(data.get("authoring_provider", {})),
             runtime_unavailable_reason=data.get("runtime_unavailable_reason"),
             tool_catalog=list(data.get("tool_catalog", [])),
         )
@@ -931,6 +933,7 @@ class MobpackSkillsCatalogResult:
     schema_version: str
     runtime_backed: bool
     source: str
+    authoring_provider: dict[str, Any]
     runtime_unavailable_reason: str | None
     skill_realms: list[dict[str, Any]]
 
@@ -940,6 +943,7 @@ class MobpackSkillsCatalogResult:
             schema_version=str(data.get("schema_version", "")),
             runtime_backed=bool(data.get("runtime_backed", False)),
             source=str(data.get("source", "")),
+            authoring_provider=dict(data.get("authoring_provider", {})),
             runtime_unavailable_reason=data.get("runtime_unavailable_reason"),
             skill_realms=list(data.get("skill_realms", [])),
         )
@@ -951,6 +955,7 @@ class MobpackAgentDefinitionsResult:
     schema_version: str
     runtime_backed: bool
     source: str
+    authoring_provider: dict[str, Any]
     runtime_unavailable_reason: str | None
     agent_definitions: list[dict[str, Any]]
 
@@ -960,6 +965,7 @@ class MobpackAgentDefinitionsResult:
             schema_version=str(data.get("schema_version", "")),
             runtime_backed=bool(data.get("runtime_backed", False)),
             source=str(data.get("source", "")),
+            authoring_provider=dict(data.get("authoring_provider", {})),
             runtime_unavailable_reason=data.get("runtime_unavailable_reason"),
             agent_definitions=list(data.get("agent_definitions", [])),
         )
@@ -970,6 +976,8 @@ class MobpackTemplatesResult:
     """Result of a mobkit/mobpacks/templates RPC call."""
     schema_version: str
     source: str
+    authoring_provider: dict[str, Any]
+    runtime_unavailable_reason: str | None
     blank_mobpack: dict[str, Any] | None
     sample_mobpacks: list[dict[str, Any]]
     sample_agent_definitions: list[dict[str, Any]]
@@ -981,6 +989,8 @@ class MobpackTemplatesResult:
         return cls(
             schema_version=str(data.get("schema_version", "")),
             source=str(data.get("source", "")),
+            authoring_provider=dict(data.get("authoring_provider", {})),
+            runtime_unavailable_reason=data.get("runtime_unavailable_reason"),
             blank_mobpack=blank if isinstance(blank, dict) else None,
             sample_mobpacks=list(data.get("sample_mobpacks", [])),
             sample_agent_definitions=list(data.get("sample_agent_definitions", [])),
@@ -993,6 +1003,8 @@ class MobpackCatalogsResult:
     """Result of a mobkit/mobpacks/catalogs RPC call."""
     schema_version: str
     runtime_backed: bool
+    authoring_provider: dict[str, Any]
+    runtime_unavailable_reason: str | None
     sources: dict[str, Any]
     templates: dict[str, Any]
     tool_catalog: list[dict[str, Any]]
@@ -1010,6 +1022,8 @@ class MobpackCatalogsResult:
         return cls(
             schema_version=str(data.get("schema_version", "")),
             runtime_backed=bool(data.get("runtime_backed", False)),
+            authoring_provider=dict(data.get("authoring_provider", {})),
+            runtime_unavailable_reason=data.get("runtime_unavailable_reason"),
             sources=dict(data.get("sources", {})),
             templates=dict(data.get("templates", {})),
             tool_catalog=list(data.get("tool_catalog", [])),

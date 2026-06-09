@@ -1155,11 +1155,13 @@ describe("mobpack editor catalog parsers", () => {
       schema_version: "mobpack.editor.v1",
       runtime_backed: false,
       source: "mobkit/tool-config",
+      authoring_provider: { id: "standalone_authoring", runtime_binding: "unbound" },
       runtime_unavailable_reason: "standalone",
       tool_catalog: [{ id: "shell", tag_class: "ops" }],
     });
     assert.equal(tools.schemaVersion, "mobpack.editor.v1");
     assert.equal(tools.runtimeBacked, false);
+    assert.equal(tools.authoringProvider.id, "standalone_authoring");
     assert.equal(tools.runtimeUnavailableReason, "standalone");
     assert.deepEqual(tools.toolCatalog, [{ id: "shell", tag_class: "ops" }]);
 
@@ -1167,16 +1169,20 @@ describe("mobpack editor catalog parsers", () => {
       schema_version: "mobpack.editor.v1",
       runtime_backed: false,
       source: "mobkit/authoring-skill-realms",
+      authoring_provider: { id: "standalone_authoring" },
       skill_realms: [{ id: "mobkit/authoring", skills: [] }],
     });
+    assert.equal(skills.authoringProvider.id, "standalone_authoring");
     assert.deepEqual(skills.skillRealms, [{ id: "mobkit/authoring", skills: [] }]);
 
     const definitions = parseMobpackAgentDefinitionsResult({
       schema_version: "mobpack.editor.v1",
       runtime_backed: false,
       source: "mobkit/authoring-agent-definitions",
+      authoring_provider: { id: "standalone_authoring" },
       agent_definitions: [{ id: "authoring:reviewer", role: "reviewer" }],
     });
+    assert.equal(definitions.authoringProvider.id, "standalone_authoring");
     assert.deepEqual(definitions.agentDefinitions, [
       { id: "authoring:reviewer", role: "reviewer" },
     ]);
@@ -1184,11 +1190,15 @@ describe("mobpack editor catalog parsers", () => {
     const templates = parseMobpackTemplatesResult({
       schema_version: "mobpack.editor.v1",
       source: "mobkit/mobpack-templates",
+      authoring_provider: { id: "standalone_authoring" },
+      runtime_unavailable_reason: "standalone",
       blank_mobpack: { document: { members: [] } },
       sample_mobpacks: [{ id: "review" }],
       sample_agent_definitions: [{ id: "sample:reviewer" }],
       templates: { blank_mobpack: { document: { members: [] } } },
     });
+    assert.equal(templates.authoringProvider.id, "standalone_authoring");
+    assert.equal(templates.runtimeUnavailableReason, "standalone");
     assert.deepEqual(templates.blankMobpack, { document: { members: [] } });
     assert.deepEqual(templates.sampleMobpacks, [{ id: "review" }]);
     assert.deepEqual(templates.sampleAgentDefinitions, [{ id: "sample:reviewer" }]);
@@ -1198,6 +1208,8 @@ describe("mobpack editor catalog parsers", () => {
     const result = parseMobpackCatalogsResult({
       schema_version: "mobpack.editor.v1",
       runtime_backed: false,
+      authoring_provider: { id: "standalone_authoring", runtime_binding: "unbound" },
+      runtime_unavailable_reason: "standalone",
       sources: { tools: "mobkit/tools/catalog" },
       templates: { blank_mobpack: {} },
       tool_catalog: [{ id: "shell" }],
@@ -1219,6 +1231,8 @@ describe("mobpack editor catalog parsers", () => {
         models: [],
       }],
     });
+    assert.equal(result.authoringProvider.runtime_binding, "unbound");
+    assert.equal(result.runtimeUnavailableReason, "standalone");
     assert.equal(result.sources.tools, "mobkit/tools/catalog");
     assert.deepEqual(result.toolCatalog, [{ id: "shell" }]);
     assert.deepEqual(result.skillRealms, [{ id: "mobkit/authoring" }]);

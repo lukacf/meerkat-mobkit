@@ -45,6 +45,7 @@ class MobkitToolsCatalogResult(TypedDict):
     schema_version: str
     runtime_backed: bool
     source: str
+    authoring_provider: dict[str, Any]
     runtime_unavailable_reason: str
     tool_catalog: list[dict[str, Any]]
 
@@ -53,6 +54,7 @@ class MobkitSkillsCatalogResult(TypedDict):
     schema_version: str
     runtime_backed: bool
     source: str
+    authoring_provider: dict[str, Any]
     runtime_unavailable_reason: str
     skill_realms: list[dict[str, Any]]
 
@@ -61,6 +63,7 @@ class MobkitAgentDefinitionsResult(TypedDict):
     schema_version: str
     runtime_backed: bool
     source: str
+    authoring_provider: dict[str, Any]
     runtime_unavailable_reason: str
     agent_definitions: list[dict[str, Any]]
 
@@ -68,6 +71,8 @@ class MobkitAgentDefinitionsResult(TypedDict):
 class MobkitTemplatesResult(TypedDict):
     schema_version: str
     source: str
+    authoring_provider: dict[str, Any]
+    runtime_unavailable_reason: str
     blank_mobpack: dict[str, Any]
     sample_mobpacks: list[dict[str, Any]]
     sample_agent_definitions: list[dict[str, Any]]
@@ -77,6 +82,8 @@ class MobkitTemplatesResult(TypedDict):
 class MobkitCatalogsResult(TypedDict):
     schema_version: str
     runtime_backed: bool
+    authoring_provider: dict[str, Any]
+    runtime_unavailable_reason: str
     sources: dict[str, Any]
     templates: dict[str, Any]
     tool_catalog: list[dict[str, Any]]
@@ -740,6 +747,7 @@ def _is_tools_catalog_result(value: Any) -> bool:
         and isinstance(value.get("schema_version"), str)
         and isinstance(value.get("runtime_backed"), bool)
         and isinstance(value.get("source"), str)
+        and isinstance(value.get("authoring_provider"), dict)
         and isinstance(value.get("tool_catalog"), list)
     )
 
@@ -750,6 +758,7 @@ def _is_skills_catalog_result(value: Any) -> bool:
         and isinstance(value.get("schema_version"), str)
         and isinstance(value.get("runtime_backed"), bool)
         and isinstance(value.get("source"), str)
+        and isinstance(value.get("authoring_provider"), dict)
         and isinstance(value.get("skill_realms"), list)
     )
 
@@ -760,6 +769,7 @@ def _is_agent_definitions_result(value: Any) -> bool:
         and isinstance(value.get("schema_version"), str)
         and isinstance(value.get("runtime_backed"), bool)
         and isinstance(value.get("source"), str)
+        and isinstance(value.get("authoring_provider"), dict)
         and isinstance(value.get("agent_definitions"), list)
     )
 
@@ -769,6 +779,7 @@ def _is_mobpack_templates_result(value: Any) -> bool:
         isinstance(value, dict)
         and isinstance(value.get("schema_version"), str)
         and isinstance(value.get("source"), str)
+        and isinstance(value.get("authoring_provider"), dict)
         and isinstance(value.get("blank_mobpack"), dict)
         and isinstance(value.get("sample_mobpacks"), list)
         and isinstance(value.get("sample_agent_definitions"), list)
@@ -781,6 +792,7 @@ def _is_mobpack_catalogs_result(value: Any) -> bool:
         isinstance(value, dict)
         and isinstance(value.get("schema_version"), str)
         and isinstance(value.get("runtime_backed"), bool)
+        and isinstance(value.get("authoring_provider"), dict)
         and isinstance(value.get("sources"), dict)
         and isinstance(value.get("templates"), dict)
         and isinstance(value.get("tool_catalog"), list)

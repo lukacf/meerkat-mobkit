@@ -1121,6 +1121,7 @@ export interface MobpackToolsCatalogResult {
   readonly schemaVersion: string;
   readonly runtimeBacked: boolean;
   readonly source: string;
+  readonly authoringProvider: Record<string, unknown>;
   readonly runtimeUnavailableReason: string | null;
   readonly toolCatalog: readonly Record<string, unknown>[];
 }
@@ -1133,6 +1134,7 @@ export function parseMobpackToolsCatalogResult(
     schemaVersion: String(d.schema_version ?? ""),
     runtimeBacked: Boolean(d.runtime_backed),
     source: String(d.source ?? ""),
+    authoringProvider: asRecord(d.authoring_provider),
     runtimeUnavailableReason:
       d.runtime_unavailable_reason == null
         ? null
@@ -1145,6 +1147,7 @@ export interface MobpackSkillsCatalogResult {
   readonly schemaVersion: string;
   readonly runtimeBacked: boolean;
   readonly source: string;
+  readonly authoringProvider: Record<string, unknown>;
   readonly runtimeUnavailableReason: string | null;
   readonly skillRealms: readonly Record<string, unknown>[];
 }
@@ -1157,6 +1160,7 @@ export function parseMobpackSkillsCatalogResult(
     schemaVersion: String(d.schema_version ?? ""),
     runtimeBacked: Boolean(d.runtime_backed),
     source: String(d.source ?? ""),
+    authoringProvider: asRecord(d.authoring_provider),
     runtimeUnavailableReason:
       d.runtime_unavailable_reason == null
         ? null
@@ -1169,6 +1173,7 @@ export interface MobpackAgentDefinitionsResult {
   readonly schemaVersion: string;
   readonly runtimeBacked: boolean;
   readonly source: string;
+  readonly authoringProvider: Record<string, unknown>;
   readonly runtimeUnavailableReason: string | null;
   readonly agentDefinitions: readonly Record<string, unknown>[];
 }
@@ -1181,6 +1186,7 @@ export function parseMobpackAgentDefinitionsResult(
     schemaVersion: String(d.schema_version ?? ""),
     runtimeBacked: Boolean(d.runtime_backed),
     source: String(d.source ?? ""),
+    authoringProvider: asRecord(d.authoring_provider),
     runtimeUnavailableReason:
       d.runtime_unavailable_reason == null
         ? null
@@ -1192,6 +1198,8 @@ export function parseMobpackAgentDefinitionsResult(
 export interface MobpackTemplatesResult {
   readonly schemaVersion: string;
   readonly source: string;
+  readonly authoringProvider: Record<string, unknown>;
+  readonly runtimeUnavailableReason: string | null;
   readonly blankMobpack: Record<string, unknown> | null;
   readonly sampleMobpacks: readonly Record<string, unknown>[];
   readonly sampleAgentDefinitions: readonly Record<string, unknown>[];
@@ -1203,6 +1211,11 @@ export function parseMobpackTemplatesResult(raw: unknown): MobpackTemplatesResul
   return {
     schemaVersion: String(d.schema_version ?? ""),
     source: String(d.source ?? ""),
+    authoringProvider: asRecord(d.authoring_provider),
+    runtimeUnavailableReason:
+      d.runtime_unavailable_reason == null
+        ? null
+        : String(d.runtime_unavailable_reason),
     blankMobpack: d.blank_mobpack == null ? null : asRecord(d.blank_mobpack),
     sampleMobpacks: asRecordArray(d.sample_mobpacks),
     sampleAgentDefinitions: asRecordArray(d.sample_agent_definitions),
@@ -1213,6 +1226,8 @@ export function parseMobpackTemplatesResult(raw: unknown): MobpackTemplatesResul
 export interface MobpackCatalogsResult {
   readonly schemaVersion: string;
   readonly runtimeBacked: boolean;
+  readonly authoringProvider: Record<string, unknown>;
+  readonly runtimeUnavailableReason: string | null;
   readonly sources: Record<string, unknown>;
   readonly templates: Record<string, unknown>;
   readonly toolCatalog: readonly Record<string, unknown>[];
@@ -1230,6 +1245,11 @@ export function parseMobpackCatalogsResult(raw: unknown): MobpackCatalogsResult 
   return {
     schemaVersion: String(d.schema_version ?? ""),
     runtimeBacked: Boolean(d.runtime_backed),
+    authoringProvider: asRecord(d.authoring_provider),
+    runtimeUnavailableReason:
+      d.runtime_unavailable_reason == null
+        ? null
+        : String(d.runtime_unavailable_reason),
     sources: asRecord(d.sources),
     templates: asRecord(d.templates),
     toolCatalog: asRecordArray(d.tool_catalog),

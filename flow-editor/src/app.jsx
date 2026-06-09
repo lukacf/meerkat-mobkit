@@ -575,13 +575,13 @@ function App() {
       const document = currentMobKitDocument();
       const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, operation);
       if (!authoringRevisionIsCurrent(requestToken)) {
-        return { ok: false, error: "stale authoring operation" };
+        return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
       }
       const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
         deployDefaults: catalogs.deployDefaults,
         mobDefaults: catalogs.mobDefaults,
       });
-      if (!projection) return { ok: false, error: "MobKit authoring operation did not return a document" };
+      if (!projection) return { ok: false, error: catalogs.errorView.authoringOperationMissingDocumentError };
       beginProjectionSync();
       applyAuthoringDocumentProjection(projection);
       markDraft();
@@ -607,13 +607,13 @@ function App() {
         ...operation,
       });
       if (!authoringRevisionIsCurrent(requestToken)) {
-        return { ok: false, error: "stale authoring operation" };
+        return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
       }
       const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
         deployDefaults: catalogs.deployDefaults,
         mobDefaults: catalogs.mobDefaults,
       });
-      if (!projection) return { ok: false, error: "MobKit authoring operation did not return a document" };
+      if (!projection) return { ok: false, error: catalogs.errorView.authoringOperationMissingDocumentError };
       beginProjectionSync();
       applyAuthoringDocumentProjection(projection);
       markDraft();

@@ -124,11 +124,13 @@ class TestMobpackEditorCatalogResults:
             "schema_version": "mobpack.editor.v1",
             "runtime_backed": False,
             "source": "mobkit/tool-config",
+            "authoring_provider": {"id": "standalone_authoring", "runtime_binding": "unbound"},
             "runtime_unavailable_reason": "standalone",
             "tool_catalog": [{"id": "shell"}],
         })
         assert tools.schema_version == "mobpack.editor.v1"
         assert tools.runtime_backed is False
+        assert tools.authoring_provider["id"] == "standalone_authoring"
         assert tools.runtime_unavailable_reason == "standalone"
         assert tools.tool_catalog == [{"id": "shell"}]
 
@@ -136,26 +138,34 @@ class TestMobpackEditorCatalogResults:
             "schema_version": "mobpack.editor.v1",
             "runtime_backed": False,
             "source": "mobkit/authoring-skill-realms",
+            "authoring_provider": {"id": "standalone_authoring"},
             "skill_realms": [{"id": "mobkit/authoring"}],
         })
+        assert skills.authoring_provider["id"] == "standalone_authoring"
         assert skills.skill_realms == [{"id": "mobkit/authoring"}]
 
         agents = MobpackAgentDefinitionsResult.from_dict({
             "schema_version": "mobpack.editor.v1",
             "runtime_backed": False,
             "source": "mobkit/authoring-agent-definitions",
+            "authoring_provider": {"id": "standalone_authoring"},
             "agent_definitions": [{"id": "authoring:reviewer"}],
         })
+        assert agents.authoring_provider["id"] == "standalone_authoring"
         assert agents.agent_definitions == [{"id": "authoring:reviewer"}]
 
         templates = MobpackTemplatesResult.from_dict({
             "schema_version": "mobpack.editor.v1",
             "source": "mobkit/mobpack-templates",
+            "authoring_provider": {"id": "standalone_authoring"},
+            "runtime_unavailable_reason": "standalone",
             "blank_mobpack": {"document": {}},
             "sample_mobpacks": [{"id": "sample"}],
             "sample_agent_definitions": [{"id": "sample:reviewer"}],
             "templates": {"blank_mobpack": {"document": {}}},
         })
+        assert templates.authoring_provider["id"] == "standalone_authoring"
+        assert templates.runtime_unavailable_reason == "standalone"
         assert templates.blank_mobpack == {"document": {}}
         assert templates.sample_mobpacks == [{"id": "sample"}]
         assert templates.sample_agent_definitions == [{"id": "sample:reviewer"}]
@@ -164,6 +174,8 @@ class TestMobpackEditorCatalogResults:
         catalogs = MobpackCatalogsResult.from_dict({
             "schema_version": "mobpack.editor.v1",
             "runtime_backed": False,
+            "authoring_provider": {"id": "standalone_authoring", "runtime_binding": "unbound"},
+            "runtime_unavailable_reason": "standalone",
             "sources": {"tools": "mobkit/tools/catalog"},
             "templates": {},
             "tool_catalog": [{"id": "shell"}],
@@ -185,6 +197,8 @@ class TestMobpackEditorCatalogResults:
                 "models": [],
             }],
         })
+        assert catalogs.authoring_provider["runtime_binding"] == "unbound"
+        assert catalogs.runtime_unavailable_reason == "standalone"
         assert catalogs.sources == {"tools": "mobkit/tools/catalog"}
         assert catalogs.tool_catalog == [{"id": "shell"}]
         assert catalogs.models[0].display_name == "GPT-5"

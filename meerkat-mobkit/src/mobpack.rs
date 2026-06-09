@@ -843,6 +843,20 @@ fn with_catalog_snapshot(mut value: Value, source: &str, runtime_backed: bool) -
     value
 }
 
+const STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON: &str =
+    "standalone Flow Editor authoring server has no UnifiedRuntime handle";
+
+fn standalone_authoring_provider(source: &str) -> Value {
+    json!({
+        "id": "standalone_authoring",
+        "kind": "mobpack_authoring_provider",
+        "source": source,
+        "runtime_backed": false,
+        "runtime_binding": "unbound",
+        "runtime_unavailable_reason": STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON,
+    })
+}
+
 fn model_catalog_response() -> Vec<Value> {
     meerkat_models::catalog()
         .iter()
@@ -880,7 +894,8 @@ pub fn mobpack_tools_catalog_response() -> Value {
             "schema_version": MOBPACK_SCHEMA_VERSION,
             "runtime_backed": false,
             "source": "mobkit/tool-config",
-            "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle",
+            "authoring_provider": standalone_authoring_provider("mobkit/tools/catalog"),
+            "runtime_unavailable_reason": STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON,
             "tool_catalog": tool_catalog_response(),
         }),
         "mobkit/tools/catalog",
@@ -894,7 +909,8 @@ pub fn mobpack_skills_catalog_response() -> Value {
             "schema_version": MOBPACK_SCHEMA_VERSION,
             "runtime_backed": false,
             "source": "mobkit/authoring-skill-realms",
-            "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle",
+            "authoring_provider": standalone_authoring_provider("mobkit/skills/catalog"),
+            "runtime_unavailable_reason": STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON,
             "skill_realms": authoring_skill_realms_response(),
         }),
         "mobkit/skills/catalog",
@@ -917,7 +933,8 @@ pub fn mobpack_agent_definitions_response() -> Value {
             "schema_version": MOBPACK_SCHEMA_VERSION,
             "runtime_backed": false,
             "source": "mobkit/authoring-agent-definitions",
-            "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle",
+            "authoring_provider": standalone_authoring_provider("mobkit/agent_definitions/list"),
+            "runtime_unavailable_reason": STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON,
             "agent_definitions": agent_definitions,
         }),
         "mobkit/agent_definitions/list",
@@ -943,6 +960,8 @@ pub fn mobpack_templates_response() -> Value {
             "schema_version": MOBPACK_SCHEMA_VERSION,
             "source": "mobkit/mobpack-templates",
             "runtime_backed": false,
+            "authoring_provider": standalone_authoring_provider("mobkit/mobpacks/templates"),
+            "runtime_unavailable_reason": STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON,
             "blank_mobpack": blank_mobpack,
             "sample_mobpacks": sample_mobpacks,
             "sample_agent_definitions": sample_agent_definitions,
@@ -965,6 +984,8 @@ pub fn mobpack_catalogs_response() -> Value {
         json!({
             "schema_version": MOBPACK_SCHEMA_VERSION,
             "runtime_backed": false,
+            "authoring_provider": standalone_authoring_provider("mobkit/mobpacks/catalogs"),
+            "runtime_unavailable_reason": STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON,
             "sources": {
                 "catalog": "mobkit/mobpacks/catalogs",
                 "tools": "mobkit/tools/catalog",
@@ -972,7 +993,8 @@ pub fn mobpack_catalogs_response() -> Value {
                 "agent_definitions": "mobkit/agent_definitions/list",
                 "templates": "mobkit/mobpacks/templates",
                 "runtime": "standalone_authoring",
-                "runtime_unavailable_reason": "standalone Flow Editor authoring server has no UnifiedRuntime handle"
+                "runtime_binding": "unbound",
+                "runtime_unavailable_reason": STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON
             },
             "templates": templates["templates"].clone(),
             "tool_catalog": tools["tool_catalog"].clone(),
@@ -1579,6 +1601,8 @@ pub fn mobpack_schema_response() -> Value {
         "rpc_error_meta": "/flow-editor/rpc",
         "authoring_operation_failed_head": "MobKit authoring operation failed",
         "authoring_operation_meta": "MobKit authoring",
+        "authoring_operation_stale_error": "stale authoring operation",
+        "authoring_operation_missing_document_error": "MobKit authoring operation did not return a document",
         "export_failed_head": "Export failed",
         "import_failed_head": "Import failed",
         "missing_editor_flow_head": "Imported mobpack is missing a MobKit editor flow",
@@ -27595,6 +27619,14 @@ model = "gpt-5.5"
     fn catalogs_response_exposes_real_tool_catalog_without_schema_aliases() {
         let schema = mobpack_schema_response();
         let catalogs = mobpack_catalogs_response();
+        assert_eq!(catalogs["authoring_provider"]["id"], "standalone_authoring");
+        assert_eq!(catalogs["authoring_provider"]["runtime_binding"], "unbound");
+        assert_eq!(
+            catalogs["runtime_unavailable_reason"],
+            STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON
+        );
+        assert_eq!(catalogs["sources"]["runtime"], "standalone_authoring");
+        assert_eq!(catalogs["sources"]["runtime_binding"], "unbound");
         assert!(
             schema.get("tool_config").is_none(),
             "schema must not expose compatibility tool_config aliases"
@@ -27608,6 +27640,22 @@ model = "gpt-5.5"
             "dynamic agent definitions must be loaded through mobkit/mobpacks/catalogs"
         );
         let tool_catalog = catalogs["tool_catalog"].as_array().expect("tool_catalog");
+        assert_eq!(
+            mobpack_tools_catalog_response()["authoring_provider"]["runtime_binding"],
+            "unbound"
+        );
+        assert_eq!(
+            mobpack_skills_catalog_response()["authoring_provider"]["runtime_binding"],
+            "unbound"
+        );
+        assert_eq!(
+            mobpack_agent_definitions_response()["authoring_provider"]["runtime_binding"],
+            "unbound"
+        );
+        assert_eq!(
+            mobpack_templates_response()["authoring_provider"]["runtime_binding"],
+            "unbound"
+        );
         assert_eq!(
             catalogs["catalog_snapshot"]["source"],
             json!("mobkit/mobpacks/catalogs")
