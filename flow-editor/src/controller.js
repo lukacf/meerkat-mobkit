@@ -9862,6 +9862,20 @@
     };
   }
 
+  function exportDownloadPayload(result) {
+    const contentBase64 = String(result?.content_base64 || "").trim();
+    if (!contentBase64) throw new Error("mobkit/mobpacks/export did not return content_base64");
+    const mediaType = String(result?.media_type || "").trim();
+    if (!mediaType) throw new Error("mobkit/mobpacks/export did not return media_type");
+    const filename = String(result?.filename || "").trim();
+    if (!filename) throw new Error("mobkit/mobpacks/export did not return filename");
+    return {
+      contentBase64,
+      mediaType,
+      filename,
+    };
+  }
+
   function sourceFileForPath(sourceDocument, path) {
     const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
     const selectedPath = String(path || sourceDocument?.sourcePath || "mobkit/mob.toml").trim();
@@ -11207,6 +11221,7 @@
     exportErrorOutcome,
     importErrorOutcome,
     sourceDocumentFromExport,
+    exportDownloadPayload,
     sourceEditorState,
     sampleFlowsFromSchema,
     flowCatalogBootstrapState,

@@ -6385,6 +6385,28 @@ assert.throws(
   /mobkit\/mobpacks\/export did not return mobkit\/mob.toml sha256/,
 );
 
+assert.deepEqual(controller.exportDownloadPayload({
+  content_base64: "YWJj",
+  media_type: "application/vnd.mobkit.mobpack",
+  filename: "source-proof.mobpack",
+}), {
+  contentBase64: "YWJj",
+  mediaType: "application/vnd.mobkit.mobpack",
+  filename: "source-proof.mobpack",
+});
+assert.throws(
+  () => controller.exportDownloadPayload({ media_type: "application/vnd.mobkit.mobpack", filename: "missing-content.mobpack" }),
+  /mobkit\/mobpacks\/export did not return content_base64/,
+);
+assert.throws(
+  () => controller.exportDownloadPayload({ content_base64: "YWJj", filename: "missing-media.mobpack" }),
+  /mobkit\/mobpacks\/export did not return media_type/,
+);
+assert.throws(
+  () => controller.exportDownloadPayload({ content_base64: "YWJj", media_type: "application/vnd.mobkit.mobpack" }),
+  /mobkit\/mobpacks\/export did not return filename/,
+);
+
 assert.deepEqual(controller.importParamsFromDecodedFile({
   filename: "mob.toml",
   mediaType: "text/toml",

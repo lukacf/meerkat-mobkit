@@ -857,6 +857,9 @@ assert.match(app, /exportCurrentSourceDocument[\s\S]*MobKitFlowController\.expor
 assert(!/mob_toml:\s*result\.mob_toml/.test(controller), "source-file views must render the actual mobkit/mob.toml archive member text, not top-level export metadata");
 assert.match(controller, /mob_toml:\s*mobTomlFile\.text/, "source-file projection must store the validated mobkit/mob.toml source file text");
 assert.match(controller, /const sourceDigest = String\(mobTomlFile\.sha256[\s\S]*sourceDigest,/, "source-file projection must store the validated mobkit/mob.toml archive digest");
+assert.match(controller, /function exportDownloadPayload/, "controller plane must own MobKit export download payload validation");
+assert.match(app, /MobKitFlowController\.exportDownloadPayload\(result\)/, "app shell must request controller-projected export download fields");
+assert(!/content_base64|media_type|did not return content_base64|did not return media_type|did not return filename/.test((app.match(/function downloadExportResult[\s\S]*?async function importParamsFromFile/) || [""])[0]), "app shell must not validate MobKit export payload fields locally");
 assert.match(app, /<BuilderView[\s\S]*onShowSource=\{\(\) => handleInlineSource\("basic"\)\}[\s\S]*sourceOpen=\{inlineSourceOpen && inlineSourceSurface === "basic"\}[\s\S]*sourceDocument=\{inlineSourceDocument\}[\s\S]*sourceView=\{catalogs\.sourceView\}/, "Basic editor mob.toml tile must open a Basic-scoped inline export-backed source editor");
 assert.match(builder, /<InlineSourceEditor[\s\S]*state=\{sourceDocument\}[\s\S]*busy=\{sourceBusy\}[\s\S]*sourceView=\{sourceView\}/, "Basic editor must render the real mob.toml content inline, not as a decorative tile");
 assert.match(controller, /sourceToggleLabel:\s*String\(view\.source_toggle_label/, "controller plane must hydrate the Basic source toggle label from MobKit schema");
@@ -1554,7 +1557,7 @@ assert(!/mobkit_gateway mobpack deploy|profile_templates/.test(controllerProject
 assert(!/DiffOnly|ArtifactOnly/.test(app + "\n" + builder + "\n" + graph + "\n" + inspector + "\n" + controller), "Fork context options must come from MobKit ForkContext, not stale prototype labels");
 assert.match(controller, /function configure/, "controller RPC endpoint must be configured with data, not discovered through the DOM");
 assert.match(app, /function downloadExportResult/, "browser download behavior belongs to the app UI shell");
-assert.match(app, /mobkit\/mobpacks\/export did not return content_base64[\s\S]*mobkit\/mobpacks\/export did not return media_type[\s\S]*mobkit\/mobpacks\/export did not return filename/, "browser download must fail closed when MobKit export omits archive metadata");
+assert.match(controller, /function exportDownloadPayload[\s\S]*mobkit\/mobpacks\/export did not return content_base64[\s\S]*mobkit\/mobpacks\/export did not return media_type[\s\S]*mobkit\/mobpacks\/export did not return filename/, "browser download must fail closed through controller-owned MobKit export metadata validation");
 assert(!/result\.media_type\s*\|\|\s*["']application\/vnd\.meerkat\.mobpack["']|result\.filename\s*\|\|\s*["']mobkit-flow\.mobpack["']/.test(app), "browser download must not invent MobKit export media type or filename");
 assert.match(app, /function importParamsFromFile/, "browser file decoding belongs to the app UI shell");
 assert.match(app, /function rpcUrlFromShell/, "browser RPC URL discovery belongs to the app UI shell");

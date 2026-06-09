@@ -9895,6 +9895,20 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function exportDownloadPayload(result) {
+    const contentBase64 = String(result?.content_base64 || "").trim();
+    if (!contentBase64) throw new Error("mobkit/mobpacks/export did not return content_base64");
+    const mediaType = String(result?.media_type || "").trim();
+    if (!mediaType) throw new Error("mobkit/mobpacks/export did not return media_type");
+    const filename = String(result?.filename || "").trim();
+    if (!filename) throw new Error("mobkit/mobpacks/export did not return filename");
+    return {
+      contentBase64,
+      mediaType,
+      filename,
+    };
+  }
+
   function sourceFileForPath(sourceDocument, path) {
     const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
     const selectedPath = String(path || sourceDocument?.sourcePath || "mobkit/mob.toml").trim();
@@ -11240,6 +11254,7 @@ window.MOBKIT_BOOT = {
     exportErrorOutcome,
     importErrorOutcome,
     sourceDocumentFromExport,
+    exportDownloadPayload,
     sourceEditorState,
     sampleFlowsFromSchema,
     flowCatalogBootstrapState,
@@ -14676,18 +14691,13 @@ function rpcUrlFromShell() {
   return `${base}/flow-editor/rpc`;
 }
 function downloadExportResult(result) {
-  const content = String(result?.content_base64 || "").trim();
-  const mediaType = String(result?.media_type || "").trim();
-  const filename = String(result?.filename || "").trim();
-  if (!content) throw new Error("mobkit/mobpacks/export did not return content_base64");
-  if (!mediaType) throw new Error("mobkit/mobpacks/export did not return media_type");
-  if (!filename) throw new Error("mobkit/mobpacks/export did not return filename");
-  const bytes = Uint8Array.from(atob(content), (char) => char.charCodeAt(0));
-  const blob = new Blob([bytes], { type: mediaType });
+  const download = window.MobKitFlowController.exportDownloadPayload(result);
+  const bytes = Uint8Array.from(atob(download.contentBase64), (char) => char.charCodeAt(0));
+  const blob = new Blob([bytes], { type: download.mediaType });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = filename;
+  anchor.download = download.filename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
