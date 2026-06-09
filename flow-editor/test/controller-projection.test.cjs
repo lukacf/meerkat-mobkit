@@ -5444,7 +5444,7 @@ const sourceProjection = controller.sourceDocumentFromExport({
   mob_id: "source_proof",
   mob_toml: "[stale]",
 }, {
-  mob_toml: "[mob]\nid = \"source_proof\"\n",
+  mob_toml: "[top-level stale export text]",
   source_files: [{
     path: "mobkit/mob.toml",
     media_type: "text/toml",
@@ -5469,6 +5469,7 @@ const sourceProjection = controller.sourceDocumentFromExport({
 });
 assert.equal(sourceProjection.document.name, "Source Proof");
 assert.equal(sourceProjection.document.mob_toml, "[mob]\nid = \"source_proof\"\n");
+assert.notEqual(sourceProjection.document.mob_toml, "[top-level stale export text]");
 assert.equal(sourceProjection.sourceDocument.filename, "source-proof.mobpack");
 assert.equal(sourceProjection.sourceDocument.media_type, "application/vnd.mobkit.mobpack");
 assert.equal(sourceProjection.sourceDocument.sourcePath, "mobkit/mob.toml");

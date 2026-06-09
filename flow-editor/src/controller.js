@@ -9120,7 +9120,7 @@
     const sourceView = sourceViewForState(null, options.sourceView);
     const renderedDocument = {
       ...(document && typeof document === "object" ? document : {}),
-      mob_toml: result.mob_toml,
+      mob_toml: mobTomlFile.text,
     };
     const validation = result?.validation || null;
     const stage = validation?.ok ? "valid" : "draft";
