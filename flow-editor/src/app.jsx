@@ -949,12 +949,18 @@ function rpcUrlFromShell() {
 }
 
 function downloadExportResult(result) {
-  const bytes = Uint8Array.from(atob(result.content_base64), (char) => char.charCodeAt(0));
-  const blob = new Blob([bytes], { type: result.media_type || "application/vnd.meerkat.mobpack" });
+  const content = String(result?.content_base64 || "").trim();
+  const mediaType = String(result?.media_type || "").trim();
+  const filename = String(result?.filename || "").trim();
+  if (!content) throw new Error("mobkit/mobpacks/export did not return content_base64");
+  if (!mediaType) throw new Error("mobkit/mobpacks/export did not return media_type");
+  if (!filename) throw new Error("mobkit/mobpacks/export did not return filename");
+  const bytes = Uint8Array.from(atob(content), (char) => char.charCodeAt(0));
+  const blob = new Blob([bytes], { type: mediaType });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = result.filename || "mobkit-flow.mobpack";
+  anchor.download = filename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();

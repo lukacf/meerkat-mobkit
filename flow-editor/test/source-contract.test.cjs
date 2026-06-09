@@ -1269,6 +1269,8 @@ assert(!/mobkit_gateway mobpack deploy|profile_templates/.test(controllerProject
 assert(!/DiffOnly|ArtifactOnly/.test(app + "\n" + builder + "\n" + graph + "\n" + inspector + "\n" + controller), "Fork context options must come from MobKit ForkContext, not stale prototype labels");
 assert.match(controller, /function configure/, "controller RPC endpoint must be configured with data, not discovered through the DOM");
 assert.match(app, /function downloadExportResult/, "browser download behavior belongs to the app UI shell");
+assert.match(app, /mobkit\/mobpacks\/export did not return content_base64[\s\S]*mobkit\/mobpacks\/export did not return media_type[\s\S]*mobkit\/mobpacks\/export did not return filename/, "browser download must fail closed when MobKit export omits archive metadata");
+assert(!/result\.media_type\s*\|\|\s*["']application\/vnd\.meerkat\.mobpack["']|result\.filename\s*\|\|\s*["']mobkit-flow\.mobpack["']/.test(app), "browser download must not invent MobKit export media type or filename");
 assert.match(app, /function importParamsFromFile/, "browser file decoding belongs to the app UI shell");
 assert.match(app, /function rpcUrlFromShell/, "browser RPC URL discovery belongs to the app UI shell");
 
