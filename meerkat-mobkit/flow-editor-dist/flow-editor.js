@@ -7296,7 +7296,7 @@ window.MOBKIT_BOOT = {
   }
 
   function mobKitCatalogsFromSchema(schema, boot = {}, catalogPayload = null) {
-    const catalogSource = catalogPayload && typeof catalogPayload === "object" ? catalogPayload : schema;
+    const catalogSource = catalogPayload && typeof catalogPayload === "object" ? catalogPayload : {};
     const agentDefinitions = agentDefinitionsFromSchema(catalogSource);
     const blankMobpack = blankMobpackFromSchema(catalogSource);
     return {

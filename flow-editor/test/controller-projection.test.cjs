@@ -803,6 +803,42 @@ assert.equal(emptyCatalogs.template, null);
 assert.equal(emptyCatalogs.conditionView, null);
 assert.equal(emptyCatalogs.errorView, null);
 assert.deepEqual(controller.schemaSkillRealms({ skill_realms: "starter" }), []);
+const schemaOnlyCatalogLeakState = controller.mobKitCatalogsFromSchema({
+  schema_version: "mobpack/v1",
+  media_type: "application/vnd.mobkit.mobpack+json",
+  validation_source: "mobkit/mobpacks/schema",
+  deploy_settings: {
+    defaults: { command: "rkat mob deploy", surface: "cli" },
+  },
+  mob_definition: {
+    mob_settings: { defaults: { backendDefault: "session", advanced: { topology: null } } },
+  },
+  models: [{ id: "schema-leak-model", label: "Schema Leak Model", vendor: "openai" }],
+  tool_catalog: [{ id: "schema-leak-tool", label: "Schema Leak Tool", desc: "leaked", kind: "runtime", source: "schema" }],
+  skill_realms: [{ id: "schema/leak", skills: [{ id: "mob.schema.leak" }] }],
+  agent_definitions: [{
+    id: "schema_leak_agent",
+    name: "Schema Leak Agent",
+    role: "schema_leak_agent",
+    definitionType: "mobkit/profile-member",
+    source: "schema",
+    model: "gpt-5.5",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+  }],
+  blank_mobpack: {
+    id: "schema-leak-blank",
+    name: "Schema Leak Blank",
+    source: "schema",
+    document: { flow: { name: "leak", steps: [] }, members: [] },
+  },
+}, catalogBoot);
+assert.deepEqual(schemaOnlyCatalogLeakState.models, []);
+assert.deepEqual(schemaOnlyCatalogLeakState.toolCatalog, []);
+assert.deepEqual(schemaOnlyCatalogLeakState.skillRealms, []);
+assert.deepEqual(schemaOnlyCatalogLeakState.agentDefinitions, []);
+assert.equal(schemaOnlyCatalogLeakState.blankMobpack, null);
+assert.equal(schemaOnlyCatalogLeakState.template, null);
 const separateCatalogPayloadState = controller.mobKitCatalogsFromSchema({
   schema_version: "mobpack/v1",
   media_type: "application/vnd.mobkit.mobpack+json",
@@ -849,7 +885,7 @@ assert.deepEqual(separateCatalogPayloadState.skillRealms.map((realm) => realm.id
 assert.deepEqual(separateCatalogPayloadState.agentDefinitions.map((definition) => definition.id), ["sample_reviewer"]);
 assert.equal(separateCatalogPayloadState.template.name, "Blank");
 
-const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
+const hydratedContractAndCatalogFixture = {
   schema_version: "mobpack/v1",
   media_type: "application/vnd.mobkit.mobpack+json",
   validation_source: "mobkit/mobpacks/schema",
@@ -1267,7 +1303,8 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       members: [{ id: "m_worker", role: "worker" }],
     },
   },
-}, catalogBoot);
+};
+const hydratedCatalogs = controller.mobKitCatalogsFromSchema(hydratedContractAndCatalogFixture, catalogBoot, hydratedContractAndCatalogFixture);
 assert.equal(hydratedCatalogs.contractMeta.loaded, true);
 assert.equal(hydratedCatalogs.contractMeta.schemaVersion, "mobpack/v1");
 assert.equal(hydratedCatalogs.deployDefaults.command, "rkat mob deploy");
