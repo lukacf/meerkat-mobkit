@@ -500,12 +500,16 @@ function App() {
     if (!availability.supported) return { ok: false, error: availability.error };
     const requestToken = currentAuthoringRevision();
     const document = buildDocument();
-    const replacement = buildAuthoringProjection(overrides);
-    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, {
+    const operation = {
       type: operationType,
       ...(overrides.operation || {}),
-      document: replacement.document,
       selection: overrides.selection || null,
+    };
+    if (operationType === "replace_authoring_document") {
+      operation.document = buildAuthoringProjection(overrides).document;
+    }
+    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, {
+      ...operation,
     });
     if (!authoringRevisionIsCurrent(requestToken)) {
       return { ok: false, error: "stale authoring operation" };
@@ -771,9 +775,8 @@ function App() {
       sourceView: catalogs.sourceView,
     });
     if (!sourceProjectionIsCurrent(requestToken)) return null;
-    window.__mobkitFlowLastDocument = projection.document;
+    window.__mobkitFlowLastDocument = document;
     window.__mobkitFlowLastSource = result;
-    persistCurrentOutcome(projection);
     setValidationResults(projection.validationRows);
     setStage(projection.stage);
     return projection.sourceDocument;
@@ -1198,19 +1201,32 @@ function App() {
             blankTemplate: catalogs.blankMobpack,
           })}
           newFlowView={catalogs.newFlowView}
-          onCreate={(spec) => {
+          onCreate={async (spec) => {
             if (!canCreateAuthoring) return;
-            const draft = window.MobKitFlowController.flowRegistryCreateDraftProjection(flows, {
-              spec,
-              templates,
-              blankTemplate: catalogs.blankMobpack,
-              deploySettings,
-              mobSettings,
-            });
-            if (!draft.ok || !draft.hydration) return;
-            setFlows(draft.rows);
-            hydrateMobpackDocument(draft.hydration.result, draft.hydration.options);
-            setCreating(null);
+            setApiBusy(true);
+            try {
+              const result = await window.MobKitFlowController.createDocument(spec);
+              const row = result?.row;
+              if (!row?.document) return;
+              setFlows(Array.isArray(result?.rows) ? result.rows : window.MobKitFlowController.flowRegistryUpsertRowPatch(flows, row));
+              hydrateMobpackDocument(
+                { document: row.document, validation: row.validation || null },
+                {
+                  id: row.id,
+                  flowRow: row,
+                  addToRegistry: false,
+                  openEditor: true,
+                },
+              );
+              setCreating(null);
+            } catch (error) {
+              const outcome = window.MobKitFlowController.importErrorOutcome(error, { filename: "mobkit/mobpacks/create", errorView: catalogs.errorView });
+              setValidationResults(outcome.validationRows);
+              applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
+              setStage(outcome.stage);
+            } finally {
+              setApiBusy(false);
+            }
           }}
         />
       )}

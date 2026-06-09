@@ -66,6 +66,7 @@ pub(crate) const MOBPACK_AUTHORING_METHODS: &[&str] = &[
     "mobkit/mobpacks/import",
     "mobkit/mobpacks/list",
     "mobkit/mobpacks/get",
+    "mobkit/mobpacks/create",
     "mobkit/mobpacks/save",
     "mobkit/mobpacks/delete",
     "mobkit/mobpacks/apply_operation",
@@ -101,6 +102,7 @@ pub(crate) fn handle_mobpack_authoring_rpc(
         "mobkit/mobpacks/import" => crate::mobpack::import_mobpack(params),
         "mobkit/mobpacks/list" => crate::mobpack::list_mobpack_drafts(params),
         "mobkit/mobpacks/get" => crate::mobpack::get_mobpack_draft(params),
+        "mobkit/mobpacks/create" => crate::mobpack::create_mobpack_draft(params),
         "mobkit/mobpacks/save" => crate::mobpack::save_mobpack_draft(params),
         "mobkit/mobpacks/delete" => crate::mobpack::delete_mobpack_draft(params),
         "mobkit/mobpacks/apply_operation" => {

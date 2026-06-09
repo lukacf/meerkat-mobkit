@@ -2048,6 +2048,7 @@ pub fn mobpack_schema_response() -> Value {
             "import": "mobkit/mobpacks/import",
             "list": "mobkit/mobpacks/list",
             "get": "mobkit/mobpacks/get",
+            "create": "mobkit/mobpacks/create",
             "save": "mobkit/mobpacks/save",
             "delete": "mobkit/mobpacks/delete",
             "apply_operation": "mobkit/mobpacks/apply_operation",
@@ -3002,6 +3003,156 @@ fn mobpack_draft_row_from_params(params: &Value) -> Result<Value, String> {
         "validation": validation,
         "updated_at_unix_ms": updated_at_unix_ms,
         "registry_source": "mobkit/mobpacks/save"
+    }))
+}
+
+fn mobpack_draft_template(template_id: &str) -> Result<Value, String> {
+    let template = if template_id == "blank" || template_id.trim().is_empty() {
+        blank_mobpack_template()
+    } else {
+        sample_mobpack_catalog()
+            .as_array()
+            .and_then(|samples| {
+                samples
+                    .iter()
+                    .find(|sample| sample["id"].as_str() == Some(template_id))
+                    .cloned()
+            })
+            .unwrap_or(Value::Null)
+    };
+    if template.is_null() {
+        return Err(format!(
+            "mobkit/mobpacks/create unknown template: {template_id}"
+        ));
+    }
+    Ok(template)
+}
+
+fn clone_draft_template_document(template: &Value, name: &str) -> Result<MobpackDocument, String> {
+    let mut document = document_from_value(
+        template
+            .get("document")
+            .ok_or_else(|| "mobkit/mobpacks/create template is missing document".to_string())?,
+    )?;
+    let clean_name = name.trim();
+    if !clean_name.is_empty() {
+        document.name = clean_name.to_string();
+        document.mob_id = sanitize_identifier(clean_name);
+        if let Some(flow) = document.flow.as_object_mut() {
+            flow.insert("name".to_string(), Value::String(clean_name.to_string()));
+        }
+    }
+    document.mob_toml = None;
+    Ok(document)
+}
+
+fn mobpack_create_draft_id(
+    params: &Value,
+    document: &MobpackDocument,
+    rows: &BTreeMap<String, Value>,
+) -> String {
+    if let Some(id) = params
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return id.to_string();
+    }
+    let base = params
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| (!document.name.trim().is_empty()).then_some(document.name.trim()))
+        .or_else(|| {
+            params
+                .get("template")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("mobkit_flow");
+    let clean = sanitize_identifier(base);
+    let prefix = if clean.starts_with("f_") {
+        clean
+    } else {
+        format!("f_{clean}")
+    };
+    if !rows.contains_key(&prefix) {
+        return prefix;
+    }
+    let mut index = 2;
+    loop {
+        let candidate = format!("{prefix}_{index}");
+        if !rows.contains_key(&candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+pub fn create_mobpack_draft(params: &Value) -> Result<Value, String> {
+    let template_id = params
+        .get("template")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("blank");
+    let template = mobpack_draft_template(template_id)?;
+    let fallback_name = template
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("MobKit Flow");
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_name);
+    let document = clone_draft_template_document(&template, name)?;
+    let validation = validate_document(&document);
+    let trigger = params
+        .get("trigger")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| template.get("trigger").and_then(Value::as_str))
+        .unwrap_or("MobKit authoring draft");
+    let source = template
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("mobkit/mobpacks/create");
+    let _guard = MOBPACK_DRAFT_STORE_LOCK
+        .lock()
+        .map_err(|_| "mobpack draft store lock poisoned".to_string())?;
+    let path = mobpack_draft_store_path(params);
+    let mut rows = read_mobpack_draft_store(&path)?;
+    let id = mobpack_create_draft_id(params, &document, &rows);
+    let updated_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let row = json!({
+        "id": id,
+        "name": if document.name.trim().is_empty() { document.mob_id.clone() } else { document.name.clone() },
+        "version": document.schema_version,
+        "stage": "draft",
+        "trigger": trigger,
+        "source": source,
+        "document": document,
+        "validation": validation,
+        "updated_at_unix_ms": updated_at_unix_ms,
+        "registry_source": "mobkit/mobpacks/create",
+        "template": template_id
+    });
+    rows.insert(id, row.clone());
+    write_mobpack_draft_store(&path, &rows)?;
+    Ok(json!({
+        "source": "mobkit/mobpacks/create",
+        "store_path": path,
+        "row": row,
+        "rows": sorted_mobpack_draft_rows(&rows),
     }))
 }
 
@@ -20343,6 +20494,48 @@ model = "gpt-5.5"
     }
 
     #[test]
+    fn create_mobpack_draft_clones_template_on_mobkit_side() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("drafts.json");
+
+        let created = create_mobpack_draft(&json!({
+            "store_path": store_path,
+            "template": "sample_docs_only",
+            "name": "Docs Flow Draft",
+            "trigger": "path · docs/**"
+        }))
+        .expect("create draft");
+
+        assert_eq!(created["source"], json!("mobkit/mobpacks/create"));
+        assert_eq!(
+            created["row"]["registry_source"],
+            json!("mobkit/mobpacks/create")
+        );
+        assert_eq!(created["row"]["id"], json!("f_docs_flow_draft"));
+        assert_eq!(created["row"]["name"], json!("Docs Flow Draft"));
+        assert_eq!(created["row"]["document"]["name"], json!("Docs Flow Draft"));
+        assert_eq!(
+            created["row"]["document"]["mob_id"],
+            json!("docs_flow_draft")
+        );
+        assert_eq!(
+            created["row"]["document"]["flow"]["name"],
+            json!("Docs Flow Draft")
+        );
+        assert!(created["row"]["document"]["mob_toml"].is_null());
+        assert!(
+            created["row"]["validation"]["ok"]
+                .as_bool()
+                .unwrap_or(false)
+        );
+
+        let listed =
+            list_mobpack_drafts(&json!({ "store_path": store_path })).expect("list drafts");
+        assert_eq!(listed["rows"].as_array().expect("rows").len(), 1);
+        assert_eq!(listed["rows"][0]["id"], json!("f_docs_flow_draft"));
+    }
+
+    #[test]
     fn graph_projection_rpc_projects_editor_flow_controls() {
         let mut document = valid_document();
         document.members = json!([
@@ -21814,6 +22007,7 @@ model = "gpt-5.5"
             ("import", "mobkit/mobpacks/import"),
             ("list", "mobkit/mobpacks/list"),
             ("get", "mobkit/mobpacks/get"),
+            ("create", "mobkit/mobpacks/create"),
             ("save", "mobkit/mobpacks/save"),
             ("delete", "mobkit/mobpacks/delete"),
             ("apply_operation", "mobkit/mobpacks/apply_operation"),

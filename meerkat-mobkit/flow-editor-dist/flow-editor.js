@@ -46,6 +46,7 @@ window.MOBKIT_BOOT = {
     import: "mobkit/mobpacks/import",
     list: "mobkit/mobpacks/list",
     get: "mobkit/mobpacks/get",
+    create: "mobkit/mobpacks/create",
     save: "mobkit/mobpacks/save",
     delete: "mobkit/mobpacks/delete",
     applyOperation: "mobkit/mobpacks/apply_operation",
@@ -62,6 +63,7 @@ window.MOBKIT_BOOT = {
     import: "import",
     list: "list",
     get: "get",
+    create: "create",
     save: "save",
     delete: "delete",
     applyOperation: "apply_operation",
@@ -8445,6 +8447,10 @@ window.MOBKIT_BOOT = {
     return callRpc(rpcMethod("get"), { ...(params || {}), id });
   }
 
+  async function createDocument(spec = {}) {
+    return callRpc(rpcMethod("create"), spec || {});
+  }
+
   async function saveDocument(row = {}) {
     const document = row.document;
     return callRpc(rpcMethod("save"), {
@@ -10395,16 +10401,13 @@ window.MOBKIT_BOOT = {
     const sourceDigest = String(primarySourceFile.sha256 || "").trim();
     if (!sourceDigest) throw new Error(`${apiSource} did not return primary source sha256 ${primarySourcePath}`);
     files.forEach((file, index) => validateSourceFileMetadata(apiSource, file, index));
-    const renderedDocument = {
-      ...(document && typeof document === "object" ? document : {}),
-      mob_toml: primarySourceFile.text,
-    };
+    const authoringDocument = document && typeof document === "object" ? document : {};
     const validation = result?.validation || null;
     const stage = validation?.ok ? "valid" : "draft";
     return {
-      document: renderedDocument,
+      document: authoringDocument,
       sourceDocument: {
-        ...renderedDocument,
+        ...authoringDocument,
         validation,
         filename,
         media_type: mediaType,
@@ -11909,6 +11912,7 @@ window.MOBKIT_BOOT = {
     importDocument,
     listDocuments,
     getDocument,
+    createDocument,
     saveDocument,
     deleteDocument,
     applyAuthoringOperationDocument,
@@ -15087,12 +15091,16 @@ function App() {
     if (!availability.supported) return { ok: false, error: availability.error };
     const requestToken = currentAuthoringRevision();
     const document2 = buildDocument();
-    const replacement = buildAuthoringProjection(overrides);
-    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, {
+    const operation = {
       type: operationType,
       ...overrides.operation || {},
-      document: replacement.document,
       selection: overrides.selection || null
+    };
+    if (operationType === "replace_authoring_document") {
+      operation.document = buildAuthoringProjection(overrides).document;
+    }
+    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, {
+      ...operation
     });
     if (!authoringRevisionIsCurrent(requestToken)) {
       return { ok: false, error: "stale authoring operation" };
@@ -15354,9 +15362,8 @@ function App() {
       sourceView: catalogs.sourceView
     });
     if (!sourceProjectionIsCurrent(requestToken)) return null;
-    window.__mobkitFlowLastDocument = projection.document;
+    window.__mobkitFlowLastDocument = document2;
     window.__mobkitFlowLastSource = result;
-    persistCurrentOutcome(projection);
     setValidationResults(projection.validationRows);
     setStage(projection.stage);
     return projection.sourceDocument;
@@ -15765,19 +15772,32 @@ function App() {
         blankTemplate: catalogs.blankMobpack
       }),
       newFlowView: catalogs.newFlowView,
-      onCreate: (spec) => {
+      onCreate: async (spec) => {
         if (!canCreateAuthoring) return;
-        const draft = window.MobKitFlowController.flowRegistryCreateDraftProjection(flows, {
-          spec,
-          templates,
-          blankTemplate: catalogs.blankMobpack,
-          deploySettings,
-          mobSettings
-        });
-        if (!draft.ok || !draft.hydration) return;
-        setFlows(draft.rows);
-        hydrateMobpackDocument(draft.hydration.result, draft.hydration.options);
-        setCreating(null);
+        setApiBusy(true);
+        try {
+          const result = await window.MobKitFlowController.createDocument(spec);
+          const row = result?.row;
+          if (!row?.document) return;
+          setFlows(Array.isArray(result?.rows) ? result.rows : window.MobKitFlowController.flowRegistryUpsertRowPatch(flows, row));
+          hydrateMobpackDocument(
+            { document: row.document, validation: row.validation || null },
+            {
+              id: row.id,
+              flowRow: row,
+              addToRegistry: false,
+              openEditor: true
+            }
+          );
+          setCreating(null);
+        } catch (error) {
+          const outcome = window.MobKitFlowController.importErrorOutcome(error, { filename: "mobkit/mobpacks/create", errorView: catalogs.errorView });
+          setValidationResults(outcome.validationRows);
+          applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
+          setStage(outcome.stage);
+        } finally {
+          setApiBusy(false);
+        }
       }
     }
   ), /* @__PURE__ */ React.createElement(DrySim, { open: drySim, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.deployPlanTraceCloseTransition()), onActiveStep: setActiveStepId, runKey: drySimKey, document: drySimDocument, plan: drySimPlan, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(ValidateSheet, { open: validate, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.validationSheetCloseTransition()), onPublish: handlePublish, onDeployPlan: handleDeployPlan, onDeployRun: handleDeployRun, results: validationResults, stage, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(SourceDrawer, { open: sourceOpen, onClose: clearSourceProjection, state: sourceDocument, sourceView: catalogs.sourceView }), /* @__PURE__ */ React.createElement(

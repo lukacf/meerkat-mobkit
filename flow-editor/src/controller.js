@@ -13,6 +13,7 @@
     import: "mobkit/mobpacks/import",
     list: "mobkit/mobpacks/list",
     get: "mobkit/mobpacks/get",
+    create: "mobkit/mobpacks/create",
     save: "mobkit/mobpacks/save",
     delete: "mobkit/mobpacks/delete",
     applyOperation: "mobkit/mobpacks/apply_operation",
@@ -29,6 +30,7 @@
     import: "import",
     list: "list",
     get: "get",
+    create: "create",
     save: "save",
     delete: "delete",
     applyOperation: "apply_operation",
@@ -8412,6 +8414,10 @@
     return callRpc(rpcMethod("get"), { ...(params || {}), id });
   }
 
+  async function createDocument(spec = {}) {
+    return callRpc(rpcMethod("create"), spec || {});
+  }
+
   async function saveDocument(row = {}) {
     const document = row.document;
     return callRpc(rpcMethod("save"), {
@@ -10362,16 +10368,13 @@
     const sourceDigest = String(primarySourceFile.sha256 || "").trim();
     if (!sourceDigest) throw new Error(`${apiSource} did not return primary source sha256 ${primarySourcePath}`);
     files.forEach((file, index) => validateSourceFileMetadata(apiSource, file, index));
-    const renderedDocument = {
-      ...(document && typeof document === "object" ? document : {}),
-      mob_toml: primarySourceFile.text,
-    };
+    const authoringDocument = document && typeof document === "object" ? document : {};
     const validation = result?.validation || null;
     const stage = validation?.ok ? "valid" : "draft";
     return {
-      document: renderedDocument,
+      document: authoringDocument,
       sourceDocument: {
-        ...renderedDocument,
+        ...authoringDocument,
         validation,
         filename,
         media_type: mediaType,
@@ -11876,6 +11879,7 @@
     importDocument,
     listDocuments,
     getDocument,
+    createDocument,
     saveDocument,
     deleteDocument,
     applyAuthoringOperationDocument,

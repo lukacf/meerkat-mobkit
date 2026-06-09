@@ -6696,12 +6696,13 @@ const sourceProjection = controller.sourceDocumentFromSourceResult({
   sourceView: hydratedCatalogs.sourceView,
 });
 assert.equal(sourceProjection.document.name, "Source Proof");
-assert.equal(sourceProjection.document.mob_toml, "[mob]\nid = \"source_proof\"\n");
+assert.equal(sourceProjection.document.mob_toml, "[stale]");
 assert.notEqual(sourceProjection.document.mob_toml, "[top-level stale export text]");
 assert.equal(sourceProjection.sourceDocument.filename, "source-proof.mobpack");
 assert.equal(sourceProjection.sourceDocument.media_type, "application/vnd.mobkit.mobpack");
 assert.equal(sourceProjection.sourceDocument.sourcePath, "mobkit/mob.toml");
 assert.equal(sourceProjection.sourceDocument.sourceFile.media_type, "text/toml");
+assert.equal(sourceProjection.sourceDocument.sourceFile.text, "[mob]\nid = \"source_proof\"\n");
 assert.equal(sourceProjection.sourceDocument.sourceFiles.length, 2);
 assert.equal(sourceProjection.sourceDocument.sourceDigest, "2496e694a40dca7b5f535d6cb5969d867b6989aa9fa258535c048947073086fa");
 assert.equal(sourceProjection.sourceDocument.source, "mobkit/mobpacks/source");

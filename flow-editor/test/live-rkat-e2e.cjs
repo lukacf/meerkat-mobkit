@@ -54,6 +54,7 @@ async function assertAuthoringCapabilities() {
     "mobkit/mobpacks/import",
     "mobkit/mobpacks/list",
     "mobkit/mobpacks/get",
+    "mobkit/mobpacks/create",
     "mobkit/mobpacks/save",
     "mobkit/mobpacks/delete",
     "mobkit/mobpacks/apply_operation",
@@ -1415,7 +1416,7 @@ async function validateDocumentBackedDeployPreview(document) {
   };
 }
 
-async function validateNamedProjectedOperations(catalogs) {
+async function validateNamedTypedOperations(catalogs) {
   let document = catalogs.blank_mobpack.document;
   const added = await rpc("mobkit/mobpacks/apply_operation", {
     document,
@@ -1429,23 +1430,18 @@ async function validateNamedProjectedOperations(catalogs) {
   }
   document = added.document;
   const memberId = added.selection.id;
-  const projected = JSON.parse(JSON.stringify(document));
-  projected.name = "Named operation payload proof";
-  projected.flow.name = "Named operation payload proof";
-  projected.deploy = { ...(projected.deploy || {}), prompt: "Named projected operation prompt." };
-  projected.members = projected.members.map((member) => (
-    member.id === memberId ? { ...member, name: "Named operation agent" } : member
-  ));
   const updated = await rpc("mobkit/mobpacks/apply_operation", {
     document,
     operation: {
-      type: "update_flow_step",
-      document: projected,
+      type: "update_member",
+      member_id: memberId,
+      patch: { name: "Named typed operation agent" },
       selection: { kind: "agent", id: memberId },
     },
   });
-  if (!updated.ok || updated.document.name !== projected.name) {
-    throw new Error(`named projected operation did not apply operation.document: ${JSON.stringify(updated)}`);
+  const updatedMember = updated.document.members.find((member) => member.id === memberId);
+  if (!updated.ok || updatedMember?.name !== "Named typed operation agent") {
+    throw new Error(`named typed operation did not apply member patch: ${JSON.stringify(updated)}`);
   }
   const settings = await rpc("mobkit/mobpacks/apply_operation", {
     document: updated.document,
@@ -1971,7 +1967,7 @@ async function validateFlowStepOperations(catalogs) {
     blankMobpackTemplate: await validateBlankMobpackTemplate(dir, catalogs),
     customDeploySettings: await validateCustomDeploySettings(dir),
     documentBackedDeployPreview: await validateDocumentBackedDeployPreview(sample.document),
-    namedProjectedOperations: await validateNamedProjectedOperations(catalogs),
+    namedTypedOperations: await validateNamedTypedOperations(catalogs),
     inputParamOperations: await validateInputParamOperations(catalogs),
     flowStepOperations: await validateFlowStepOperations(catalogs),
     graphOperations: await validateGraphOperations(catalogs),
