@@ -16,6 +16,7 @@ const controller = src("controller.js");
 const topRailBlock = (app.match(/function TopRail[\s\S]*?\/\/ ── Flows registry view/) || [""])[0];
 const tweaksPanel = src("tweaks-panel.jsx");
 const devServer = fs.readFileSync(path.join(root, "dev-server.cjs"), "utf8");
+const mobpackRust = fs.readFileSync(path.join(root, "..", "meerkat-mobkit", "src", "mobpack.rs"), "utf8");
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const controllerProjectionTest = testSrc("controller-projection.test.cjs");
 const liveRkatE2eTest = testSrc("live-rkat-e2e.cjs");
@@ -1688,6 +1689,7 @@ assert(!/updateBudgetSplitPolicy\(\{\s*kind:\s*["']Fixed["'],\s*limit:\s*Number\
 assert(!/mobkit\/starters|source:\s*['"]starter['"]/.test(app + "\n" + builder + "\n" + agents + "\n" + graph + "\n" + inspector + "\n" + controller), "Flow Editor frontend must not refer to the removed starter skill realm");
 assert(!/mobkit_gateway mobpack deploy|profile_templates/.test(controllerProjectionTest), "projection fixtures must not preserve legacy gateway deploy or profile-template compatibility contracts");
 assert(!/DiffOnly|ArtifactOnly/.test(app + "\n" + builder + "\n" + graph + "\n" + inspector + "\n" + controller), "Fork context options must come from MobKit ForkContext, not stale prototype labels");
+assert(!/\bTopology\b|topology view/.test(app + "\n" + builder + "\n" + graph + "\n" + inspector + "\n" + agents + "\n" + controller + "\n" + mobpackRust + "\n" + controllerProjectionTest), "Flow Editor UI and schema copy must use Basic/Graph/Agent surface names, not legacy Topology naming");
 assert.match(controller, /function configure/, "controller RPC endpoint must be configured with data, not discovered through the DOM");
 assert.match(app, /function downloadExportResult/, "browser download behavior belongs to the app UI shell");
 assert.match(controller, /function exportDownloadPayload[\s\S]*mobkit\/mobpacks\/export did not return content_base64[\s\S]*mobkit\/mobpacks\/export did not return media_type[\s\S]*mobkit\/mobpacks\/export did not return filename/, "browser download must fail closed through controller-owned MobKit export metadata validation");

@@ -1061,7 +1061,7 @@ pub fn mobpack_schema_response() -> Value {
         "cell_plural": "cells",
         "delete_confirm_cells_suffix": "those nodes will be removed.",
         "usage_title_prefix": "USED IN",
-        "empty_usage_hint": "Not yet placed in any cell. Switch to Topology to add.",
+        "empty_usage_hint": "Not yet placed in any cell. Switch to Graph to add.",
         "identity_title": "IDENTITY",
         "profile_binding_label": "Profile binding",
         "missing_profile_binding_label": "missing profile binding",
