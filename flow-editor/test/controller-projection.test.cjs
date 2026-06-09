@@ -2813,6 +2813,35 @@ assert.equal(bootstrapProjection.initialHydration.options.addToRegistry, false);
 assert.equal(bootstrapProjection.initialHydration.options.openEditor, true);
 assert.deepEqual(bootstrapProjection.initialHydration.options.deployDefaults, { surface: "local" });
 assert.deepEqual(bootstrapProjection.initialHydration.options.mobDefaults, { backend: "session" });
+
+const savedRegistryBootstrap = controller.flowCatalogBootstrapState({
+  blank_mobpack: {
+    id: "blank",
+    name: "Blank MobKit mobpack",
+    source: "mobkit/blank-mobpack",
+    trigger: "blank · authoring",
+    stage: "valid",
+    document: { mob_id: "blank", schema_version: "0.1" },
+    validation: { ok: true },
+  },
+  sample_mobpacks: [],
+}, {
+  registryResult: {
+    rows: [{
+      id: "saved_flow",
+      name: "Saved Flow",
+      source: "mobkit/mobpacks/save",
+      trigger: "saved",
+      stage: "draft",
+      document: { mob_id: "saved_flow", name: "Saved Flow", schema_version: "0.1" },
+      validation: null,
+    }],
+  },
+});
+assert.deepEqual(savedRegistryBootstrap.flows.map((row) => row.id), ["saved_flow"]);
+assert.equal(savedRegistryBootstrap.initialHydration.result.document.mob_id, "saved_flow");
+assert.equal(savedRegistryBootstrap.initialHydration.options.flowRow.source, "mobkit/mobpacks/save");
+
 assert.deepEqual(controller.flowCatalogBootstrapState({ sample_mobpacks: [] }), {
   templates: [],
   flows: [],

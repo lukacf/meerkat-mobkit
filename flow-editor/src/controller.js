@@ -11,6 +11,10 @@
     source: "mobkit/mobpacks/source",
     export: "mobkit/mobpacks/export",
     import: "mobkit/mobpacks/import",
+    list: "mobkit/mobpacks/list",
+    get: "mobkit/mobpacks/get",
+    save: "mobkit/mobpacks/save",
+    delete: "mobkit/mobpacks/delete",
     deployCommand: "mobkit/mobpacks/deploy_command",
     deploy: "mobkit/mobpacks/deploy",
   };
@@ -21,6 +25,10 @@
     source: "source",
     export: "export",
     import: "import",
+    list: "list",
+    get: "get",
+    save: "save",
+    delete: "delete",
     deployCommand: "deploy_command",
     deploy: "deploy_rpc",
   };
@@ -8350,6 +8358,30 @@
     return callRpc(rpcMethod("import"), params || {});
   }
 
+  async function listDocuments(params = {}) {
+    return callRpc(rpcMethod("list"), params || {});
+  }
+
+  async function getDocument(id, params = {}) {
+    return callRpc(rpcMethod("get"), { ...(params || {}), id });
+  }
+
+  async function saveDocument(row = {}) {
+    const document = row.document;
+    return callRpc(rpcMethod("save"), {
+      id: row.id || row.currentFlowId,
+      document,
+      validation: row.validation ?? null,
+      stage: row.stage,
+      trigger: row.trigger,
+      source: row.source,
+    });
+  }
+
+  async function deleteDocument(id, params = {}) {
+    return callRpc(rpcMethod("delete"), { ...(params || {}), id });
+  }
+
   function importParamsFromDecodedFile(input = {}) {
     const {
       filename = "",
@@ -10463,18 +10495,21 @@
     const blankFlow = blank
       ? { ...blank, stage: "draft", validation: null }
       : null;
+    const registryFlows = flowRegistryRowsFromBackend(options.registryRows || options.registryResult?.rows);
+    const flows = registryFlows.length ? registryFlows : (blankFlow ? [blankFlow] : []);
+    const first = flows[0] || null;
     return {
       templates: sampleFlows,
-      flows: blankFlow ? [blankFlow] : [],
-      initialHydration: blankFlow
+      flows,
+      initialHydration: first
         ? {
           result: {
-            document: blankFlow.document,
-            validation: null,
+            document: first.document,
+            validation: first.validation ?? null,
           },
           options: {
-            id: blankFlow.id,
-            flowRow: blankFlow,
+            id: first.id,
+            flowRow: first,
             addToRegistry: false,
             openEditor: !!options.openEditor,
             deployDefaults: options.deployDefaults,
@@ -10483,6 +10518,23 @@
         }
         : null,
     };
+  }
+
+  function flowRegistryRowsFromBackend(rows = []) {
+    return (Array.isArray(rows) ? rows : [])
+      .map((row) => {
+        if (!row || typeof row !== "object" || !row.document) return null;
+        return flowRegistryRowFromDocument({
+          id: row.id,
+          document: row.document,
+          validation: row.validation ?? null,
+          stage: row.stage,
+          trigger: row.trigger,
+          source: row.source,
+          flowRow: row,
+        });
+      })
+      .filter(Boolean);
   }
 
   function blankMobpackFromCatalogs(schema) {
@@ -11717,6 +11769,10 @@
     exportDocument,
     deployDocument,
     importDocument,
+    listDocuments,
+    getDocument,
+    saveDocument,
+    deleteDocument,
     importParamsFromDecodedFile,
     deploySettingsForUi,
     deployDefaultsFromSchema,
@@ -11762,6 +11818,7 @@
     sourceFileSelectionTransition,
     sampleFlowsFromCatalogs,
     flowCatalogBootstrapState,
+    flowRegistryRowsFromBackend,
     sampleAgentDefinitionsFromCatalogs,
     newFlowModalPatch,
     newFlowModalFieldPatch,

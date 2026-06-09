@@ -44,6 +44,10 @@ window.MOBKIT_BOOT = {
     source: "mobkit/mobpacks/source",
     export: "mobkit/mobpacks/export",
     import: "mobkit/mobpacks/import",
+    list: "mobkit/mobpacks/list",
+    get: "mobkit/mobpacks/get",
+    save: "mobkit/mobpacks/save",
+    delete: "mobkit/mobpacks/delete",
     deployCommand: "mobkit/mobpacks/deploy_command",
     deploy: "mobkit/mobpacks/deploy",
   };
@@ -54,6 +58,10 @@ window.MOBKIT_BOOT = {
     source: "source",
     export: "export",
     import: "import",
+    list: "list",
+    get: "get",
+    save: "save",
+    delete: "delete",
     deployCommand: "deploy_command",
     deploy: "deploy_rpc",
   };
@@ -8383,6 +8391,30 @@ window.MOBKIT_BOOT = {
     return callRpc(rpcMethod("import"), params || {});
   }
 
+  async function listDocuments(params = {}) {
+    return callRpc(rpcMethod("list"), params || {});
+  }
+
+  async function getDocument(id, params = {}) {
+    return callRpc(rpcMethod("get"), { ...(params || {}), id });
+  }
+
+  async function saveDocument(row = {}) {
+    const document = row.document;
+    return callRpc(rpcMethod("save"), {
+      id: row.id || row.currentFlowId,
+      document,
+      validation: row.validation ?? null,
+      stage: row.stage,
+      trigger: row.trigger,
+      source: row.source,
+    });
+  }
+
+  async function deleteDocument(id, params = {}) {
+    return callRpc(rpcMethod("delete"), { ...(params || {}), id });
+  }
+
   function importParamsFromDecodedFile(input = {}) {
     const {
       filename = "",
@@ -10496,18 +10528,21 @@ window.MOBKIT_BOOT = {
     const blankFlow = blank
       ? { ...blank, stage: "draft", validation: null }
       : null;
+    const registryFlows = flowRegistryRowsFromBackend(options.registryRows || options.registryResult?.rows);
+    const flows = registryFlows.length ? registryFlows : (blankFlow ? [blankFlow] : []);
+    const first = flows[0] || null;
     return {
       templates: sampleFlows,
-      flows: blankFlow ? [blankFlow] : [],
-      initialHydration: blankFlow
+      flows,
+      initialHydration: first
         ? {
           result: {
-            document: blankFlow.document,
-            validation: null,
+            document: first.document,
+            validation: first.validation ?? null,
           },
           options: {
-            id: blankFlow.id,
-            flowRow: blankFlow,
+            id: first.id,
+            flowRow: first,
             addToRegistry: false,
             openEditor: !!options.openEditor,
             deployDefaults: options.deployDefaults,
@@ -10516,6 +10551,23 @@ window.MOBKIT_BOOT = {
         }
         : null,
     };
+  }
+
+  function flowRegistryRowsFromBackend(rows = []) {
+    return (Array.isArray(rows) ? rows : [])
+      .map((row) => {
+        if (!row || typeof row !== "object" || !row.document) return null;
+        return flowRegistryRowFromDocument({
+          id: row.id,
+          document: row.document,
+          validation: row.validation ?? null,
+          stage: row.stage,
+          trigger: row.trigger,
+          source: row.source,
+          flowRow: row,
+        });
+      })
+      .filter(Boolean);
   }
 
   function blankMobpackFromCatalogs(schema) {
@@ -11750,6 +11802,10 @@ window.MOBKIT_BOOT = {
     exportDocument,
     deployDocument,
     importDocument,
+    listDocuments,
+    getDocument,
+    saveDocument,
+    deleteDocument,
     importParamsFromDecodedFile,
     deploySettingsForUi,
     deployDefaultsFromSchema,
@@ -11795,6 +11851,7 @@ window.MOBKIT_BOOT = {
     sourceFileSelectionTransition,
     sampleFlowsFromCatalogs,
     flowCatalogBootstrapState,
+    flowRegistryRowsFromBackend,
     sampleAgentDefinitionsFromCatalogs,
     newFlowModalPatch,
     newFlowModalFieldPatch,
@@ -14473,6 +14530,7 @@ function App() {
     window.MobKitFlowController.loadSchema().then(async (schema) => {
       window.MobKitFlowController.configureAuthoringMethodsFromSchema(schema);
       const catalogPayload = await window.MobKitFlowController.loadCatalogs();
+      const registryPayload = await window.MobKitFlowController.listDocuments().catch(() => ({ rows: [] }));
       if (cancelled) return;
       const nextCatalogs = window.MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
       setCatalogs(nextCatalogs);
@@ -14483,7 +14541,8 @@ function App() {
       const bootstrap = window.MobKitFlowController.flowCatalogBootstrapState(catalogPayload, {
         openEditor: view === "editor",
         deployDefaults: nextCatalogs.deployDefaults,
-        mobDefaults: nextCatalogs.mobDefaults
+        mobDefaults: nextCatalogs.mobDefaults,
+        registryResult: registryPayload
       });
       setTemplates(bootstrap.templates);
       setFlows(bootstrap.flows);
@@ -14747,6 +14806,11 @@ function App() {
     applyAuthoringDocumentProjection(projection);
     return projection.document;
   };
+  const saveRegistryDocument = (rowPatch) => {
+    if (!rowPatch?.document) return;
+    window.MobKitFlowController.saveDocument(rowPatch).catch(() => {
+    });
+  };
   React.useEffect(() => {
     let cancelled = false;
     setDeployCommandPreview("");
@@ -14793,6 +14857,7 @@ function App() {
     if (!projection.ok || !projection.changed) return projection;
     persistedDocumentSig.current = projection.signature;
     setFlows(projection.rows);
+    saveRegistryDocument(projection.persistence?.rowPatch);
     return projection;
   };
   React.useEffect(() => {
@@ -14814,6 +14879,7 @@ function App() {
     if (!persistence.changed) return;
     persistedDocumentSig.current = persistence.signature;
     setFlows(persistence.rows);
+    saveRegistryDocument(persistence.rowPatch);
   }, [
     flows,
     currentFlowId,

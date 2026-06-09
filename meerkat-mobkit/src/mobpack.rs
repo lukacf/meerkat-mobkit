@@ -20,6 +20,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tar::{Builder, Header};
 
 pub const MOBPACK_SCHEMA_VERSION: &str = "0.1.0";
@@ -37,10 +39,14 @@ const EDITOR_INPUT_STEP_ID_PREFIX: &str = "input";
 const EDITOR_INPUT_STEP_DEFAULT_TASK: &str = "Run the mobpack flow.";
 const DEFAULT_DEPLOY_EXEC_TIMEOUT_MS: u64 = 120_000;
 const DEPLOY_EXEC_TIMEOUT_GRACE_MS: u64 = 250;
+const MOBPACK_DRAFT_STORE_ENV: &str = "MOBKIT_FLOW_EDITOR_DRAFT_STORE";
+const MOBPACK_DRAFT_STORE_FILENAME: &str = "meerkat-mobkit-flow-editor-drafts.json";
 const EDITOR_SCHEMA_FIELD_TYPES: &[&str] = &[
     "string", "string[]", "number", "float", "int", "integer", "boolean", "bool", "enum", "bytes",
     "object",
 ];
+
+static MOBPACK_DRAFT_STORE_LOCK: Mutex<()> = Mutex::new(());
 
 fn editor_input_step_default_task() -> &'static str {
     EDITOR_INPUT_STEP_DEFAULT_TASK
@@ -1763,6 +1769,10 @@ pub fn mobpack_schema_response() -> Value {
             "source": "mobkit/mobpacks/source",
             "export": "mobkit/mobpacks/export",
             "import": "mobkit/mobpacks/import",
+            "list": "mobkit/mobpacks/list",
+            "get": "mobkit/mobpacks/get",
+            "save": "mobkit/mobpacks/save",
+            "delete": "mobkit/mobpacks/delete",
             "deploy_command": "mobkit/mobpacks/deploy_command",
             "deploy_rpc": "mobkit/mobpacks/deploy",
             "deploy_cli": "rkat mob deploy <pack.mobpack> <prompt>"
@@ -2564,6 +2574,240 @@ fn import_media_type(params: &Value, fallback: &str) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or(fallback)
         .to_string()
+}
+
+fn mobpack_draft_store_path(params: &Value) -> PathBuf {
+    params
+        .get("store_path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var(MOBPACK_DRAFT_STORE_ENV)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
+        .unwrap_or_else(|| std::env::temp_dir().join(MOBPACK_DRAFT_STORE_FILENAME))
+}
+
+fn read_mobpack_draft_store(path: &Path) -> Result<BTreeMap<String, Value>, String> {
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let bytes = std::fs::read(path).map_err(|err| {
+        format!(
+            "failed to read mobpack draft store {}: {err}",
+            path.display()
+        )
+    })?;
+    if bytes.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    serde_json::from_slice(&bytes).map_err(|err| {
+        format!(
+            "failed to parse mobpack draft store {}: {err}",
+            path.display()
+        )
+    })
+}
+
+fn write_mobpack_draft_store(path: &Path, rows: &BTreeMap<String, Value>) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed to create mobpack draft store directory {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    let bytes = serde_json::to_vec_pretty(rows)
+        .map_err(|err| format!("failed to encode mobpack draft store: {err}"))?;
+    let tmp_path = path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, bytes).map_err(|err| {
+        format!(
+            "failed to write mobpack draft store {}: {err}",
+            tmp_path.display()
+        )
+    })?;
+    std::fs::rename(&tmp_path, path).map_err(|err| {
+        format!(
+            "failed to replace mobpack draft store {}: {err}",
+            path.display()
+        )
+    })
+}
+
+fn mobpack_draft_id_from_params(
+    params: &Value,
+    document: &MobpackDocument,
+) -> Result<String, String> {
+    let id = params
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            (!document.mob_id.trim().is_empty())
+                .then(|| sanitize_identifier(document.mob_id.trim()))
+        })
+        .or_else(|| {
+            (!document.name.trim().is_empty()).then(|| sanitize_identifier(document.name.trim()))
+        })
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "mobkit/mobpacks/save requires id or document.mob_id".to_string())?;
+    Ok(id)
+}
+
+fn mobpack_draft_row_from_params(params: &Value) -> Result<Value, String> {
+    let document = document_from_params(params)?;
+    let id = mobpack_draft_id_from_params(params, &document)?;
+    let validation = params
+        .get("validation")
+        .cloned()
+        .filter(|value| !value.is_null())
+        .unwrap_or_else(|| {
+            serde_json::to_value(validate_document(&document)).unwrap_or(Value::Null)
+        });
+    let stage = params
+        .get("stage")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            if validation.get("ok").and_then(Value::as_bool) == Some(true) {
+                "valid".to_string()
+            } else {
+                "draft".to_string()
+            }
+        });
+    let trigger = params
+        .get("trigger")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            document
+                .flow
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| "MobKit authoring draft".to_string());
+    let source = params
+        .get("source")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("mobkit/mobpacks/save");
+    let updated_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    Ok(json!({
+        "id": id,
+        "name": if document.name.trim().is_empty() { document.mob_id.clone() } else { document.name.clone() },
+        "version": document.schema_version,
+        "stage": stage,
+        "trigger": trigger,
+        "source": source,
+        "document": document,
+        "validation": validation,
+        "updated_at_unix_ms": updated_at_unix_ms,
+        "registry_source": "mobkit/mobpacks/save"
+    }))
+}
+
+fn sorted_mobpack_draft_rows(rows: &BTreeMap<String, Value>) -> Vec<Value> {
+    rows.values().cloned().collect()
+}
+
+pub fn list_mobpack_drafts(params: &Value) -> Result<Value, String> {
+    let _guard = MOBPACK_DRAFT_STORE_LOCK
+        .lock()
+        .map_err(|_| "mobpack draft store lock poisoned".to_string())?;
+    let path = mobpack_draft_store_path(params);
+    let rows = read_mobpack_draft_store(&path)?;
+    Ok(json!({
+        "source": "mobkit/mobpacks/list",
+        "store_path": path,
+        "rows": sorted_mobpack_draft_rows(&rows),
+    }))
+}
+
+pub fn get_mobpack_draft(params: &Value) -> Result<Value, String> {
+    let id = params
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "mobkit/mobpacks/get requires id".to_string())?;
+    let _guard = MOBPACK_DRAFT_STORE_LOCK
+        .lock()
+        .map_err(|_| "mobpack draft store lock poisoned".to_string())?;
+    let path = mobpack_draft_store_path(params);
+    let rows = read_mobpack_draft_store(&path)?;
+    let row = rows
+        .get(id)
+        .cloned()
+        .ok_or_else(|| format!("mobpack draft not found: {id}"))?;
+    Ok(json!({
+        "source": "mobkit/mobpacks/get",
+        "store_path": path,
+        "row": row,
+    }))
+}
+
+pub fn save_mobpack_draft(params: &Value) -> Result<Value, String> {
+    let row = mobpack_draft_row_from_params(params)?;
+    let id = row["id"]
+        .as_str()
+        .ok_or_else(|| "mobpack draft row missing id".to_string())?
+        .to_string();
+    let _guard = MOBPACK_DRAFT_STORE_LOCK
+        .lock()
+        .map_err(|_| "mobpack draft store lock poisoned".to_string())?;
+    let path = mobpack_draft_store_path(params);
+    let mut rows = read_mobpack_draft_store(&path)?;
+    rows.insert(id, row.clone());
+    write_mobpack_draft_store(&path, &rows)?;
+    Ok(json!({
+        "source": "mobkit/mobpacks/save",
+        "store_path": path,
+        "row": row,
+        "rows": sorted_mobpack_draft_rows(&rows),
+    }))
+}
+
+pub fn delete_mobpack_draft(params: &Value) -> Result<Value, String> {
+    let id = params
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "mobkit/mobpacks/delete requires id".to_string())?
+        .to_string();
+    let _guard = MOBPACK_DRAFT_STORE_LOCK
+        .lock()
+        .map_err(|_| "mobpack draft store lock poisoned".to_string())?;
+    let path = mobpack_draft_store_path(params);
+    let mut rows = read_mobpack_draft_store(&path)?;
+    let deleted = rows.remove(&id).is_some();
+    write_mobpack_draft_store(&path, &rows)?;
+    Ok(json!({
+        "source": "mobkit/mobpacks/delete",
+        "store_path": path,
+        "id": id,
+        "deleted": deleted,
+        "rows": sorted_mobpack_draft_rows(&rows),
+    }))
 }
 
 pub fn validate_mobpack(params: &Value) -> Result<MobpackValidationResult, String> {
@@ -16426,6 +16670,48 @@ model = "gpt-5.5"
     }
 
     #[test]
+    fn mobpack_draft_registry_persists_saved_editor_documents() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("drafts.json");
+        let mut document = valid_document();
+        document.name = "Registry Draft".to_string();
+
+        let saved = save_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "registry_draft",
+            "document": document,
+            "stage": "draft",
+            "trigger": "manual save"
+        }))
+        .expect("save draft");
+        assert_eq!(saved["source"], json!("mobkit/mobpacks/save"));
+        assert_eq!(saved["row"]["id"], json!("registry_draft"));
+        assert_eq!(saved["row"]["document"]["name"], json!("Registry Draft"));
+        assert_eq!(saved["row"]["stage"], json!("draft"));
+
+        let listed =
+            list_mobpack_drafts(&json!({ "store_path": store_path })).expect("list drafts");
+        assert_eq!(listed["source"], json!("mobkit/mobpacks/list"));
+        assert_eq!(listed["rows"].as_array().expect("rows").len(), 1);
+        assert_eq!(listed["rows"][0]["id"], json!("registry_draft"));
+
+        let fetched = get_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "registry_draft"
+        }))
+        .expect("get draft");
+        assert_eq!(fetched["row"]["document"]["mob_id"], json!("review-pack"));
+
+        let deleted = delete_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "registry_draft"
+        }))
+        .expect("delete draft");
+        assert_eq!(deleted["deleted"], json!(true));
+        assert_eq!(deleted["rows"].as_array().expect("rows").len(), 0);
+    }
+
+    #[test]
     fn writes_deploy_result_fixture_when_requested() {
         let params = match std::env::var("MOBKIT_MOBPACK_DEPLOY_IN") {
             Ok(path) => serde_json::from_str(
@@ -16974,6 +17260,10 @@ model = "gpt-5.5"
             ("source", "mobkit/mobpacks/source"),
             ("export", "mobkit/mobpacks/export"),
             ("import", "mobkit/mobpacks/import"),
+            ("list", "mobkit/mobpacks/list"),
+            ("get", "mobkit/mobpacks/get"),
+            ("save", "mobkit/mobpacks/save"),
+            ("delete", "mobkit/mobpacks/delete"),
             ("deploy_command", "mobkit/mobpacks/deploy_command"),
             ("deploy_rpc", "mobkit/mobpacks/deploy"),
             ("deploy_cli", "rkat mob deploy <pack.mobpack> <prompt>"),

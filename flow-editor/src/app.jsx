@@ -154,6 +154,7 @@ function App() {
       .then(async (schema) => {
         window.MobKitFlowController.configureAuthoringMethodsFromSchema(schema);
         const catalogPayload = await window.MobKitFlowController.loadCatalogs();
+        const registryPayload = await window.MobKitFlowController.listDocuments().catch(() => ({ rows: [] }));
         if (cancelled) return;
         const nextCatalogs = window.MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
         setCatalogs(nextCatalogs);
@@ -165,6 +166,7 @@ function App() {
           openEditor: view === "editor",
           deployDefaults: nextCatalogs.deployDefaults,
           mobDefaults: nextCatalogs.mobDefaults,
+          registryResult: registryPayload,
         });
         setTemplates(bootstrap.templates);
         setFlows(bootstrap.flows);
@@ -438,6 +440,10 @@ function App() {
     applyAuthoringDocumentProjection(projection);
     return projection.document;
   };
+  const saveRegistryDocument = (rowPatch) => {
+    if (!rowPatch?.document) return;
+    window.MobKitFlowController.saveDocument(rowPatch).catch(() => {});
+  };
   React.useEffect(() => {
     let cancelled = false;
     setDeployCommandPreview("");
@@ -486,6 +492,7 @@ function App() {
     if (!projection.ok || !projection.changed) return projection;
     persistedDocumentSig.current = projection.signature;
     setFlows(projection.rows);
+    saveRegistryDocument(projection.persistence?.rowPatch);
     return projection;
   };
 
@@ -508,6 +515,7 @@ function App() {
     if (!persistence.changed) return;
     persistedDocumentSig.current = persistence.signature;
     setFlows(persistence.rows);
+    saveRegistryDocument(persistence.rowPatch);
   }, [
     flows,
     currentFlowId,
