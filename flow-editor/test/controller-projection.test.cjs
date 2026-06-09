@@ -6342,6 +6342,36 @@ assert.deepEqual(controller.deployErrorOutcome(new Error("no plan"), {
   meta: "deploy-meta",
 });
 
+assert.deepEqual(controller.sourceProjectionClearTransition(), {
+  sourceOpen: false,
+  sourceDocument: null,
+  inlineSourceOpen: false,
+  inlineSourceSurface: null,
+  inlineSourceDocument: null,
+  inlineSourceBusy: false,
+});
+const readySourceDocument = { filename: "ready.mobpack" };
+assert.deepEqual(controller.sourceDrawerReadyTransition(readySourceDocument), {
+  sourceOpen: true,
+  sourceDocument: readySourceDocument,
+});
+assert.deepEqual(controller.sourceDrawerReadyTransition(null), {
+  sourceOpen: false,
+  sourceDocument: null,
+});
+assert.deepEqual(controller.inlineSourcePendingTransition("graph"), {
+  inlineSourceOpen: true,
+  inlineSourceSurface: "graph",
+  inlineSourceBusy: true,
+});
+assert.deepEqual(controller.inlineSourceReadyTransition(readySourceDocument), {
+  inlineSourceDocument: readySourceDocument,
+  inlineSourceBusy: false,
+});
+assert.deepEqual(controller.inlineSourceBusyTransition(false), {
+  inlineSourceBusy: false,
+});
+
 const sourceProjection = controller.sourceDocumentFromSourceResult({
   name: "Source Proof",
   mob_id: "source_proof",

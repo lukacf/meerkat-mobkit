@@ -75,15 +75,19 @@ function App() {
   const currentAuthoringRevision = React.useCallback(() => authoringRevision.current, []);
   const authoringRevisionIsCurrent = React.useCallback((requestToken) =>
     requestToken === authoringRevision.current, []);
+  const applySourceProjectionPatch = React.useCallback((patch) => {
+    const next = patch && typeof patch === "object" ? patch : {};
+    if (Object.prototype.hasOwnProperty.call(next, "sourceOpen")) setSourceOpen(next.sourceOpen);
+    if (Object.prototype.hasOwnProperty.call(next, "sourceDocument")) setSourceDocument(next.sourceDocument);
+    if (Object.prototype.hasOwnProperty.call(next, "inlineSourceOpen")) setInlineSourceOpen(next.inlineSourceOpen);
+    if (Object.prototype.hasOwnProperty.call(next, "inlineSourceSurface")) setInlineSourceSurface(next.inlineSourceSurface);
+    if (Object.prototype.hasOwnProperty.call(next, "inlineSourceDocument")) setInlineSourceDocument(next.inlineSourceDocument);
+    if (Object.prototype.hasOwnProperty.call(next, "inlineSourceBusy")) setInlineSourceBusy(next.inlineSourceBusy);
+  }, []);
   const clearSourceProjection = React.useCallback(() => {
     sourceProjectionVersion.current += 1;
-    setSourceOpen(false);
-    setSourceDocument(null);
-    setInlineSourceOpen(false);
-    setInlineSourceSurface(null);
-    setInlineSourceDocument(null);
-    setInlineSourceBusy(false);
-  }, []);
+    applySourceProjectionPatch(window.MobKitFlowController.sourceProjectionClearTransition());
+  }, [applySourceProjectionPatch]);
   const markDraft = React.useCallback(() => {
     if (projectionSyncInFlight.current) return;
     authoringRevision.current += 1;
@@ -314,7 +318,7 @@ function App() {
       }
       if (e.key === "Escape") {
         clearSelection(); closeGraphAddMenu();
-        setDrySim(false); setValidate(false); setSourceOpen(false);
+        setDrySim(false); setValidate(false); clearSourceProjection();
         if (creating) setCreating(null);
       }
     };
@@ -573,8 +577,7 @@ function App() {
       requestToken = beginSourceProjection();
       const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document);
       if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
-      setSourceDocument(nextSourceDocument);
-      setSourceOpen(true);
+      applySourceProjectionPatch(window.MobKitFlowController.sourceDrawerReadyTransition(nextSourceDocument));
     } catch (error) {
       if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
@@ -592,19 +595,15 @@ function App() {
 
   const handleInlineSource = async (surface = "basic") => {
     let requestToken = null;
-    setInlineSourceSurface(surface);
-    setInlineSourceOpen(true);
-    setInlineSourceBusy(true);
+    applySourceProjectionPatch(window.MobKitFlowController.inlineSourcePendingTransition(surface));
     setApiBusy(true);
     try {
       const document = buildDocument();
       requestToken = beginSourceProjection();
-      setInlineSourceSurface(surface);
-      setInlineSourceOpen(true);
-      setInlineSourceBusy(true);
+      applySourceProjectionPatch(window.MobKitFlowController.inlineSourcePendingTransition(surface));
       const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document);
       if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
-      setInlineSourceDocument(nextSourceDocument);
+      applySourceProjectionPatch(window.MobKitFlowController.inlineSourceReadyTransition(nextSourceDocument));
     } catch (error) {
       if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
@@ -612,7 +611,7 @@ function App() {
       setValidate(true);
       setStage(outcome.stage);
     } finally {
-      setInlineSourceBusy(false);
+      applySourceProjectionPatch(window.MobKitFlowController.inlineSourceBusyTransition(false));
       setApiBusy(false);
     }
   };

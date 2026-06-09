@@ -10102,6 +10102,43 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function sourceProjectionClearTransition() {
+    return {
+      sourceOpen: false,
+      sourceDocument: null,
+      inlineSourceOpen: false,
+      inlineSourceSurface: null,
+      inlineSourceDocument: null,
+      inlineSourceBusy: false,
+    };
+  }
+
+  function sourceDrawerReadyTransition(sourceDocument) {
+    return {
+      sourceOpen: !!sourceDocument,
+      sourceDocument: sourceDocument || null,
+    };
+  }
+
+  function inlineSourcePendingTransition(surface = "basic") {
+    return {
+      inlineSourceOpen: true,
+      inlineSourceSurface: String(surface || "basic"),
+      inlineSourceBusy: true,
+    };
+  }
+
+  function inlineSourceReadyTransition(sourceDocument) {
+    return {
+      inlineSourceDocument: sourceDocument || null,
+      inlineSourceBusy: false,
+    };
+  }
+
+  function inlineSourceBusyTransition(busy) {
+    return { inlineSourceBusy: !!busy };
+  }
+
   function sourceFileForPath(sourceDocument, path) {
     const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
     const selectedPath = String(path || sourceDocument?.sourcePath || "mobkit/mob.toml").trim();
@@ -11519,6 +11556,11 @@ window.MOBKIT_BOOT = {
     importErrorOutcome,
     sourceDocumentFromSourceResult,
     exportDownloadPayload,
+    sourceProjectionClearTransition,
+    sourceDrawerReadyTransition,
+    inlineSourcePendingTransition,
+    inlineSourceReadyTransition,
+    inlineSourceBusyTransition,
     sourceEditorState,
     sourceFileSelectionTransition,
     sampleFlowsFromSchema,
@@ -14097,15 +14139,19 @@ function App() {
   const sourceProjectionIsCurrent = React.useCallback((requestToken) => requestToken === sourceProjectionVersion.current, []);
   const currentAuthoringRevision = React.useCallback(() => authoringRevision.current, []);
   const authoringRevisionIsCurrent = React.useCallback((requestToken) => requestToken === authoringRevision.current, []);
+  const applySourceProjectionPatch = React.useCallback((patch) => {
+    const next = patch && typeof patch === "object" ? patch : {};
+    if (Object.prototype.hasOwnProperty.call(next, "sourceOpen")) setSourceOpen(next.sourceOpen);
+    if (Object.prototype.hasOwnProperty.call(next, "sourceDocument")) setSourceDocument(next.sourceDocument);
+    if (Object.prototype.hasOwnProperty.call(next, "inlineSourceOpen")) setInlineSourceOpen(next.inlineSourceOpen);
+    if (Object.prototype.hasOwnProperty.call(next, "inlineSourceSurface")) setInlineSourceSurface(next.inlineSourceSurface);
+    if (Object.prototype.hasOwnProperty.call(next, "inlineSourceDocument")) setInlineSourceDocument(next.inlineSourceDocument);
+    if (Object.prototype.hasOwnProperty.call(next, "inlineSourceBusy")) setInlineSourceBusy(next.inlineSourceBusy);
+  }, []);
   const clearSourceProjection = React.useCallback(() => {
     sourceProjectionVersion.current += 1;
-    setSourceOpen(false);
-    setSourceDocument(null);
-    setInlineSourceOpen(false);
-    setInlineSourceSurface(null);
-    setInlineSourceDocument(null);
-    setInlineSourceBusy(false);
-  }, []);
+    applySourceProjectionPatch(window.MobKitFlowController.sourceProjectionClearTransition());
+  }, [applySourceProjectionPatch]);
   const markDraft = React.useCallback(() => {
     if (projectionSyncInFlight.current) return;
     authoringRevision.current += 1;
@@ -14327,7 +14373,7 @@ function App() {
         closeGraphAddMenu();
         setDrySim(false);
         setValidate(false);
-        setSourceOpen(false);
+        clearSourceProjection();
         if (creating) setCreating(null);
       }
     };
@@ -14576,8 +14622,7 @@ function App() {
       requestToken = beginSourceProjection();
       const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document2);
       if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
-      setSourceDocument(nextSourceDocument);
-      setSourceOpen(true);
+      applySourceProjectionPatch(window.MobKitFlowController.sourceDrawerReadyTransition(nextSourceDocument));
     } catch (error) {
       if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
@@ -14593,19 +14638,15 @@ function App() {
   }, [view, editorMode, clearSourceProjection]);
   const handleInlineSource = async (surface = "basic") => {
     let requestToken = null;
-    setInlineSourceSurface(surface);
-    setInlineSourceOpen(true);
-    setInlineSourceBusy(true);
+    applySourceProjectionPatch(window.MobKitFlowController.inlineSourcePendingTransition(surface));
     setApiBusy(true);
     try {
       const document2 = buildDocument();
       requestToken = beginSourceProjection();
-      setInlineSourceSurface(surface);
-      setInlineSourceOpen(true);
-      setInlineSourceBusy(true);
+      applySourceProjectionPatch(window.MobKitFlowController.inlineSourcePendingTransition(surface));
       const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document2);
       if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
-      setInlineSourceDocument(nextSourceDocument);
+      applySourceProjectionPatch(window.MobKitFlowController.inlineSourceReadyTransition(nextSourceDocument));
     } catch (error) {
       if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
@@ -14613,7 +14654,7 @@ function App() {
       setValidate(true);
       setStage(outcome.stage);
     } finally {
-      setInlineSourceBusy(false);
+      applySourceProjectionPatch(window.MobKitFlowController.inlineSourceBusyTransition(false));
       setApiBusy(false);
     }
   };

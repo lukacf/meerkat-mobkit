@@ -10069,6 +10069,43 @@
     };
   }
 
+  function sourceProjectionClearTransition() {
+    return {
+      sourceOpen: false,
+      sourceDocument: null,
+      inlineSourceOpen: false,
+      inlineSourceSurface: null,
+      inlineSourceDocument: null,
+      inlineSourceBusy: false,
+    };
+  }
+
+  function sourceDrawerReadyTransition(sourceDocument) {
+    return {
+      sourceOpen: !!sourceDocument,
+      sourceDocument: sourceDocument || null,
+    };
+  }
+
+  function inlineSourcePendingTransition(surface = "basic") {
+    return {
+      inlineSourceOpen: true,
+      inlineSourceSurface: String(surface || "basic"),
+      inlineSourceBusy: true,
+    };
+  }
+
+  function inlineSourceReadyTransition(sourceDocument) {
+    return {
+      inlineSourceDocument: sourceDocument || null,
+      inlineSourceBusy: false,
+    };
+  }
+
+  function inlineSourceBusyTransition(busy) {
+    return { inlineSourceBusy: !!busy };
+  }
+
   function sourceFileForPath(sourceDocument, path) {
     const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
     const selectedPath = String(path || sourceDocument?.sourcePath || "mobkit/mob.toml").trim();
@@ -11486,6 +11523,11 @@
     importErrorOutcome,
     sourceDocumentFromSourceResult,
     exportDownloadPayload,
+    sourceProjectionClearTransition,
+    sourceDrawerReadyTransition,
+    inlineSourcePendingTransition,
+    inlineSourceReadyTransition,
+    inlineSourceBusyTransition,
     sourceEditorState,
     sourceFileSelectionTransition,
     sampleFlowsFromSchema,
