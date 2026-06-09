@@ -84,6 +84,9 @@ pub(crate) fn mobpack_authoring_capabilities() -> Value {
     serde_json::json!({
         "domain": "mobpack_authoring",
         "runtime_mutation": false,
+        "host_mutation_methods": {
+            "mobkit/mobpacks/deploy": "when execute=true, writes a mobpack archive and runs rkat mob deploy on the host"
+        },
         "deploy_command": "rkat mob deploy",
         "methods": MOBPACK_AUTHORING_METHODS,
         "operations": crate::mobpack::mobpack_authoring_operations(),
@@ -4209,6 +4212,12 @@ comms = true
             json!(false)
         );
         assert_eq!(
+            response["result"]["authoring_capabilities"]["host_mutation_methods"]["mobkit/mobpacks/deploy"],
+            json!(
+                "when execute=true, writes a mobpack archive and runs rkat mob deploy on the host"
+            )
+        );
+        assert_eq!(
             response["result"]["authoring_capabilities"]["methods"]
                 .as_array()
                 .expect("authoring methods")
@@ -4312,6 +4321,12 @@ comms = true
         assert_eq!(
             capabilities["result"]["authoring_capabilities"]["runtime_mutation"],
             json!(false)
+        );
+        assert_eq!(
+            capabilities["result"]["authoring_capabilities"]["host_mutation_methods"]["mobkit/mobpacks/deploy"],
+            json!(
+                "when execute=true, writes a mobpack archive and runs rkat mob deploy on the host"
+            )
         );
 
         let schema: Value = serde_json::from_str(&super::handle_mobkit_rpc_json(

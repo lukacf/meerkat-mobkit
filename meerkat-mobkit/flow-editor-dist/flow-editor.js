@@ -12304,6 +12304,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   const hostRef = React.useRef(null);
   const [drag, setDrag] = React.useState(null);
   const [conn, setConn] = React.useState(null);
+  const [operationError, setOperationError] = React.useState("");
   const [hoverInId, setHoverInId] = React.useState(null);
   const [hoverCell, setHoverCell] = React.useState(null);
   const canvasView = window.MobKitFlowController.graphCanvasViewState(graphView);
@@ -12317,6 +12318,30 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   const g = gridState.grid;
   const totalW = gridState.totalW;
   const totalH = gridState.totalH;
+  const graphOperationErrorText = (result, fallback) => {
+    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
+    return result?.error || fallback;
+  };
+  const applyGraphOperation = async (payload, fallback) => {
+    if (!applyAuthoringReplacement) {
+      const result = { ok: false, error: "MobKit authoring operation API is unavailable" };
+      setOperationError(graphOperationErrorText(result, fallback));
+      return result;
+    }
+    try {
+      const result = await applyAuthoringReplacement(payload);
+      if (result?.ok === false) {
+        setOperationError(graphOperationErrorText(result, fallback));
+      } else {
+        setOperationError("");
+      }
+      return result;
+    } catch (error) {
+      const result = { ok: false, error: error?.message || String(error || fallback) };
+      setOperationError(graphOperationErrorText(result, fallback));
+      return result;
+    }
+  };
   const fitToBounds = React.useCallback(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -12442,17 +12467,15 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const w = screenToWorld(e.clientX, e.clientY);
         const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
         if (cell && (cell.col !== drag.origCol || cell.row !== drag.origRow)) {
-          if (applyAuthoringReplacement) {
-            applyAuthoringReplacement({
-              operationType: "move_graph_node",
-              operation: {
-                instance_id: drag.instId,
-                cell,
-                original_cell: { col: drag.origCol, row: drag.origRow }
-              },
-              selection: { kind: "instance", id: drag.instId }
-            });
-          }
+          applyGraphOperation({
+            operationType: "move_graph_node",
+            operation: {
+              instance_id: drag.instId,
+              cell,
+              original_cell: { col: drag.origCol, row: drag.origRow }
+            },
+            selection: { kind: "instance", id: drag.instId }
+          }, "MobKit graph node move failed");
         }
         setDrag(null);
         setHoverCell(null);
@@ -12461,17 +12484,14 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const t = document.elementFromPoint(e.clientX, e.clientY);
         const closest = t?.closest?.("[data-inst-id]");
         if (closest && closest.dataset.instId !== conn.fromId) {
-          if (applyAuthoringReplacement) {
-            applyAuthoringReplacement({
-              operationType: "connect_graph_nodes",
-              operation: { from_id: conn.fromId, to_id: closest.dataset.instId }
-            }).then((result) => {
-              if (result?.ok === false) return;
-              const id = result?.selection?.id;
-              if (id) selectEdge(id);
-            }).catch(() => {
-            });
-          }
+          applyGraphOperation({
+            operationType: "connect_graph_nodes",
+            operation: { from_id: conn.fromId, to_id: closest.dataset.instId }
+          }, "MobKit graph connection failed").then((result) => {
+            if (result?.ok === false) return;
+            const id = result?.selection?.id;
+            if (id) selectEdge(id);
+          });
         }
         setConn(null);
         setHoverInId(null);
@@ -12592,6 +12612,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       }
     },
     /* @__PURE__ */ React.createElement("div", { className: "canvas", style: { width: totalW, height: totalH, transform: `translate(${fit.tx}px, ${fit.ty}px) scale(${fit.scale})`, transformOrigin: "0 0" } }, colHeads, rowHeads, frameEls, cells, /* @__PURE__ */ React.createElement("svg", { className: "edges-svg", width: totalW, height: totalH }, /* @__PURE__ */ React.createElement("defs", null, /* @__PURE__ */ React.createElement("marker", { id: "arr", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--ink)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-red", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--danger)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-acc", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--accent)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-dim", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--subtle)" }))), edgeEls, conn && /* @__PURE__ */ React.createElement("path", { d: window.MobKitFlowController.graphEdgePath(conn.from, conn.to), className: "edge-line is-ghost", markerEnd: "url(#arr-acc)" })), nodeEls),
+    operationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line graph-operation-error", style: { color: "var(--danger)" } }, operationError),
     /* @__PURE__ */ React.createElement("div", { className: "zoom-controls", onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", title: canvasView.zoomOutTitle, onClick: () => {
       const r = hostRef.current.getBoundingClientRect();
       zoomAt(1 / 1.2, r.left + r.width / 2, r.top + r.height / 2);
@@ -13312,20 +13333,42 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
 }
 function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null, applyAuthoringReplacement = null }) {
   const [fieldAddResult, setFieldAddResult] = React.useState(null);
+  const [schemaOperationError, setSchemaOperationError] = React.useState("");
   React.useEffect(() => setFieldAddResult(null), [schema?.id]);
+  React.useEffect(() => setSchemaOperationError(""), [schema?.id]);
   const schemaState = window.MobKitFlowController.schemaEditorControlState({
     schema,
     members: studio.members,
     schemaView
   });
   const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult);
-  const applySchemaOperation = (selection = { kind: "schema", id: schema.id }, operationType = "update_schema", operation = {}) => {
-    if (!applyAuthoringReplacement) return;
-    applyAuthoringReplacement({
-      operationType,
-      operation,
-      selection
-    });
+  const schemaOperationErrorText = (result, fallback) => {
+    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
+    return result?.error || fallback;
+  };
+  const applySchemaOperation = async (selection = { kind: "schema", id: schema.id }, operationType = "update_schema", operation = {}) => {
+    if (!applyAuthoringReplacement) {
+      const result = { ok: false, error: "MobKit authoring operation API is unavailable" };
+      setSchemaOperationError(schemaOperationErrorText(result, "MobKit schema operation failed"));
+      return result;
+    }
+    try {
+      const result = await applyAuthoringReplacement({
+        operationType,
+        operation,
+        selection
+      });
+      if (result?.ok === false) {
+        setSchemaOperationError(schemaOperationErrorText(result, "MobKit schema operation failed"));
+      } else {
+        setSchemaOperationError("");
+      }
+      return result;
+    } catch (error) {
+      const result = { ok: false, error: error?.message || String(error || "MobKit schema operation failed") };
+      setSchemaOperationError(schemaOperationErrorText(result, "MobKit schema operation failed"));
+      return result;
+    }
   };
   const change = (patch) => {
     applySchemaOperation({ kind: "schema", id: schema.id }, "update_schema", {
@@ -13376,23 +13419,25 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       });
     });
   };
-  const deleteSchema = () => {
+  const deleteSchema = async () => {
     const selection = { kind: null, id: null };
-    applySchemaOperation(selection, "delete_schema", { schema_id: schema.id });
-    setAgentSel(selection);
+    const result = await applySchemaOperation(selection, "delete_schema", { schema_id: schema.id });
+    if (result?.ok === false) return;
+    setAgentSel(result?.selection || selection);
   };
-  const renameSchema = (newId) => {
+  const renameSchema = async (newId) => {
     const result = window.MobKitFlowController.renameSchemaDefinition({
       schemas: studio.schemas,
       members: studio.members,
       flow
     }, schema.id, newId);
     if (!result.renamed) return;
-    applySchemaOperation(result.selection, "rename_schema", {
+    const operationResult = await applySchemaOperation(result.selection, "rename_schema", {
       schema_id: schema.id,
       new_id: newId
     });
-    setAgentSel(result.selection);
+    if (operationResult?.ok === false) return;
+    setAgentSel(operationResult?.selection || result.selection);
   };
   return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, schemaState.eyebrow), /* @__PURE__ */ React.createElement(
     "input",
@@ -13404,7 +13449,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
         if (e.key === "Enter") e.target.blur();
       }
     }
-  ), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, schemaState.usageLabel)), /* @__PURE__ */ React.createElement(
+  ), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, schemaState.usageLabel), schemaOperationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, schemaOperationError)), /* @__PURE__ */ React.createElement(
     "button",
     {
       className: "btn btn--ghost btn--sm",
@@ -13766,21 +13811,45 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const setSel = setSelProp || setSelLocal;
   const [picker, setPicker] = React.useState({ open: false });
   const [view, setView] = React.useState({ scale: 1, tx: 0, ty: 0 });
+  const [operationError, setOperationError] = React.useState("");
   const hostRef = React.useRef(null);
   const panRef = React.useRef(null);
   const isFlow = mode === "flow";
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   const canvasView = Math.abs(view.ty) > 1200 ? { ...view, ty: 0 } : view;
-  const commitFlow = (operationType = "update_flow_step", operation = {}) => {
-    if (!applyAuthoringReplacement) return Promise.resolve({ ok: false, error: "MobKit authoring operation API is unavailable" });
-    return applyAuthoringReplacement({ operationType, operation });
+  const operationErrorText = (result, fallback) => {
+    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
+    return result?.error || fallback;
+  };
+  const commitFlow = async (operationType = "update_flow_step", operation = {}) => {
+    if (!applyAuthoringReplacement) {
+      const result = { ok: false, error: "MobKit authoring operation API is unavailable" };
+      setOperationError(operationErrorText(result, "MobKit authoring operation failed"));
+      return result;
+    }
+    try {
+      const result = await applyAuthoringReplacement({ operationType, operation });
+      if (result?.ok === false) {
+        setOperationError(operationErrorText(result, "MobKit authoring operation failed"));
+      } else {
+        setOperationError("");
+      }
+      return result;
+    } catch (error) {
+      const result = {
+        ok: false,
+        error: error?.message || String(error || "MobKit authoring operation failed")
+      };
+      setOperationError(operationErrorText(result, "MobKit authoring operation failed"));
+      return result;
+    }
   };
   const update = (id, patch, operationType = "update_flow_step", operation = {}) => {
     const payload = operationType === "update_flow_step" && !Object.keys(operation || {}).length ? { step_id: id, patch } : operation;
-    commitFlow(operationType, payload);
+    return commitFlow(operationType, payload);
   };
-  const editStep2 = (id, action, payload = {}) => {
-    commitFlow("apply_flow_step_edit", { step_id: id, action, ...payload });
+  const editStep = (id, action, payload = {}) => {
+    return commitFlow("apply_flow_step_edit", { step_id: id, action, ...payload });
   };
   const selStep = findStep(flow.steps, sel);
   const applyBasicInteraction = (result) => {
@@ -13789,15 +13858,11 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     if ("picker" in result) setPicker(result.picker);
   };
   const insertAt = (laneRef, pick) => {
-    if (!applyAuthoringReplacement) return;
     applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition());
-    applyAuthoringReplacement({
-      operationType: "insert_flow_step",
-      operation: { pick, lane_ref: laneRef }
-    }).then((result) => {
+    commitFlow("insert_flow_step", { pick, lane_ref: laneRef }).then((result) => {
+      if (result?.ok === false) return;
       const id = result?.selection?.id;
       if (id) setSel(id);
-    }).catch(() => {
     });
   };
   const removeStep = (id) => {
@@ -13806,7 +13871,6 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       if (operationResult?.ok === false) return;
       setSel(result.selection);
       setPicker(result.picker);
-    }).catch(() => {
     });
   };
   const openPicker = (laneRef) => applyBasicInteraction(window.MobKitFlowController.basicStepPickerOpenTransition(laneRef));
@@ -13878,7 +13942,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       onPick: (pick) => insertAt(picker.at, pick),
       onClose: () => applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition())
     }
-  ) : selStep ? /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, setFlow, step: selStep, update, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, launchView, conditionView, applyAuthoringReplacement }) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
+  ) : selStep ? /* @__PURE__ */ React.createElement(React.Fragment, null, operationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)", padding: "0 16px 8px" } }, operationError), /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, setFlow, step: selStep, update, editStep, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, launchView, conditionView, applyAuthoringReplacement })) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
 }
 function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract, basicView = null }) {
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
@@ -13930,7 +13994,7 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
   }
   return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-search" }, /* @__PURE__ */ React.createElement("span", { className: "bld-search__icon" }, pickerState.searchIcon), /* @__PURE__ */ React.createElement("input", { className: "bld-search__input", placeholder: pickerState.searchPlaceholder, value: q, onChange: (e) => setQ(e.target.value), autoFocus: true })), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.membersLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.iconTint }, row.icon), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub)))), !pickerState.hasConfiguredMembers && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { padding: "4px 8px" } }, pickerState.emptyMembersHint)), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.flowLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.primitiveRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.tint }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.label, row.isNew && /* @__PURE__ */ React.createElement("span", { className: "bld-opt__new" }, pickerState.newBadgeLabel)), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub))))));
 }
-function StepInspector({ studio, members, flow, setFlow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null, applyAuthoringReplacement = null }) {
+function StepInspector({ studio, members, flow, setFlow, step, update, editStep, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null, applyAuthoringReplacement = null }) {
   const [paramAddResult, setParamAddResult] = React.useState(null);
   React.useEffect(() => setParamAddResult(null), [step?.id]);
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
@@ -13939,25 +14003,21 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
     const params = inputState.params;
     const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult);
     const applyInputOperation = (operationType, operation = {}) => {
-      if (!applyAuthoringReplacement) return;
-      applyAuthoringReplacement({ operationType, operation });
+      if (!update) return Promise.resolve({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      return update(step.id, {}, operationType, operation);
     };
     const updateParam = (id, patch) => {
-      applyInputOperation("update_input_param", { step_id: step.id, param_id: id, patch });
+      return applyInputOperation("update_input_param", { step_id: step.id, param_id: id, patch });
     };
     const deleteParam = (id) => {
-      applyInputOperation("delete_input_param", { step_id: step.id, param_id: id });
+      return applyInputOperation("delete_input_param", { step_id: step.id, param_id: id });
     };
     const renameParam = (id, rawName, previousName) => {
-      applyInputOperation("rename_input_param", { step_id: step.id, param_id: id, new_name: rawName });
+      return applyInputOperation("rename_input_param", { step_id: step.id, param_id: id, new_name: rawName });
     };
     const addParam = () => {
-      if (!applyAuthoringReplacement) return;
       setParamAddResult(null);
-      applyAuthoringReplacement({
-        operationType: "add_input_param",
-        operation: { step_id: step.id }
-      }).then((result) => {
+      applyInputOperation("add_input_param", { step_id: step.id }).then((result) => {
         if (result?.ok === false) {
           setParamAddResult(result);
           return;
@@ -14227,6 +14287,20 @@ function App() {
       setFlows((rows) => window.MobKitFlowController.flowRegistryMarkDraftPatch(rows, currentFlowId));
     }
   }, [clearSourceProjection, currentFlowId]);
+  const showAuthoringFailure = React.useCallback((resultOrError, fallbackHead = "MobKit authoring operation failed") => {
+    const validation = resultOrError?.validation || null;
+    const validationRows = validation ? window.MobKitFlowController.diagnosticsToRows(validation) : null;
+    const outcome = validationRows?.length ? { validationRows, stage: "draft" } : window.MobKitFlowController.criticalErrorOutcome({
+      head: fallbackHead,
+      error: resultOrError?.error || resultOrError,
+      meta: "MobKit authoring",
+      errorView: catalogs.errorView
+    });
+    setValidationResults(outcome.validationRows);
+    setStage(outcome.stage);
+    applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
+    return outcome;
+  }, [applyApiOverlayPatch, catalogs.errorView]);
   const setAuthoringFlow = React.useCallback((next) => {
     markDraft();
     setFlow(next);
@@ -14336,7 +14410,9 @@ function App() {
       studio.setInstances(projection.instances || []);
       studio.setEdges(projection.edges || []);
       studio.setFrames(projection.frames || []);
-    }).catch(() => {
+    }).catch((error) => {
+      if (cancelled) return;
+      showAuthoringFailure(error, "MobKit graph projection failed");
     });
     return () => {
       cancelled = true;
@@ -14351,8 +14427,9 @@ function App() {
     applyMobKitAuthoringReplacement({
       operationType: "sync_graph_to_flow",
       operation: { reason: "advanced_graph_changed" }
-    }).catch(() => {
-    });
+    }).then((result) => {
+      if (result?.ok === false) showAuthoringFailure(result, "MobKit graph sync failed");
+    }).catch((error) => showAuthoringFailure(error, "MobKit graph sync failed"));
   }, [editorMode, studio.instances, studio.edges, studio.members, flow, contract]);
   React.useEffect(() => {
     const previousMembers = previousMembersRef.current || [];
@@ -14491,11 +14568,14 @@ function App() {
       operationType: "insert_graph_node",
       operation: { pick, cell: addAt }
     }).then((result) => {
+      if (result?.ok === false) {
+        showAuthoringFailure(result, "MobKit graph node insert failed");
+        return;
+      }
       const id = result?.selection?.id;
       if (id) selectInstance(id);
-    }).catch(() => {
-    });
-    setAddAt(nextMenu.addAt);
+      setAddAt(nextMenu.addAt);
+    }).catch((error) => showAuthoringFailure(error, "MobKit graph node insert failed"));
   };
   const handleAgentNavigation = (id) => {
     const next = window.MobKitFlowController.agentNavigationProjection(id);
@@ -15103,7 +15183,8 @@ function App() {
       queueMicrotask(() => {
         hydratingDocumentRef.current = false;
       });
-    }).catch(() => {
+    }).catch((error) => {
+      showAuthoringFailure(error, "MobKit graph projection failed");
     });
   };
   const hydrateImportedDocument = (result) => {

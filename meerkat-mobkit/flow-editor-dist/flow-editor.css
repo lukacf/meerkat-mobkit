@@ -2016,6 +2016,17 @@ a.node {
 
 .bld-section-label { font-size: 14px; font-weight: 600; color: var(--ink); margin-top: 16px; }
 .bld-hint { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+.graph-operation-error {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  max-width: min(420px, calc(100% - 120px));
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--paper) 92%, var(--danger) 8%);
+  z-index: 8;
+}
 .bld-branch-card {
   border: 1px solid var(--hair); border-radius: var(--r-md);
   padding: 14px; margin-top: 12px; background: var(--bg);

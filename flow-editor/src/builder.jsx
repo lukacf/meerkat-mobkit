@@ -169,6 +169,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const setSel = setSelProp || setSelLocal;
   const [picker, setPicker] = React.useState({ open: false });
   const [view, setView] = React.useState({ scale: 1, tx: 0, ty: 0 });
+  const [operationError, setOperationError] = React.useState("");
   const hostRef = React.useRef(null);
   const panRef = React.useRef(null);
   const isFlow = mode === "flow";
@@ -177,18 +178,41 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     ? { ...view, ty: 0 }
     : view;
 
-  const commitFlow = (operationType = "update_flow_step", operation = {}) => {
-    if (!applyAuthoringReplacement) return Promise.resolve({ ok: false, error: "MobKit authoring operation API is unavailable" });
-    return applyAuthoringReplacement({ operationType, operation });
+  const operationErrorText = (result, fallback) => {
+    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
+    return result?.error || fallback;
+  };
+  const commitFlow = async (operationType = "update_flow_step", operation = {}) => {
+    if (!applyAuthoringReplacement) {
+      const result = { ok: false, error: "MobKit authoring operation API is unavailable" };
+      setOperationError(operationErrorText(result, "MobKit authoring operation failed"));
+      return result;
+    }
+    try {
+      const result = await applyAuthoringReplacement({ operationType, operation });
+      if (result?.ok === false) {
+        setOperationError(operationErrorText(result, "MobKit authoring operation failed"));
+      } else {
+        setOperationError("");
+      }
+      return result;
+    } catch (error) {
+      const result = {
+        ok: false,
+        error: error?.message || String(error || "MobKit authoring operation failed"),
+      };
+      setOperationError(operationErrorText(result, "MobKit authoring operation failed"));
+      return result;
+    }
   };
   const update = (id, patch, operationType = "update_flow_step", operation = {}) => {
     const payload = operationType === "update_flow_step" && !Object.keys(operation || {}).length
       ? { step_id: id, patch }
       : operation;
-    commitFlow(operationType, payload);
+    return commitFlow(operationType, payload);
   };
   const editStep = (id, action, payload = {}) => {
-    commitFlow("apply_flow_step_edit", { step_id: id, action, ...payload });
+    return commitFlow("apply_flow_step_edit", { step_id: id, action, ...payload });
   };
   const selStep = findStep(flow.steps, sel);
   const applyBasicInteraction = (result) => {
@@ -198,15 +222,12 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   };
 
   const insertAt = (laneRef, pick) => {
-    if (!applyAuthoringReplacement) return;
     applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition());
-    applyAuthoringReplacement({
-      operationType: "insert_flow_step",
-      operation: { pick, lane_ref: laneRef },
-    }).then((result) => {
+    commitFlow("insert_flow_step", { pick, lane_ref: laneRef }).then((result) => {
+      if (result?.ok === false) return;
       const id = result?.selection?.id;
       if (id) setSel(id);
-    }).catch(() => {});
+    });
   };
   const removeStep = (id) => {
     const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
@@ -214,7 +235,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       if (operationResult?.ok === false) return;
       setSel(result.selection);
       setPicker(result.picker);
-    }).catch(() => {});
+    });
   };
   const openPicker = (laneRef) => applyBasicInteraction(window.MobKitFlowController.basicStepPickerOpenTransition(laneRef));
 
@@ -292,7 +313,10 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
             onClose={() => applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition())}
           />
         ) : selStep ? (
-          <StepInspector studio={studio} members={members} flow={flow} setFlow={setFlow} step={selStep} update={update} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} launchView={launchView} conditionView={conditionView} applyAuthoringReplacement={applyAuthoringReplacement} />
+          <>
+            {operationError && <div className="hint__line" style={{ color: "var(--danger)", padding: "0 16px 8px" }}>{operationError}</div>}
+            <StepInspector studio={studio} members={members} flow={flow} setFlow={setFlow} step={selStep} update={update} editStep={editStep} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} launchView={launchView} conditionView={conditionView} applyAuthoringReplacement={applyAuthoringReplacement} />
+          </>
         ) : (
           <EmptyPanel state={viewState} />
         )}
@@ -481,7 +505,7 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
 }
 
 // ── Inspector ──
-function StepInspector({ studio, members, flow, setFlow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null, applyAuthoringReplacement = null }) {
+function StepInspector({ studio, members, flow, setFlow, step, update, editStep, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null, applyAuthoringReplacement = null }) {
   const [paramAddResult, setParamAddResult] = React.useState(null);
   React.useEffect(() => setParamAddResult(null), [step?.id]);
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
@@ -490,25 +514,21 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
     const params = inputState.params;
     const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult);
     const applyInputOperation = (operationType, operation = {}) => {
-      if (!applyAuthoringReplacement) return;
-      applyAuthoringReplacement({ operationType, operation });
+      if (!update) return Promise.resolve({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      return update(step.id, {}, operationType, operation);
     };
     const updateParam = (id, patch) => {
-      applyInputOperation("update_input_param", { step_id: step.id, param_id: id, patch });
+      return applyInputOperation("update_input_param", { step_id: step.id, param_id: id, patch });
     };
     const deleteParam = (id) => {
-      applyInputOperation("delete_input_param", { step_id: step.id, param_id: id });
+      return applyInputOperation("delete_input_param", { step_id: step.id, param_id: id });
     };
     const renameParam = (id, rawName, previousName) => {
-      applyInputOperation("rename_input_param", { step_id: step.id, param_id: id, new_name: rawName });
+      return applyInputOperation("rename_input_param", { step_id: step.id, param_id: id, new_name: rawName });
     };
     const addParam = () => {
-      if (!applyAuthoringReplacement) return;
       setParamAddResult(null);
-      applyAuthoringReplacement({
-        operationType: "add_input_param",
-        operation: { step_id: step.id },
-      }).then((result) => {
+      applyInputOperation("add_input_param", { step_id: step.id }).then((result) => {
         if (result?.ok === false) {
           setParamAddResult(result);
           return;

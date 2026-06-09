@@ -73,6 +73,9 @@ async function assertAuthoringCapabilities() {
   if (authoring.runtime_mutation !== false) {
     throw new Error(`flow editor authoring capabilities must not mutate runtime: ${JSON.stringify(authoring)}`);
   }
+  if (authoring.host_mutation_methods?.["mobkit/mobpacks/deploy"] !== "when execute=true, writes a mobpack archive and runs rkat mob deploy on the host") {
+    throw new Error(`flow editor capabilities must disclose deploy host mutation: ${JSON.stringify(authoring)}`);
+  }
   if (capabilities.authenticated !== false || capabilities.auth?.mode !== "none") {
     throw new Error(`standalone flow editor must not claim authenticated runtime access: ${JSON.stringify(capabilities)}`);
   }

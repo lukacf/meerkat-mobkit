@@ -603,20 +603,42 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
 // ── Schema editor (visual, field-by-field) ──────────────────────────
 function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null, applyAuthoringReplacement = null }) {
   const [fieldAddResult, setFieldAddResult] = React.useState(null);
+  const [schemaOperationError, setSchemaOperationError] = React.useState("");
   React.useEffect(() => setFieldAddResult(null), [schema?.id]);
+  React.useEffect(() => setSchemaOperationError(""), [schema?.id]);
   const schemaState = window.MobKitFlowController.schemaEditorControlState({
     schema,
     members: studio.members,
     schemaView,
   });
   const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult);
-  const applySchemaOperation = (selection = { kind: "schema", id: schema.id }, operationType = "update_schema", operation = {}) => {
-    if (!applyAuthoringReplacement) return;
-    applyAuthoringReplacement({
-      operationType,
-      operation,
-      selection,
-    });
+  const schemaOperationErrorText = (result, fallback) => {
+    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
+    return result?.error || fallback;
+  };
+  const applySchemaOperation = async (selection = { kind: "schema", id: schema.id }, operationType = "update_schema", operation = {}) => {
+    if (!applyAuthoringReplacement) {
+      const result = { ok: false, error: "MobKit authoring operation API is unavailable" };
+      setSchemaOperationError(schemaOperationErrorText(result, "MobKit schema operation failed"));
+      return result;
+    }
+    try {
+      const result = await applyAuthoringReplacement({
+        operationType,
+        operation,
+        selection,
+      });
+      if (result?.ok === false) {
+        setSchemaOperationError(schemaOperationErrorText(result, "MobKit schema operation failed"));
+      } else {
+        setSchemaOperationError("");
+      }
+      return result;
+    } catch (error) {
+      const result = { ok: false, error: error?.message || String(error || "MobKit schema operation failed") };
+      setSchemaOperationError(schemaOperationErrorText(result, "MobKit schema operation failed"));
+      return result;
+    }
   };
 
   const change = (patch) => {
@@ -673,24 +695,26 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     });
   };
 
-  const deleteSchema = () => {
+  const deleteSchema = async () => {
     const selection = { kind: null, id: null };
-    applySchemaOperation(selection, "delete_schema", { schema_id: schema.id });
-    setAgentSel(selection);
+    const result = await applySchemaOperation(selection, "delete_schema", { schema_id: schema.id });
+    if (result?.ok === false) return;
+    setAgentSel(result?.selection || selection);
   };
 
-  const renameSchema = (newId) => {
+  const renameSchema = async (newId) => {
     const result = window.MobKitFlowController.renameSchemaDefinition({
       schemas: studio.schemas,
       members: studio.members,
       flow,
     }, schema.id, newId);
     if (!result.renamed) return;
-    applySchemaOperation(result.selection, "rename_schema", {
+    const operationResult = await applySchemaOperation(result.selection, "rename_schema", {
       schema_id: schema.id,
       new_id: newId,
     });
-    setAgentSel(result.selection);
+    if (operationResult?.ok === false) return;
+    setAgentSel(operationResult?.selection || result.selection);
   };
 
   return (
@@ -706,6 +730,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
               onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
             />
             <div className="inspector__id">{schemaState.usageLabel}</div>
+            {schemaOperationError && <div className="hint__line" style={{ color: "var(--danger)" }}>{schemaOperationError}</div>}
           </div>
           <button
             className="btn btn--ghost btn--sm"

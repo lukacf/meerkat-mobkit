@@ -58,6 +58,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   const hostRef = React.useRef(null);
   const [drag, setDrag] = React.useState(null);
   const [conn, setConn] = React.useState(null);
+  const [operationError, setOperationError] = React.useState("");
   const [hoverInId, setHoverInId] = React.useState(null);
   const [hoverCell, setHoverCell] = React.useState(null);
   const canvasView = window.MobKitFlowController.graphCanvasViewState(graphView);
@@ -72,6 +73,30 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   const g = gridState.grid;
   const totalW = gridState.totalW;
   const totalH = gridState.totalH;
+  const graphOperationErrorText = (result, fallback) => {
+    if (result?.validation?.display_rows?.length) return result.validation.display_rows[0].head || fallback;
+    return result?.error || fallback;
+  };
+  const applyGraphOperation = async (payload, fallback) => {
+    if (!applyAuthoringReplacement) {
+      const result = { ok: false, error: "MobKit authoring operation API is unavailable" };
+      setOperationError(graphOperationErrorText(result, fallback));
+      return result;
+    }
+    try {
+      const result = await applyAuthoringReplacement(payload);
+      if (result?.ok === false) {
+        setOperationError(graphOperationErrorText(result, fallback));
+      } else {
+        setOperationError("");
+      }
+      return result;
+    } catch (error) {
+      const result = { ok: false, error: error?.message || String(error || fallback) };
+      setOperationError(graphOperationErrorText(result, fallback));
+      return result;
+    }
+  };
 
   // Fit-to-content (used on mount and on the ⤢ button)
   const fitToBounds = React.useCallback(() => {
@@ -212,17 +237,15 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const w = screenToWorld(e.clientX, e.clientY);
         const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
         if (cell && (cell.col !== drag.origCol || cell.row !== drag.origRow)) {
-          if (applyAuthoringReplacement) {
-            applyAuthoringReplacement({
-              operationType: "move_graph_node",
-              operation: {
-                instance_id: drag.instId,
-                cell,
-                original_cell: { col: drag.origCol, row: drag.origRow },
-              },
-              selection: { kind: "instance", id: drag.instId },
-            });
-          }
+          applyGraphOperation({
+            operationType: "move_graph_node",
+            operation: {
+              instance_id: drag.instId,
+              cell,
+              original_cell: { col: drag.origCol, row: drag.origRow },
+            },
+            selection: { kind: "instance", id: drag.instId },
+          }, "MobKit graph node move failed");
         }
         setDrag(null); setHoverCell(null);
       }
@@ -230,16 +253,14 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const t = document.elementFromPoint(e.clientX, e.clientY);
         const closest = t?.closest?.("[data-inst-id]");
         if (closest && closest.dataset.instId !== conn.fromId) {
-          if (applyAuthoringReplacement) {
-            applyAuthoringReplacement({
-              operationType: "connect_graph_nodes",
-              operation: { from_id: conn.fromId, to_id: closest.dataset.instId },
-            }).then((result) => {
-              if (result?.ok === false) return;
-              const id = result?.selection?.id;
-              if (id) selectEdge(id);
-            }).catch(() => {});
-          }
+          applyGraphOperation({
+            operationType: "connect_graph_nodes",
+            operation: { from_id: conn.fromId, to_id: closest.dataset.instId },
+          }, "MobKit graph connection failed").then((result) => {
+            if (result?.ok === false) return;
+            const id = result?.selection?.id;
+            if (id) selectEdge(id);
+          });
         }
         setConn(null); setHoverInId(null);
       }
@@ -380,6 +401,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       </div>
 
       {/* Zoom controls — fixed in the corner, outside the scaled canvas. */}
+      {operationError && <div className="hint__line graph-operation-error" style={{ color: "var(--danger)" }}>{operationError}</div>}
       <div className="zoom-controls" onMouseDown={e => e.stopPropagation()}>
         <button className="zoom-btn" title={canvasView.zoomOutTitle} onClick={() => {
           const r = hostRef.current.getBoundingClientRect();

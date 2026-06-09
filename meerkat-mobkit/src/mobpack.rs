@@ -2189,6 +2189,9 @@ pub fn mobpack_schema_response() -> Value {
         "archive": "tar.gz",
         "files": ["manifest.toml", "definition.json", "mobkit/editor.json", "mobkit/mob.toml", "schemas/*.json", "skills/*.md"],
         "runtime_mutation": false,
+        "host_mutation_methods": {
+            "mobkit/mobpacks/deploy": "when execute=true, writes a mobpack archive and runs rkat mob deploy on the host"
+        },
         "required_fields": ["document"],
         "commands": {
             "schema": "mobkit/mobpacks/schema",
@@ -2929,6 +2932,12 @@ pub fn import_mobpack(params: &Value) -> Result<Value, String> {
     {
         let definition = MobDefinition::from_toml(mob_toml)
             .map_err(|err| format!("failed to parse mob.toml for editor import: {err}"))?;
+        if definition.flows.len() > 1 {
+            return Err(format!(
+                "cannot import mob.toml into Flow Editor: {} flows found, but this editor projection supports exactly one flow; export/deploy the original mob.toml directly or split it into a single-flow mobpack",
+                definition.flows.len()
+            ));
+        }
         document = project_definition_to_editor_document(
             &definition,
             mob_toml,
@@ -11068,34 +11077,49 @@ fn parse_deploy_duration_ms(value: &str) -> Option<u64> {
         return None;
     }
     let lower = trimmed.to_ascii_lowercase();
-    if let Some(number) = lower.strip_suffix("ms") {
-        return number.trim().parse::<u64>().ok();
+    let bytes = lower.as_bytes();
+    let mut index = 0;
+    let mut total = 0u64;
+    let mut saw_part = false;
+    while index < bytes.len() {
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            break;
+        }
+        let number_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if number_start == index {
+            return None;
+        }
+        let number = lower[number_start..index].parse::<u64>().ok()?;
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        let multiplier = if lower[index..].starts_with("ms") {
+            index += 2;
+            1
+        } else if lower[index..].starts_with('h') {
+            index += 1;
+            3_600_000
+        } else if lower[index..].starts_with('m') {
+            index += 1;
+            60_000
+        } else if lower[index..].starts_with('s') {
+            index += 1;
+            1_000
+        } else if index == bytes.len() {
+            1_000
+        } else {
+            return None;
+        };
+        total = total.saturating_add(number.saturating_mul(multiplier));
+        saw_part = true;
     }
-    if let Some(number) = lower.strip_suffix('s') {
-        return number
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .map(|seconds| seconds.saturating_mul(1_000));
-    }
-    if let Some(number) = lower.strip_suffix('m') {
-        return number
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .map(|minutes| minutes.saturating_mul(60_000));
-    }
-    if let Some(number) = lower.strip_suffix('h') {
-        return number
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .map(|hours| hours.saturating_mul(3_600_000));
-    }
-    lower
-        .parse::<u64>()
-        .ok()
-        .map(|seconds| seconds.saturating_mul(1_000))
+    saw_part.then_some(total)
 }
 
 fn deploy_string(deploy: &Value, key: &str) -> Option<String> {
@@ -26409,6 +26433,17 @@ model = "gpt-5.5"
         }));
     }
 
+    #[test]
+    fn parses_composite_rkat_deploy_durations_for_execution_timeout() {
+        assert_eq!(parse_deploy_duration_ms("1h30m"), Some(5_400_000));
+        assert_eq!(parse_deploy_duration_ms("2m15s"), Some(135_000));
+        assert_eq!(parse_deploy_duration_ms("1h 2m 3s 4ms"), Some(3_723_004));
+        assert_eq!(parse_deploy_duration_ms("90"), Some(90_000));
+        assert_eq!(parse_deploy_duration_ms("1500ms"), Some(1_500));
+        assert_eq!(parse_deploy_duration_ms("1.5h"), None);
+        assert_eq!(parse_deploy_duration_ms("1hour"), None);
+    }
+
     #[cfg(unix)]
     #[test]
     fn reports_failed_rkat_mob_deploy_execution() {
@@ -28066,6 +28101,34 @@ url = "https://example.invalid/mcp"
         assert_eq!(repeat["iterationInput"], Value::Null);
         let validation = result["validation"].as_object().expect("validation");
         assert_eq!(validation["ok"], true);
+    }
+
+    #[test]
+    fn rejects_raw_mob_toml_with_multiple_flows_instead_of_silently_truncating() {
+        let toml = r#"
+[mob]
+id = "multi-flow-import"
+
+[profiles.planner]
+model = "gpt-5.2"
+
+[flows.main]
+description = "Main flow"
+
+[flows.main.steps.plan]
+role = "planner"
+message = "Plan"
+
+[flows.audit]
+description = "Audit flow"
+
+[flows.audit.steps.audit]
+role = "planner"
+message = "Audit"
+"#;
+        let err = import_mobpack(&json!({ "mob_toml": toml })).expect_err("multi-flow import");
+        assert!(err.contains("2 flows"), "{err}");
+        assert!(err.contains("supports exactly one flow"), "{err}");
     }
 
     #[test]

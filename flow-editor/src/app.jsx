@@ -113,6 +113,24 @@ function App() {
       setFlows((rows) => window.MobKitFlowController.flowRegistryMarkDraftPatch(rows, currentFlowId));
     }
   }, [clearSourceProjection, currentFlowId]);
+  const showAuthoringFailure = React.useCallback((resultOrError, fallbackHead = "MobKit authoring operation failed") => {
+    const validation = resultOrError?.validation || null;
+    const validationRows = validation
+      ? window.MobKitFlowController.diagnosticsToRows(validation)
+      : null;
+    const outcome = validationRows?.length
+      ? { validationRows, stage: "draft" }
+      : window.MobKitFlowController.criticalErrorOutcome({
+          head: fallbackHead,
+          error: resultOrError?.error || resultOrError,
+          meta: "MobKit authoring",
+          errorView: catalogs.errorView,
+        });
+    setValidationResults(outcome.validationRows);
+    setStage(outcome.stage);
+    applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
+    return outcome;
+  }, [applyApiOverlayPatch, catalogs.errorView]);
   const setAuthoringFlow = React.useCallback((next) => {
     markDraft();
     setFlow(next);
@@ -230,7 +248,10 @@ function App() {
         studio.setEdges(projection.edges || []);
         studio.setFrames(projection.frames || []);
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (cancelled) return;
+        showAuthoringFailure(error, "MobKit graph projection failed");
+      });
     return () => {
       cancelled = true;
     };
@@ -245,7 +266,9 @@ function App() {
     applyMobKitAuthoringReplacement({
       operationType: "sync_graph_to_flow",
       operation: { reason: "advanced_graph_changed" },
-    }).catch(() => {});
+    }).then((result) => {
+      if (result?.ok === false) showAuthoringFailure(result, "MobKit graph sync failed");
+    }).catch((error) => showAuthoringFailure(error, "MobKit graph sync failed"));
   }, [editorMode, studio.instances, studio.edges, studio.members, flow, contract]);
 
   React.useEffect(() => {
@@ -393,10 +416,14 @@ function App() {
       operationType: "insert_graph_node",
       operation: { pick, cell: addAt },
     }).then((result) => {
+      if (result?.ok === false) {
+        showAuthoringFailure(result, "MobKit graph node insert failed");
+        return;
+      }
       const id = result?.selection?.id;
       if (id) selectInstance(id);
-    }).catch(() => {});
-    setAddAt(nextMenu.addAt);
+      setAddAt(nextMenu.addAt);
+    }).catch((error) => showAuthoringFailure(error, "MobKit graph node insert failed"));
   };
 
   const handleAgentNavigation = (id) => {
@@ -1025,7 +1052,9 @@ function App() {
           hydratingDocumentRef.current = false;
         });
       })
-      .catch(() => {});
+      .catch((error) => {
+        showAuthoringFailure(error, "MobKit graph projection failed");
+      });
   };
 
   const hydrateImportedDocument = (result) => {
