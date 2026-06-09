@@ -13202,20 +13202,26 @@ function InputParamField({ param, normalizeName, onRename, onChange, onDelete, c
   const fieldState = window.MobKitFlowController.inputParamFieldControlState(param, contract, basicView);
   const values = fieldState.enumValues;
   const previousNameRef = React.useRef(null);
+  const [draftName, setDraftName] = React.useState(param.name || "");
+  React.useEffect(() => {
+    setDraftName(param.name || "");
+  }, [param.id, param.name]);
   const typeState = fieldState.typeState;
   return /* @__PURE__ */ React.createElement("div", { className: "schema-field" }, /* @__PURE__ */ React.createElement(
     "input",
     {
       className: "sb-input sb-col--name",
-      value: param.name || "",
+      value: draftName,
       onFocus: () => {
         previousNameRef.current = param.name || "";
       },
-      onChange: (e) => onChange({ name: e.target.value }),
+      onChange: (e) => setDraftName(e.target.value),
       onBlur: (e) => {
         const previousName = previousNameRef.current ?? param.name;
         previousNameRef.current = null;
-        onRename?.(normalizeName(e.target.value), previousName);
+        const normalized = normalizeName(e.target.value);
+        setDraftName(normalized);
+        if (String(previousName || "").trim() !== normalized) onRename?.(normalized, previousName);
       },
       placeholder: fieldState.namePlaceholder
     }
@@ -13420,10 +13426,6 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
     const params = inputState.params;
     const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult);
     const updateParam = (id, patch) => {
-      if (Object.prototype.hasOwnProperty.call(patch || {}, "name")) {
-        update(step.id, window.MobKitFlowController.inputParamUpdatePatch(params, id, patch, contract));
-        return;
-      }
       setFlow((current) => {
         const result = window.MobKitFlowController.inputParamUpdateCascadePatch({
           flow: current,

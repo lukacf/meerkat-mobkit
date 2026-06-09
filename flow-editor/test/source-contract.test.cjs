@@ -590,11 +590,14 @@ assert.match(builderInputStepBlock, /inputState\.params/, "Basic input panel mus
 assert.match(builderInputStepBlock, /inputState\.paramsTitle/, "Basic input panel must render param section title through projected controller state");
 assert.match(builderInputStepBlock, /inputState\.headerRows/, "Basic input panel must render schema table headers through projected controller state");
 assert.match(builderInputStepBlock, /inputState\.emptyParamsParts/, "Basic input panel must render empty param copy through projected controller state");
-assert.match(builder, /MobKitFlowController\.inputParamUpdatePatch/, "Basic editor must update input params through the controller plane");
+assert(!/MobKitFlowController\.inputParamUpdatePatch/.test(builder), "Basic editor must not commit input-param edits through a flow-only primitive patch");
 assert.match(builder, /MobKitFlowController\.inputParamUpdateCascadePatch/, "Basic editor must update input-param semantics through the controller cascade plane");
 assert.match(builder, /MobKitFlowController\.inputParamDeleteCascadePatch/, "Basic editor must delete input params through the controller cascade plane");
 assert.match(builder, /MobKitFlowController\.inputParamRenameCascadePatch/, "Basic editor must rename input params through the controller cascade plane");
 assert.match(builder, /MobKitFlowController\.inputParamAddPatch/, "Basic editor must add input params through the controller plane");
+assert.match(builderInputParamBlock, /const \[draftName,\s*setDraftName\] = React\.useState\(param\.name \|\| ""\)/, "Basic input-param names must draft in the UI plane before commit");
+assert.match(builderInputParamBlock, /onChange=\{e => setDraftName\(e\.target\.value\)\}[\s\S]*onBlur=\{e => \{[\s\S]*onRename\?\.\(normalized,\s*previousName\)/, "Basic input-param names must commit through the controller rename cascade on blur");
+assert(!/onChange=\{e => onChange\(\{\s*name:\s*e\.target\.value\s*\}\)\}/.test(builderInputParamBlock), "Basic input-param name typing must not mutate deployable flow state directly");
 assert.match(controller, /function inputParamAddPatch/, "controller plane must own schema-backed input-param creation");
 assert.match(controller, /function inputParamAddErrorState/, "controller plane must own rejected input-param add display state");
 assert.match(builderStepInspectorBlock, /const \[paramAddResult,\s*setParamAddResult\] = React\.useState\(null\);[\s\S]*MobKitFlowController\.inputParamAddErrorState\(paramAddResult\)/, "Basic input panel must ask the controller plane to project rejected param-add errors");
