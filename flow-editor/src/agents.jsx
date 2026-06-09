@@ -312,16 +312,6 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     }
   };
   const changeSchema = (rawSchema) => {
-    const result = window.MobKitFlowController.memberSchemaCascadePatch({
-      memberId: member.id,
-      members: studio.members,
-      flow,
-      edges: studio.edges,
-      instances: studio.instances,
-      schemas: studio.schemas,
-    }, rawSchema);
-    setSchemaChangeResult(result);
-    if (!result.ok) return;
     if (!applyAuthoringReplacement) {
       setSchemaChangeResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
       return;
@@ -329,41 +319,23 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     applyAuthoringReplacement({
       operationType: "assign_member_schema",
       operation: { member_id: member.id, schema_id: rawSchema },
-      flow: result.flow,
-      studio: {
-        members: result.members,
-        instances: result.instances,
-        edges: result.edges,
-      },
       selection: { kind: "agent", id: member.id },
+    }).then((result) => {
+      setSchemaChangeResult(result?.ok === false ? result : null);
+    }).catch((error) => {
+      setSchemaChangeResult({ ok: false, error: error?.message || "MobKit schema assignment failed" });
     });
-    setSchemaChangeResult(null);
   };
   const deleteConfirmState = window.MobKitFlowController.agentDeleteConfirmationState(editorState, deleteConfirmOpen);
   const deleteMember = () => {
-    const result = window.MobKitFlowController.memberDeleteCascadePatch({
-      memberId: member.id,
-      members: studio.members,
-      instances: studio.instances,
-      edges: studio.edges,
-      flow,
-      mobSettings,
-    });
-    if (!result.ok) return;
     if (!applyAuthoringReplacement) return;
+    const selection = null;
     applyAuthoringReplacement({
       operationType: "delete_member",
       operation: { member_id: member.id },
-      flow: result.flow,
-      mobSettings: result.mobSettings,
-      studio: {
-        members: result.members,
-        instances: result.instances,
-        edges: result.edges,
-      },
-      selection: result.selection,
+      selection,
     });
-    setAgentSel(result.selection);
+    setAgentSel(selection);
     setDeleteConfirmOpen(false);
   };
 
@@ -634,39 +606,24 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     schemaView,
   });
   const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult);
-  const applySchemaCascade = (result, selection = { kind: "schema", id: schema.id }, operationType = "update_schema", operation = {}) => {
+  const applySchemaOperation = (selection = { kind: "schema", id: schema.id }, operationType = "update_schema", operation = {}) => {
     if (!applyAuthoringReplacement) return;
     applyAuthoringReplacement({
       operationType,
       operation,
-      flow: result.flow || flow,
-      studio: {
-        schemas: result.schemas,
-        members: result.members || studio.members,
-        edges: result.edges || studio.edges,
-      },
       selection,
     });
   };
 
   const change = (patch) => {
-    const result = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas: studio.schemas }, schema.id, patch);
-    applySchemaCascade(result, { kind: "schema", id: schema.id }, "update_schema", {
+    applySchemaOperation({ kind: "schema", id: schema.id }, "update_schema", {
       schema_id: schema.id,
       patch,
     });
   };
 
   const renameField = (fieldId, oldName, newName) => {
-    const result = window.MobKitFlowController.schemaFieldRenameCascadePatch({
-      schema,
-      schemas: studio.schemas,
-      flow,
-      edges: studio.edges,
-      members: studio.members,
-      instances: studio.instances,
-    }, fieldId, newName, oldName, contract);
-    applySchemaCascade(result, { kind: "schema", id: schema.id }, "rename_schema_field", {
+    applySchemaOperation({ kind: "schema", id: schema.id }, "rename_schema_field", {
       schema_id: schema.id,
       field_id: fieldId,
       new_name: newName,
@@ -674,15 +631,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   };
 
   const updateField = (fieldId, patch) => {
-    const result = window.MobKitFlowController.schemaFieldUpdateCascadePatch({
-      schema,
-      schemas: studio.schemas,
-      flow,
-      edges: studio.edges,
-      members: studio.members,
-      instances: studio.instances,
-    }, fieldId, patch, contract);
-    applySchemaCascade(result, { kind: "schema", id: schema.id }, "update_schema_field", {
+    applySchemaOperation({ kind: "schema", id: schema.id }, "update_schema_field", {
       schema_id: schema.id,
       field_id: fieldId,
       patch,
@@ -690,15 +639,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   };
 
   const deleteField = (fieldId) => {
-    const result = window.MobKitFlowController.schemaFieldDeleteCascadePatch({
-      schema,
-      schemas: studio.schemas,
-      flow,
-      edges: studio.edges,
-      members: studio.members,
-      instances: studio.instances,
-    }, fieldId);
-    applySchemaCascade(result, { kind: "schema", id: schema.id }, "delete_schema_field", {
+    applySchemaOperation({ kind: "schema", id: schema.id }, "delete_schema_field", {
       schema_id: schema.id,
       field_id: fieldId,
     });
@@ -729,15 +670,9 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   };
 
   const deleteSchema = () => {
-    const result = window.MobKitFlowController.studioDeleteSchemaPatch({
-      schemas: studio.schemas,
-      members: studio.members,
-      flow,
-      edges: studio.edges,
-      instances: studio.instances,
-    }, schema.id);
-    applySchemaCascade(result, result.selection, "delete_schema", { schema_id: schema.id });
-    setAgentSel(result.selection);
+    const selection = { kind: null, id: null };
+    applySchemaOperation(selection, "delete_schema", { schema_id: schema.id });
+    setAgentSel(selection);
   };
 
   const renameSchema = (newId) => {
@@ -747,10 +682,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       flow,
     }, schema.id, newId);
     if (!result.renamed) return;
-    applySchemaCascade({
-      ...result,
-      edges: studio.edges,
-    }, result.selection, "rename_schema", {
+    applySchemaOperation(result.selection, "rename_schema", {
       schema_id: schema.id,
       new_id: newId,
     });

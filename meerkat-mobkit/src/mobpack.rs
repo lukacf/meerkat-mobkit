@@ -851,6 +851,38 @@ pub fn mobpack_authoring_operations() -> Value {
             "projection_document_supported": true
         },
         {
+            "type": "sync_graph_to_flow",
+            "plane": "graph",
+            "authority": "mobkit",
+            "requires": [],
+            "mutates": ["document.flow"],
+            "projection_document_supported": false
+        },
+        {
+            "type": "reconcile_members",
+            "plane": "document",
+            "authority": "mobkit",
+            "requires": [],
+            "mutates": ["document.flow", "document.instances", "document.edges", "document.mob_settings"],
+            "projection_document_supported": false
+        },
+        {
+            "type": "reconcile_condition_fields",
+            "plane": "document",
+            "authority": "mobkit",
+            "requires": [],
+            "mutates": ["document.flow", "document.edges"],
+            "projection_document_supported": false
+        },
+        {
+            "type": "reconcile_contract_refs",
+            "plane": "document",
+            "authority": "mobkit",
+            "requires": [],
+            "mutates": ["document.members", "document.flow", "document.instances", "document.edges", "document.deploy", "document.mob_settings"],
+            "projection_document_supported": false
+        },
+        {
             "type": "add_agent_definition",
             "plane": "agent",
             "authority": "mobkit",
@@ -3274,6 +3306,14 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "mobkit/mobpacks/apply_operation requires operation.type".to_string())?;
     let selection = match operation_type {
+        "sync_graph_to_flow" => apply_sync_graph_to_flow_operation(&mut document, operation)?,
+        "reconcile_members" => apply_reconcile_members_operation(&mut document, operation)?,
+        "reconcile_condition_fields" => {
+            apply_reconcile_condition_fields_operation(&mut document, operation)?
+        }
+        "reconcile_contract_refs" => {
+            apply_reconcile_contract_refs_operation(&mut document, operation)?
+        }
         "add_agent_definition" => apply_add_agent_definition_operation(&mut document, operation)?,
         "update_member" => apply_update_member_operation(&mut document, operation)?,
         "add_member_tool" => apply_member_tool_operation(&mut document, operation, true)?,
@@ -3381,6 +3421,53 @@ fn apply_projected_authoring_document_operation(
         .get("selection")
         .cloned()
         .unwrap_or_else(|| json!({ "kind": null, "id": null })))
+}
+
+fn operation_selection_or_clear(operation: &serde_json::Map<String, Value>) -> Value {
+    operation
+        .get("selection")
+        .cloned()
+        .unwrap_or_else(|| json!({ "kind": null, "id": null }))
+}
+
+fn apply_sync_graph_to_flow_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    document.flow = graph_to_flow_from_document(document);
+    Ok(operation_selection_or_clear(operation))
+}
+
+fn apply_reconcile_members_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    reconcile_document_after_member_change(document);
+    prune_mob_settings_for_current_members(document);
+    Ok(operation_selection_or_clear(operation))
+}
+
+fn apply_reconcile_condition_fields_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    reconcile_condition_field_availability(document);
+    Ok(operation_selection_or_clear(operation))
+}
+
+fn apply_reconcile_contract_refs_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    prune_member_refs_for_contract(document);
+    reconcile_document_after_member_change(document);
+    prune_mob_settings_for_current_members(document);
+    reconcile_condition_field_availability(document);
+    if !document.deploy.is_object() {
+        document.deploy = json!({});
+    }
+    document.deploy["command"] = json!("rkat mob deploy");
+    Ok(operation_selection_or_clear(operation))
 }
 
 fn apply_delete_member_operation(
@@ -4166,6 +4253,26 @@ fn member_identity_values(member: &Value) -> BTreeSet<String> {
         .collect()
 }
 
+fn member_profile_value(member: &Value) -> String {
+    ["name", "role", "id"]
+        .into_iter()
+        .filter_map(|key| member.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn current_member_profiles(members: &Value) -> BTreeSet<String> {
+    members
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(member_profile_value)
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
 fn prune_mob_settings_for_removed_member(settings: &mut Value, removed_names: &BTreeSet<String>) {
     let Some(object) = settings.as_object_mut() else {
         return;
@@ -4193,6 +4300,135 @@ fn prune_mob_settings_for_removed_member(settings: &mut Value, removed_names: &B
                 .trim();
             !removed_names.contains(a) && !removed_names.contains(b)
         });
+    }
+}
+
+fn prune_mob_settings_for_current_members(document: &mut MobpackDocument) {
+    let profiles = current_member_profiles(&document.members);
+    let Some(object) = document.mob_settings.as_object_mut() else {
+        return;
+    };
+    for key in ["orchestrator", "orchestratorRole"] {
+        let invalid = object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some_and(|value| !profiles.contains(value));
+        if invalid {
+            object.insert(key.to_string(), Value::String(String::new()));
+        }
+    }
+    if let Some(wiring) = object.get_mut("roleWiring").and_then(Value::as_array_mut) {
+        let mut seen = BTreeSet::new();
+        wiring.retain(|row| {
+            let a = row
+                .get("a")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            let b = row
+                .get("b")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            if a.is_empty() || b.is_empty() || !profiles.contains(a) || !profiles.contains(b) {
+                return false;
+            }
+            seen.insert(format!("{a}\u{0}{b}"))
+        });
+    }
+}
+
+fn schema_ids(document: &MobpackDocument) -> BTreeSet<String> {
+    document
+        .schemas
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|schema| schema.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn available_member_tools() -> BTreeSet<String> {
+    tool_catalog_response()
+        .iter()
+        .filter_map(|tool| tool.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn available_skill_ids(skill_realms: &Value) -> BTreeSet<String> {
+    skill_realms
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|realm| realm.get("skills").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|skill| skill.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn available_model_ids() -> BTreeSet<String> {
+    meerkat_models::catalog()
+        .into_iter()
+        .map(|entry| entry.id.to_string())
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
+fn prune_string_list_field_for_set(member: &mut Value, field: &str, allowed: &BTreeSet<String>) {
+    let Some(list) = member.get_mut(field).and_then(Value::as_array_mut) else {
+        return;
+    };
+    list.retain(|value| {
+        value
+            .as_str()
+            .map(str::trim)
+            .is_some_and(|id| allowed.contains(id))
+    });
+}
+
+fn prune_member_refs_for_contract(document: &mut MobpackDocument) {
+    let schema_ids = schema_ids(document);
+    let tool_ids = available_member_tools();
+    let skill_ids = available_skill_ids(&document.skill_realms);
+    let model_ids = available_model_ids();
+    let Some(members) = document.members.as_array_mut() else {
+        return;
+    };
+    for member in members {
+        let Some(object) = member.as_object_mut() else {
+            continue;
+        };
+        let invalid_schema = object
+            .get("schema")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|schema| !schema.is_empty())
+            .is_some_and(|schema| !schema_ids.contains(schema));
+        if invalid_schema {
+            object.insert("schema".to_string(), Value::String(String::new()));
+        }
+        let invalid_model = object
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .is_some_and(|model| !model_ids.contains(model));
+        if invalid_model {
+            object.insert("model".to_string(), Value::String(String::new()));
+        }
+        prune_string_list_field_for_set(member, "tools", &tool_ids);
+        prune_string_list_field_for_set(member, "skills", &skill_ids);
     }
 }
 
@@ -4484,6 +4720,245 @@ fn rewrite_schema_field_references_in_edges(
             cond_object.insert("var".to_string(), Value::String(next_path));
         }
     }
+}
+
+fn input_param_field_names(flow: &Value) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    if let Some(steps) = flow.get("steps").and_then(Value::as_array) {
+        collect_input_param_field_names(steps, &mut out);
+    }
+    out
+}
+
+fn collect_input_param_field_names(steps: &[Value], out: &mut BTreeSet<String>) {
+    for step in steps {
+        if step.get("type").and_then(Value::as_str) == Some("input") {
+            if let Some(params) = step.get("inputParams").and_then(Value::as_array) {
+                out.extend(
+                    params
+                        .iter()
+                        .filter_map(|param| param.get("name").and_then(Value::as_str))
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(ToString::to_string),
+                );
+            }
+        }
+        if let Some(nested) = step.get("steps").and_then(Value::as_array) {
+            collect_input_param_field_names(nested, out);
+        }
+        if let Some(branches) = step.get("branches").and_then(Value::as_array) {
+            for branch in branches {
+                if let Some(branch_steps) = branch.get("steps").and_then(Value::as_array) {
+                    collect_input_param_field_names(branch_steps, out);
+                }
+            }
+        }
+        if let Some(fallback) = step.get("fallback").and_then(Value::as_array) {
+            collect_input_param_field_names(fallback, out);
+        }
+    }
+}
+
+fn schema_field_name_set(schemas: &Value, schema_id: &str) -> BTreeSet<String> {
+    schemas
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|schema| {
+            schema
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == schema_id)
+        })
+        .and_then(|schema| schema.get("fields").and_then(Value::as_array))
+        .into_iter()
+        .flatten()
+        .filter_map(|field| field.get("name").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn condition_field_available(
+    namespace: &str,
+    source_id: &str,
+    field: &str,
+    step_schemas: &BTreeMap<String, String>,
+    schemas: &Value,
+    input_params: &BTreeSet<String>,
+) -> bool {
+    if field.is_empty() {
+        return true;
+    }
+    if namespace == "params" || source_id == "params" {
+        return input_params.contains(field);
+    }
+    let schema_id = step_schemas.get(source_id).cloned().unwrap_or_default();
+    if schema_id.is_empty() {
+        return false;
+    }
+    schema_field_name_set(schemas, &schema_id).contains(field)
+}
+
+fn reconcile_editor_condition(
+    cond: &mut Value,
+    step_schemas: &BTreeMap<String, String>,
+    schemas: &Value,
+    input_params: &BTreeSet<String>,
+) {
+    let Some(object) = cond.as_object() else {
+        return;
+    };
+    let step_id = object
+        .get("stepId")
+        .or_else(|| object.get("step_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    let field = object
+        .get("field")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if !step_id.is_empty()
+        && !condition_field_available("", step_id, field, step_schemas, schemas, input_params)
+    {
+        *cond = json!({});
+    }
+}
+
+fn reconcile_editor_conditions_in_steps(
+    steps: &mut [Value],
+    step_schemas: &BTreeMap<String, String>,
+    schemas: &Value,
+    input_params: &BTreeSet<String>,
+) {
+    for step in steps {
+        match step.get("type").and_then(Value::as_str) {
+            Some("repeat") => {
+                if let Some(cond) = step.get_mut("cond") {
+                    reconcile_editor_condition(cond, step_schemas, schemas, input_params);
+                }
+                if let Some(nested) = step.get_mut("steps").and_then(Value::as_array_mut) {
+                    reconcile_editor_conditions_in_steps(
+                        nested,
+                        step_schemas,
+                        schemas,
+                        input_params,
+                    );
+                }
+            }
+            Some("branch") => {
+                if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+                    for branch in branches {
+                        if let Some(cond) = branch.get_mut("cond") {
+                            reconcile_editor_condition(cond, step_schemas, schemas, input_params);
+                        }
+                        if let Some(branch_steps) =
+                            branch.get_mut("steps").and_then(Value::as_array_mut)
+                        {
+                            reconcile_editor_conditions_in_steps(
+                                branch_steps,
+                                step_schemas,
+                                schemas,
+                                input_params,
+                            );
+                        }
+                    }
+                }
+                if let Some(fallback) = step.get_mut("fallback").and_then(Value::as_array_mut) {
+                    reconcile_editor_conditions_in_steps(
+                        fallback,
+                        step_schemas,
+                        schemas,
+                        input_params,
+                    );
+                }
+            }
+            Some("parallel") => {
+                if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+                    for branch in branches {
+                        if let Some(branch_steps) =
+                            branch.get_mut("steps").and_then(Value::as_array_mut)
+                        {
+                            reconcile_editor_conditions_in_steps(
+                                branch_steps,
+                                step_schemas,
+                                schemas,
+                                input_params,
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn reconcile_condition_edges(
+    edges: &mut Value,
+    step_schemas: &BTreeMap<String, String>,
+    schemas: &Value,
+    input_params: &BTreeSet<String>,
+) {
+    let Some(edges) = edges.as_array_mut() else {
+        return;
+    };
+    for edge in edges {
+        let Some(cond) = edge.get("cond") else {
+            continue;
+        };
+        let Some(cond_object) = cond.as_object() else {
+            continue;
+        };
+        let path = cond_object
+            .get("var")
+            .or_else(|| cond_object.get("path"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let mut parts = path.split('.');
+        let namespace = parts.next().unwrap_or_default();
+        let source_id = parts.next().unwrap_or_default();
+        let field = parts.next().unwrap_or_default();
+        if namespace.is_empty() || source_id.is_empty() || parts.next().is_some() {
+            continue;
+        }
+        if !condition_field_available(
+            namespace,
+            source_id,
+            field,
+            step_schemas,
+            schemas,
+            input_params,
+        ) {
+            edge["cond"] = Value::Null;
+            edge["label"] = Value::String(String::new());
+        }
+    }
+}
+
+fn reconcile_condition_field_availability(document: &mut MobpackDocument) {
+    let member_schemas = member_schema_index(&document.members);
+    let input_params = input_param_field_names(&document.flow);
+    let flow_step_schemas = flow_step_schema_index(&document.flow, &member_schemas);
+    if let Some(steps) = document.flow.get_mut("steps").and_then(Value::as_array_mut) {
+        reconcile_editor_conditions_in_steps(
+            steps,
+            &flow_step_schemas,
+            &document.schemas,
+            &input_params,
+        );
+    }
+    let graph_step_schemas = graph_step_schema_index(&document.instances, &member_schemas);
+    reconcile_condition_edges(
+        &mut document.edges,
+        &graph_step_schemas,
+        &document.schemas,
+        &input_params,
+    );
 }
 
 fn flow_step_mut_by_id<'a>(flow: &'a mut Value, step_id: &str) -> Option<&'a mut Value> {

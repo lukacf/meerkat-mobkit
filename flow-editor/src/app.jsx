@@ -231,42 +231,14 @@ function App() {
 
   React.useEffect(() => {
     if (editorMode !== "advanced") return;
-    if (!window.MobKitFlowController?.graphToFlowDocument) return;
     const sig = window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges, { members: studio.members, contract });
     if (sig === graphProjectionSig.current) return;
     graphProjectionSig.current = sig;
     skipNextGraphProjection.current = true;
-    let cancelled = false;
-    const requestToken = currentAuthoringRevision();
-    const projectionOverrides = {
-      editorMode: "basic",
-      studio: {
-        instances: studio.instances,
-        edges: studio.edges,
-        frames: studio.frames,
-        members: studio.members,
-      },
-    };
-    const projectionDocument = graphDocumentFromProjection(
-      buildAuthoringProjection(projectionOverrides),
-      projectionOverrides,
-    );
-    window.MobKitFlowController.graphToFlowDocument(projectionDocument)
-      .then((projectionResult) => {
-        if (cancelled || !authoringRevisionIsCurrent(requestToken)) return;
-        const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(projectionResult, {
-          deployDefaults: catalogs.deployDefaults,
-          mobDefaults: catalogs.mobDefaults,
-        });
-        if (!projection) return;
-        beginProjectionSync();
-        applyAuthoringDocumentProjection(projection);
-        markDraft();
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+    applyMobKitAuthoringReplacement({
+      operationType: "sync_graph_to_flow",
+      operation: { reason: "advanced_graph_changed" },
+    }).catch(() => {});
   }, [editorMode, studio.instances, studio.edges, studio.members, flow, contract]);
 
   React.useEffect(() => {
@@ -290,14 +262,8 @@ function App() {
     previousMembersRef.current = studio.members;
     if (!changed) return;
     applyMobKitAuthoringReplacement({
-      operationType: "replace_authoring_document",
+      operationType: "reconcile_members",
       operation: { reason: "reconcile_members" },
-      flow: result.flow,
-      mobSettings: result.mobSettings,
-      studio: {
-        instances: result.instances,
-        edges: result.edges,
-      },
     });
   }, [studio.members, flow, studio.instances, studio.edges, mobSettings]);
 
@@ -315,12 +281,8 @@ function App() {
     const edgesChanged = result.edges !== studio.edges;
     if (!flowChanged && !edgesChanged) return;
     applyMobKitAuthoringReplacement({
-      operationType: "replace_authoring_document",
+      operationType: "reconcile_condition_fields",
       operation: { reason: "reconcile_condition_fields" },
-      flow: result.flow,
-      studio: {
-        edges: result.edges,
-      },
     });
   }, [flow, studio.edges, studio.instances, studio.members, studio.schemas]);
 
@@ -342,16 +304,8 @@ function App() {
     });
     if (!result.changed) return;
     applyMobKitAuthoringReplacement({
-      operationType: "replace_authoring_document",
+      operationType: "reconcile_contract_refs",
       operation: { reason: "reconcile_contract_refs" },
-      flow: result.flow,
-      deploySettings: result.deploySettings,
-      mobSettings: result.mobSettings,
-      studio: {
-        members: result.members,
-        instances: result.instances,
-        edges: result.edges,
-      },
     });
   }, [
     studio.members,
@@ -378,25 +332,20 @@ function App() {
       if (tg.tagName === "INPUT" || tg.tagName === "TEXTAREA" || tg.tagName === "SELECT") return;
       if (e.key === "Backspace" || e.key === "Delete") {
         if (selection.kind === "instance") {
-          const result = window.MobKitFlowController.studioDeleteInstancePatch({
-            instances: studio.instances,
-            edges: studio.edges,
-          }, selection.id);
+          const nextSelection = { kind: null, id: null };
           applyMobKitAuthoringReplacement({
             operationType: "delete_graph_node",
             operation: { instance_id: selection.id },
-            studio: { instances: result.instances, edges: result.edges },
-            selection: result.selection,
-          }).then(() => clearSelection(result.selection));
+            selection: nextSelection,
+          }).then(() => clearSelection(nextSelection));
         }
         else if (selection.kind === "edge") {
-          const result = window.MobKitFlowController.studioDeleteEdgePatch({ edges: studio.edges }, selection.id);
+          const nextSelection = { kind: null, id: null };
           applyMobKitAuthoringReplacement({
             operationType: "delete_graph_edge",
             operation: { edge_id: selection.id },
-            studio: { edges: result.edges },
-            selection: result.selection,
-          }).then(() => clearSelection(result.selection));
+            selection: nextSelection,
+          }).then(() => clearSelection(nextSelection));
         }
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
@@ -544,22 +493,14 @@ function App() {
       const document = buildDocument(overrides);
       return { document, requestToken };
     }
-    const baseProjection = buildAuthoringProjection({ ...overrides, editorMode: "basic" });
-    const document = graphDocumentFromProjection(baseProjection, overrides);
-    const result = await window.MobKitFlowController.graphToFlowDocument(document);
+    const result = await applyMobKitAuthoringReplacement({
+      operationType: "sync_graph_to_flow",
+      operation: { reason: "build_projected_document" },
+    });
     if (!authoringRevisionIsCurrent(requestToken)) {
       return { document: null, requestToken, stale: true };
     }
-    const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
-      deployDefaults: catalogs.deployDefaults,
-      mobDefaults: catalogs.mobDefaults,
-    });
-    if (!projection) {
-      return { document, requestToken };
-    }
-    beginProjectionSync();
-    applyAuthoringDocumentProjection(projection);
-    return { document: projection.document, requestToken };
+    return { document: result?.document || buildDocument(overrides), requestToken };
   };
   const applyMobKitAuthoringOperation = async (operation) => {
     const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operation?.type);
@@ -628,30 +569,21 @@ function App() {
       return next;
     },
     updateInstance: (id, patch) => {
-      const next = window.MobKitFlowController.studioUpdateInstancePatch({
-        instances: studio.instances,
-        members: studio.members,
-      }, id, patch);
       applyMobKitAuthoringReplacement({
         operationType: "update_graph_node",
         operation: { instance_id: id, patch },
-        studio: { instances: next.instances },
         selection: { kind: "instance", id },
       });
-      return next;
+      return { ok: true, selection: { kind: "instance", id } };
     },
     deleteInstance: (id) => {
-      const next = window.MobKitFlowController.studioDeleteInstancePatch({
-        instances: studio.instances,
-        edges: studio.edges,
-      }, id);
+      const selection = { kind: null, id: null };
       applyMobKitAuthoringReplacement({
         operationType: "delete_graph_node",
         operation: { instance_id: id },
-        studio: { instances: next.instances, edges: next.edges },
-        selection: next.selection,
+        selection,
       });
-      return next;
+      return { ok: true, selection };
     },
     addEdge: (edge) => {
       const next = window.MobKitFlowController.studioAddEdgePatch({
@@ -669,27 +601,21 @@ function App() {
       return next;
     },
     updateEdge: (id, patch) => {
-      const next = window.MobKitFlowController.studioUpdateEdgePatch({
-        edges: studio.edges,
-        instances: studio.instances,
-      }, id, patch);
       applyMobKitAuthoringReplacement({
         operationType: "update_graph_edge",
         operation: { edge_id: id, patch },
-        studio: { edges: next.edges },
         selection: { kind: "edge", id },
       });
-      return next;
+      return { ok: true, selection: { kind: "edge", id } };
     },
     deleteEdge: (id) => {
-      const next = window.MobKitFlowController.studioDeleteEdgePatch({ edges: studio.edges }, id);
+      const selection = { kind: null, id: null };
       applyMobKitAuthoringReplacement({
         operationType: "delete_graph_edge",
         operation: { edge_id: id },
-        studio: { edges: next.edges },
-        selection: next.selection,
+        selection,
       });
-      return next;
+      return { ok: true, selection };
     },
     addSchema: () => {
       applyMobKitAuthoringReplacement({
@@ -699,31 +625,21 @@ function App() {
       return { ok: true };
     },
     updateSchema: (id, patch) => {
-      const next = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas: studio.schemas }, id, patch);
       applyMobKitAuthoringReplacement({
         operationType: "update_schema",
         operation: { schema_id: id, patch },
-        studio: { schemas: next.schemas },
         selection: { kind: "schema", id },
       });
-      return next;
+      return { ok: true, selection: { kind: "schema", id } };
     },
     deleteSchema: (id) => {
-      const next = window.MobKitFlowController.studioDeleteSchemaPatch({
-        schemas: studio.schemas,
-        members: studio.members,
-        flow,
-        edges: studio.edges,
-        instances: studio.instances,
-      }, id);
+      const selection = { kind: null, id: null };
       applyMobKitAuthoringReplacement({
         operationType: "delete_schema",
         operation: { schema_id: id },
-        flow: next.flow,
-        studio: { schemas: next.schemas, members: next.members, edges: next.edges },
-        selection: next.selection,
+        selection,
       });
-      return next;
+      return { ok: true, selection };
     },
   };
   const saveRegistryDocument = (rowPatch) => {
@@ -1549,7 +1465,6 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
       applyAuthoringReplacement({
         operationType: "update_deploy_settings",
         operation: { deploy: next },
-        deploySettings: next,
       });
     } else {
       setDeploySettings(next);
@@ -1561,7 +1476,6 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
       applyAuthoringReplacement({
         operationType: field === "roleWiring" ? "update_role_wiring" : "update_mob_settings",
         operation: field === "roleWiring" ? { role_wiring: next.roleWiring || [] } : { mob_settings: next },
-        mobSettings: next,
       });
     } else {
       setMobSettings(next);

@@ -177,16 +177,16 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     ? { ...view, ty: 0 }
     : view;
 
-  const commitFlow = (nextFlow, studioPatch = {}, operationType = "update_flow_step", operation = {}) => {
+  const commitFlow = (operationType = "update_flow_step", operation = {}) => {
     if (!applyAuthoringReplacement) return false;
-    applyAuthoringReplacement({ operationType, operation, flow: nextFlow, studio: studioPatch });
+    applyAuthoringReplacement({ operationType, operation });
     return true;
   };
   const update = (id, patch, operationType = "update_flow_step", operation = {}) => {
     const payload = operationType === "update_flow_step" && !Object.keys(operation || {}).length
       ? { step_id: id, patch }
       : operation;
-    commitFlow(window.MobKitFlowController.flowStepUpdatePatch(flow, id, patch, { members }), {}, operationType, payload);
+    commitFlow(operationType, payload);
   };
   const selStep = findStep(flow.steps, sel);
   const applyBasicInteraction = (result) => {
@@ -208,7 +208,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   };
   const removeStep = (id) => {
     const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
-    if (!commitFlow(result.flow, {}, "delete_flow_step", { step_id: id })) return;
+    if (!commitFlow("delete_flow_step", { step_id: id })) return;
     setSel(result.selection);
     setPicker(result.picker);
   };
@@ -485,35 +485,18 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
     const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult);
-    const applyInputCascade = (result, operationType, operation = {}) => {
+    const applyInputOperation = (operationType, operation = {}) => {
       if (!applyAuthoringReplacement) return;
-      applyAuthoringReplacement({
-        operationType,
-        operation,
-        flow: result.flow,
-        studio: { edges: result.edges },
-      });
+      applyAuthoringReplacement({ operationType, operation });
     };
     const updateParam = (id, patch) => {
-      applyInputCascade(window.MobKitFlowController.inputParamUpdateCascadePatch({
-        flow,
-        edges: studio?.edges || [],
-        members: studio?.members || [],
-        instances: studio?.instances || [],
-        schemas: studio?.schemas || [],
-      }, step.id, id, patch, contract), "update_input_param", { step_id: step.id, param_id: id, patch });
+      applyInputOperation("update_input_param", { step_id: step.id, param_id: id, patch });
     };
     const deleteParam = (id) => {
-      applyInputCascade(window.MobKitFlowController.inputParamDeleteCascadePatch({
-        flow,
-        edges: studio?.edges || [],
-      }, step.id, id, contract), "delete_input_param", { step_id: step.id, param_id: id });
+      applyInputOperation("delete_input_param", { step_id: step.id, param_id: id });
     };
     const renameParam = (id, rawName, previousName) => {
-      applyInputCascade(window.MobKitFlowController.inputParamRenameCascadePatch({
-        flow,
-        edges: studio?.edges || [],
-      }, step.id, id, rawName, previousName, contract), "rename_input_param", { step_id: step.id, param_id: id, new_name: rawName });
+      applyInputOperation("rename_input_param", { step_id: step.id, param_id: id, new_name: rawName });
     };
     const addParam = () => {
       if (!applyAuthoringReplacement) return;
