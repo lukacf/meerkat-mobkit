@@ -634,9 +634,11 @@ assert.match(controller, /function reconcileMobSettingsProfiles/, "controller pl
 assert.match(app, /function RoleWiringEditor/, "mob role wiring must use structured profile controls, not free-text profile names");
 assert(!/parseRoleWiring|TweakText label="Role wiring"/.test(app), "mob role wiring must not be edited as raw profile-name text");
 assert.match(app, /const canCreateAuthoring = !!catalogs\.contractMeta\.loaded && !contract\?\.error;/, "blank/sample authoring must be gated on loaded MobKit schema");
-assert.match(app, /if \(!canCreateAuthoring\) return;[\s\S]*setCreating\(\{ step: 1/, "New flow modal must not open before MobKit schema hydration");
+assert.match(app, /if \(!canCreateAuthoring\) return;[\s\S]*setCreating\(window\.MobKitFlowController\.newFlowInitialState/, "New flow modal must not open before MobKit schema hydration");
 assert.match(app, /if \(!canCreateAuthoring\) return;[\s\S]*MobKitFlowController\.createFlowDraftFromSpec/, "Blank/sample mobpack creation must not run before MobKit schema hydration");
+assert.match(app, /setCreating\(window\.MobKitFlowController\.newFlowInitialState\(\{ blankTemplate: catalogs\.blankMobpack \}\)\)/, "New flow modal initial state must come from controller-projected MobKit blank mobpack data");
 assert.match(controller, /function createFlowDraftFromSpec/, "controller plane must own new flow draft document and registry row creation");
+assert.match(controller, /function newFlowInitialState[\s\S]*blankTemplate\.trigger[\s\S]*blankTemplate\.id/, "controller plane must seed new-flow initial trigger/template from the MobKit blank mobpack catalog");
 assert.match(app, /MobKitFlowController\.newFlowTemplateOptions\(templates, \{[\s\S]*canCreateBlank: canCreateAuthoring/, "New flow modal must receive controller-projected blank/sample template options");
 assert.match(app, /MobKitFlowController\.newFlowTemplateOptions\(templates, \{[\s\S]*blankTemplate: catalogs\.blankMobpack/, "New flow modal blank option must use the MobKit schema blank mobpack");
 assert(!/blankMobpackFromSchema[\s\S]{0,260}blank\.id \|\| ["']blank["']|blankMobpackFromSchema[\s\S]{0,260}blank\.name \|\| ["']Blank["']/.test(controller), "MobKit blank mobpack hydration must require schema-provided id/name instead of UI defaults");
@@ -658,6 +660,7 @@ assert(!/selectedTemplate|templateOptions\.find|templateOptions\.map|template ==
 assert(!/NEW FLOW · STEP \{modalState\.step\} OF 2|<label className="field__label">(?:Name|Trigger)<\/label>|placeholder=["'](?:docs-only|label · docs)["']|>Start from<\/div>|>← BACK<\/button>|>NEXT →<\/button>|>CREATE<\/button>/.test(newFlowModalBlock), "New flow modal must not compose titles, labels, placeholders, or action copy locally");
 assert(!/eyebrow:\s*`NEW FLOW · STEP|namePlaceholder:\s*["']docs-only["']|triggerPlaceholder:\s*["']label · docs["']|startFromLabel:\s*["']Start from["']|createLabel:\s*["']CREATE["']/.test(controller), "controller plane must not keep New Flow modal labels or placeholders as local literals");
 assert(!/templates\.map\(\(sample\)|sample\.validation\?\.ok|sample\.trigger \|\| sample\.source/.test(app), "app shell must not derive sample template labels, provenance, or validity tiers locally");
+assert(!/setCreating\(\{\s*step:\s*1[\s\S]{0,160}trigger:\s*["']label · small-fix["']|setCreating\(\{\s*step:\s*1[\s\S]{0,160}template:\s*["']blank["']/.test(app), "app shell must not hard-code new-flow initial trigger or template id");
 assert(!/MobKitFlowController\.(?:cloneDocument|buildBlankDocument)\(/.test(app), "app shell must not choose template clone vs blank mobpack construction directly");
 assert(!/function\s+buildBlankDocument|buildBlankDocument,/.test(controller), "controller must not expose a local non-deployable blank mobpack document builder");
 assert(!/mobkit\/blank-draft/.test(app + "\n" + controller), "blank mobpack creation must not invent MobKit provenance labels");

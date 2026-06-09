@@ -9264,6 +9264,16 @@
     return options;
   }
 
+  function newFlowInitialState({ blankTemplate = null } = {}) {
+    const hasBlankDocument = !!blankTemplate?.document;
+    return {
+      step: 1,
+      name: "",
+      trigger: hasBlankDocument ? String(blankTemplate.trigger || "") : "",
+      template: hasBlankDocument ? String(blankTemplate.id || "") : "",
+    };
+  }
+
   function newFlowModalState(state = {}, templateOptions = [], newFlowView = null) {
     const view = newFlowViewForState(newFlowView);
     const step = Number(state.step || 1);
@@ -9658,6 +9668,7 @@
     createFlowDraftFromSpec,
     flowDraftIdFromSpec,
     newFlowTemplateOptions,
+    newFlowInitialState,
     newFlowModalState,
     graphSignature,
     graphStructureSignature,

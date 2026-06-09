@@ -778,7 +778,7 @@ function App() {
           flowRegistryView={catalogs.flowRegistryView}
           onNew={() => {
             if (!canCreateAuthoring) return;
-            setCreating({ step: 1, name: "", trigger: "label · small-fix", template: "blank" });
+            setCreating(window.MobKitFlowController.newFlowInitialState({ blankTemplate: catalogs.blankMobpack }));
           }}
         />
       )}

@@ -618,6 +618,18 @@ assert.deepEqual(controller.newFlowTemplateOptions([
 ]);
 assert.equal(controller.newFlowTemplateOptions([], { canCreateBlank: true })[0].disabled, true);
 assert.equal(controller.newFlowTemplateOptions([], { canCreateBlank: true, blankTemplate: schemaBlankMobpack })[0].disabled, false);
+assert.deepEqual(controller.newFlowInitialState({ blankTemplate: schemaBlankMobpack }), {
+  step: 1,
+  name: "",
+  trigger: "label · small-fix",
+  template: "blank",
+});
+assert.deepEqual(controller.newFlowInitialState({ blankTemplate: { id: "missing-document", trigger: "ignored" } }), {
+  step: 1,
+  name: "",
+  trigger: "",
+  template: "",
+});
 assert.deepEqual(controller.newFlowModalState({
   step: 2,
   name: "New Mob",

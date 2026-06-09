@@ -9297,6 +9297,16 @@ window.MOBKIT_BOOT = {
     return options;
   }
 
+  function newFlowInitialState({ blankTemplate = null } = {}) {
+    const hasBlankDocument = !!blankTemplate?.document;
+    return {
+      step: 1,
+      name: "",
+      trigger: hasBlankDocument ? String(blankTemplate.trigger || "") : "",
+      template: hasBlankDocument ? String(blankTemplate.id || "") : "",
+    };
+  }
+
   function newFlowModalState(state = {}, templateOptions = [], newFlowView = null) {
     const view = newFlowViewForState(newFlowView);
     const step = Number(state.step || 1);
@@ -9691,6 +9701,7 @@ window.MOBKIT_BOOT = {
     createFlowDraftFromSpec,
     flowDraftIdFromSpec,
     newFlowTemplateOptions,
+    newFlowInitialState,
     newFlowModalState,
     graphSignature,
     graphStructureSignature,
@@ -13106,7 +13117,7 @@ function App() {
       flowRegistryView: catalogs.flowRegistryView,
       onNew: () => {
         if (!canCreateAuthoring) return;
-        setCreating({ step: 1, name: "", trigger: "label \xB7 small-fix", template: "blank" });
+        setCreating(window.MobKitFlowController.newFlowInitialState({ blankTemplate: catalogs.blankMobpack }));
       }
     }
   ), view === "editor" && /* @__PURE__ */ React.createElement(ModeToggle, { mode: editorMode, setMode: setEditorMode, railState: shellState }), view === "editor" && editorMode === "advanced" && /* @__PURE__ */ React.createElement("div", { className: "stage-area", onClick: (e) => {
