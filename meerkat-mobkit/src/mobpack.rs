@@ -1619,6 +1619,7 @@ pub fn mobpack_schema_response() -> Value {
     mob_definition["editor_settings_view"] = editor_settings_view;
     mob_definition["editor_launch_view"] = editor_launch_view;
     mob_definition["editor_input_step_draft"] = editor_input_step_draft_contract();
+    mob_definition["deploy_runtime_mode_compatibility"] = deploy_runtime_mode_compatibility();
     json!({
         "schema_version": MOBPACK_SCHEMA_VERSION,
         "media_type": MOBPACK_MEDIA_TYPE,
@@ -7792,7 +7793,7 @@ fn validate_deploy_runtime_modes(document: &MobpackDocument) -> Vec<MobpackDiagn
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("");
-        if runtime_mode == "autonomous_host" {
+        if let Some(reason) = deploy_runtime_mode_block_reason(deploy_surface, runtime_mode) {
             let label = member
                 .get("name")
                 .or_else(|| member.get("id"))
@@ -7800,15 +7801,61 @@ fn validate_deploy_runtime_modes(document: &MobpackDocument) -> Vec<MobpackDiagn
                 .unwrap_or("member");
             diagnostics.push(MobpackDiagnostic {
                 severity: "error".to_string(),
-                code: "cli_deploy_requires_turn_driven_profile".to_string(),
+                code: "deploy_surface_runtime_mode_unsupported".to_string(),
                 message: format!(
-                    "profile '{label}' uses autonomous_host, but rkat mob deploy requires turn_driven profiles on the cli surface"
+                    "profile '{label}' uses runtime mode '{runtime_mode}', but deploy surface '{deploy_surface}' does not support it: {reason}"
                 ),
                 path: Some(format!("members[{member_index}].runtimeMode")),
             });
         }
     }
     diagnostics
+}
+
+fn deploy_runtime_mode_compatibility() -> Value {
+    json!({
+        "cli": {
+            "allowed": ["turn_driven"],
+            "blocked": {
+                "autonomous_host": "RPC surface only; rkat mob deploy requires turn_driven profiles."
+            }
+        },
+        "rpc": {
+            "allowed": runtime_mode_values(),
+            "blocked": {}
+        }
+    })
+}
+
+fn deploy_runtime_mode_block_reason(surface: &str, runtime_mode: &str) -> Option<String> {
+    let runtime_mode = runtime_mode.trim();
+    if runtime_mode.is_empty() {
+        return None;
+    }
+    let compatibility = deploy_runtime_mode_compatibility();
+    let surface_contract = compatibility.get(surface)?;
+    let allowed = surface_contract
+        .get("allowed")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    if allowed.contains(runtime_mode) {
+        return None;
+    }
+    surface_contract
+        .get("blocked")
+        .and_then(Value::as_object)
+        .and_then(|blocked| blocked.get(runtime_mode))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| Some("runtime mode is not in this surface's allowed runtime_modes".to_string()))
 }
 
 fn validate_editor_schemas(schemas: &Value) -> Vec<MobpackDiagnostic> {
@@ -14257,8 +14304,10 @@ message = "stale"
 
         assert!(!result.ok);
         assert!(result.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == "cli_deploy_requires_turn_driven_profile"
+            diagnostic.code == "deploy_surface_runtime_mode_unsupported"
                 && diagnostic.path.as_deref() == Some("members[0].runtimeMode")
+                && diagnostic.message.contains("deploy surface 'cli'")
+                && diagnostic.message.contains("RPC surface only")
         }));
     }
 
@@ -16486,6 +16535,18 @@ model = "gpt-5.5"
         assert_eq!(defaults["graph_terminal_kind"], json!("success"));
         assert_eq!(
             mob_definition["runtime_modes"],
+            json!(runtime_mode_values())
+        );
+        assert_eq!(
+            mob_definition["deploy_runtime_mode_compatibility"]["cli"]["allowed"],
+            json!(["turn_driven"])
+        );
+        assert_eq!(
+            mob_definition["deploy_runtime_mode_compatibility"]["cli"]["blocked"]["autonomous_host"],
+            json!("RPC surface only; rkat mob deploy requires turn_driven profiles.")
+        );
+        assert_eq!(
+            mob_definition["deploy_runtime_mode_compatibility"]["rpc"]["allowed"],
             json!(runtime_mode_values())
         );
         assert_eq!(

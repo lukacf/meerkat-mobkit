@@ -2893,9 +2893,12 @@ window.MOBKIT_BOOT = {
       }
       if (runtimeModes.length) {
         const runtimeMode = String(member.runtimeMode || member.runtime_mode || "").trim();
-        if (runtimeMode && !runtimeModes.includes(runtimeMode)) write("runtimeMode", "");
-        if (surface === "cli" && runtimeMode === "autonomous_host" && runtimeModes.includes("turn_driven")) {
-          write("runtimeMode", "turn_driven");
+        const knownRuntimeMode = runtimeMode && runtimeModes.includes(runtimeMode);
+        if (runtimeMode && !knownRuntimeMode) write("runtimeMode", "");
+        if (knownRuntimeMode && !runtimeModeDeploySurfaceAllowed(contract, surface, runtimeMode)) {
+          const replacement = firstDeploySurfaceRuntimeMode(contract, surface);
+          if (replacement) write("runtimeMode", replacement);
+          else write("runtimeMode", "");
         }
       }
       if (profileBackends.length) {
@@ -8262,14 +8265,44 @@ window.MOBKIT_BOOT = {
       autonomous_host: "autonomous_host — RPC keep-alive member loop",
     };
     return modes.map((mode) => {
-      const cliBlocked = surface === "cli" && mode === "autonomous_host";
+      const surfaceBlocked = !runtimeModeDeploySurfaceAllowed(contract, surface, mode);
       return {
         value: mode,
         label: labels[mode] || mode,
-        disabled: cliBlocked,
-        reason: cliBlocked ? "RPC surface only; rkat mob deploy requires turn_driven profiles." : "",
+        disabled: surfaceBlocked,
+        reason: surfaceBlocked ? runtimeModeDeploySurfaceReason(contract, surface, mode) : "",
       };
     });
+  }
+
+  function deployRuntimeCompatibility(contract, surface) {
+    const compatibility = contract?.mob_definition?.deploy_runtime_mode_compatibility;
+    if (!compatibility || typeof compatibility !== "object") return null;
+    const surfaceKey = String(surface || contract?.deploy_settings?.defaults?.surface || "").trim();
+    const surfaceContract = compatibility[surfaceKey];
+    return surfaceContract && typeof surfaceContract === "object" ? surfaceContract : null;
+  }
+
+  function deploySurfaceRuntimeModes(contract, surface) {
+    return contractStringValues(deployRuntimeCompatibility(contract, surface)?.allowed);
+  }
+
+  function runtimeModeDeploySurfaceAllowed(contract, surface, mode) {
+    const value = String(mode || "").trim();
+    if (!value) return true;
+    const allowed = deploySurfaceRuntimeModes(contract, surface);
+    return allowed.length ? allowed.includes(value) : true;
+  }
+
+  function runtimeModeDeploySurfaceReason(contract, surface, mode) {
+    const value = String(mode || "").trim();
+    const blocked = deployRuntimeCompatibility(contract, surface)?.blocked;
+    const reason = blocked && typeof blocked === "object" ? blocked[value] : "";
+    return String(reason || "Unsupported by this MobKit deploy surface.");
+  }
+
+  function firstDeploySurfaceRuntimeMode(contract, surface) {
+    return deploySurfaceRuntimeModes(contract, surface)[0] || "";
   }
 
   function simpleContractOptions(values, currentValue, labels, contractName) {

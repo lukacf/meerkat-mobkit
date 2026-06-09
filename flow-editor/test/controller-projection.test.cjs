@@ -3823,6 +3823,14 @@ const reconciledContractMembers = controller.reconcileMembersWithContract([
   mob_definition: {
     defaults: { runtime_mode: "turn_driven" },
     runtime_modes: ["turn_driven", "autonomous_host"],
+    deploy_runtime_mode_compatibility: {
+      cli: {
+        allowed: ["turn_driven"],
+        blocked: {
+          autonomous_host: "RPC surface only; rkat mob deploy requires turn_driven profiles.",
+        },
+      },
+    },
     profile_binding: ["inline"],
     profile_backends: ["session", "external"],
   },
@@ -4129,6 +4137,18 @@ const agentContract = {
       },
     },
     runtime_modes: ["turn_driven", "autonomous_host"],
+    deploy_runtime_mode_compatibility: {
+      cli: {
+        allowed: ["turn_driven"],
+        blocked: {
+          autonomous_host: "RPC surface only; rkat mob deploy requires turn_driven profiles.",
+        },
+      },
+      rpc: {
+        allowed: ["turn_driven", "autonomous_host"],
+        blocked: {},
+      },
+    },
     profile_backends: ["session", "external"],
   },
 };
@@ -4146,6 +4166,13 @@ assert.deepEqual(
 assert.deepEqual(
   controller.runtimeModeOptions(agentContract, { surface: "rpc" }, "").map((option) => option.value),
   ["turn_driven", "autonomous_host"],
+);
+assert.deepEqual(
+  controller.runtimeModeOptions(agentContract, { surface: "cli" }, "").map((option) => [option.value, option.disabled, option.reason]),
+  [
+    ["turn_driven", false, ""],
+    ["autonomous_host", true, "RPC surface only; rkat mob deploy requires turn_driven profiles."],
+  ],
 );
 const tweaksState = controller.tweaksControlState({
   flows: [
