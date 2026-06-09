@@ -2086,6 +2086,15 @@
     };
   }
 
+  function memberSchemaChangeErrorState(result = null) {
+    const error = String(result?.error || "").trim();
+    return {
+      hasError: !!error,
+      text: error,
+      rawError: error,
+    };
+  }
+
   function schemaEditorControlState({ schema, members = [], schemaView = null } = {}) {
     const view = schemaViewForState(schemaView);
     const fields = Array.isArray(schema?.fields) ? schema.fields : [];
@@ -10607,6 +10616,7 @@
     agentDefinitionOptions,
     agentDefinitionAddControlState,
     agentDefinitionAddErrorState,
+    memberSchemaChangeErrorState,
     basicEditorViewState,
     schemaEditorControlState,
     memberPromptSkeleton,

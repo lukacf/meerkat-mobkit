@@ -184,6 +184,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
   const change = (patch) => studio.updateMember(member.id, patch);
   const [toolDraft, setToolDraft] = React.useState("");
   const [toolDraftError, setToolDraftError] = React.useState("");
+  const [schemaChangeResult, setSchemaChangeResult] = React.useState(null);
   const toolAccessState = window.MobKitFlowController.memberToolAccessState(member, toolCatalog, agentAccessView);
   const editorState = window.MobKitFlowController.agentEditorControlState({
     member,
@@ -194,6 +195,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     modelCatalog,
     agentDetailView,
   });
+  const schemaErrorState = window.MobKitFlowController.memberSchemaChangeErrorState(schemaChangeResult);
   const addToolAccess = (raw) => {
     const result = window.MobKitFlowController.memberToolAccessCascadePatch({
       memberId: member.id,
@@ -236,12 +238,14 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       instances: studio.instances,
       schemas: studio.schemas,
     }, rawSchema);
+    setSchemaChangeResult(result);
     if (!result.ok) return;
     if (studio.snap) studio.snap();
     studio.setMembers(result.members);
     if (result.flow !== flow && setFlow) setFlow(result.flow);
     if (result.instances !== studio.instances) studio.setInstances(result.instances);
     if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    setSchemaChangeResult(null);
   };
 
   return (
@@ -441,6 +445,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
               >
                 {editorState.schemaOptions.map(option => <option key={option.value || "none"} value={option.value}>{option.label}</option>)}
               </select>
+              {schemaErrorState.hasError && <div className="hint__line">{schemaErrorState.text}</div>}
               {editorState.hasOutputSchema ? (
                 <>
                   <ul className="schema-fields schema-fields--preview">

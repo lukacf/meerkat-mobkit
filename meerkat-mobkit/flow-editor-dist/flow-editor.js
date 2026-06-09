@@ -2119,6 +2119,15 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function memberSchemaChangeErrorState(result = null) {
+    const error = String(result?.error || "").trim();
+    return {
+      hasError: !!error,
+      text: error,
+      rawError: error,
+    };
+  }
+
   function schemaEditorControlState({ schema, members = [], schemaView = null } = {}) {
     const view = schemaViewForState(schemaView);
     const fields = Array.isArray(schema?.fields) ? schema.fields : [];
@@ -10640,6 +10649,7 @@ window.MOBKIT_BOOT = {
     agentDefinitionOptions,
     agentDefinitionAddControlState,
     agentDefinitionAddErrorState,
+    memberSchemaChangeErrorState,
     basicEditorViewState,
     schemaEditorControlState,
     memberPromptSkeleton,
@@ -12370,6 +12380,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
   const change = (patch) => studio.updateMember(member.id, patch);
   const [toolDraft, setToolDraft] = React.useState("");
   const [toolDraftError, setToolDraftError] = React.useState("");
+  const [schemaChangeResult, setSchemaChangeResult] = React.useState(null);
   const toolAccessState = window.MobKitFlowController.memberToolAccessState(member, toolCatalog, agentAccessView);
   const editorState = window.MobKitFlowController.agentEditorControlState({
     member,
@@ -12380,6 +12391,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     modelCatalog,
     agentDetailView
   });
+  const schemaErrorState = window.MobKitFlowController.memberSchemaChangeErrorState(schemaChangeResult);
   const addToolAccess = (raw) => {
     const result = window.MobKitFlowController.memberToolAccessCascadePatch({
       memberId: member.id,
@@ -12422,12 +12434,14 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       instances: studio.instances,
       schemas: studio.schemas
     }, rawSchema);
+    setSchemaChangeResult(result);
     if (!result.ok) return;
     if (studio.snap) studio.snap();
     studio.setMembers(result.members);
     if (result.flow !== flow && setFlow) setFlow(result.flow);
     if (result.instances !== studio.instances) studio.setInstances(result.instances);
     if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    setSchemaChangeResult(null);
   };
   return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, "AGENT \xB7 ", member.role), /* @__PURE__ */ React.createElement(
     "input",
@@ -12529,7 +12543,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       onChange: (e) => changeSchema(e.target.value)
     },
     editorState.schemaOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value || "none", value: option.value }, option.label))
-  ), editorState.hasOutputSchema ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("ul", { className: "schema-fields schema-fields--preview" }, editorState.schemaPreviewRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => setAgentSel(editorState.editSchemaSelection) }, editorState.editSchemaLabel)) : /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, editorState.emptySchemaHint)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement(SkillAccess, { studio, member, agentAccessView }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.usageTitle), editorState.placedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.emptyUsageHint), editorState.usageRows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.id, className: "usage-row usage-row--ro" }, /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.cellLabel), /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.laneLabel))))))));
+  ), schemaErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaErrorState.text), editorState.hasOutputSchema ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("ul", { className: "schema-fields schema-fields--preview" }, editorState.schemaPreviewRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => setAgentSel(editorState.editSchemaSelection) }, editorState.editSchemaLabel)) : /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, editorState.emptySchemaHint)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement(SkillAccess, { studio, member, agentAccessView }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.usageTitle), editorState.placedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.emptyUsageHint), editorState.usageRows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.id, className: "usage-row usage-row--ro" }, /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.cellLabel), /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.laneLabel))))))));
 }
 function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null }) {
   const change = (patch) => studio.updateSchema(schema.id, patch);

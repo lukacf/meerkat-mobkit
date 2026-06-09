@@ -4767,6 +4767,16 @@ assert.deepEqual(controller.agentDefinitionAddErrorState({ ok: true }, hydratedC
   text: "",
   rawError: "",
 });
+assert.deepEqual(controller.memberSchemaChangeErrorState({ ok: false, error: "unknown schema" }), {
+  hasError: true,
+  text: "unknown schema",
+  rawError: "unknown schema",
+});
+assert.deepEqual(controller.memberSchemaChangeErrorState({ ok: true }), {
+  hasError: false,
+  text: "",
+  rawError: "",
+});
 assert.deepEqual(controller.agentDefinitionAddControlState([{
   id: "reviewer",
   role: "reviewer",
