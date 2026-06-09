@@ -9778,12 +9778,56 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function sourceFileForPath(sourceDocument, path) {
+    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
+    const selectedPath = String(path || sourceDocument?.sourcePath || "mobkit/mob.toml").trim();
+    return files.find((file) => String(file?.path || "") === selectedPath)
+      || sourceDocument?.sourceFile
+      || files[0]
+      || null;
+  }
+
+  function sourceFileContent(file) {
+    return typeof file?.text === "string" ? file.text : "";
+  }
+
+  function sourceFileRows(sourceDocument, selectedPath) {
+    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
+    const activePath = String(selectedPath || sourceDocument?.sourcePath || "").trim();
+    return files
+      .filter((file) => String(file?.path || "").trim())
+      .map((file) => {
+        const path = String(file.path || "").trim();
+        const size = Number(file.size_bytes || 0);
+        const mediaType = String(file.media_type || "").trim();
+        return {
+          path,
+          label: path,
+          value: path,
+          selected: path === activePath,
+          className: `source-file-row${path === activePath ? " is-selected" : ""}`,
+          meta: [mediaType, size > 0 ? `${size}b` : ""].filter(Boolean).join(" · "),
+          file,
+        };
+      });
+  }
+
+  function highlightSourceFile(file) {
+    const source = sourceFileContent(file);
+    const path = String(file?.path || "");
+    const mediaType = String(file?.media_type || "");
+    if (/\.toml$/i.test(path) || mediaType === "text/toml") return highlightTomlSource(source);
+    return escapeHtml(source);
+  }
+
   function sourceEditorState(sourceDocument, options = {}) {
-    const source = sourceDocument?.mob_toml || "";
+    const selectedFile = sourceFileForPath(sourceDocument, options.sourcePath);
+    const source = selectedFile ? sourceFileContent(selectedFile) : String(sourceDocument?.mob_toml || "");
     const view = sourceViewForState(sourceDocument, options.sourceView);
+    const sourcePath = String(selectedFile?.path || sourceDocument?.sourcePath || "").trim();
     const sourceLabel = [
       sourceDocument?.source || "",
-      sourceDocument?.sourcePath || "",
+      sourcePath,
       sourceDocument?.filename || "",
       sourceDocument?.media_type || "",
     ].filter(Boolean).join(" · ");
@@ -9791,12 +9835,14 @@ window.MOBKIT_BOOT = {
     const bodyClass = options.compact ? "bld-toml__body" : "source-drawer__body";
     return {
       source,
-      sourceHtml: highlightTomlSource(source),
+      sourceHtml: selectedFile ? highlightSourceFile(selectedFile) : highlightTomlSource(source),
       drawerEyebrow: view.drawerEyebrow,
       inlineTitle: view.inlineTitle,
       sourceLabel,
       validationSource,
       bodyClass,
+      selectedPath: sourcePath,
+      fileRows: sourceFileRows(sourceDocument, sourcePath),
       showLoading: !!options.busy && !source,
       loadingText: view.loadingText,
       copyLabel: view.copyLabel,
@@ -12409,8 +12455,8 @@ function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, re
   const sheetState = window.MobKitFlowController.validationSheetState(results, { stage, deployView });
   return /* @__PURE__ */ React.createElement("div", { className: "validate" }, /* @__PURE__ */ React.createElement("div", { className: "validate__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, sheetState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, sheetState.title)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onPublish, disabled: sheetState.actionsDisabled }, sheetState.publishLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onDeployPlan, disabled: sheetState.actionsDisabled }, sheetState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onDeployRun, disabled: sheetState.actionsDisabled }, sheetState.deployLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, sheetState.closeLabel))), /* @__PURE__ */ React.createElement("div", { className: "validate__body" }, sheetState.rows.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "validate__row is-" + r.kind }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }, r.glyph), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "head" }, r.head), /* @__PURE__ */ React.createElement("div", { className: "sub" }, r.sub)), /* @__PURE__ */ React.createElement("span", { className: "meta" }, r.meta)))));
 }
-function SourceCodePanel({ state, busy = false, compact = false, sourceView = null }) {
-  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact, sourceView });
+function SourceCodePanel({ state, busy = false, compact = false, sourceView = null, sourcePath = "" }) {
+  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact, sourceView, sourcePath });
   if (editorState.showLoading) {
     return /* @__PURE__ */ React.createElement("pre", { className: editorState.bodyClass, role: "textbox", "aria-readonly": "true" }, editorState.loadingText);
   }
@@ -12425,14 +12471,22 @@ function SourceCodePanel({ state, busy = false, compact = false, sourceView = nu
   );
 }
 function SourceDrawer({ open, onClose, state, sourceView = null }) {
+  const [sourcePath, setSourcePath] = React.useState("");
+  React.useEffect(() => {
+    setSourcePath("");
+  }, [state]);
   if (!open) return null;
-  const editorState = window.MobKitFlowController.sourceEditorState(state, { sourceView });
-  return /* @__PURE__ */ React.createElement("div", { className: "source-drawer" }, /* @__PURE__ */ React.createElement("div", { className: "source-drawer__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.drawerEyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source) }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, sourceView }));
+  const editorState = window.MobKitFlowController.sourceEditorState(state, { sourceView, sourcePath });
+  return /* @__PURE__ */ React.createElement("div", { className: "source-drawer" }, /* @__PURE__ */ React.createElement("div", { className: "source-drawer__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.drawerEyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source) }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => setSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, sourceView, sourcePath }));
 }
 function InlineSourceEditor({ open, onClose, state, busy = false, surface = "basic", sourceView = null }) {
+  const [sourcePath, setSourcePath] = React.useState("");
+  React.useEffect(() => {
+    setSourcePath("");
+  }, [state]);
   if (!open) return null;
-  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true, sourceView });
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-toml bld-toml--" + surface, onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "bld-toml__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", null, editorState.inlineTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, busy, compact: true, sourceView }));
+  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true, sourceView, sourcePath });
+  return /* @__PURE__ */ React.createElement("div", { className: "bld-toml bld-toml--" + surface, onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "bld-toml__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", null, editorState.inlineTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list source-file-list--inline" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => setSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, busy, compact: true, sourceView, sourcePath }));
 }
 window.DrySim = DrySim;
 window.ValidateSheet = ValidateSheet;

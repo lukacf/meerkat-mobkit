@@ -900,6 +900,39 @@ a.node {
   border-bottom: 1px solid var(--ink);
   background: var(--surface);
 }
+.source-file-list {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--hair);
+  background: var(--paper);
+}
+.source-file-list--inline {
+  padding: 8px 10px;
+}
+.source-file-row {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 100%;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-xs);
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 4px 7px;
+}
+.source-file-row span {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.source-file-row em {
+  color: var(--subtle);
+  font-style: normal;
+}
+.source-file-row.is-selected {
+  border-color: var(--ink);
+  color: var(--ink);
+  background: var(--ink-soft);
+}
 .source-drawer__body {
   flex: 1; overflow: auto; padding: 14px 18px;
   font-family: var(--font-mono); font-size: 12px;

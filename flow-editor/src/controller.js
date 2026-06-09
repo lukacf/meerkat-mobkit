@@ -9745,12 +9745,56 @@
     };
   }
 
+  function sourceFileForPath(sourceDocument, path) {
+    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
+    const selectedPath = String(path || sourceDocument?.sourcePath || "mobkit/mob.toml").trim();
+    return files.find((file) => String(file?.path || "") === selectedPath)
+      || sourceDocument?.sourceFile
+      || files[0]
+      || null;
+  }
+
+  function sourceFileContent(file) {
+    return typeof file?.text === "string" ? file.text : "";
+  }
+
+  function sourceFileRows(sourceDocument, selectedPath) {
+    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
+    const activePath = String(selectedPath || sourceDocument?.sourcePath || "").trim();
+    return files
+      .filter((file) => String(file?.path || "").trim())
+      .map((file) => {
+        const path = String(file.path || "").trim();
+        const size = Number(file.size_bytes || 0);
+        const mediaType = String(file.media_type || "").trim();
+        return {
+          path,
+          label: path,
+          value: path,
+          selected: path === activePath,
+          className: `source-file-row${path === activePath ? " is-selected" : ""}`,
+          meta: [mediaType, size > 0 ? `${size}b` : ""].filter(Boolean).join(" · "),
+          file,
+        };
+      });
+  }
+
+  function highlightSourceFile(file) {
+    const source = sourceFileContent(file);
+    const path = String(file?.path || "");
+    const mediaType = String(file?.media_type || "");
+    if (/\.toml$/i.test(path) || mediaType === "text/toml") return highlightTomlSource(source);
+    return escapeHtml(source);
+  }
+
   function sourceEditorState(sourceDocument, options = {}) {
-    const source = sourceDocument?.mob_toml || "";
+    const selectedFile = sourceFileForPath(sourceDocument, options.sourcePath);
+    const source = selectedFile ? sourceFileContent(selectedFile) : String(sourceDocument?.mob_toml || "");
     const view = sourceViewForState(sourceDocument, options.sourceView);
+    const sourcePath = String(selectedFile?.path || sourceDocument?.sourcePath || "").trim();
     const sourceLabel = [
       sourceDocument?.source || "",
-      sourceDocument?.sourcePath || "",
+      sourcePath,
       sourceDocument?.filename || "",
       sourceDocument?.media_type || "",
     ].filter(Boolean).join(" · ");
@@ -9758,12 +9802,14 @@
     const bodyClass = options.compact ? "bld-toml__body" : "source-drawer__body";
     return {
       source,
-      sourceHtml: highlightTomlSource(source),
+      sourceHtml: selectedFile ? highlightSourceFile(selectedFile) : highlightTomlSource(source),
       drawerEyebrow: view.drawerEyebrow,
       inlineTitle: view.inlineTitle,
       sourceLabel,
       validationSource,
       bodyClass,
+      selectedPath: sourcePath,
+      fileRows: sourceFileRows(sourceDocument, sourcePath),
       showLoading: !!options.busy && !source,
       loadingText: view.loadingText,
       copyLabel: view.copyLabel,

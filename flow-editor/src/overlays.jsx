@@ -97,8 +97,8 @@ function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, re
   );
 }
 
-function SourceCodePanel({ state, busy = false, compact = false, sourceView = null }) {
-  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact, sourceView });
+function SourceCodePanel({ state, busy = false, compact = false, sourceView = null, sourcePath = "" }) {
+  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact, sourceView, sourcePath });
   if (editorState.showLoading) {
     return <pre className={editorState.bodyClass} role="textbox" aria-readonly="true">{editorState.loadingText}</pre>;
   }
@@ -113,8 +113,12 @@ function SourceCodePanel({ state, busy = false, compact = false, sourceView = nu
 }
 
 function SourceDrawer({ open, onClose, state, sourceView = null }) {
+  const [sourcePath, setSourcePath] = React.useState("");
+  React.useEffect(() => {
+    setSourcePath("");
+  }, [state]);
   if (!open) return null;
-  const editorState = window.MobKitFlowController.sourceEditorState(state, { sourceView });
+  const editorState = window.MobKitFlowController.sourceEditorState(state, { sourceView, sourcePath });
   return (
     <div className="source-drawer">
       <div className="source-drawer__head">
@@ -128,14 +132,28 @@ function SourceDrawer({ open, onClose, state, sourceView = null }) {
           <button className="btn btn--ghost btn--sm" onClick={onClose}>{editorState.closeLabel}</button>
         </div>
       </div>
-      <SourceCodePanel state={state} sourceView={sourceView} />
+      {editorState.fileRows.length > 1 && (
+        <div className="source-file-list">
+          {editorState.fileRows.map(row => (
+            <button key={row.path} className={row.className} onClick={() => setSourcePath(row.path)}>
+              <span>{row.label}</span>
+              <em>{row.meta}</em>
+            </button>
+          ))}
+        </div>
+      )}
+      <SourceCodePanel state={state} sourceView={sourceView} sourcePath={sourcePath} />
     </div>
   );
 }
 
 function InlineSourceEditor({ open, onClose, state, busy = false, surface = "basic", sourceView = null }) {
+  const [sourcePath, setSourcePath] = React.useState("");
+  React.useEffect(() => {
+    setSourcePath("");
+  }, [state]);
   if (!open) return null;
-  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true, sourceView });
+  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true, sourceView, sourcePath });
   return (
     <div className={"bld-toml bld-toml--" + surface} onMouseDown={e => e.stopPropagation()}>
       <div className="bld-toml__head">
@@ -149,7 +167,17 @@ function InlineSourceEditor({ open, onClose, state, busy = false, surface = "bas
           <button className="btn btn--ghost btn--sm" onClick={onClose}>{editorState.closeLabel}</button>
         </div>
       </div>
-      <SourceCodePanel state={state} busy={busy} compact sourceView={sourceView} />
+      {editorState.fileRows.length > 1 && (
+        <div className="source-file-list source-file-list--inline">
+          {editorState.fileRows.map(row => (
+            <button key={row.path} className={row.className} onClick={() => setSourcePath(row.path)}>
+              <span>{row.label}</span>
+              <em>{row.meta}</em>
+            </button>
+          ))}
+        </div>
+      )}
+      <SourceCodePanel state={state} busy={busy} compact sourceView={sourceView} sourcePath={sourcePath} />
     </div>
   );
 }

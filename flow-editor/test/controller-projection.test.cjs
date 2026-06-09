@@ -6154,6 +6154,13 @@ const sourceProjection = controller.sourceDocumentFromExport({
     content_base64: "unused",
     sha256: "2496e694a40dca7b5f535d6cb5969d867b6989aa9fa258535c048947073086fa",
     text: "[mob]\nid = \"source_proof\"\n",
+  }, {
+    path: "definition.json",
+    media_type: "application/json",
+    size_bytes: 31,
+    content_base64: "unused",
+    sha256: "json-sha",
+    text: "{\"mob\":{\"id\":\"source_proof\"}}\n",
   }],
   filename: "source-proof.mobpack",
   media_type: "application/vnd.mobkit.mobpack",
@@ -6177,7 +6184,7 @@ assert.equal(sourceProjection.sourceDocument.filename, "source-proof.mobpack");
 assert.equal(sourceProjection.sourceDocument.media_type, "application/vnd.mobkit.mobpack");
 assert.equal(sourceProjection.sourceDocument.sourcePath, "mobkit/mob.toml");
 assert.equal(sourceProjection.sourceDocument.sourceFile.media_type, "text/toml");
-assert.equal(sourceProjection.sourceDocument.sourceFiles.length, 1);
+assert.equal(sourceProjection.sourceDocument.sourceFiles.length, 2);
 assert.equal(sourceProjection.sourceDocument.sourceDigest, "2496e694a40dca7b5f535d6cb5969d867b6989aa9fa258535c048947073086fa");
 assert.equal(sourceProjection.sourceDocument.source, "mobkit/mobpacks/export");
 assert.deepEqual(sourceProjection.sourceDocument.sourceView, hydratedCatalogs.sourceView);
@@ -6192,12 +6199,44 @@ assert.deepEqual(controller.sourceEditorState(sourceProjection.sourceDocument), 
   sourceLabel: "mobkit/mobpacks/export · mobkit/mob.toml · source-proof.mobpack · application/vnd.mobkit.mobpack",
   validationSource: "",
   bodyClass: "source-drawer__body",
+  selectedPath: "mobkit/mob.toml",
+  fileRows: [
+    {
+      path: "mobkit/mob.toml",
+      label: "mobkit/mob.toml",
+      value: "mobkit/mob.toml",
+      selected: true,
+      className: "source-file-row is-selected",
+      meta: "text/toml · 26b",
+      file: sourceProjection.sourceDocument.sourceFiles[0],
+    },
+    {
+      path: "definition.json",
+      label: "definition.json",
+      value: "definition.json",
+      selected: false,
+      className: "source-file-row",
+      meta: "application/json · 31b",
+      file: sourceProjection.sourceDocument.sourceFiles[1],
+    },
+  ],
   showLoading: false,
   loadingText: "rendering mob.toml from mobkit/mobpacks/export...",
   copyLabel: "copy",
   closeLabel: "×",
   copyDisabled: false,
 });
+const selectedDefinitionSource = controller.sourceEditorState(sourceProjection.sourceDocument, {
+  sourcePath: "definition.json",
+});
+assert.equal(selectedDefinitionSource.source, "{\"mob\":{\"id\":\"source_proof\"}}\n");
+assert.equal(selectedDefinitionSource.sourceHtml, "{\"mob\":{\"id\":\"source_proof\"}}\n");
+assert.equal(selectedDefinitionSource.sourceLabel, "mobkit/mobpacks/export · definition.json · source-proof.mobpack · application/vnd.mobkit.mobpack");
+assert.equal(selectedDefinitionSource.selectedPath, "definition.json");
+assert.deepEqual(selectedDefinitionSource.fileRows.map((row) => [row.path, row.selected]), [
+  ["mobkit/mob.toml", false],
+  ["definition.json", true],
+]);
 const escapedSourceEditorState = controller.sourceEditorState({
   mob_toml: "# <unsafe & comment>\n[mob]\nid = \"safe\"\n",
 }, { sourceView: hydratedCatalogs.sourceView });
@@ -6213,6 +6252,8 @@ assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true,
   sourceLabel: "",
   validationSource: "",
   bodyClass: "bld-toml__body",
+  selectedPath: "",
+  fileRows: [],
   showLoading: true,
   loadingText: "rendering mob.toml from mobkit/mobpacks/export...",
   copyLabel: "copy",
@@ -6227,6 +6268,8 @@ assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true 
   sourceLabel: "",
   validationSource: "",
   bodyClass: "bld-toml__body",
+  selectedPath: "",
+  fileRows: [],
   showLoading: true,
   loadingText: "",
   copyLabel: "",
