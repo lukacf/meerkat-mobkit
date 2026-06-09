@@ -2713,7 +2713,7 @@ assert.notEqual(
   controller.graphSignature(graphSemanticBaseInstances, graphSemanticBaseEdges),
   controller.graphSignature(graphSemanticMovedInstances, graphSemanticBaseEdges),
 );
-assert.equal(
+assert.notEqual(
   controller.graphStructureSignature(graphSemanticBaseInstances, graphSemanticBaseEdges),
   controller.graphStructureSignature(graphSemanticMovedInstances, graphSemanticBaseEdges),
 );
@@ -2725,6 +2725,29 @@ assert.notEqual(
   controller.graphStructureSignature(graphSemanticBaseInstances, graphSemanticBaseEdges),
   controller.graphStructureSignature(graphSemanticBaseInstances, graphSemanticChangedEdges),
 );
+
+const graphOrderMembers = [{ id: "m_reviewer" }];
+const graphOrderPreviousFlow = { steps: [{ id: "input_1", type: "input", task: "", inputParams: [] }] };
+const graphOrderBase = controller.graphToFlow({
+  previousFlow: graphOrderPreviousFlow,
+  members: graphOrderMembers,
+  instances: [
+    { id: "draft", memberId: "m_reviewer", col: 0, row: 0 },
+    { id: "review", memberId: "m_reviewer", col: 1, row: 0 },
+  ],
+  edges: [],
+});
+const graphOrderMoved = controller.graphToFlow({
+  previousFlow: graphOrderPreviousFlow,
+  members: graphOrderMembers,
+  instances: [
+    { id: "draft", memberId: "m_reviewer", col: 2, row: 0 },
+    { id: "review", memberId: "m_reviewer", col: 1, row: 0 },
+  ],
+  edges: [],
+});
+assert.deepEqual(graphOrderBase.steps.map((step) => step.id), ["input_1", "draft", "review"]);
+assert.deepEqual(graphOrderMoved.steps.map((step) => step.id), ["input_1", "review", "draft"]);
 
 assert.equal(flow.steps.length, 2);
 assert.deepEqual(flow.steps[1], {

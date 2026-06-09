@@ -6957,7 +6957,7 @@ window.MOBKIT_BOOT = {
   }
 
   function graphStructureSignature(instances, edges) {
-    return graphSignatureFor(instances, edges, { includeLayout: false });
+    return graphSignatureFor(instances, edges, { includeLayout: true });
   }
 
   function graphSignatureFor(instances, edges, { includeLayout }) {
