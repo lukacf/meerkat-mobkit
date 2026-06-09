@@ -2099,6 +2099,10 @@
     return memberSchemaChangeErrorState(result);
   }
 
+  function schemaFieldAddErrorState(result = null) {
+    return memberSchemaChangeErrorState(result);
+  }
+
   function inputParamAddErrorState(result = null) {
     return memberSchemaChangeErrorState(result);
   }
@@ -10645,6 +10649,7 @@
     agentDefinitionAddErrorState,
     memberSchemaChangeErrorState,
     schemaDefinitionAddErrorState,
+    schemaFieldAddErrorState,
     inputParamAddErrorState,
     basicEditorViewState,
     schemaEditorControlState,

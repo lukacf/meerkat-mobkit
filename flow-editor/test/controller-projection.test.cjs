@@ -4933,6 +4933,19 @@ assert.deepEqual(controller.schemaFieldAddPatch({
   error: "MobKit schema is missing mob_definition.editor_schema_draft",
   patch: { fields: [{ id: "f1", name: "existing", type: "string" }] },
 });
+assert.deepEqual(controller.schemaFieldAddErrorState({
+  ok: false,
+  error: "MobKit schema is missing mob_definition.editor_schema_draft",
+}), {
+  hasError: true,
+  text: "MobKit schema is missing mob_definition.editor_schema_draft",
+  rawError: "MobKit schema is missing mob_definition.editor_schema_draft",
+});
+assert.deepEqual(controller.schemaFieldAddErrorState({ ok: true }), {
+  hasError: false,
+  text: "",
+  rawError: "",
+});
 assert.deepEqual(controller.schemaFieldUpdatePatch({
   fields: [{ id: "f1", name: "old", type: "string" }],
 }, "f1", { name: "new" }, schemaDraftContract), {

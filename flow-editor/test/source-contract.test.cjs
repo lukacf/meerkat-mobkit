@@ -1082,6 +1082,9 @@ assert(!/if \(!studio\.schemas\.some[\s\S]{0,180}studio\.addSchema/.test(agents)
 assert.match(agents, /MobKitFlowController\.schemaDefinitionAddPatch/, "Agent Editor must create schema drafts through the controller plane");
 assert.match(controller, /function schemaDefinitionAddPatch/, "controller plane must own schema draft creation");
 assert.match(agents, /MobKitFlowController\.schemaFieldAddPatch/, "Agent Editor must add schema fields through the controller plane");
+assert.match(controller, /function schemaFieldAddErrorState/, "controller plane must own rejected schema-field add display state");
+assert.match(schemaEditorBlock, /const \[fieldAddResult,\s*setFieldAddResult\] = React\.useState\(null\);[\s\S]*MobKitFlowController\.schemaFieldAddErrorState\(fieldAddResult\)/, "Schema editor must ask the controller plane to project rejected field-add errors");
+assert.match(schemaEditorBlock, /setFieldAddResult\(result\);[\s\S]*if \(result\.ok === false\) return;[\s\S]*setFieldAddResult\(null\);[\s\S]*fieldAddErrorState\.hasError[\s\S]*fieldAddErrorState\.text/, "Schema field add must render rejected controller results instead of silently dropping them");
 assert.match(controller, /mob_definition\?\.editor_schema_draft/, "schema draft creation must hydrate from the MobKit editor_schema_draft contract");
 assert.match(controller, /function schemaViewFromSchema/, "controller plane must hydrate Schema Editor view contract from MobKit schema");
 assert.match(controller, /mob_definition\?\.editor_schema_view/, "Schema Editor view copy must come from MobKit editor_schema_view");

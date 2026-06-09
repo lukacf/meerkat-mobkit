@@ -2132,6 +2132,10 @@ window.MOBKIT_BOOT = {
     return memberSchemaChangeErrorState(result);
   }
 
+  function schemaFieldAddErrorState(result = null) {
+    return memberSchemaChangeErrorState(result);
+  }
+
   function inputParamAddErrorState(result = null) {
     return memberSchemaChangeErrorState(result);
   }
@@ -10678,6 +10682,7 @@ window.MOBKIT_BOOT = {
     agentDefinitionAddErrorState,
     memberSchemaChangeErrorState,
     schemaDefinitionAddErrorState,
+    schemaFieldAddErrorState,
     inputParamAddErrorState,
     basicEditorViewState,
     schemaEditorControlState,
@@ -12581,11 +12586,14 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
 }
 function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null }) {
   const change = (patch) => studio.updateSchema(schema.id, patch);
+  const [fieldAddResult, setFieldAddResult] = React.useState(null);
+  React.useEffect(() => setFieldAddResult(null), [schema?.id]);
   const schemaState = window.MobKitFlowController.schemaEditorControlState({
     schema,
     members: studio.members,
     schemaView
   });
+  const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult);
   const renameField = (fieldId, oldName, newName) => {
     const result = window.MobKitFlowController.schemaFieldRenameCascadePatch({
       schema,
@@ -12638,7 +12646,9 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   };
   const addField = () => {
     const result = window.MobKitFlowController.schemaFieldAddPatch(schema, contract);
+    setFieldAddResult(result);
     if (result.ok === false) return;
+    setFieldAddResult(null);
     change(result.patch);
   };
   const deleteSchema = () => {
@@ -12697,7 +12707,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       placeholder: schemaState.descriptionPlaceholder,
       onChange: (e) => change(window.MobKitFlowController.schemaDescriptionPatch(e.target.value))
     }
-  )), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, schemaState.fieldsTitle), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: addField }, schemaState.addFieldLabel)), /* @__PURE__ */ React.createElement("div", { className: "schema-builder" }, /* @__PURE__ */ React.createElement("div", { className: "schema-builder__header" }, /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--name" }, schemaState.headerLabels.name), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--type" }, schemaState.headerLabels.type), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--req" }, schemaState.headerLabels.required), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--desc" }, schemaState.headerLabels.description), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--act" }, schemaState.headerLabels.action)), schemaState.fieldRows.map(({ field: f }) => /* @__PURE__ */ React.createElement(
+  )), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, schemaState.fieldsTitle), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: addField }, schemaState.addFieldLabel)), fieldAddErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, fieldAddErrorState.text), /* @__PURE__ */ React.createElement("div", { className: "schema-builder" }, /* @__PURE__ */ React.createElement("div", { className: "schema-builder__header" }, /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--name" }, schemaState.headerLabels.name), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--type" }, schemaState.headerLabels.type), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--req" }, schemaState.headerLabels.required), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--desc" }, schemaState.headerLabels.description), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--act" }, schemaState.headerLabels.action)), schemaState.fieldRows.map(({ field: f }) => /* @__PURE__ */ React.createElement(
     SchemaField,
     {
       key: f.id,

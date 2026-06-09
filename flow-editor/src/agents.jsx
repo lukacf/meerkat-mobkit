@@ -503,11 +503,14 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
 // ── Schema editor (visual, field-by-field) ──────────────────────────
 function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null }) {
   const change = (patch) => studio.updateSchema(schema.id, patch);
+  const [fieldAddResult, setFieldAddResult] = React.useState(null);
+  React.useEffect(() => setFieldAddResult(null), [schema?.id]);
   const schemaState = window.MobKitFlowController.schemaEditorControlState({
     schema,
     members: studio.members,
     schemaView,
   });
+  const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult);
 
   const renameField = (fieldId, oldName, newName) => {
     const result = window.MobKitFlowController.schemaFieldRenameCascadePatch({
@@ -564,7 +567,9 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
 
   const addField = () => {
     const result = window.MobKitFlowController.schemaFieldAddPatch(schema, contract);
+    setFieldAddResult(result);
     if (result.ok === false) return;
+    setFieldAddResult(null);
     change(result.patch);
   };
 
@@ -638,6 +643,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
             <div className="section__title">{schemaState.fieldsTitle}</div>
             <button className="btn btn--ghost btn--sm" onClick={addField}>{schemaState.addFieldLabel}</button>
           </div>
+          {fieldAddErrorState.hasError && <div className="hint__line">{fieldAddErrorState.text}</div>}
 
           <div className="schema-builder">
             <div className="schema-builder__header">
