@@ -1,12 +1,15 @@
 use axum::{
     Json, Router,
-    http::{StatusCode, header},
+    extract::State,
+    http::{HeaderMap, StatusCode, Uri, header},
     response::IntoResponse,
     routing::{get, post},
 };
 use serde_json::Value;
 
+use crate::http_sse::sse_request_authorized;
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
+use crate::runtime::RuntimeDecisionState;
 
 const FLOW_EDITOR_FRONTEND_INDEX_HTML: &str = include_str!("../flow-editor-dist/index.html");
 const FLOW_EDITOR_FRONTEND_VENDOR_JS: &str = include_str!("../flow-editor-dist/react-globals.js");
@@ -20,6 +23,10 @@ const FLOW_EDITOR_FRONTEND_APP_CSS: &str = include_str!("../flow-editor-dist/flo
 /// console RPC plane.
 pub fn flow_editor_router() -> Router {
     flow_editor_frontend_router::<()>().merge(flow_editor_rpc_router::<()>())
+}
+
+pub fn protected_flow_editor_router(decisions: RuntimeDecisionState) -> Router {
+    flow_editor_frontend_router::<()>().merge(flow_editor_rpc_router_with_decisions(decisions))
 }
 
 pub fn flow_editor_frontend_router<S>() -> Router<S>
@@ -48,6 +55,12 @@ where
     S: Clone + Send + Sync + 'static,
 {
     Router::new().route("/flow-editor/rpc", post(flow_editor_rpc_handler))
+}
+
+pub fn flow_editor_rpc_router_with_decisions(decisions: RuntimeDecisionState) -> Router {
+    Router::new()
+        .route("/flow-editor/rpc", post(protected_flow_editor_rpc_handler))
+        .with_state(FlowEditorRpcState { decisions })
 }
 
 pub async fn flow_editor_frontend_index_handler() -> impl IntoResponse {
@@ -110,11 +123,84 @@ pub async fn flow_editor_rpc_handler(Json(request): Json<Value>) -> impl IntoRes
             );
         }
     };
-    let response = handle_flow_editor_rpc(parsed_request);
+    let response = handle_flow_editor_rpc_with_auth(
+        parsed_request,
+        FlowEditorAuthReport {
+            authenticated: false,
+            mode: "none",
+            reason: "standalone Flow Editor authoring server",
+        },
+    );
+    (StatusCode::OK, Json::<Value>(response))
+}
+
+#[derive(Clone)]
+struct FlowEditorRpcState {
+    decisions: RuntimeDecisionState,
+}
+
+#[derive(Clone, Copy)]
+struct FlowEditorAuthReport {
+    authenticated: bool,
+    mode: &'static str,
+    reason: &'static str,
+}
+
+async fn protected_flow_editor_rpc_handler(
+    State(state): State<FlowEditorRpcState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Json(request): Json<Value>,
+) -> impl IntoResponse {
+    let parsed_request = match serde_json::from_value::<JsonRpcRequest>(request) {
+        Ok(req) => req,
+        Err(_) => {
+            return (
+                StatusCode::OK,
+                Json::<Value>(serde_json::json!({
+                    "jsonrpc": JSONRPC_VERSION,
+                    "id": Value::Null,
+                    "error": { "code": -32600, "message": "Invalid Request" }
+                })),
+            );
+        }
+    };
+    if !sse_request_authorized(Some(&state.decisions), &headers, &uri) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json::<Value>(serde_json::json!({
+                "jsonrpc": JSONRPC_VERSION,
+                "id": parsed_request.id.unwrap_or(Value::Null),
+                "error": {
+                    "code": -32600,
+                    "message": "unauthorized: flow editor rpc requires a valid auth token",
+                }
+            })),
+        );
+    }
+    let response = handle_flow_editor_rpc_with_auth(
+        parsed_request,
+        FlowEditorAuthReport {
+            authenticated: true,
+            mode: "reference_app",
+            reason: "reference app Flow Editor authoring server",
+        },
+    );
     (StatusCode::OK, Json::<Value>(response))
 }
 
 pub fn handle_flow_editor_rpc(request: JsonRpcRequest) -> Value {
+    handle_flow_editor_rpc_with_auth(
+        request,
+        FlowEditorAuthReport {
+            authenticated: false,
+            mode: "none",
+            reason: "standalone Flow Editor authoring server",
+        },
+    )
+}
+
+fn handle_flow_editor_rpc_with_auth(request: JsonRpcRequest, auth: FlowEditorAuthReport) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
     match request.method.as_str() {
         "mobkit/capabilities" => {
@@ -124,10 +210,10 @@ pub fn handle_flow_editor_rpc(request: JsonRpcRequest) -> Value {
                 response_id,
                 Some(serde_json::json!({
                     "methods": methods,
-                    "authenticated": false,
+                    "authenticated": auth.authenticated,
                     "auth": {
-                        "mode": "none",
-                        "reason": "standalone Flow Editor authoring server"
+                        "mode": auth.mode,
+                        "reason": auth.reason
                     },
                     "features": {
                         "flow_editor": true,

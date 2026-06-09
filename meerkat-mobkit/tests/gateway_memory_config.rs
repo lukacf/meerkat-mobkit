@@ -441,6 +441,13 @@ fn gateway_runtime_options_auth_config_protects_reference_http_routes() {
 
     let unauthenticated = http_get_status(base_url, "/console/experience", None);
     assert_eq!(unauthenticated, 401);
+    let unauthenticated_editor_rpc = http_post_status(
+        base_url,
+        "/flow-editor/rpc",
+        r#"{"jsonrpc":"2.0","id":"caps","method":"mobkit/capabilities","params":{}}"#,
+        None,
+    );
+    assert_eq!(unauthenticated_editor_rpc, 401);
 
     let token = hs256_jwt(
         "top-secret",
@@ -454,6 +461,13 @@ fn gateway_runtime_options_auth_config_protects_reference_http_routes() {
     );
     let authenticated = http_get_status(base_url, "/console/experience", Some(&token));
     assert_eq!(authenticated, 200);
+    let authenticated_editor_rpc = http_post_status(
+        base_url,
+        "/flow-editor/rpc",
+        r#"{"jsonrpc":"2.0","id":"caps","method":"mobkit/capabilities","params":{}}"#,
+        Some(&token),
+    );
+    assert_eq!(authenticated_editor_rpc, 200);
 }
 
 fn http_get_status(base_url: &str, path: &str, bearer: Option<&str>) -> u16 {
@@ -465,6 +479,30 @@ fn http_get_status(base_url: &str, path: &str, bearer: Option<&str>) -> u16 {
     write!(
         stream,
         "GET {path} HTTP/1.1\r\nHost: {addr}\r\n{auth}Connection: close\r\n\r\n"
+    )
+    .expect("write http request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read http response");
+    response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .expect("status code")
+}
+
+fn http_post_status(base_url: &str, path: &str, body: &str, bearer: Option<&str>) -> u16 {
+    let addr = base_url.trim_start_matches("http://");
+    let mut stream = std::net::TcpStream::connect(addr).expect("connect http");
+    let auth = bearer
+        .map(|token| format!("Authorization: Bearer {token}\r\n"))
+        .unwrap_or_default();
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
     )
     .expect("write http request");
     let mut response = String::new();

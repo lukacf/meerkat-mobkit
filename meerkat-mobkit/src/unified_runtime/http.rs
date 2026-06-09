@@ -12,7 +12,7 @@ use crate::console_aggregator::{
 use crate::http_console::{
     console_frontend_router, console_json_router_with_runtime_events_and_policy,
 };
-use crate::http_flow_editor::flow_editor_router;
+use crate::http_flow_editor::protected_flow_editor_router;
 use crate::http_sse::{
     agent_events_sse_router, mob_events_sse_router, mob_structural_events_sse_router,
 };
@@ -82,13 +82,14 @@ impl UnifiedRuntime {
         // must carry a valid bearer / auth_token. Pre-fix, only the
         // structural-events route gated; tier-2 (`/agents/{id}/events`)
         // and tier-3 (`/mob/events`) shipped unauthenticated.
+        let flow_editor_decisions = decisions.clone();
         let sse_decisions_a = decisions.clone();
         let sse_decisions_b = decisions.clone();
         let sse_decisions_c = decisions.clone();
         Router::new()
             .route("/healthz", get(|| async { "ok" }))
             .merge(self.build_console_frontend_router())
-            .merge(flow_editor_router())
+            .merge(protected_flow_editor_router(flow_editor_decisions))
             .merge(self.build_console_json_router_with_policy(decisions, visibility_policy))
             .merge(agent_events_sse_router(
                 Arc::new(move |agent_id| {
