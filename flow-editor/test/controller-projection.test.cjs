@@ -1352,6 +1352,21 @@ const hydratedContractAndCatalogFixture = {
       inspector_label_title: "LABEL",
       inspector_kind_title: "KIND",
       inspector_runtime_default_label: "runtime default",
+      instance_eyebrow: "INSTANCE",
+      instance_id_line_template: "{id} · cell ({col},{row})",
+      instance_member_role_template: "MEMBER · {role}",
+      instance_edit_member_label: "EDIT MEMBER →",
+      instance_model_label: "model",
+      instance_schema_label: "schema",
+      instance_tools_label: "tools",
+      instance_member_hint: "Editing the member updates every instance that uses it.",
+      instance_position_title: "POSITION",
+      instance_position_stage_label: "stage (col)",
+      instance_position_slot_label: "slot (row)",
+      instance_output_title_template: "MEMBER OUTPUT · {schema}",
+      instance_output_required_label: "req",
+      instance_output_hint: "Defined on the member.",
+      instance_output_open_member_label: "Open member →",
       gate_collection_title: "COLLECTION POLICY",
       gate_join_member_label: "Join member",
       gate_join_member_placeholder: "— select member —",
@@ -1914,6 +1929,21 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   inspectorLabelTitle: "LABEL",
   inspectorKindTitle: "KIND",
   inspectorRuntimeDefaultLabel: "runtime default",
+  instanceEyebrow: "INSTANCE",
+  instanceIdLineTemplate: "{id} · cell ({col},{row})",
+  instanceMemberRoleTemplate: "MEMBER · {role}",
+  instanceEditMemberLabel: "EDIT MEMBER →",
+  instanceModelLabel: "model",
+  instanceSchemaLabel: "schema",
+  instanceToolsLabel: "tools",
+  instanceMemberHint: "Editing the member updates every instance that uses it.",
+  instancePositionTitle: "POSITION",
+  instancePositionStageLabel: "stage (col)",
+  instancePositionSlotLabel: "slot (row)",
+  instanceOutputTitleTemplate: "MEMBER OUTPUT · {schema}",
+  instanceOutputRequiredLabel: "req",
+  instanceOutputHint: "Defined on the member.",
+  instanceOutputOpenMemberLabel: "Open member →",
   gateCollectionTitle: "COLLECTION POLICY",
   gateJoinMemberLabel: "Join member",
   gateJoinMemberPlaceholder: "— select member —",
@@ -1970,6 +2000,21 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   inspectorLabelTitle: "",
   inspectorKindTitle: "",
   inspectorRuntimeDefaultLabel: "",
+  instanceEyebrow: "",
+  instanceIdLineTemplate: "",
+  instanceMemberRoleTemplate: "",
+  instanceEditMemberLabel: "",
+  instanceModelLabel: "",
+  instanceSchemaLabel: "",
+  instanceToolsLabel: "",
+  instanceMemberHint: "",
+  instancePositionTitle: "",
+  instancePositionStageLabel: "",
+  instancePositionSlotLabel: "",
+  instanceOutputTitleTemplate: "",
+  instanceOutputRequiredLabel: "",
+  instanceOutputHint: "",
+  instanceOutputOpenMemberLabel: "",
   gateCollectionTitle: "",
   gateJoinMemberLabel: "",
   gateJoinMemberPlaceholder: "",
@@ -7133,6 +7178,7 @@ const instanceControlState = controller.graphInstanceControlState({
   instances: graphProjectionInstances,
   members: graphProjectionMembers,
   schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
+  graphView: hydratedCatalogs.graphView,
 });
 assert.equal(instanceControlState.member.id, "m_review");
 assert.equal(instanceControlState.memberId, "m_review");
@@ -7155,6 +7201,44 @@ assert.deepEqual(instanceControlState.positionRows, [
   { key: "stage", label: "stage (col)", value: 2 },
   { key: "slot", label: "slot (row)", value: 1 },
 ]);
+const reskinnedInstanceControlState = controller.graphInstanceControlState({
+  inst: graphProjectionInstances[1],
+  instances: graphProjectionInstances,
+  members: graphProjectionMembers,
+  schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
+  graphView: {
+    ...hydratedCatalogs.graphView,
+    instanceEyebrow: "PLACEMENT",
+    instanceIdLineTemplate: "{id} @ {col}/{row}",
+    instanceMemberRoleTemplate: "ROLE {role}",
+    instanceEditMemberLabel: "Open agent",
+    instanceModelLabel: "model id",
+    instanceSchemaLabel: "output",
+    instanceToolsLabel: "tool access",
+    instanceMemberHint: "Shared agent definition.",
+    instancePositionTitle: "GRID",
+    instancePositionStageLabel: "column",
+    instancePositionSlotLabel: "row",
+    instanceOutputTitleTemplate: "OUTPUT {schema}",
+    instanceOutputRequiredLabel: "required",
+    instanceOutputHint: "From schema.",
+    instanceOutputOpenMemberLabel: "Open agent",
+  },
+});
+assert.equal(reskinnedInstanceControlState.eyebrow, "PLACEMENT");
+assert.equal(reskinnedInstanceControlState.idLine, "n_review @ 2/1");
+assert.equal(reskinnedInstanceControlState.memberRoleLabel, "ROLE reviewer");
+assert.deepEqual(reskinnedInstanceControlState.memberSummaryRows.map((row) => [row.key, row.label]), [
+  ["model", "model id"],
+  ["schema", "output"],
+  ["tools", "tool access"],
+]);
+assert.equal(reskinnedInstanceControlState.memberHint, "Shared agent definition.");
+assert.equal(reskinnedInstanceControlState.positionTitle, "GRID");
+assert.deepEqual(reskinnedInstanceControlState.positionRows.map((row) => [row.key, row.label]), [
+  ["stage", "column"],
+  ["slot", "row"],
+]);
 assert.deepEqual(instanceControlState.forkSourceOptions.map((option) => [option.value, option.label]), [
   ["n_writer", "Writer · n_writer"],
 ]);
@@ -7164,6 +7248,7 @@ const writerInstanceState = controller.graphInstanceControlState({
   instances: graphProjectionInstances,
   members: graphProjectionMembers,
   schemas: [{ id: "Draft", fields: [{ id: "f1", name: "body", type: "string", required: true }] }],
+  graphView: hydratedCatalogs.graphView,
 });
 assert.equal(writerInstanceState.memberToolSummary, "4 · builtins, shell, git…");
 assert.equal(writerInstanceState.memberSchemaLabel, "Draft");

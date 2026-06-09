@@ -1702,6 +1702,21 @@
       inspectorLabelTitle: String(view.inspector_label_title || "").trim(),
       inspectorKindTitle: String(view.inspector_kind_title || "").trim(),
       inspectorRuntimeDefaultLabel: String(view.inspector_runtime_default_label || "").trim(),
+      instanceEyebrow: String(view.instance_eyebrow || "").trim(),
+      instanceIdLineTemplate: String(view.instance_id_line_template || "").trim(),
+      instanceMemberRoleTemplate: String(view.instance_member_role_template || "").trim(),
+      instanceEditMemberLabel: String(view.instance_edit_member_label || "").trim(),
+      instanceModelLabel: String(view.instance_model_label || "").trim(),
+      instanceSchemaLabel: String(view.instance_schema_label || "").trim(),
+      instanceToolsLabel: String(view.instance_tools_label || "").trim(),
+      instanceMemberHint: String(view.instance_member_hint || "").trim(),
+      instancePositionTitle: String(view.instance_position_title || "").trim(),
+      instancePositionStageLabel: String(view.instance_position_stage_label || "").trim(),
+      instancePositionSlotLabel: String(view.instance_position_slot_label || "").trim(),
+      instanceOutputTitleTemplate: String(view.instance_output_title_template || "").trim(),
+      instanceOutputRequiredLabel: String(view.instance_output_required_label || "").trim(),
+      instanceOutputHint: String(view.instance_output_hint || "").trim(),
+      instanceOutputOpenMemberLabel: String(view.instance_output_open_member_label || "").trim(),
       gateCollectionTitle: String(view.gate_collection_title || "").trim(),
       gateJoinMemberLabel: String(view.gate_join_member_label || "").trim(),
       gateJoinMemberPlaceholder: String(view.gate_join_member_placeholder || "").trim(),
@@ -1744,7 +1759,12 @@
       && Object.keys(out.frameKindLabels).length
       && Object.keys(out.edgeKindLabels).length
       && out.inspectorDeleteLabel && out.inspectorLabelTitle && out.inspectorKindTitle
-      && out.inspectorRuntimeDefaultLabel && out.gateCollectionTitle
+      && out.inspectorRuntimeDefaultLabel && out.instanceEyebrow && out.instanceIdLineTemplate
+      && out.instanceMemberRoleTemplate && out.instanceEditMemberLabel && out.instanceModelLabel
+      && out.instanceSchemaLabel && out.instanceToolsLabel && out.instanceMemberHint
+      && out.instancePositionTitle && out.instancePositionStageLabel && out.instancePositionSlotLabel
+      && out.instanceOutputTitleTemplate && out.instanceOutputRequiredLabel && out.instanceOutputHint
+      && out.instanceOutputOpenMemberLabel && out.gateCollectionTitle
       && out.gateJoinMemberLabel && out.gateJoinMemberPlaceholder && out.gateJoinMemberHint
       && out.gateDispatchTitle && out.gateDispatchHint && out.gateConditionsTitle
       && out.gateEmptyBranchHint && out.gateWiringTitle && out.gateIncomingLabel
@@ -1801,6 +1821,21 @@
       inspectorLabelTitle: String(view?.inspectorLabelTitle || ""),
       inspectorKindTitle: String(view?.inspectorKindTitle || ""),
       inspectorRuntimeDefaultLabel: String(view?.inspectorRuntimeDefaultLabel || ""),
+      instanceEyebrow: String(view?.instanceEyebrow || ""),
+      instanceIdLineTemplate: String(view?.instanceIdLineTemplate || ""),
+      instanceMemberRoleTemplate: String(view?.instanceMemberRoleTemplate || ""),
+      instanceEditMemberLabel: String(view?.instanceEditMemberLabel || ""),
+      instanceModelLabel: String(view?.instanceModelLabel || ""),
+      instanceSchemaLabel: String(view?.instanceSchemaLabel || ""),
+      instanceToolsLabel: String(view?.instanceToolsLabel || ""),
+      instanceMemberHint: String(view?.instanceMemberHint || ""),
+      instancePositionTitle: String(view?.instancePositionTitle || ""),
+      instancePositionStageLabel: String(view?.instancePositionStageLabel || ""),
+      instancePositionSlotLabel: String(view?.instancePositionSlotLabel || ""),
+      instanceOutputTitleTemplate: String(view?.instanceOutputTitleTemplate || ""),
+      instanceOutputRequiredLabel: String(view?.instanceOutputRequiredLabel || ""),
+      instanceOutputHint: String(view?.instanceOutputHint || ""),
+      instanceOutputOpenMemberLabel: String(view?.instanceOutputOpenMemberLabel || ""),
       gateCollectionTitle: String(view?.gateCollectionTitle || ""),
       gateJoinMemberLabel: String(view?.gateJoinMemberLabel || ""),
       gateJoinMemberPlaceholder: String(view?.gateJoinMemberPlaceholder || ""),
@@ -5358,7 +5393,8 @@
     };
   }
 
-  function graphInstanceControlState({ inst, instances = [], members = [], schemas = [] } = {}) {
+  function graphInstanceControlState({ inst, instances = [], members = [], schemas = [], graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
     const sourceMembers = Array.isArray(members) ? members : [];
     const sourceInstances = Array.isArray(instances) ? instances : [];
     const member = inst?.memberId
@@ -5376,7 +5412,7 @@
       name: field.name,
       type: field.type,
       required: !!field.required,
-      requiredLabel: field.required ? "req" : "",
+      requiredLabel: field.required ? view.instanceOutputRequiredLabel : "",
     }));
     const tools = normalizeStringList(member?.tools);
     const memberToolSummary = tools.length
@@ -5398,36 +5434,44 @@
     return {
       member,
       memberId: member?.id || "",
-      eyebrow: "INSTANCE",
-      title: member ? member.name : "—",
-      idLine: `${id} · cell (${col},${row})`,
-      deleteLabel: "DELETE",
-      memberTitle: member ? member.name : "—",
-      memberRoleLabel: member ? `MEMBER · ${member.role}` : "",
-      editMemberLabel: "EDIT MEMBER →",
+      eyebrow: view.instanceEyebrow,
+      title: member ? member.name : view.edgeRowMissingValue,
+      idLine: graphTemplateText(view.instanceIdLineTemplate, { id, col, row }),
+      deleteLabel: view.inspectorDeleteLabel,
+      memberTitle: member ? member.name : view.edgeRowMissingValue,
+      memberRoleLabel: member ? graphTemplateText(view.instanceMemberRoleTemplate, { role: member.role || "" }) : "",
+      editMemberLabel: view.instanceEditMemberLabel,
       memberName: member?.name || "",
-      memberSchemaLabel: member?.schema || "—",
+      memberSchemaLabel: member?.schema || view.edgeRowMissingValue,
       memberToolSummary,
       memberSummaryRows: [
-        { key: "model", label: "model", value: member?.model || "—" },
-        { key: "schema", label: "schema", value: member?.schema || "—" },
-        { key: "tools", label: "tools", value: memberToolSummary },
+        { key: "model", label: view.instanceModelLabel, value: member?.model || view.edgeRowMissingValue },
+        { key: "schema", label: view.instanceSchemaLabel, value: member?.schema || view.edgeRowMissingValue },
+        { key: "tools", label: view.instanceToolsLabel, value: memberToolSummary },
       ],
-      memberHint: "Editing the member updates every instance that uses it.",
-      positionTitle: "POSITION",
+      memberHint: view.instanceMemberHint,
+      positionTitle: view.instancePositionTitle,
       positionRows: [
-        { key: "stage", label: "stage (col)", value: col },
-        { key: "slot", label: "slot (row)", value: row },
+        { key: "stage", label: view.instancePositionStageLabel, value: col },
+        { key: "slot", label: view.instancePositionSlotLabel, value: row },
       ],
       outputSchema,
       outputFields,
-      outputTitle: `MEMBER OUTPUT · ${member?.schema || "—"}`,
+      outputTitle: graphTemplateText(view.instanceOutputTitleTemplate, { schema: member?.schema || view.edgeRowMissingValue }),
       outputFieldRows,
-      outputHint: "Defined on the member.",
-      outputOpenMemberLabel: "Open member →",
+      outputHint: view.instanceOutputHint,
+      outputOpenMemberLabel: view.instanceOutputOpenMemberLabel,
       forkSourceOptions,
       firstForkSourceId: forkSourceOptions[0]?.value || "",
     };
+  }
+
+  function graphTemplateText(template, values = {}) {
+    let out = String(template || "");
+    for (const [key, value] of Object.entries(values || {})) {
+      out = out.replaceAll(`{${key}}`, String(value ?? ""));
+    }
+    return out;
   }
 
   function graphToolTagClass(toolId) {

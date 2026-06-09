@@ -247,6 +247,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
     instances: studio.instances,
     members: studio.members,
     schemas: studio.schemas,
+    graphView,
   });
   const member = instanceState.member;
 

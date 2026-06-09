@@ -850,6 +850,22 @@ pub fn mobpack_schema_response() -> Value {
     editor_graph_view["inspector_label_title"] = json!("LABEL");
     editor_graph_view["inspector_kind_title"] = json!("KIND");
     editor_graph_view["inspector_runtime_default_label"] = json!("runtime default");
+    editor_graph_view["instance_eyebrow"] = json!("INSTANCE");
+    editor_graph_view["instance_id_line_template"] = json!("{id} · cell ({col},{row})");
+    editor_graph_view["instance_member_role_template"] = json!("MEMBER · {role}");
+    editor_graph_view["instance_edit_member_label"] = json!("EDIT MEMBER →");
+    editor_graph_view["instance_model_label"] = json!("model");
+    editor_graph_view["instance_schema_label"] = json!("schema");
+    editor_graph_view["instance_tools_label"] = json!("tools");
+    editor_graph_view["instance_member_hint"] =
+        json!("Editing the member updates every instance that uses it.");
+    editor_graph_view["instance_position_title"] = json!("POSITION");
+    editor_graph_view["instance_position_stage_label"] = json!("stage (col)");
+    editor_graph_view["instance_position_slot_label"] = json!("slot (row)");
+    editor_graph_view["instance_output_title_template"] = json!("MEMBER OUTPUT · {schema}");
+    editor_graph_view["instance_output_required_label"] = json!("req");
+    editor_graph_view["instance_output_hint"] = json!("Defined on the member.");
+    editor_graph_view["instance_output_open_member_label"] = json!("Open member →");
     editor_graph_view["gate_collection_title"] = json!("COLLECTION POLICY");
     editor_graph_view["gate_join_member_label"] = json!("Join member");
     editor_graph_view["gate_join_member_placeholder"] = json!("— select member —");
@@ -16690,6 +16706,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_template_view"]["quick_start_rows"][0][1]["text"],
             json!("library member")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["instance_eyebrow"],
+            json!("INSTANCE")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["instance_id_line_template"],
+            json!("{id} · cell ({col},{row})")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["instance_output_title_template"],
+            json!("MEMBER OUTPUT · {schema}")
         );
     }
 
