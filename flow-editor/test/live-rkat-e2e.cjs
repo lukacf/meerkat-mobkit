@@ -1676,14 +1676,18 @@ async function validateGraphOperations(catalogs) {
     document: updated.document,
     operation: {
       type: "connect_graph_nodes",
-      edge: { id: "e_plan_done", from: "n_plan", to: "n_done", kind: "next", label: "" },
+      from_id: "n_plan",
+      to_id: "n_done",
     },
   });
+  if (connected.selection?.id !== "e_n_plan_n_done" || connected.document.edges[0]?.kind !== "next") {
+    throw new Error(`semantic graph connect operation did not draft expected edge: ${JSON.stringify(connected.document.edges)}`);
+  }
   const edgeUpdated = await rpc("mobkit/mobpacks/apply_operation", {
     document: connected.document,
     operation: {
       type: "update_graph_edge",
-      edge_id: "e_plan_done",
+      edge_id: "e_n_plan_n_done",
       patch: { label: "done" },
     },
   });
@@ -1694,7 +1698,7 @@ async function validateGraphOperations(catalogs) {
     document: edgeUpdated.document,
     operation: {
       type: "delete_graph_edge",
-      edge_id: "e_plan_done",
+      edge_id: "e_n_plan_n_done",
     },
   });
   if (edgeDeleted.document.edges.length !== 0) {
@@ -1704,7 +1708,8 @@ async function validateGraphOperations(catalogs) {
     document: edgeDeleted.document,
     operation: {
       type: "connect_graph_nodes",
-      edge: { id: "e_done_plan", from: "n_done", to: "n_plan", kind: "next", label: "" },
+      from_id: "n_done",
+      to_id: "n_plan",
     },
   });
   const deleted = await rpc("mobkit/mobpacks/apply_operation", {

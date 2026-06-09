@@ -1102,7 +1102,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "connect_graph_nodes",
             "plane": "graph",
             "authority": "mobkit",
-            "requires": ["edge"],
+            "requires": ["edge_or_endpoints"],
             "mutates": ["document.edges", "document.flow"],
             "projection_document_supported": true
         },
@@ -5922,6 +5922,26 @@ fn graph_edge_ids(edges: &[Value]) -> BTreeSet<String> {
         .collect()
 }
 
+fn unique_graph_edge_id(from_id: &str, to_id: &str, edges: &[Value]) -> String {
+    let base = format!(
+        "e_{}_{}",
+        sanitize_identifier(from_id),
+        sanitize_identifier(to_id)
+    );
+    let used = graph_edge_ids(edges);
+    if !used.contains(&base) {
+        return base;
+    }
+    let mut index = 2;
+    loop {
+        let id = format!("{base}_{index}");
+        if !used.contains(&id) {
+            return id;
+        }
+        index += 1;
+    }
+}
+
 fn unique_graph_instance_id(prefix: &str, instances: &[Value]) -> String {
     let stem = sanitize_identifier(prefix);
     let base = if stem.starts_with("i_") {
@@ -6225,6 +6245,93 @@ fn graph_quick_insert_from_pick(
         ]
     };
     Ok((instances_out, edges_out, gate_id))
+}
+
+fn graph_endpoint_id(
+    operation: &serde_json::Map<String, Value>,
+    snake: &str,
+    camel: &str,
+    legacy: &str,
+) -> Result<String, String> {
+    operation
+        .get(snake)
+        .or_else(|| operation.get(camel))
+        .or_else(|| operation.get(legacy))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("connect_graph_nodes requires {snake}"))
+}
+
+fn graph_connection_edge_from_endpoints(
+    operation: &serde_json::Map<String, Value>,
+    instances: &[Value],
+    edges: &[Value],
+) -> Result<Value, String> {
+    let from_id = graph_endpoint_id(operation, "from_id", "fromId", "from")?;
+    let to_id = graph_endpoint_id(operation, "to_id", "toId", "to")?;
+    if from_id == to_id {
+        return Err("edge endpoints must be different graph nodes".to_string());
+    }
+    let from = instances
+        .iter()
+        .find(|instance| instance.get("id").and_then(Value::as_str) == Some(from_id.as_str()))
+        .ok_or_else(|| "edge endpoints must reference existing graph nodes".to_string())?;
+    let to = instances
+        .iter()
+        .find(|instance| instance.get("id").and_then(Value::as_str) == Some(to_id.as_str()))
+        .ok_or_else(|| "edge endpoints must reference existing graph nodes".to_string())?;
+    let default_kind = mob_definition_default("graph_edge_kind");
+    let fanout_kind = mob_definition_default("graph_fanout_edge_kind");
+    let condition_kind = mob_definition_default("graph_condition_edge_kind");
+    let mut kind = default_kind;
+    let mut label = String::new();
+    if to
+        .get("isTerminal")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        label = format!(
+            "{}{}",
+            graph_draft_string("terminal_edge_label_prefix"),
+            to.get("label")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_lowercase()
+        );
+    } else if from.get("isGate").and_then(Value::as_bool).unwrap_or(false)
+        && from.get("gateKind").and_then(Value::as_str) == Some("fork")
+    {
+        kind = fanout_kind;
+    } else if to.get("isGate").and_then(Value::as_bool).unwrap_or(false)
+        && to.get("gateKind").and_then(Value::as_str) == Some("join")
+    {
+        // Keep the default next edge kind.
+    } else if to.get("col").and_then(Value::as_i64) == from.get("col").and_then(Value::as_i64) {
+        kind = fanout_kind;
+        label = graph_draft_string("parallel_edge_label");
+    } else if to.get("col").and_then(Value::as_i64).unwrap_or(0)
+        < from.get("col").and_then(Value::as_i64).unwrap_or(0)
+    {
+        kind = condition_kind;
+        label = graph_draft_string("rework_edge_label");
+    }
+    Ok(json!({
+        "id": operation
+            .get("edge_id")
+            .or_else(|| operation.get("edgeId"))
+            .or_else(|| operation.get("id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| unique_graph_edge_id(&from_id, &to_id, edges)),
+        "from": from_id,
+        "to": to_id,
+        "kind": kind,
+        "label": label,
+    }))
 }
 
 fn apply_graph_operation_sections(
@@ -6561,19 +6668,26 @@ fn apply_connect_graph_nodes_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some() && operation.get("edge").is_none() {
+    if operation.get("document").is_some()
+        && operation.get("edge").is_none()
+        && operation
+            .get("from_id")
+            .or_else(|| operation.get("fromId"))
+            .or_else(|| operation.get("from"))
+            .is_none()
+    {
         return apply_projected_authoring_document_operation(document, operation);
     }
-    let edge = operation
-        .get("edge")
-        .cloned()
-        .ok_or_else(|| "connect_graph_nodes requires edge object".to_string())?;
     let instances = document
         .instances
         .as_array()
         .cloned()
         .unwrap_or_else(Vec::new);
     let mut edges = document.edges.as_array().cloned().unwrap_or_else(Vec::new);
+    let edge =
+        operation.get("edge").cloned().map(Ok).unwrap_or_else(|| {
+            graph_connection_edge_from_endpoints(operation, &instances, &edges)
+        })?;
     let id = validate_graph_edge(&edge, &edges, &instances, None)?;
     edges.push(edge);
     document.edges = Value::Array(edges);
@@ -23201,11 +23315,13 @@ model = "gpt-5.5"
             "document": updated["document"],
             "operation": {
                 "type": "connect_graph_nodes",
-                "edge": { "id": "e_plan_done", "from": "n_plan", "to": "n_done", "kind": "next", "label": "" }
+                "from_id": "n_plan",
+                "to_id": "n_done"
             }
         }))
         .expect("connect graph nodes");
         assert_eq!(connected["selection"]["kind"], json!("edge"));
+        assert_eq!(connected["selection"]["id"], json!("e_n_plan_n_done"));
         assert_eq!(
             connected["document"]["edges"]
                 .as_array()
@@ -23213,12 +23329,13 @@ model = "gpt-5.5"
                 .len(),
             1
         );
+        assert_eq!(connected["document"]["edges"][0]["kind"], json!("next"));
 
         let edge_updated = apply_mobpack_authoring_operation(&json!({
             "document": connected["document"],
             "operation": {
                 "type": "update_graph_edge",
-                "edge_id": "e_plan_done",
+                "edge_id": "e_n_plan_n_done",
                 "patch": { "label": "done", "cond": { "var": "steps.n_done.status", "op": "==", "val": "ok" } }
             }
         }))
@@ -23229,7 +23346,7 @@ model = "gpt-5.5"
             "document": edge_updated["document"],
             "operation": {
                 "type": "delete_graph_edge",
-                "edge_id": "e_plan_done"
+                "edge_id": "e_n_plan_n_done"
             }
         }))
         .expect("delete graph edge");
@@ -23245,7 +23362,8 @@ model = "gpt-5.5"
             "document": edge_deleted["document"],
             "operation": {
                 "type": "connect_graph_nodes",
-                "edge": { "id": "e_done_plan", "from": "n_done", "to": "n_plan", "kind": "cond", "cond": { "var": "steps.n_done.status" } }
+                "from_id": "n_done",
+                "to_id": "n_plan"
             }
         }))
         .expect("reconnect graph nodes");

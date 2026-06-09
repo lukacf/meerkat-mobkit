@@ -218,11 +218,14 @@ assert.match(controller, /function graphQuickInsertProjection/, "controller proj
 assert.match(graph, /MobKitFlowController\.studioUpdateEdgePatch/, "Graph state hook must ask controller plane to update edges");
 assert.match(graph, /MobKitFlowController\.studioDeleteEdgePatch/, "Graph state hook must ask controller plane to delete edges");
 assert.match(app, /operationType:\s*"connect_graph_nodes"[\s\S]*operation:\s*\{\s*edge:\s*next\.edge\s*\}/, "Graph edge adds must send edge payloads to MobKit");
-assert.match(graph, /operationType:\s*"connect_graph_nodes"[\s\S]*operation:\s*\{\s*edge:\s*result\.edge\s*\}/, "Graph port connections must send edge payloads to MobKit");
+assert.match(graph, /operationType:\s*"connect_graph_nodes"[\s\S]*operation:\s*\{\s*from_id:\s*conn\.fromId,\s*to_id:\s*closest\.dataset\.instId\s*\}/, "Graph port connections must send semantic endpoint payloads to MobKit");
+assert(!/graphConnectionAddPatch\(\{[\s\S]*fromId:\s*conn\.fromId|operation:\s*\{\s*edge:\s*result\.edge\s*\}/.test(graph), "Graph port connections must not draft edge objects locally");
 assert.match(app, /operationType:\s*"update_graph_edge"[\s\S]*operation:\s*\{\s*edge_id:\s*id,\s*patch\s*\}/, "Graph edge updates must send edge_id and patch to MobKit");
 assert.match(app, /operationType:\s*"delete_graph_edge"[\s\S]*operation:\s*\{\s*edge_id:\s*id\s*\}/, "Graph edge deletes must send edge_id to MobKit");
 assert.match(mobpackRust, /"type":\s*"insert_graph_node"[\s\S]*"authority":\s*"mobkit"[\s\S]*"requires":\s*\["pick_or_instance"\]/, "MobKit operation catalog must advertise graph node insert as semantic MobKit-owned operation");
 assert.match(mobpackRust, /fn graph_quick_insert_from_pick[\s\S]*memberInstance[\s\S]*gateKind[\s\S]*editor_graph_draft/, "MobKit apply_operation must own Graph quick-insert member and control-shape draft creation");
+assert.match(mobpackRust, /"type":\s*"connect_graph_nodes"[\s\S]*"authority":\s*"mobkit"[\s\S]*"requires":\s*\["edge_or_endpoints"\]/, "MobKit operation catalog must advertise graph edge connect as semantic MobKit-owned operation");
+assert.match(mobpackRust, /fn graph_connection_edge_from_endpoints[\s\S]*terminal_edge_label_prefix[\s\S]*rework_edge_label/, "MobKit apply_operation must own graph connection edge id, kind, and label drafts");
 assert.match(mobpackRust, /"move_graph_node"\s*=>\s*apply_move_graph_node_operation/, "MobKit apply_operation must own graph move mutations");
 assert.match(mobpackRust, /fn apply_operation_mutates_graph_without_projected_document/, "MobKit tests must prove graph operations mutate without operation.document");
 assert.match(controller, /function studioDeleteEdgePatch[\s\S]*selection:\s*\{\s*kind:\s*null,\s*id:\s*null\s*\}/, "controller plane must own graph edge-delete selection clearing");
@@ -307,9 +310,9 @@ assert(!/setMembers\(ms => ms\.map\(m => m\.schema === id \?/.test(graph), "Grap
 assert.match(app, /MobKitFlowController\.reconcileAuthoringForMembers/, "app shell must keep Basic and Graph step tool scopes synchronized through aggregate member reconciliation");
 assert.match(controller, /function reconcileFlowStepToolScopes/, "controller plane must own Basic step tool-scope reconciliation");
 assert.match(controller, /function reconcileGraphStepToolScopes/, "controller plane must own Graph step tool-scope reconciliation");
-assert.match(graph, /MobKitFlowController\.graphConnectionAddPatch/, "Graph editor must ask the controller plane to complete semantic connection adds");
-assert.match(controller, /function graphConnectionAddPatch/, "controller plane must own graph connection endpoint lookup, semantic draft, and edge add validation");
-assert.match(controller, /function graphConnectionEdgeDraft/, "controller plane must own semantic edge creation for graph connections");
+assert(!/MobKitFlowController\.graphConnectionAddPatch/.test(graph), "Graph editor must not complete semantic connection adds in the browser controller");
+assert.match(controller, /function graphConnectionAddPatch/, "legacy controller projection tests may keep graph connection draft coverage until fully deleted");
+assert.match(controller, /function graphConnectionEdgeDraft/, "legacy controller projection tests may keep graph edge draft coverage until fully deleted");
 assert(!/if \(conn\)[\s\S]{0,900}state\.instances\.find|if \(conn\)[\s\S]{0,900}state\.addEdge|const\s+fromI\s*=|const\s+toI\s*=/.test(graph), "Graph editor must not resolve graph connection endpoints or add connection edges locally");
 assert.match(builderStepPickerBlock, /MobKitFlowController\.basicStepPickerState/, "Basic add-step picker must render controller-projected palette rows");
 assert.match(builderStepPickerBlock, /basicStepPickerState\(\{[\s\S]*basicView/, "Basic add-step picker must pass schema-backed Basic view into controller projection");

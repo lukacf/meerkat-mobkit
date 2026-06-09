@@ -323,22 +323,14 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const t = document.elementFromPoint(e.clientX, e.clientY);
         const closest = t?.closest?.("[data-inst-id]");
         if (closest && closest.dataset.instId !== conn.fromId) {
-          const result = window.MobKitFlowController.graphConnectionAddPatch({
-            fromId: conn.fromId,
-            toId: closest.dataset.instId,
-            instances: state.instances,
-            edges: state.edges,
-            contract,
-          });
-          if (result.ok && result.edge) {
-            if (applyAuthoringReplacement) {
-              applyAuthoringReplacement({
-                operationType: "connect_graph_nodes",
-                operation: { edge: result.edge },
-                studio: { edges: result.edges },
-                selection: { kind: "edge", id: result.selectId },
-              }).then(() => selectEdge(result.selectId));
-            }
+          if (applyAuthoringReplacement) {
+            applyAuthoringReplacement({
+              operationType: "connect_graph_nodes",
+              operation: { from_id: conn.fromId, to_id: closest.dataset.instId },
+            }).then((result) => {
+              const id = result?.selection?.id;
+              if (id) selectEdge(id);
+            });
           }
         }
         setConn(null); setHoverInId(null);
