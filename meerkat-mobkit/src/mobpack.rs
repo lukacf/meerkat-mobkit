@@ -970,6 +970,9 @@ pub fn mobpack_schema_response() -> Value {
         "skill_inline_create_hint": "Creates an inline skill definition in this mobpack.",
         "skill_inline_add_label": "ADD SKILL",
         "skill_inline_error_fallback": "Could not create inline skill.",
+        "skill_inline_missing_label_error": "Inline skill id or label is required.",
+        "skill_inline_missing_content_error": "Inline skill content is required.",
+        "skill_inline_invalid_id_error": "Inline skill id or label must contain letters or numbers.",
         "skill_no_realms_message": "MobKit did not provide skill realms for this document.",
         "skill_realm_label": "Realm",
         "skill_default_realm_suffix": " · default",
@@ -16038,6 +16041,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_access_view"]["skill_inline_add_label"],
             json!("ADD SKILL")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_access_view"]["skill_inline_missing_label_error"],
+            json!("Inline skill id or label is required.")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_access_view"]["skill_inline_missing_content_error"],
+            json!("Inline skill content is required.")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_access_view"]["skill_inline_invalid_id_error"],
+            json!("Inline skill id or label must contain letters or numbers.")
         );
         assert_eq!(
             mob_definition["editor_new_flow_view"]["eyebrow_template"],

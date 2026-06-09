@@ -996,7 +996,11 @@ assert.match(controller, /function memberSkillToggleCascadePatch/, "controller p
 assert.match(controller, /function memberSkillRemoveCascadePatch/, "controller plane must own member skill-remove cascade semantics");
 assert.match(controller, /function memberInlineSkillCascadePatch/, "controller plane must own inline skill definition plus member-binding semantics");
 assert(!/normalizeSkillId\(raw,\s*fallback|mob\.editor\.skill|spec\.label \|\| spec\.id \|\| ["']Mob skill["']/.test(controller), "inline skill creation must require explicit MobKit skill identity instead of local default ids or labels");
-assert.match(controller, /Inline skill id or label is required/, "controller plane must reject inline skills without explicit id or label");
+assert.match(controller, /skillInlineMissingLabelError:\s*String\(view\.skill_inline_missing_label_error/, "controller plane must hydrate inline skill missing-label errors from MobKit schema");
+assert.match(controller, /skillInlineMissingContentError:\s*String\(view\.skill_inline_missing_content_error/, "controller plane must hydrate inline skill missing-content errors from MobKit schema");
+assert.match(controller, /skillInlineInvalidIdError:\s*String\(view\.skill_inline_invalid_id_error/, "controller plane must hydrate inline skill invalid-id errors from MobKit schema");
+assert.match(controller, /throw new Error\(view\.skillInlineMissingLabelError\)/, "inline skill creation must reject missing identities through schema-backed error copy");
+assert(!/throw new Error\(["']Inline skill id or label is required\.["']\)|throw new Error\(["']Inline skill content is required\.["']\)|throw new Error\(["']Inline skill id or label must contain letters or numbers\.["']\)/.test(controller), "inline skill creation must not keep validation error copy as local controller literals");
 assert.match(controller, /className: `skill-row\$\{selected \? " is-on" : ""\}`/, "controller plane must own Agent skill row selected classes");
 assert.match(controller, /mob_definition\?\.editor_agent_access_view/, "controller plane must hydrate Agent tool and skill access chrome from MobKit schema");
 assert.match(controller, /inlineToggleLabel: inlineOpen \? view\.skillInlineCancelLabel : view\.skillInlineOpenLabel/, "controller plane must own schema-backed Agent inline-skill toggle labels");

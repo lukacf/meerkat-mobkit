@@ -113,6 +113,9 @@ const TEST_AGENT_ACCESS_VIEW_SCHEMA = {
   skill_inline_create_hint: "Creates an inline skill definition in this mobpack.",
   skill_inline_add_label: "ADD SKILL",
   skill_inline_error_fallback: "Could not create inline skill.",
+  skill_inline_missing_label_error: "Inline skill id or label is required.",
+  skill_inline_missing_content_error: "Inline skill content is required.",
+  skill_inline_invalid_id_error: "Inline skill id or label must contain letters or numbers.",
   skill_no_realms_message: "MobKit did not provide skill realms for this document.",
   skill_realm_label: "Realm",
   skill_default_realm_suffix: " · default",
@@ -145,6 +148,9 @@ const TEST_AGENT_ACCESS_VIEW = {
   skillInlineCreateHint: "Creates an inline skill definition in this mobpack.",
   skillInlineAddLabel: "ADD SKILL",
   skillInlineErrorFallback: "Could not create inline skill.",
+  skillInlineMissingLabelError: "Inline skill id or label is required.",
+  skillInlineMissingContentError: "Inline skill content is required.",
+  skillInlineInvalidIdError: "Inline skill id or label must contain letters or numbers.",
   skillNoRealmsMessage: "MobKit did not provide skill realms for this document.",
   skillRealmLabel: "Realm",
   skillDefaultRealmSuffix: " · default",
@@ -2342,7 +2348,16 @@ assert.throws(
     { content: "Do the work." },
     hydratedCatalogs.agentAccessView,
   ),
-  /id or label is required/,
+  new RegExp(hydratedCatalogs.agentAccessView.skillInlineMissingLabelError.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+);
+assert.throws(
+  () => controller.memberInlineSkillPatch(
+    { skills: [] },
+    [],
+    { label: "mob.empty" },
+    hydratedCatalogs.agentAccessView,
+  ),
+  new RegExp(hydratedCatalogs.agentAccessView.skillInlineMissingContentError.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
 );
 assert.throws(
   () => controller.memberInlineSkillPatch(
@@ -2351,7 +2366,7 @@ assert.throws(
     { label: "!!!", content: "Do the work." },
     hydratedCatalogs.agentAccessView,
   ),
-  /letters or numbers/,
+  new RegExp(hydratedCatalogs.agentAccessView.skillInlineInvalidIdError.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
 );
 
 const sampleRows = controller.sampleFlowsFromSchema({

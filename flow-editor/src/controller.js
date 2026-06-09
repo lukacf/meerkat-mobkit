@@ -158,16 +158,16 @@
     const view = agentAccessViewForState(accessView);
     const nextRealms = JSON.parse(JSON.stringify(realms || []));
     const label = String(spec.label || spec.id || "").trim();
-    if (!label) throw new Error("Inline skill id or label is required.");
+    if (!label) throw new Error(view.skillInlineMissingLabelError);
     const content = String(spec.content || "").trim();
-    if (!content) throw new Error("Inline skill content is required.");
+    if (!content) throw new Error(view.skillInlineMissingContentError);
     const used = skillIdsFromRealms(nextRealms);
     const explicitId = String(spec.id || "").trim();
     const identityText = explicitId || label;
-    if (!normalizeSkillId(identityText)) throw new Error("Inline skill id or label must contain letters or numbers.");
+    if (!normalizeSkillId(identityText)) throw new Error(view.skillInlineInvalidIdError);
     const rawId = explicitId || (label.includes(".") ? label : `mob.${label}`);
     const baseId = normalizeSkillId(rawId);
-    if (!baseId) throw new Error("Inline skill id or label must contain letters or numbers.");
+    if (!baseId) throw new Error(view.skillInlineInvalidIdError);
     let id = baseId;
     let index = 2;
     while (used.has(id)) id = `${baseId}.${index++}`;
@@ -945,6 +945,9 @@
       skillInlineCreateHint: String(view.skill_inline_create_hint || "").trim(),
       skillInlineAddLabel: String(view.skill_inline_add_label || "").trim(),
       skillInlineErrorFallback: String(view.skill_inline_error_fallback || "").trim(),
+      skillInlineMissingLabelError: String(view.skill_inline_missing_label_error || "").trim(),
+      skillInlineMissingContentError: String(view.skill_inline_missing_content_error || "").trim(),
+      skillInlineInvalidIdError: String(view.skill_inline_invalid_id_error || "").trim(),
       skillNoRealmsMessage: String(view.skill_no_realms_message || "").trim(),
       skillRealmLabel: String(view.skill_realm_label || "").trim(),
       skillDefaultRealmSuffix: String(view.skill_default_realm_suffix || ""),
@@ -984,6 +987,9 @@
       skillInlineCreateHint: String(view?.skillInlineCreateHint || ""),
       skillInlineAddLabel: String(view?.skillInlineAddLabel || ""),
       skillInlineErrorFallback: String(view?.skillInlineErrorFallback || ""),
+      skillInlineMissingLabelError: String(view?.skillInlineMissingLabelError || ""),
+      skillInlineMissingContentError: String(view?.skillInlineMissingContentError || ""),
+      skillInlineInvalidIdError: String(view?.skillInlineInvalidIdError || ""),
       skillNoRealmsMessage: String(view?.skillNoRealmsMessage || ""),
       skillRealmLabel: String(view?.skillRealmLabel || ""),
       skillDefaultRealmSuffix: String(view?.skillDefaultRealmSuffix || ""),
