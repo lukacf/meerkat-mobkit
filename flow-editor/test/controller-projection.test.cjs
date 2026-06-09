@@ -8089,6 +8089,22 @@ assert.equal(controller.graphSelectionState({
   instances: graphProjectionInstances,
   edges: graphProjectionEdges,
 }).missing, true);
+assert.deepEqual(controller.graphSelectionProjection("instance", "n_writer"), {
+  kind: "instance",
+  id: "n_writer",
+});
+assert.deepEqual(controller.graphSelectionProjection("edge", "e1"), {
+  kind: "edge",
+  id: "e1",
+});
+assert.deepEqual(controller.graphSelectionProjection("member", "m_writer"), {
+  kind: null,
+  id: null,
+});
+assert.deepEqual(controller.graphSelectionProjection("instance", " "), {
+  kind: null,
+  id: null,
+});
 assert.deepEqual(controller.graphTemplateInspectorState({
   studio: {
     members: graphProjectionMembers,

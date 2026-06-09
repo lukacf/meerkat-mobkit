@@ -5739,6 +5739,13 @@ window.MOBKIT_BOOT = {
     return { kind: "", instance: null, edge: null, missing: false };
   }
 
+  function graphSelectionProjection(kind, id) {
+    const selectionKind = String(kind || "").trim();
+    const selectionId = String(id || "").trim();
+    if (!selectionId || (selectionKind !== "instance" && selectionKind !== "edge")) return { kind: null, id: null };
+    return { kind: selectionKind, id: selectionId };
+  }
+
   function graphTemplateInspectorState({ studio = {}, template = null, templateSeed = null, templateView = null } = {}) {
     const seed = templateSeed && typeof templateSeed === "object" ? templateSeed : {};
     const view = graphTemplateViewForState(templateView);
@@ -11226,6 +11233,7 @@ window.MOBKIT_BOOT = {
     graphEdgeFallbackPatch,
     graphConnectionEdgeDraft,
     graphSelectionState,
+    graphSelectionProjection,
     graphTemplateInspectorState,
     graphInstanceControlState,
     graphToolTagClass,
@@ -14175,8 +14183,8 @@ function App() {
     catalogs.contractMeta.loaded,
     markDraft
   ]);
-  const selectInstance = (id) => setSelection({ kind: "instance", id });
-  const selectEdge = (id) => setSelection({ kind: "edge", id });
+  const selectInstance = (id) => setSelection(window.MobKitFlowController.graphSelectionProjection("instance", id));
+  const selectEdge = (id) => setSelection(window.MobKitFlowController.graphSelectionProjection("edge", id));
   const clearSelection = (nextSelection = { kind: null, id: null }) => setSelection(nextSelection || { kind: null, id: null });
   React.useEffect(() => {
     const onKey = (e) => {

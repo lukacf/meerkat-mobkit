@@ -5706,6 +5706,13 @@
     return { kind: "", instance: null, edge: null, missing: false };
   }
 
+  function graphSelectionProjection(kind, id) {
+    const selectionKind = String(kind || "").trim();
+    const selectionId = String(id || "").trim();
+    if (!selectionId || (selectionKind !== "instance" && selectionKind !== "edge")) return { kind: null, id: null };
+    return { kind: selectionKind, id: selectionId };
+  }
+
   function graphTemplateInspectorState({ studio = {}, template = null, templateSeed = null, templateView = null } = {}) {
     const seed = templateSeed && typeof templateSeed === "object" ? templateSeed : {};
     const view = graphTemplateViewForState(templateView);
@@ -11193,6 +11200,7 @@
     graphEdgeFallbackPatch,
     graphConnectionEdgeDraft,
     graphSelectionState,
+    graphSelectionProjection,
     graphTemplateInspectorState,
     graphInstanceControlState,
     graphToolTagClass,

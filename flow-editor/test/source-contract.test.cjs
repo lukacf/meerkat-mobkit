@@ -181,6 +181,10 @@ assert.match(graph, /MobKitFlowController\.studioUpdateEdgePatch/, "Graph state 
 assert.match(graph, /MobKitFlowController\.studioDeleteEdgePatch/, "Graph state hook must ask controller plane to delete edges");
 assert.match(controller, /function studioDeleteEdgePatch[\s\S]*selection:\s*\{\s*kind:\s*null,\s*id:\s*null\s*\}/, "controller plane must own graph edge-delete selection clearing");
 assert.match(graph, /const deleteEdge = \(id\) => \{[\s\S]*studioDeleteEdgePatch[\s\S]*setEdges\(next\.edges\);[\s\S]*return next;/, "Graph state hook must return controller-projected edge-delete transitions");
+assert.match(app, /selectInstance = \(id\) => setSelection\(window\.MobKitFlowController\.graphSelectionProjection\("instance", id\)\)/, "app shell must select graph nodes through the controller plane");
+assert.match(app, /selectEdge = \(id\) => setSelection\(window\.MobKitFlowController\.graphSelectionProjection\("edge", id\)\)/, "app shell must select graph edges through the controller plane");
+assert.match(controller, /function graphSelectionProjection/, "controller plane must own graph selection projection");
+assert(!/setSelection\(\{\s*kind:\s*"(?:instance|edge)",\s*id\s*\}\)/.test(app), "app shell must not assemble graph selection objects locally");
 assert.match(app, /const clearSelection = \(nextSelection = \{\s*kind:\s*null,\s*id:\s*null\s*\}\) => setSelection\(nextSelection \|\| \{\s*kind:\s*null,\s*id:\s*null\s*\}\)/, "app shell must allow controller-projected graph selection clearing");
 assert.match(app, /const result = studio\.deleteInstance\(selection\.id\);[\s\S]*clearSelection\(result\?\.selection\);[\s\S]*const result = studio\.deleteEdge\(selection\.id\);[\s\S]*clearSelection\(result\?\.selection\);/, "keyboard graph deletes must apply controller-projected selection clearing");
 assert.match(inspectorGateBlock, /const result = studio\.deleteInstance\(inst\.id\); clearSelection\(result\?\.selection\);/, "Gate inspector deletes must apply controller-projected selection clearing");

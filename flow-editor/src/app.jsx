@@ -290,8 +290,8 @@ function App() {
     markDraft,
   ]);
 
-  const selectInstance = (id) => setSelection({ kind: "instance", id });
-  const selectEdge = (id) => setSelection({ kind: "edge", id });
+  const selectInstance = (id) => setSelection(window.MobKitFlowController.graphSelectionProjection("instance", id));
+  const selectEdge = (id) => setSelection(window.MobKitFlowController.graphSelectionProjection("edge", id));
   const clearSelection = (nextSelection = { kind: null, id: null }) => setSelection(nextSelection || { kind: null, id: null });
 
   React.useEffect(() => {
