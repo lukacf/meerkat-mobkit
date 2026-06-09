@@ -66,6 +66,7 @@ function allowedCssDelta(sign, line) {
     /actions-menu/,
     /max-width: 980px/,
     /grid-template-columns: auto auto minmax/,
+    /\.(?:library__bullet|agents-list__bullet|add-menu__dot)\[data-role="(?:planner|coder|reviewer|critic|judge|publisher|illustrator|shell|schema)"\]/,
   ];
   if (shared.some((pattern) => pattern.test(text))) return true;
   if (sign === "+") {

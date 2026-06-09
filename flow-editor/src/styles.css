@@ -1126,15 +1126,6 @@ a.node {
 .library__item.is-readonly { cursor: default; }
 .library__item.is-readonly:hover { background: none; }
 .library__bullet { font-size: 9px; line-height: 1.6; color: var(--muted); text-align: center; }
-.library__bullet[data-role="planner"]     { color: var(--accent); }
-.library__bullet[data-role="coder"]       { color: var(--ok, #2f7d4d); }
-.library__bullet[data-role="reviewer"]    { color: var(--warn, #c98810); }
-.library__bullet[data-role="critic"]      { color: var(--muted); }
-.library__bullet[data-role="publisher"]   { color: var(--ink); }
-.library__bullet[data-role="illustrator"] { color: var(--accent); }
-.library__bullet[data-role="shell"]       { color: var(--accent); }
-.library__bullet[data-role="write"]       { color: var(--ink); }
-.library__bullet[data-role="schema"]      { color: var(--subtle); }
 .library__name {
   font-size: 13px; color: var(--ink); letter-spacing: -0.005em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -1330,13 +1321,6 @@ a.node {
 .agents-list__bullet {
   font-size: 10px; line-height: 1; color: var(--muted); text-align: center;
 }
-.agents-list__bullet[data-role="planner"]     { color: var(--accent); }
-.agents-list__bullet[data-role="coder"]       { color: var(--ok, #2f7d4d); }
-.agents-list__bullet[data-role="reviewer"]    { color: var(--warn, #c98810); }
-.agents-list__bullet[data-role="critic"]      { color: var(--muted); }
-.agents-list__bullet[data-role="publisher"]   { color: var(--ink); }
-.agents-list__bullet[data-role="illustrator"] { color: var(--accent); }
-.agents-list__bullet[data-role="schema"]      { color: var(--subtle); }
 .agents-list__col { display: flex; flex-direction: column; min-width: 0; }
 .agents-list__name {
   font-size: 13px; color: var(--ink); letter-spacing: -0.005em;
@@ -2134,13 +2118,6 @@ a.node {
   max-width: 130px;
 }
 .add-menu__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink); flex-shrink: 0; }
-.add-menu__dot[data-role="planner"]{ background:#2A6FDB; }
-.add-menu__dot[data-role="coder"]{ background:#1F8A5B; }
-.add-menu__dot[data-role="reviewer"]{ background:#D97757; }
-.add-menu__dot[data-role="critic"]{ background:#9B59B6; }
-.add-menu__dot[data-role="judge"]{ background:#C99A2E; }
-.add-menu__dot[data-role="publisher"]{ background:#555; }
-.add-menu__dot[data-role="illustrator"]{ background:#E0699B; }
 .add-menu__glyph {
   width: 14px; text-align: center; flex-shrink: 0;
   font-family: var(--font-mono); color: var(--accent); font-size: 13px;
