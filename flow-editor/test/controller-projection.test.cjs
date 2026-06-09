@@ -10375,6 +10375,68 @@ assert.deepEqual(controller.enumValueCommitPatch({ enumValues: ["green", "red"] 
 assert.deepEqual(controller.enumValueDeletePatch({ enumValues: ["green", "red"] }, 0), { enumValues: ["red"] });
 assert.deepEqual(controller.enumValueAddPatch({ enumValues: ["value"] }, "value"), { enumValues: ["value", "value_2"] });
 
+const projectionPlan = controller.authoringProjectionApplyPlan({
+  flow: { id: "main", steps: [{ id: "input", type: "input" }] },
+  members: [{ id: "reviewer", name: "Reviewer" }],
+  instances: [{ id: "n_reviewer", memberId: "reviewer", col: 1, row: 0 }],
+  edges: [],
+  frames: [{ id: "frame_review", kind: "repeat", colStart: 1, colEnd: 1, rowStart: 0, rowEnd: 0 }],
+  deploySettings: { surface: "cli" },
+  mobSettings: { backendDefault: "session" },
+}, {
+  flow: { id: "main", steps: [] },
+  studio: {
+    members: [{ id: "reviewer", name: "Old reviewer" }],
+    instances: [{ id: "n_reviewer", memberId: "reviewer", col: 0, row: 0 }],
+    edges: [],
+    frames: [],
+  },
+  deploySettings: { surface: "web" },
+  mobSettings: { backendDefault: "rpc" },
+  contract: graphShapeContract,
+});
+assert.equal(projectionPlan.ok, true);
+assert.equal(projectionPlan.flow.changed, true);
+assert.equal(projectionPlan.members.changed, true);
+assert.equal(projectionPlan.graph.changed, true);
+assert.equal(projectionPlan.frames.changed, true);
+assert.equal(projectionPlan.deploySettings.changed, true);
+assert.equal(projectionPlan.mobSettings.changed, true);
+assert.equal(
+  projectionPlan.graph.signature,
+  controller.graphStructureSignature(projectionPlan.graph.instances, projectionPlan.graph.edges, {
+    members: projectionPlan.members.value,
+    contract: graphShapeContract,
+  }),
+);
+
+const unchangedProjectionPlan = controller.authoringProjectionApplyPlan({
+  flow: projectionPlan.flow.value,
+  members: projectionPlan.members.value,
+  instances: projectionPlan.graph.instances,
+  edges: projectionPlan.graph.edges,
+  frames: projectionPlan.frames.value,
+  deploySettings: projectionPlan.deploySettings.value,
+  mobSettings: projectionPlan.mobSettings.value,
+}, {
+  flow: projectionPlan.flow.value,
+  studio: {
+    members: projectionPlan.members.value,
+    instances: projectionPlan.graph.instances,
+    edges: projectionPlan.graph.edges,
+    frames: projectionPlan.frames.value,
+  },
+  deploySettings: projectionPlan.deploySettings.value,
+  mobSettings: projectionPlan.mobSettings.value,
+  contract: graphShapeContract,
+});
+assert.equal(unchangedProjectionPlan.flow.changed, false);
+assert.equal(unchangedProjectionPlan.members.changed, false);
+assert.equal(unchangedProjectionPlan.graph.changed, false);
+assert.equal(unchangedProjectionPlan.frames.changed, false);
+assert.equal(unchangedProjectionPlan.deploySettings.changed, false);
+assert.equal(unchangedProjectionPlan.mobSettings.changed, false);
+
 const studioStateA = {
   members: [{ id: "m1" }],
   instances: [{ id: "i1" }],

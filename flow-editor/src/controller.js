@@ -6504,6 +6504,55 @@
     };
   }
 
+  function jsonEquivalent(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  function authoringProjectionApplyPlan(projection, current = {}) {
+    if (!projection || typeof projection !== "object") return { ok: false };
+    const studio = current?.studio && typeof current.studio === "object" ? current.studio : {};
+    const members = Array.isArray(projection.members) ? projection.members : [];
+    const instances = Array.isArray(projection.instances) ? projection.instances : [];
+    const edges = Array.isArray(projection.edges) ? projection.edges : [];
+    const frames = Array.isArray(projection.frames) ? projection.frames : [];
+    const graphMembers = Array.isArray(projection.members) ? projection.members : (studio.members || []);
+    const graphSignatureNext = projection.instances
+      ? graphStructureSignature(instances, edges, { members: graphMembers, contract: current.contract })
+      : "";
+    const graphSignatureCurrent = projection.instances
+      ? graphStructureSignature(studio.instances || [], studio.edges || [], { members: studio.members || [], contract: current.contract })
+      : "";
+    return {
+      ok: true,
+      flow: {
+        changed: !jsonEquivalent(projection.flow, current.flow),
+        value: projection.flow,
+      },
+      members: {
+        changed: !jsonEquivalent(members, studio.members || []),
+        value: members,
+      },
+      graph: {
+        changed: !!projection.instances && graphSignatureNext !== graphSignatureCurrent,
+        signature: graphSignatureNext,
+        instances,
+        edges,
+      },
+      frames: {
+        changed: !jsonEquivalent(frames, studio.frames || []),
+        value: frames,
+      },
+      deploySettings: {
+        changed: !jsonEquivalent(projection.deploySettings, current.deploySettings),
+        value: projection.deploySettings,
+      },
+      mobSettings: {
+        changed: !jsonEquivalent(projection.mobSettings, current.mobSettings),
+        value: projection.mobSettings,
+      },
+    };
+  }
+
   function flowForDocument(flow) {
     const source = flow && typeof flow === "object" ? flow : {};
     return {
@@ -10842,6 +10891,7 @@
     buildDocument,
     authoringFlowForDocument,
     authoringDocumentFromState,
+    authoringProjectionApplyPlan,
     createFlowDraftFromSpec,
     flowRegistryCreateDraftProjection,
     flowDraftIdFromSpec,

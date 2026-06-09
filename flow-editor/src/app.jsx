@@ -344,17 +344,29 @@ function App() {
   };
 
   const applyAuthoringDocumentProjection = (projection) => {
-    if (!projection) return;
-    if (JSON.stringify(projection.flow) !== JSON.stringify(flow)) setFlow(projection.flow);
-    if (JSON.stringify(projection.members || []) !== JSON.stringify(studio.members)) studio.setMembers(projection.members || []);
-    if (projection.instances && window.MobKitFlowController.graphStructureSignature(projection.instances, projection.edges || [], { members: projection.members || studio.members, contract }) !== window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges, { members: studio.members, contract })) {
-      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: projection.members || studio.members, contract });
-      studio.setInstances(projection.instances || []);
-      studio.setEdges(projection.edges || []);
+    const plan = window.MobKitFlowController.authoringProjectionApplyPlan(projection, {
+      flow,
+      studio: {
+        members: studio.members,
+        instances: studio.instances,
+        edges: studio.edges,
+        frames: studio.frames,
+      },
+      deploySettings,
+      mobSettings,
+      contract,
+    });
+    if (!plan.ok) return;
+    if (plan.flow.changed) setFlow(plan.flow.value);
+    if (plan.members.changed) studio.setMembers(plan.members.value);
+    if (plan.graph.changed) {
+      graphProjectionSig.current = plan.graph.signature;
+      studio.setInstances(plan.graph.instances);
+      studio.setEdges(plan.graph.edges);
     }
-    if (JSON.stringify(projection.frames || []) !== JSON.stringify(studio.frames)) studio.setFrames(projection.frames || []);
-    if (JSON.stringify(projection.deploySettings) !== JSON.stringify(deploySettings)) setDeploySettings(projection.deploySettings);
-    if (JSON.stringify(projection.mobSettings) !== JSON.stringify(mobSettings)) setMobSettings(projection.mobSettings);
+    if (plan.frames.changed) studio.setFrames(plan.frames.value);
+    if (plan.deploySettings.changed) setDeploySettings(plan.deploySettings.value);
+    if (plan.mobSettings.changed) setMobSettings(plan.mobSettings.value);
   };
   const currentFlowSelection = window.MobKitFlowController.flowRegistrySelectionState(flows, currentFlowId);
   const currentFlow = currentFlowSelection.row;
