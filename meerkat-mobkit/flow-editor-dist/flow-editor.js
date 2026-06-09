@@ -7784,7 +7784,6 @@ window.MOBKIT_BOOT = {
     const validation = result?.validation || null;
     const validationRows = diagnosticsToRows(validation);
     const stage = validation?.ok ? "valid" : "draft";
-    const flowName = document.name || document.mob_id || document.flow?.name || "imported-mob";
     const registryRow = flowRegistryRowFromDocument({
       id,
       document,
@@ -7793,8 +7792,6 @@ window.MOBKIT_BOOT = {
       sourceLabel: result?.source_label || "",
       source: result?.source || "",
       flowRow: options.flowRow || null,
-      fallbackName: flowName,
-      fallbackVersion: "imported",
     });
     return {
       id,
@@ -7817,8 +7814,10 @@ window.MOBKIT_BOOT = {
 
   function flowImportedIdFromDocument(document, result = {}, existingRows = []) {
     const source = result?.source_name || result?.sourceName || result?.filename || result?.source;
+    const name = document?.name || document?.mob_id || document?.flow?.name || source || "";
+    if (!String(name || "").trim()) return "";
     return flowDraftIdFromSpec({
-      name: document?.name || document?.mob_id || document?.flow?.name || source || "imported-mob",
+      name,
     }, existingRows);
   }
 
@@ -9480,8 +9479,8 @@ window.MOBKIT_BOOT = {
     source = "",
     sourceLabel = "",
     flowRow = null,
-    fallbackName = "imported-mob",
-    fallbackVersion = "draft",
+    fallbackName = "",
+    fallbackVersion = "",
   } = {}) {
     const rowId = String(id || "").trim();
     if (!rowId || !document || typeof document !== "object") return null;

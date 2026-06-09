@@ -8743,6 +8743,7 @@ assert.equal(controller.flowImportedIdFromDocument({
 assert.equal(controller.flowImportedIdFromDocument({}, {
   source_name: "special.mobpack",
 }, []), "f_specialmobpack");
+assert.equal(controller.flowImportedIdFromDocument({}, {}, []), "");
 
 const rememberedRows = controller.flowRegistryRememberDocumentPatch(registryRows, {
   currentFlowId: "f_existing",
@@ -8955,6 +8956,17 @@ assert.equal(flowOnlyHydrated.graphProjection.instances[0].id, "step_1");
 assert.equal(flowOnlyHydrated.graphProjection.instances[0].memberId, "reviewer");
 assert.deepEqual(flowOnlyHydrated.graphProjection.frames, []);
 assert.deepEqual(flowOnlyHydrated.validationRows, []);
+
+const anonymousHydrated = controller.hydrateMobpackDocumentState({
+  document: {
+    members: storedGraphDocument.members,
+    flow: { steps: [{ id: "step_1", type: "member", role: "reviewer", instruction: "Review." }] },
+  },
+}, {
+  existingRows: [],
+});
+assert.equal(anonymousHydrated.id, "");
+assert.equal(anonymousHydrated.registryRow, null);
 
 const missingFlowHydrated = controller.hydrateMobpackDocumentState({
   document: { name: "No Flow Import", mob_id: "no_flow_import" },

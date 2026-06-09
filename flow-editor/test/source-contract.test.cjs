@@ -824,6 +824,8 @@ assert(!/const sampleFlows = window\.MobKitFlowController\.sampleFlowsFromSchema
 assert(!/STARTER_FLOWS/.test(app), "app shell must not keep a local starter-flow catalog");
 assert.match(controller, /function flowImportedIdFromDocument[\s\S]*flowDraftIdFromSpec/, "controller plane must derive imported mobpack registry ids from document/source metadata");
 assert(!/id:\s*["']f_imported["']/.test(app + "\n" + controller), "Flow Editor must not assign every imported mobpack the same local f_imported registry id");
+assert(!/imported-mob/.test(controller), "imported mobpack registry identity must come from document or MobKit import metadata, not a controller-local generic name");
+assert.match(controller, /flowImportedIdFromDocument[\s\S]*if \(!String\(name \|\| ""\)\.trim\(\)\) return ""/, "anonymous imports must not mint a generic registry id");
 assert(!/sampleSkillRealm\?\.source\s*\|\|\s*["']mobkit\/sample-mobpack["']/.test(testSrc("live-rkat-e2e.cjs")), "live projection tests must require sample skill realm source metadata from MobKit");
 assert(!/validation:\s*validation\s*\|\|\s*row\.validation/.test(app), "Flow registry rows must not carry stale validation when the current document has no API validation");
 assert(!/MobKitFlowController\.DEFAULT_(DEPLOY|MOB)_SETTINGS/.test(app), "app shell must not read controller-local default constants as authoritative settings");
