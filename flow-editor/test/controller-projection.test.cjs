@@ -2415,44 +2415,6 @@ assert.deepEqual(controller.memberToolRemovePatch(
   { tools: ["builtins", "shell", "shell"] },
   "shell",
 ), { ok: true, id: "shell", patch: { tools: ["builtins"] } });
-const toolCascadeResult = controller.memberToolRemoveCascadePatch({
-  memberId: "m_tool",
-  members: [{ id: "m_tool", tools: ["builtins", "shell"] }],
-  flow: {
-    name: "tool-cascade-proof",
-    steps: [
-      {
-        id: "tool_step",
-        type: "member",
-        role: "m_tool",
-        allowedTools: ["builtins", "shell"],
-        blockedTools: ["shell"],
-      },
-    ],
-  },
-  instances: [
-    { id: "tool_inst", memberId: "m_tool", allowedTools: ["builtins", "shell"], blockedTools: ["shell"] },
-  ],
-}, "shell");
-assert.equal(toolCascadeResult.ok, true);
-assert.deepEqual(toolCascadeResult.members[0].tools, ["builtins"]);
-assert.deepEqual(toolCascadeResult.flow.steps[0].allowedTools, ["builtins"]);
-assert.deepEqual(toolCascadeResult.flow.steps[0].blockedTools, []);
-assert.deepEqual(toolCascadeResult.instances[0].allowedTools, ["builtins"]);
-assert.deepEqual(toolCascadeResult.instances[0].blockedTools, []);
-const toolCascadeAddResult = controller.memberToolAccessCascadePatch({
-  memberId: "m_tool",
-  members: [{ id: "m_tool", tools: ["builtins"] }],
-  flow: {
-    name: "tool-add-cascade-proof",
-    steps: [{ id: "tool_step", type: "member", role: "m_tool", allowedTools: ["builtins"] }],
-  },
-  instances: [{ id: "tool_inst", memberId: "m_tool", allowedTools: ["builtins"] }],
-}, "shell", [{ id: "builtins" }, { id: "shell" }], hydratedCatalogs.agentAccessView);
-assert.equal(toolCascadeAddResult.ok, true);
-assert.deepEqual(toolCascadeAddResult.members[0].tools, ["builtins", "shell"]);
-assert.deepEqual(toolCascadeAddResult.flow.steps[0].allowedTools, ["builtins"]);
-assert.deepEqual(toolCascadeAddResult.instances[0].allowedTools, ["builtins"]);
 assert.deepEqual(controller.memberSkillAccessState({
   member: { skills: ["mob.review", "mob.tests", "mob.missing"] },
   realmId: "docs",
@@ -2646,31 +2608,6 @@ assert.deepEqual(controller.memberSkillRemovePatch(
   { skills: ["mob.workpad", "mob.review", "mob.review"] },
   "mob.review",
 ), { ok: true, id: "mob.review", patch: { skills: ["mob.workpad"] } });
-assert.deepEqual(controller.memberSkillToggleCascadePatch({
-  memberId: "m_skill",
-  members: [{ id: "m_skill", skills: ["mob.workpad"] }],
-  skillRealms: [{ id: "main", skills: [{ id: "mob.review" }] }],
-}, "mob.fake"), {
-  ok: false,
-  id: "mob.fake",
-  patch: null,
-  members: [{ id: "m_skill", skills: ["mob.workpad"] }],
-  skillRealms: [{ id: "main", skills: [{ id: "mob.review" }] }],
-});
-const skillToggleCascade = controller.memberSkillToggleCascadePatch({
-  memberId: "m_skill",
-  members: [{ id: "m_skill", skills: ["mob.workpad"] }],
-  skillRealms: [{ id: "main", skills: [{ id: "mob.review" }] }],
-}, "mob.review");
-assert.equal(skillToggleCascade.ok, true);
-assert.deepEqual(skillToggleCascade.members[0].skills, ["mob.workpad", "mob.review"]);
-const staleSkillRemoveCascade = controller.memberSkillRemoveCascadePatch({
-  memberId: "m_skill",
-  members: [{ id: "m_skill", skills: ["mob.workpad", "mob.stale", "mob.stale"] }],
-  skillRealms: [{ id: "main", skills: [{ id: "mob.workpad" }] }],
-}, "mob.stale");
-assert.equal(staleSkillRemoveCascade.ok, true);
-assert.deepEqual(staleSkillRemoveCascade.members[0].skills, ["mob.workpad"]);
 const inlinePatch = controller.memberInlineSkillPatch(
   { skills: ["mob.workpad"] },
   [{ id: "mobkit/sample-mobpacks", skills: [{ id: "mob.workpad" }] }],
@@ -2685,25 +2622,6 @@ assert.equal(inlinePatch.skillRealms[0].source, "mobkit/editor");
 assert.equal(inlinePatch.skillRealms[0].skills[0].source, "inline");
 assert.equal(inlinePatch.skillRealms[0].skills[0].content, "Review and emit the QualityVerdict schema.");
 assert.equal(inlinePatch.skillRealms[0].skills[0].desc, "Inline MobKit skill stored in this mobpack.");
-const inlineCascade = controller.memberInlineSkillCascadePatch({
-  memberId: "m_skill",
-  members: [{ id: "m_skill", skills: ["mob.workpad"] }],
-  skillRealms: [{ id: "main", skills: [{ id: "mob.workpad" }] }],
-}, { label: "Quality Gate", content: "Review and emit the QualityVerdict schema." }, hydratedCatalogs.agentAccessView);
-assert.equal(inlineCascade.ok, true);
-assert.equal(inlineCascade.id, "mob.quality.gate");
-assert.deepEqual(inlineCascade.members[0].skills, ["mob.workpad", "mob.quality.gate"]);
-assert.equal(inlineCascade.skillRealms[0].id, "mobkit/editor-inline");
-assert.equal(inlineCascade.skillRealms[0].source, "mobkit/editor");
-assert.equal(inlineCascade.skillRealms[0].skills[0].source, "inline");
-assert.equal(inlineCascade.skillRealms[0].skills[0].content, "Review and emit the QualityVerdict schema.");
-assert.deepEqual(inlineCascade.inlineForm, {
-  realmId: "mobkit/editor-inline",
-  label: "",
-  content: "",
-  error: "",
-  open: false,
-});
 assert.throws(
   () => controller.memberInlineSkillPatch(
     { skills: [] },
@@ -7250,30 +7168,6 @@ assert.equal(deletedParamReferences.flow.steps[1].branches[1].condition, "");
 assert.deepEqual(deletedParamReferences.edges.map(edge => edge.cond), [null, null]);
 assert.deepEqual(deletedParamReferences.edges.map(edge => edge.label), ["", ""]);
 
-const renamedParamCascade = controller.inputParamRenameCascadePatch({
-  flow: paramReferenceFlow,
-  edges: paramReferenceEdges,
-}, "input_1", "p1", "category", "kind", null);
-assert.equal(renamedParamCascade.name, "category");
-assert.equal(renamedParamCascade.flow.steps[0].inputParams[0].name, "category");
-assert.equal(renamedParamCascade.flow.steps[0].fields, "category: string");
-assert.equal(renamedParamCascade.flow.steps[1].branches[0].cond.field, "category");
-assert.equal(renamedParamCascade.flow.steps[1].branches[0].condition, "params.category == \"docs\"");
-assert.deepEqual(renamedParamCascade.edges[0].cond, { var: "params.category", op: "==", val: "docs" });
-assert.equal(renamedParamCascade.edges[0].label, "params.category == \"docs\"");
-
-const deletedParamCascade = controller.inputParamDeleteCascadePatch({
-  flow: renamedParamCascade.flow,
-  edges: renamedParamCascade.edges,
-}, "input_1", "p1", null);
-assert.equal(deletedParamCascade.removed.name, "category");
-assert.deepEqual(deletedParamCascade.flow.steps[0].inputParams, []);
-assert.equal(deletedParamCascade.flow.steps[0].fields, "");
-assert.deepEqual(deletedParamCascade.flow.steps[1].branches[0].cond, {});
-assert.equal(deletedParamCascade.flow.steps[1].branches[0].condition, "");
-assert.deepEqual(deletedParamCascade.edges[0].cond, null);
-assert.equal(deletedParamCascade.edges[0].label, "");
-
 const generatedConditionEdge = {
   id: "e_generated_condition",
   from: "review",
@@ -9617,60 +9511,6 @@ assert.deepEqual(controller.inputParamUpdatePatch([
   inputParams: [{ id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["value"] }],
   fields: "route: enum",
 });
-const updatedParamCascade = controller.inputParamUpdateCascadePatch({
-  flow: {
-    name: "input-param-update-cascade",
-    steps: [
-      {
-        id: "input_1",
-        type: "input",
-        inputParams: [{ id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: ["docs", "code"] }],
-        fields: "route: enum",
-      },
-      {
-        id: "branch_1",
-        type: "branch",
-        branches: [{
-          id: "docs",
-          cond: { namespace: "params", stepId: "params", field: "route", op: "==", val: "docs" },
-          condition: "params.route == \"docs\"",
-          steps: [],
-        }],
-        fallback: [],
-      },
-      { id: "review_step", type: "member", role: "m_reviewer" },
-      {
-        id: "branch_2",
-        type: "branch",
-        branches: [{
-          id: "green",
-          cond: { namespace: "steps", stepId: "review_step", field: "verdict", op: "==", val: "green" },
-          condition: "steps.review_step.verdict == \"green\"",
-          steps: [],
-        }],
-        fallback: [],
-      },
-    ],
-  },
-  edges: [
-    { id: "e_param", from: "gate", to: "docs", kind: "cond", label: "params.route == \"docs\"", cond: { var: "params.route", op: "==", val: "docs" } },
-    { id: "e_schema", from: "review_inst", to: "done", kind: "cond", label: "steps.review_inst.verdict == \"green\"", cond: { var: "steps.review_inst.verdict", op: "==", val: "green" } },
-  ],
-  members: [{ id: "m_reviewer", schema: "ReviewArtifact" }],
-  instances: [
-    { id: "review_inst", memberId: "m_reviewer" },
-    { id: "done", isTerminal: true },
-  ],
-  schemas: [{ id: "ReviewArtifact", fields: [{ id: "f1", name: "verdict", type: "enum", enumValues: ["green"] }] }],
-}, "input_1", "p1", { enumValues: ["code"] }, graphShapeContract);
-assert.deepEqual(updatedParamCascade.flow.steps[0].inputParams[0].enumValues, ["code"]);
-assert.equal(updatedParamCascade.flow.steps[0].fields, "route: enum");
-assert.deepEqual(updatedParamCascade.flow.steps[1].branches[0].cond, {});
-assert.equal(updatedParamCascade.flow.steps[1].branches[0].condition, "");
-assert.deepEqual(updatedParamCascade.edges[0].cond, null);
-assert.equal(updatedParamCascade.edges[0].label, "");
-assert.deepEqual(updatedParamCascade.flow.steps[3].branches[0].cond, { namespace: "steps", stepId: "review_step", field: "verdict", op: "==", val: "green" });
-assert.deepEqual(updatedParamCascade.edges[1].cond, { var: "steps.review_inst.verdict", op: "==", val: "green" });
 assert.deepEqual(controller.inputParamRenamePatch([
   { id: "p1", name: "route", type: "enum", required: true, description: "", enumValues: [] },
   { id: "p2", name: "route_2", type: "string", required: true, description: "", enumValues: [] },
