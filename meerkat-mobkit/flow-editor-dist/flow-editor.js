@@ -6540,8 +6540,8 @@ window.MOBKIT_BOOT = {
   function graphEdgeKey(edge) {
     const from = String(edge?.from || "").trim();
     const to = String(edge?.to || "").trim();
-    const kind = String(edge?.kind || "next").trim() || "next";
-    return from && to ? `${from}\n${to}\n${kind}` : "";
+    const kind = String(edge?.kind || "").trim();
+    return from && to && kind ? `${from}\n${to}\n${kind}` : "";
   }
 
   function instancesForDocument(flow, members, existingInstances, contract) {

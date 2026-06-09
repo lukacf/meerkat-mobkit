@@ -6357,6 +6357,32 @@ assert.deepEqual(branchDocument.edges.slice(0, 2).map((edge) => edge.cond), [
 ]);
 assert(branchDocument.frames.some((frame) => frame.id === "frame_branch_route" && frame.kind === "Branch"));
 
+const branchDocumentWithMissingEdgeKind = controller.buildDocument({
+  flow: branchFlow,
+  studio: {
+    members: graphMembers,
+    schemas: [],
+    instances: [
+      { id: "g_branch_route", isGate: true, gateKind: "branch", col: 0, row: 0 },
+      { id: "left", memberId: "m_left", col: 1, row: 0 },
+      { id: "right", memberId: "m_right", col: 1, row: 1 },
+      { id: "j_branch_route", isGate: true, gateKind: "join", collection: "any", controllerRole: "m_review", col: 2, row: 0 },
+    ],
+    edges: [
+      { id: "e1", from: "g_branch_route", to: "left", kind: "cond", label: "docs", cond: { source: "params.kind", op: "==", value: "docs" } },
+      { id: "e2", from: "g_branch_route", to: "right", kind: "cond", label: "code", cond: { namespace: "params", stepId: "params", field: "kind", op: "==", val: "code" } },
+      { id: "stale_missing_kind", from: "left", to: "j_branch_route", label: "" },
+      { id: "e4", from: "right", to: "j_branch_route", kind: "next", label: "" },
+    ],
+    frames: [],
+    skillRealms: [],
+  },
+  currentFlow: { name: "branch-missing-kind-proof" },
+  deploySettings: testDeploySettings(),
+});
+assert(!branchDocumentWithMissingEdgeKind.edges.some((edge) => edge.id === "stale_missing_kind"));
+assert(branchDocumentWithMissingEdgeKind.edges.some((edge) => edge.from === "left" && edge.to === "j_branch_route" && edge.kind === "next"));
+
 const basicConditionOptionMembers = [
   { id: "m_plan", name: "Planner", schema: "PlanArtifact" },
   { id: "m_review", name: "Reviewer", schema: "ReviewArtifact" },

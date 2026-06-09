@@ -8297,12 +8297,21 @@ fn validate_graph_projection(document: &MobpackDocument) -> Vec<MobpackDiagnosti
                 });
             }
         }
-        let kind = edge.get("kind").and_then(Value::as_str).unwrap_or("next");
+        let kind = edge
+            .get("kind")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|kind| !kind.is_empty())
+            .unwrap_or("");
         if !GRAPH_EDGE_KINDS.contains(&kind) {
             diagnostics.push(MobpackDiagnostic {
                 severity: "error".to_string(),
                 code: "invalid_graph_edge_kind".to_string(),
-                message: format!("unsupported graph edge kind '{kind}'"),
+                message: if kind.is_empty() {
+                    "graph edge must include non-empty kind".to_string()
+                } else {
+                    format!("unsupported graph edge kind '{kind}'")
+                },
                 path: Some(format!("{path}.kind")),
             });
         }
@@ -8803,15 +8812,14 @@ fn validate_expected_graph_edges(
     let actual = edges
         .iter()
         .filter_map(|edge| {
+            let kind = edge.get("kind")?.as_str()?.trim().to_string();
+            if kind.is_empty() {
+                return None;
+            }
             Some((
                 edge.get("from")?.as_str()?.trim().to_string(),
                 edge.get("to")?.as_str()?.trim().to_string(),
-                edge.get("kind")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|kind| !kind.is_empty())
-                    .unwrap_or("next")
-                    .to_string(),
+                kind,
             ))
         })
         .collect::<BTreeSet<_>>();
@@ -14055,6 +14063,25 @@ message = "stale"
                 .iter()
                 .any(|diagnostic| diagnostic.code == "invalid_graph_edge_kind"
                     && diagnostic.path.as_deref() == Some("edges[0].kind"))
+        );
+    }
+
+    #[test]
+    fn rejects_graph_edge_without_explicit_kind() {
+        let mut document = document_with_real_launch_modes();
+        document.edges = json!([
+            { "id": "e1", "from": "plan", "to": "review", "label": "" }
+        ]);
+        let result = validate_document(&document);
+
+        assert!(!result.ok);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "invalid_graph_edge_kind"
+                    && diagnostic.path.as_deref() == Some("edges[0].kind")
+                    && diagnostic.message.contains("non-empty kind"))
         );
     }
 
