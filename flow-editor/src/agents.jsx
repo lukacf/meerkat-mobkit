@@ -516,8 +516,26 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     if (edgesChanged) studio.setEdges(result.edges);
   };
 
-  const updateField = (fieldId, patch) =>
-    change(window.MobKitFlowController.schemaFieldUpdatePatch(schema, fieldId, patch, contract));
+  const updateField = (fieldId, patch) => {
+    if (Object.prototype.hasOwnProperty.call(patch || {}, "name")) {
+      change(window.MobKitFlowController.schemaFieldUpdatePatch(schema, fieldId, patch, contract));
+      return;
+    }
+    const result = window.MobKitFlowController.schemaFieldUpdateCascadePatch({
+      schema,
+      schemas: studio.schemas,
+      flow,
+      edges: studio.edges,
+      members: studio.members,
+      instances: studio.instances,
+    }, fieldId, patch, contract);
+    const flowChanged = result.flow !== flow;
+    const edgesChanged = result.edges !== studio.edges;
+    if (studio.snap) studio.snap();
+    studio.setSchemas(result.schemas);
+    if (flowChanged && setFlow) setFlow(result.flow);
+    if (edgesChanged) studio.setEdges(result.edges);
+  };
 
   const deleteField = (fieldId) => {
     const result = window.MobKitFlowController.schemaFieldDeleteCascadePatch({

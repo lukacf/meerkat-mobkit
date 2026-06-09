@@ -4956,6 +4956,51 @@ assert.deepEqual(controller.schemaFieldUpdatePatch({
 }, "f1", { type: "enum" }, schemaDraftContract), {
   fields: [{ id: "f1", name: "old", type: "enum", enumValues: ["value"] }],
 });
+const updatedSchemaFieldCascade = controller.schemaFieldUpdateCascadePatch({
+  schema: {
+    id: "ReviewArtifact",
+    fields: [{ id: "f1", name: "verdict", type: "enum", enumValues: ["green", "red"] }],
+  },
+  schemas: [
+    { id: "ReviewArtifact", fields: [{ id: "f1", name: "verdict", type: "enum", enumValues: ["green", "red"] }] },
+  ],
+  members: [{ id: "m_reviewer", schema: "ReviewArtifact" }],
+  flow: {
+    name: "field-update-cascade",
+    steps: [
+      { id: "review_step", type: "member", role: "m_reviewer" },
+      {
+        id: "route",
+        type: "branch",
+        branches: [{
+          id: "br_red",
+          cond: { stepId: "review_step", field: "verdict", op: "==", val: "red" },
+          condition: "steps.review_step.verdict == \"red\"",
+          steps: [],
+        }],
+        fallback: [],
+      },
+    ],
+  },
+  edges: [{
+    id: "e_review_done",
+    from: "review_inst",
+    to: "done",
+    kind: "cond",
+    label: "steps.review_inst.verdict == \"red\"",
+    cond: { var: "steps.review_inst.verdict", op: "==", val: "red" },
+  }],
+  instances: [
+    { id: "review_inst", memberId: "m_reviewer" },
+    { id: "done", isTerminal: true },
+  ],
+}, "f1", { enumValues: ["green"] }, schemaDraftContract);
+assert.deepEqual(updatedSchemaFieldCascade.schema.fields[0].enumValues, ["green"]);
+assert.deepEqual(updatedSchemaFieldCascade.schemas[0].fields[0].enumValues, ["green"]);
+assert.deepEqual(updatedSchemaFieldCascade.flow.steps[1].branches[0].cond, {});
+assert.equal(updatedSchemaFieldCascade.flow.steps[1].branches[0].condition, "");
+assert.deepEqual(updatedSchemaFieldCascade.edges[0].cond, null);
+assert.equal(updatedSchemaFieldCascade.edges[0].label, "");
 assert.deepEqual(controller.schemaFieldDeletePatch({
   fields: [{ id: "f1", name: "old" }, { id: "f2", name: "keep" }],
 }, "f1"), {

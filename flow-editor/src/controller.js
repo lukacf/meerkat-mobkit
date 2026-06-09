@@ -3382,20 +3382,23 @@
     for (const schema of schemas || []) {
       const id = String(schema?.id || "").trim();
       if (!id) continue;
-      out.set(id, new Set((schema.fields || [])
-        .map((field) => String(field?.name || "").trim())
-        .filter(Boolean)));
+      const fields = new Map();
+      for (const field of schema.fields || []) {
+        const name = String(field?.name || "").trim();
+        if (name) fields.set(name, field);
+      }
+      out.set(id, fields);
     }
     return out;
   }
 
   function inputParamNameSet(flow) {
-    const out = new Set();
+    const out = new Map();
     collectVisualSteps(flow?.steps || [], (step) => {
       if (step?.type !== "input") return;
       for (const param of step.inputParams || []) {
         const name = String(param?.name || "").trim();
-        if (name) out.add(name);
+        if (name) out.set(name, param);
       }
     });
     return out;
@@ -3478,11 +3481,11 @@
     const field = String(cond.field || "").trim();
     if (!field) return true;
     if (cond.namespace === "params" || cond.stepId === "params" || cond.step_id === "params") {
-      return inputFields.has(field);
+      return conditionFieldValueAvailable(inputFields.get(field), cond);
     }
     const stepId = String(cond.stepId || cond.step_id || "").trim();
     if (!stepId) return true;
-    return schemaHasField(schemaFields, stepSchemas.get(stepId), field);
+    return conditionFieldValueAvailable(schemaFieldForCondition(schemaFields, stepSchemas.get(stepId), field), cond);
   }
 
   function reconcileConditionAvailabilityInEdges(edges, stepSchemas, schemaFields, inputFields) {
@@ -3493,9 +3496,9 @@
       const parts = path.split(".").filter(Boolean);
       let available = true;
       if (parts.length === 2 && parts[0] === "params") {
-        available = inputFields.has(parts[1]);
+        available = conditionFieldValueAvailable(inputFields.get(parts[1]), condition);
       } else if (parts.length === 3 && parts[0] === "steps") {
-        available = schemaHasField(schemaFields, stepSchemas.get(parts[1]), parts[2]);
+        available = conditionFieldValueAvailable(schemaFieldForCondition(schemaFields, stepSchemas.get(parts[1]), parts[2]), condition);
       }
       if (available) return edge;
       changed = true;
@@ -3505,9 +3508,28 @@
   }
 
   function schemaHasField(schemaFields, schemaId, field) {
+    return !!schemaFieldForCondition(schemaFields, schemaId, field);
+  }
+
+  function schemaFieldForCondition(schemaFields, schemaId, field) {
     const id = String(schemaId || "").trim();
     const name = String(field || "").trim();
-    return !!id && !!name && schemaFields.get(id)?.has(name);
+    if (!id || !name) return null;
+    const fields = schemaFields.get(id);
+    if (!fields) return null;
+    if (fields instanceof Map) return fields.get(name) || null;
+    return fields.has?.(name) ? { name } : null;
+  }
+
+  function conditionFieldValueAvailable(field, cond) {
+    if (!field) return false;
+    const type = String(field.type || "").trim();
+    if (type !== "enum") return true;
+    const values = enumValuesForField(field).map(String);
+    if (!values.length) return true;
+    const raw = cond?.val ?? cond?.value;
+    if (raw == null || String(raw).trim() === "") return true;
+    return values.includes(String(raw));
   }
 
   function flowStepSchemaIndex(steps, memberSchemaById, out = new Map()) {
@@ -3919,6 +3941,30 @@
       normalized.name = uniqueSchemaFieldName(fields, normalized.name, fieldId, editorSchemaFieldNameFallback(contract));
     }
     return { fields: fields.map((field) => field?.id === fieldId ? { ...field, ...normalized } : field) };
+  }
+
+  function schemaFieldUpdateCascadePatch({ schema, schemas, flow, edges, members, instances } = {}, fieldId, patch = {}, contract) {
+    const currentSchemaId = String(schema?.id || "").trim();
+    const updatePatch = schemaFieldUpdatePatch(schema, fieldId, patch, contract);
+    const nextSchema = { ...(schema || {}), ...updatePatch };
+    const list = Array.isArray(schemas) ? schemas : [];
+    const nextSchemas = currentSchemaId
+      ? list.map((candidate) => candidate?.id === currentSchemaId ? nextSchema : candidate)
+      : list;
+    const reconciled = reconcileConditionFieldAvailability({
+      flow,
+      edges,
+      members,
+      instances,
+      schemas: nextSchemas,
+    });
+    return {
+      patch: updatePatch,
+      schema: nextSchema,
+      schemas: nextSchemas,
+      flow: reconciled.flow,
+      edges: reconciled.edges,
+    };
   }
 
   function schemaFieldRenameCascadePatch({ schema, schemas, flow, edges, members, instances } = {}, fieldId, rawName, oldName, contract) {
@@ -10681,6 +10727,7 @@
     enumValueAddPatch,
     schemaFieldAddPatch,
     schemaFieldUpdatePatch,
+    schemaFieldUpdateCascadePatch,
     schemaFieldRenameCascadePatch,
     schemaFieldDeletePatch,
     schemaFieldDeleteCascadePatch,

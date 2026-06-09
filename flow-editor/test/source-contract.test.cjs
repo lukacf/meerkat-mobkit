@@ -1078,6 +1078,8 @@ assert.match(agentsMainBlock, /schemaView(?:\s*=\s*null)?[\s\S]*<SchemaEditor[\s
 assert.match(schemaEditorBlock, /schemaEditorControlState\(\{[\s\S]*schemaView/, "Schema detail pane must pass schema-backed view state into controller projection");
 assert(!/`Artifact|["']field_one["']|["']new_field["']/.test(controller), "controller must not own local schema id or field-name draft defaults");
 assert.match(agents, /MobKitFlowController\.schemaFieldUpdatePatch/, "Agent Editor must update schema fields through the controller plane");
+assert.match(agents, /MobKitFlowController\.schemaFieldUpdateCascadePatch/, "Agent Editor must update schema field semantics through the controller cascade plane");
+assert.match(agents, /schemaFieldUpdateCascadePatch\(\{[\s\S]*schema,[\s\S]*schemas:\s*studio\.schemas,[\s\S]*flow,[\s\S]*edges:\s*studio\.edges,[\s\S]*members:\s*studio\.members,[\s\S]*instances:\s*studio\.instances/, "Agent Editor schema-field semantic updates must pass schemas plus Basic/Graph context into controller cleanup");
 assert.match(agents, /MobKitFlowController\.schemaFieldRenameCascadePatch/, "Agent Editor must commit schema field renames through the controller cascade plane");
 assert.match(agents, /schemaFieldRenameCascadePatch\(\{[\s\S]*schema,[\s\S]*schemas:\s*studio\.schemas,[\s\S]*flow,[\s\S]*edges:\s*studio\.edges,[\s\S]*members:\s*studio\.members,[\s\S]*instances:\s*studio\.instances/, "Agent Editor schema-field renames must pass schemas plus Basic/Graph context into controller cleanup");
 assert.match(agents, /MobKitFlowController\.schemaFieldDeleteCascadePatch/, "Agent Editor must delete schema fields through the controller cascade plane");
@@ -1086,6 +1088,8 @@ assert.match(agents, /const deleteField = \(fieldId\) => \{[\s\S]*if \(result\.f
 assert(!/onDelete=\{\(\) => \{[\s\S]*reconcileFieldReferences\(f\.name,\s*[""]{2}\)/.test(agents), "Agent Editor schema-field deletes must not split condition cleanup into a UI-local pre-delete step");
 assert.match(agents, /MobKitFlowController\.uniqueSchemaFieldName/, "Agent Editor must normalize schema field names through the controller plane");
 assert.match(controller, /schemaFieldUpdatePatch[\s\S]{0,720}uniqueSchemaFieldName[\s\S]{0,160}editorSchemaFieldNameFallback/, "controller plane must normalize schema field names on every Agent schema-field update using MobKit draft fallback names");
+assert.match(controller, /function schemaFieldUpdateCascadePatch/, "controller plane must own schema-field semantic update cascade semantics");
+assert.match(controller, /schemaFieldUpdateCascadePatch[\s\S]*schemaFieldUpdatePatch\(schema,\s*fieldId,\s*patch,\s*contract\)[\s\S]*reconcileConditionFieldAvailability\(\{[\s\S]*schemas:\s*nextSchemas/, "schema-field semantic update cascade must update schema docs and clear invalid Basic/Graph conditions together");
 assert.match(controller, /function schemaFieldRenameCascadePatch/, "controller plane must own schema-field rename cascade semantics");
 assert.match(controller, /schemaFieldRenameCascadePatch[\s\S]*schemaFieldUpdatePatch\(schema,\s*fieldId,\s*\{\s*name:\s*rawName\s*\},\s*contract\)[\s\S]*reconcileSchemaFieldReferences\(\{/, "schema-field rename cascade must update schema docs and rewrite Basic/Graph condition references together");
 assert.match(controller, /function schemaFieldDeletePatch/, "controller plane must own primitive schema-field deletion semantics");
