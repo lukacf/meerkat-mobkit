@@ -14314,6 +14314,7 @@ function App() {
   const [mobSettings, setMobSettings] = React.useState(() => window.MobKitFlowController.mobDefaultsFromSchema(null));
   const projectionSyncInFlight = React.useRef(false);
   const projectionSyncReset = React.useRef(0);
+  const authoringOperationQueue = React.useRef(Promise.resolve());
   const beginProjectionSync = React.useCallback(() => {
     projectionSyncInFlight.current = true;
     if (projectionSyncReset.current) window.cancelAnimationFrame(projectionSyncReset.current);
@@ -14331,6 +14332,11 @@ function App() {
   const sourceProjectionIsCurrent = React.useCallback((requestToken) => requestToken === sourceProjectionVersion.current, []);
   const currentAuthoringRevision = React.useCallback(() => authoringRevision.current, []);
   const authoringRevisionIsCurrent = React.useCallback((requestToken) => requestToken === authoringRevision.current, []);
+  const enqueueMobKitAuthoringTask = React.useCallback((task) => {
+    const run = authoringOperationQueue.current.catch(() => null).then(task);
+    authoringOperationQueue.current = run.catch(() => null);
+    return run;
+  }, []);
   const setCurrentAuthoringDocument = React.useCallback((document2) => {
     const next = document2 && typeof document2 === "object" ? document2 : null;
     authoringDocumentRef.current = next;
@@ -14787,53 +14793,57 @@ function App() {
     return { document: result?.document || authoringDocumentRef.current || buildDocument(overrides), requestToken };
   };
   const applyMobKitAuthoringOperation = async (operation) => {
-    const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operation?.type);
-    if (!availability.supported) return { ok: false, error: availability.error };
-    const requestToken = currentAuthoringRevision();
-    const document2 = currentMobKitDocument();
-    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, operation);
-    if (!authoringRevisionIsCurrent(requestToken)) {
-      return { ok: false, error: "stale authoring operation" };
-    }
-    const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
-      deployDefaults: catalogs.deployDefaults,
-      mobDefaults: catalogs.mobDefaults
+    return enqueueMobKitAuthoringTask(async () => {
+      const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operation?.type);
+      if (!availability.supported) return { ok: false, error: availability.error };
+      const requestToken = currentAuthoringRevision();
+      const document2 = currentMobKitDocument();
+      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, operation);
+      if (!authoringRevisionIsCurrent(requestToken)) {
+        return { ok: false, error: "stale authoring operation" };
+      }
+      const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
+        deployDefaults: catalogs.deployDefaults,
+        mobDefaults: catalogs.mobDefaults
+      });
+      if (!projection) return { ok: false, error: "MobKit authoring operation did not return a document" };
+      beginProjectionSync();
+      applyAuthoringDocumentProjection(projection);
+      markDraft();
+      return result;
     });
-    if (!projection) return { ok: false, error: "MobKit authoring operation did not return a document" };
-    beginProjectionSync();
-    applyAuthoringDocumentProjection(projection);
-    markDraft();
-    return result;
   };
   const applyMobKitAuthoringReplacement = async (overrides = {}) => {
-    const operationType = overrides.operationType || "replace_authoring_document";
-    const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operationType);
-    if (!availability.supported) return { ok: false, error: availability.error };
-    const requestToken = currentAuthoringRevision();
-    const document2 = currentMobKitDocument();
-    const operation = {
-      type: operationType,
-      ...overrides.operation || {},
-      selection: overrides.selection || null
-    };
-    if (operationType === "replace_authoring_document") {
-      operation.document = buildAuthoringProjection(overrides).document;
-    }
-    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, {
-      ...operation
+    return enqueueMobKitAuthoringTask(async () => {
+      const operationType = overrides.operationType || "replace_authoring_document";
+      const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operationType);
+      if (!availability.supported) return { ok: false, error: availability.error };
+      const requestToken = currentAuthoringRevision();
+      const document2 = currentMobKitDocument();
+      const operation = {
+        type: operationType,
+        ...overrides.operation || {},
+        selection: overrides.selection || null
+      };
+      if (operationType === "replace_authoring_document") {
+        operation.document = buildAuthoringProjection(overrides).document;
+      }
+      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, {
+        ...operation
+      });
+      if (!authoringRevisionIsCurrent(requestToken)) {
+        return { ok: false, error: "stale authoring operation" };
+      }
+      const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
+        deployDefaults: catalogs.deployDefaults,
+        mobDefaults: catalogs.mobDefaults
+      });
+      if (!projection) return { ok: false, error: "MobKit authoring operation did not return a document" };
+      beginProjectionSync();
+      applyAuthoringDocumentProjection(projection);
+      markDraft();
+      return result;
     });
-    if (!authoringRevisionIsCurrent(requestToken)) {
-      return { ok: false, error: "stale authoring operation" };
-    }
-    const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
-      deployDefaults: catalogs.deployDefaults,
-      mobDefaults: catalogs.mobDefaults
-    });
-    if (!projection) return { ok: false, error: "MobKit authoring operation did not return a document" };
-    beginProjectionSync();
-    applyAuthoringDocumentProjection(projection);
-    markDraft();
-    return result;
   };
   const mobKitStudio = {
     ...studio,

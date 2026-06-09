@@ -12,6 +12,7 @@ const agents = src("agents.jsx");
 const graph = src("graph.jsx");
 const inspector = src("inspector.jsx");
 const app = src("app.jsx");
+const styles = src("styles.css");
 const controller = src("controller.js");
 const topRailBlock = (app.match(/function TopRail[\s\S]*?\/\/ ── Flows registry view/) || [""])[0];
 const tweaksPanel = src("tweaks-panel.jsx");
@@ -95,6 +96,10 @@ assert.match(app, /MobKitFlowController\.emptyAuthoringFlowState\(\)/, "app init
 assert(!/window\.PRESETS\b/.test(app), "app must load sample flows from MobKit schema, not window.PRESETS");
 assert(!/j_graph_/.test(app), "graph editor must not create standalone join gates; joins must belong to MobKit branch/parallel shapes");
 assert(!/label:\s*gateKind === "join"/.test(app), "graph editor must not keep visual-only join fallback nodes");
+assert.match(app, /const authoringOperationQueue = React\.useRef\(Promise\.resolve\(\)\)/, "app shell must serialize MobKit authoring RPC mutations so same-revision edits apply in intent order");
+assert.match(app, /function TopRail[\s\S]*className="brand"[\s\S]*className="viewtabs"[\s\S]*className="mob-status"[\s\S]*className="mob-status mob-status--env"[\s\S]*className="crumbs"[\s\S]*className="actions"/, "TopRail must keep the six handoff rail children explicit");
+assert.match(styles, /\.toprail\s*\{[\s\S]*grid-template-columns:\s*auto auto minmax\(84px,\s*auto\) minmax\(72px,\s*auto\) minmax\(0,\s*1fr\) auto;/, "desktop TopRail grid must declare one bounded track per rendered rail child");
+assert.match(styles, /@media \(max-width: 980px\)[\s\S]*\.toprail\s*\{[\s\S]*grid-template-columns:\s*auto auto minmax\(84px,\s*auto\) minmax\(0,\s*1fr\) auto;/, "mobile TopRail grid must declare one track per visible rail child after hiding deploy status");
 assert(!/document\.querySelector|document\.createElement|document\.body|new Blob|URL\.createObjectURL|arrayBuffer\(|new TextDecoder|btoa\(|atob\(|importFile/.test(controller), "controller plane must not perform browser URL discovery, download, file decoding, or DOM rendering side effects");
 assert(!/window\.MOBKIT_DATA/.test(controller), "controller plane must not read UI shell catalog globals");
 assert(!/\bMOBKIT_DATA\b/.test(app), "app shell must not use a live-looking MobKit catalog global");
@@ -112,6 +117,7 @@ assert.match(controller, /agentDefinitionsFromCatalogs[\s\S]*deployability:\s*te
 assert.match(controller, /mobKitCatalogsFromSchema[\s\S]*catalogSnapshot:\s*catalogSource\.catalog_snapshot/, "controller catalog projection must preserve the MobKit catalog snapshot contract");
 assert.match(mobpackRust, /fn catalog_deployability[\s\S]*"command":\s*"rkat mob deploy"/, "MobKit catalogs must expose deployability metadata tied to rkat mob deploy");
 assert.match(mobpackRust, /fn with_catalog_snapshot[\s\S]*"deploy_command":\s*"rkat mob deploy"/, "MobKit catalogs must expose deterministic snapshot metadata for deploy-context provenance");
+assert.match(mobpackRust, /fn canonicalize_deployable_authoring_document[\s\S]*document\.mob_toml = Some\(authoring_mob_toml\(document\)\?\)/, "MobKit source/export/save must stamp the canonical rendered mob.toml into editor projections before artifacts are persisted");
 assert.match(controller, /memberFromAgentDefinition[\s\S]*sourceMobpack contract[\s\S]*sourceOrigin contract/, "Agent Editor add flow must reject profile-member definitions without MobKit source provenance");
 assert.match(agents, /MobKitFlowController\.agentDefinitionCatalogState\(agentDefinitions,\s*agentView\)/, "Agent definition catalog rows must be projected by the controller plane");
 assert.match(controller, /function agentDefinitionCatalogState[\s\S]*toolDefinitions[\s\S]*skillDefinitions[\s\S]*definitionCatalogSourceLabel/, "Agent definition catalog must preserve MobKit tool, skill, and source provenance");
@@ -1131,7 +1137,7 @@ assert.match(app, /setTemplates\(bootstrap\.templates\);[\s\S]*setFlows\(bootstr
 assert.match(controller, /function flowCatalogBootstrapState\(catalogPayload, options = \{\}\)[\s\S]*flowRegistryRowsFromBackend\(options\.registryRows \|\| options\.registryResult\?\.rows\)[\s\S]*registryFlows\.length \? registryFlows : \(blankFlow \? \[blankFlow\] : \[\]\)/, "controller plane must open MobKit-saved registry rows before falling back to the blank mobpack");
 assert.match(controller, /async function saveDocument[\s\S]*rpcMethod\("save"\)/, "controller plane must save registry documents through mobkit/mobpacks/save");
 assert.match(controller, /async function saveDocument[\s\S]*expected_revision[\s\S]*expected_etag[\s\S]*rpcMethod\("save"\)/, "controller save projection must send MobKit draft revision and etag guards when present");
-assert.match(mobpackRust, /fn mobpack_draft_row_from_params[\s\S]*let validation = serde_json::to_value\(validate_document\(&document\)\)[\s\S]*let stage = if validation\.get\("ok"\)/, "mobkit/mobpacks/save must recompute validation and stage from the submitted MobKit document");
+assert.match(mobpackRust, /fn mobpack_draft_row_from_params[\s\S]*let validation_result = canonicalize_deployable_authoring_document\(&mut document\)\?[\s\S]*let validation = serde_json::to_value\(&validation_result\)[\s\S]*let stage = if validation\.get\("ok"\)/, "mobkit/mobpacks/save must canonicalize the submitted MobKit document before recomputing validation and stage");
 assert(!/fn mobpack_draft_row_from_params[\s\S]{0,900}params\s*\.get\("validation"\)/.test(mobpackRust), "mobkit/mobpacks/save must not trust caller-supplied validation rows");
 assert.match(mobpackRust, /fn mobpack_draft_registry_recomputes_validation_on_save/, "MobKit tests must prove saved registry rows cannot fake validation or valid stage");
 assert.match(mobpackRust, /fn mobpack_draft_registry_rejects_stale_expected_revision/, "MobKit tests must prove saved registry rows reject stale editor revisions");

@@ -3281,10 +3281,11 @@ fn mobpack_draft_expected_etag(params: &Value) -> Option<String> {
 }
 
 fn mobpack_draft_row_from_params(params: &Value, revision: u64) -> Result<Value, String> {
-    let document = document_from_params(params)?;
+    let mut document = document_from_params(params)?;
     let id = mobpack_draft_id_from_params(params, &document)?;
     let draft_etag = mobpack_draft_etag(&id, revision);
-    let validation = serde_json::to_value(validate_document(&document)).unwrap_or(Value::Null);
+    let validation_result = canonicalize_deployable_authoring_document(&mut document)?;
+    let validation = serde_json::to_value(&validation_result).unwrap_or(Value::Null);
     let stage = if validation.get("ok").and_then(Value::as_bool) == Some(true) {
         "valid".to_string()
     } else {
@@ -10973,12 +10974,15 @@ struct RenderedMobpackSource {
 }
 
 fn render_mobpack_source(params: &Value) -> Result<RenderedMobpackSource, String> {
-    let document = document_from_params(params)?;
-    let validation = validate_document(&document);
+    let mut document = document_from_params(params)?;
+    let validation = canonicalize_deployable_authoring_document(&mut document)?;
     if !validation.ok {
         return Err("cannot render source for invalid mobpack document".to_string());
     }
-    let mob_toml = authoring_mob_toml(&document)?;
+    let mob_toml = document
+        .mob_toml
+        .clone()
+        .ok_or_else(|| "canonical authoring document is missing rendered mob.toml".to_string())?;
     let filename = document_export_filename(&document);
     let slug = filename
         .strip_suffix(".mobpack")
@@ -10991,6 +10995,16 @@ fn render_mobpack_source(params: &Value) -> Result<RenderedMobpackSource, String
         files,
         validation,
     })
+}
+
+fn canonicalize_deployable_authoring_document(
+    document: &mut MobpackDocument,
+) -> Result<MobpackValidationResult, String> {
+    let validation = validate_document(document);
+    if validation.ok {
+        document.mob_toml = Some(authoring_mob_toml(document)?);
+    }
+    Ok(validation)
 }
 
 pub fn source_mobpack(params: &Value) -> Result<MobpackSourceResult, String> {
@@ -22558,6 +22572,18 @@ message = "stale"
         assert!(result.mob_toml.contains(r#"message = "Review""#));
         assert!(!result.mob_toml.contains("stale-pack"));
         assert!(!result.mob_toml.contains("[flows.stale]"));
+        let editor_json = result
+            .source_files
+            .iter()
+            .find(|file| file.path == "mobkit/editor.json")
+            .and_then(|file| file.text.as_deref())
+            .expect("mobkit/editor.json source file");
+        let editor_json: Value = serde_json::from_str(editor_json).expect("editor json");
+        assert_eq!(
+            editor_json["document"]["mob_toml"].as_str(),
+            Some(result.mob_toml.as_str()),
+            "editor projection archived with the mobpack must carry MobKit's canonical rendered mob.toml"
+        );
     }
 
     #[test]
@@ -25046,6 +25072,12 @@ model = "gpt-5.5"
             "trigger": "manual save"
         }))
         .expect("save draft");
+        assert!(
+            saved["row"]["document"]["mob_toml"]
+                .as_str()
+                .is_some_and(|text| text.contains("[mob]")),
+            "saved registry document must persist the server-rendered canonical mob.toml"
+        );
         assert_eq!(saved["source"], json!("mobkit/mobpacks/save"));
         assert_eq!(saved["row"]["id"], json!("registry_draft"));
         assert_eq!(saved["row"]["revision"], json!(1));

@@ -305,7 +305,7 @@ body {
 /* ── Topbar (matches MobKit Console .mobkit-topbar pattern) ── */
 .toprail {
   display: grid;
-  grid-template-columns: auto auto minmax(84px, auto) minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(84px, auto) minmax(72px, auto) minmax(0, 1fr) auto;
   align-items: stretch;
   min-width: 0;
   border-bottom: 1px solid var(--hair);
@@ -506,7 +506,7 @@ body {
 
 @media (max-width: 980px) {
   .toprail {
-    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-columns: auto auto minmax(84px, auto) minmax(0, 1fr) auto;
   }
   .mob-status--env {
     display: none;
