@@ -3336,6 +3336,48 @@
     };
   }
 
+  function errorViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_error_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      criticalGlyph: String(view.critical_glyph || "").trim(),
+      genericErrorHead: String(view.generic_error_head || "").trim(),
+      deployFailedHead: String(view.deploy_failed_head || "").trim(),
+      deployPlanFailedHead: String(view.deploy_plan_failed_head || "").trim(),
+      deployErrorMeta: String(view.deploy_error_meta || "").trim(),
+      sourceFailedHead: String(view.source_failed_head || "").trim(),
+      sourceErrorMeta: String(view.source_error_meta || "").trim(),
+      validationApiFailedHead: String(view.validation_api_failed_head || "").trim(),
+      rpcErrorMeta: String(view.rpc_error_meta || "").trim(),
+      exportFailedHead: String(view.export_failed_head || "").trim(),
+      importFailedHead: String(view.import_failed_head || "").trim(),
+      missingEditorFlowHead: String(view.missing_editor_flow_head || "").trim(),
+      missingEditorFlowSub: String(view.missing_editor_flow_sub || "").trim(),
+      missingEditorFlowMeta: String(view.missing_editor_flow_meta || "").trim(),
+    };
+    return Object.values(out).every(Boolean) ? out : null;
+  }
+
+  function errorViewForState(errorView) {
+    const view = errorView && typeof errorView === "object" ? errorView : null;
+    return {
+      criticalGlyph: String(view?.criticalGlyph || ""),
+      genericErrorHead: String(view?.genericErrorHead || ""),
+      deployFailedHead: String(view?.deployFailedHead || ""),
+      deployPlanFailedHead: String(view?.deployPlanFailedHead || ""),
+      deployErrorMeta: String(view?.deployErrorMeta || ""),
+      sourceFailedHead: String(view?.sourceFailedHead || ""),
+      sourceErrorMeta: String(view?.sourceErrorMeta || ""),
+      validationApiFailedHead: String(view?.validationApiFailedHead || ""),
+      rpcErrorMeta: String(view?.rpcErrorMeta || ""),
+      exportFailedHead: String(view?.exportFailedHead || ""),
+      importFailedHead: String(view?.importFailedHead || ""),
+      missingEditorFlowHead: String(view?.missingEditorFlowHead || ""),
+      missingEditorFlowSub: String(view?.missingEditorFlowSub || ""),
+      missingEditorFlowMeta: String(view?.missingEditorFlowMeta || ""),
+    };
+  }
+
   function conditionValueControl(field, rawValue = "", conditionView = null) {
     const view = conditionViewForState(conditionView);
     const type = String(field?.type || "").trim();
@@ -7158,6 +7200,7 @@
       graphView: null,
       graphTemplateView: null,
       conditionView: null,
+      errorView: null,
       validationSource: "",
       contractMeta: {
         loaded: false,
@@ -7195,6 +7238,7 @@
       graphView: graphViewFromSchema(schema),
       graphTemplateView: graphTemplateViewFromSchema(schema),
       conditionView: conditionViewFromSchema(schema),
+      errorView: errorViewFromSchema(schema),
       validationSource: schema?.validation_source || "",
       contractMeta: {
         loaded: true,
@@ -7275,6 +7319,7 @@
     const members = Array.isArray(document.members) ? document.members : [];
     const schemas = Array.isArray(document.schemas) ? document.schemas : [];
     const flow = flowFromHydratedDocument(document);
+    const errorView = errorViewForState(options.errorView);
     if (!flow) {
       return {
         ok: false,
@@ -7292,14 +7337,14 @@
         openEditor: false,
         validation: null,
         validationRows: [{
-          kind: "error",
-          glyph: "!",
-          head: "Imported mobpack is missing a MobKit editor flow",
-          sub: "mobkit/mobpacks/import did not return document.flow.steps",
-          meta: "missing_editor_flow",
+          kind: "crit",
+          glyph: errorView.criticalGlyph,
+          head: errorView.missingEditorFlowHead,
+          sub: errorView.missingEditorFlowSub,
+          meta: errorView.missingEditorFlowMeta,
         }],
         stage: "draft",
-        error: "missing_editor_flow",
+        error: errorView.missingEditorFlowMeta,
       };
     }
     const skillRealms = mergeSkillRealms(document.skill_realms, options.contractSkillRealms || []);
@@ -8527,12 +8572,13 @@
     return error?.message || String(error || "");
   }
 
-  function criticalErrorOutcome({ head, error, meta } = {}) {
+  function criticalErrorOutcome({ head, error, meta, errorView } = {}) {
+    const view = errorViewForState(errorView);
     return {
       validationRows: [{
         kind: "crit",
-        glyph: "!",
-        head: String(head || "MobKit error"),
+        glyph: view.criticalGlyph,
+        head: String(head || view.genericErrorHead),
         sub: errorMessage(error),
         meta: String(meta || ""),
       }],
@@ -8541,42 +8587,52 @@
   }
 
   function deployErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
     return criticalErrorOutcome({
-      head: options.execute ? "Deploy failed" : "Deploy plan failed",
+      head: options.execute ? view.deployFailedHead : view.deployPlanFailedHead,
       error,
-      meta: "mobkit/mobpacks/deploy",
+      meta: view.deployErrorMeta,
+      errorView: view,
     });
   }
 
-  function sourceErrorOutcome(error) {
+  function sourceErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
     return criticalErrorOutcome({
-      head: "Source render failed",
+      head: view.sourceFailedHead,
       error,
-      meta: "mobkit/mobpacks/export",
+      meta: view.sourceErrorMeta,
+      errorView: view,
     });
   }
 
-  function validationErrorOutcome(error) {
+  function validationErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
     return criticalErrorOutcome({
-      head: "MobKit API unavailable",
+      head: view.validationApiFailedHead,
       error,
-      meta: "/flow-editor/rpc",
+      meta: view.rpcErrorMeta,
+      errorView: view,
     });
   }
 
-  function exportErrorOutcome(error) {
+  function exportErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
     return criticalErrorOutcome({
-      head: "Export failed",
+      head: view.exportFailedHead,
       error,
-      meta: "/flow-editor/rpc",
+      meta: view.rpcErrorMeta,
+      errorView: view,
     });
   }
 
   function importErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
     return criticalErrorOutcome({
-      head: "Import failed",
+      head: view.importFailedHead,
       error,
       meta: options.filename || "",
+      errorView: view,
     });
   }
 

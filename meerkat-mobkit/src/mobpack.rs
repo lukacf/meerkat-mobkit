@@ -820,6 +820,22 @@ pub fn mobpack_schema_response() -> Value {
         "empty_value_label": "—",
         "text_value_placeholder": "value"
     });
+    let editor_error_view = json!({
+        "critical_glyph": "!",
+        "generic_error_head": "MobKit error",
+        "deploy_failed_head": "Deploy failed",
+        "deploy_plan_failed_head": "Deploy plan failed",
+        "deploy_error_meta": "mobkit/mobpacks/deploy",
+        "source_failed_head": "Source render failed",
+        "source_error_meta": "mobkit/mobpacks/export",
+        "validation_api_failed_head": "MobKit API unavailable",
+        "rpc_error_meta": "/flow-editor/rpc",
+        "export_failed_head": "Export failed",
+        "import_failed_head": "Import failed",
+        "missing_editor_flow_head": "Imported mobpack is missing a MobKit editor flow",
+        "missing_editor_flow_sub": "mobkit/mobpacks/import did not return document.flow.steps",
+        "missing_editor_flow_meta": "missing_editor_flow"
+    });
     let editor_agent_view = json!({
         "agents_heading": "AGENTS",
         "schemas_heading": "SCHEMAS",
@@ -1423,6 +1439,7 @@ pub fn mobpack_schema_response() -> Value {
         "dependency_modes": dependency_mode_values()
     });
     mob_definition["editor_condition_view"] = editor_condition_view;
+    mob_definition["editor_error_view"] = editor_error_view;
     mob_definition["editor_agent_detail_view"] = editor_agent_detail_view;
     mob_definition["editor_agent_access_view"] = editor_agent_access_view;
     mob_definition["editor_deploy_view"] = editor_deploy_view;
@@ -15874,6 +15891,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_condition_view"]["empty_value_label"],
             json!("—")
+        );
+        assert_eq!(
+            mob_definition["editor_error_view"]["deploy_plan_failed_head"],
+            json!("Deploy plan failed")
+        );
+        assert_eq!(
+            mob_definition["editor_error_view"]["missing_editor_flow_meta"],
+            json!("missing_editor_flow")
         );
         assert_eq!(
             mob_definition["editor_agent_view"]["agents_heading"],

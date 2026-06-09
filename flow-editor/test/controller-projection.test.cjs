@@ -322,6 +322,38 @@ const TEST_CONDITION_VIEW = {
   emptyValueLabel: "—",
   textValuePlaceholder: "value",
 };
+const TEST_ERROR_VIEW_SCHEMA = {
+  critical_glyph: "!",
+  generic_error_head: "MobKit error",
+  deploy_failed_head: "Deploy failed",
+  deploy_plan_failed_head: "Deploy plan failed",
+  deploy_error_meta: "mobkit/mobpacks/deploy",
+  source_failed_head: "Source render failed",
+  source_error_meta: "mobkit/mobpacks/export",
+  validation_api_failed_head: "MobKit API unavailable",
+  rpc_error_meta: "/flow-editor/rpc",
+  export_failed_head: "Export failed",
+  import_failed_head: "Import failed",
+  missing_editor_flow_head: "Imported mobpack is missing a MobKit editor flow",
+  missing_editor_flow_sub: "mobkit/mobpacks/import did not return document.flow.steps",
+  missing_editor_flow_meta: "missing_editor_flow",
+};
+const TEST_ERROR_VIEW = {
+  criticalGlyph: "!",
+  genericErrorHead: "MobKit error",
+  deployFailedHead: "Deploy failed",
+  deployPlanFailedHead: "Deploy plan failed",
+  deployErrorMeta: "mobkit/mobpacks/deploy",
+  sourceFailedHead: "Source render failed",
+  sourceErrorMeta: "mobkit/mobpacks/export",
+  validationApiFailedHead: "MobKit API unavailable",
+  rpcErrorMeta: "/flow-editor/rpc",
+  exportFailedHead: "Export failed",
+  importFailedHead: "Import failed",
+  missingEditorFlowHead: "Imported mobpack is missing a MobKit editor flow",
+  missingEditorFlowSub: "mobkit/mobpacks/import did not return document.flow.steps",
+  missingEditorFlowMeta: "missing_editor_flow",
+};
 const TEST_SCHEMA = {
   deploy_settings: {
     command: "rkat mob deploy",
@@ -350,6 +382,7 @@ const TEST_SCHEMA = {
     editor_settings_view: TEST_SETTINGS_VIEW_SCHEMA,
     editor_launch_view: TEST_LAUNCH_VIEW_SCHEMA,
     editor_condition_view: TEST_CONDITION_VIEW_SCHEMA,
+    editor_error_view: TEST_ERROR_VIEW_SCHEMA,
     mob_settings: {
       defaults: {
         orchestrator: "",
@@ -748,6 +781,7 @@ assert.equal(emptyCatalogs.grid, catalogBoot.grid);
 assert.equal(emptyCatalogs.cellXY, catalogBoot.cellXY);
 assert.equal(emptyCatalogs.template, null);
 assert.equal(emptyCatalogs.conditionView, null);
+assert.equal(emptyCatalogs.errorView, null);
 assert.deepEqual(controller.schemaSkillRealms({ skill_realms: "starter" }), []);
 
 const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
@@ -772,6 +806,7 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       close_label: "×",
     },
     editor_condition_view: TEST_CONDITION_VIEW_SCHEMA,
+    editor_error_view: TEST_ERROR_VIEW_SCHEMA,
     editor_agent_view: {
       agents_heading: "AGENTS",
       schemas_heading: "SCHEMAS",
@@ -1184,6 +1219,7 @@ assert.deepEqual(hydratedCatalogs.sourceView, {
   closeLabel: "×",
 });
 assert.deepEqual(hydratedCatalogs.conditionView, TEST_CONDITION_VIEW);
+assert.deepEqual(hydratedCatalogs.errorView, TEST_ERROR_VIEW);
 assert.deepEqual(hydratedCatalogs.agentView, {
   agentsHeading: "AGENTS",
   schemasHeading: "SCHEMAS",
@@ -4772,7 +4808,7 @@ const failedRunOutcome = controller.deployOutcome({ mob_id: "deploy_me" }, {
 assert.equal(failedRunOutcome.stage, "draft");
 assert.equal(failedRunOutcome.validation.ok, true);
 
-const deployPlanError = controller.deployErrorOutcome(new Error("planner offline"), { execute: false });
+const deployPlanError = controller.deployErrorOutcome(new Error("planner offline"), { execute: false, errorView: hydratedCatalogs.errorView });
 assert.equal(deployPlanError.stage, "draft");
 assert.deepEqual(deployPlanError.validationRows[0], {
   kind: "crit",
@@ -4782,7 +4818,7 @@ assert.deepEqual(deployPlanError.validationRows[0], {
   meta: "mobkit/mobpacks/deploy",
 });
 
-const deployRunError = controller.deployErrorOutcome(new Error("runner offline"), { execute: true });
+const deployRunError = controller.deployErrorOutcome(new Error("runner offline"), { execute: true, errorView: hydratedCatalogs.errorView });
 assert.equal(deployRunError.validationRows[0].head, "Deploy failed");
 assert.equal(deployRunError.validationRows[0].meta, "mobkit/mobpacks/deploy");
 
@@ -4812,23 +4848,33 @@ assert.equal(controller.validationSheetState([{ kind: "ok" }], { stage: "draft",
 assert.equal(controller.validationSheetState([{ kind: "ok" }], { stage: "valid", deployView: TEST_DEPLOY_VIEW }).actionsDisabled, false);
 assert.equal(controller.validationSheetState([{ kind: "crit" }], { stage: "valid", deployView: TEST_DEPLOY_VIEW }).actionsDisabled, true);
 
-assert.deepEqual(controller.sourceErrorOutcome(new Error("missing toml")).validationRows[0], {
+assert.deepEqual(controller.sourceErrorOutcome(new Error("missing toml"), { errorView: hydratedCatalogs.errorView }).validationRows[0], {
   kind: "crit",
   glyph: "!",
   head: "Source render failed",
   sub: "missing toml",
   meta: "mobkit/mobpacks/export",
 });
-assert.equal(controller.validationErrorOutcome(new Error("rpc down")).validationRows[0].head, "MobKit API unavailable");
-assert.equal(controller.validationErrorOutcome(new Error("rpc down")).validationRows[0].meta, "/flow-editor/rpc");
-assert.equal(controller.exportErrorOutcome(new Error("pack failed")).validationRows[0].head, "Export failed");
-assert.equal(controller.exportErrorOutcome(new Error("pack failed")).validationRows[0].meta, "/flow-editor/rpc");
-assert.deepEqual(controller.importErrorOutcome(new Error("bad archive"), { filename: "bad.mobpack" }).validationRows[0], {
+assert.equal(controller.validationErrorOutcome(new Error("rpc down"), { errorView: hydratedCatalogs.errorView }).validationRows[0].head, "MobKit API unavailable");
+assert.equal(controller.validationErrorOutcome(new Error("rpc down"), { errorView: hydratedCatalogs.errorView }).validationRows[0].meta, "/flow-editor/rpc");
+assert.equal(controller.exportErrorOutcome(new Error("pack failed"), { errorView: hydratedCatalogs.errorView }).validationRows[0].head, "Export failed");
+assert.equal(controller.exportErrorOutcome(new Error("pack failed"), { errorView: hydratedCatalogs.errorView }).validationRows[0].meta, "/flow-editor/rpc");
+assert.deepEqual(controller.importErrorOutcome(new Error("bad archive"), { filename: "bad.mobpack", errorView: hydratedCatalogs.errorView }).validationRows[0], {
   kind: "crit",
   glyph: "!",
   head: "Import failed",
   sub: "bad archive",
   meta: "bad.mobpack",
+});
+assert.deepEqual(controller.deployErrorOutcome(new Error("no plan"), {
+  execute: false,
+  errorView: { ...hydratedCatalogs.errorView, deployPlanFailedHead: "Plan API failed", deployErrorMeta: "deploy-meta" },
+}).validationRows[0], {
+  kind: "crit",
+  glyph: "!",
+  head: "Plan API failed",
+  sub: "no plan",
+  meta: "deploy-meta",
 });
 
 const sourceProjection = controller.sourceDocumentFromExport({
@@ -7907,6 +7953,7 @@ const missingFlowHydrated = controller.hydrateMobpackDocumentState({
 }, {
   deployDefaults: testDeploySettings(),
   mobDefaults: controller.mobDefaultsFromSchema(TEST_SCHEMA),
+  errorView: hydratedCatalogs.errorView,
 });
 assert.equal(missingFlowHydrated.ok, false);
 assert.equal(missingFlowHydrated.error, "missing_editor_flow");
@@ -7918,6 +7965,8 @@ assert.deepEqual(missingFlowHydrated.members, []);
 assert.deepEqual(missingFlowHydrated.schemas, []);
 assert.equal(missingFlowHydrated.deploySettings.maxTotalTokens, 64);
 assert.equal(missingFlowHydrated.mobSettings.backendDefault, "session");
+assert.equal(missingFlowHydrated.validationRows[0].kind, "crit");
+assert.equal(missingFlowHydrated.validationRows[0].head, "Imported mobpack is missing a MobKit editor flow");
 assert.equal(missingFlowHydrated.validationRows[0].meta, "missing_editor_flow");
 
 const appendedRows = controller.flowRegistryAppendRowPatch(registryRows, importedRow);

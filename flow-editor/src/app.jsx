@@ -498,7 +498,7 @@ function App() {
       setDrySimKey(k => k + 1);
     } catch (error) {
       if (!authoringRevisionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.deployErrorOutcome(error, { execute: false });
+      const outcome = window.MobKitFlowController.deployErrorOutcome(error, { execute: false, errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
       setValidate(true);
       setStage(outcome.stage);
@@ -536,7 +536,7 @@ function App() {
       setSourceOpen(true);
     } catch (error) {
       if (!sourceProjectionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.sourceErrorOutcome(error);
+      const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
       setValidate(true);
       setStage(outcome.stage);
@@ -561,7 +561,7 @@ function App() {
       setInlineSourceDocument(nextSourceDocument);
     } catch (error) {
       if (!sourceProjectionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.sourceErrorOutcome(error);
+      const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
       setValidate(true);
       setStage(outcome.stage);
@@ -586,7 +586,7 @@ function App() {
       setStage(outcome.stage);
     } catch (error) {
       if (!authoringRevisionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.validationErrorOutcome(error);
+      const outcome = window.MobKitFlowController.validationErrorOutcome(error, { errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
     } finally {
@@ -616,7 +616,7 @@ function App() {
       setValidate(false);
     } catch (error) {
       if (!authoringRevisionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.exportErrorOutcome(error);
+      const outcome = window.MobKitFlowController.exportErrorOutcome(error, { errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
       setValidate(true);
       setStage(outcome.stage);
@@ -641,7 +641,7 @@ function App() {
       setValidate(true);
     } catch (error) {
       if (!authoringRevisionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.deployErrorOutcome(error, { execute });
+      const outcome = window.MobKitFlowController.deployErrorOutcome(error, { execute, errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
       setValidate(true);
       setStage(outcome.stage);
@@ -662,6 +662,7 @@ function App() {
       mobDefaults: options.mobDefaults || catalogs.mobDefaults,
       contractSkillRealms: contractSkillRealms.current,
       contract,
+      errorView: catalogs.errorView,
     });
     if (hydration.ok === false) {
       setValidationResults(hydration.validationRows || []);
@@ -716,7 +717,7 @@ function App() {
       window.__mobkitFlowLastImport = result;
       hydrateImportedDocument(result);
     } catch (error) {
-      const outcome = window.MobKitFlowController.importErrorOutcome(error, { filename: file.name });
+      const outcome = window.MobKitFlowController.importErrorOutcome(error, { filename: file.name, errorView: catalogs.errorView });
       setValidationResults(outcome.validationRows);
       setValidate(true);
       setStage(outcome.stage);

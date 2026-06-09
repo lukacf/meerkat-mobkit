@@ -355,6 +355,8 @@ assert.match(controller, /function emptyMobKitCatalogs/, "controller plane must 
 assert.match(controller, /function mobKitCatalogsFromSchema/, "controller plane must own MobKit schema catalog projection");
 assert.match(controller, /mob_definition\?\.editor_condition_view/, "controller plane must hydrate shared condition value view from MobKit schema");
 assert.match(controller, /conditionView:\s*conditionViewFromSchema\(schema\)/, "schema catalog projection must include shared condition view state");
+assert.match(controller, /mob_definition\?\.editor_error_view/, "controller plane must hydrate client error-row view state from MobKit schema");
+assert.match(controller, /errorView:\s*errorViewFromSchema\(schema\)/, "schema catalog projection must include shared client error-row view state");
 assert.match(controller, /function mergeSkillRealms/, "controller plane must own skill realm merge semantics");
 assert.match(controller, /function hydrateMobpackDocumentState/, "controller plane must own imported document hydration semantics");
 assert.match(controller, /function flowFromHydratedDocument/, "controller plane must own hydrated flow reset semantics");
@@ -364,7 +366,7 @@ assert.match(app, /graphToFlow\(\{[\s\S]*previousFlow:\s*current,[\s\S]*contract
 assert.match(app, /buildDocument\(\{[\s\S]*deploySettings,[\s\S]*contract/, "Mobpack document export must pass the loaded MobKit contract into controller projection");
 assert.match(app, /hydrateMobpackDocumentState\(result,\s*\{[\s\S]*contractSkillRealms:[\s\S]*contract/, "Mobpack import hydration must pass the loaded MobKit contract into graph projection");
 assert.match(controller, /graphProjectionForDocument\(document,\s*members,\s*contract\)/, "controller hydration graph projection must accept the MobKit graph contract");
-assert.match(controller, /missing_editor_flow/, "controller hydration must reject MobKit documents that do not include document.flow.steps");
+assert.match(controller, /errorView\.missingEditorFlowMeta/, "controller hydration must reject MobKit documents that do not include document.flow.steps using schema-backed error metadata");
 assert(!/flowFromHydratedDocument[\s\S]{0,520}untitled-mob|flowFromHydratedDocument[\s\S]{0,700}id:\s*["']input_1["']/.test(controller), "hydration must not synthesize local input-only flows when MobKit import omits a real flow");
 assert.match(app, /if \(hydration\.ok === false\) \{[\s\S]*setValidationResults\(hydration\.validationRows \|\| \[\]\);[\s\S]*setStage\(hydration\.stage \|\| "draft"\);[\s\S]*setValidate\(true\);[\s\S]*return;/, "app shell must not mutate editor state when controller rejects imported document hydration");
 assert.match(controller, /validationRows:\s*diagnosticsToRows\(validation\)/, "controller hydration must project imported document validation rows");
@@ -722,11 +724,14 @@ assert.match(controller, /function importErrorOutcome/, "controller plane must o
 assert.match(app, /MobKitFlowController\.validationOutcome\(document, result\)/, "app shell must project validate API results through the controller plane");
 assert.match(app, /MobKitFlowController\.exportOutcome\(document, result\)/, "app shell must project publish/export API results through the controller plane");
 assert.match(app, /MobKitFlowController\.deployOutcome\(document, (?:plan|result), \{ execute(?:: false)? \}\)/, "app shell must project deploy API results through the controller plane");
-assert.match(app, /MobKitFlowController\.deployErrorOutcome\(error, \{ execute(?:: false)? \}\)/, "app shell must project deploy errors through the controller plane");
-assert.match(app, /MobKitFlowController\.sourceErrorOutcome\(error\)/, "app shell must project source export errors through the controller plane");
-assert.match(app, /MobKitFlowController\.validationErrorOutcome\(error\)/, "app shell must project validation API errors through the controller plane");
-assert.match(app, /MobKitFlowController\.exportErrorOutcome\(error\)/, "app shell must project publish/export errors through the controller plane");
-assert.match(app, /MobKitFlowController\.importErrorOutcome\(error, \{ filename: file\.name \}\)/, "app shell must project import errors through the controller plane");
+assert.match(app, /MobKitFlowController\.deployErrorOutcome\(error, \{ execute(?:: false)?, errorView: catalogs\.errorView \}\)/, "app shell must project deploy errors through the controller plane with schema-backed error view");
+assert.match(app, /MobKitFlowController\.sourceErrorOutcome\(error, \{ errorView: catalogs\.errorView \}\)/, "app shell must project source export errors through the controller plane with schema-backed error view");
+assert.match(app, /MobKitFlowController\.validationErrorOutcome\(error, \{ errorView: catalogs\.errorView \}\)/, "app shell must project validation API errors through the controller plane with schema-backed error view");
+assert.match(app, /MobKitFlowController\.exportErrorOutcome\(error, \{ errorView: catalogs\.errorView \}\)/, "app shell must project publish/export errors through the controller plane with schema-backed error view");
+assert.match(app, /MobKitFlowController\.importErrorOutcome\(error, \{ filename: file\.name, errorView: catalogs\.errorView \}\)/, "app shell must project import errors through the controller plane with schema-backed error view");
+assert.match(app, /hydrateMobpackDocumentState\(result, \{[\s\S]*errorView: catalogs\.errorView/, "app shell must pass schema-backed error view into import hydration rejection projection");
+assert(!/["'](?:MobKit error|Deploy failed|Deploy plan failed|Source render failed|MobKit API unavailable|Export failed|Import failed|Imported mobpack is missing a MobKit editor flow)["']/.test(controller), "controller error-row display labels must come from MobKit editor_error_view, not local literals");
+assert(!/["'](?:mobkit\/mobpacks\/deploy|mobkit\/mobpacks\/export|\/flow-editor\/rpc|missing_editor_flow)["']/.test((controller.match(/function (?:criticalErrorOutcome|deployErrorOutcome|sourceErrorOutcome|validationErrorOutcome|exportErrorOutcome|importErrorOutcome|hydrateMobpackDocumentState)[\s\S]*?function sourceDocumentFromExport/) || [""])[0]), "controller error-row display meta values must come from MobKit editor_error_view, not local literals");
 assert(!/result\.ok \? ["']valid["']|result\.validation\?\.ok \? ["']published["']|result\.validation\?\.ok &&|plan\.validation\?\.ok \? ["']valid["']|const deployOk =/.test(app), "app shell must not choose MobKit API success stages locally");
 assert(!/kind:\s*["']crit["']|glyph:\s*["']!["']|head:\s*["'](?:Deploy|Source|MobKit|Export|Import)/.test(app), "app shell must not assemble MobKit critical diagnostic rows locally");
 assert.match(app, /const handleValidate = async \(\) => \{[\s\S]*const requestToken = currentAuthoringRevision\(\);[\s\S]*MobKitFlowController\.validateDocument\(document\);[\s\S]*if \(!authoringRevisionIsCurrent\(requestToken\)\) return;[\s\S]*rememberCurrentDocument/, "stale validation responses must not write validation, stage, or flow-row state after an edit");
