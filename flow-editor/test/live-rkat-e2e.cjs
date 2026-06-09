@@ -1465,6 +1465,10 @@ async function validateDocumentBackedDeployPreview(document) {
       throw new Error(`flow editor schema did not expose Schema Editor template ${key}: ${JSON.stringify(schemaView)}`);
     }
   }
+  const sourceView = schema.mob_definition?.editor_source_view || {};
+  if (sourceView.primary_source_path !== "mobkit/mob.toml") {
+    throw new Error(`flow editor schema did not expose primary source path: ${JSON.stringify(sourceView)}`);
+  }
   const samples = catalogs.sample_mobpacks || [];
   const sample = samples.find((candidate) => candidate.id === sampleId) || samples[0];
   if (!sample?.document) throw new Error("flow editor schema did not return any sample mobpack documents");

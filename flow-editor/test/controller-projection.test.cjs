@@ -1121,6 +1121,7 @@ const hydratedContractAndCatalogFixture = {
     editor_source_view: {
       drawer_eyebrow: "SOURCE · mob.toml",
       inline_title: "mob.toml",
+      primary_source_path: "mobkit/mob.toml",
       loading_text: "rendering mob.toml from mobkit/mobpacks/source...",
       copy_label: "copy",
       close_label: "×",
@@ -1605,6 +1606,7 @@ assert.deepEqual(hydratedCatalogs.flowRegistryView, TEST_FLOW_REGISTRY_VIEW);
 assert.deepEqual(hydratedCatalogs.sourceView, {
   drawerEyebrow: "SOURCE · mob.toml",
   inlineTitle: "mob.toml",
+  primarySourcePath: "mobkit/mob.toml",
   loadingText: "rendering mob.toml from mobkit/mobpacks/source...",
   copyLabel: "copy",
   closeLabel: "×",
@@ -6747,15 +6749,15 @@ assert.throws(
   () => controller.sourceDocumentFromSourceResult({ name: "No TOML file" }, {
     source: "mobkit/mobpacks/source",
     source_files: [{ path: "manifest.toml", text: "name = \"missing\"" }],
-  }),
-  /mobkit\/mobpacks\/source did not return mobkit\/mob\.toml source file/,
+  }, { sourceView: hydratedCatalogs.sourceView }),
+  /mobkit\/mobpacks\/source did not return primary source file mobkit\/mob\.toml/,
 );
 assert.throws(
   () => controller.sourceDocumentFromSourceResult({ name: "No TOML text" }, {
     source: "mobkit/mobpacks/source",
     source_files: [{ path: "mobkit/mob.toml", text: "" }],
-  }),
-  /mobkit\/mobpacks\/source did not return mobkit\/mob\.toml text/,
+  }, { sourceView: hydratedCatalogs.sourceView }),
+  /mobkit\/mobpacks\/source did not return primary source text mobkit\/mob\.toml/,
 );
 assert.throws(
   () => controller.sourceDocumentFromSourceResult({ name: "No filename" }, {
@@ -6763,7 +6765,7 @@ assert.throws(
     mob_toml: "[mob]\nid = \"no_filename\"\n",
     source_files: [{ path: "mobkit/mob.toml", text: "[mob]\nid = \"no_filename\"\n" }],
     media_type: "application/vnd.mobkit.mobpack",
-  }),
+  }, { sourceView: hydratedCatalogs.sourceView }),
   /mobkit\/mobpacks\/source did not return filename/,
 );
 assert.throws(
@@ -6772,7 +6774,7 @@ assert.throws(
     mob_toml: "[mob]\nid = \"no_media\"\n",
     source_files: [{ path: "mobkit/mob.toml", text: "[mob]\nid = \"no_media\"\n" }],
     filename: "no-media.mobpack",
-  }),
+  }, { sourceView: hydratedCatalogs.sourceView }),
   /mobkit\/mobpacks\/source did not return media_type/,
 );
 assert.throws(
@@ -6782,8 +6784,8 @@ assert.throws(
     source_files: [{ path: "mobkit/mob.toml", text: "[mob]\nid = \"no_sha\"\n" }],
     filename: "no-sha.mobpack",
     media_type: "application/vnd.mobkit.mobpack",
-  }),
-  /mobkit\/mobpacks\/source did not return mobkit\/mob.toml sha256/,
+  }, { sourceView: hydratedCatalogs.sourceView }),
+  /mobkit\/mobpacks\/source did not return primary source sha256 mobkit\/mob.toml/,
 );
 assert.throws(
   () => controller.sourceDocumentFromSourceResult({ name: "No aux content" }, {
@@ -6804,7 +6806,7 @@ assert.throws(
     }],
     filename: "no-aux-content.mobpack",
     media_type: "application/vnd.mobkit.mobpack",
-  }),
+  }, { sourceView: hydratedCatalogs.sourceView }),
   /mobkit\/mobpacks\/source source_files\[1\] did not return content_base64/,
 );
 assert.throws(
@@ -6826,7 +6828,7 @@ assert.throws(
     }],
     filename: "no-aux-text.mobpack",
     media_type: "application/vnd.mobkit.mobpack",
-  }),
+  }, { sourceView: hydratedCatalogs.sourceView }),
   /mobkit\/mobpacks\/source source_files\[1\] did not return text/,
 );
 

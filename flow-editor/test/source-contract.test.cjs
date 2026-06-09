@@ -891,8 +891,9 @@ assert(!/plan\?\.plan_trace|plan\?\.command|document\?\.deploy_command|plan\?\.p
 assert(!/result\?\.source \|\| ["']mobkit\/mobpacks\/source["']/.test(controller), "Source drawer must require MobKit source-preview provenance instead of defaulting missing result.source");
 assert.match(controller, /apiSource !== "mobkit\/mobpacks\/source"[\s\S]*source preview expected mobkit\/mobpacks\/source/, "Source drawer projection must reject export-shaped results");
 assert.match(controller, /did not return source_files/, "Source drawer must fail closed when MobKit source preview omits archive member metadata");
-assert.match(controller, /did not return mobkit\/mob\.toml source file/, "Source drawer must fail closed when MobKit source preview omits the real mob.toml archive member");
-assert.match(controller, /function sourceDocumentFromSourceResult[\s\S]*did not return source_files[\s\S]*did not return mobkit\/mob\.toml source file[\s\S]*did not return mobkit\/mob\.toml text[\s\S]*did not return filename[\s\S]*did not return media_type[\s\S]*did not return mobkit\/mob\.toml sha256/, "Source drawer must fail closed when MobKit source preview omits source archive metadata");
+assert.match(controller, /primarySourcePath = sourceView\.primarySourcePath/, "Source drawer must use the MobKit schema-provided primary source path");
+assert.match(controller, /did not return primary source file/, "Source drawer must fail closed when MobKit source preview omits the schema-declared primary archive member");
+assert.match(controller, /function sourceDocumentFromSourceResult[\s\S]*did not receive primary source path from MobKit schema[\s\S]*did not return source_files[\s\S]*did not return primary source file[\s\S]*did not return primary source text[\s\S]*did not return filename[\s\S]*did not return media_type[\s\S]*did not return primary source sha256/, "Source drawer must fail closed when MobKit source preview omits source archive metadata");
 assert.match(controller, /function validateSourceFileMetadata[\s\S]*did not return path[\s\S]*did not return media_type[\s\S]*did not return content_base64[\s\S]*did not return sha256[\s\S]*did not return size_bytes[\s\S]*did not return text/, "Source drawer must fail closed when any MobKit source archive member omits real file metadata or text content");
 assert.match(controller, /sourceDocumentFromSourceResult[\s\S]*files\.forEach\(\(file, index\) => validateSourceFileMetadata\(apiSource, file, index\)\)/, "Source drawer must validate every MobKit source archive member before rendering file rows");
 assert.match(controller, /function sourceDocumentFromSourceResult/, "controller plane must own source API result to source-document projection");
@@ -906,7 +907,8 @@ assert.match(controller, /function escapeHtml/, "controller plane must own sourc
 assert.match(sourceEditorBlock, /sourceHtml:\s*selectedFile\s*\?\s*highlightSourceFile\(selectedFile\)\s*:\s*highlightTomlSource\(source\)/, "source editor state must expose controller-projected highlighted source HTML");
 assert.match(sourceEditorBlock, /selectedPath:\s*sourcePath[\s\S]*fileRows:\s*sourceFileRows\(sourceDocument,\s*sourcePath\)/, "source editor state must expose controller-projected archive file rows");
 assert.match(controller, /mob_definition\?\.editor_source_view/, "controller plane must hydrate source editor labels from MobKit schema");
-assert.match(controllerProjectionTest, /editor_source_view:\s*\{[\s\S]*drawer_eyebrow:\s*"SOURCE · mob\.toml"[\s\S]*loading_text:\s*"rendering mob\.toml from mobkit\/mobpacks\/source\.\.\."/,
+assert.match(controller, /primarySourcePath:\s*String\(view\.primary_source_path/, "controller plane must hydrate the primary source archive path from MobKit schema");
+assert.match(controllerProjectionTest, /editor_source_view:\s*\{[\s\S]*drawer_eyebrow:\s*"SOURCE · mob\.toml"[\s\S]*primary_source_path:\s*"mobkit\/mob\.toml"[\s\S]*loading_text:\s*"rendering mob\.toml from mobkit\/mobpacks\/source\.\.\."/,
   "source editor label/loading copy must be test-covered as MobKit schema data");
 assert(!/SOURCE · mob\.toml|rendering mob\.toml from mobkit\/mobpacks\/(?:source|export)|copyLabel:\s*"copy"|closeLabel:\s*"×"/.test(sourceEditorBlock),
   "source editor projection must not keep local label/loading defaults");
@@ -925,13 +927,13 @@ assert(!/function\s+highlightToml|replace\(\s*\/&\/g|toml-comment|toml-table|tom
 assert(!/definition\.json|mobkit\/editor\.json|manifest\.toml|mobkit\/mob\.toml/.test(src("overlays.jsx")), "source editor overlays must not hard-code archive file paths");
 assert.match(app, /MobKitFlowController\.sourceDocument\(document\)/, "source-file views must render mob.toml through the MobKit source preview API");
 assert.match(app, /MobKitFlowController\.sourceDocumentFromSourceResult\(document, result, \{\s*sourceView:\s*catalogs\.sourceView,\s*\}\)/, "app shell must project MobKit source-preview results through the controller plane with the schema-backed source-view contract");
-assert.match(controller, /sourceDocument:\s*\{[\s\S]*sourcePath:\s*mobTomlFile\.path[\s\S]*sourceFile:\s*mobTomlFile[\s\S]*sourceFiles:\s*files[\s\S]*sourceDigest[\s\S]*source:\s*apiSource[\s\S]*sourceView,/, "controller-projected source documents must carry the MobKit archive member and source-view contracts");
+assert.match(controller, /sourceDocument:\s*\{[\s\S]*sourcePath:\s*primarySourceFile\.path[\s\S]*sourceFile:\s*primarySourceFile[\s\S]*sourceFiles:\s*files[\s\S]*sourceDigest[\s\S]*source:\s*apiSource[\s\S]*sourceView,/, "controller-projected source documents must carry the MobKit archive member and source-view contracts");
 assert(!/const renderedDocument = \{ \.\.\.document, mob_toml: result\.mob_toml \}|filename:\s*result\.filename|media_type:\s*result\.media_type|source:\s*["']mobkit\/mobpacks\/export["']/.test(app), "app shell must not assemble export-backed source documents locally");
 assert(!/mob_toml:\s*result\.mob_toml\s*\|\||result\.mob_toml\s*\|\|\s*document\.mob_toml/.test(app), "Source drawer must not fall back to stale document.mob_toml; previewed TOML must come from mobkit/mobpacks/source");
 assert(!/MobKitFlowController\.exportDocument\(document\)/.test(sourceProjectionBlock), "source-file views must not export a full mobpack archive just to render read-only source");
 assert(!/mob_toml:\s*result\.mob_toml/.test(controller), "source-file views must render the actual mobkit/mob.toml archive member text, not top-level export metadata");
-assert.match(controller, /mob_toml:\s*mobTomlFile\.text/, "source-file projection must store the validated mobkit/mob.toml source file text");
-assert.match(controller, /const sourceDigest = String\(mobTomlFile\.sha256[\s\S]*sourceDigest,/, "source-file projection must store the validated mobkit/mob.toml archive digest");
+assert.match(controller, /mob_toml:\s*primarySourceFile\.text/, "source-file projection must store the validated primary source file text");
+assert.match(controller, /const sourceDigest = String\(primarySourceFile\.sha256[\s\S]*sourceDigest,/, "source-file projection must store the validated primary source archive digest");
 assert.match(controller, /function exportDownloadPayload/, "controller plane must own MobKit export download payload validation");
 assert.match(app, /MobKitFlowController\.exportDownloadPayload\(result\)/, "app shell must request controller-projected export download fields");
 assert(!/content_base64|media_type|did not return content_base64|did not return media_type|did not return filename/.test((app.match(/function downloadExportResult[\s\S]*?async function importParamsFromFile/) || [""])[0]), "app shell must not validate MobKit export payload fields locally");

@@ -902,6 +902,7 @@ pub fn mobpack_schema_response() -> Value {
     let editor_source_view = json!({
         "drawer_eyebrow": "SOURCE · mob.toml",
         "inline_title": "mob.toml",
+        "primary_source_path": "mobkit/mob.toml",
         "loading_text": "rendering mob.toml from mobkit/mobpacks/source...",
         "copy_label": "copy",
         "close_label": "×"
@@ -17322,6 +17323,10 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_source_view"]["inline_title"],
             json!("mob.toml")
+        );
+        assert_eq!(
+            mob_definition["editor_source_view"]["primary_source_path"],
+            json!("mobkit/mob.toml")
         );
         assert_eq!(
             mob_definition["editor_source_view"]["loading_text"],

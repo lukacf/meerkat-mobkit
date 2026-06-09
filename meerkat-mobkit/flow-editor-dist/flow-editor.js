@@ -10225,23 +10225,25 @@ window.MOBKIT_BOOT = {
     if (apiSource !== "mobkit/mobpacks/source") {
       throw new Error(`source preview expected mobkit/mobpacks/source but received ${apiSource}`);
     }
+    const sourceView = sourceViewForState(null, options.sourceView);
+    const primarySourcePath = sourceView.primarySourcePath;
+    if (!primarySourcePath) throw new Error(`${apiSource} did not receive primary source path from MobKit schema`);
     const files = Array.isArray(result?.source_files) ? result.source_files : [];
     if (!files.length) throw new Error(`${apiSource} did not return source_files`);
-    const mobTomlFile = files.find((file) => String(file?.path || "") === "mobkit/mob.toml");
-    if (!mobTomlFile) throw new Error(`${apiSource} did not return mobkit/mob.toml source file`);
-    const exportedToml = String(mobTomlFile.text || "").trim();
-    if (!exportedToml) throw new Error(`${apiSource} did not return mobkit/mob.toml text`);
+    const primarySourceFile = files.find((file) => String(file?.path || "") === primarySourcePath);
+    if (!primarySourceFile) throw new Error(`${apiSource} did not return primary source file ${primarySourcePath}`);
+    const exportedSource = String(primarySourceFile.text || "").trim();
+    if (!exportedSource) throw new Error(`${apiSource} did not return primary source text ${primarySourcePath}`);
     const filename = String(result?.filename || "").trim();
     if (!filename) throw new Error(`${apiSource} did not return filename`);
     const mediaType = String(result?.media_type || "").trim();
     if (!mediaType) throw new Error(`${apiSource} did not return media_type`);
-    const sourceDigest = String(mobTomlFile.sha256 || "").trim();
-    if (!sourceDigest) throw new Error(`${apiSource} did not return mobkit/mob.toml sha256`);
+    const sourceDigest = String(primarySourceFile.sha256 || "").trim();
+    if (!sourceDigest) throw new Error(`${apiSource} did not return primary source sha256 ${primarySourcePath}`);
     files.forEach((file, index) => validateSourceFileMetadata(apiSource, file, index));
-    const sourceView = sourceViewForState(null, options.sourceView);
     const renderedDocument = {
       ...(document && typeof document === "object" ? document : {}),
-      mob_toml: mobTomlFile.text,
+      mob_toml: primarySourceFile.text,
     };
     const validation = result?.validation || null;
     const stage = validation?.ok ? "valid" : "draft";
@@ -10252,8 +10254,8 @@ window.MOBKIT_BOOT = {
         validation,
         filename,
         media_type: mediaType,
-        sourcePath: mobTomlFile.path,
-        sourceFile: mobTomlFile,
+        sourcePath: primarySourceFile.path,
+        sourceFile: primarySourceFile,
         sourceFiles: files,
         sourceDigest,
         source: apiSource,
@@ -10318,7 +10320,7 @@ window.MOBKIT_BOOT = {
 
   function sourceFileForPath(sourceDocument, path) {
     const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
-    const selectedPath = String(path || sourceDocument?.sourcePath || "mobkit/mob.toml").trim();
+    const selectedPath = String(path || sourceDocument?.sourcePath || sourceViewForState(sourceDocument).primarySourcePath || "").trim();
     return files.find((file) => String(file?.path || "") === selectedPath)
       || sourceDocument?.sourceFile
       || files[0]
@@ -10418,11 +10420,12 @@ window.MOBKIT_BOOT = {
     const out = {
       drawerEyebrow: String(view.drawer_eyebrow || "").trim(),
       inlineTitle: String(view.inline_title || "").trim(),
+      primarySourcePath: String(view.primary_source_path || "").trim(),
       loadingText: String(view.loading_text || "").trim(),
       copyLabel: String(view.copy_label || "").trim(),
       closeLabel: String(view.close_label || "").trim(),
     };
-    return out.drawerEyebrow && out.inlineTitle && out.loadingText && out.copyLabel && out.closeLabel
+    return out.drawerEyebrow && out.inlineTitle && out.primarySourcePath && out.loadingText && out.copyLabel && out.closeLabel
       ? out
       : null;
   }
@@ -10434,6 +10437,7 @@ window.MOBKIT_BOOT = {
     return {
       drawerEyebrow: String(view?.drawerEyebrow || ""),
       inlineTitle: String(view?.inlineTitle || ""),
+      primarySourcePath: String(view?.primarySourcePath || ""),
       loadingText: String(view?.loadingText || ""),
       copyLabel: String(view?.copyLabel || ""),
       closeLabel: String(view?.closeLabel || ""),
