@@ -597,6 +597,9 @@ assert(!/flowStepTemplate\(pick/.test(builder), "Basic editor must not draft flo
 assert(!/flowStepInsertTransition\(flow,\s*laneRef/.test(builder), "Basic editor must not locally insert flow steps before MobKit insert_flow_step");
 assert.match(builder, /if \(!commitFlow\("delete_flow_step",\s*\{\s*step_id:\s*id\s*\}\)\) return;[\s\S]*setSel\(result\.selection\);[\s\S]*setPicker\(result\.picker\)/, "Basic flow step deletes must send step_id payloads before applying UI-only selection and picker transitions");
 assert.match(builder, /operationType === "update_flow_step"[\s\S]*\{ step_id:\s*id,\s*patch \}/, "Basic flow step updates must send step_id and patch payloads to MobKit");
+assert.match(mobpackRust, /fn normalize_flow_step_update_patch\([\s\S]*unsupported update_flow_step patch field/, "MobKit apply_operation must reject unsupported Basic flow-step patch keys server-side");
+assert.match(mobpackRust, /fn normalize_flow_step_update_patch\([\s\S]*dispatch_mode_values\(\)[\s\S]*collection_policy_values\(\)[\s\S]*dependency_mode_values\(\)[\s\S]*step_output_format_values\(\)/, "MobKit apply_operation must validate Basic flow-step option values server-side");
+assert.match(mobpackRust, /fn normalize_flow_step_tool_scope\([\s\S]*unknown MobKit tool for \{key\}/, "MobKit flow-step updates must validate tool scope refs against real member or catalog tools");
 assert.match(mobpackRust, /"type":\s*"insert_flow_step"[\s\S]*"authority":\s*"mobkit"[\s\S]*"requires":\s*\["step_or_pick",\s*"lane_ref"\]/, "MobKit operation catalog must advertise Basic flow-step insert as MobKit-owned");
 assert.match(mobpackRust, /"insert_flow_step"\s*=>\s*apply_insert_flow_step_operation/, "MobKit apply_operation must own Basic flow-step inserts");
 assert.match(mobpackRust, /fn flow_step_from_pick[\s\S]*"member"[\s\S]*"branch"[\s\S]*"parallel"[\s\S]*"repeat"/, "MobKit apply_operation must own semantic Basic flow-step draft creation from picks");

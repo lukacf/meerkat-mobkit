@@ -5644,14 +5644,12 @@ fn apply_update_flow_step_operation(
         .ok_or_else(|| format!("flow step not found: {step_id}"))?
         .clone();
     let mut next_step = current;
+    let normalized_patch = normalize_flow_step_update_patch(&next_step, &document.members, patch)?;
     let object = next_step
         .as_object_mut()
         .ok_or_else(|| format!("flow step is not an object: {step_id}"))?;
-    for (key, value) in patch {
-        if key == "id" {
-            return Err("update_flow_step cannot change step id".to_string());
-        }
-        object.insert(key.clone(), value.clone());
+    for (key, value) in normalized_patch {
+        object.insert(key, value);
     }
     validate_flow_step(
         &next_step,
@@ -5662,6 +5660,230 @@ fn apply_update_flow_step_operation(
     *flow_step_mut_by_id(&mut document.flow, &step_id)
         .ok_or_else(|| format!("flow step not found: {step_id}"))? = next_step;
     Ok(json!({ "kind": "step", "id": step_id }))
+}
+
+fn normalize_flow_step_update_patch(
+    current_step: &Value,
+    members: &Value,
+    patch: &serde_json::Map<String, Value>,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let mut normalized = serde_json::Map::new();
+    let step_type = current_step
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    for (key, value) in patch {
+        match key.as_str() {
+            "id" => return Err("update_flow_step cannot change step id".to_string()),
+            "type" => return Err("update_flow_step cannot change step type".to_string()),
+            "task" | "instruction" | "loopId" => {
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| format!("update_flow_step {key} must be a string"))?;
+                normalized.insert(key.clone(), Value::String(text.to_string()));
+            }
+            "quorum" | "timeoutMs" | "maxIterations" => {
+                normalized.insert(key.clone(), positive_integer_or_null(value, key)?);
+            }
+            "cond" => {
+                if !value.is_null() && !value.is_object() {
+                    return Err("update_flow_step cond must be an object or null".to_string());
+                }
+                normalized.insert(key.clone(), value.clone());
+            }
+            "branches" => {
+                if step_type != "branch" && step_type != "parallel" {
+                    return Err(
+                        "update_flow_step branches patch requires branch or parallel step"
+                            .to_string(),
+                    );
+                }
+                if !value.is_array() {
+                    return Err("update_flow_step branches must be an array".to_string());
+                }
+                normalized.insert(key.clone(), value.clone());
+            }
+            "fallback" => {
+                if step_type != "branch" {
+                    return Err("update_flow_step fallback patch requires branch step".to_string());
+                }
+                if !value.is_array() {
+                    return Err("update_flow_step fallback must be an array".to_string());
+                }
+                normalized.insert(key.clone(), value.clone());
+            }
+            "iterationInput" => {
+                let value = value
+                    .as_str()
+                    .ok_or_else(|| "update_flow_step iterationInput must be a string".to_string())?
+                    .trim()
+                    .to_string();
+                if !value.is_empty() && !REPEAT_ITERATION_INPUTS.contains(&value.as_str()) {
+                    return Err(format!("unsupported repeat iteration input: {value}"));
+                }
+                normalized.insert(key.clone(), Value::String(value));
+            }
+            "controllerRole" | "role" => {
+                let member_id = value
+                    .as_str()
+                    .ok_or_else(|| format!("update_flow_step {key} must be a string"))?
+                    .trim()
+                    .to_string();
+                if !member_id.is_empty() && !graph_member_ids(members).contains(&member_id) {
+                    return Err(format!(
+                        "update_flow_step {key} must reference an existing member: {member_id}"
+                    ));
+                }
+                normalized.insert(key.clone(), Value::String(member_id));
+            }
+            "dispatchMode" | "dispatch" => {
+                normalized.insert(
+                    key.clone(),
+                    allowed_flow_option_value(value, "dispatch mode", &dispatch_mode_values())?,
+                );
+            }
+            "collection" => {
+                normalized.insert(
+                    key.clone(),
+                    allowed_flow_option_value(
+                        value,
+                        "collection policy",
+                        &collection_policy_values(),
+                    )?,
+                );
+            }
+            "dependsMode" => {
+                normalized.insert(
+                    key.clone(),
+                    allowed_flow_option_value(value, "dependency mode", &dependency_mode_values())?,
+                );
+            }
+            "outputFormat" => {
+                normalized.insert(
+                    key.clone(),
+                    allowed_flow_option_value(
+                        value,
+                        "step output format",
+                        &step_output_format_values(),
+                    )?,
+                );
+            }
+            "allowedTools" => {
+                normalized.insert(
+                    key.clone(),
+                    Value::Array(normalize_flow_step_tool_scope(
+                        value,
+                        &member_tool_scope_for_step(current_step, members),
+                        "allowedTools",
+                    )?),
+                );
+            }
+            "blockedTools" => {
+                normalized.insert(
+                    key.clone(),
+                    Value::Array(normalize_flow_step_tool_scope(
+                        value,
+                        &tool_catalog_id_set(),
+                        "blockedTools",
+                    )?),
+                );
+            }
+            other => {
+                return Err(format!("unsupported update_flow_step patch field: {other}"));
+            }
+        }
+    }
+    Ok(normalized)
+}
+
+fn positive_integer_or_null(value: &Value, key: &str) -> Result<Value, String> {
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    if let Some(text) = value.as_str() {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Ok(Value::Null);
+        }
+        let parsed = trimmed
+            .parse::<u64>()
+            .map_err(|_| format!("update_flow_step {key} must be a positive integer"))?;
+        if parsed == 0 {
+            return Err(format!("update_flow_step {key} must be positive"));
+        }
+        return Ok(json!(parsed));
+    }
+    if let Some(number) = value.as_u64() {
+        if number == 0 {
+            return Err(format!("update_flow_step {key} must be positive"));
+        }
+        return Ok(json!(number));
+    }
+    Err(format!("update_flow_step {key} must be a positive integer"))
+}
+
+fn allowed_flow_option_value(
+    value: &Value,
+    label: &str,
+    allowed: &[String],
+) -> Result<Value, String> {
+    let option = value
+        .as_str()
+        .ok_or_else(|| format!("update_flow_step {label} must be a string"))?
+        .trim()
+        .to_string();
+    if !option.is_empty() && !allowed.iter().any(|candidate| candidate == &option) {
+        return Err(format!("unsupported {label}: {option}"));
+    }
+    Ok(Value::String(option))
+}
+
+fn tool_catalog_id_set() -> BTreeSet<String> {
+    tool_catalog_response()
+        .into_iter()
+        .filter_map(|tool| {
+            tool.get("id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect()
+}
+
+fn member_tool_scope_for_step(step: &Value, members: &Value) -> BTreeSet<String> {
+    let role = step
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    let list = members.as_array().cloned().unwrap_or_else(Vec::new);
+    member_tool_set(&list, role)
+}
+
+fn normalize_flow_step_tool_scope(
+    value: &Value,
+    allowed: &BTreeSet<String>,
+    key: &str,
+) -> Result<Vec<Value>, String> {
+    let items = value
+        .as_array()
+        .ok_or_else(|| format!("update_flow_step {key} must be an array"))?;
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for item in items {
+        let tool = item
+            .as_str()
+            .ok_or_else(|| format!("update_flow_step {key} entries must be strings"))?
+            .trim();
+        if tool.is_empty() || seen.contains(tool) {
+            continue;
+        }
+        if !allowed.contains(tool) {
+            return Err(format!("unknown MobKit tool for {key}: {tool}"));
+        }
+        seen.insert(tool.to_string());
+        out.push(Value::String(tool.to_string()));
+    }
+    Ok(out)
 }
 
 fn flow_fork_source_allowed(flow: &Value, step_id: &str, source_id: &str) -> bool {
@@ -24601,7 +24823,7 @@ model = "gpt-5.5"
                 "profileBinding": "inline",
                 "runtimeMode": "turn_driven",
                 "model": "gpt-5.5",
-                "tools": []
+                "tools": ["shell"]
             }
         ]);
         document.flow = json!({
@@ -24685,9 +24907,78 @@ model = "gpt-5.5"
             updated["document"]["flow"]["steps"][2]["instruction"],
             json!("Review carefully.")
         );
+        let normalized_update = apply_mobpack_authoring_operation(&json!({
+            "document": updated["document"],
+            "operation": {
+                "type": "update_flow_step",
+                "step_id": "review",
+                "patch": {
+                    "quorum": "2",
+                    "dispatchMode": "fan_out",
+                    "allowedTools": ["shell", "shell"]
+                }
+            }
+        }))
+        .expect("normalize flow step update");
+        assert_eq!(
+            normalized_update["document"]["flow"]["steps"][2]["quorum"],
+            json!(2)
+        );
+        assert_eq!(
+            normalized_update["document"]["flow"]["steps"][2]["allowedTools"],
+            json!(["shell"])
+        );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": normalized_update["document"],
+                "operation": {
+                    "type": "update_flow_step",
+                    "step_id": "review",
+                    "patch": { "locallyInvented": true }
+                }
+            }))
+            .expect_err("unknown flow step patch field")
+            .contains("unsupported update_flow_step patch field")
+        );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": normalized_update["document"],
+                "operation": {
+                    "type": "update_flow_step",
+                    "step_id": "review",
+                    "patch": { "dispatchMode": "broadcast" }
+                }
+            }))
+            .expect_err("unsupported dispatch mode")
+            .contains("unsupported dispatch mode")
+        );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": normalized_update["document"],
+                "operation": {
+                    "type": "update_flow_step",
+                    "step_id": "review",
+                    "patch": { "role": "missing" }
+                }
+            }))
+            .expect_err("missing member role")
+            .contains("must reference an existing member")
+        );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": normalized_update["document"],
+                "operation": {
+                    "type": "update_flow_step",
+                    "step_id": "review",
+                    "patch": { "allowedTools": ["not-a-real-tool"] }
+                }
+            }))
+            .expect_err("unknown step tool")
+            .contains("unknown MobKit tool")
+        );
 
         let launch_edited = apply_mobpack_authoring_operation(&json!({
-            "document": updated["document"],
+            "document": normalized_update["document"],
             "operation": {
                 "type": "apply_flow_step_edit",
                 "step_id": "review",
