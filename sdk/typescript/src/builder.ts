@@ -39,6 +39,7 @@ export interface MobKitBuilderConfig {
   eventLog: Record<string, unknown> | null;
   consoleConfigPath: string | null;
   consoleRequireAppAuth: boolean | null;
+  consoleReadOnly: boolean | null;
   consoleFetchTimeoutMs: number | null;
   demoLlm: boolean;
   gatingConfigPath: string | null;
@@ -71,6 +72,7 @@ function defaultConfig(): MobKitBuilderConfig {
     eventLog: null,
     consoleConfigPath: null,
     consoleRequireAppAuth: null,
+    consoleReadOnly: null,
     consoleFetchTimeoutMs: null,
     demoLlm: false,
     gatingConfigPath: null,
@@ -143,6 +145,11 @@ export class MobKitBuilder {
 
   consoleAuthRequired(required: boolean): this {
     this._config.consoleRequireAppAuth = required;
+    return this;
+  }
+
+  consoleReadOnly(readOnly = true): this {
+    this._config.consoleReadOnly = readOnly;
     return this;
   }
 

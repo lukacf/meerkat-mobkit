@@ -116,6 +116,8 @@ impl Default for AuthPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsolePolicy {
     pub require_app_auth: bool,
+    #[serde(default)]
+    pub read_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fetch_timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "ConsoleUiConfig::is_default")]
@@ -126,6 +128,7 @@ impl Default for ConsolePolicy {
     fn default() -> Self {
         Self {
             require_app_auth: true,
+            read_only: false,
             fetch_timeout_ms: None,
             ui: ConsoleUiConfig::default(),
         }

@@ -16,6 +16,7 @@ class MobKitBuilderConfig:
     pre_spawn_callback: Any | None = None
     error_callback: Any | None = None
     event_log: Any | None = None
+    console_read_only: bool | None = None
     console_fetch_timeout_ms: int | None = None
     gating_config_path: str | None = None
     routing_config_path: str | None = None
@@ -135,6 +136,10 @@ class MobKitBuilder:
         if not isinstance(timeout_ms, int) or timeout_ms <= 0:
             raise ValueError("console_fetch_timeout_ms must be a positive integer")
         self._config.console_fetch_timeout_ms = timeout_ms
+        return self
+
+    def console_read_only(self, read_only: bool = True) -> MobKitBuilder:
+        self._config.console_read_only = bool(read_only)
         return self
 
     def implicit_delegate_idle_retirement(

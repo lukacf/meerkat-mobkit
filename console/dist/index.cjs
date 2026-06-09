@@ -6643,6 +6643,7 @@ function normalizeCapabilities(value) {
   return {
     methods,
     version: typeof record.version === "string" ? record.version : void 0,
+    ...typeof record.read_only === "boolean" ? { readOnly: record.read_only } : {},
     runtime_capabilities: record.runtime_capabilities,
     method_capabilities: record.method_capabilities
   };
@@ -6727,6 +6728,50 @@ function findPaneResizeRoot(handle) {
   if (workbenchRoot instanceof HTMLElement) return workbenchRoot;
   const shellRoot = handle.closest(".shell");
   return shellRoot instanceof HTMLElement ? shellRoot : null;
+}
+
+// src/lib/read-only-override.ts
+var READ_ONLY_QUERY_KEYS = [
+  "console_read_only",
+  "mobkit_console_read_only",
+  "view_only"
+];
+function parseBooleanFlag(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return null;
+  switch (value.trim().toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true;
+    case "0":
+    case "false":
+    case "no":
+    case "off":
+      return false;
+    default:
+      return null;
+  }
+}
+function browserSearch() {
+  if (typeof window === "undefined") return "";
+  return window.location.search;
+}
+function browserHostOverride() {
+  if (typeof window === "undefined") return void 0;
+  return window.__MOBKIT_CONSOLE_READ_ONLY__;
+}
+function resolveConsoleReadOnlyOverride(input = {}) {
+  const search = input.search ?? browserSearch();
+  const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+  const hostOverride = parseBooleanFlag(input.hostOverride ?? browserHostOverride());
+  if (hostOverride === true) return true;
+  for (const key of READ_ONLY_QUERY_KEYS) {
+    const parsed = parseBooleanFlag(params.get(key));
+    if (parsed === true) return true;
+  }
+  return false;
 }
 
 // src/icon.tsx
@@ -8401,7 +8446,12 @@ function derivePolicies(audit) {
     escalated: s.escalated
   }));
 }
-function GatingInboxPanel({ pending, audit, onDecide }) {
+function GatingInboxPanel({
+  pending,
+  audit,
+  onDecide,
+  readOnly = false
+}) {
   const [tab, setTab] = import_react17.default.useState("pending");
   const [selectedId, setSelectedId] = import_react17.default.useState(null);
   const policies = import_react17.default.useMemo(() => derivePolicies(audit), [audit]);
@@ -8516,7 +8566,7 @@ function GatingInboxPanel({ pending, audit, onDecide }) {
         const risk = getRisk(r2);
         const payload = payloadSummary(r2);
         const selected = selectedId === pid;
-        const showActions = tab === "pending";
+        const showActions = tab === "pending" && !readOnly;
         return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
           "div",
           {
@@ -11488,6 +11538,7 @@ function ChatPane({
   phase,
   draft,
   sending,
+  readOnly = false,
   staged,
   onDraftChange,
   onStagedChange,
@@ -11563,12 +11614,12 @@ function ChatPane({
   const transcriptText = import_react24.default.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
-  const canAttachImages = agent?.model_capabilities?.image_input === true;
+  const canAttachImages = !readOnly && agent?.model_capabilities?.image_input === true;
   const [dragActive, setDragActive] = import_react24.default.useState(false);
   const [attachmentError, setAttachmentError] = import_react24.default.useState(null);
   const resolvedDraftBlobRefs = import_react24.default.useRef("");
   function addFiles(fileList) {
-    if (!canAttachImages) return;
+    if (readOnly || !canAttachImages) return;
     const files = dedupeComposerImageFiles(Array.from(fileList));
     const accepted = [];
     let error = null;
@@ -11653,6 +11704,9 @@ function ChatPane({
   async function submitComposer() {
     if (staged.length > 0 && !canAttachImages) {
       setAttachmentError("model cannot see images");
+      return;
+    }
+    if (readOnly) {
       return;
     }
     if (!draft.trim() && staged.length === 0) {
@@ -11817,9 +11871,12 @@ function ChatPane({
             /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
               "textarea",
               {
-                placeholder: `Message ${agentLabel}\u2026`,
+                placeholder: readOnly ? "View-only console" : `Message ${agentLabel}\u2026`,
                 value: draft,
-                onChange: (e) => onDraftChange(e.target.value),
+                disabled: readOnly,
+                onChange: (e) => {
+                  if (!readOnly) onDraftChange(e.target.value);
+                },
                 onKeyDown: (e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
@@ -11837,7 +11894,7 @@ function ChatPane({
                 "button",
                 {
                   className: "composer__send",
-                  disabled: !draft.trim() && staged.length === 0 || staged.length > 0 && !canAttachImages || staged.length > 0 && sending,
+                  disabled: !draft.trim() && staged.length === 0 || readOnly || staged.length > 0 && !canAttachImages || staged.length > 0 && sending,
                   onClick: submitComposer,
                   "data-testid": `chat-send:${identity}`,
                   children: [
@@ -11870,7 +11927,11 @@ function ChatPane({
           /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "\xB7" }),
           /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { style: { color: "var(--accent)" }, children: phase })
         ] }),
-        !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(import_jsx_runtime33.Fragment, { children: [
+        readOnly && /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(import_jsx_runtime33.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "view only" })
+        ] }),
+        !readOnly && !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(import_jsx_runtime33.Fragment, { children: [
           /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "\xB7" }),
           /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "model cannot see images" })
         ] }),
@@ -13680,6 +13741,10 @@ function ConsoleApp({ baseUrl }) {
     setRailCollapsed(configured);
   }, [experience?.console_config?.rail?.collapsed]);
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
+  const frontendReadOnly = import_react27.default.useMemo(() => resolveConsoleReadOnlyOverride(), []);
+  const consoleReadOnly = frontendReadOnly || experience?.console_policy?.read_only === true || experience?.runtime_capabilities?.can_send_messages === false;
+  const consoleReadOnlyRef = import_react27.default.useRef(false);
+  consoleReadOnlyRef.current = consoleReadOnly;
   const visibleControls = import_react27.default.useMemo(() => {
     const runtimeControls = hasMobControlSurface ? [
       "topology",
@@ -13969,6 +14034,7 @@ function ConsoleApp({ baseUrl }) {
   }
   async function submitMessageNow(panelId, target, text, handlingMode, attachments = []) {
     if (target.kind !== "agent-chat") return false;
+    if (consoleReadOnlyRef.current) return false;
     const panelKey = buildPanelConversationKey2(panelId, target);
     const identity = target.identity || target.memberId;
     const optimisticObjectUrls = attachments.map(
@@ -14053,6 +14119,7 @@ function ConsoleApp({ baseUrl }) {
   }
   async function onSendMessage(panelId, target, attachments = []) {
     if (!target || target.kind !== "agent-chat") return false;
+    if (consoleReadOnly) return false;
     const panelKey = buildPanelConversationKey2(panelId, target);
     const identity = target.identity || target.memberId;
     const rawDraft = draftByKey[panelKey] || "";
@@ -14128,6 +14195,7 @@ function ConsoleApp({ baseUrl }) {
     return null;
   }
   function onStackSteer(identity, id) {
+    if (consoleReadOnlyRef.current) return;
     setPendingStack(
       identity,
       (prev) => prev.map(
@@ -14135,6 +14203,7 @@ function ConsoleApp({ baseUrl }) {
       )
     );
     window.setTimeout(() => {
+      if (consoleReadOnlyRef.current) return;
       const stack = getPendingStack(identity);
       const item = stack.find((it) => it.id === id);
       if (!item) return;
@@ -14214,6 +14283,7 @@ function ConsoleApp({ baseUrl }) {
     );
   }
   function maybeDrainHead(identity) {
+    if (consoleReadOnlyRef.current) return;
     const stack = getPendingStack(identity);
     if (stack.length === 0) return;
     const target = findChatTargetFor(identity);
@@ -14231,6 +14301,7 @@ function ConsoleApp({ baseUrl }) {
       )
     );
     window.setTimeout(() => {
+      if (consoleReadOnlyRef.current) return;
       const persistedHead = loadPendingStack(identity, {
         preserveFreshDraining: true
       }).find((it) => it.id === head.id);
@@ -14260,6 +14331,7 @@ function ConsoleApp({ baseUrl }) {
     }, animMs(420));
   }
   async function onLifecycleAction(identity, method) {
+    if (consoleReadOnly) return;
     const command = method === "mobkit/retire" ? CONSOLE_COMMAND_NAMES2.retireIdentity : method === "mobkit/respawn" ? CONSOLE_COMMAND_NAMES2.respawnIdentity : CONSOLE_COMMAND_NAMES2.resetIdentity;
     await executeHeadlessCommand(command, identityWorkbenchTarget(identity, "chat"), { identity });
     const nextAgents = await loadExperience();
@@ -14278,6 +14350,7 @@ function ConsoleApp({ baseUrl }) {
     }
   }
   async function onGatingDecision(pendingId, decision) {
+    if (consoleReadOnly) return;
     const gatingTarget = controlWorkbenchTarget("gating");
     await executeHeadlessCommand(CONSOLE_COMMAND_NAMES2.decideGating, gatingTarget, {
       pending_id: pendingId,
@@ -14444,8 +14517,8 @@ function ConsoleApp({ baseUrl }) {
       hasLocalPhase: honorLocalPhase,
       serverPhase: agent?.response_phase ?? null
     });
-    const canRespawn = configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
-    const canRetire = configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
+    const canRespawn = !consoleReadOnly && configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
+    const canRetire = !consoleReadOnly && configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
     const stackItems = getPendingStack(identity);
     const agentBusy = isIdentityBusy(identity);
     const stackSlot = stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
@@ -14474,6 +14547,7 @@ function ConsoleApp({ baseUrl }) {
         phase,
         draft,
         sending: isSending,
+        readOnly: consoleReadOnly,
         staged,
         onDraftChange: (v) => setDraftByKey((c) => ({ ...c, [panelKey]: v })),
         onStagedChange: (action) => setStagedAttachmentsForIdentity(identity, action),
@@ -14499,9 +14573,9 @@ function ConsoleApp({ baseUrl }) {
     const agent = agents.find(
       (candidate) => candidate.identity === target.identity || candidate.member_id === target.identity
     );
-    const canRespawn = configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
-    const canRetire = configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
-    const canReset = configuredActionVisibility.reset && experience?.runtime_capabilities?.can_retire_members === true;
+    const canRespawn = !consoleReadOnly && configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
+    const canRetire = !consoleReadOnly && configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
+    const canReset = !consoleReadOnly && configuredActionVisibility.reset && experience?.runtime_capabilities?.can_retire_members === true;
     return /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)(
       "div",
       {
@@ -14624,7 +14698,8 @@ function ConsoleApp({ baseUrl }) {
         {
           pending: gatingData.pending,
           audit: gatingData.audit,
-          onDecide: (pid, decision) => void onGatingDecision(pid, decision)
+          onDecide: (pid, decision) => void onGatingDecision(pid, decision),
+          readOnly: consoleReadOnly
         }
       );
     if (target.kind === "topology")
@@ -14652,9 +14727,14 @@ function ConsoleApp({ baseUrl }) {
           onChat: (a) => openAgentChat(a),
           onDetails: (a) => handleShowRosterDetails(a),
           onLifecycle: (identity, method) => void onLifecycleAction(identity, method),
-          canResetLifecycle: hasMobControlSurface,
+          canResetLifecycle: !consoleReadOnly && hasMobControlSurface,
           actionLabels: configuredActionLabels,
-          actionVisibility: configuredActionVisibility
+          actionVisibility: {
+            ...configuredActionVisibility,
+            respawn: !consoleReadOnly && configuredActionVisibility.respawn,
+            retire: !consoleReadOnly && configuredActionVisibility.retire,
+            reset: !consoleReadOnly && configuredActionVisibility.reset
+          }
         }
       );
     if (target.kind === "gates")
@@ -14663,7 +14743,8 @@ function ConsoleApp({ baseUrl }) {
         {
           pending: gatingData.pending,
           audit: gatingData.audit,
-          onDecide: (pid, decision) => void onGatingDecision(pid, decision)
+          onDecide: (pid, decision) => void onGatingDecision(pid, decision),
+          readOnly: consoleReadOnly
         }
       );
     if (target.kind === "logs")

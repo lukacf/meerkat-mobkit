@@ -42,6 +42,12 @@ class TestBuilderChain:
 
         assert params["runtime_options"]["console_fetch_timeout_ms"] == 120_000
 
+    def test_console_read_only_sets_runtime_option(self):
+        b = MobKit.builder().console_read_only()
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["console_read_only"] is True
+
     def test_console_fetch_timeout_ms_rejects_non_positive_values(self):
         with pytest.raises(ValueError):
             MobKit.builder().console_fetch_timeout_ms(0)

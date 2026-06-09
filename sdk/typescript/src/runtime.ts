@@ -367,6 +367,9 @@ export class MobKitRuntime {
       runtimeOptions.console_require_app_auth =
         this._config.consoleRequireAppAuth;
     }
+    if (this._config.consoleReadOnly !== null) {
+      runtimeOptions.console_read_only = this._config.consoleReadOnly;
+    }
     if (this._config.consoleFetchTimeoutMs !== null) {
       runtimeOptions.console_fetch_timeout_ms =
         this._config.consoleFetchTimeoutMs;

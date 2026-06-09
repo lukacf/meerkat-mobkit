@@ -68,6 +68,7 @@ struct GatewayRuntimeOptions {
     decisions: Option<RuntimeDecisionState>,
     console_ui: ConsoleUiConfig,
     console_require_app_auth: Option<bool>,
+    console_read_only: Option<bool>,
     console_fetch_timeout_ms: Option<u64>,
     demo_llm: bool,
 }
@@ -84,6 +85,7 @@ impl Default for GatewayRuntimeOptions {
             decisions: None,
             console_ui: ConsoleUiConfig::default(),
             console_require_app_auth: None,
+            console_read_only: None,
             console_fetch_timeout_ms: None,
             demo_llm: false,
         }
@@ -416,6 +418,19 @@ group_by = ["labels.console_group", "group"]
     }
 
     #[test]
+    fn gateway_runtime_options_can_enable_read_only_console() {
+        let params = json!({
+            "runtime_options": {
+                "console_read_only": true
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+
+        assert!(options.decisions.expect("decisions").console.read_only);
+    }
+
+    #[test]
     fn gateway_runtime_options_parse_console_fetch_timeout_ms() {
         let params = json!({
             "runtime_options": {
@@ -512,6 +527,7 @@ fn parse_gateway_runtime_options(
         "auth_config",
         "console_config_path",
         "console_require_app_auth",
+        "console_read_only",
         "console_fetch_timeout_ms",
         "demo_llm",
         "max_sessions",
@@ -567,6 +583,12 @@ fn parse_gateway_runtime_options(
         parsed.console_require_app_auth = Some(value.as_bool().ok_or_else(|| {
             "runtime_options.console_require_app_auth must be a boolean".to_string()
         })?);
+    }
+    if let Some(value) = runtime_options.get("console_read_only") {
+        parsed.console_read_only =
+            Some(value.as_bool().ok_or_else(|| {
+                "runtime_options.console_read_only must be a boolean".to_string()
+            })?);
     }
     if let Some(value) = runtime_options.get("console_fetch_timeout_ms") {
         if !value.is_null() {
@@ -631,6 +653,13 @@ fn parse_gateway_runtime_options(
             .get_or_insert_with(minimal_decision_state)
             .console
             .require_app_auth = require_app_auth;
+    }
+    if let Some(read_only) = parsed.console_read_only {
+        parsed
+            .decisions
+            .get_or_insert_with(minimal_decision_state)
+            .console
+            .read_only = read_only;
     }
     if let Some(fetch_timeout_ms) = parsed.console_fetch_timeout_ms {
         parsed

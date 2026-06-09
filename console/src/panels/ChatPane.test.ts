@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import type { ConversationTimelineEntry } from "@console-core";
-import { __chatPaneTest } from "./ChatPane";
+import { ChatPane, __chatPaneTest } from "./ChatPane";
 
 const USER = { id: "user", label: "You", role: "user" as const };
 const AGENT = { id: "agent", label: "Agent", role: "assistant" as const };
@@ -78,4 +80,36 @@ test("chat pane does not count peer update scaffolding as user work", () => {
   ]);
 
   assert.equal(messages.find((entry) => entry.id === "reply")?.workedFor, undefined);
+});
+
+test("chat pane disables composer in read-only mode", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ChatPane, {
+      agent: {
+        agent_id: "agent",
+        member_id: "agent",
+        identity: "agent",
+        label: "Agent",
+        kind: "mob_agent",
+        role: "worker",
+        state: "active",
+        model_capabilities: { image_input: true },
+      },
+      agentLabel: "Agent",
+      identity: "agent",
+      entries: [],
+      phase: null,
+      draft: "hello",
+      sending: false,
+      readOnly: true,
+      staged: [],
+      onDraftChange: () => undefined,
+      onStagedChange: () => undefined,
+      onSend: () => true,
+    }),
+  );
+
+  assert.match(html, /disabled=""/);
+  assert.match(html, /View-only console/);
+  assert.match(html, /view only/);
 });

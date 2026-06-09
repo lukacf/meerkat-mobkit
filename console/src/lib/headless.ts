@@ -46,6 +46,7 @@ export interface ConsoleFact<T> {
 export interface ConsoleCapabilities {
   methods: string[];
   version?: string;
+  readOnly?: boolean;
   runtime_capabilities?: unknown;
   method_capabilities?: unknown;
 }
@@ -510,6 +511,7 @@ function normalizeCapabilities(value: unknown): ConsoleCapabilities {
   return {
     methods,
     version: typeof record.version === "string" ? record.version : undefined,
+    ...(typeof record.read_only === "boolean" ? { readOnly: record.read_only } : {}),
     runtime_capabilities: record.runtime_capabilities,
     method_capabilities: record.method_capabilities,
   };

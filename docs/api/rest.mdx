@@ -180,6 +180,12 @@ MobKit's built-in console auth is bearer-token based and does not rely on
 cookies. Deployments that add cookie-backed console auth at a reverse proxy must
 also add CSRF/origin protection for mutating console routes.
 
+Set `ConsolePolicy.read_only` to `true` to serve the console in view-only mode.
+Read endpoints and streams remain available, while mutating JSON-RPC methods
+such as `mobkit/console/send`, `mobkit/blob/upload`, lifecycle controls, gating
+decisions, and metadata writes are omitted from `mobkit/capabilities` and return
+a read-only error if called directly.
+
 ## Error responses
 
 API errors return standard HTTP status codes with a JSON body:

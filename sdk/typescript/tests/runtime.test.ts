@@ -41,6 +41,7 @@ function createMockRuntime(): {
     eventLog: null,
     consoleConfigPath: null,
     consoleRequireAppAuth: null,
+    consoleReadOnly: null,
     consoleFetchTimeoutMs: null,
     gatingConfigPath: null,
     routingConfigPath: null,
@@ -117,6 +118,15 @@ describe("MobKitRuntime", () => {
     assert.equal(rt.rustHttpBaseUrl, null);
     rt.setRustHttpBase("http://127.0.0.1:8081");
     assert.equal(rt.rustHttpBaseUrl, "http://127.0.0.1:8081");
+  });
+
+  it("builds console_read_only runtime option", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.consoleReadOnly = true;
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal(params.runtime_options.console_read_only, true);
   });
 });
 

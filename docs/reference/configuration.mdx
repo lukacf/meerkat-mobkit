@@ -101,6 +101,7 @@ The stock SDK gateway consumes the `runtime_options` object sent by Python and T
 | `auth_config` | Object | Supports JWT shared-secret auth (`provider = "jwt"` / `shared_secret`) and wires the reference HTTP console/SSE routes to the configured trusted issuer, audience, and email allowlist. |
 | `console_config_path` | String | Loads a TOML `ConsoleUiConfig` and projects it through `/console/experience` as `console_config`. |
 | `console_require_app_auth` | Boolean | Overrides `ConsolePolicy.require_app_auth` for explicit gateway builds, commonly `false` for local demos. |
+| `console_read_only` | Boolean | Sets `ConsolePolicy.read_only` for SDK `rpc_gateway` launches; mutating console RPCs are denied and omitted from capabilities while read/stream routes stay available. |
 | `console_fetch_timeout_ms` | Positive integer | Sets `RuntimeDecisionState.console.fetch_timeout_ms`, which the bundled console uses for JSON fetches after the initial 60s default. |
 | `event_log` | Object | Supports the built-in memory event log with `storage = "memory"`, `batch_size`, and `flush_interval_ms`; `mobkit/query_events` returns the configured store instead of `no_event_log_configured`. |
 
@@ -244,6 +245,7 @@ enum AuthProvider {
 ```rust
 ConsolePolicy {
     require_app_auth: bool,
+    read_only: bool,
     fetch_timeout_ms: Option<u64>,
 }
 ```
@@ -251,7 +253,13 @@ ConsolePolicy {
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `require_app_auth` | `bool` | `true` | Whether console routes require JWT authentication |
+| `read_only` | `bool` | `false` | Whether the console is view-only; when enabled, send/upload/lifecycle/gating-write RPCs return a read-only error |
 | `fetch_timeout_ms` | `Option<u64>` | `None` | Optional bundled-console JSON fetch timeout override, projected through `/console/experience` |
+
+For standalone `mobkit_gateway` launches, pass `console_read_only: true` in the
+`mobkit/init` params or set `MOBKIT_CONSOLE_READ_ONLY=true`. This setting is
+part of the gateway resume fingerprint, so toggling it creates or resumes the
+matching runtime instead of reusing a runtime launched with the opposite policy.
 
 ---
 
