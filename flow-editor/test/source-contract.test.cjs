@@ -1399,6 +1399,9 @@ assert(!/mob_definition\?\.[\w?.]+\s*\|\|\s*\[/.test(controller), "Mob definitio
 assert(!/function\s+deployCommand\s*\(|args\s*=\s*\[\s*["']rkat["']\s*,\s*["']mob["']\s*,\s*["']deploy["']/.test(controller), "Deploy command previews must come from mobkit/mobpacks/deploy_command, not a controller-local shell renderer");
 assert.match(controller, /mobkit\/mobpacks\/deploy_command/, "controller must use MobKit deploy command preview RPC");
 assert.match(app, /graphQuickInsertProjection\(\{[\s\S]*pick,[\s\S]*at:\s*addAt,[\s\S]*members:\s*studio\.members,[\s\S]*instances:\s*studio\.instances,[\s\S]*edges:\s*studio\.edges,[\s\S]*flow,[\s\S]*contract,[\s\S]*graphView:\s*catalogs\.graphView/, "Graph quick insertion must pass Basic, Graph, Agent, contract, and schema-backed view context into controller projection");
+assert.match(controller, /function graphQuickInsertResult[\s\S]*addAt:\s*null/, "controller quick insertion must own add-menu close transitions");
+assert.match(app, /setAddAt\(inserted\.addAt\)/, "Graph quick insertion must apply controller-projected add-menu transitions");
+assert(!/graphQuickInsertProjection[\s\S]{0,900}setAddAt\(null\)/.test(app), "Graph quick insertion must not close the add menu locally after controller projection");
 assert.match(controller, /graphQuickInsertProjection[\s\S]*graphControlShape\(\{[\s\S]*instances:\s*sourceInstances,[\s\S]*edges:\s*sourceEdges,[\s\S]*graphView/, "controller quick insertion must derive MobKit-backed Graph control shapes");
 assert.match(controller, /graphQuickInsertProjection[\s\S]*graphMemberInstanceShape\(\{[\s\S]*instances:\s*sourceInstances/, "controller quick insertion must derive MobKit-backed member-instance shapes with current graph IDs");
 assert.match(controller, /function uniqueGraphControlSuffix/, "controller plane must own graph control ID collision handling");

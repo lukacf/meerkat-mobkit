@@ -346,7 +346,7 @@ function App() {
       if (inserted.edges !== studio.edges) studio.setEdges(inserted.edges);
       if (inserted.selectId) selectInstance(inserted.selectId);
     }
-    setAddAt(null);
+    setAddAt(inserted.addAt);
   };
 
   const applyAuthoringDocumentProjection = (projection) => {

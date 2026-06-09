@@ -9337,13 +9337,27 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function graphQuickInsertResult(result = {}) {
+    return {
+      ok: false,
+      error: "",
+      flow: result.flow,
+      instances: Array.isArray(result.instances) ? result.instances : [],
+      edges: Array.isArray(result.edges) ? result.edges : [],
+      selectId: "",
+      snap: false,
+      addAt: null,
+      ...result,
+    };
+  }
+
   function graphQuickInsertProjection({ pick, at, members, instances, edges, flow, contract, graphView = null } = {}) {
     const sourceInstances = Array.isArray(instances) ? instances : [];
     const sourceEdges = Array.isArray(edges) ? edges : [];
     const sourceFlow = flow;
     const kind = String(pick?.kind || "").trim();
     if (!pick || !at) {
-      return { ok: false, error: "", flow: sourceFlow, instances: sourceInstances, edges: sourceEdges, selectId: "", snap: false };
+      return graphQuickInsertResult({ flow: sourceFlow, instances: sourceInstances, edges: sourceEdges });
     }
     if (kind === "memberInstance") {
       const instance = graphMemberInstanceShape({
@@ -9354,9 +9368,9 @@ window.MOBKIT_BOOT = {
       });
       const next = studioAddInstancePatch({ instances: sourceInstances, members }, instance);
       if (!next.ok) {
-        return { ok: false, error: next.error, flow: sourceFlow, instances: sourceInstances, edges: sourceEdges, selectId: "", snap: false };
+        return graphQuickInsertResult({ error: next.error, flow: sourceFlow, instances: sourceInstances, edges: sourceEdges });
       }
-      return { ok: true, error: "", flow: sourceFlow, instances: next.instances, edges: sourceEdges, selectId: next.instance?.id || "", snap: true };
+      return graphQuickInsertResult({ ok: true, flow: sourceFlow, instances: next.instances, edges: sourceEdges, selectId: next.instance?.id || "", snap: true });
     }
     if (kind === "gate") {
       const inserted = graphControlShape({
@@ -9370,21 +9384,20 @@ window.MOBKIT_BOOT = {
         graphView,
       });
       if (!inserted) {
-        return { ok: false, error: "", flow: sourceFlow, instances: sourceInstances, edges: sourceEdges, selectId: "", snap: false };
+        return graphQuickInsertResult({ flow: sourceFlow, instances: sourceInstances, edges: sourceEdges });
       }
       const instancesPatch = studioAppendInstancesPatch({ instances: sourceInstances, members }, inserted.instances);
       const edgesPatch = studioAppendEdgesPatch({ edges: sourceEdges, instances: instancesPatch.instances }, inserted.edges);
-      return {
+      return graphQuickInsertResult({
         ok: true,
-        error: "",
         flow: inserted.flow || sourceFlow,
         instances: instancesPatch.instances,
         edges: edgesPatch.edges,
         selectId: inserted.selectId || "",
         snap: true,
-      };
+      });
     }
-    return { ok: false, error: "", flow: sourceFlow, instances: sourceInstances, edges: sourceEdges, selectId: "", snap: false };
+    return graphQuickInsertResult({ flow: sourceFlow, instances: sourceInstances, edges: sourceEdges });
   }
 
   function flowStepTemplate(pick, contract, options = {}) {
@@ -14200,7 +14213,7 @@ function App() {
       if (inserted.edges !== studio.edges) studio.setEdges(inserted.edges);
       if (inserted.selectId) selectInstance(inserted.selectId);
     }
-    setAddAt(null);
+    setAddAt(inserted.addAt);
   };
   const applyAuthoringDocumentProjection = (projection) => {
     const plan = window.MobKitFlowController.authoringProjectionApplyPlan(projection, {

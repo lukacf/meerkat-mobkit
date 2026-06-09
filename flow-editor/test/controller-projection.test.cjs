@@ -9966,6 +9966,7 @@ assert.deepEqual(quickMemberInsert.edges, [{ id: "keep_edge", from: "i_m_left", 
 assert.equal(quickMemberInsert.instances[1].id, "i_m_left_2");
 assert.equal(quickMemberInsert.instances[1].memberId, "m_left");
 assert.equal(quickMemberInsert.selectId, "i_m_left_2");
+assert.equal(quickMemberInsert.addAt, null);
 
 const quickMissingMemberInsert = controller.graphQuickInsertProjection({
   pick: { kind: "memberInstance", memberId: "m_missing" },
@@ -9979,6 +9980,7 @@ const quickMissingMemberInsert = controller.graphQuickInsertProjection({
 assert.equal(quickMissingMemberInsert.ok, false);
 assert.deepEqual(quickMissingMemberInsert.instances, []);
 assert.deepEqual(quickMissingMemberInsert.edges, []);
+assert.equal(quickMissingMemberInsert.addAt, null);
 
 const quickBranchInsert = controller.graphQuickInsertProjection({
   pick: { kind: "gate", gateKind: "branch" },
@@ -9994,6 +9996,7 @@ assert.equal(quickBranchInsert.ok, true);
 assert.equal(quickBranchInsert.snap, true);
 assert.equal(quickBranchInsert.flow, previousFlow);
 assert.equal(quickBranchInsert.selectId, "g_branch_1");
+assert.equal(quickBranchInsert.addAt, null);
 assert.deepEqual(quickBranchInsert.instances.map((instance) => instance.id), [
   "existing",
   "g_branch_1",
