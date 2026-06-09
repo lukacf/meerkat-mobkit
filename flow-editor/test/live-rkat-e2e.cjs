@@ -71,7 +71,22 @@ async function assertAuthoringCapabilities() {
     throw new Error(`flow editor deploy command must be rkat mob deploy: ${JSON.stringify(authoring)}`);
   }
   const operations = array(authoring.operations, "authoring.operations");
-  for (const operationType of ["delete_member", "rename_schema_field", "delete_schema", "add_input_param", "rename_input_param", "delete_input_param", "update_deploy_settings"]) {
+  for (const operationType of [
+    "delete_member",
+    "rename_schema_field",
+    "delete_schema",
+    "add_input_param",
+    "rename_input_param",
+    "delete_input_param",
+    "insert_graph_node",
+    "update_graph_node",
+    "move_graph_node",
+    "delete_graph_node",
+    "connect_graph_nodes",
+    "update_graph_edge",
+    "delete_graph_edge",
+    "update_deploy_settings",
+  ]) {
     const operation = operations.find((candidate) => candidate?.type === operationType);
     if (!operation) {
       throw new Error(`flow editor authoring capabilities missing operation ${operationType}: ${JSON.stringify(operations)}`);
@@ -1532,6 +1547,127 @@ async function validateInputParamOperations(catalogs) {
   };
 }
 
+async function validateGraphOperations(catalogs) {
+  const document = JSON.parse(JSON.stringify(catalogs.blank_mobpack.document));
+  document.members = [
+    {
+      id: "planner",
+      name: "planner",
+      role: "planner",
+      profileBinding: "inline",
+      runtimeMode: "turn_driven",
+      model: "gpt-5.5",
+      tools: [],
+      skills: [],
+    },
+    {
+      id: "reviewer",
+      name: "reviewer",
+      role: "reviewer",
+      profileBinding: "inline",
+      runtimeMode: "turn_driven",
+      model: "gpt-5.5",
+      tools: [],
+      skills: [],
+    },
+  ];
+  document.instances = [
+    { id: "n_plan", kind: "member", memberId: "planner", col: 0, row: 0 },
+    { id: "n_review", kind: "member", memberId: "reviewer", col: 1, row: 0 },
+  ];
+  document.edges = [];
+  const inserted = await rpc("mobkit/mobpacks/apply_operation", {
+    document,
+    operation: {
+      type: "insert_graph_node",
+      instance: { id: "n_done", kind: "terminal", isTerminal: true, col: 2, row: 0 },
+    },
+  });
+  const moved = await rpc("mobkit/mobpacks/apply_operation", {
+    document: inserted.document,
+    operation: {
+      type: "move_graph_node",
+      instance_id: "n_done",
+      cell: { col: 1, row: 0 },
+      original_cell: { col: 2, row: 0 },
+    },
+  });
+  const doneAfterMove = moved.document.instances.find((instance) => instance.id === "n_done");
+  const reviewerAfterMove = moved.document.instances.find((instance) => instance.id === "n_review");
+  if (doneAfterMove?.col !== 1 || reviewerAfterMove?.col !== 2) {
+    throw new Error(`graph move operation did not swap cells: ${JSON.stringify(moved.document.instances)}`);
+  }
+  const updated = await rpc("mobkit/mobpacks/apply_operation", {
+    document: moved.document,
+    operation: {
+      type: "update_graph_node",
+      instance_id: "n_done",
+      patch: { lane: "terminal" },
+    },
+  });
+  const connected = await rpc("mobkit/mobpacks/apply_operation", {
+    document: updated.document,
+    operation: {
+      type: "connect_graph_nodes",
+      edge: { id: "e_plan_done", from: "n_plan", to: "n_done", kind: "next", label: "" },
+    },
+  });
+  const edgeUpdated = await rpc("mobkit/mobpacks/apply_operation", {
+    document: connected.document,
+    operation: {
+      type: "update_graph_edge",
+      edge_id: "e_plan_done",
+      patch: { label: "done" },
+    },
+  });
+  if (edgeUpdated.document.edges[0]?.label !== "done") {
+    throw new Error(`graph edge update operation did not apply patch: ${JSON.stringify(edgeUpdated.document.edges)}`);
+  }
+  const edgeDeleted = await rpc("mobkit/mobpacks/apply_operation", {
+    document: edgeUpdated.document,
+    operation: {
+      type: "delete_graph_edge",
+      edge_id: "e_plan_done",
+    },
+  });
+  if (edgeDeleted.document.edges.length !== 0) {
+    throw new Error(`graph edge delete operation did not remove edge: ${JSON.stringify(edgeDeleted.document.edges)}`);
+  }
+  const reconnected = await rpc("mobkit/mobpacks/apply_operation", {
+    document: edgeDeleted.document,
+    operation: {
+      type: "connect_graph_nodes",
+      edge: { id: "e_done_plan", from: "n_done", to: "n_plan", kind: "next", label: "" },
+    },
+  });
+  const deleted = await rpc("mobkit/mobpacks/apply_operation", {
+    document: reconnected.document,
+    operation: {
+      type: "delete_graph_node",
+      instance_id: "n_done",
+    },
+  });
+  if (deleted.document.instances.some((instance) => instance.id === "n_done") || deleted.document.edges.length !== 0) {
+    throw new Error(`graph node delete operation did not prune node/edges: ${JSON.stringify(deleted.document)}`);
+  }
+  return {
+    inserted: inserted.selection.id,
+    moved: { done: doneAfterMove.col, reviewer: reviewerAfterMove.col },
+    updatedLane: updated.document.instances.find((instance) => instance.id === "n_done")?.lane,
+    edgeLabel: edgeUpdated.document.edges[0]?.label,
+    remainingInstances: deleted.document.instances.map((instance) => instance.id),
+    operations: [
+      inserted.operation,
+      moved.operation,
+      updated.operation,
+      connected.operation,
+      edgeUpdated.operation,
+      edgeDeleted.operation,
+      deleted.operation,
+    ],
+  };
+}
+
 (async () => {
   run("rkat", ["mob", "--help"]);
 
@@ -1736,6 +1872,7 @@ async function validateInputParamOperations(catalogs) {
     documentBackedDeployPreview: await validateDocumentBackedDeployPreview(sample.document),
     namedProjectedOperations: await validateNamedProjectedOperations(catalogs),
     inputParamOperations: await validateInputParamOperations(catalogs),
+    graphOperations: await validateGraphOperations(catalogs),
     deploy: null,
   };
 

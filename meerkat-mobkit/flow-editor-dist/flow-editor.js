@@ -12821,6 +12821,11 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
           if (applyAuthoringReplacement) {
             applyAuthoringReplacement({
               operationType: "move_graph_node",
+              operation: {
+                instance_id: drag.instId,
+                cell,
+                original_cell: { col: drag.origCol, row: drag.origRow }
+              },
               studio: { instances: next.instances },
               selection: { kind: "instance", id: drag.instId }
             });
@@ -12847,6 +12852,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
             if (applyAuthoringReplacement) {
               applyAuthoringReplacement({
                 operationType: "connect_graph_nodes",
+                operation: { edge: result.edge },
                 studio: { edges: result.edges },
                 selection: { kind: "edge", id: result.selectId }
               }).then(() => selectEdge(result.selectId));
@@ -14882,6 +14888,7 @@ function App() {
           }, selection.id);
           applyMobKitAuthoringReplacement({
             operationType: "delete_graph_node",
+            operation: { instance_id: selection.id },
             studio: { instances: result.instances, edges: result.edges },
             selection: result.selection
           }).then(() => clearSelection(result.selection));
@@ -14889,6 +14896,7 @@ function App() {
           const result = window.MobKitFlowController.studioDeleteEdgePatch({ edges: studio.edges }, selection.id);
           applyMobKitAuthoringReplacement({
             operationType: "delete_graph_edge",
+            operation: { edge_id: selection.id },
             studio: { edges: result.edges },
             selection: result.selection
           }).then(() => clearSelection(result.selection));
@@ -14933,6 +14941,11 @@ function App() {
     if (inserted.ok) {
       applyMobKitAuthoringReplacement({
         operationType: "insert_graph_node",
+        operation: {
+          instances: inserted.instances,
+          edges: inserted.edges,
+          flow: inserted.flow
+        },
         flow: inserted.flow,
         studio: {
           instances: inserted.instances,
@@ -15077,7 +15090,14 @@ function App() {
         instances: studio.instances,
         members: studio.members
       }, instance);
-      applyMobKitAuthoringReplacement({ operationType: "insert_graph_node", studio: { instances: next.instances } });
+      if (next.ok && next.instance) {
+        applyMobKitAuthoringReplacement({
+          operationType: "insert_graph_node",
+          operation: { instance: next.instance },
+          studio: { instances: next.instances },
+          selection: { kind: "instance", id: next.instance.id }
+        });
+      }
       return next;
     },
     updateInstance: (id, patch) => {
@@ -15087,6 +15107,7 @@ function App() {
       }, id, patch);
       applyMobKitAuthoringReplacement({
         operationType: "update_graph_node",
+        operation: { instance_id: id, patch },
         studio: { instances: next.instances },
         selection: { kind: "instance", id }
       });
@@ -15099,6 +15120,7 @@ function App() {
       }, id);
       applyMobKitAuthoringReplacement({
         operationType: "delete_graph_node",
+        operation: { instance_id: id },
         studio: { instances: next.instances, edges: next.edges },
         selection: next.selection
       });
@@ -15109,7 +15131,14 @@ function App() {
         edges: studio.edges,
         instances: studio.instances
       }, edge);
-      applyMobKitAuthoringReplacement({ operationType: "connect_graph_nodes", studio: { edges: next.edges } });
+      if (next.ok && next.edge) {
+        applyMobKitAuthoringReplacement({
+          operationType: "connect_graph_nodes",
+          operation: { edge: next.edge },
+          studio: { edges: next.edges },
+          selection: { kind: "edge", id: next.edge.id }
+        });
+      }
       return next;
     },
     updateEdge: (id, patch) => {
@@ -15119,6 +15148,7 @@ function App() {
       }, id, patch);
       applyMobKitAuthoringReplacement({
         operationType: "update_graph_edge",
+        operation: { edge_id: id, patch },
         studio: { edges: next.edges },
         selection: { kind: "edge", id }
       });
@@ -15128,6 +15158,7 @@ function App() {
       const next = window.MobKitFlowController.studioDeleteEdgePatch({ edges: studio.edges }, id);
       applyMobKitAuthoringReplacement({
         operationType: "delete_graph_edge",
+        operation: { edge_id: id },
         studio: { edges: next.edges },
         selection: next.selection
       });

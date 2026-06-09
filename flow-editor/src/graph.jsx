@@ -318,6 +318,11 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
           if (applyAuthoringReplacement) {
             applyAuthoringReplacement({
               operationType: "move_graph_node",
+              operation: {
+                instance_id: drag.instId,
+                cell,
+                original_cell: { col: drag.origCol, row: drag.origRow },
+              },
               studio: { instances: next.instances },
               selection: { kind: "instance", id: drag.instId },
             });
@@ -343,6 +348,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
             if (applyAuthoringReplacement) {
               applyAuthoringReplacement({
                 operationType: "connect_graph_nodes",
+                operation: { edge: result.edge },
                 studio: { edges: result.edges },
                 selection: { kind: "edge", id: result.selectId },
               }).then(() => selectEdge(result.selectId));
