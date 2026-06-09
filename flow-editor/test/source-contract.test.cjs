@@ -651,7 +651,7 @@ assert.match(app, /function RoleWiringEditor/, "mob role wiring must use structu
 assert(!/parseRoleWiring|TweakText label="Role wiring"/.test(app), "mob role wiring must not be edited as raw profile-name text");
 assert.match(app, /const canCreateAuthoring = !!catalogs\.contractMeta\.loaded && !contract\?\.error;/, "blank/sample authoring must be gated on loaded MobKit schema");
 assert.match(app, /if \(!canCreateAuthoring\) return;[\s\S]*setCreating\(window\.MobKitFlowController\.newFlowInitialState/, "New flow modal must not open before MobKit schema hydration");
-assert.match(app, /if \(!canCreateAuthoring\) return;[\s\S]*MobKitFlowController\.createFlowDraftFromSpec/, "Blank/sample mobpack creation must not run before MobKit schema hydration");
+assert.match(app, /if \(!canCreateAuthoring\) return;[\s\S]*MobKitFlowController\.flowRegistryCreateDraftProjection/, "Blank/sample mobpack creation must not run before MobKit schema hydration");
 assert.match(app, /setCreating\(window\.MobKitFlowController\.newFlowInitialState\(\{ blankTemplate: catalogs\.blankMobpack \}\)\)/, "New flow modal initial state must come from controller-projected MobKit blank mobpack data");
 assert.match(controller, /function createFlowDraftFromSpec/, "controller plane must own new flow draft document and registry row creation");
 assert.match(controller, /function newFlowInitialState[\s\S]*blankTemplate\.trigger[\s\S]*blankTemplate\.id/, "controller plane must seed new-flow initial trigger/template from the MobKit blank mobpack catalog");
@@ -663,7 +663,7 @@ assert.match(controller, /function newFlowTemplateOptions/, "controller plane mu
 assert.match(controller, /function newFlowModalState/, "controller plane must own new-flow modal template selection and action enablement");
 assert.match(app, /newFlowView=\{catalogs\.newFlowView\}/, "New flow modal must receive schema-backed modal view chrome");
 assert.match(app, /MobKitFlowController\.newFlowModalState\(state, templateOptions, newFlowView\)/, "New flow modal must render controller-projected modal state with MobKit view chrome");
-assert.match(app, /MobKitFlowController\.createFlowDraftFromSpec\(\{[\s\S]*blankTemplate: catalogs\.blankMobpack/, "New flow creation must pass the MobKit schema blank mobpack into the controller plane");
+assert.match(app, /MobKitFlowController\.flowRegistryCreateDraftProjection\(flows,\s*\{[\s\S]*blankTemplate: catalogs\.blankMobpack/, "New flow creation must pass the MobKit schema blank mobpack and registry rows into the controller plane");
 assert.match(newFlowModalBlock, /modalState\.eyebrow/, "New flow modal title must render through controller state");
 assert.match(newFlowModalBlock, /modalState\.namePlaceholder/, "New flow modal name placeholder must render through controller state");
 assert.match(newFlowModalBlock, /modalState\.triggerPlaceholder/, "New flow modal trigger placeholder must render through controller state");
@@ -1173,11 +1173,10 @@ assert.match(app, /flowRegistryPersistDocumentProjection\(flows,\s*\{[\s\S]*curr
 assert.match(app, /flowRegistryPersistDocumentProjection\(flows,\s*\{[\s\S]*previousSignature:\s*persistedDocumentSig\.current,[\s\S]*skipIfUnchanged:\s*true/, "autosave persistence must let the controller projection suppress unchanged document snapshots");
 assert(!/flowRegistryRememberDocumentPatch/.test(app), "app shell must not apply flow registry document row patches locally");
 assert.match(app, /MobKitFlowController\.flowRegistrySelectionState/, "app shell must select and load registry rows through the controller plane");
-assert.match(app, /MobKitFlowController\.createFlowDraftFromSpec/, "app shell must derive new-flow registry rows through controller draft creation");
-assert.match(app, /existingRows:\s*flows/, "app shell must pass existing flow rows into controller-owned new-flow ID creation");
+assert.match(app, /MobKitFlowController\.flowRegistryCreateDraftProjection/, "app shell must derive new-flow registry rows and hydration payload through one controller projection");
 assert.match(app, /MobKitFlowController\.hydrateMobpackDocumentState/, "app shell must derive imported registry rows through controller hydration");
 assert.match(app, /const hydrationPersistence = window\.MobKitFlowController\.flowRegistryDocumentPersistence\(\{[\s\S]*currentFlowId: hydration\.id,[\s\S]*document: hydration\.document,[\s\S]*validation: hydration\.validation,[\s\S]*stage: hydration\.stage,[\s\S]*persistedDocumentSig\.current = hydrationPersistence\.signature/, "hydrated registry documents must seed the controller-owned persistence signature before UI effects can clear validation");
-assert.match(app, /MobKitFlowController\.flowRegistryAppendRowPatch/, "app shell must append flow registry rows through the controller plane");
+assert(!/MobKitFlowController\.flowRegistryAppendRowPatch/.test(app), "app shell must not append new-flow registry rows locally");
 assert.match(app, /MobKitFlowController\.flowRegistryUpsertRowPatch/, "app shell must upsert flow registry rows through the controller plane");
 assert(!/const\s+id\s*=\s*["']f_["']\s*\+\s*Math\.random|Math\.random\(\)[\s\S]{0,80}createFlowDraftFromSpec/.test(app), "app shell must not mint deployable new-flow ids locally");
 assert(!/const flowRegistryDraftRow|flowRegistryRowFromDocument\(\{[\s\S]{0,180}fallbackVersion:\s*["']draft["']/.test(app), "app shell must not assemble new-flow draft registry rows locally");
@@ -1190,6 +1189,9 @@ assert.match(controller, /function flowRegistryPersistOutcomeProjection/, "contr
 assert.match(controller, /function flowRegistrySelectionState/, "controller plane must own registry row selection and hydrate/fallback decisions");
 assert.match(controller, /function flowRegistryRowFromDocument/, "controller plane must own document-to-registry row projection");
 assert.match(controller, /function flowDraftIdFromSpec/, "controller plane must own new-flow ID creation and collision handling");
+assert.match(controller, /function flowRegistryCreateDraftProjection/, "controller plane must own new-flow draft registry append and hydration projection");
+assert.match(controller, /flowRegistryCreateDraftProjection[\s\S]*createFlowDraftFromSpec\(\{[\s\S]*existingRows: options\.existingRows \|\| sourceRows/, "controller projection must create new-flow draft documents using existing registry rows for collision handling");
+assert.match(controller, /flowRegistryCreateDraftProjection[\s\S]*flowRegistryAppendRowPatch\(sourceRows, draft\.row\)/, "controller projection must append new-flow registry rows inside the controller plane");
 assert.match(controller, /function flowRegistryAppendRowPatch/, "controller plane must own flow registry append semantics");
 assert.match(controller, /function flowRegistryUpsertRowPatch/, "controller plane must own flow registry upsert semantics");
 assert(!/setFlows\(\s*\(?\w+\)?\s*=>\s*\w+\.map\([^)]*=>[\s\S]{0,220}stage:\s*["']draft["']|setFlows\(\s*\(?\w+\)?\s*=>\s*\w+\.some\([^)]*\)\s*\?\s*\w+\.map|setFlows\(\s*\(?\w+\)?\s*=>\s*\[\.\.\.\w+,\s*row\]/.test(app), "app shell must not locally map/upsert/append flow registry rows");

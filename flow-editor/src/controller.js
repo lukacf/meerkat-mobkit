@@ -9550,6 +9550,35 @@
     return { id: rowId, document, row, template: template || null };
   }
 
+  function flowRegistryCreateDraftProjection(rows, options = {}) {
+    const sourceRows = Array.isArray(rows) ? rows : [];
+    const draft = createFlowDraftFromSpec({
+      ...options,
+      existingRows: options.existingRows || sourceRows,
+    });
+    if (!draft?.document || !draft?.row) {
+      return {
+        ok: false,
+        draft: null,
+        rows: sourceRows,
+        hydration: null,
+      };
+    }
+    return {
+      ok: true,
+      draft,
+      rows: flowRegistryAppendRowPatch(sourceRows, draft.row),
+      hydration: {
+        result: { document: draft.document, validation: null },
+        options: {
+          id: draft.id,
+          flowRow: draft.row,
+          addToRegistry: false,
+        },
+      },
+    };
+  }
+
   function flowDraftIdFromSpec(spec, existingRows = []) {
     const draftSpec = spec && typeof spec === "object" ? spec : {};
     const base = slug(draftSpec.name || draftSpec.template || "mobkit_flow", "mobkit_flow");
@@ -9994,6 +10023,7 @@
     authoringFlowForDocument,
     authoringDocumentFromState,
     createFlowDraftFromSpec,
+    flowRegistryCreateDraftProjection,
     flowDraftIdFromSpec,
     newFlowTemplateOptions,
     newFlowInitialState,

@@ -801,6 +801,30 @@ assert.equal(generatedBlankDraft.id, "f_blank_created_2");
 assert.equal(generatedBlankDraft.row.id, "f_blank_created_2");
 assert.equal(generatedBlankDraft.row.trigger, "label · generated");
 
+const createdDraftProjection = controller.flowRegistryCreateDraftProjection([{ id: "f_existing" }], {
+  spec: { name: "Projected Draft", trigger: "label · projected", template: "blank" },
+  templates: [],
+  blankTemplate: schemaBlankMobpack,
+  deploySettings: testDeploySettings(),
+  mobSettings: controller.mobDefaultsFromSchema(TEST_SCHEMA),
+});
+assert.equal(createdDraftProjection.ok, true);
+assert.equal(createdDraftProjection.draft.id, "f_projected_draft");
+assert.equal(createdDraftProjection.rows.length, 2);
+assert.equal(createdDraftProjection.rows[1].id, "f_projected_draft");
+assert.equal(createdDraftProjection.hydration.result.document, createdDraftProjection.draft.document);
+assert.equal(createdDraftProjection.hydration.options.id, "f_projected_draft");
+assert.equal(createdDraftProjection.hydration.options.flowRow, createdDraftProjection.draft.row);
+assert.equal(createdDraftProjection.hydration.options.addToRegistry, false);
+
+const missingDraftProjection = controller.flowRegistryCreateDraftProjection([{ id: "f_existing" }], {
+  spec: { name: "Missing", template: "blank" },
+  templates: [],
+});
+assert.equal(missingDraftProjection.ok, false);
+assert.equal(missingDraftProjection.rows.length, 1);
+assert.equal(missingDraftProjection.hydration, null);
+
 assert.equal(controller.createFlowDraftFromSpec({
   id: "f_blank_missing",
   spec: { name: "Blank Missing", template: "blank" },

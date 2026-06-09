@@ -9583,6 +9583,35 @@ window.MOBKIT_BOOT = {
     return { id: rowId, document, row, template: template || null };
   }
 
+  function flowRegistryCreateDraftProjection(rows, options = {}) {
+    const sourceRows = Array.isArray(rows) ? rows : [];
+    const draft = createFlowDraftFromSpec({
+      ...options,
+      existingRows: options.existingRows || sourceRows,
+    });
+    if (!draft?.document || !draft?.row) {
+      return {
+        ok: false,
+        draft: null,
+        rows: sourceRows,
+        hydration: null,
+      };
+    }
+    return {
+      ok: true,
+      draft,
+      rows: flowRegistryAppendRowPatch(sourceRows, draft.row),
+      hydration: {
+        result: { document: draft.document, validation: null },
+        options: {
+          id: draft.id,
+          flowRow: draft.row,
+          addToRegistry: false,
+        },
+      },
+    };
+  }
+
   function flowDraftIdFromSpec(spec, existingRows = []) {
     const draftSpec = spec && typeof spec === "object" ? spec : {};
     const base = slug(draftSpec.name || draftSpec.template || "mobkit_flow", "mobkit_flow");
@@ -10027,6 +10056,7 @@ window.MOBKIT_BOOT = {
     authoringFlowForDocument,
     authoringDocumentFromState,
     createFlowDraftFromSpec,
+    flowRegistryCreateDraftProjection,
     flowDraftIdFromSpec,
     newFlowTemplateOptions,
     newFlowInitialState,
@@ -13534,21 +13564,16 @@ function App() {
       newFlowView: catalogs.newFlowView,
       onCreate: (spec) => {
         if (!canCreateAuthoring) return;
-        const draft = window.MobKitFlowController.createFlowDraftFromSpec({
+        const draft = window.MobKitFlowController.flowRegistryCreateDraftProjection(flows, {
           spec,
           templates,
-          existingRows: flows,
           blankTemplate: catalogs.blankMobpack,
           deploySettings,
           mobSettings
         });
-        if (!draft?.document || !draft?.row) return;
-        setFlows((fs) => window.MobKitFlowController.flowRegistryAppendRowPatch(fs, draft.row));
-        hydrateMobpackDocument({ document: draft.document, validation: null }, {
-          id: draft.id,
-          flowRow: draft.row,
-          addToRegistry: false
-        });
+        if (!draft.ok || !draft.hydration) return;
+        setFlows(draft.rows);
+        hydrateMobpackDocument(draft.hydration.result, draft.hydration.options);
         setCreating(null);
       }
     }

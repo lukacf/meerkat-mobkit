@@ -833,21 +833,16 @@ function App() {
           newFlowView={catalogs.newFlowView}
           onCreate={(spec) => {
             if (!canCreateAuthoring) return;
-            const draft = window.MobKitFlowController.createFlowDraftFromSpec({
+            const draft = window.MobKitFlowController.flowRegistryCreateDraftProjection(flows, {
               spec,
               templates,
-              existingRows: flows,
               blankTemplate: catalogs.blankMobpack,
               deploySettings,
               mobSettings,
             });
-            if (!draft?.document || !draft?.row) return;
-            setFlows(fs => window.MobKitFlowController.flowRegistryAppendRowPatch(fs, draft.row));
-            hydrateMobpackDocument({ document: draft.document, validation: null }, {
-              id: draft.id,
-              flowRow: draft.row,
-              addToRegistry: false,
-            });
+            if (!draft.ok || !draft.hydration) return;
+            setFlows(draft.rows);
+            hydrateMobpackDocument(draft.hydration.result, draft.hydration.options);
             setCreating(null);
           }}
         />
