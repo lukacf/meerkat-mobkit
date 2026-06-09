@@ -1055,6 +1055,13 @@ pub fn mobpack_schema_response() -> Value {
         "definition_catalog_source_label": "source",
         "definition_catalog_tools_label": "tools",
         "definition_catalog_skills_label": "skills",
+        "member_sub_label_template": "{role} · {model}",
+        "member_placed_empty_label": "unplaced",
+        "member_placed_count_template": "×{count}",
+        "schema_field_singular_template": "{count} field",
+        "schema_field_plural_template": "{count} fields",
+        "schema_usage_label_template": "used by {count}",
+        "sidebar_sub_label_separator": " · ",
         "empty_title": "AGENT LIBRARY",
         "empty_lines": [
             "Select an agent or schema on the left.",
@@ -17400,6 +17407,30 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_view"]["definition_catalog_skills_label"],
             json!("skills")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["member_sub_label_template"],
+            json!("{role} · {model}")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["member_placed_empty_label"],
+            json!("unplaced")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["member_placed_count_template"],
+            json!("×{count}")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["schema_field_plural_template"],
+            json!("{count} fields")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["schema_usage_label_template"],
+            json!("used by {count}")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_view"]["sidebar_sub_label_separator"],
+            json!(" · ")
         );
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["identity_title"],

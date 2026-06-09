@@ -1138,6 +1138,13 @@ const hydratedContractAndCatalogFixture = {
       definition_catalog_source_label: "source",
       definition_catalog_tools_label: "tools",
       definition_catalog_skills_label: "skills",
+      member_sub_label_template: "{role} · {model}",
+      member_placed_empty_label: "unplaced",
+      member_placed_count_template: "×{count}",
+      schema_field_singular_template: "{count} field",
+      schema_field_plural_template: "{count} fields",
+      schema_usage_label_template: "used by {count}",
+      sidebar_sub_label_separator: " · ",
       empty_title: "AGENT LIBRARY",
       empty_lines: [
         "Select an agent or schema on the left.",
@@ -1609,6 +1616,13 @@ assert.deepEqual(hydratedCatalogs.agentView, {
   definitionCatalogSourceLabel: "source",
   definitionCatalogToolsLabel: "tools",
   definitionCatalogSkillsLabel: "skills",
+  memberSubLabelTemplate: "{role} · {model}",
+  memberPlacedEmptyLabel: "unplaced",
+  memberPlacedCountTemplate: "×{count}",
+  schemaFieldSingularTemplate: "{count} field",
+  schemaFieldPluralTemplate: "{count} fields",
+  schemaUsageLabelTemplate: "used by {count}",
+  sidebarSubLabelSeparator: " · ",
   emptyTitle: "AGENT LIBRARY",
   emptyLines: [
     "Select an agent or schema on the left.",
@@ -4891,6 +4905,29 @@ assert.deepEqual(controller.agentListState({
     },
   ],
 });
+const reskinnedAgentListState = controller.agentListState({
+  members: agentMembersForProjection,
+  instances: agentInstancesForProjection,
+  schemas: agentSchemasForProjection,
+  selection: { kind: "schema", id: "ReviewArtifact" },
+  agentView: {
+    ...hydratedCatalogs.agentView,
+    memberSubLabelTemplate: "{model} / {role}",
+    memberPlacedEmptyLabel: "not placed",
+    memberPlacedCountTemplate: "placed {count}",
+    schemaFieldSingularTemplate: "{count} column",
+    schemaFieldPluralTemplate: "{count} columns",
+    schemaUsageLabelTemplate: "{count} refs",
+    sidebarSubLabelSeparator: " | ",
+  },
+});
+assert.equal(reskinnedAgentListState.memberRows[0].subLabel, "gpt-5.5 / planner");
+assert.equal(reskinnedAgentListState.memberRows[0].placedLabel, "not placed");
+assert.equal(reskinnedAgentListState.memberRows[1].placedLabel, "placed 2");
+assert.equal(reskinnedAgentListState.schemaRows[0].fieldLabel, "1 column");
+assert.equal(reskinnedAgentListState.schemaRows[1].fieldLabel, "2 columns");
+assert.equal(reskinnedAgentListState.schemaRows[1].usageLabel, "1 refs");
+assert.equal(reskinnedAgentListState.schemaRows[1].subLabel, "2 columns | 1 refs");
 assert.deepEqual(controller.agentListState({}), {
   agentsHeading: "",
   schemasHeading: "",

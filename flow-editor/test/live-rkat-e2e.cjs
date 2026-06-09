@@ -1425,6 +1425,19 @@ async function validateDocumentBackedDeployPreview(document) {
   if (realmProfileRestriction?.deployable !== false || !String(realmProfileRestriction?.reason || "").includes("rkat mob validate")) {
     throw new Error(`flow editor schema did not expose rkat-backed realm_profile restriction: ${JSON.stringify(realmProfileRestriction)}`);
   }
+  const agentView = schema.mob_definition?.editor_agent_view || {};
+  for (const [key, expected] of Object.entries({
+    member_sub_label_template: "{role} · {model}",
+    member_placed_count_template: "×{count}",
+    schema_field_singular_template: "{count} field",
+    schema_field_plural_template: "{count} fields",
+    schema_usage_label_template: "used by {count}",
+    sidebar_sub_label_separator: " · ",
+  })) {
+    if (agentView[key] !== expected) {
+      throw new Error(`flow editor schema did not expose Agent sidebar template ${key}: ${JSON.stringify(agentView)}`);
+    }
+  }
   const samples = catalogs.sample_mobpacks || [];
   const sample = samples.find((candidate) => candidate.id === sampleId) || samples[0];
   if (!sample?.document) throw new Error("flow editor schema did not return any sample mobpack documents");

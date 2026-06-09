@@ -576,7 +576,9 @@
     const memberRows = sourceMembers.map((member) => {
       const placedCount = sourceInstances.filter((instance) => instance?.memberId === member.id).length;
       const selected = selection?.kind === "agent" && selection.id === member.id;
-      const placedLabel = placedCount === 0 ? "unplaced" : `×${placedCount}`;
+      const placedLabel = placedCount === 0
+        ? view.memberPlacedEmptyLabel
+        : graphTemplateText(view.memberPlacedCountTemplate, { count: placedCount });
       const isUnplaced = placedCount === 0;
       return {
         id: member.id,
@@ -587,7 +589,10 @@
         selected,
         itemClass: `agents-list__item${selected ? " is-selected" : ""}`,
         bulletRole: member.role,
-        subLabel: `${member.role} · ${member.model}`,
+        subLabel: graphTemplateText(view.memberSubLabelTemplate, {
+          role: member.role,
+          model: member.model,
+        }),
         placedCount,
         placedLabel,
         isUnplaced,
@@ -598,8 +603,11 @@
       const fieldCount = Array.isArray(schema.fields) ? schema.fields.length : 0;
       const usedCount = sourceMembers.filter((member) => member?.schema === schema.id).length;
       const selected = selection?.kind === "schema" && selection.id === schema.id;
-      const fieldLabel = `${fieldCount} field${fieldCount === 1 ? "" : "s"}`;
-      const usageLabel = `used by ${usedCount}`;
+      const fieldLabel = graphTemplateText(
+        fieldCount === 1 ? view.schemaFieldSingularTemplate : view.schemaFieldPluralTemplate,
+        { count: fieldCount },
+      );
+      const usageLabel = graphTemplateText(view.schemaUsageLabelTemplate, { count: usedCount });
       return {
         id: schema.id,
         schema,
@@ -610,7 +618,7 @@
         fieldLabel,
         usedCount,
         usageLabel,
-        subLabel: `${fieldLabel} · ${usageLabel}`,
+        subLabel: [fieldLabel, usageLabel].filter(Boolean).join(view.sidebarSubLabelSeparator),
       };
     });
     return {
@@ -645,6 +653,13 @@
       definitionCatalogSourceLabel: String(view.definition_catalog_source_label || "").trim(),
       definitionCatalogToolsLabel: String(view.definition_catalog_tools_label || "").trim(),
       definitionCatalogSkillsLabel: String(view.definition_catalog_skills_label || "").trim(),
+      memberSubLabelTemplate: String(view.member_sub_label_template || "").trim(),
+      memberPlacedEmptyLabel: String(view.member_placed_empty_label || "").trim(),
+      memberPlacedCountTemplate: String(view.member_placed_count_template || "").trim(),
+      schemaFieldSingularTemplate: String(view.schema_field_singular_template || "").trim(),
+      schemaFieldPluralTemplate: String(view.schema_field_plural_template || "").trim(),
+      schemaUsageLabelTemplate: String(view.schema_usage_label_template || "").trim(),
+      sidebarSubLabelSeparator: String(view.sidebar_sub_label_separator || ""),
       emptyTitle: String(view.empty_title || "").trim(),
       emptyLines: Array.isArray(view.empty_lines)
         ? view.empty_lines.map((line) => String(line || "").trim()).filter(Boolean)
@@ -657,6 +672,9 @@
       && out.addAgentUnavailableLabel && out.addAgentPlaceholderLabel
       && out.definitionCatalogTitle && out.definitionCatalogEmpty
       && out.definitionCatalogSourceLabel && out.definitionCatalogToolsLabel && out.definitionCatalogSkillsLabel
+      && out.memberSubLabelTemplate && out.memberPlacedEmptyLabel && out.memberPlacedCountTemplate
+      && out.schemaFieldSingularTemplate && out.schemaFieldPluralTemplate && out.schemaUsageLabelTemplate
+      && out.sidebarSubLabelSeparator
       && out.emptyTitle && out.emptyLines.length && out.missingSchemaLabel && out.missingAgentLabel
       ? out
       : null;
@@ -678,6 +696,13 @@
       definitionCatalogSourceLabel: String(view?.definitionCatalogSourceLabel || ""),
       definitionCatalogToolsLabel: String(view?.definitionCatalogToolsLabel || ""),
       definitionCatalogSkillsLabel: String(view?.definitionCatalogSkillsLabel || ""),
+      memberSubLabelTemplate: String(view?.memberSubLabelTemplate || ""),
+      memberPlacedEmptyLabel: String(view?.memberPlacedEmptyLabel || ""),
+      memberPlacedCountTemplate: String(view?.memberPlacedCountTemplate || ""),
+      schemaFieldSingularTemplate: String(view?.schemaFieldSingularTemplate || ""),
+      schemaFieldPluralTemplate: String(view?.schemaFieldPluralTemplate || ""),
+      schemaUsageLabelTemplate: String(view?.schemaUsageLabelTemplate || ""),
+      sidebarSubLabelSeparator: String(view?.sidebarSubLabelSeparator || ""),
       emptyTitle: String(view?.emptyTitle || ""),
       emptyLines: Array.isArray(view?.emptyLines) ? view.emptyLines : [],
       missingSchemaLabel: String(view?.missingSchemaLabel || ""),

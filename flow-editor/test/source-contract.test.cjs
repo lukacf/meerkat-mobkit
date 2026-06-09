@@ -38,6 +38,7 @@ const builderStepPickerBlock = (builder.match(/function StepPicker[\s\S]*?\/\/ �
 const sourceEditorBlock = (controller.match(/function sourceEditorState[\s\S]*?function sampleFlowsFromCatalogs/) || [""])[0];
 const graphEditorBlock = (graph.match(/function GraphEditor[\s\S]*?function NodeView/) || [""])[0];
 const agentsListBlock = (agents.match(/function AgentsList[\s\S]*?function AddAgentControl/) || [""])[0];
+const agentListStateBlock = (controller.match(/function agentListState[\s\S]*?function agentViewFromSchema/) || [""])[0];
 const addAgentControlBlock = (agents.match(/function AddAgentControl[\s\S]*?function AgentsMain/) || [""])[0];
 const agentsMainBlock = (agents.match(/function AgentsMain[\s\S]*?\/\/ ── Agent editor/) || [""])[0];
 const agentEditorBlock = (agents.match(/function AgentEditor[\s\S]*?\/\/ ── Schema editor/) || [""])[0];
@@ -1189,6 +1190,7 @@ assert(!/starter_skills/.test(app + "\n" + controller), "Flow Editor frontend mu
 assert(!/schema\?\.tool_config\s*\|\||schema\?\.tool_catalog[\s\S]{0,80}schema\?\.tool_config/.test(controller), "Tool catalog hydration must consume mobkit/mobpacks/catalogs tool_catalog, not compatibility tool_config aliases");
 assert(!/schema\.tool_config|schema\.tool_catalog[\s\S]{0,80}schema\.tool_config/.test(liveRkatE2eTest), "Live rkat e2e proof must require catalogs.tool_catalog, not compatibility tool_config aliases");
 assert.match(liveRkatE2eTest, /mobkit\/mobpacks\/schema leaked dynamic catalog key/, "Live rkat e2e proof must fail if schema leaks dynamic catalog payloads");
+assert.match(liveRkatE2eTest, /member_sub_label_template[\s\S]*schema_usage_label_template[\s\S]*Agent sidebar template/, "Live rkat e2e proof must require MobKit schema-owned Agent sidebar display templates");
 assert(!/model\.vendor \|\| model\.provider \|\| ["']provider["']|tool\.desc \|\| tool\.description \|\| tool\.summary \|\| ["']MobKit tool_config["']|tool\.kind \|\| tool\.type \|\| ["']tool["']/.test(controller), "Catalog hydration must not invent model/tool display metadata");
 assert(!/sampleFlowsFromCatalogs[\s\S]{0,520}sample\.id \|\| sample\.document\?\.mob_id|sampleFlowsFromCatalogs[\s\S]{0,560}sample\.name \|\| sample\.document\?\.name/.test(controller), "Sample mobpack hydration must require schema-provided sample id/name instead of document fallbacks");
 assert(!/sampleFlowsFromCatalogs[\s\S]{0,620}validation\?\.ok \? ["']valid["'] : ["']draft["']/.test(controller), "Sample mobpack hydration must require MobKit catalog stage metadata instead of deriving status from validation");
@@ -1369,6 +1371,11 @@ assert.match(controller, /function schemaEditorControlState/, "controller plane 
 assert.match(controller, /fieldsTitle: `\$\{view\.fieldsTitlePrefix\} · \$\{fields\.length\}`/, "controller plane must render Schema Editor field-count title from MobKit view contract");
 assert.match(controller, /function agentDefinitionAddByIdPatch/, "controller plane must own agent definition id resolution");
 assert.match(controller, /addAgentPlaceholderLabel:\s*String\(view\.add_agent_placeholder_label/, "controller plane must hydrate Agent add-control labels from MobKit schema");
+assert.match(controller, /memberSubLabelTemplate:\s*String\(view\.member_sub_label_template/, "controller plane must hydrate Agent sidebar member label templates from MobKit schema");
+assert.match(controller, /schemaUsageLabelTemplate:\s*String\(view\.schema_usage_label_template/, "controller plane must hydrate Agent sidebar schema usage templates from MobKit schema");
+assert.match(agentListStateBlock, /graphTemplateText\(view\.memberSubLabelTemplate/, "Agent sidebar member sublabels must be controller-projected from MobKit view templates");
+assert.match(agentListStateBlock, /graphTemplateText\(view\.schemaUsageLabelTemplate/, "Agent sidebar schema usage labels must be controller-projected from MobKit view templates");
+assert(!/["']unplaced["']|`×\$\{placedCount\}`|field\$\{fieldCount === 1 \? "" : "s"\}|`used by \$\{usedCount\}`|`\$\{member\.role\} · \$\{member\.model\}`|`\$\{fieldLabel\} · \$\{usageLabel\}`/.test(agentListStateBlock), "Agent sidebar controller projection must not compose local placement, schema count, or usage copy");
 assert.match(controller, /agentDefinitionAddControlState\(agentDefinitions = \[\], agentView = null\)/, "Agent add-control projection must accept schema-backed agent view state");
 assert.match(controller, /placeholderOption:\s*\{ value:\s*"", label:\s*view\.addAgentPlaceholderLabel \}/, "Agent add-control placeholder must render through schema-backed view state");
 assert.match(agents, /agentDefinitionAddControlState\(agentDefinitions, agentView\)/, "Agent Editor add-control must pass schema-backed agent view state into the controller projection");
