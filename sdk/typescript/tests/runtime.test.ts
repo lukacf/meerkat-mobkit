@@ -185,6 +185,73 @@ describe("MobHandle Rust gateway parity wrappers", () => {
     assert.deepEqual(calls[0].params, { operation: "probe" });
     assert.deepEqual(result, { rows: 1 });
   });
+
+  it("sends split MobKit editor catalog RPC names", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse((method) => {
+      if (method === "mobkit/tools/catalog") {
+        return {
+          schema_version: "mobpack.editor.v1",
+          runtime_backed: false,
+          source: "mobkit/tool-config",
+          tool_catalog: [{ id: "shell" }],
+        };
+      }
+      if (method === "mobkit/skills/catalog") {
+        return {
+          schema_version: "mobpack.editor.v1",
+          runtime_backed: false,
+          source: "mobkit/authoring-skill-realms",
+          skill_realms: [{ id: "mobkit/authoring" }],
+        };
+      }
+      if (method === "mobkit/agent_definitions/list") {
+        return {
+          schema_version: "mobpack.editor.v1",
+          runtime_backed: false,
+          source: "mobkit/authoring-agent-definitions",
+          agent_definitions: [{ id: "authoring:reviewer" }],
+        };
+      }
+      if (method === "mobkit/mobpacks/templates") {
+        return {
+          schema_version: "mobpack.editor.v1",
+          source: "mobkit/mobpack-templates",
+          blank_mobpack: { document: {} },
+          sample_mobpacks: [{ id: "sample" }],
+          sample_agent_definitions: [{ id: "sample:reviewer" }],
+          templates: { blank_mobpack: { document: {} } },
+        };
+      }
+      return {
+        schema_version: "mobpack.editor.v1",
+        runtime_backed: false,
+        sources: { tools: "mobkit/tools/catalog" },
+        templates: {},
+        tool_catalog: [{ id: "shell" }],
+        skill_realms: [{ id: "mobkit/authoring" }],
+        blank_mobpack: { document: {} },
+        sample_mobpacks: [{ id: "sample" }],
+        agent_definitions: [{ id: "authoring:reviewer" }],
+        sample_agent_definitions: [{ id: "sample:reviewer" }],
+        models: [],
+        provider_defaults: [],
+      };
+    });
+
+    assert.deepEqual((await handle.toolsCatalog()).toolCatalog, [{ id: "shell" }]);
+    assert.deepEqual((await handle.skillsCatalog()).skillRealms, [{ id: "mobkit/authoring" }]);
+    assert.deepEqual((await handle.agentDefinitions()).agentDefinitions, [{ id: "authoring:reviewer" }]);
+    assert.deepEqual((await handle.mobpackTemplates()).sampleMobpacks, [{ id: "sample" }]);
+    assert.deepEqual((await handle.mobpackCatalogs()).sources, { tools: "mobkit/tools/catalog" });
+    assert.deepEqual(calls.map((call) => call.method), [
+      "mobkit/tools/catalog",
+      "mobkit/skills/catalog",
+      "mobkit/agent_definitions/list",
+      "mobkit/mobpacks/templates",
+      "mobkit/mobpacks/catalogs",
+    ]);
+  });
 });
 
 describe("MobHandle.spawn()", () => {

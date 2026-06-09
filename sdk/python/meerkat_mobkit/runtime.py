@@ -49,6 +49,11 @@ from .types import (
     MemoryIndexResult,
     MemoryQueryResult,
     MemoryStoreInfo,
+    MobpackAgentDefinitionsResult,
+    MobpackCatalogsResult,
+    MobpackSkillsCatalogResult,
+    MobpackTemplatesResult,
+    MobpackToolsCatalogResult,
     MobStructuralEvent,
     ModelsCatalogResult,
     ReconcileEdgesReport,
@@ -712,6 +717,31 @@ class MobHandle:
         """Return the curated model catalog with provider defaults."""
         raw = await self._runtime._rpc("mobkit/models/catalog")
         return ModelsCatalogResult.from_dict(raw)
+
+    async def tools_catalog(self) -> MobpackToolsCatalogResult:
+        """Return the MobKit tool catalog used by mobpack authoring."""
+        raw = await self._runtime._rpc("mobkit/tools/catalog")
+        return MobpackToolsCatalogResult.from_dict(raw)
+
+    async def skills_catalog(self) -> MobpackSkillsCatalogResult:
+        """Return the MobKit skill realms used by mobpack authoring."""
+        raw = await self._runtime._rpc("mobkit/skills/catalog")
+        return MobpackSkillsCatalogResult.from_dict(raw)
+
+    async def agent_definitions(self) -> MobpackAgentDefinitionsResult:
+        """Return MobKit-owned agent definitions for the Agent Editor."""
+        raw = await self._runtime._rpc("mobkit/agent_definitions/list")
+        return MobpackAgentDefinitionsResult.from_dict(raw)
+
+    async def mobpack_templates(self) -> MobpackTemplatesResult:
+        """Return blank and sample mobpack templates."""
+        raw = await self._runtime._rpc("mobkit/mobpacks/templates")
+        return MobpackTemplatesResult.from_dict(raw)
+
+    async def mobpack_catalogs(self) -> MobpackCatalogsResult:
+        """Return the composed MobKit mobpack authoring catalog snapshot."""
+        raw = await self._runtime._rpc("mobkit/mobpacks/catalogs")
+        return MobpackCatalogsResult.from_dict(raw)
 
     async def session_store_bigquery(self, **kwargs: Any) -> Any:
         """Run a BigQuery session-store RPC operation."""

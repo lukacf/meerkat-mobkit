@@ -41,6 +41,54 @@ class MobkitModelsCatalogResult(TypedDict):
     provider_defaults: list[dict[str, Any]]
 
 
+class MobkitToolsCatalogResult(TypedDict):
+    schema_version: str
+    runtime_backed: bool
+    source: str
+    runtime_unavailable_reason: str
+    tool_catalog: list[dict[str, Any]]
+
+
+class MobkitSkillsCatalogResult(TypedDict):
+    schema_version: str
+    runtime_backed: bool
+    source: str
+    runtime_unavailable_reason: str
+    skill_realms: list[dict[str, Any]]
+
+
+class MobkitAgentDefinitionsResult(TypedDict):
+    schema_version: str
+    runtime_backed: bool
+    source: str
+    runtime_unavailable_reason: str
+    agent_definitions: list[dict[str, Any]]
+
+
+class MobkitTemplatesResult(TypedDict):
+    schema_version: str
+    source: str
+    blank_mobpack: dict[str, Any]
+    sample_mobpacks: list[dict[str, Any]]
+    sample_agent_definitions: list[dict[str, Any]]
+    templates: dict[str, Any]
+
+
+class MobkitCatalogsResult(TypedDict):
+    schema_version: str
+    runtime_backed: bool
+    sources: dict[str, Any]
+    templates: dict[str, Any]
+    tool_catalog: list[dict[str, Any]]
+    skill_realms: list[dict[str, Any]]
+    blank_mobpack: dict[str, Any]
+    sample_mobpacks: list[dict[str, Any]]
+    agent_definitions: list[dict[str, Any]]
+    sample_agent_definitions: list[dict[str, Any]]
+    models: list[dict[str, Any]]
+    provider_defaults: list[dict[str, Any]]
+
+
 class MobkitStatusResult(TypedDict):
     contract_version: str
     running: bool
@@ -290,6 +338,71 @@ class MobkitTypedClient:
             ),
         )
 
+    def tools_catalog(
+        self, request_id: str = "tools_catalog"
+    ) -> MobkitToolsCatalogResult:
+        return cast(
+            MobkitToolsCatalogResult,
+            _unwrap_typed_result(
+                self.rpc(request_id, "mobkit/tools/catalog", {}),
+                request_id,
+                "mobkit/tools/catalog",
+                _is_tools_catalog_result,
+            ),
+        )
+
+    def skills_catalog(
+        self, request_id: str = "skills_catalog"
+    ) -> MobkitSkillsCatalogResult:
+        return cast(
+            MobkitSkillsCatalogResult,
+            _unwrap_typed_result(
+                self.rpc(request_id, "mobkit/skills/catalog", {}),
+                request_id,
+                "mobkit/skills/catalog",
+                _is_skills_catalog_result,
+            ),
+        )
+
+    def agent_definitions(
+        self, request_id: str = "agent_definitions"
+    ) -> MobkitAgentDefinitionsResult:
+        return cast(
+            MobkitAgentDefinitionsResult,
+            _unwrap_typed_result(
+                self.rpc(request_id, "mobkit/agent_definitions/list", {}),
+                request_id,
+                "mobkit/agent_definitions/list",
+                _is_agent_definitions_result,
+            ),
+        )
+
+    def mobpack_templates(
+        self, request_id: str = "mobpack_templates"
+    ) -> MobkitTemplatesResult:
+        return cast(
+            MobkitTemplatesResult,
+            _unwrap_typed_result(
+                self.rpc(request_id, "mobkit/mobpacks/templates", {}),
+                request_id,
+                "mobkit/mobpacks/templates",
+                _is_mobpack_templates_result,
+            ),
+        )
+
+    def mobpack_catalogs(
+        self, request_id: str = "mobpack_catalogs"
+    ) -> MobkitCatalogsResult:
+        return cast(
+            MobkitCatalogsResult,
+            _unwrap_typed_result(
+                self.rpc(request_id, "mobkit/mobpacks/catalogs", {}),
+                request_id,
+                "mobkit/mobpacks/catalogs",
+                _is_mobpack_catalogs_result,
+            ),
+        )
+
 
 class MobkitAsyncTypedClient:
     def __init__(self, transport: AsyncRpcTransport):
@@ -401,6 +514,71 @@ class MobkitAsyncTypedClient:
                 "mobkit/models/catalog",
                 {},
                 _is_models_catalog_result,
+            ),
+        )
+
+    async def tools_catalog(
+        self, request_id: str = "tools_catalog"
+    ) -> MobkitToolsCatalogResult:
+        return cast(
+            MobkitToolsCatalogResult,
+            await self.request(
+                request_id,
+                "mobkit/tools/catalog",
+                {},
+                _is_tools_catalog_result,
+            ),
+        )
+
+    async def skills_catalog(
+        self, request_id: str = "skills_catalog"
+    ) -> MobkitSkillsCatalogResult:
+        return cast(
+            MobkitSkillsCatalogResult,
+            await self.request(
+                request_id,
+                "mobkit/skills/catalog",
+                {},
+                _is_skills_catalog_result,
+            ),
+        )
+
+    async def agent_definitions(
+        self, request_id: str = "agent_definitions"
+    ) -> MobkitAgentDefinitionsResult:
+        return cast(
+            MobkitAgentDefinitionsResult,
+            await self.request(
+                request_id,
+                "mobkit/agent_definitions/list",
+                {},
+                _is_agent_definitions_result,
+            ),
+        )
+
+    async def mobpack_templates(
+        self, request_id: str = "mobpack_templates"
+    ) -> MobkitTemplatesResult:
+        return cast(
+            MobkitTemplatesResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/templates",
+                {},
+                _is_mobpack_templates_result,
+            ),
+        )
+
+    async def mobpack_catalogs(
+        self, request_id: str = "mobpack_catalogs"
+    ) -> MobkitCatalogsResult:
+        return cast(
+            MobkitCatalogsResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/catalogs",
+                {},
+                _is_mobpack_catalogs_result,
             ),
         )
 
@@ -551,6 +729,66 @@ def _is_subscribe_result(value: Any) -> bool:
 def _is_models_catalog_result(value: Any) -> bool:
     return (
         isinstance(value, dict)
+        and isinstance(value.get("models"), list)
+        and isinstance(value.get("provider_defaults"), list)
+    )
+
+
+def _is_tools_catalog_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("schema_version"), str)
+        and isinstance(value.get("runtime_backed"), bool)
+        and isinstance(value.get("source"), str)
+        and isinstance(value.get("tool_catalog"), list)
+    )
+
+
+def _is_skills_catalog_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("schema_version"), str)
+        and isinstance(value.get("runtime_backed"), bool)
+        and isinstance(value.get("source"), str)
+        and isinstance(value.get("skill_realms"), list)
+    )
+
+
+def _is_agent_definitions_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("schema_version"), str)
+        and isinstance(value.get("runtime_backed"), bool)
+        and isinstance(value.get("source"), str)
+        and isinstance(value.get("agent_definitions"), list)
+    )
+
+
+def _is_mobpack_templates_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("schema_version"), str)
+        and isinstance(value.get("source"), str)
+        and isinstance(value.get("blank_mobpack"), dict)
+        and isinstance(value.get("sample_mobpacks"), list)
+        and isinstance(value.get("sample_agent_definitions"), list)
+        and isinstance(value.get("templates"), dict)
+    )
+
+
+def _is_mobpack_catalogs_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("schema_version"), str)
+        and isinstance(value.get("runtime_backed"), bool)
+        and isinstance(value.get("sources"), dict)
+        and isinstance(value.get("templates"), dict)
+        and isinstance(value.get("tool_catalog"), list)
+        and isinstance(value.get("skill_realms"), list)
+        and isinstance(value.get("blank_mobpack"), dict)
+        and isinstance(value.get("sample_mobpacks"), list)
+        and isinstance(value.get("agent_definitions"), list)
+        and isinstance(value.get("sample_agent_definitions"), list)
         and isinstance(value.get("models"), list)
         and isinstance(value.get("provider_defaults"), list)
     )

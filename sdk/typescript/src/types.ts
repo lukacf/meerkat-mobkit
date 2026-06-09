@@ -1115,6 +1115,134 @@ export function parseModelsCatalogResult(raw: unknown): ModelsCatalogResult {
   };
 }
 
+// -- Mobpack editor catalogs ----------------------------------------------
+
+export interface MobpackToolsCatalogResult {
+  readonly schemaVersion: string;
+  readonly runtimeBacked: boolean;
+  readonly source: string;
+  readonly runtimeUnavailableReason: string | null;
+  readonly toolCatalog: readonly Record<string, unknown>[];
+}
+
+export function parseMobpackToolsCatalogResult(
+  raw: unknown,
+): MobpackToolsCatalogResult {
+  const d = asRecord(raw);
+  return {
+    schemaVersion: String(d.schema_version ?? ""),
+    runtimeBacked: Boolean(d.runtime_backed),
+    source: String(d.source ?? ""),
+    runtimeUnavailableReason:
+      d.runtime_unavailable_reason == null
+        ? null
+        : String(d.runtime_unavailable_reason),
+    toolCatalog: asRecordArray(d.tool_catalog),
+  };
+}
+
+export interface MobpackSkillsCatalogResult {
+  readonly schemaVersion: string;
+  readonly runtimeBacked: boolean;
+  readonly source: string;
+  readonly runtimeUnavailableReason: string | null;
+  readonly skillRealms: readonly Record<string, unknown>[];
+}
+
+export function parseMobpackSkillsCatalogResult(
+  raw: unknown,
+): MobpackSkillsCatalogResult {
+  const d = asRecord(raw);
+  return {
+    schemaVersion: String(d.schema_version ?? ""),
+    runtimeBacked: Boolean(d.runtime_backed),
+    source: String(d.source ?? ""),
+    runtimeUnavailableReason:
+      d.runtime_unavailable_reason == null
+        ? null
+        : String(d.runtime_unavailable_reason),
+    skillRealms: asRecordArray(d.skill_realms),
+  };
+}
+
+export interface MobpackAgentDefinitionsResult {
+  readonly schemaVersion: string;
+  readonly runtimeBacked: boolean;
+  readonly source: string;
+  readonly runtimeUnavailableReason: string | null;
+  readonly agentDefinitions: readonly Record<string, unknown>[];
+}
+
+export function parseMobpackAgentDefinitionsResult(
+  raw: unknown,
+): MobpackAgentDefinitionsResult {
+  const d = asRecord(raw);
+  return {
+    schemaVersion: String(d.schema_version ?? ""),
+    runtimeBacked: Boolean(d.runtime_backed),
+    source: String(d.source ?? ""),
+    runtimeUnavailableReason:
+      d.runtime_unavailable_reason == null
+        ? null
+        : String(d.runtime_unavailable_reason),
+    agentDefinitions: asRecordArray(d.agent_definitions),
+  };
+}
+
+export interface MobpackTemplatesResult {
+  readonly schemaVersion: string;
+  readonly source: string;
+  readonly blankMobpack: Record<string, unknown> | null;
+  readonly sampleMobpacks: readonly Record<string, unknown>[];
+  readonly sampleAgentDefinitions: readonly Record<string, unknown>[];
+  readonly templates: Record<string, unknown>;
+}
+
+export function parseMobpackTemplatesResult(raw: unknown): MobpackTemplatesResult {
+  const d = asRecord(raw);
+  return {
+    schemaVersion: String(d.schema_version ?? ""),
+    source: String(d.source ?? ""),
+    blankMobpack: d.blank_mobpack == null ? null : asRecord(d.blank_mobpack),
+    sampleMobpacks: asRecordArray(d.sample_mobpacks),
+    sampleAgentDefinitions: asRecordArray(d.sample_agent_definitions),
+    templates: asRecord(d.templates),
+  };
+}
+
+export interface MobpackCatalogsResult {
+  readonly schemaVersion: string;
+  readonly runtimeBacked: boolean;
+  readonly sources: Record<string, unknown>;
+  readonly templates: Record<string, unknown>;
+  readonly toolCatalog: readonly Record<string, unknown>[];
+  readonly skillRealms: readonly Record<string, unknown>[];
+  readonly blankMobpack: Record<string, unknown> | null;
+  readonly sampleMobpacks: readonly Record<string, unknown>[];
+  readonly agentDefinitions: readonly Record<string, unknown>[];
+  readonly sampleAgentDefinitions: readonly Record<string, unknown>[];
+  readonly models: readonly CatalogEntry[];
+  readonly providerDefaults: readonly ProviderDefaults[];
+}
+
+export function parseMobpackCatalogsResult(raw: unknown): MobpackCatalogsResult {
+  const d = asRecord(raw);
+  return {
+    schemaVersion: String(d.schema_version ?? ""),
+    runtimeBacked: Boolean(d.runtime_backed),
+    sources: asRecord(d.sources),
+    templates: asRecord(d.templates),
+    toolCatalog: asRecordArray(d.tool_catalog),
+    skillRealms: asRecordArray(d.skill_realms),
+    blankMobpack: d.blank_mobpack == null ? null : asRecord(d.blank_mobpack),
+    sampleMobpacks: asRecordArray(d.sample_mobpacks),
+    agentDefinitions: asRecordArray(d.agent_definitions),
+    sampleAgentDefinitions: asRecordArray(d.sample_agent_definitions),
+    models: asRecordArray(d.models).map(parseCatalogEntry),
+    providerDefaults: asRecordArray(d.provider_defaults).map(parseProviderDefaults),
+  };
+}
+
 // -- ErrorCategory / ErrorEvent -------------------------------------------
 
 export const ErrorCategory = {

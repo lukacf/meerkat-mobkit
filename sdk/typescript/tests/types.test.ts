@@ -38,6 +38,11 @@ import {
   parseReconcileEdgesReport,
   parsePersistedEvent,
   parseErrorEvent,
+  parseMobpackToolsCatalogResult,
+  parseMobpackSkillsCatalogResult,
+  parseMobpackAgentDefinitionsResult,
+  parseMobpackTemplatesResult,
+  parseMobpackCatalogsResult,
   eventQueryToDict,
 } from "../dist/index.js";
 
@@ -1137,5 +1142,87 @@ describe("eventQueryToDict", () => {
     const result = eventQueryToDict({ eventTypes: types });
     assert.deepEqual(result.event_types, ["a", "b"]);
     assert.notEqual(result.event_types, types);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mobpack editor catalogs
+// ---------------------------------------------------------------------------
+
+describe("mobpack editor catalog parsers", () => {
+  it("parses split MobKit catalog payloads", () => {
+    const tools = parseMobpackToolsCatalogResult({
+      schema_version: "mobpack.editor.v1",
+      runtime_backed: false,
+      source: "mobkit/tool-config",
+      runtime_unavailable_reason: "standalone",
+      tool_catalog: [{ id: "shell", tag_class: "ops" }],
+    });
+    assert.equal(tools.schemaVersion, "mobpack.editor.v1");
+    assert.equal(tools.runtimeBacked, false);
+    assert.equal(tools.runtimeUnavailableReason, "standalone");
+    assert.deepEqual(tools.toolCatalog, [{ id: "shell", tag_class: "ops" }]);
+
+    const skills = parseMobpackSkillsCatalogResult({
+      schema_version: "mobpack.editor.v1",
+      runtime_backed: false,
+      source: "mobkit/authoring-skill-realms",
+      skill_realms: [{ id: "mobkit/authoring", skills: [] }],
+    });
+    assert.deepEqual(skills.skillRealms, [{ id: "mobkit/authoring", skills: [] }]);
+
+    const definitions = parseMobpackAgentDefinitionsResult({
+      schema_version: "mobpack.editor.v1",
+      runtime_backed: false,
+      source: "mobkit/authoring-agent-definitions",
+      agent_definitions: [{ id: "authoring:reviewer", role: "reviewer" }],
+    });
+    assert.deepEqual(definitions.agentDefinitions, [
+      { id: "authoring:reviewer", role: "reviewer" },
+    ]);
+
+    const templates = parseMobpackTemplatesResult({
+      schema_version: "mobpack.editor.v1",
+      source: "mobkit/mobpack-templates",
+      blank_mobpack: { document: { members: [] } },
+      sample_mobpacks: [{ id: "review" }],
+      sample_agent_definitions: [{ id: "sample:reviewer" }],
+      templates: { blank_mobpack: { document: { members: [] } } },
+    });
+    assert.deepEqual(templates.blankMobpack, { document: { members: [] } });
+    assert.deepEqual(templates.sampleMobpacks, [{ id: "review" }]);
+    assert.deepEqual(templates.sampleAgentDefinitions, [{ id: "sample:reviewer" }]);
+  });
+
+  it("parses composed MobKit catalog snapshots", () => {
+    const result = parseMobpackCatalogsResult({
+      schema_version: "mobpack.editor.v1",
+      runtime_backed: false,
+      sources: { tools: "mobkit/tools/catalog" },
+      templates: { blank_mobpack: {} },
+      tool_catalog: [{ id: "shell" }],
+      skill_realms: [{ id: "mobkit/authoring" }],
+      blank_mobpack: { document: {} },
+      sample_mobpacks: [{ id: "sample" }],
+      agent_definitions: [{ id: "authoring:reviewer" }],
+      sample_agent_definitions: [{ id: "sample:reviewer" }],
+      models: [{
+        id: "gpt-5",
+        display_name: "GPT-5",
+        provider: "openai",
+        tier: "frontier",
+        profile: { vision: true },
+      }],
+      provider_defaults: [{
+        provider: "openai",
+        default_model_id: "gpt-5",
+        models: [],
+      }],
+    });
+    assert.equal(result.sources.tools, "mobkit/tools/catalog");
+    assert.deepEqual(result.toolCatalog, [{ id: "shell" }]);
+    assert.deepEqual(result.skillRealms, [{ id: "mobkit/authoring" }]);
+    assert.equal(result.models[0].displayName, "GPT-5");
+    assert.equal(result.providerDefaults[0].defaultModelId, "gpt-5");
   });
 });

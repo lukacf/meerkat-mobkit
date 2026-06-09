@@ -71,6 +71,65 @@ async def test_attach_session_rpc_name():
 
 
 @pytest.mark.asyncio
+async def test_mobpack_editor_catalog_rpc_names():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/tools/catalog": {
+            "schema_version": "mobpack.editor.v1",
+            "runtime_backed": False,
+            "source": "mobkit/tool-config",
+            "tool_catalog": [{"id": "shell"}],
+        },
+        "mobkit/skills/catalog": {
+            "schema_version": "mobpack.editor.v1",
+            "runtime_backed": False,
+            "source": "mobkit/authoring-skill-realms",
+            "skill_realms": [{"id": "mobkit/authoring"}],
+        },
+        "mobkit/agent_definitions/list": {
+            "schema_version": "mobpack.editor.v1",
+            "runtime_backed": False,
+            "source": "mobkit/authoring-agent-definitions",
+            "agent_definitions": [{"id": "authoring:reviewer"}],
+        },
+        "mobkit/mobpacks/templates": {
+            "schema_version": "mobpack.editor.v1",
+            "source": "mobkit/mobpack-templates",
+            "blank_mobpack": {"document": {}},
+            "sample_mobpacks": [{"id": "sample"}],
+            "sample_agent_definitions": [{"id": "sample:reviewer"}],
+            "templates": {"blank_mobpack": {"document": {}}},
+        },
+        "mobkit/mobpacks/catalogs": {
+            "schema_version": "mobpack.editor.v1",
+            "runtime_backed": False,
+            "sources": {"tools": "mobkit/tools/catalog"},
+            "templates": {},
+            "tool_catalog": [{"id": "shell"}],
+            "skill_realms": [{"id": "mobkit/authoring"}],
+            "blank_mobpack": {"document": {}},
+            "sample_mobpacks": [{"id": "sample"}],
+            "agent_definitions": [{"id": "authoring:reviewer"}],
+            "sample_agent_definitions": [{"id": "sample:reviewer"}],
+            "models": [],
+            "provider_defaults": [],
+        },
+    })
+
+    assert (await handle.tools_catalog()).tool_catalog == [{"id": "shell"}]
+    assert (await handle.skills_catalog()).skill_realms == [{"id": "mobkit/authoring"}]
+    assert (await handle.agent_definitions()).agent_definitions == [{"id": "authoring:reviewer"}]
+    assert (await handle.mobpack_templates()).sample_mobpacks == [{"id": "sample"}]
+    assert (await handle.mobpack_catalogs()).sources == {"tools": "mobkit/tools/catalog"}
+    assert [call[0] for call in calls] == [
+        "mobkit/tools/catalog",
+        "mobkit/skills/catalog",
+        "mobkit/agent_definitions/list",
+        "mobkit/mobpacks/templates",
+        "mobkit/mobpacks/catalogs",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_send_with_attachments_uses_multipart(monkeypatch):
     from meerkat_mobkit import runtime as runtime_module
 

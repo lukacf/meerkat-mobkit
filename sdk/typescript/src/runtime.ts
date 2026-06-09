@@ -76,6 +76,11 @@ import {
   parseMobRunSnapshot,
   parseCrossMobContactEntry,
   parseModelsCatalogResult,
+  parseMobpackToolsCatalogResult,
+  parseMobpackSkillsCatalogResult,
+  parseMobpackAgentDefinitionsResult,
+  parseMobpackTemplatesResult,
+  parseMobpackCatalogsResult,
   eventQueryToDict,
   parseIdentityStatus,
   parseBlobGetResult,
@@ -111,6 +116,11 @@ import {
   type MobRunSnapshot,
   type CrossMobContactEntry,
   type ModelsCatalogResult,
+  type MobpackToolsCatalogResult,
+  type MobpackSkillsCatalogResult,
+  type MobpackAgentDefinitionsResult,
+  type MobpackTemplatesResult,
+  type MobpackCatalogsResult,
   type EventQuery,
   type IdentityStatus,
   type BlobGetResult,
@@ -584,6 +594,36 @@ export class MobHandle {
   async modelsCatalog(): Promise<ModelsCatalogResult> {
     return parseModelsCatalogResult(
       await this._runtime._rpc("mobkit/models/catalog"),
+    );
+  }
+
+  async toolsCatalog(): Promise<MobpackToolsCatalogResult> {
+    return parseMobpackToolsCatalogResult(
+      await this._runtime._rpc("mobkit/tools/catalog"),
+    );
+  }
+
+  async skillsCatalog(): Promise<MobpackSkillsCatalogResult> {
+    return parseMobpackSkillsCatalogResult(
+      await this._runtime._rpc("mobkit/skills/catalog"),
+    );
+  }
+
+  async agentDefinitions(): Promise<MobpackAgentDefinitionsResult> {
+    return parseMobpackAgentDefinitionsResult(
+      await this._runtime._rpc("mobkit/agent_definitions/list"),
+    );
+  }
+
+  async mobpackTemplates(): Promise<MobpackTemplatesResult> {
+    return parseMobpackTemplatesResult(
+      await this._runtime._rpc("mobkit/mobpacks/templates"),
+    );
+  }
+
+  async mobpackCatalogs(): Promise<MobpackCatalogsResult> {
+    return parseMobpackCatalogsResult(
+      await this._runtime._rpc("mobkit/mobpacks/catalogs"),
     );
   }
 

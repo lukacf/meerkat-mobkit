@@ -905,6 +905,126 @@ class ModelsCatalogResult:
         )
 
 
+@dataclass(frozen=True)
+class MobpackToolsCatalogResult:
+    """Result of a mobkit/tools/catalog RPC call."""
+    schema_version: str
+    runtime_backed: bool
+    source: str
+    runtime_unavailable_reason: str | None
+    tool_catalog: list[dict[str, Any]]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackToolsCatalogResult:
+        return cls(
+            schema_version=str(data.get("schema_version", "")),
+            runtime_backed=bool(data.get("runtime_backed", False)),
+            source=str(data.get("source", "")),
+            runtime_unavailable_reason=data.get("runtime_unavailable_reason"),
+            tool_catalog=list(data.get("tool_catalog", [])),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackSkillsCatalogResult:
+    """Result of a mobkit/skills/catalog RPC call."""
+    schema_version: str
+    runtime_backed: bool
+    source: str
+    runtime_unavailable_reason: str | None
+    skill_realms: list[dict[str, Any]]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackSkillsCatalogResult:
+        return cls(
+            schema_version=str(data.get("schema_version", "")),
+            runtime_backed=bool(data.get("runtime_backed", False)),
+            source=str(data.get("source", "")),
+            runtime_unavailable_reason=data.get("runtime_unavailable_reason"),
+            skill_realms=list(data.get("skill_realms", [])),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackAgentDefinitionsResult:
+    """Result of a mobkit/agent_definitions/list RPC call."""
+    schema_version: str
+    runtime_backed: bool
+    source: str
+    runtime_unavailable_reason: str | None
+    agent_definitions: list[dict[str, Any]]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackAgentDefinitionsResult:
+        return cls(
+            schema_version=str(data.get("schema_version", "")),
+            runtime_backed=bool(data.get("runtime_backed", False)),
+            source=str(data.get("source", "")),
+            runtime_unavailable_reason=data.get("runtime_unavailable_reason"),
+            agent_definitions=list(data.get("agent_definitions", [])),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackTemplatesResult:
+    """Result of a mobkit/mobpacks/templates RPC call."""
+    schema_version: str
+    source: str
+    blank_mobpack: dict[str, Any] | None
+    sample_mobpacks: list[dict[str, Any]]
+    sample_agent_definitions: list[dict[str, Any]]
+    templates: dict[str, Any]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackTemplatesResult:
+        blank = data.get("blank_mobpack")
+        return cls(
+            schema_version=str(data.get("schema_version", "")),
+            source=str(data.get("source", "")),
+            blank_mobpack=blank if isinstance(blank, dict) else None,
+            sample_mobpacks=list(data.get("sample_mobpacks", [])),
+            sample_agent_definitions=list(data.get("sample_agent_definitions", [])),
+            templates=dict(data.get("templates", {})),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackCatalogsResult:
+    """Result of a mobkit/mobpacks/catalogs RPC call."""
+    schema_version: str
+    runtime_backed: bool
+    sources: dict[str, Any]
+    templates: dict[str, Any]
+    tool_catalog: list[dict[str, Any]]
+    skill_realms: list[dict[str, Any]]
+    blank_mobpack: dict[str, Any] | None
+    sample_mobpacks: list[dict[str, Any]]
+    agent_definitions: list[dict[str, Any]]
+    sample_agent_definitions: list[dict[str, Any]]
+    models: list[CatalogEntry]
+    provider_defaults: list[ProviderDefaults]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackCatalogsResult:
+        blank = data.get("blank_mobpack")
+        return cls(
+            schema_version=str(data.get("schema_version", "")),
+            runtime_backed=bool(data.get("runtime_backed", False)),
+            sources=dict(data.get("sources", {})),
+            templates=dict(data.get("templates", {})),
+            tool_catalog=list(data.get("tool_catalog", [])),
+            skill_realms=list(data.get("skill_realms", [])),
+            blank_mobpack=blank if isinstance(blank, dict) else None,
+            sample_mobpacks=list(data.get("sample_mobpacks", [])),
+            agent_definitions=list(data.get("agent_definitions", [])),
+            sample_agent_definitions=list(data.get("sample_agent_definitions", [])),
+            models=[CatalogEntry.from_dict(m) for m in data.get("models", [])],
+            provider_defaults=[
+                ProviderDefaults.from_dict(p) for p in data.get("provider_defaults", [])
+            ],
+        )
+
+
 class MobMemberStatus(str, Enum):
     """Execution status for a mob member."""
     ACTIVE = "active"

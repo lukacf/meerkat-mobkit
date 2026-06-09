@@ -19,6 +19,11 @@ from meerkat_mobkit.types import (
     MemoryIndexResult,
     MemoryQueryResult,
     MemoryStoreInfo,
+    MobpackAgentDefinitionsResult,
+    MobpackCatalogsResult,
+    MobpackSkillsCatalogResult,
+    MobpackTemplatesResult,
+    MobpackToolsCatalogResult,
     PersistedEvent,
     ReconcileEdgesReport,
     ReconcileResult,
@@ -111,6 +116,79 @@ class TestCapabilitiesResult:
         assert rc.profile_capabilities["identity"].has_wiring is True
         assert rc.profile_capabilities["gate"].instance_count == 1
         assert rc.profile_capabilities["gate"].addressable is False
+
+
+class TestMobpackEditorCatalogResults:
+    def test_split_catalog_results_from_dict(self):
+        tools = MobpackToolsCatalogResult.from_dict({
+            "schema_version": "mobpack.editor.v1",
+            "runtime_backed": False,
+            "source": "mobkit/tool-config",
+            "runtime_unavailable_reason": "standalone",
+            "tool_catalog": [{"id": "shell"}],
+        })
+        assert tools.schema_version == "mobpack.editor.v1"
+        assert tools.runtime_backed is False
+        assert tools.runtime_unavailable_reason == "standalone"
+        assert tools.tool_catalog == [{"id": "shell"}]
+
+        skills = MobpackSkillsCatalogResult.from_dict({
+            "schema_version": "mobpack.editor.v1",
+            "runtime_backed": False,
+            "source": "mobkit/authoring-skill-realms",
+            "skill_realms": [{"id": "mobkit/authoring"}],
+        })
+        assert skills.skill_realms == [{"id": "mobkit/authoring"}]
+
+        agents = MobpackAgentDefinitionsResult.from_dict({
+            "schema_version": "mobpack.editor.v1",
+            "runtime_backed": False,
+            "source": "mobkit/authoring-agent-definitions",
+            "agent_definitions": [{"id": "authoring:reviewer"}],
+        })
+        assert agents.agent_definitions == [{"id": "authoring:reviewer"}]
+
+        templates = MobpackTemplatesResult.from_dict({
+            "schema_version": "mobpack.editor.v1",
+            "source": "mobkit/mobpack-templates",
+            "blank_mobpack": {"document": {}},
+            "sample_mobpacks": [{"id": "sample"}],
+            "sample_agent_definitions": [{"id": "sample:reviewer"}],
+            "templates": {"blank_mobpack": {"document": {}}},
+        })
+        assert templates.blank_mobpack == {"document": {}}
+        assert templates.sample_mobpacks == [{"id": "sample"}]
+        assert templates.sample_agent_definitions == [{"id": "sample:reviewer"}]
+
+    def test_composed_catalog_result_from_dict(self):
+        catalogs = MobpackCatalogsResult.from_dict({
+            "schema_version": "mobpack.editor.v1",
+            "runtime_backed": False,
+            "sources": {"tools": "mobkit/tools/catalog"},
+            "templates": {},
+            "tool_catalog": [{"id": "shell"}],
+            "skill_realms": [{"id": "mobkit/authoring"}],
+            "blank_mobpack": {"document": {}},
+            "sample_mobpacks": [{"id": "sample"}],
+            "agent_definitions": [{"id": "authoring:reviewer"}],
+            "sample_agent_definitions": [{"id": "sample:reviewer"}],
+            "models": [{
+                "id": "gpt-5",
+                "display_name": "GPT-5",
+                "provider": "openai",
+                "tier": "frontier",
+                "profile": {"vision": True},
+            }],
+            "provider_defaults": [{
+                "provider": "openai",
+                "default_model_id": "gpt-5",
+                "models": [],
+            }],
+        })
+        assert catalogs.sources == {"tools": "mobkit/tools/catalog"}
+        assert catalogs.tool_catalog == [{"id": "shell"}]
+        assert catalogs.models[0].display_name == "GPT-5"
+        assert catalogs.provider_defaults[0].default_model_id == "gpt-5"
 
 
 class TestReconcileResult:
