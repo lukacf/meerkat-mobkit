@@ -5,7 +5,7 @@
 <h1 align="center">MobKit</h1>
 
 <p align="center">
-  Identity-first control, durable agent continuity, and an operator console for Meerkat mobs.
+  A thin convenience, gateway, SDK, and console layer for identity-first Meerkat mobs.
 </p>
 
 <p align="center">
@@ -18,9 +18,9 @@
 
 ---
 
-MobKit is the application-facing kit around Meerkat mobs. It gives host apps a stable way to boot a mob, project it into a console, route user and system work by durable identity, expose JSON-RPC/REST/SSE control surfaces, and keep long-lived agents recoverable across restarts.
+MobKit is the application-facing convenience layer around identity-first Meerkat mobs. It gives host apps a stable way to boot a mob, project it into a console, expose JSON-RPC/REST/SSE control surfaces, and use Python or TypeScript SDKs without hand-wiring every Meerkat primitive.
 
-MobKit does not replace Meerkat or `meerkat-mob`. Meerkat runs sessions and the agent loop. `meerkat-mob` owns mob membership, topology, lifecycle, and mob-level event/comms behavior. `meerkat-mobkit` packages the surrounding control plane: identity-first continuity, runtime bootstrap, operational modules, SDKs, and the console projection.
+MobKit does not replace Meerkat or `meerkat-mob`. Meerkat owns the session runtime and agent loop. `meerkat-mob` is already identity-first: it owns the multi-agent runtime path, `AgentIdentity` vs `AgentRuntimeId` binding model, mob membership, lifecycle, wiring, flows, supervisor bridge, and mob event authority. `meerkat-mobkit` mostly packages convenience around that substrate: gateway startup, SDK ergonomics, provider adapters, operational-module wiring, and rebuildable console/timeline projections.
 
 <p align="center">
   <img src="docs/images/mobkit-console.png" alt="HarborOps MobKit console with route planning, topology, roster, and signals panels" width="900" />
@@ -37,21 +37,27 @@ MobKit is useful when a system needs agents that keep meaning over time:
 
 The important idea is that the app talks to identities, not throwaway runtime members. A runtime member can be created, resumed, retired, respawned, or rematerialized, but `identity:luka` remains the app-facing handle.
 
-## Identity-First Continuity
+## Identity-First Mobs
 
-Identity-first mode is MobKit's contract for long-lived agents.
+Identity-first is a `meerkat-mob` contract that MobKit exposes conveniently.
 
-Each durable identity has a continuity record containing the app-facing `AgentIdentity`, the current runtime member id, the Meerkat session id, a continuity generation, and a checkpoint version. MobKit uses a continuity store plus leases and fencing tokens so a process can prove it is the current owner before it sends, dispatches, checkpoints, or retires an identity.
+In `meerkat-mob`, stable member identity is separate from runtime binding:
+
+- **`AgentIdentity`.** The public member identity. It survives respawn and runtime-binding changes and keys public mob APIs.
+- **`AgentRuntimeId`.** The current runtime binding. It can rotate when a member is respawned or rebound.
+- **`FenceToken`.** A monotonic binding epoch used by guards to reject stale binding-level work.
+- **`Generation`.** The mob-member generation counter, incremented on respawn.
+
+MobKit's identity-facing surface should be read as convenience over that model. The SDKs, gateway, and console let an app address `identity:luka` or `triage:main`, inspect current binding state, and recover members without forcing the app to manage the underlying mob/session plumbing directly.
 
 That gives host apps a few concrete guarantees:
 
-- **Stable addressing.** Send to `identity:luka` or dispatch to `triage:main` even if the concrete runtime member has changed.
-- **Session continuity.** Non-destructive recovery keeps the same durable identity and session history when possible.
-- **Safe ownership.** Lease renewal and fencing protect long-lived identities from split-brain writes.
-- **Controlled lifecycle.** `respawn()` and `rematerialize()` recover an identity without intentionally wiping continuity; `reset()` starts a destructive new generation.
-- **Lazy or eager materialization.** Runtimes can materialize every identity at boot, register identities lazily, or warm them in the background.
+- **Stable addressing.** Send to `identity:luka` or dispatch to `triage:main` using the same identity handle the mob uses internally.
+- **Runtime-binding transparency.** Console and SDK calls can show or act on the current runtime binding without making binding ids the public API.
+- **Recovery ergonomics.** MobKit can expose recover/respawn/rematerialize-style operator controls, but the semantic model remains the mob identity/binding model.
+- **Rebuildable projections.** Console timelines, identity rows, and sidebar grouping are projections of mob/runtime truth, not separate authorities.
 
-For local and embedded deployments, `.persistent_state(...)` creates SQLite-backed MobKit metadata, console logs, runtime state, session state, and blob storage under one directory. For externally authoritative deployments, provide a continuity store, lease provider, roster provider, and scratch directory instead.
+For local and embedded deployments, `.persistent_state(...)` creates SQLite-backed MobKit metadata, console logs, runtime state, session state, and blob storage under one directory. For externally authoritative deployments, MobKit can be paired with app-provided stores/providers, but those should adapt to the identity-first mob substrate rather than inventing a parallel identity authority.
 
 ## Quick Start
 
@@ -123,7 +129,7 @@ Host apps can shape the stock console with `config/console.toml`: branding, them
 ## Core Capabilities
 
 - **Unified runtime bootstrap.** Build a Meerkat mob and MobKit operational surface in one runtime.
-- **Identity-first runtime.** Durable rosters, topology providers, continuity stores, leases, fencing, lifecycle recovery, and identity-scoped handles.
+- **Identity-first convenience.** SDK, gateway, and console affordances for the `meerkat-mob` identity-first binding model.
 - **Operational modules.** Routing, delivery, scheduling, gating, memory, session-store adapters, metadata, and event transport.
 - **Console projection.** Roster, topology, conversations, activity signals, logs, health, approvals, timeline replay, and live SSE updates.
 - **SDKs.** Rust exports plus Python and TypeScript clients with typed identity-first, mob, event, memory, routing, delivery, and gating APIs.
@@ -133,11 +139,11 @@ Host apps can shape the stock console with `config/console.toml`: branding, them
 
 | | Meerkat | `meerkat-mob` | `meerkat-mobkit` |
 |---|---|---|---|
-| **Primary job** | Runs agent sessions | Runs mobs of agents | Makes mobs usable by apps and operators |
-| **Owns** | Agent loop, prompt assembly, tool execution, session runtime, session persistence primitives | Membership, topology, mob lifecycle, mob event ledger, mob handles, mob-level comms behavior | Identity-first control plane, continuity adapters, runtime bootstrap, operational modules, console projection, SDK transport |
-| **App-facing handles** | Session ids and agent runtime APIs | Member ids, mob handles, mob events | Durable identities such as `identity:luka` plus console and SDK handles |
+| **Primary job** | Runs agent sessions | Runs the multi-agent runtime | Makes mobs easy to boot, expose, observe, and operate |
+| **Owns** | Agent loop, prompt assembly, tool execution, session runtime, session persistence primitives | MobMachine authority, `AgentIdentity` / `AgentRuntimeId` / `FenceToken` / `Generation`, membership, provisioning, lifecycle, wiring, flows, supervisor bridge, mob events | Gateway and builder ergonomics, provider adapters, JSON-RPC/REST/SSE packaging, SDK transport, operational-module wiring, console/timeline projections |
+| **App-facing handles** | Session ids and agent runtime APIs | `AgentIdentity`, `MobHandle`, member snapshots, mob events | The same mob identities surfaced through SDK handles, console rows, timelines, and convenience methods |
 | **Typical surface** | Rust crates, CLI, REST/RPC/MCP surfaces in the Meerkat repo | Rust mob APIs and event streams | Rust crate, `mobkit_gateway`, JSON-RPC, REST/SSE console routes, Python SDK, TypeScript SDK |
-| **Boundary rule** | Executes individual agent work | Decides what the mob is and how members relate | Projects and controls the mob without inventing ownership that belongs in Meerkat or `meerkat-mob` |
+| **Boundary rule** | If it changes how a single session executes, it belongs here | If it changes what a mob member is, how members bind, or how a mob transitions, it belongs here | If it is bootstrapping, packaging, projection, host integration, or operator ergonomics, it can live here |
 
 ## Install
 
@@ -156,7 +162,7 @@ cargo add meerkat-mobkit
 
 | Path | Description |
 |------|-------------|
-| `meerkat-mobkit/` | Rust crate, gateway binaries, runtime, identity-first, RPC, HTTP, console contracts |
+| `meerkat-mobkit/` | Rust crate, gateway binaries, runtime adapters, RPC, HTTP, console contracts |
 | `sdk/python/` | Python SDK (`meerkat-mobkit` on PyPI) |
 | `sdk/typescript/` | TypeScript SDK (`@rkat/mobkit-sdk` on npm) |
 | `console/` | React console source and browser smoke harness |
