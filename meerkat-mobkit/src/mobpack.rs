@@ -337,7 +337,7 @@ fn default_schema_version() -> String {
     MOBPACK_SCHEMA_VERSION.to_string()
 }
 
-fn discover_skill_realms(sample_mobpacks: &Value) -> Value {
+fn discover_skill_realms(sample_mobpacks: &Value, authoring_sources: &Value) -> Value {
     let mut realms = Vec::new();
     for (realm_id, label, dir) in skill_catalog_dirs() {
         let skills = discover_skills_in_dir(&dir);
@@ -352,16 +352,51 @@ fn discover_skill_realms(sample_mobpacks: &Value) -> Value {
             }));
         }
     }
+    if let Some(authoring_realm) = authoring_skill_realm(authoring_sources, realms.is_empty()) {
+        realms.push(authoring_realm);
+    }
     if let Some(sample_realm) = sample_skill_realm(sample_mobpacks, realms.is_empty()) {
         realms.push(sample_realm);
     }
     Value::Array(realms)
 }
 
+fn authoring_skill_realm(authoring_sources: &Value, default: bool) -> Option<Value> {
+    mobpack_source_skill_realm(
+        authoring_sources,
+        default,
+        "mobkit/authoring-agent-definitions",
+        "mobkit/authoring-agent-definitions",
+        "mobkit/authoring-agent-definition",
+        "authoring_mobpacks[].document.skill_realms[]",
+        "authoring_mobpacks[].document.skill_realms[].skills[]",
+    )
+}
+
 fn sample_skill_realm(sample_mobpacks: &Value, default: bool) -> Option<Value> {
+    mobpack_source_skill_realm(
+        sample_mobpacks,
+        default,
+        "mobkit/sample-mobpacks",
+        "mobkit/sample-mobpacks",
+        "mobkit/sample-mobpack",
+        "sample_mobpacks[].document.skill_realms[]",
+        "sample_mobpacks[].document.skill_realms[].skills[]",
+    )
+}
+
+fn mobpack_source_skill_realm(
+    mobpacks: &Value,
+    default: bool,
+    realm_id: &str,
+    realm_label: &str,
+    realm_source: &str,
+    realm_source_document_path: &str,
+    skill_source_document_path: &str,
+) -> Option<Value> {
     let mut skills = BTreeMap::<String, Value>::new();
-    for sample in sample_mobpacks.as_array()? {
-        let Some(source_mobpack) = sample
+    for mobpack in mobpacks.as_array()? {
+        let Some(source_mobpack) = mobpack
             .get("id")
             .and_then(Value::as_str)
             .map(str::trim)
@@ -369,7 +404,7 @@ fn sample_skill_realm(sample_mobpacks: &Value, default: bool) -> Option<Value> {
         else {
             continue;
         };
-        let Some(sample_source) = sample
+        let Some(mobpack_source) = mobpack
             .get("source")
             .and_then(Value::as_str)
             .map(str::trim)
@@ -377,11 +412,11 @@ fn sample_skill_realm(sample_mobpacks: &Value, default: bool) -> Option<Value> {
         else {
             continue;
         };
-        let source_name = sample
+        let source_name = mobpack
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or(source_mobpack);
-        let Some(realms) = sample
+        let Some(realms) = mobpack
             .get("document")
             .and_then(|document| document.get("skill_realms"))
             .and_then(Value::as_array)
@@ -416,7 +451,7 @@ fn sample_skill_realm(sample_mobpacks: &Value, default: bool) -> Option<Value> {
                         .or_insert_with(|| Value::String(skill_id.to_string()));
                     projected.insert(
                         "origin".to_string(),
-                        Value::String(sample_source.to_string()),
+                        Value::String(mobpack_source.to_string()),
                     );
                     projected.insert(
                         "sourceMobpack".to_string(),
@@ -432,9 +467,7 @@ fn sample_skill_realm(sample_mobpacks: &Value, default: bool) -> Option<Value> {
                     );
                     projected.insert(
                         "sourceDocumentPath".to_string(),
-                        Value::String(
-                            "sample_mobpacks[].document.skill_realms[].skills[]".to_string(),
-                        ),
+                        Value::String(skill_source_document_path.to_string()),
                     );
                     Value::Object(projected)
                 });
@@ -445,11 +478,11 @@ fn sample_skill_realm(sample_mobpacks: &Value, default: bool) -> Option<Value> {
         return None;
     }
     Some(json!({
-        "id": "mobkit/sample-mobpacks",
-        "label": "mobkit/sample-mobpacks",
+        "id": realm_id,
+        "label": realm_label,
         "default": default,
-        "source": "mobkit/sample-mobpack",
-        "sourceDocumentPath": "sample_mobpacks[].document.skill_realms[]",
+        "source": realm_source,
+        "sourceDocumentPath": realm_source_document_path,
         "skills": skills.into_values().collect::<Vec<_>>(),
     }))
 }
@@ -756,12 +789,17 @@ pub fn mobpack_catalogs_response() -> Value {
         .iter()
         .filter_map(|default| serde_json::to_value(default).ok())
         .collect();
+    let authoring_sources = authoring_agent_definition_mobpack_sources();
     let sample_mobpacks = sample_mobpack_catalog();
     let blank_mobpack = blank_mobpack_template();
-    let skill_realms = discover_skill_realms(&sample_mobpacks);
+    let skill_realms = discover_skill_realms(&sample_mobpacks, &authoring_sources);
     let tool_catalog = tool_catalog_response();
-    let agent_definitions =
-        agent_definition_catalog(&sample_mobpacks, &tool_catalog, &skill_realms);
+    let agent_definitions = combined_agent_definition_catalog(
+        &authoring_sources,
+        &sample_mobpacks,
+        &tool_catalog,
+        &skill_realms,
+    );
     json!({
         "tool_catalog": tool_catalog,
         "skill_realms": skill_realms,
@@ -1764,17 +1802,39 @@ fn resolved_catalog_refs(ids: &[String], catalog: &BTreeMap<String, Value>) -> V
     )
 }
 
-fn agent_definition_catalog(
+fn combined_agent_definition_catalog(
+    authoring_sources: &Value,
     sample_mobpacks: &Value,
+    tool_catalog: &[Value],
+    skill_realms: &Value,
+) -> Value {
+    let mut definitions = BTreeMap::<String, Value>::new();
+    for source in [authoring_sources, sample_mobpacks] {
+        if let Some(rows) = agent_definition_catalog(source, tool_catalog, skill_realms).as_array()
+        {
+            for row in rows {
+                if let Some(id) = row.get("id").and_then(Value::as_str) {
+                    definitions
+                        .entry(id.to_string())
+                        .or_insert_with(|| row.clone());
+                }
+            }
+        }
+    }
+    Value::Array(definitions.into_values().collect())
+}
+
+fn agent_definition_catalog(
+    source_mobpacks: &Value,
     tool_catalog: &[Value],
     skill_realms: &Value,
 ) -> Value {
     let mut templates = BTreeMap::<String, Value>::new();
     let tools_by_id = tool_catalog_by_id(tool_catalog);
     let skills_by_id = skill_catalog_by_id(skill_realms);
-    if let Some(samples) = sample_mobpacks.as_array() {
-        for sample in samples {
-            let Some(source_mobpack) = sample
+    if let Some(sources) = source_mobpacks.as_array() {
+        for source in sources {
+            let Some(source_mobpack) = source
                 .get("id")
                 .and_then(Value::as_str)
                 .map(str::trim)
@@ -1782,7 +1842,7 @@ fn agent_definition_catalog(
             else {
                 continue;
             };
-            let Some(sample_source) = sample
+            let Some(source_origin) = source
                 .get("source")
                 .and_then(Value::as_str)
                 .map(str::trim)
@@ -1790,7 +1850,7 @@ fn agent_definition_catalog(
             else {
                 continue;
             };
-            let schema_by_id = sample
+            let schema_by_id = source
                 .get("document")
                 .and_then(|document| document.get("schemas"))
                 .and_then(Value::as_array)
@@ -1804,11 +1864,11 @@ fn agent_definition_catalog(
                         .collect::<BTreeMap<_, _>>()
                 })
                 .unwrap_or_default();
-            let source_name = sample
+            let source_name = source
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or(source_mobpack);
-            let Some(members) = sample
+            let Some(members) = source
                 .get("document")
                 .and_then(|document| document.get("members"))
                 .and_then(Value::as_array)
@@ -1888,7 +1948,7 @@ fn agent_definition_catalog(
                         "source": "mobkit/mobpack-profile-member",
                         "sourceMobpack": source_mobpack,
                         "sourceMobpackName": source_name,
-                        "sourceOrigin": sample_source,
+                        "sourceOrigin": source_origin,
                         "sourceDocumentPath": format!("document.members[{member_index}]"),
                     })
                 });
@@ -1896,6 +1956,139 @@ fn agent_definition_catalog(
         }
     }
     Value::Array(templates.into_values().collect())
+}
+
+fn authoring_agent_definition_mobpack_sources() -> Value {
+    let mob_toml = authoring_agent_definitions_toml();
+    let Ok(definition) = MobDefinition::from_toml(mob_toml) else {
+        return Value::Array(Vec::new());
+    };
+    let Ok(document) = project_definition_to_editor_document(
+        &definition,
+        mob_toml,
+        Some("MobKit authoring profiles"),
+        Value::Null,
+    ) else {
+        return Value::Array(Vec::new());
+    };
+    Value::Array(vec![json!({
+        "id": "mobkit_authoring_profiles",
+        "name": "MobKit authoring profiles",
+        "version": MOBPACK_SCHEMA_VERSION,
+        "stage": "valid",
+        "trigger": "definition · authoring",
+        "source": "mobkit/authoring-agent-definitions",
+        "document": document,
+    })])
+}
+
+fn authoring_agent_definitions_toml() -> &'static str {
+    r#"
+[mob]
+id = "mobkit-authoring-profiles"
+
+[profiles.planner]
+model = "gpt-5.5"
+skills = ["mob.authoring.plan"]
+peer_description = "Turn an operator request into a concise mob plan, identify needed artifacts, and hand the implementation member a focused next step."
+runtime_mode = "turn_driven"
+
+[profiles.planner.tools]
+builtins = true
+comms = true
+mob = true
+workgraph = true
+
+[profiles.implementer]
+model = "gpt-5.5"
+skills = ["mob.authoring.implement"]
+peer_description = "Make the requested code or configuration change, keep evidence current, and report exactly what changed."
+runtime_mode = "turn_driven"
+
+[profiles.implementer.tools]
+builtins = true
+shell = true
+comms = true
+mob = true
+workgraph = true
+
+[profiles.reviewer]
+model = "gpt-5.5"
+skills = ["mob.authoring.review"]
+peer_description = "Review the implementation against the requested MobKit contract and emit a structured verdict."
+runtime_mode = "turn_driven"
+
+[profiles.reviewer.tools]
+builtins = true
+shell = true
+comms = true
+mob = true
+
+[profiles.reviewer.output_schema]
+type = "object"
+description = "MobKit authoring review result."
+required = ["verdict", "summary"]
+additionalProperties = false
+
+[profiles.reviewer.output_schema.properties]
+
+[profiles.reviewer.output_schema.properties.verdict]
+type = "string"
+description = "Whether the reviewed work is acceptable."
+enum = ["accepted", "needs_changes"]
+
+[profiles.reviewer.output_schema.properties.summary]
+type = "string"
+description = "Short review summary."
+
+[skills."mob.authoring.plan"]
+source = "inline"
+content = "Plan MobKit authoring work from the requested deployable mobpack contract. Keep scope tied to real MobKit APIs."
+
+[skills."mob.authoring.implement"]
+source = "inline"
+content = "Implement against MobKit-owned contracts. Preserve controller/UI separation and avoid UI-local mock state."
+
+[skills."mob.authoring.review"]
+source = "inline"
+content = "Review the mobpack artifact, source preview, validation, export, and deploy command evidence before accepting."
+
+[flows.main]
+description = "Plan, implement, and review a MobKit authoring change."
+
+[flows.main.steps.plan]
+role = "planner"
+message = "Plan the MobKit authoring work."
+
+[flows.main.steps.implement]
+role = "implementer"
+message = "Implement the approved plan."
+depends_on = ["plan"]
+
+[flows.main.steps.review]
+role = "reviewer"
+message = "Review the implementation and emit a verdict."
+depends_on = ["implement"]
+expected_schema_ref = "schemas/reviewer.json"
+
+[flows.main.root.nodes.node_plan]
+kind = "step"
+step_id = "plan"
+depends_on = []
+depends_on_mode = "all"
+
+[flows.main.root.nodes.node_implement]
+kind = "step"
+step_id = "implement"
+depends_on = ["node_plan"]
+depends_on_mode = "all"
+
+[flows.main.root.nodes.node_review]
+kind = "step"
+step_id = "review"
+depends_on = ["node_implement"]
+depends_on_mode = "all"
+"#
 }
 
 fn sample_mobpack_catalog() -> Value {
@@ -16518,6 +16711,32 @@ model = "gpt-5.5"
                     .is_some_and(|id| id.starts_with("sample_"))
             );
         }
+        let authoring_realm = realms
+            .iter()
+            .find(|realm| realm["id"] == "mobkit/authoring-agent-definitions")
+            .expect("authoring agent definition skill realm");
+        assert_eq!(
+            authoring_realm["source"],
+            "mobkit/authoring-agent-definition"
+        );
+        assert_eq!(
+            authoring_realm["sourceDocumentPath"],
+            "authoring_mobpacks[].document.skill_realms[]"
+        );
+        let authoring_skill = authoring_realm["skills"]
+            .as_array()
+            .expect("authoring realm skills")
+            .iter()
+            .find(|skill| skill["id"] == "mob.authoring.review")
+            .expect("authoring review skill");
+        assert_eq!(
+            authoring_skill["origin"],
+            "mobkit/authoring-agent-definitions"
+        );
+        assert_eq!(
+            authoring_skill["sourceMobpack"],
+            "mobkit_authoring_profiles"
+        );
     }
 
     #[test]
@@ -17638,7 +17857,39 @@ model = "gpt-5.5"
                     .as_str()
                     .is_some_and(|value| value.starts_with("sample_"))
         }));
-        for definition in agent_definitions {
+        let sample_agent_definitions = agent_definitions
+            .iter()
+            .filter(|definition| definition["sourceOrigin"] == "mobkit/sample-mobpack")
+            .collect::<Vec<_>>();
+        let authoring_agent_definitions = agent_definitions
+            .iter()
+            .filter(|definition| definition["sourceOrigin"] == "mobkit/authoring-agent-definitions")
+            .collect::<Vec<_>>();
+        assert!(
+            !authoring_agent_definitions.is_empty(),
+            "catalogs must expose MobKit-owned authoring definitions, not only sample-derived agents"
+        );
+        assert!(authoring_agent_definitions.iter().any(|definition| {
+            definition["role"] == "reviewer"
+                && definition["sourceMobpack"] == "mobkit_authoring_profiles"
+                && definition["sourceDocumentPath"] == "document.members[2]"
+                && definition["tools"]
+                    .as_array()
+                    .is_some_and(|tools| tools.contains(&json!("shell")))
+                && definition["skills"]
+                    .as_array()
+                    .is_some_and(|skills| skills.contains(&json!("mob.authoring.review")))
+                && definition["skillDefinitions"]
+                    .as_array()
+                    .is_some_and(|skills| {
+                        skills.iter().any(|skill| {
+                            skill["id"] == "mob.authoring.review"
+                                && skill["origin"] == "mobkit/authoring-agent-definitions"
+                        })
+                    })
+                && definition["schemaDefinition"]["id"] == "ReviewerOutput"
+        }));
+        for definition in sample_agent_definitions {
             let source_mobpack = definition["sourceMobpack"]
                 .as_str()
                 .expect("agent definition source mobpack");

@@ -845,7 +845,10 @@ async function validateFilesystemSkillPacking(dir) {
 function buildUnifiedProjectionDocument(catalogs) {
   const definitions = controller.agentDefinitionsFromCatalogs(catalogs);
   const coderDefinition = definitions.find((definition) => definition.role === "coder") || definitions[0];
-  const reviewerDefinition = definitions.find((definition) => definition.role === "reviewer") || definitions[1] || definitions[0];
+  const reviewerDefinition = definitions.find((definition) => definition.role === "reviewer" && definition.sourceOrigin === "mobkit/sample-mobpack")
+    || definitions.find((definition) => definition.role === "reviewer")
+    || definitions[1]
+    || definitions[0];
   if (!coderDefinition || !reviewerDefinition) {
     throw new Error("unified projection proof needs MobKit agent definitions from mobkit/mobpacks/catalogs");
   }
@@ -1380,6 +1383,27 @@ async function validateDocumentBackedDeployPreview(document) {
   }
   if (!Array.isArray(catalogs.agent_definitions) || catalogs.agent_definitions.length === 0) {
     throw new Error("mobkit/mobpacks/catalogs did not expose real agent_definitions");
+  }
+  const authoringDefinition = catalogs.agent_definitions.find((definition) => (
+    definition.role === "reviewer"
+    && definition.sourceMobpack === "mobkit_authoring_profiles"
+    && definition.sourceOrigin === "mobkit/authoring-agent-definitions"
+  ));
+  if (!authoringDefinition) {
+    throw new Error(`mobkit/mobpacks/catalogs did not expose MobKit-owned authoring agent definitions: ${JSON.stringify(catalogs.agent_definitions)}`);
+  }
+  if (!Array.isArray(authoringDefinition.tools) || !authoringDefinition.tools.includes("shell")) {
+    throw new Error(`MobKit authoring reviewer definition did not carry real tool refs: ${JSON.stringify(authoringDefinition)}`);
+  }
+  if (!Array.isArray(authoringDefinition.skills) || !authoringDefinition.skills.includes("mob.authoring.review")) {
+    throw new Error(`MobKit authoring reviewer definition did not carry real skill refs: ${JSON.stringify(authoringDefinition)}`);
+  }
+  if (authoringDefinition.schemaDefinition?.id !== "ReviewerOutput") {
+    throw new Error(`MobKit authoring reviewer definition did not carry its real schema definition: ${JSON.stringify(authoringDefinition)}`);
+  }
+  const authoringRealm = catalogs.skill_realms.find((realm) => realm.id === "mobkit/authoring-agent-definitions");
+  if (!authoringRealm || !String(authoringRealm.source || "").includes("authoring-agent-definition")) {
+    throw new Error(`mobkit/mobpacks/catalogs did not expose authoring skill realm metadata: ${JSON.stringify(catalogs.skill_realms)}`);
   }
   const reviewerDefinitions = catalogs.agent_definitions.filter((definition) => definition.role === "reviewer");
   const reviewerSources = new Set(reviewerDefinitions.map((definition) => definition.sourceMobpack).filter(Boolean));
