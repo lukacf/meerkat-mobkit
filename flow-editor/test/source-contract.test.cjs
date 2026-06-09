@@ -1290,6 +1290,10 @@ assert.match(controller, /function memberSchemaPatch/, "controller plane must ow
 assert.match(controller, /function memberSchemaCascadePatch/, "controller plane must own member schema cascade semantics");
 assert.match(controller, /function memberBackendPatch/, "controller plane must own profile backend patch semantics");
 assert.match(controller, /function optionValueAllowed/, "controller plane must validate Agent Editor option-backed writes against enabled MobKit options");
+assert.match(controller, /toolDefinitions:\s*normalizeAgentDefinitionRows/, "agent definition hydration must preserve MobKit-resolved tool definition rows");
+assert.match(controller, /skillDefinitions:\s*normalizeAgentDefinitionRows/, "agent definition hydration must preserve MobKit-resolved skill definition rows");
+assert.match(controller, /sourceMobpackName:\s*template\.sourceMobpackName/, "agent definition hydration must preserve the MobKit sample mobpack display name");
+assert.match(controller, /schemaSourceDocumentPath:\s*String\(template\.schemaSourceDocumentPath/, "agent definition hydration must preserve schema provenance from the MobKit catalog");
 assert.match(controller, /memberProfileBindingPatch[\s\S]*profileBindingOptions\(contract,\s*binding\)/, "member profile-binding writes must validate against MobKit profile_binding options and restrictions");
 assert.match(controller, /memberRuntimeModePatch[\s\S]*runtimeModeOptions\(contract,\s*deploySettings,\s*runtimeMode\)/, "member runtime-mode writes must validate against MobKit runtime_modes and deploy surface restrictions");
 assert.match(controller, /runtime_mode_labels/, "member runtime-mode labels must hydrate from the MobKit schema contract");

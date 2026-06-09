@@ -3939,22 +3939,32 @@ const [agentDefinition] = controller.agentDefinitionsFromSchema({
     definitionType: "mobkit/profile-member",
     source: "mobkit/mobpack-profile-member",
     sourceMobpack: "sample_review_pr",
+    sourceMobpackName: "Review PR",
     sourceOrigin: "mobkit/sample-mobpack",
     sourceDocumentPath: "document.members[]",
     profileBinding: "inline",
     runtimeMode: "turn_driven",
     backend: "sidecar",
     schema: "ReviewArtifact",
+    schemaSourceDocumentPath: "document.schemas[]",
     schemaDefinition: {
       id: "ReviewArtifact",
       description: "Review output",
       fields: [{ id: "f1", name: "verdict", type: "enum", required: true, enumValues: ["green", "red"] }],
     },
+    tools: ["mob"],
+    toolDefinitions: [{ id: "mob", kind: "runtime", source: "meerkat_mob::ToolConfig" }],
+    skills: ["mob.review"],
+    skillDefinitions: [{ id: "mob.review", source: "inline", sourceMobpack: "sample_review_pr" }],
   }],
 });
 assert.equal(agentDefinition.backend, "sidecar");
 assert.equal(agentDefinition.sourceMobpack, "sample_review_pr");
+assert.equal(agentDefinition.sourceMobpackName, "Review PR");
 assert.equal(agentDefinition.sourceOrigin, "mobkit/sample-mobpack");
+assert.equal(agentDefinition.schemaSourceDocumentPath, "document.schemas[]");
+assert.deepEqual(agentDefinition.toolDefinitions, [{ id: "mob", kind: "runtime", source: "meerkat_mob::ToolConfig" }]);
+assert.deepEqual(agentDefinition.skillDefinitions, [{ id: "mob.review", source: "inline", sourceMobpack: "sample_review_pr" }]);
 
 assert.deepEqual(controller.agentDefinitionsFromSchema({
   members: [{

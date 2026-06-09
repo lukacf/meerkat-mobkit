@@ -749,8 +749,9 @@ pub fn mobpack_catalogs_response() -> Value {
     let sample_mobpacks = sample_mobpack_catalog();
     let blank_mobpack = blank_mobpack_template();
     let skill_realms = discover_skill_realms(&sample_mobpacks);
-    let agent_definitions = agent_definition_catalog(&sample_mobpacks);
     let tool_catalog = tool_catalog_response();
+    let agent_definitions =
+        agent_definition_catalog(&sample_mobpacks, &tool_catalog, &skill_realms);
     json!({
         "tool_catalog": tool_catalog,
         "skill_realms": skill_realms,
@@ -1674,8 +1675,76 @@ pub fn mobpack_schema_response() -> Value {
     })
 }
 
-fn agent_definition_catalog(sample_mobpacks: &Value) -> Value {
+fn tool_catalog_by_id(tool_catalog: &[Value]) -> BTreeMap<String, Value> {
+    tool_catalog
+        .iter()
+        .filter_map(|tool| {
+            let id = tool.get("id").and_then(Value::as_str)?.trim();
+            if id.is_empty() {
+                None
+            } else {
+                Some((id.to_string(), tool.clone()))
+            }
+        })
+        .collect()
+}
+
+fn skill_catalog_by_id(skill_realms: &Value) -> BTreeMap<String, Value> {
+    let mut out = BTreeMap::new();
+    let Some(realms) = skill_realms.as_array() else {
+        return out;
+    };
+    for realm in realms {
+        let realm_id = realm.get("id").and_then(Value::as_str).unwrap_or_default();
+        let realm_label = realm
+            .get("label")
+            .and_then(Value::as_str)
+            .unwrap_or(realm_id);
+        let Some(skills) = realm.get("skills").and_then(Value::as_array) else {
+            continue;
+        };
+        for skill in skills {
+            let Some(id) = skill
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            out.entry(id.to_string()).or_insert_with(|| {
+                let mut projected = skill.as_object().cloned().unwrap_or_default();
+                projected
+                    .entry("label".to_string())
+                    .or_insert_with(|| Value::String(id.to_string()));
+                projected.insert("realm".to_string(), Value::String(realm_id.to_string()));
+                projected.insert(
+                    "realmLabel".to_string(),
+                    Value::String(realm_label.to_string()),
+                );
+                Value::Object(projected)
+            });
+        }
+    }
+    out
+}
+
+fn resolved_catalog_refs(ids: &[String], catalog: &BTreeMap<String, Value>) -> Value {
+    Value::Array(
+        ids.iter()
+            .filter_map(|id| catalog.get(id).cloned())
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn agent_definition_catalog(
+    sample_mobpacks: &Value,
+    tool_catalog: &[Value],
+    skill_realms: &Value,
+) -> Value {
     let mut templates = BTreeMap::<String, Value>::new();
+    let tools_by_id = tool_catalog_by_id(tool_catalog);
+    let skills_by_id = skill_catalog_by_id(skill_realms);
     if let Some(samples) = sample_mobpacks.as_array() {
         for sample in samples {
             let Some(source_mobpack) = sample
@@ -1708,6 +1777,10 @@ fn agent_definition_catalog(sample_mobpacks: &Value) -> Value {
                         .collect::<BTreeMap<_, _>>()
                 })
                 .unwrap_or_default();
+            let source_name = sample
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(source_mobpack);
             let Some(members) = sample
                 .get("document")
                 .and_then(|document| document.get("members"))
@@ -1756,6 +1829,8 @@ fn agent_definition_catalog(sample_mobpacks: &Value) -> Value {
                         .unwrap_or_default();
                     let schema_definition =
                         schema_by_id.get(schema_id).cloned().unwrap_or(Value::Null);
+                    let tools = string_vec(member.get("tools"));
+                    let skills = string_vec(member.get("skills"));
                     json!({
                         "id": key,
                         "role": role,
@@ -1763,9 +1838,12 @@ fn agent_definition_catalog(sample_mobpacks: &Value) -> Value {
                         "name": name,
                         "model": model,
                         "schema": schema_id,
+                        "schemaSourceDocumentPath": if schema_definition.is_null() { "" } else { "document.schemas[]" },
                         "schemaDefinition": schema_definition,
-                        "skills": member.get("skills").cloned().unwrap_or_else(|| json!([])),
-                        "tools": member.get("tools").cloned().unwrap_or_else(|| json!([])),
+                        "skills": skills.clone(),
+                        "skillDefinitions": resolved_catalog_refs(&skills, &skills_by_id),
+                        "tools": tools.clone(),
+                        "toolDefinitions": resolved_catalog_refs(&tools, &tools_by_id),
                         "profileBinding": profile_binding,
                         "realmProfile": member.get("realmProfile").or_else(|| member.get("realm_profile")).and_then(Value::as_str).unwrap_or_default(),
                         "runtimeMode": runtime_mode,
@@ -1777,6 +1855,7 @@ fn agent_definition_catalog(sample_mobpacks: &Value) -> Value {
                         "definitionType": "mobkit/profile-member",
                         "source": "mobkit/mobpack-profile-member",
                         "sourceMobpack": source_mobpack,
+                        "sourceMobpackName": source_name,
                         "sourceOrigin": sample_source,
                         "sourceDocumentPath": "document.members[]",
                     })
@@ -16438,6 +16517,7 @@ model = "gpt-5.5"
             },
             {
                 "id": "valid_sample",
+                "name": "Valid Sample",
                 "source": "mobkit/sample-mobpack",
                 "document": {
                     "members": [{
@@ -16449,19 +16529,49 @@ model = "gpt-5.5"
                         "tools": ["builtins"],
                         "skills": ["mob.real"],
                         "systemPrompt": "Be real."
+                    }],
+                    "skill_realms": [{
+                        "id": "sample",
+                        "label": "Sample skills",
+                        "source": "mobkit/sample-mobpack",
+                        "skills": [{
+                            "id": "mob.real",
+                            "label": "Real skill",
+                            "source": "inline",
+                            "content": "real skill"
+                        }]
                     }]
                 }
             }
         ]);
 
-        let definitions = agent_definition_catalog(&samples);
+        let skill_realms = sample_skill_realm(&samples, true).expect("sample skill realm");
+        let definitions =
+            agent_definition_catalog(&samples, &tool_catalog_response(), &json!([skill_realms]));
         let definitions = definitions.as_array().expect("agent definitions");
         assert_eq!(definitions.len(), 1);
         assert_eq!(definitions[0]["role"], "real");
         assert_eq!(definitions[0]["definitionType"], "mobkit/profile-member");
         assert_eq!(definitions[0]["source"], "mobkit/mobpack-profile-member");
         assert_eq!(definitions[0]["sourceMobpack"], "valid_sample");
+        assert_eq!(definitions[0]["sourceMobpackName"], "Valid Sample");
         assert_eq!(definitions[0]["sourceOrigin"], "mobkit/sample-mobpack");
+        assert_eq!(definitions[0]["tools"], json!(["builtins"]));
+        assert_eq!(definitions[0]["toolDefinitions"][0]["id"], "builtins");
+        assert_eq!(
+            definitions[0]["toolDefinitions"][0]["source"],
+            "meerkat_mob::ToolConfig"
+        );
+        assert_eq!(definitions[0]["skills"], json!(["mob.real"]));
+        assert_eq!(definitions[0]["skillDefinitions"][0]["id"], "mob.real");
+        assert_eq!(
+            definitions[0]["skillDefinitions"][0]["origin"],
+            "mobkit/sample-mobpack"
+        );
+        assert_eq!(
+            definitions[0]["skillDefinitions"][0]["sourceMobpack"],
+            "valid_sample"
+        );
     }
 
     #[test]

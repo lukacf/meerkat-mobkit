@@ -10268,8 +10268,11 @@
           model,
           schema: String(template.schema || ""),
           schemaDefinition: normalizeAgentSchemaDefinition(template.schemaDefinition || template.schema_definition),
+          schemaSourceDocumentPath: String(template.schemaSourceDocumentPath || template.schema_source_document_path || ""),
           skills: Array.isArray(template.skills) ? [...template.skills] : [],
+          skillDefinitions: normalizeAgentDefinitionRows(template.skillDefinitions || template.skill_definitions),
           tools: Array.isArray(template.tools) ? [...template.tools] : [],
+          toolDefinitions: normalizeAgentDefinitionRows(template.toolDefinitions || template.tool_definitions),
           profileBinding: String(template.profileBinding || template.profile_binding || ""),
           realmProfile: String(template.realmProfile || template.realm_profile || ""),
           runtimeMode: String(template.runtimeMode || template.runtime_mode || ""),
@@ -10281,6 +10284,7 @@
           definitionType: String(template.definitionType || template.definition_type),
           source: template.source || "",
           sourceMobpack: template.sourceMobpack || template.source_mobpack || "",
+          sourceMobpackName: template.sourceMobpackName || template.source_mobpack_name || "",
           sourceOrigin: template.sourceOrigin || template.source_origin || "",
           sourceDocumentPath: template.sourceDocumentPath || template.source_document_path || "",
         };
@@ -10339,6 +10343,13 @@
     const fields = Array.isArray(value.fields) ? value.fields : [];
     if (!id || !fields.length) return null;
     return JSON.parse(JSON.stringify(value));
+  }
+
+  function normalizeAgentDefinitionRows(value) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((row) => row && typeof row === "object" && !Array.isArray(row))
+      .map((row) => JSON.parse(JSON.stringify(row)));
   }
 
   function schemaDefinitionsFromAgentDefinition(definition) {
