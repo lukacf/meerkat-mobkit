@@ -1,4 +1,4 @@
-/* global React, ReactDOM, MOBKIT_BOOT, useStudioState, GraphEditor, Inspector, AddNodeMenu, DrySim, ValidateSheet, SourceDrawer, InlineSourceEditor, useTweaks, TweaksPanel, TweakSection, TweakRadio, AgentsView, BuilderView */
+/* global React, ReactDOM, MOBKIT_BOOT, useStudioState, GraphEditor, Inspector, AddNodeMenu, DeployPlanTrace, ValidateSheet, SourceDrawer, InlineSourceEditor, useTweaks, TweaksPanel, TweakSection, TweakRadio, AgentsView, BuilderView */
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "edgeStyle": "text",
@@ -33,10 +33,10 @@ function App() {
   const [agentSel, setAgentSel] = React.useState(null);
   const [selection, setSelection] = React.useState({ kind: null, id: null });
   const [activeStepId, setActiveStepId] = React.useState(null);
-  const [drySim, setDrySim] = React.useState(false);
-  const [drySimKey, setDrySimKey] = React.useState(0);
-  const [drySimDocument, setDrySimDocument] = React.useState(null);
-  const [drySimPlan, setDrySimPlan] = React.useState(null);
+  const [deployPlanOpen, setDeployPlanOpen] = React.useState(false);
+  const [deployPlanKey, setDeployPlanKey] = React.useState(0);
+  const [deployPlanDocument, setDeployPlanDocument] = React.useState(null);
+  const [deployPlanResult, setDeployPlanResult] = React.useState(null);
   const [validate, setValidate] = React.useState(false);
   const [validationResults, setValidationResults] = React.useState([]);
   const [apiBusy, setApiBusy] = React.useState(false);
@@ -100,10 +100,10 @@ function App() {
   }, []);
   const applyApiOverlayPatch = React.useCallback((patch) => {
     const next = patch && typeof patch === "object" ? patch : {};
-    if (Object.prototype.hasOwnProperty.call(next, "drySim")) setDrySim(next.drySim);
-    if (Object.prototype.hasOwnProperty.call(next, "drySimDocument")) setDrySimDocument(next.drySimDocument);
-    if (Object.prototype.hasOwnProperty.call(next, "drySimPlan")) setDrySimPlan(next.drySimPlan);
-    if (next.incrementDrySimKey) setDrySimKey(k => k + 1);
+    if (Object.prototype.hasOwnProperty.call(next, "deployPlanOpen")) setDeployPlanOpen(next.deployPlanOpen);
+    if (Object.prototype.hasOwnProperty.call(next, "deployPlanDocument")) setDeployPlanDocument(next.deployPlanDocument);
+    if (Object.prototype.hasOwnProperty.call(next, "deployPlanResult")) setDeployPlanResult(next.deployPlanResult);
+    if (next.incrementDeployPlanKey) setDeployPlanKey(k => k + 1);
     if (Object.prototype.hasOwnProperty.call(next, "validate")) setValidate(next.validate);
   }, []);
   const clearSourceProjection = React.useCallback(() => {
@@ -814,7 +814,7 @@ function App() {
     authoringDocument,
   ]);
 
-  const handleDrySim = async () => {
+  const handleDeployPlanTrace = async () => {
     let requestToken = null;
     setApiBusy(true);
     try {
@@ -1138,7 +1138,7 @@ function App() {
         onDeployPlan={handleDeployPlan}
         onDeployRun={handleDeployRun}
         onImport={() => importInputRef.current?.click()}
-        onDrySim={handleDrySim}
+        onDeployPlanTrace={handleDeployPlanTrace}
         onYaml={handleSource}
         deploySettings={deploySettings}
       />
@@ -1314,7 +1314,7 @@ function App() {
         />
       )}
 
-      <DrySim open={drySim} onClose={() => applyApiOverlayPatch(window.MobKitFlowController.deployPlanTraceCloseTransition())} onActiveStep={setActiveStepId} runKey={drySimKey} document={drySimDocument} plan={drySimPlan} deployView={catalogs.deployView} />
+      <DeployPlanTrace open={deployPlanOpen} onClose={() => applyApiOverlayPatch(window.MobKitFlowController.deployPlanTraceCloseTransition())} onActiveStep={setActiveStepId} runKey={deployPlanKey} document={deployPlanDocument} plan={deployPlanResult} deployView={catalogs.deployView} />
       <ValidateSheet open={validate} onClose={() => applyApiOverlayPatch(window.MobKitFlowController.validationSheetCloseTransition())} onPublish={handlePublish} onDeployPlan={handleDeployPlan} onDeployRun={handleDeployRun} results={validationResults} stage={stage} deployView={catalogs.deployView} />
       <SourceDrawer open={sourceOpen} onClose={clearSourceProjection} state={sourceDocument} sourceView={catalogs.sourceView} />
       <Tweaks
@@ -1375,7 +1375,7 @@ async function importParamsFromFile(file) {
   });
 }
 
-function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, onToggleTheme, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDrySim, onYaml, contract, deploySettings }) {
+function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, onToggleTheme, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDeployPlanTrace, onYaml, contract, deploySettings }) {
   return (
     <header className="toprail">
       <div className="brand">
@@ -1413,7 +1413,7 @@ function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, o
             <details className="actions-menu">
               <summary className="btn btn--ghost btn--sm actions-menu__summary">{railState.overflowLabel}</summary>
               <div className="actions-menu__panel">
-                <button className="actions-menu__item" onClick={onDrySim}>{railState.planTraceLabel}</button>
+                <button className="actions-menu__item" onClick={onDeployPlanTrace}>{railState.planTraceLabel}</button>
                 <button className="actions-menu__item" onClick={onImport}>{railState.importLabel}</button>
                 <button className="actions-menu__item" disabled={railState.deployActionsDisabled} onClick={onDeployPlan}>{railState.deployPlanLabel}</button>
                 <button className="actions-menu__item actions-menu__item--primary" disabled={railState.deployRunDisabled} onClick={onDeployRun}>{railState.deployLabel}</button>

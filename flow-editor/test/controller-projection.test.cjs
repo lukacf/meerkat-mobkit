@@ -6378,14 +6378,14 @@ assert.equal(invalidOutcome.validationRows[0].kind, "crit");
 assert.deepEqual(controller.validationSheetOpenTransition(), { validate: true });
 assert.deepEqual(controller.validationSheetCloseTransition(), { validate: false });
 assert.deepEqual(controller.deployPlanTraceReadyTransition({ mob_id: "trace_me" }, { plan_trace: [] }), {
-  drySim: true,
-  drySimDocument: { mob_id: "trace_me" },
-  drySimPlan: { plan_trace: [] },
-  incrementDrySimKey: true,
+  deployPlanOpen: true,
+  deployPlanDocument: { mob_id: "trace_me" },
+  deployPlanResult: { plan_trace: [] },
+  incrementDeployPlanKey: true,
 });
-assert.deepEqual(controller.deployPlanTraceCloseTransition(), { drySim: false });
+assert.deepEqual(controller.deployPlanTraceCloseTransition(), { deployPlanOpen: false });
 assert.deepEqual(controller.apiOverlayClearTransition(), {
-  drySim: false,
+  deployPlanOpen: false,
   validate: false,
 });
 

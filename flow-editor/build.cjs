@@ -42,7 +42,7 @@ async function compileClassicScript(file) {
   const source = await fs.readFile(path.join(srcDir, file), "utf8");
   if (file.endsWith(".js")) return source;
   const appGlobals = file === "app.jsx"
-    ? `const { useStudioState, GraphEditor, Inspector, AddNodeMenu, DrySim, ValidateSheet, SourceDrawer, InlineSourceEditor, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakSelect, TweakText, TweakNumber, AgentsView, BuilderView } = window;\n`
+    ? `const { useStudioState, GraphEditor, Inspector, AddNodeMenu, DeployPlanTrace, ValidateSheet, SourceDrawer, InlineSourceEditor, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakSelect, TweakText, TweakNumber, AgentsView, BuilderView } = window;\n`
     : "";
   const result = await transform(source, {
     loader: "jsx",

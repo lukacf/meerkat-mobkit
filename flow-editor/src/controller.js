@@ -10043,20 +10043,20 @@
 
   function deployPlanTraceReadyTransition(document, plan) {
     return {
-      drySim: true,
-      drySimDocument: document || null,
-      drySimPlan: plan || null,
-      incrementDrySimKey: true,
+      deployPlanOpen: true,
+      deployPlanDocument: document || null,
+      deployPlanResult: plan || null,
+      incrementDeployPlanKey: true,
     };
   }
 
   function deployPlanTraceCloseTransition() {
-    return { drySim: false };
+    return { deployPlanOpen: false };
   }
 
   function apiOverlayClearTransition() {
     return {
-      drySim: false,
+      deployPlanOpen: false,
       validate: false,
     };
   }

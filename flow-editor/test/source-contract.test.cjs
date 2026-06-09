@@ -962,7 +962,8 @@ assert.match(controller, /flowRegistryView: flowRegistryViewFromSchema\(schema\)
 assert.match(controller, /columns:\s*view\.columns/, "controller plane must project flow registry columns from MobKit view chrome");
 assert(!/eyebrow:\s*["']FLOWS["']|createLabel:\s*["']\+ NEW FLOW["']|createReadyTitle:\s*["']Create a MobKit mobpack["']|createUnavailableTitle:\s*["']Waiting for MobKit schema["']|label:\s*["']NAME["']|label:\s*["']VERSION["']|label:\s*["']STAGE["']/.test(controller), "controller plane must not keep Flow registry labels or column names as local literals");
 assert(!/flows\.length|disabled=\{!canCreate\}|title=\{canCreate \?|className=\{"flows-list__row"|f\.id === currentFlowId|>FLOWS<\/div>|>\+ NEW FLOW<\/button>|<span>NAME<\/span>|<span>TRIGGER<\/span>|<span>VERSION<\/span>|<span>STAGE<\/span>/.test((app.match(/function FlowsView[\s\S]*?function NewFlowModal/) || [""])[0]), "Flows view must not derive registry title, create affordance, column labels, or current row class locally");
-assert.match(app, /const handleDrySim = async \(\) => \{[\s\S]*MobKitFlowController\.deployDocument\(document, \{ execute: false \}\)[\s\S]*deployPlanTraceReadyTransition\(document,\s*plan\)/, "Plan Trace must render a non-executing MobKit deploy plan, not a local simulation");
+assert.match(app, /const handleDeployPlanTrace = async \(\) => \{[\s\S]*MobKitFlowController\.deployDocument\(document, \{ execute: false \}\)[\s\S]*deployPlanTraceReadyTransition\(document,\s*plan\)/, "Plan Trace must render a non-executing MobKit deploy plan, not a local simulation");
+assert(!/DrySim|drySim|drysim/.test(app + "\n" + controller + "\n" + src("overlays.jsx") + "\n" + styles), "Deploy plan trace code must not retain prototype dry-simulation naming");
 assert.match(controller, /function deployPlanTraceState/, "controller plane must own deploy-plan trace display projection");
 assert.match(controller, /plan\?\.plan_trace[\s\S]*view\.planUnavailableHead[\s\S]*view\.planUnavailableBody/, "controller plane must consume MobKit deploy plan_trace and own the schema-backed unavailable-trace fallback");
 assert.match(controller, /function deployPlanTraceReadyTransition/, "controller plane must own plan trace open/document/plan transitions");
@@ -970,8 +971,8 @@ assert.match(controller, /function deployPlanTraceCloseTransition/, "controller 
 assert.match(controller, /function validationSheetOpenTransition/, "controller plane must own validation sheet open transitions");
 assert.match(controller, /function validationSheetCloseTransition/, "controller plane must own validation sheet close transitions");
 assert.match(controller, /function apiOverlayClearTransition/, "controller plane must own aggregate API overlay clear transitions");
-assert.match(app, /const applyApiOverlayPatch = React\.useCallback\(\(patch\) => \{[\s\S]*drySim[\s\S]*drySimDocument[\s\S]*drySimPlan[\s\S]*incrementDrySimKey[\s\S]*validate/, "app shell may only apply controller-projected API overlay patches");
-assert.match(app, /<DrySim[\s\S]*onClose=\{\(\) => applyApiOverlayPatch\(window\.MobKitFlowController\.deployPlanTraceCloseTransition\(\)\)\}/, "Plan Trace close affordance must use controller-projected transition state");
+assert.match(app, /const applyApiOverlayPatch = React\.useCallback\(\(patch\) => \{[\s\S]*deployPlanOpen[\s\S]*deployPlanDocument[\s\S]*deployPlanResult[\s\S]*incrementDeployPlanKey[\s\S]*validate/, "app shell may only apply controller-projected API overlay patches");
+assert.match(app, /<DeployPlanTrace[\s\S]*onClose=\{\(\) => applyApiOverlayPatch\(window\.MobKitFlowController\.deployPlanTraceCloseTransition\(\)\)\}/, "Plan Trace close affordance must use controller-projected transition state");
 assert.match(app, /<ValidateSheet[\s\S]*onClose=\{\(\) => applyApiOverlayPatch\(window\.MobKitFlowController\.validationSheetCloseTransition\(\)\)\}/, "Validation sheet close affordance must use controller-projected transition state");
 assert.match(src("overlays.jsx"), /MobKitFlowController\.deployPlanTraceState\(document, plan, \{ deployView \}\)/, "Plan Trace overlay must render controller-projected deploy-plan state from MobKit view chrome");
 assert.match(src("overlays.jsx"), /traceState\.eyebrow/, "Plan Trace overlay header must render through controller state");
@@ -1280,7 +1281,7 @@ assert.match(app, /MobKitFlowController\.editorModeTransition\(target\)/, "edito
 assert.match(controller, /function editorModeTransition/, "controller plane must own editor mode transitions");
 assert.match(app, /<ModeToggle[\s\S]*onSelectMode=\{handleEditorModeSelection\}/, "Mode toggle must emit semantic editor mode targets to the app shell");
 assert(!/setMode\(|setEditorMode\(|onClick=\{\(\) => onSelectMode\(["']graph["']\)/.test(modeToggleBlock), "ModeToggle renderer must not own editor mode state transitions or non-contract mode names");
-assert.match(app, /<DrySim[\s\S]*deployView=\{catalogs\.deployView\}/, "Deploy plan overlay must receive schema-backed deploy view state");
+assert.match(app, /<DeployPlanTrace[\s\S]*deployView=\{catalogs\.deployView\}/, "Deploy plan overlay must receive schema-backed deploy view state");
 assert.match(app, /<ValidateSheet[\s\S]*deployView=\{catalogs\.deployView\}/, "Validation sheet must receive schema-backed deploy view state");
 assert.match(app, /railState\.brandLabel/, "Top rail brand label must render through controller state");
 assert.match(app, /railState\.planTraceLabel/, "Top rail deploy-plan trace label must render through controller state");

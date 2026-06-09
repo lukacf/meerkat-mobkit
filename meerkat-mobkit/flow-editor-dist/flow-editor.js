@@ -10076,20 +10076,20 @@ window.MOBKIT_BOOT = {
 
   function deployPlanTraceReadyTransition(document, plan) {
     return {
-      drySim: true,
-      drySimDocument: document || null,
-      drySimPlan: plan || null,
-      incrementDrySimKey: true,
+      deployPlanOpen: true,
+      deployPlanDocument: document || null,
+      deployPlanResult: plan || null,
+      incrementDeployPlanKey: true,
     };
   }
 
   function deployPlanTraceCloseTransition() {
-    return { drySim: false };
+    return { deployPlanOpen: false };
   }
 
   function apiOverlayClearTransition() {
     return {
-      drySim: false,
+      deployPlanOpen: false,
       validate: false,
     };
   }
@@ -12962,7 +12962,7 @@ window.AddNodeMenu = AddNodeMenu;
 /* overlays.jsx */
 
 {
-function DrySim({ open, onClose, onActiveStep, runKey, document, plan, deployView = null }) {
+function DeployPlanTrace({ open, onClose, onActiveStep, runKey, document, plan, deployView = null }) {
   const traceState = React.useMemo(
     () => window.MobKitFlowController.deployPlanTraceState(document, plan, { deployView }),
     [document, plan, deployView]
@@ -12985,16 +12985,16 @@ function DrySim({ open, onClose, onActiveStep, runKey, document, plan, deployVie
     }
   }, [idx, open, traceState.steps]);
   if (!open) return null;
-  return /* @__PURE__ */ React.createElement("div", { className: "drysim" }, /* @__PURE__ */ React.createElement("div", { className: "drysim__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "drysim__title" }, /* @__PURE__ */ React.createElement("span", { className: "accent" }, traceState.eyebrow), " \xB7 ", traceState.title), /* @__PURE__ */ React.createElement("div", { className: "drysim__sub" }, traceState.subtitle)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx(0) }, traceState.firstLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, traceState.closeLabel))), /* @__PURE__ */ React.createElement("div", { className: "drysim__body", ref: bodyRef }, traceState.steps.map((s, i) => /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement("div", { className: "deploy-plan" }, /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__title" }, /* @__PURE__ */ React.createElement("span", { className: "accent" }, traceState.eyebrow), " \xB7 ", traceState.title), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__sub" }, traceState.subtitle)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx(0) }, traceState.firstLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, traceState.closeLabel))), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__body", ref: bodyRef }, traceState.steps.map((s, i) => /* @__PURE__ */ React.createElement(
     "div",
     {
       key: i,
       "data-step": i,
-      className: "drysim__step" + (i === idx ? " is-current" : "") + (i > idx ? " is-pending" : "")
+      className: "deploy-plan__step" + (i === idx ? " is-current" : "") + (i > idx ? " is-pending" : "")
     },
     /* @__PURE__ */ React.createElement("div", { className: "g" }),
     /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "head" }, s.head), /* @__PURE__ */ React.createElement("div", { className: "body" }, s.body))
-  ))), /* @__PURE__ */ React.createElement("div", { className: "drysim__foot" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { width: "100%" } }, /* @__PURE__ */ React.createElement("span", { className: "muted" }, traceState.packLabel ? `${traceState.packLabel} \xB7 ` : "", traceState.stepLabel, " ", idx + 1, " / ", traceState.steps.length), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.max(0, i - 1)) }, traceState.previousLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.min(traceState.steps.length - 1, i + 1)) }, traceState.nextLabel)))));
+  ))), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__foot" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { width: "100%" } }, /* @__PURE__ */ React.createElement("span", { className: "muted" }, traceState.packLabel ? `${traceState.packLabel} \xB7 ` : "", traceState.stepLabel, " ", idx + 1, " / ", traceState.steps.length), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.max(0, i - 1)) }, traceState.previousLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.min(traceState.steps.length - 1, i + 1)) }, traceState.nextLabel)))));
 }
 function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, results, stage, deployView = null }) {
   if (!open) return null;
@@ -13042,7 +13042,7 @@ function InlineSourceEditor({ open, onClose, state, busy = false, surface = "bas
   const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true, sourceView, sourcePath });
   return /* @__PURE__ */ React.createElement("div", { className: "bld-toml bld-toml--" + surface, onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "bld-toml__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", null, editorState.inlineTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list source-file-list--inline" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => selectSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, busy, compact: true, sourceView, sourcePath }));
 }
-window.DrySim = DrySim;
+window.DeployPlanTrace = DeployPlanTrace;
 window.ValidateSheet = ValidateSheet;
 window.SourceDrawer = SourceDrawer;
 window.InlineSourceEditor = InlineSourceEditor;
@@ -14259,7 +14259,7 @@ window.BuilderView = BuilderView;
 
 /* app.jsx */
 
-const { useStudioState, GraphEditor, Inspector, AddNodeMenu, DrySim, ValidateSheet, SourceDrawer, InlineSourceEditor, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakSelect, TweakText, TweakNumber, AgentsView, BuilderView } = window;
+const { useStudioState, GraphEditor, Inspector, AddNodeMenu, DeployPlanTrace, ValidateSheet, SourceDrawer, InlineSourceEditor, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakSelect, TweakText, TweakNumber, AgentsView, BuilderView } = window;
 const TWEAK_DEFAULTS = (
   /*EDITMODE-BEGIN*/
   {
@@ -14288,10 +14288,10 @@ function App() {
   const [agentSel, setAgentSel] = React.useState(null);
   const [selection, setSelection] = React.useState({ kind: null, id: null });
   const [activeStepId, setActiveStepId] = React.useState(null);
-  const [drySim, setDrySim] = React.useState(false);
-  const [drySimKey, setDrySimKey] = React.useState(0);
-  const [drySimDocument, setDrySimDocument] = React.useState(null);
-  const [drySimPlan, setDrySimPlan] = React.useState(null);
+  const [deployPlanOpen, setDeployPlanOpen] = React.useState(false);
+  const [deployPlanKey, setDeployPlanKey] = React.useState(0);
+  const [deployPlanDocument, setDeployPlanDocument] = React.useState(null);
+  const [deployPlanResult, setDeployPlanResult] = React.useState(null);
   const [validate, setValidate] = React.useState(false);
   const [validationResults, setValidationResults] = React.useState([]);
   const [apiBusy, setApiBusy] = React.useState(false);
@@ -14353,10 +14353,10 @@ function App() {
   }, []);
   const applyApiOverlayPatch = React.useCallback((patch) => {
     const next = patch && typeof patch === "object" ? patch : {};
-    if (Object.prototype.hasOwnProperty.call(next, "drySim")) setDrySim(next.drySim);
-    if (Object.prototype.hasOwnProperty.call(next, "drySimDocument")) setDrySimDocument(next.drySimDocument);
-    if (Object.prototype.hasOwnProperty.call(next, "drySimPlan")) setDrySimPlan(next.drySimPlan);
-    if (next.incrementDrySimKey) setDrySimKey((k) => k + 1);
+    if (Object.prototype.hasOwnProperty.call(next, "deployPlanOpen")) setDeployPlanOpen(next.deployPlanOpen);
+    if (Object.prototype.hasOwnProperty.call(next, "deployPlanDocument")) setDeployPlanDocument(next.deployPlanDocument);
+    if (Object.prototype.hasOwnProperty.call(next, "deployPlanResult")) setDeployPlanResult(next.deployPlanResult);
+    if (next.incrementDeployPlanKey) setDeployPlanKey((k) => k + 1);
     if (Object.prototype.hasOwnProperty.call(next, "validate")) setValidate(next.validate);
   }, []);
   const clearSourceProjection = React.useCallback(() => {
@@ -15032,7 +15032,7 @@ function App() {
     catalogs.contractMeta.loaded,
     authoringDocument
   ]);
-  const handleDrySim = async () => {
+  const handleDeployPlanTrace = async () => {
     let requestToken = null;
     setApiBusy(true);
     try {
@@ -15340,7 +15340,7 @@ function App() {
       onDeployPlan: handleDeployPlan,
       onDeployRun: handleDeployRun,
       onImport: () => importInputRef.current?.click(),
-      onDrySim: handleDrySim,
+      onDeployPlanTrace: handleDeployPlanTrace,
       onYaml: handleSource,
       deploySettings
     }
@@ -15512,7 +15512,7 @@ function App() {
         }
       }
     }
-  ), /* @__PURE__ */ React.createElement(DrySim, { open: drySim, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.deployPlanTraceCloseTransition()), onActiveStep: setActiveStepId, runKey: drySimKey, document: drySimDocument, plan: drySimPlan, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(ValidateSheet, { open: validate, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.validationSheetCloseTransition()), onPublish: handlePublish, onDeployPlan: handleDeployPlan, onDeployRun: handleDeployRun, results: validationResults, stage, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(SourceDrawer, { open: sourceOpen, onClose: clearSourceProjection, state: sourceDocument, sourceView: catalogs.sourceView }), /* @__PURE__ */ React.createElement(
+  ), /* @__PURE__ */ React.createElement(DeployPlanTrace, { open: deployPlanOpen, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.deployPlanTraceCloseTransition()), onActiveStep: setActiveStepId, runKey: deployPlanKey, document: deployPlanDocument, plan: deployPlanResult, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(ValidateSheet, { open: validate, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.validationSheetCloseTransition()), onPublish: handlePublish, onDeployPlan: handleDeployPlan, onDeployRun: handleDeployRun, results: validationResults, stage, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(SourceDrawer, { open: sourceOpen, onClose: clearSourceProjection, state: sourceDocument, sourceView: catalogs.sourceView }), /* @__PURE__ */ React.createElement(
     Tweaks,
     {
       t,
@@ -15567,8 +15567,8 @@ async function importParamsFromFile(file) {
     contentBase64: btoa(binary)
   });
 }
-function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, onToggleTheme, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDrySim, onYaml, contract, deploySettings }) {
-  return /* @__PURE__ */ React.createElement("header", { className: "toprail" }, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "dot" }), /* @__PURE__ */ React.createElement("span", null, railState.brandLabel)), /* @__PURE__ */ React.createElement("nav", { className: "viewtabs" }, /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "flows" || view === "editor" ? " is-current" : ""), onClick: () => onNavigate("flows-tab") }, railState.flowsTabLabel), /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "agents" ? " is-current" : ""), onClick: () => onNavigate("agents-tab") }, railState.agentsTabLabel)), /* @__PURE__ */ React.createElement("div", { className: "mob-status", title: railState.mobStatusTitle }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.mobFileLabel), /* @__PURE__ */ React.createElement("span", { className: "env" }, "\xB7 ", railState.contractState)), /* @__PURE__ */ React.createElement("div", { className: "mob-status mob-status--env", title: railState.deployCommand }, /* @__PURE__ */ React.createElement("span", { className: "env" }, railState.deployPrefixLabel), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.deploySurface)), /* @__PURE__ */ React.createElement("nav", { className: "crumbs" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "crumb crumb--link", onClick: () => onNavigate("flows-crumb") }, railState.flowsCrumbLabel), /* @__PURE__ */ React.createElement("span", { className: "crumb crumb--sep" }, railState.crumbSeparator), /* @__PURE__ */ React.createElement("span", { className: "crumb is-current" }, currentFlowName))), /* @__PURE__ */ React.createElement("div", { className: "actions" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), stage), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onValidate }, railState.validateLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: railState.deployActionsDisabled, onClick: onPublish }, railState.publishLabel), /* @__PURE__ */ React.createElement("details", { className: "actions-menu" }, /* @__PURE__ */ React.createElement("summary", { className: "btn btn--ghost btn--sm actions-menu__summary" }, railState.overflowLabel), /* @__PURE__ */ React.createElement("div", { className: "actions-menu__panel" }, /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onDrySim }, railState.planTraceLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onImport }, railState.importLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", disabled: railState.deployActionsDisabled, onClick: onDeployPlan }, railState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item actions-menu__item--primary", disabled: railState.deployRunDisabled, onClick: onDeployRun }, railState.deployLabel)))), /* @__PURE__ */ React.createElement(
+function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, onToggleTheme, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDeployPlanTrace, onYaml, contract, deploySettings }) {
+  return /* @__PURE__ */ React.createElement("header", { className: "toprail" }, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "dot" }), /* @__PURE__ */ React.createElement("span", null, railState.brandLabel)), /* @__PURE__ */ React.createElement("nav", { className: "viewtabs" }, /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "flows" || view === "editor" ? " is-current" : ""), onClick: () => onNavigate("flows-tab") }, railState.flowsTabLabel), /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "agents" ? " is-current" : ""), onClick: () => onNavigate("agents-tab") }, railState.agentsTabLabel)), /* @__PURE__ */ React.createElement("div", { className: "mob-status", title: railState.mobStatusTitle }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.mobFileLabel), /* @__PURE__ */ React.createElement("span", { className: "env" }, "\xB7 ", railState.contractState)), /* @__PURE__ */ React.createElement("div", { className: "mob-status mob-status--env", title: railState.deployCommand }, /* @__PURE__ */ React.createElement("span", { className: "env" }, railState.deployPrefixLabel), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.deploySurface)), /* @__PURE__ */ React.createElement("nav", { className: "crumbs" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "crumb crumb--link", onClick: () => onNavigate("flows-crumb") }, railState.flowsCrumbLabel), /* @__PURE__ */ React.createElement("span", { className: "crumb crumb--sep" }, railState.crumbSeparator), /* @__PURE__ */ React.createElement("span", { className: "crumb is-current" }, currentFlowName))), /* @__PURE__ */ React.createElement("div", { className: "actions" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), stage), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onValidate }, railState.validateLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: railState.deployActionsDisabled, onClick: onPublish }, railState.publishLabel), /* @__PURE__ */ React.createElement("details", { className: "actions-menu" }, /* @__PURE__ */ React.createElement("summary", { className: "btn btn--ghost btn--sm actions-menu__summary" }, railState.overflowLabel), /* @__PURE__ */ React.createElement("div", { className: "actions-menu__panel" }, /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onDeployPlanTrace }, railState.planTraceLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onImport }, railState.importLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", disabled: railState.deployActionsDisabled, onClick: onDeployPlan }, railState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item actions-menu__item--primary", disabled: railState.deployRunDisabled, onClick: onDeployRun }, railState.deployLabel)))), /* @__PURE__ */ React.createElement(
     "button",
     {
       className: "btn btn--ghost btn--sm theme-toggle",

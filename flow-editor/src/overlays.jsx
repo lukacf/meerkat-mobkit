@@ -1,7 +1,7 @@
 /* global React */
 // Deploy plan trace, validate sheet, source drawer.
 
-function DrySim({ open, onClose, onActiveStep, runKey, document, plan, deployView = null }) {
+function DeployPlanTrace({ open, onClose, onActiveStep, runKey, document, plan, deployView = null }) {
   const traceState = React.useMemo(() =>
     window.MobKitFlowController.deployPlanTraceState(document, plan, { deployView }),
     [document, plan, deployView]);
@@ -25,23 +25,23 @@ function DrySim({ open, onClose, onActiveStep, runKey, document, plan, deployVie
   if (!open) return null;
 
   return (
-    <div className="drysim">
-      <div className="drysim__head">
+    <div className="deploy-plan">
+      <div className="deploy-plan__head">
         <div>
-          <div className="drysim__title"><span className="accent">{traceState.eyebrow}</span> · {traceState.title}</div>
-          <div className="drysim__sub">{traceState.subtitle}</div>
+          <div className="deploy-plan__title"><span className="accent">{traceState.eyebrow}</span> · {traceState.title}</div>
+          <div className="deploy-plan__sub">{traceState.subtitle}</div>
         </div>
         <div className="row">
           <button className="btn btn--sm" onClick={() => setIdx(0)}>{traceState.firstLabel}</button>
           <button className="btn btn--ghost btn--sm" onClick={onClose}>{traceState.closeLabel}</button>
         </div>
       </div>
-      <div className="drysim__body" ref={bodyRef}>
+      <div className="deploy-plan__body" ref={bodyRef}>
         {traceState.steps.map((s, i) => (
           <div
             key={i}
             data-step={i}
-            className={"drysim__step" + (i === idx ? " is-current" : "") + (i > idx ? " is-pending" : "")}
+            className={"deploy-plan__step" + (i === idx ? " is-current" : "") + (i > idx ? " is-pending" : "")}
           >
             <div className="g" />
             <div>
@@ -51,7 +51,7 @@ function DrySim({ open, onClose, onActiveStep, runKey, document, plan, deployVie
           </div>
         ))}
       </div>
-      <div className="drysim__foot">
+      <div className="deploy-plan__foot">
         <div className="row row--between" style={{ width: "100%" }}>
           <span className="muted">{traceState.packLabel ? `${traceState.packLabel} · ` : ""}{traceState.stepLabel} {idx + 1} / {traceState.steps.length}</span>
           <div className="row">
@@ -190,7 +190,7 @@ function InlineSourceEditor({ open, onClose, state, busy = false, surface = "bas
   );
 }
 
-window.DrySim = DrySim;
+window.DeployPlanTrace = DeployPlanTrace;
 window.ValidateSheet = ValidateSheet;
 window.SourceDrawer = SourceDrawer;
 window.InlineSourceEditor = InlineSourceEditor;
