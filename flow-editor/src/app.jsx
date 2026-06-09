@@ -294,6 +294,7 @@ function App() {
       toolCatalog: catalogs.toolCatalog,
       contractLoaded: !!catalogs.contractMeta.loaded,
     });
+    if (result.changed && !hydratingDocumentRef.current) markDraft();
     if (result.members !== studio.members) studio.setMembers(result.members);
     if (result.deploySettings !== deploySettings) setDeploySettings(result.deploySettings);
     if (result.flow !== flow) setFlow(result.flow);
@@ -313,6 +314,7 @@ function App() {
     catalogs.models,
     catalogs.toolCatalog,
     catalogs.contractMeta.loaded,
+    markDraft,
   ]);
 
   const selectInstance = (id) => setSelection({ kind: "instance", id });

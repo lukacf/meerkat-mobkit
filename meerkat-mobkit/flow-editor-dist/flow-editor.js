@@ -2973,13 +2973,20 @@ window.MOBKIT_BOOT = {
       previousMembers: members,
       members: nextMembers,
     });
+    const nextMobSettings = reconcileMobSettingsWithContract(authoring.mobSettings, contract);
     return {
       members: nextMembers,
       deploySettings: nextDeploySettings,
       flow: authoring.flow,
       instances: authoring.instances,
       edges: authoring.edges,
-      mobSettings: reconcileMobSettingsWithContract(authoring.mobSettings, contract),
+      mobSettings: nextMobSettings,
+      changed: nextMembers !== members
+        || nextDeploySettings !== deploySettings
+        || authoring.flow !== flow
+        || authoring.instances !== instances
+        || authoring.edges !== edges
+        || nextMobSettings !== mobSettings,
     };
   }
 
@@ -13646,6 +13653,7 @@ function App() {
       toolCatalog: catalogs.toolCatalog,
       contractLoaded: !!catalogs.contractMeta.loaded
     });
+    if (result.changed && !hydratingDocumentRef.current) markDraft();
     if (result.members !== studio.members) studio.setMembers(result.members);
     if (result.deploySettings !== deploySettings) setDeploySettings(result.deploySettings);
     if (result.flow !== flow) setFlow(result.flow);
@@ -13664,7 +13672,8 @@ function App() {
     contract,
     catalogs.models,
     catalogs.toolCatalog,
-    catalogs.contractMeta.loaded
+    catalogs.contractMeta.loaded,
+    markDraft
   ]);
   const selectInstance = (id) => setSelection({ kind: "instance", id });
   const selectEdge = (id) => setSelection({ kind: "edge", id });

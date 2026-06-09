@@ -3646,6 +3646,35 @@ assert.deepEqual(aggregateContractReconcile.instances[0].allowedTools, ["shell"]
 assert.deepEqual(aggregateContractReconcile.instances[0].blockedTools, []);
 assert.equal(aggregateContractReconcile.mobSettings.backendDefault, "");
 assert.equal(aggregateContractReconcile.mobSettings.orchestrator, "worker");
+assert.equal(aggregateContractReconcile.changed, true);
+
+const stableAggregateContractReconcile = controller.reconcileAuthoringWithContract({
+  contractLoaded: true,
+  contract: {
+    deploy_settings: {
+      command: "rkat mob deploy",
+      surfaces: ["cli"],
+      trust_policies: ["permissive"],
+      realm_backends: ["sqlite"],
+    },
+    mob_definition: {
+      runtime_modes: ["turn_driven"],
+      profile_binding: ["inline"],
+      profile_backends: ["session"],
+    },
+  },
+  modelCatalog: [{ id: "gpt-5.5", label: "GPT-5.5" }],
+  toolCatalog: [{ id: "shell", label: "Shell" }],
+  skillRealms: [{ id: "main", skills: [{ id: "mob.review" }] }],
+  schemas: [{ id: "ReviewArtifact", fields: [] }],
+  deploySettings: aggregateContractReconcile.deploySettings,
+  members: aggregateContractReconcile.members,
+  mobSettings: aggregateContractReconcile.mobSettings,
+  flow: aggregateContractReconcile.flow,
+  instances: aggregateContractReconcile.instances,
+  edges: aggregateContractReconcile.edges,
+});
+assert.equal(stableAggregateContractReconcile.changed, false);
 
 const launchSourceFlow = controller.reconcileFlowLaunchSources({
   name: "launch-source-proof",

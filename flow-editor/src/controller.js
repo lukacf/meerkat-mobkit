@@ -2940,13 +2940,20 @@
       previousMembers: members,
       members: nextMembers,
     });
+    const nextMobSettings = reconcileMobSettingsWithContract(authoring.mobSettings, contract);
     return {
       members: nextMembers,
       deploySettings: nextDeploySettings,
       flow: authoring.flow,
       instances: authoring.instances,
       edges: authoring.edges,
-      mobSettings: reconcileMobSettingsWithContract(authoring.mobSettings, contract),
+      mobSettings: nextMobSettings,
+      changed: nextMembers !== members
+        || nextDeploySettings !== deploySettings
+        || authoring.flow !== flow
+        || authoring.instances !== instances
+        || authoring.edges !== edges
+        || nextMobSettings !== mobSettings,
     };
   }
 
