@@ -95,6 +95,8 @@ assert(!/replaceArray\(MOBKIT_DATA\.(models|toolCatalog|agentDefinitions|profile
 assert.match(app, /<BuilderView[\s\S]*toolCatalog=\{catalogs\.toolCatalog\}/, "app shell must inject MobKit tool catalog into Basic editor");
 assert.match(app, /<BuilderView[\s\S]*conditionView=\{catalogs\.conditionView\}/, "app shell must inject schema-backed shared condition view into Basic editor");
 assert.match(app, /<AgentsView[\s\S]*agentDefinitions=\{catalogs\.agentDefinitions\}/, "app shell must inject MobKit agent definitions into Agent editor");
+assert.match(controller, /agentDefinitionsFromSchema[\s\S]*sourceMobpack:[\s\S]*template\.sourceMobpack \|\| template\.source_mobpack[\s\S]*sourceOrigin:[\s\S]*template\.sourceOrigin \|\| template\.source_origin/, "Agent Editor definitions must preserve MobKit source mobpack and source-origin provenance");
+assert.match(controller, /memberFromAgentDefinition[\s\S]*sourceMobpack contract[\s\S]*sourceOrigin contract/, "Agent Editor add flow must reject profile-member definitions without MobKit source provenance");
 assert.match(app, /<GraphEditor[\s\S]*grid=\{catalogs\.grid\}/, "app shell must inject layout data into Graph editor");
 assert.match(app, /<GraphEditor[\s\S]*contract=\{contract\}/, "app shell must inject the MobKit graph contract into Graph editor");
 assert.match(app, /<GraphEditor[\s\S]*graphView=\{catalogs\.graphView\}/, "app shell must inject schema-backed Graph canvas view state");

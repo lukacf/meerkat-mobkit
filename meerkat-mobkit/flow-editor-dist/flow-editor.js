@@ -9913,7 +9913,9 @@ window.MOBKIT_BOOT = {
     return definitions
       .filter((template) => template && typeof template === "object")
       .filter((template) => String(template.definitionType || template.definition_type || "") === "mobkit/profile-member")
-      .filter((template) => String(template.source || template.source_mobpack || template.sourceMobpack || "").trim())
+      .filter((template) => String(template.source || "").trim())
+      .filter((template) => String(template.sourceMobpack || template.source_mobpack || "").trim())
+      .filter((template) => String(template.sourceOrigin || template.source_origin || "").trim())
       .filter((template) => String(template.profileBinding || template.profile_binding || "").trim())
       .filter((template) => String(template.runtimeMode || template.runtime_mode || "").trim())
       .filter((template) => String(template.model || "").trim())
@@ -9944,6 +9946,7 @@ window.MOBKIT_BOOT = {
           definitionType: String(template.definitionType || template.definition_type),
           source: template.source || "",
           sourceMobpack: template.sourceMobpack || template.source_mobpack || "",
+          sourceOrigin: template.sourceOrigin || template.source_origin || "",
           sourceDocumentPath: template.sourceDocumentPath || template.source_document_path || "",
         };
       })
@@ -9995,6 +9998,12 @@ window.MOBKIT_BOOT = {
     }
     if (!String(source.source || source.sourceMobpack || "").trim()) {
       throw new Error("MobKit agent definition is missing its source contract.");
+    }
+    if (!String(source.sourceMobpack || "").trim()) {
+      throw new Error("MobKit agent definition is missing its sourceMobpack contract.");
+    }
+    if (!String(source.sourceOrigin || "").trim()) {
+      throw new Error("MobKit agent definition is missing its sourceOrigin contract.");
     }
     if (!String(source.id || "").trim()) {
       throw new Error("MobKit agent definition is missing its id contract.");

@@ -993,7 +993,9 @@ const separateCatalogPayloadState = controller.mobKitCatalogsFromSchema({
     name: "Reviewer",
     role: "reviewer",
     definitionType: "mobkit/profile-member",
-    source: "mobkit/sample-mobpack",
+    source: "mobkit/mobpack-profile-member",
+    sourceMobpack: "sample_review_pr",
+    sourceOrigin: "mobkit/sample-mobpack",
     model: "gpt-5.5",
     profileBinding: "inline",
     runtimeMode: "turn_driven",
@@ -1456,7 +1458,9 @@ const hydratedContractAndCatalogFixture = {
     name: "Reviewer",
     role: "reviewer",
     definitionType: "mobkit/profile-member",
-    source: "mobkit/sample-mobpack",
+    source: "mobkit/mobpack-profile-member",
+    sourceMobpack: "sample_review_pr",
+    sourceOrigin: "mobkit/sample-mobpack",
     model: "gpt-5.5",
     profileBinding: "inline",
     runtimeMode: "turn_driven",
@@ -3794,6 +3798,7 @@ const [agentDefinition] = controller.agentDefinitionsFromSchema({
     definitionType: "mobkit/profile-member",
     source: "mobkit/mobpack-profile-member",
     sourceMobpack: "sample_review_pr",
+    sourceOrigin: "mobkit/sample-mobpack",
     sourceDocumentPath: "document.members[]",
     profileBinding: "inline",
     runtimeMode: "turn_driven",
@@ -3807,6 +3812,8 @@ const [agentDefinition] = controller.agentDefinitionsFromSchema({
   }],
 });
 assert.equal(agentDefinition.backend, "sidecar");
+assert.equal(agentDefinition.sourceMobpack, "sample_review_pr");
+assert.equal(agentDefinition.sourceOrigin, "mobkit/sample-mobpack");
 
 assert.deepEqual(controller.agentDefinitionsFromSchema({
   members: [{
@@ -3814,6 +3821,21 @@ assert.deepEqual(controller.agentDefinitionsFromSchema({
     role: "legacy",
     name: "Legacy",
     model: "gpt-5.5",
+  }],
+}), []);
+
+assert.deepEqual(controller.agentDefinitionsFromSchema({
+  agent_definitions: [{
+    id: "origin_less",
+    role: "origin_less",
+    name: "Origin Less",
+    model: "gpt-5.5",
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/mobpack-profile-member",
+    sourceMobpack: "sample_origin_less",
+    sourceDocumentPath: "document.members[]",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
   }],
 }), []);
 
@@ -3903,6 +3925,8 @@ assert.throws(
   () => controller.memberFromAgentDefinition({
     definitionType: "mobkit/profile-member",
     source: "mobkit/mobpack-profile-member",
+    sourceMobpack: "sample_partial",
+    sourceOrigin: "mobkit/sample-mobpack",
     id: "partial",
     role: "partial",
     name: "Partial",
@@ -3913,6 +3937,8 @@ assert.throws(
   () => controller.memberFromAgentDefinition({
     definitionType: "mobkit/profile-member",
     source: "mobkit/mobpack-profile-member",
+    sourceMobpack: "sample_partial",
+    sourceOrigin: "mobkit/sample-mobpack",
     id: "model_less",
     role: "model_less",
     name: "Model Less",
@@ -3925,6 +3951,8 @@ assert.throws(
   () => controller.memberFromAgentDefinition({
     definitionType: "mobkit/profile-member",
     source: "mobkit/mobpack-profile-member",
+    sourceMobpack: "sample_missing_id",
+    sourceOrigin: "mobkit/sample-mobpack",
     role: "missing_id",
     name: "Missing Id",
     model: "gpt-5.5",
@@ -3937,6 +3965,8 @@ assert.throws(
   () => controller.memberFromAgentDefinition({
     definitionType: "mobkit/profile-member",
     source: "mobkit/mobpack-profile-member",
+    sourceMobpack: "sample_missing_role",
+    sourceOrigin: "mobkit/sample-mobpack",
     id: "missing_role",
     name: "Missing Role",
     model: "gpt-5.5",
@@ -3949,6 +3979,8 @@ assert.throws(
   () => controller.memberFromAgentDefinition({
     definitionType: "mobkit/profile-member",
     source: "mobkit/mobpack-profile-member",
+    sourceMobpack: "sample_missing_name",
+    sourceOrigin: "mobkit/sample-mobpack",
     id: "missing_name",
     role: "missing_name",
     model: "gpt-5.5",
