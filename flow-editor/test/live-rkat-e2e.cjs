@@ -1621,6 +1621,28 @@ async function validateGraphOperations(catalogs) {
     { id: "n_review", kind: "member", memberId: "reviewer", col: 1, row: 0 },
   ];
   document.edges = [];
+  const semanticMember = await rpc("mobkit/mobpacks/apply_operation", {
+    document,
+    operation: {
+      type: "insert_graph_node",
+      pick: { kind: "memberInstance", memberId: "planner" },
+      cell: { col: 3, row: 4 },
+    },
+  });
+  if (semanticMember.selection?.id !== "i_planner" || semanticMember.document.instances[2]?.launchMode?.kind !== "Fresh") {
+    throw new Error(`semantic graph member insert did not use MobKit defaults: ${JSON.stringify(semanticMember.document.instances)}`);
+  }
+  const semanticBranch = await rpc("mobkit/mobpacks/apply_operation", {
+    document,
+    operation: {
+      type: "insert_graph_node",
+      pick: { kind: "gate", gateKind: "branch" },
+      cell: { col: 0, row: 0 },
+    },
+  });
+  if (semanticBranch.selection?.id !== "g_branch_1" || semanticBranch.document.edges[1]?.label !== "fallback") {
+    throw new Error(`semantic graph branch insert did not use MobKit graph draft: ${JSON.stringify(semanticBranch.document)}`);
+  }
   const inserted = await rpc("mobkit/mobpacks/apply_operation", {
     document,
     operation: {
@@ -1697,11 +1719,15 @@ async function validateGraphOperations(catalogs) {
   }
   return {
     inserted: inserted.selection.id,
+    semanticMember: semanticMember.selection.id,
+    semanticBranch: semanticBranch.selection.id,
     moved: { done: doneAfterMove.col, reviewer: reviewerAfterMove.col },
     updatedLane: updated.document.instances.find((instance) => instance.id === "n_done")?.lane,
     edgeLabel: edgeUpdated.document.edges[0]?.label,
     remainingInstances: deleted.document.instances.map((instance) => instance.id),
     operations: [
+      semanticMember.operation,
+      semanticBranch.operation,
       inserted.operation,
       moved.operation,
       updated.operation,

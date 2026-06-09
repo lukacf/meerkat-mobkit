@@ -14904,35 +14904,16 @@ function App() {
   };
   const handlePick = (pick) => {
     if (!addAt) return;
-    const inserted = window.MobKitFlowController.graphQuickInsertProjection({
-      pick,
-      at: addAt,
-      members: studio.members,
-      instances: studio.instances,
-      edges: studio.edges,
-      flow,
-      contract,
-      graphView: catalogs.graphView
+    const nextMenu = window.MobKitFlowController.graphAddMenuCloseProjection();
+    applyMobKitAuthoringReplacement({
+      operationType: "insert_graph_node",
+      operation: { pick, cell: addAt }
+    }).then((result) => {
+      const id = result?.selection?.id;
+      if (id) selectInstance(id);
+    }).catch(() => {
     });
-    if (inserted.ok) {
-      applyMobKitAuthoringReplacement({
-        operationType: "insert_graph_node",
-        operation: {
-          instances: inserted.instances,
-          edges: inserted.edges,
-          flow: inserted.flow
-        },
-        flow: inserted.flow,
-        studio: {
-          instances: inserted.instances,
-          edges: inserted.edges
-        },
-        selection: inserted.selectId ? { kind: "instance", id: inserted.selectId } : null
-      }).then(() => {
-        if (inserted.selectId) selectInstance(inserted.selectId);
-      });
-    }
-    setAddAt(inserted.addAt);
+    setAddAt(nextMenu.addAt);
   };
   const handleAgentNavigation = (id) => {
     const next = window.MobKitFlowController.agentNavigationProjection(id);

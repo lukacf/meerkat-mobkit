@@ -1070,7 +1070,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "insert_graph_node",
             "plane": "graph",
             "authority": "mobkit",
-            "requires": ["instance_or_instances"],
+            "requires": ["pick_or_instance"],
             "mutates": ["document.instances", "document.edges", "document.frames", "document.flow"],
             "projection_document_supported": true
         },
@@ -5912,6 +5912,321 @@ fn validate_graph_edge(
     Ok(id)
 }
 
+fn graph_edge_ids(edges: &[Value]) -> BTreeSet<String> {
+    edges
+        .iter()
+        .filter_map(|edge| edge.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn unique_graph_instance_id(prefix: &str, instances: &[Value]) -> String {
+    let stem = sanitize_identifier(prefix);
+    let base = if stem.starts_with("i_") {
+        stem
+    } else {
+        format!("i_{stem}")
+    };
+    let used = graph_instance_ids(instances);
+    if !used.contains(&base) {
+        return base;
+    }
+    let mut index = 2;
+    loop {
+        let id = format!("{base}_{index}");
+        if !used.contains(&id) {
+            return id;
+        }
+        index += 1;
+    }
+}
+
+fn graph_operation_cell(operation: &serde_json::Map<String, Value>) -> Result<(i64, i64), String> {
+    let cell = operation
+        .get("cell")
+        .or_else(|| operation.get("at"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| "insert_graph_node semantic pick requires cell".to_string())?;
+    let col = cell
+        .get("col")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "insert_graph_node cell.col is required".to_string())?;
+    let row = cell
+        .get("row")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "insert_graph_node cell.row is required".to_string())?;
+    Ok((col, row))
+}
+
+fn graph_cell_occupied(instances: &[Value], col: i64, row: i64) -> bool {
+    instances.iter().any(|instance| {
+        instance.get("col").and_then(Value::as_i64) == Some(col)
+            && instance.get("row").and_then(Value::as_i64) == Some(row)
+    })
+}
+
+fn allocate_graph_control_cells(instances: &[Value], col: i64, row: i64) -> [(i64, i64); 4] {
+    for candidate_row in row..(row + 24) {
+        let cells = [
+            (col, candidate_row),
+            (col + 1, candidate_row),
+            (col + 1, candidate_row + 1),
+            (col + 2, candidate_row),
+        ];
+        if cells
+            .iter()
+            .all(|(cell_col, cell_row)| !graph_cell_occupied(instances, *cell_col, *cell_row))
+        {
+            return cells;
+        }
+    }
+    [
+        (col, row),
+        (col + 1, row),
+        (col + 1, row + 1),
+        (col + 2, row),
+    ]
+}
+
+fn unique_graph_control_suffix(kind: &str, instances: &[Value], edges: &[Value]) -> String {
+    let prefix = if kind == "branch" {
+        "branch"
+    } else {
+        "parallel"
+    };
+    let instance_ids = graph_instance_ids(instances);
+    let edge_ids = graph_edge_ids(edges);
+    let mut index = 1;
+    loop {
+        let suffix = index.to_string();
+        let gate_id = format!("g_{prefix}_{suffix}");
+        let left_id = format!("{gate_id}_a");
+        let right_id = format!("{gate_id}_b");
+        let join_id = format!("j_{prefix}_{suffix}");
+        let proposed_edge_ids = [
+            format!("e_{gate_id}_{left_id}"),
+            format!("e_{gate_id}_{right_id}"),
+            format!("e_{left_id}_{join_id}"),
+            format!("e_{right_id}_{join_id}"),
+        ];
+        if [&gate_id, &left_id, &right_id, &join_id]
+            .iter()
+            .all(|id| !instance_ids.contains(*id))
+            && proposed_edge_ids.iter().all(|id| !edge_ids.contains(id))
+        {
+            return suffix;
+        }
+        index += 1;
+    }
+}
+
+fn mob_definition_default(name: &str) -> String {
+    mobpack_schema_response()["mob_definition"]["defaults"][name]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn graph_draft_value(name: &str) -> Value {
+    mobpack_schema_response()["mob_definition"]["editor_graph_draft"][name].clone()
+}
+
+fn graph_draft_string(name: &str) -> String {
+    graph_draft_value(name)
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn graph_draft_lane_label(index: usize) -> String {
+    graph_draft_value("parallel_lane_labels")
+        .as_array()
+        .and_then(|items| items.get(index))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn graph_launch_mode_default() -> String {
+    match mob_definition_default("launch_mode").as_str() {
+        "fresh" | "Fresh" => "Fresh".to_string(),
+        "resume" | "Resume" => "Resume".to_string(),
+        "fork" | "Fork" => "Fork".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn graph_quick_insert_from_pick(
+    document: &MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<(Vec<Value>, Vec<Value>, String), String> {
+    let pick = operation
+        .get("pick")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "insert_graph_node semantic insert requires pick".to_string())?;
+    let kind = pick
+        .get("kind")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "insert_graph_node pick.kind is required".to_string())?;
+    let (col, row) = graph_operation_cell(operation)?;
+    let instances = document
+        .instances
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let edges = document.edges.as_array().map(Vec::as_slice).unwrap_or(&[]);
+    if kind == "memberInstance" || kind == "member" {
+        let member_id = pick
+            .get("memberId")
+            .or_else(|| pick.get("member_id"))
+            .or_else(|| pick.get("id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "insert_graph_node member pick requires memberId".to_string())?;
+        if !graph_member_ids(&document.members).contains(member_id) {
+            return Err(format!(
+                "member graph node must reference an existing member: {member_id}"
+            ));
+        }
+        let instance = json!({
+            "id": unique_graph_instance_id(&format!("i_{member_id}"), instances),
+            "memberId": member_id,
+            "col": col,
+            "row": row,
+            "launchMode": { "kind": graph_launch_mode_default() },
+            "lane": "",
+        });
+        let id = instance["id"].as_str().unwrap_or_default().to_string();
+        return Ok((vec![instance], Vec::new(), id));
+    }
+    if kind != "gate" {
+        return Err(format!("unsupported insert_graph_node pick.kind: {kind}"));
+    }
+    let gate_kind = pick
+        .get("gateKind")
+        .or_else(|| pick.get("gate_kind"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "insert_graph_node gate pick requires gateKind".to_string())?;
+    if gate_kind != "branch" && gate_kind != "fork" {
+        return Err(format!(
+            "unsupported insert_graph_node gateKind: {gate_kind}"
+        ));
+    }
+    let members = document
+        .members
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let first_member = members
+        .first()
+        .and_then(|member| member.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "insert_graph_node gate pick requires at least one member".to_string())?;
+    let second_member = members
+        .get(1)
+        .and_then(|member| member.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(first_member);
+    let is_branch = gate_kind == "branch";
+    let suffix = unique_graph_control_suffix(gate_kind, instances, edges);
+    let gate_id = if is_branch {
+        format!("g_branch_{suffix}")
+    } else {
+        format!("g_parallel_{suffix}")
+    };
+    let left_id = format!("{gate_id}_a");
+    let right_id = format!("{gate_id}_b");
+    let join_id = if is_branch {
+        format!("j_branch_{suffix}")
+    } else {
+        format!("j_parallel_{suffix}")
+    };
+    let [
+        (gate_col, gate_row),
+        (left_col, left_row),
+        (right_col, right_row),
+        (join_col, join_row),
+    ] = allocate_graph_control_cells(instances, col, row);
+    let launch_kind = graph_launch_mode_default();
+    let next_edge_kind = mob_definition_default("graph_edge_kind");
+    let collection = if is_branch {
+        "any".to_string()
+    } else {
+        mob_definition_default("collection_policy")
+    };
+    let dispatch = if is_branch {
+        String::new()
+    } else {
+        mob_definition_default("dispatch_mode")
+    };
+    let mut gate = json!({
+        "id": gate_id,
+        "isGate": true,
+        "gateKind": gate_kind,
+        "label": if is_branch { graph_draft_string("branch_gate_label") } else { dispatch.clone() },
+        "col": gate_col,
+        "row": gate_row,
+    });
+    if !is_branch {
+        gate["dispatch"] = Value::String(dispatch);
+    }
+    let instances_out = vec![
+        gate,
+        json!({
+            "id": left_id,
+            "memberId": first_member,
+            "col": left_col,
+            "row": left_row,
+            "lane": if is_branch { graph_draft_string("branch_condition_lane_label") } else { graph_draft_lane_label(0) },
+            "launchMode": { "kind": launch_kind },
+        }),
+        json!({
+            "id": right_id,
+            "memberId": second_member,
+            "col": right_col,
+            "row": right_row,
+            "lane": if is_branch { graph_draft_string("branch_fallback_lane_label") } else { graph_draft_lane_label(1) },
+            "launchMode": { "kind": launch_kind },
+        }),
+        json!({
+            "id": join_id,
+            "isGate": true,
+            "gateKind": "join",
+            "label": if is_branch { graph_draft_string("branch_join_label") } else { format!("{}{}", graph_draft_string("join_label_prefix"), collection) },
+            "collection": collection,
+            "controllerRole": if is_branch { first_member } else { "" },
+            "col": join_col,
+            "row": join_row,
+        }),
+    ];
+    let edges_out = if is_branch {
+        vec![
+            json!({ "id": format!("e_{gate_id}_{left_id}"), "from": gate_id, "to": left_id, "kind": mob_definition_default("graph_condition_edge_kind"), "label": "", "cond": Value::Null }),
+            json!({ "id": format!("e_{gate_id}_{right_id}"), "from": gate_id, "to": right_id, "kind": next_edge_kind, "label": graph_draft_string("fallback_edge_label") }),
+            json!({ "id": format!("e_{left_id}_{join_id}"), "from": left_id, "to": join_id, "kind": next_edge_kind, "label": "" }),
+            json!({ "id": format!("e_{right_id}_{join_id}"), "from": right_id, "to": join_id, "kind": next_edge_kind, "label": "" }),
+        ]
+    } else {
+        let fanout_edge_kind = mob_definition_default("graph_fanout_edge_kind");
+        vec![
+            json!({ "id": format!("e_{gate_id}_{left_id}"), "from": gate_id, "to": left_id, "kind": fanout_edge_kind, "label": "" }),
+            json!({ "id": format!("e_{gate_id}_{right_id}"), "from": gate_id, "to": right_id, "kind": fanout_edge_kind, "label": "" }),
+            json!({ "id": format!("e_{left_id}_{join_id}"), "from": left_id, "to": join_id, "kind": next_edge_kind, "label": "" }),
+            json!({ "id": format!("e_{right_id}_{join_id}"), "from": right_id, "to": join_id, "kind": next_edge_kind, "label": "" }),
+        ]
+    };
+    Ok((instances_out, edges_out, gate_id))
+}
+
 fn apply_graph_operation_sections(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
@@ -5937,10 +6252,19 @@ fn apply_insert_graph_node_operation(
     if operation.get("document").is_some()
         && operation.get("instance").is_none()
         && operation.get("instances").is_none()
+        && operation.get("pick").is_none()
     {
         return apply_projected_authoring_document_operation(document, operation);
     }
     let mut incoming_instances = Vec::new();
+    let mut incoming_edges = Vec::new();
+    let mut semantic_selection = None;
+    if operation.get("pick").is_some() {
+        let (instances, edges, selection) = graph_quick_insert_from_pick(document, operation)?;
+        incoming_instances.extend(instances);
+        incoming_edges.extend(edges);
+        semantic_selection = Some(selection);
+    }
     if let Some(instance) = operation.get("instance") {
         incoming_instances.push(instance.clone());
     }
@@ -5987,8 +6311,17 @@ fn apply_insert_graph_node_operation(
         .map(ToString::to_string)
         .or_else(|| inserted_ids.first().cloned())
         .unwrap_or_default();
-    document.instances = Value::Array(instances);
+    document.instances = Value::Array(instances.clone());
+    if !incoming_edges.is_empty() {
+        let mut edges = document.edges.as_array().cloned().unwrap_or_else(Vec::new);
+        for edge in incoming_edges {
+            validate_graph_edge(&edge, &edges, &instances, None)?;
+            edges.push(edge);
+        }
+        document.edges = Value::Array(edges);
+    }
     apply_graph_operation_sections(document, operation, &["flow", "edges", "frames"]);
+    let selected_id = semantic_selection.unwrap_or(selected_id);
     Ok(json!({ "kind": "instance", "id": selected_id, "inserted_ids": inserted_ids }))
 }
 
@@ -22757,6 +23090,53 @@ model = "gpt-5.5"
             { "id": "n_review", "memberId": "reviewer", "kind": "member", "col": 1, "row": 0 }
         ]);
         document.edges = json!([]);
+
+        let semantic_member = apply_mobpack_authoring_operation(&json!({
+            "document": document.clone(),
+            "operation": {
+                "type": "insert_graph_node",
+                "pick": { "kind": "memberInstance", "memberId": "planner" },
+                "cell": { "col": 3, "row": 4 }
+            }
+        }))
+        .expect("insert graph member from semantic pick");
+        assert_eq!(semantic_member["selection"]["id"], json!("i_planner"));
+        assert_eq!(
+            semantic_member["document"]["instances"][2],
+            json!({
+                "id": "i_planner",
+                "memberId": "planner",
+                "col": 3,
+                "row": 4,
+                "launchMode": { "kind": "Fresh" },
+                "lane": ""
+            })
+        );
+
+        let semantic_branch = apply_mobpack_authoring_operation(&json!({
+            "document": document.clone(),
+            "operation": {
+                "type": "insert_graph_node",
+                "pick": { "kind": "gate", "gateKind": "branch" },
+                "cell": { "col": 0, "row": 0 }
+            }
+        }))
+        .expect("insert graph branch from semantic pick");
+        assert_eq!(semantic_branch["selection"]["id"], json!("g_branch_1"));
+        assert_eq!(
+            semantic_branch["document"]["instances"]
+                .as_array()
+                .expect("instances")
+                .iter()
+                .skip(2)
+                .map(|instance| instance["id"].as_str().unwrap_or_default().to_string())
+                .collect::<Vec<_>>(),
+            vec!["g_branch_1", "g_branch_1_a", "g_branch_1_b", "j_branch_1"]
+        );
+        assert_eq!(
+            semantic_branch["document"]["edges"][1]["label"],
+            json!("fallback")
+        );
 
         let inserted = apply_mobpack_authoring_operation(&json!({
             "document": document,
