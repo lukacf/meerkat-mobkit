@@ -143,7 +143,7 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
               <div className="row" style={{ marginTop: 8 }}>
                 <input className="field__input field__input--num" type="number" min="1"
                   value={inst.quorum?.n || gateState.incoming.length || 1}
-                  onChange={e => change("set_join_quorum", { n: Number(e.target.value) || 1 })} />
+                  onChange={e => change("set_join_quorum", { n: e.target.value })} />
                 <span className="kv__hint">{gateState.quorumIncomingLabel}</span>
               </div>
             )}
@@ -374,7 +374,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
           {launchState.budgetSplitPolicy.kind === "Fixed" && (
             <div className="field">
               <label className="field__label">{launchState.fixedBudgetLabel}</label>
-              <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => studio.editInstance(inst.id, "set_launch_budget_limit", { limit: Number(e.target.value) || 1 })} />
+              <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => studio.editInstance(inst.id, "set_launch_budget_limit", { limit: e.target.value })} />
             </div>
           )}
         </div>

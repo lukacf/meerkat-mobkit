@@ -6126,29 +6126,53 @@ fn normalize_flow_step_update_patch(
 }
 
 fn positive_integer_or_null(value: &Value, key: &str) -> Result<Value, String> {
+    Ok(
+        parse_positive_integer_value(value, key, "update_flow_step")?
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    )
+}
+
+fn parse_positive_integer_value(
+    value: &Value,
+    key: &str,
+    context: &str,
+) -> Result<Option<u64>, String> {
     if value.is_null() {
-        return Ok(Value::Null);
+        return Ok(None);
     }
     if let Some(text) = value.as_str() {
         let trimmed = text.trim();
         if trimmed.is_empty() {
-            return Ok(Value::Null);
+            return Ok(None);
         }
         let parsed = trimmed
             .parse::<u64>()
-            .map_err(|_| format!("update_flow_step {key} must be a positive integer"))?;
+            .map_err(|_| format!("{context} {key} must be a positive integer"))?;
         if parsed == 0 {
-            return Err(format!("update_flow_step {key} must be positive"));
+            return Err(format!("{context} {key} must be positive"));
         }
-        return Ok(json!(parsed));
+        return Ok(Some(parsed));
     }
     if let Some(number) = value.as_u64() {
         if number == 0 {
-            return Err(format!("update_flow_step {key} must be positive"));
+            return Err(format!("{context} {key} must be positive"));
         }
-        return Ok(json!(number));
+        return Ok(Some(number));
     }
-    Err(format!("update_flow_step {key} must be a positive integer"))
+    Err(format!("{context} {key} must be a positive integer"))
+}
+
+fn positive_integer_or_default(
+    value: Option<&Value>,
+    key: &str,
+    default: u64,
+    context: &str,
+) -> Result<u64, String> {
+    value
+        .map(|candidate| parse_positive_integer_value(candidate, key, context))
+        .transpose()
+        .map(|parsed| parsed.flatten().unwrap_or(default))
 }
 
 fn allowed_flow_option_value(
@@ -6800,12 +6824,12 @@ fn apply_flow_step_edit_operation(
                 object.insert("launchMode".to_string(), Value::Object(launch_mode));
             }
             "set_launch_budget_limit" => {
-                let limit = operation
-                    .get("limit")
-                    .or_else(|| operation.get("value"))
-                    .and_then(Value::as_i64)
-                    .unwrap_or(4096)
-                    .max(1);
+                let limit = positive_integer_or_default(
+                    operation.get("limit").or_else(|| operation.get("value")),
+                    "limit",
+                    4096,
+                    "set_launch_budget_limit",
+                )?;
                 launch_mode.insert(
                     "budgetSplitPolicy".to_string(),
                     json!({ "kind": "Fixed", "limit": limit }),
@@ -8465,12 +8489,12 @@ fn apply_graph_node_edit_operation(
                 );
             }
             "set_join_quorum" => {
-                let n = operation
-                    .get("n")
-                    .or_else(|| operation.get("value"))
-                    .and_then(Value::as_i64)
-                    .unwrap_or(1)
-                    .max(1);
+                let n = positive_integer_or_default(
+                    operation.get("n").or_else(|| operation.get("value")),
+                    "n",
+                    1,
+                    "set_join_quorum",
+                )?;
                 let incoming_count = document
                     .edges
                     .as_array()
@@ -8612,12 +8636,12 @@ fn apply_graph_node_edit_operation(
                 object.insert("launchMode".to_string(), Value::Object(launch_mode));
             }
             "set_launch_budget_limit" => {
-                let limit = operation
-                    .get("limit")
-                    .or_else(|| operation.get("value"))
-                    .and_then(Value::as_i64)
-                    .unwrap_or(4096)
-                    .max(1);
+                let limit = positive_integer_or_default(
+                    operation.get("limit").or_else(|| operation.get("value")),
+                    "limit",
+                    4096,
+                    "set_launch_budget_limit",
+                )?;
                 launch_mode.insert(
                     "budgetSplitPolicy".to_string(),
                     json!({ "kind": "Fixed", "limit": limit }),
@@ -26416,9 +26440,23 @@ model = "gpt-5.5"
             launch_edited["document"]["flow"]["steps"][2]["launchMode"]["from"],
             json!("plan")
         );
+        let launch_budget_edited = apply_mobpack_authoring_operation(&json!({
+            "document": launch_edited["document"],
+            "operation": {
+                "type": "apply_flow_step_edit",
+                "step_id": "review",
+                "action": "set_launch_budget_limit",
+                "limit": "3072"
+            }
+        }))
+        .expect("semantic flow step launch budget edit accepts string numeric input");
+        assert_eq!(
+            launch_budget_edited["document"]["flow"]["steps"][2]["launchMode"]["budgetSplitPolicy"],
+            json!({ "kind": "Fixed", "limit": 3072 })
+        );
 
         let branch_condition_edited = apply_mobpack_authoring_operation(&json!({
-            "document": launch_edited["document"],
+            "document": launch_budget_edited["document"],
             "operation": {
                 "type": "apply_flow_step_edit",
                 "step_id": "route",
@@ -26585,6 +26623,20 @@ model = "gpt-5.5"
             semantic_branch["document"]["edges"][1]["label"],
             json!("fallback")
         );
+        let semantic_join_quorum = apply_mobpack_authoring_operation(&json!({
+            "document": semantic_branch["document"],
+            "operation": {
+                "type": "apply_graph_node_edit",
+                "instance_id": "j_branch_1",
+                "action": "set_join_quorum",
+                "n": "2"
+            }
+        }))
+        .expect("semantic graph join quorum edit accepts string numeric input");
+        assert_eq!(
+            semantic_join_quorum["document"]["instances"][5]["quorum"],
+            json!({ "n": 2, "m": 2 })
+        );
 
         let endpoint_connected = apply_mobpack_authoring_operation(&json!({
             "document": document.clone(),
@@ -26724,9 +26776,23 @@ model = "gpt-5.5"
             node_edited["document"]["instances"][1]["launchMode"]["from"],
             json!("n_plan")
         );
+        let node_budget_edited = apply_mobpack_authoring_operation(&json!({
+            "document": node_edited["document"],
+            "operation": {
+                "type": "apply_graph_node_edit",
+                "instance_id": "n_review",
+                "action": "set_launch_budget_limit",
+                "limit": "2048"
+            }
+        }))
+        .expect("semantic graph node launch budget edit accepts string numeric input");
+        assert_eq!(
+            node_budget_edited["document"]["instances"][1]["launchMode"]["budgetSplitPolicy"],
+            json!({ "kind": "Fixed", "limit": 2048 })
+        );
 
         let semantic_edge = apply_mobpack_authoring_operation(&json!({
-            "document": node_edited["document"],
+            "document": node_budget_edited["document"],
             "operation": {
                 "type": "apply_graph_edge_edit",
                 "edge_id": "e_n_plan_n_done",

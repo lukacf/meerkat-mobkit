@@ -762,7 +762,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, editStep,
       {launchState.selectedBudgetPolicy?.reason && <div className="bld-hint" style={{ color: "var(--warn)" }}>{launchState.selectedBudgetPolicy.reason}</div>}
       {launchState.budgetSplitPolicy.kind === "Fixed" && (
         <Field label={launchState.fixedBudgetLabel}>
-          <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => editStep(step.id, "set_launch_budget_limit", { limit: Number(e.target.value) || 1 })} />
+          <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => editStep(step.id, "set_launch_budget_limit", { limit: e.target.value })} />
         </Field>
       )}
       <Field label={memberStepState.instructionLabel}><textarea className="field__textarea" rows={4} placeholder={memberStepState.instructionPlaceholder} value={step.instruction || ""} onChange={e => editStep(step.id, "set_instruction", { value: e.target.value })} /></Field>

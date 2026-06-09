@@ -1240,6 +1240,7 @@ assert.match(builderMemberStepControlBlock, /editStep\(step\.id,\s*"set_launch_b
 assert.match(builderMemberStepControlBlock, /editStep\(step\.id,\s*"set_launch_budget_limit"/, "Basic editor fixed launch budget changes must use semantic MobKit flow-step edits");
 assert.match(inspectorInstanceBlock, /studio\.editInstance\(inst\.id,\s*"set_launch_budget_kind"/, "Graph inspector launch budget kind changes must use semantic MobKit graph node edits");
 assert.match(inspectorInstanceBlock, /studio\.editInstance\(inst\.id,\s*"set_launch_budget_limit"/, "Graph inspector fixed launch budget changes must use semantic MobKit graph node edits");
+assert.doesNotMatch(builderMemberStepControlBlock + "\n" + inspectorInstanceBlock + "\n" + inspectorGateBlock, /Number\(e\.target\.value\)\s*\|\|\s*1/, "Basic/Graph numeric semantic edits must pass raw UI values to MobKit authoring operations instead of normalizing in JSX");
 assert.match(builderMemberStepControlBlock, /memberStepState\.memberFieldLabel/, "Basic member-step member selector label must render through controller state");
 assert.match(builderMemberStepControlBlock, /memberStepState\.instructionLabel/, "Basic member-step instruction label must render through controller state");
 assert.match(builderMemberStepControlBlock, /memberStepState\.dispatchLabel/, "Basic member-step dispatch label must render through controller state");
