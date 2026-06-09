@@ -59,6 +59,7 @@ async function assertAuthoringCapabilities() {
     "mobkit/mobpacks/delete",
     "mobkit/mobpacks/apply_operation",
     "mobkit/mobpacks/graph_projection",
+    "mobkit/mobpacks/graph_to_flow",
     "mobkit/mobpacks/deploy_command",
     "mobkit/mobpacks/deploy",
   ];
