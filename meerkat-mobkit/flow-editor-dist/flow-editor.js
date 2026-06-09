@@ -14804,12 +14804,27 @@ function App() {
       return;
     }
     if (editorMode === "advanced") return;
-    if (!window.MobKitFlowController?.graphProjectionForFlow) return;
-    const { instances, edges, frames } = window.MobKitFlowController.graphProjectionForFlow(flow, studio.members, contract);
-    graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(instances, edges, { members: studio.members, contract });
-    studio.setInstances(instances);
-    studio.setEdges(edges);
-    studio.setFrames(frames || []);
+    if (!window.MobKitFlowController?.graphProjectionDocument) return;
+    let cancelled = false;
+    const projectionDocument = buildAuthoringProjection().document;
+    window.MobKitFlowController.graphProjectionDocument({
+      ...projectionDocument,
+      instances: [],
+      edges: [],
+      frames: []
+    }).then((projectionResult) => {
+      if (cancelled) return;
+      const projection = window.MobKitFlowController.graphProjectionFromMobKitResult(projectionResult);
+      if (!projection) return;
+      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: studio.members, contract });
+      studio.setInstances(projection.instances || []);
+      studio.setEdges(projection.edges || []);
+      studio.setFrames(projection.frames || []);
+    }).catch(() => {
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [flow, editorMode, contract, studio.members]);
   React.useEffect(() => {
     if (editorMode !== "advanced") return;
