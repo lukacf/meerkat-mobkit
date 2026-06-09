@@ -5652,6 +5652,59 @@ window.MOBKIT_BOOT = {
     return graphCellAt(grid, cx, cy);
   }
 
+  function graphCellCanvasRows({ grid, instances = [], hoverCell = null } = {}) {
+    const occupied = new Set();
+    for (const instance of Array.isArray(instances) ? instances : []) {
+      occupied.add(`${instance?.col}:${instance?.row}`);
+    }
+    const cols = Math.max(0, Number(grid?.cols || 0));
+    const rows = Math.max(0, Number(grid?.rows || 0));
+    const out = [];
+    for (let col = 0; col < cols; col++) {
+      for (let row = 0; row < rows; row++) {
+        const cellOccupied = occupied.has(`${col}:${row}`);
+        const hovered = Number(hoverCell?.col) === col && Number(hoverCell?.row) === row;
+        const { x, y } = graphCellXY(grid, col, row);
+        out.push({
+          key: `cell-${col}-${row}`,
+          col,
+          row,
+          occupied: cellOccupied,
+          addVisible: !cellOccupied,
+          className: "cell" + (cellOccupied ? " is-occupied" : "") + (hovered ? " is-hover" : ""),
+          style: { left: x, top: y, width: Number(grid?.cellW || 0), height: Number(grid?.cellH || 0) },
+        });
+      }
+    }
+    return out;
+  }
+
+  function graphGridHeaderCanvasRows({ grid } = {}) {
+    const cols = Math.max(0, Number(grid?.cols || 0));
+    const rows = Math.max(0, Number(grid?.rows || 0));
+    const columns = [];
+    const rowHeaders = [];
+    for (let col = 0; col < cols; col++) {
+      const { x } = graphCellXY(grid, col, 0);
+      columns.push({
+        key: `col-${col}`,
+        label: String(col + 1).padStart(2, "0"),
+        className: "grid-head grid-head--col",
+        style: { left: x, top: 28, width: Number(grid?.cellW || 0) },
+      });
+    }
+    for (let row = 0; row < rows; row++) {
+      const { y } = graphCellXY(grid, 0, row);
+      rowHeaders.push({
+        key: `row-${row}`,
+        label: String.fromCharCode(65 + row),
+        className: "grid-head grid-head--row",
+        style: { left: 14, top: y + Number(grid?.cellH || 0) / 2 - 8 },
+      });
+    }
+    return { columns, rows: rowHeaders };
+  }
+
   function graphNodeCanvasState({ inst, members = [], density = "", graphView = null } = {}) {
     const view = graphCanvasViewState(graphView);
     const isCompact = density === "compact";
@@ -10520,6 +10573,8 @@ window.MOBKIT_BOOT = {
     graphEdgeMidpoint,
     graphCellAt,
     graphDragCellAt,
+    graphCellCanvasRows,
+    graphGridHeaderCanvasRows,
     graphSourceFileNode,
     graphCanvasInstances,
     graphNodeCanvasState,
@@ -11375,11 +11430,6 @@ function useStudioState(initial, onDirty, authoring = {}) {
     updateSkillRealms
   };
 }
-function occMap(insts) {
-  const m = /* @__PURE__ */ new Map();
-  for (const i of insts) m.set(i.col + ":" + i.row, i);
-  return m;
-}
 function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null }) {
   const hostRef = React.useRef(null);
   const [drag, setDrag] = React.useState(null);
@@ -11397,7 +11447,6 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   const g = gridState.grid;
   const totalW = gridState.totalW;
   const totalH = gridState.totalH;
-  const occ = occMap(state.instances);
   const fitToBounds = React.useCallback(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -11545,39 +11594,24 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     };
   });
   const fit = view;
-  const cells = [];
-  for (let c = 0; c < g.cols; c++) {
-    for (let r = 0; r < g.rows; r++) {
-      const occupied = occ.has(c + ":" + r);
-      const { x, y } = window.MobKitFlowController.graphCellXY(g, c, r);
-      cells.push(
-        /* @__PURE__ */ React.createElement(
-          "div",
-          {
-            key: `cell-${c}-${r}`,
-            className: "cell" + (occupied ? " is-occupied" : "") + (hoverCell?.col === c && hoverCell?.row === r ? " is-hover" : ""),
-            style: { left: x, top: y, width: g.cellW, height: g.cellH },
-            onMouseDown: (e) => e.stopPropagation(),
-            onClick: (e) => {
-              e.stopPropagation();
-              if (!occupied) onRequestAdd(c, r);
-            }
-          },
-          !occupied && /* @__PURE__ */ React.createElement("div", { className: "cell__add" }, /* @__PURE__ */ React.createElement("span", { className: "cell__plus" }, "+"))
-        )
-      );
-    }
-  }
-  const colHeads = [];
-  for (let c = 0; c < g.cols; c++) {
-    const { x } = window.MobKitFlowController.graphCellXY(g, c, 0);
-    colHeads.push(/* @__PURE__ */ React.createElement("div", { key: "col-" + c, className: "grid-head grid-head--col", style: { left: x, top: 28, width: g.cellW } }, String(c + 1).padStart(2, "0")));
-  }
-  const rowHeads = [];
-  for (let r = 0; r < g.rows; r++) {
-    const { y } = window.MobKitFlowController.graphCellXY(g, 0, r);
-    rowHeads.push(/* @__PURE__ */ React.createElement("div", { key: "row-" + r, className: "grid-head grid-head--row", style: { left: 14, top: y + g.cellH / 2 - 8 } }, String.fromCharCode(65 + r)));
-  }
+  const cellRows = window.MobKitFlowController.graphCellCanvasRows({ grid: g, instances: state.instances, hoverCell });
+  const headerRows = window.MobKitFlowController.graphGridHeaderCanvasRows({ grid: g });
+  const cells = cellRows.map((row) => /* @__PURE__ */ React.createElement(
+    "div",
+    {
+      key: row.key,
+      className: row.className,
+      style: row.style,
+      onMouseDown: (e) => e.stopPropagation(),
+      onClick: (e) => {
+        e.stopPropagation();
+        if (!row.occupied) onRequestAdd(row.col, row.row);
+      }
+    },
+    row.addVisible && /* @__PURE__ */ React.createElement("div", { className: "cell__add" }, /* @__PURE__ */ React.createElement("span", { className: "cell__plus" }, "+"))
+  ));
+  const colHeads = headerRows.columns.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.key, className: row.className, style: row.style }, row.label));
+  const rowHeads = headerRows.rows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.key, className: row.className, style: row.style }, row.label));
   const frameEls = state.frames.map((fr) => {
     const frameState = window.MobKitFlowController.graphFrameCanvasState({ frame: fr, grid: g });
     return /* @__PURE__ */ React.createElement(React.Fragment, { key: frameState.id }, /* @__PURE__ */ React.createElement("div", { className: "frame", style: frameState.frameStyle }), /* @__PURE__ */ React.createElement("div", { className: "frame-label", style: frameState.labelStyle }, frameState.label));

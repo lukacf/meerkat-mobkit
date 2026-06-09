@@ -7441,6 +7441,60 @@ assert.equal(
   "M 200 40 C 260 40, 260 170, 200 170 L 100 170 C 40 170, 40 80, 100 80",
 );
 assert.deepEqual(controller.graphEdgeMidpoint({ x: 200, y: 40 }, { x: 100, y: 80 }), { x: 150, y: 170 });
+assert.deepEqual(controller.graphCellCanvasRows({
+  grid: { cols: 2, rows: 2, padX: 100, padY: 80, cellW: 120, cellH: 90, gapX: 30, gapY: 20 },
+  instances: [{ id: "n_a", col: 0, row: 1 }],
+  hoverCell: { col: 1, row: 0 },
+}), [
+  {
+    key: "cell-0-0",
+    col: 0,
+    row: 0,
+    occupied: false,
+    addVisible: true,
+    className: "cell",
+    style: { left: 100, top: 80, width: 120, height: 90 },
+  },
+  {
+    key: "cell-0-1",
+    col: 0,
+    row: 1,
+    occupied: true,
+    addVisible: false,
+    className: "cell is-occupied",
+    style: { left: 100, top: 190, width: 120, height: 90 },
+  },
+  {
+    key: "cell-1-0",
+    col: 1,
+    row: 0,
+    occupied: false,
+    addVisible: true,
+    className: "cell is-hover",
+    style: { left: 250, top: 80, width: 120, height: 90 },
+  },
+  {
+    key: "cell-1-1",
+    col: 1,
+    row: 1,
+    occupied: false,
+    addVisible: true,
+    className: "cell",
+    style: { left: 250, top: 190, width: 120, height: 90 },
+  },
+]);
+assert.deepEqual(controller.graphGridHeaderCanvasRows({
+  grid: { cols: 2, rows: 2, padX: 100, padY: 80, cellW: 120, cellH: 90, gapX: 30, gapY: 20 },
+}), {
+  columns: [
+    { key: "col-0", label: "01", className: "grid-head grid-head--col", style: { left: 100, top: 28, width: 120 } },
+    { key: "col-1", label: "02", className: "grid-head grid-head--col", style: { left: 250, top: 28, width: 120 } },
+  ],
+  rows: [
+    { key: "row-0", label: "A", className: "grid-head grid-head--row", style: { left: 14, top: 117 } },
+    { key: "row-1", label: "B", className: "grid-head grid-head--row", style: { left: 14, top: 227 } },
+  ],
+});
 assert.deepEqual(controller.graphFrameCanvasState({
   frame: { id: "frame_branch_route", label: "BRANCH · route", colStart: 1, colEnd: 3 },
   grid: { padX: 100, padY: 80, cellW: 120, cellH: 90, gapX: 30, gapY: 20, rows: 3 },

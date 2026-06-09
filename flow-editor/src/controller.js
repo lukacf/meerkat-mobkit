@@ -5619,6 +5619,59 @@
     return graphCellAt(grid, cx, cy);
   }
 
+  function graphCellCanvasRows({ grid, instances = [], hoverCell = null } = {}) {
+    const occupied = new Set();
+    for (const instance of Array.isArray(instances) ? instances : []) {
+      occupied.add(`${instance?.col}:${instance?.row}`);
+    }
+    const cols = Math.max(0, Number(grid?.cols || 0));
+    const rows = Math.max(0, Number(grid?.rows || 0));
+    const out = [];
+    for (let col = 0; col < cols; col++) {
+      for (let row = 0; row < rows; row++) {
+        const cellOccupied = occupied.has(`${col}:${row}`);
+        const hovered = Number(hoverCell?.col) === col && Number(hoverCell?.row) === row;
+        const { x, y } = graphCellXY(grid, col, row);
+        out.push({
+          key: `cell-${col}-${row}`,
+          col,
+          row,
+          occupied: cellOccupied,
+          addVisible: !cellOccupied,
+          className: "cell" + (cellOccupied ? " is-occupied" : "") + (hovered ? " is-hover" : ""),
+          style: { left: x, top: y, width: Number(grid?.cellW || 0), height: Number(grid?.cellH || 0) },
+        });
+      }
+    }
+    return out;
+  }
+
+  function graphGridHeaderCanvasRows({ grid } = {}) {
+    const cols = Math.max(0, Number(grid?.cols || 0));
+    const rows = Math.max(0, Number(grid?.rows || 0));
+    const columns = [];
+    const rowHeaders = [];
+    for (let col = 0; col < cols; col++) {
+      const { x } = graphCellXY(grid, col, 0);
+      columns.push({
+        key: `col-${col}`,
+        label: String(col + 1).padStart(2, "0"),
+        className: "grid-head grid-head--col",
+        style: { left: x, top: 28, width: Number(grid?.cellW || 0) },
+      });
+    }
+    for (let row = 0; row < rows; row++) {
+      const { y } = graphCellXY(grid, 0, row);
+      rowHeaders.push({
+        key: `row-${row}`,
+        label: String.fromCharCode(65 + row),
+        className: "grid-head grid-head--row",
+        style: { left: 14, top: y + Number(grid?.cellH || 0) / 2 - 8 },
+      });
+    }
+    return { columns, rows: rowHeaders };
+  }
+
   function graphNodeCanvasState({ inst, members = [], density = "", graphView = null } = {}) {
     const view = graphCanvasViewState(graphView);
     const isCompact = density === "compact";
@@ -10487,6 +10540,8 @@
     graphEdgeMidpoint,
     graphCellAt,
     graphDragCellAt,
+    graphCellCanvasRows,
+    graphGridHeaderCanvasRows,
     graphSourceFileNode,
     graphCanvasInstances,
     graphNodeCanvasState,

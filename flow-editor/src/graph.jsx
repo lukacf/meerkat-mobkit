@@ -149,12 +149,6 @@ function useStudioState(initial, onDirty, authoring = {}) {
   };
 }
 
-function occMap(insts) {
-  const m = new Map();
-  for (const i of insts) m.set(i.col + ":" + i.row, i);
-  return m;
-}
-
 function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null }) {
   const hostRef = React.useRef(null);
   const [drag, setDrag] = React.useState(null);
@@ -173,7 +167,6 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   const g = gridState.grid;
   const totalW = gridState.totalW;
   const totalH = gridState.totalH;
-  const occ = occMap(state.instances);
 
   // Fit-to-content (used on mount and on the ⤢ button)
   const fitToBounds = React.useCallback(() => {
@@ -333,34 +326,24 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
 
   const fit = view;
 
-  const cells = [];
-  for (let c = 0; c < g.cols; c++) {
-    for (let r = 0; r < g.rows; r++) {
-      const occupied = occ.has(c + ":" + r);
-      const { x, y } = window.MobKitFlowController.graphCellXY(g, c, r);
-      cells.push(
-        <div key={`cell-${c}-${r}`}
-          className={"cell" + (occupied ? " is-occupied" : "") + (hoverCell?.col === c && hoverCell?.row === r ? " is-hover" : "")}
-          style={{ left: x, top: y, width: g.cellW, height: g.cellH }}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); if (!occupied) onRequestAdd(c, r); }}
-        >
-          {!occupied && <div className="cell__add"><span className="cell__plus">+</span></div>}
-        </div>
-      );
-    }
-  }
-
-  const colHeads = [];
-  for (let c = 0; c < g.cols; c++) {
-    const { x } = window.MobKitFlowController.graphCellXY(g, c, 0);
-    colHeads.push(<div key={"col-" + c} className="grid-head grid-head--col" style={{ left: x, top: 28, width: g.cellW }}>{String(c + 1).padStart(2, "0")}</div>);
-  }
-  const rowHeads = [];
-  for (let r = 0; r < g.rows; r++) {
-    const { y } = window.MobKitFlowController.graphCellXY(g, 0, r);
-    rowHeads.push(<div key={"row-" + r} className="grid-head grid-head--row" style={{ left: 14, top: y + g.cellH/2 - 8 }}>{String.fromCharCode(65 + r)}</div>);
-  }
+  const cellRows = window.MobKitFlowController.graphCellCanvasRows({ grid: g, instances: state.instances, hoverCell });
+  const headerRows = window.MobKitFlowController.graphGridHeaderCanvasRows({ grid: g });
+  const cells = cellRows.map(row => (
+    <div key={row.key}
+      className={row.className}
+      style={row.style}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => { e.stopPropagation(); if (!row.occupied) onRequestAdd(row.col, row.row); }}
+    >
+      {row.addVisible && <div className="cell__add"><span className="cell__plus">+</span></div>}
+    </div>
+  ));
+  const colHeads = headerRows.columns.map(row => (
+    <div key={row.key} className={row.className} style={row.style}>{row.label}</div>
+  ));
+  const rowHeads = headerRows.rows.map(row => (
+    <div key={row.key} className={row.className} style={row.style}>{row.label}</div>
+  ));
 
   const frameEls = state.frames.map(fr => {
     const frameState = window.MobKitFlowController.graphFrameCanvasState({ frame: fr, grid: g });
