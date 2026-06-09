@@ -1367,6 +1367,11 @@ const hydratedContractAndCatalogFixture = {
       instance_output_required_label: "req",
       instance_output_hint: "Defined on the member.",
       instance_output_open_member_label: "Open member →",
+      gate_eyebrow_template: "GATE · {kind}",
+      gate_id_line_template: "{id} · cell ({col},{row})",
+      terminal_eyebrow_template: "TERMINAL · {kind}",
+      terminal_id_line_template: "{id} · cell ({col},{row})",
+      edge_eyebrow_template: "EDGE · {kind}",
       gate_collection_title: "COLLECTION POLICY",
       gate_join_member_label: "Join member",
       gate_join_member_placeholder: "— select member —",
@@ -1944,6 +1949,11 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   instanceOutputRequiredLabel: "req",
   instanceOutputHint: "Defined on the member.",
   instanceOutputOpenMemberLabel: "Open member →",
+  gateEyebrowTemplate: "GATE · {kind}",
+  gateIdLineTemplate: "{id} · cell ({col},{row})",
+  terminalEyebrowTemplate: "TERMINAL · {kind}",
+  terminalIdLineTemplate: "{id} · cell ({col},{row})",
+  edgeEyebrowTemplate: "EDGE · {kind}",
   gateCollectionTitle: "COLLECTION POLICY",
   gateJoinMemberLabel: "Join member",
   gateJoinMemberPlaceholder: "— select member —",
@@ -2015,6 +2025,11 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   instanceOutputRequiredLabel: "",
   instanceOutputHint: "",
   instanceOutputOpenMemberLabel: "",
+  gateEyebrowTemplate: "",
+  gateIdLineTemplate: "",
+  terminalEyebrowTemplate: "",
+  terminalIdLineTemplate: "",
+  edgeEyebrowTemplate: "",
   gateCollectionTitle: "",
   gateJoinMemberLabel: "",
   gateJoinMemberPlaceholder: "",
@@ -6974,6 +6989,21 @@ assert.equal(gateState.quorumIncomingLabel, "of 2 incoming");
 assert.equal(gateState.joinMemberLabel, "Join member");
 assert.deepEqual(gateState.joinMemberPlaceholderOption, { value: "", label: "— select member —" });
 assert.equal(gateState.joinMemberHint, "MobKit uses this real profile to resolve non-all fan-in.");
+const reskinnedGateState = controller.graphGateControlState({
+  id: "join_1",
+  gateKind: "join",
+}, {
+  edges: [],
+  members: [],
+  contract: graphShapeContract,
+  graphView: {
+    ...hydratedCatalogs.graphView,
+    gateEyebrowTemplate: "CONTROL {kind}",
+    gateIdLineTemplate: "{id} @ {col}/{row}",
+  },
+});
+assert.equal(reskinnedGateState.eyebrow, "CONTROL join");
+assert.equal(reskinnedGateState.idLine, "join_1 @ 1/1");
 assert.equal(gateState.dispatchTitle, "DISPATCH MODE");
 assert.equal(gateState.dispatchHint, "Exports as the MobKit parallel flow dispatch mode.");
 assert.equal(gateState.conditionsTitle, "CONDITIONS");
@@ -7446,6 +7476,19 @@ assert.equal(terminalControlState.labelValue, "Done");
 assert.equal(terminalControlState.kindTitle, "KIND");
 assert.equal(terminalControlState.terminalKind, "success");
 assert.equal(terminalControlState.selectedTerminalKind.label, "success — done");
+const reskinnedTerminalControlState = controller.graphTerminalControlState({
+  id: "n_done",
+  isTerminal: true,
+  label: "Done",
+  col: 3,
+  row: 1,
+}, graphShapeContract, {
+  ...hydratedCatalogs.graphView,
+  terminalEyebrowTemplate: "END {kind}",
+  terminalIdLineTemplate: "{id} @ {col}/{row}",
+});
+assert.equal(reskinnedTerminalControlState.eyebrow, "END success");
+assert.equal(reskinnedTerminalControlState.idLine, "n_done @ 4/2");
 assert.deepEqual(terminalControlState.terminalKindOptions.map((option) => [option.value, option.label, option.disabled]), [
   ["success", "success — done", false],
   ["failed", "failed — blocked", false],
@@ -7594,6 +7637,17 @@ const edgeInspectorState = controller.graphEdgeInspectorState({
 assert.equal(edgeInspectorState.title, "Writer → Reviewer");
 assert.equal(edgeInspectorState.eyebrow, "EDGE · cond");
 assert.equal(edgeInspectorState.idLine, "e_cond");
+assert.equal(controller.graphEdgeInspectorState({
+  edge: { id: "e_cond", from: "n_writer", to: "n_review", kind: "cond" },
+  instances: graphProjectionInstances,
+  members: graphProjectionMembers,
+  schemas: [],
+  contract: graphShapeContract,
+  graphView: {
+    ...hydratedCatalogs.graphView,
+    edgeEyebrowTemplate: "WIRE {kind}",
+  },
+}).eyebrow, "WIRE cond");
 assert.equal(edgeInspectorState.deleteLabel, "DELETE");
 assert.equal(edgeInspectorState.kindTitle, "KIND");
 assert.equal(edgeInspectorState.labelTitle, "LABEL");

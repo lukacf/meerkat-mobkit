@@ -1717,6 +1717,11 @@
       instanceOutputRequiredLabel: String(view.instance_output_required_label || "").trim(),
       instanceOutputHint: String(view.instance_output_hint || "").trim(),
       instanceOutputOpenMemberLabel: String(view.instance_output_open_member_label || "").trim(),
+      gateEyebrowTemplate: String(view.gate_eyebrow_template || "").trim(),
+      gateIdLineTemplate: String(view.gate_id_line_template || "").trim(),
+      terminalEyebrowTemplate: String(view.terminal_eyebrow_template || "").trim(),
+      terminalIdLineTemplate: String(view.terminal_id_line_template || "").trim(),
+      edgeEyebrowTemplate: String(view.edge_eyebrow_template || "").trim(),
       gateCollectionTitle: String(view.gate_collection_title || "").trim(),
       gateJoinMemberLabel: String(view.gate_join_member_label || "").trim(),
       gateJoinMemberPlaceholder: String(view.gate_join_member_placeholder || "").trim(),
@@ -1764,7 +1769,9 @@
       && out.instanceSchemaLabel && out.instanceToolsLabel && out.instanceMemberHint
       && out.instancePositionTitle && out.instancePositionStageLabel && out.instancePositionSlotLabel
       && out.instanceOutputTitleTemplate && out.instanceOutputRequiredLabel && out.instanceOutputHint
-      && out.instanceOutputOpenMemberLabel && out.gateCollectionTitle
+      && out.instanceOutputOpenMemberLabel && out.gateEyebrowTemplate && out.gateIdLineTemplate
+      && out.terminalEyebrowTemplate && out.terminalIdLineTemplate && out.edgeEyebrowTemplate
+      && out.gateCollectionTitle
       && out.gateJoinMemberLabel && out.gateJoinMemberPlaceholder && out.gateJoinMemberHint
       && out.gateDispatchTitle && out.gateDispatchHint && out.gateConditionsTitle
       && out.gateEmptyBranchHint && out.gateWiringTitle && out.gateIncomingLabel
@@ -1836,6 +1843,11 @@
       instanceOutputRequiredLabel: String(view?.instanceOutputRequiredLabel || ""),
       instanceOutputHint: String(view?.instanceOutputHint || ""),
       instanceOutputOpenMemberLabel: String(view?.instanceOutputOpenMemberLabel || ""),
+      gateEyebrowTemplate: String(view?.gateEyebrowTemplate || ""),
+      gateIdLineTemplate: String(view?.gateIdLineTemplate || ""),
+      terminalEyebrowTemplate: String(view?.terminalEyebrowTemplate || ""),
+      terminalIdLineTemplate: String(view?.terminalIdLineTemplate || ""),
+      edgeEyebrowTemplate: String(view?.edgeEyebrowTemplate || ""),
       gateCollectionTitle: String(view?.gateCollectionTitle || ""),
       gateJoinMemberLabel: String(view?.gateJoinMemberLabel || ""),
       gateJoinMemberPlaceholder: String(view?.gateJoinMemberPlaceholder || ""),
@@ -5623,9 +5635,9 @@
     return {
       incoming,
       outgoing,
-      eyebrow: `GATE · ${gateKind}`,
+      eyebrow: graphTemplateText(view.gateEyebrowTemplate, { kind: gateKind }),
       title: String(inst?.label || ""),
-      idLine: `${inst?.id || ""} · cell (${col + 1},${row + 1})`,
+      idLine: graphTemplateText(view.gateIdLineTemplate, { id: inst?.id || "", col: col + 1, row: row + 1 }),
       deleteLabel: view.inspectorDeleteLabel,
       labelTitle: view.inspectorLabelTitle,
       kindTitle: view.inspectorKindTitle,
@@ -5742,9 +5754,9 @@
     const col = Number.isFinite(Number(inst?.col)) ? Number(inst.col) + 1 : 1;
     const row = Number.isFinite(Number(inst?.row)) ? Number(inst.row) + 1 : 1;
     return {
-      eyebrow: `TERMINAL · ${terminalKind}`,
+      eyebrow: graphTemplateText(view.terminalEyebrowTemplate, { kind: terminalKind }),
       title: labelValue,
-      idLine: `${id} · cell (${col},${row})`,
+      idLine: graphTemplateText(view.terminalIdLineTemplate, { id, col, row }),
       deleteLabel: view.inspectorDeleteLabel,
       labelTitle: view.inspectorLabelTitle,
       labelValue,
@@ -5790,7 +5802,7 @@
       toInstance,
       fromMember,
       toMember,
-      eyebrow: `EDGE · ${edgeKind}`,
+      eyebrow: graphTemplateText(view.edgeEyebrowTemplate, { kind: edgeKind }),
       title: `${fromMember?.name || fromInstance?.label || view.edgeRowMissingValue} → ${toMember?.name || toInstance?.label || view.edgeRowMissingValue}`,
       idLine: String(edge?.id || ""),
       deleteLabel: view.inspectorDeleteLabel,

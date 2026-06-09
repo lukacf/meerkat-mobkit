@@ -866,6 +866,11 @@ pub fn mobpack_schema_response() -> Value {
     editor_graph_view["instance_output_required_label"] = json!("req");
     editor_graph_view["instance_output_hint"] = json!("Defined on the member.");
     editor_graph_view["instance_output_open_member_label"] = json!("Open member →");
+    editor_graph_view["gate_eyebrow_template"] = json!("GATE · {kind}");
+    editor_graph_view["gate_id_line_template"] = json!("{id} · cell ({col},{row})");
+    editor_graph_view["terminal_eyebrow_template"] = json!("TERMINAL · {kind}");
+    editor_graph_view["terminal_id_line_template"] = json!("{id} · cell ({col},{row})");
+    editor_graph_view["edge_eyebrow_template"] = json!("EDGE · {kind}");
     editor_graph_view["gate_collection_title"] = json!("COLLECTION POLICY");
     editor_graph_view["gate_join_member_label"] = json!("Join member");
     editor_graph_view["gate_join_member_placeholder"] = json!("— select member —");
@@ -16718,6 +16723,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_view"]["instance_output_title_template"],
             json!("MEMBER OUTPUT · {schema}")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["gate_eyebrow_template"],
+            json!("GATE · {kind}")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["terminal_eyebrow_template"],
+            json!("TERMINAL · {kind}")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["edge_eyebrow_template"],
+            json!("EDGE · {kind}")
         );
     }
 

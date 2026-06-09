@@ -308,6 +308,8 @@ assert(!/studio\.members\.length|new Set\(studio\.instances\.filter|studio\.inst
 assert.match(inspector, /MobKitFlowController\.graphGateControlState/, "Graph Inspector must read gate control state through the controller plane");
 assert.match(inspectorGateBlock, /graphGateControlState\(inst,\s*\{[\s\S]*graphView/, "Graph gate inspector must pass schema-backed Graph view into controller projection");
 assert.match(controller, /function graphGateControlState/, "controller plane must own gate control display state");
+assert.match(controller, /gateEyebrowTemplate:\s*String\(view\.gate_eyebrow_template/, "controller plane must hydrate Graph gate eyebrow template from MobKit schema");
+assert.match(controller, /graphGateControlState[\s\S]*graphTemplateText\(view\.gateEyebrowTemplate/, "Graph gate header must render through schema-backed template state");
 assert.match(controller, /joinMemberPlaceholderOption/, "controller plane must own Graph gate join-member placeholder state");
 assert.match(controller, /noConditionOptionsHint/, "controller plane must own Graph condition empty-state copy");
 assert.match(inspectorGateBlock, /MobKitFlowController\.graphBranchConditionRows/, "Graph branch inspector must render condition rows through the controller plane");
@@ -355,6 +357,11 @@ assert.match(controller, /instanceEyebrow:\s*String\(view\.instance_eyebrow/, "c
 assert.match(controller, /instanceIdLineTemplate:\s*String\(view\.instance_id_line_template/, "controller plane must hydrate Graph instance id-line template from MobKit schema");
 assert.match(controller, /instanceOutputTitleTemplate:\s*String\(view\.instance_output_title_template/, "controller plane must hydrate Graph instance output title template from MobKit schema");
 assert(!/eyebrow:\s*["']INSTANCE["']|deleteLabel:\s*["']DELETE["']|label:\s*["'](?:model|schema|tools|stage \(col\)|slot \(row\))["']|positionTitle:\s*["']POSITION["']|outputHint:\s*["']Defined on the member\.["']|outputOpenMemberLabel:\s*["']Open member/.test((controller.match(/function graphInstanceControlState[\s\S]*?function graphTemplateText/) || [""])[0]), "Graph instance inspector copy must not be hardcoded in the controller projection");
+assert.match(controller, /terminalEyebrowTemplate:\s*String\(view\.terminal_eyebrow_template/, "controller plane must hydrate Graph terminal eyebrow template from MobKit schema");
+assert.match(controller, /graphTerminalControlState[\s\S]*graphTemplateText\(view\.terminalEyebrowTemplate/, "Graph terminal header must render through schema-backed template state");
+assert.match(controller, /edgeEyebrowTemplate:\s*String\(view\.edge_eyebrow_template/, "controller plane must hydrate Graph edge eyebrow template from MobKit schema");
+assert.match(controller, /graphEdgeInspectorState[\s\S]*graphTemplateText\(view\.edgeEyebrowTemplate/, "Graph edge header must render through schema-backed template state");
+assert(!/eyebrow:\s*`\$\{?(?:GATE|TERMINAL|EDGE)/.test(controller), "Graph gate, terminal, and edge headers must not be hardcoded in controller template strings");
 assert(!/INSTANCE<\/div>|inst\.id\} · cell|inst\.col \+ 1|inst\.row \+ 1|>DELETE<\/button>|EDIT MEMBER →|<dt>model<\/dt>|member\.model|member\.name|Editing the member updates every instance that uses it|>POSITION<\/div>|stage \(col\)|slot \(row\)/.test(inspectorInstanceBlock), "Graph instance inspector must not compose instance header, member summary, or position copy locally");
 assert(!/MEMBER OUTPUT · \{member\.schema \|\| "—"\}|instanceState\.outputFields\.map|<span className="sf__req">req<\/span>|Defined on the member\.|Open member →|member\.schema \|\| "—"/.test(inspectorInstanceBlock), "Graph instance inspector must not compose member-output schema title, rows, required badges, or open-member copy locally");
 assert(!/contractDefaultValue\(contract,\s*["']graph_terminal_kind["']\)|graphTerminalKindOptions\(|terminalKindOptions\.find/.test(inspectorInstanceBlock), "Graph terminal inspector must not assemble terminal kind defaults or options locally");
