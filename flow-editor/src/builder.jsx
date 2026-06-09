@@ -196,13 +196,15 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   };
 
   const insertAt = (laneRef, pick) => {
-    const newStep = window.MobKitFlowController.flowStepTemplate(pick, contract, { flow, basicView });
-    if (!newStep) return;
-    const result = window.MobKitFlowController.flowStepInsertTransition(flow, laneRef, newStep, { members });
-    if (!result.ok) return;
-    if (!commitFlow(result.flow, {}, "insert_flow_step", { step: newStep, lane_ref: laneRef })) return;
-    setSel(result.selection);
-    setPicker(result.picker);
+    if (!applyAuthoringReplacement) return;
+    applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition());
+    applyAuthoringReplacement({
+      operationType: "insert_flow_step",
+      operation: { pick, lane_ref: laneRef },
+    }).then((result) => {
+      const id = result?.selection?.id;
+      if (id) setSel(id);
+    }).catch(() => {});
   };
   const removeStep = (id) => {
     const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);

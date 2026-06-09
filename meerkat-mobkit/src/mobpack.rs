@@ -1046,7 +1046,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "insert_flow_step",
             "plane": "basic",
             "authority": "mobkit",
-            "requires": ["step", "lane_ref"],
+            "requires": ["step_or_pick", "lane_ref"],
             "mutates": ["document.flow", "document.instances", "document.edges", "document.frames"],
             "projection_document_supported": true
         },
@@ -4463,6 +4463,164 @@ fn flow_step_ids(flow: &Value) -> BTreeSet<String> {
     ids
 }
 
+fn next_flow_step_id(flow: &Value, prefix: &str) -> String {
+    let stem = prefix
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    let stem = if stem.is_empty() { "s" } else { stem.as_str() };
+    let used = flow_step_ids(flow);
+    let mut index = 1;
+    loop {
+        let id = format!("{stem}_{index}");
+        if !used.contains(&id) {
+            return id;
+        }
+        index += 1;
+    }
+}
+
+fn collect_flow_branch_ids_in_steps(steps: &[Value], ids: &mut BTreeSet<String>) {
+    for step in steps {
+        if let Some(branches) = step.get("branches").and_then(Value::as_array) {
+            for branch in branches {
+                if let Some(id) = branch
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                {
+                    ids.insert(id.to_string());
+                }
+                if let Some(branch_steps) = branch.get("steps").and_then(Value::as_array) {
+                    collect_flow_branch_ids_in_steps(branch_steps, ids);
+                }
+            }
+        }
+        if let Some(nested) = step.get("steps").and_then(Value::as_array) {
+            collect_flow_branch_ids_in_steps(nested, ids);
+        }
+        if let Some(fallback) = step.get("fallback").and_then(Value::as_array) {
+            collect_flow_branch_ids_in_steps(fallback, ids);
+        }
+    }
+}
+
+fn next_flow_branch_id(flow: &Value, ids: &mut BTreeSet<String>) -> String {
+    if ids.is_empty() {
+        if let Some(steps) = flow.get("steps").and_then(Value::as_array) {
+            collect_flow_branch_ids_in_steps(steps, ids);
+        }
+    }
+    let mut index = 1;
+    loop {
+        let id = format!("br_{index}");
+        if ids.insert(id.clone()) {
+            return id;
+        }
+        index += 1;
+    }
+}
+
+fn flow_step_from_pick(
+    document: &MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let pick = operation
+        .get("pick")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "insert_flow_step requires step object or pick object".to_string())?;
+    let kind = pick
+        .get("kind")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "insert_flow_step pick.kind is required".to_string())?;
+    let id = next_flow_step_id(&document.flow, "s");
+    let dependency_mode = "all";
+    match kind {
+        "member" => {
+            let role = pick
+                .get("id")
+                .or_else(|| pick.get("member_id"))
+                .or_else(|| pick.get("memberId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "insert_flow_step member pick requires id".to_string())?;
+            if !graph_member_ids(&document.members).contains(role) {
+                return Err(format!(
+                    "member flow step must reference an existing member: {role}"
+                ));
+            }
+            Ok(json!({
+                "id": id,
+                "type": "member",
+                "role": role,
+                "instruction": "",
+                "dependsMode": dependency_mode,
+            }))
+        }
+        "branch" => {
+            let mut branch_ids = BTreeSet::new();
+            let branch_id = next_flow_branch_id(&document.flow, &mut branch_ids);
+            Ok(json!({
+                "id": id,
+                "type": "branch",
+                "controllerRole": "",
+                "branches": [{
+                    "id": branch_id,
+                    "label": "Branch 1",
+                    "condition": "",
+                    "steps": []
+                }],
+                "fallback": [],
+                "dependsMode": dependency_mode,
+            }))
+        }
+        "parallel" => {
+            let mut branch_ids = BTreeSet::new();
+            let first = next_flow_branch_id(&document.flow, &mut branch_ids);
+            let second = next_flow_branch_id(&document.flow, &mut branch_ids);
+            Ok(json!({
+                "id": id,
+                "type": "parallel",
+                "controllerRole": "",
+                "dispatch": "fan_out",
+                "collection": "all",
+                "branches": [
+                    { "id": first, "label": "Branch 1", "steps": [] },
+                    { "id": second, "label": "Branch 2", "steps": [] }
+                ],
+                "dependsMode": dependency_mode,
+            }))
+        }
+        "repeat" => Ok(json!({
+            "id": id,
+            "type": "repeat",
+            "loopId": "",
+            "until": "",
+            "maxIterations": Value::Null,
+            "iterationInput": "",
+            "steps": []
+        })),
+        other if EDITOR_FLOW_STEP_TYPES.contains(&other) => {
+            Err(format!("unsupported insert_flow_step pick.kind: {other}"))
+        }
+        other => Err(format!("unsupported insert_flow_step pick.kind: {other}")),
+    }
+}
+
 fn collect_flow_step_ids_in_steps(steps: &[Value], ids: &mut BTreeSet<String>) {
     for step in steps {
         if let Some(id) = step
@@ -4767,7 +4925,8 @@ fn apply_insert_flow_step_operation(
     let step = operation
         .get("step")
         .cloned()
-        .ok_or_else(|| "insert_flow_step requires step object".to_string())?;
+        .map(Ok)
+        .unwrap_or_else(|| flow_step_from_pick(document, operation))?;
     let lane_ref = operation
         .get("lane_ref")
         .or_else(|| operation.get("laneRef"))
@@ -22184,18 +22343,39 @@ model = "gpt-5.5"
             ]
         });
 
-        let inserted = apply_mobpack_authoring_operation(&json!({
+        let semantic_inserted = apply_mobpack_authoring_operation(&json!({
             "document": document,
             "operation": {
                 "type": "insert_flow_step",
                 "lane_ref": { "lane": "main", "index": 1 },
+                "pick": { "kind": "member", "id": "reviewer" }
+            }
+        }))
+        .expect("insert flow step from semantic pick");
+        assert_eq!(semantic_inserted["selection"]["id"], json!("s_1"));
+        assert_eq!(
+            semantic_inserted["document"]["flow"]["steps"][1],
+            json!({
+                "id": "s_1",
+                "type": "member",
+                "role": "reviewer",
+                "instruction": "",
+                "dependsMode": "all"
+            })
+        );
+
+        let inserted = apply_mobpack_authoring_operation(&json!({
+            "document": semantic_inserted["document"],
+            "operation": {
+                "type": "insert_flow_step",
+                "lane_ref": { "lane": "main", "index": 2 },
                 "step": { "type": "member", "id": "review", "role": "reviewer", "instruction": "Review." }
             }
         }))
         .expect("insert flow step");
         assert_eq!(inserted["selection"]["id"], json!("review"));
         assert_eq!(
-            inserted["document"]["flow"]["steps"][1]["id"],
+            inserted["document"]["flow"]["steps"][2]["id"],
             json!("review")
         );
 
@@ -22209,7 +22389,7 @@ model = "gpt-5.5"
         }))
         .expect("insert nested flow step");
         assert_eq!(
-            nested["document"]["flow"]["steps"][2]["branches"][0]["steps"][0]["id"],
+            nested["document"]["flow"]["steps"][3]["branches"][0]["steps"][0]["id"],
             json!("approve")
         );
 
@@ -22223,7 +22403,7 @@ model = "gpt-5.5"
         }))
         .expect("update flow step");
         assert_eq!(
-            updated["document"]["flow"]["steps"][1]["instruction"],
+            updated["document"]["flow"]["steps"][2]["instruction"],
             json!("Review carefully.")
         );
 
@@ -22243,11 +22423,11 @@ model = "gpt-5.5"
                 .any(|step| step["id"] == "review")
         );
         assert_eq!(
-            deleted["document"]["flow"]["steps"][1]["branches"][0]["cond"],
+            deleted["document"]["flow"]["steps"][2]["branches"][0]["cond"],
             json!({})
         );
         assert_eq!(
-            deleted["document"]["flow"]["steps"][1]["branches"][0]["condition"],
+            deleted["document"]["flow"]["steps"][2]["branches"][0]["condition"],
             json!("")
         );
     }

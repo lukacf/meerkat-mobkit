@@ -1706,8 +1706,8 @@ async function validateFlowStepOperations(catalogs) {
         id: "route",
         branches: [{
           id: "approved",
-          cond: { stepId: "review", field: "verdict", op: "==", val: "green" },
-          condition: "steps.review.verdict == green",
+          cond: { stepId: "s_1", field: "verdict", op: "==", val: "green" },
+          condition: "steps.s_1.verdict == green",
           steps: [],
         }],
         fallback: [],
@@ -1719,11 +1719,23 @@ async function validateFlowStepOperations(catalogs) {
     operation: {
       type: "insert_flow_step",
       lane_ref: { lane: "main", index: 1 },
-      step: { type: "member", id: "review", role: "reviewer", instruction: "Review." },
+      pick: { kind: "member", id: "reviewer" },
+    },
+  });
+  const semanticStepId = inserted.selection?.id;
+  if (!semanticStepId || inserted.document.flow.steps[1]?.role !== "reviewer") {
+    throw new Error(`semantic flow step insert did not return a real reviewer step: ${JSON.stringify(inserted.document.flow.steps)}`);
+  }
+  const authoredReview = await rpc("mobkit/mobpacks/apply_operation", {
+    document: inserted.document,
+    operation: {
+      type: "update_flow_step",
+      step_id: semanticStepId,
+      patch: { instruction: "Review." },
     },
   });
   const nested = await rpc("mobkit/mobpacks/apply_operation", {
-    document: inserted.document,
+    document: authoredReview.document,
     operation: {
       type: "insert_flow_step",
       lane_ref: { parentId: "route", branchId: "approved", index: 0 },
@@ -1737,7 +1749,7 @@ async function validateFlowStepOperations(catalogs) {
     document: nested.document,
     operation: {
       type: "update_flow_step",
-      step_id: "review",
+      step_id: semanticStepId,
       patch: { instruction: "Review carefully." },
     },
   });
@@ -1748,10 +1760,10 @@ async function validateFlowStepOperations(catalogs) {
     document: updated.document,
     operation: {
       type: "delete_flow_step",
-      step_id: "review",
+      step_id: semanticStepId,
     },
   });
-  if (deleted.document.flow.steps.some((step) => step.id === "review")) {
+  if (deleted.document.flow.steps.some((step) => step.id === semanticStepId)) {
     throw new Error(`flow step delete did not remove step: ${JSON.stringify(deleted.document.flow.steps)}`);
   }
   if (Object.keys(deleted.document.flow.steps[1]?.branches?.[0]?.cond || {}).length !== 0 || deleted.document.flow.steps[1]?.branches?.[0]?.condition !== "") {
