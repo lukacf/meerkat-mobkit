@@ -4137,6 +4137,10 @@ const agentContract = {
       },
     },
     runtime_modes: ["turn_driven", "autonomous_host"],
+    runtime_mode_labels: {
+      turn_driven: "turn_driven — explicit turn dispatch",
+      autonomous_host: "autonomous_host — RPC keep-alive member loop",
+    },
     deploy_runtime_mode_compatibility: {
       cli: {
         allowed: ["turn_driven"],
@@ -4166,6 +4170,10 @@ assert.deepEqual(
 assert.deepEqual(
   controller.runtimeModeOptions(agentContract, { surface: "rpc" }, "").map((option) => option.value),
   ["turn_driven", "autonomous_host"],
+);
+assert.deepEqual(
+  controller.runtimeModeOptions(agentContract, { surface: "rpc" }, "").map((option) => option.label),
+  ["turn_driven — explicit turn dispatch", "autonomous_host — RPC keep-alive member loop"],
 );
 assert.deepEqual(
   controller.runtimeModeOptions(agentContract, { surface: "cli" }, "").map((option) => [option.value, option.disabled, option.reason]),

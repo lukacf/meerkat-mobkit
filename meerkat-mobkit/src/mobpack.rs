@@ -1620,6 +1620,7 @@ pub fn mobpack_schema_response() -> Value {
     mob_definition["editor_launch_view"] = editor_launch_view;
     mob_definition["editor_input_step_draft"] = editor_input_step_draft_contract();
     mob_definition["deploy_runtime_mode_compatibility"] = deploy_runtime_mode_compatibility();
+    mob_definition["runtime_mode_labels"] = runtime_mode_labels();
     json!({
         "schema_version": MOBPACK_SCHEMA_VERSION,
         "media_type": MOBPACK_MEDIA_TYPE,
@@ -7856,6 +7857,13 @@ fn deploy_runtime_mode_block_reason(surface: &str, runtime_mode: &str) -> Option
         .and_then(Value::as_str)
         .map(ToString::to_string)
         .or_else(|| Some("runtime mode is not in this surface's allowed runtime_modes".to_string()))
+}
+
+fn runtime_mode_labels() -> Value {
+    json!({
+        "turn_driven": "turn_driven — explicit turn dispatch",
+        "autonomous_host": "autonomous_host — RPC keep-alive member loop"
+    })
 }
 
 fn validate_editor_schemas(schemas: &Value) -> Vec<MobpackDiagnostic> {
@@ -16536,6 +16544,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["runtime_modes"],
             json!(runtime_mode_values())
+        );
+        assert_eq!(
+            mob_definition["runtime_mode_labels"]["turn_driven"],
+            json!("turn_driven — explicit turn dispatch")
+        );
+        assert_eq!(
+            mob_definition["runtime_mode_labels"]["autonomous_host"],
+            json!("autonomous_host — RPC keep-alive member loop")
         );
         assert_eq!(
             mob_definition["deploy_runtime_mode_compatibility"]["cli"]["allowed"],

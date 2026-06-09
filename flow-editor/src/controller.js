@@ -8227,15 +8227,12 @@
     const current = String(currentMode || "");
     if (current && !modes.includes(current)) modes.push(current);
     const surface = String(deploySettings?.surface || contract?.deploy_settings?.defaults?.surface || "");
-    const labels = {
-      turn_driven: "turn_driven — explicit turn dispatch",
-      autonomous_host: "autonomous_host — RPC keep-alive member loop",
-    };
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.runtime_mode_labels);
     return modes.map((mode) => {
       const surfaceBlocked = !runtimeModeDeploySurfaceAllowed(contract, surface, mode);
       return {
         value: mode,
-        label: labels[mode] || mode,
+        label: labels[mode] || `${mode}`,
         disabled: surfaceBlocked,
         reason: surfaceBlocked ? runtimeModeDeploySurfaceReason(contract, surface, mode) : "",
       };

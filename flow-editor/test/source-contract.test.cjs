@@ -1278,6 +1278,8 @@ assert.match(controller, /function memberBackendPatch/, "controller plane must o
 assert.match(controller, /function optionValueAllowed/, "controller plane must validate Agent Editor option-backed writes against enabled MobKit options");
 assert.match(controller, /memberProfileBindingPatch[\s\S]*profileBindingOptions\(contract,\s*binding\)/, "member profile-binding writes must validate against MobKit profile_binding options and restrictions");
 assert.match(controller, /memberRuntimeModePatch[\s\S]*runtimeModeOptions\(contract,\s*deploySettings,\s*runtimeMode\)/, "member runtime-mode writes must validate against MobKit runtime_modes and deploy surface restrictions");
+assert.match(controller, /runtime_mode_labels/, "member runtime-mode labels must hydrate from the MobKit schema contract");
+assert(!/turn_driven:\s*["']turn_driven[^"']*explicit turn dispatch|autonomous_host:\s*["']autonomous_host[^"']*RPC keep-alive member loop/.test(controller), "controller plane must not hard-code runtime-mode display labels");
 assert.match(controller, /deploy_runtime_mode_compatibility/, "member runtime-mode deploy restrictions must hydrate from the MobKit schema contract");
 assert(!/surface === ["']cli["'] && (?:runtimeMode|mode) === ["']autonomous_host["']/.test(controller), "controller plane must not hard-code CLI/autonomous runtime deploy restrictions");
 assert.match(controller, /memberModelPatch[\s\S]*catalogValueAllowed\(ids,\s*model,\s*\{\s*allowBlank:\s*false\s*\}\)/, "member model writes must validate against MobKit model catalog");
