@@ -278,6 +278,7 @@ assert.match(graphEdgeCanvasBlock, /graphEdgeCanvasState\(\{[\s\S]*contract/, "G
 assert.match(graph, /MobKitFlowController\.graphNodeCanvasState/, "Graph canvas must render node member/tool/source metadata through the controller plane");
 assert.match(graph, /MobKitFlowController\.graphCanvasInstances/, "Graph canvas must ask the controller plane for renderable graph instances including the mob.toml source-file adornment");
 assert.match(graph, /MobKitFlowController\.graphGateCanvasState/, "Graph canvas must render gate glyph and sublabels through the controller plane");
+assert.match(graphGateViewBlock, /graphGateCanvasState\(\{ inst,\s*edges:\s*state\.edges,\s*contract \}\)/, "Graph gate canvas projection must receive the MobKit graph draft contract");
 assert.match(controller, /function graphSelectionState/, "controller plane must own Graph Inspector selection projection");
 assert.match(controller, /function graphTemplateInspectorState/, "controller plane must own Graph template summary projection");
 assert.match(controller, /function graphInstanceControlState/, "controller plane must own Graph instance summary and launch-source projection");
@@ -288,6 +289,7 @@ assert.match(controller, /function graphNodeCanvasState/, "controller plane must
 assert.match(controller, /function graphSourceFileNode/, "controller plane must own Graph source-file adornment projection");
 assert.match(controller, /function graphCanvasInstances/, "controller plane must own Graph canvas instance assembly");
 assert.match(controller, /function graphGateCanvasState/, "controller plane must own Graph gate canvas projection");
+assert.match(controller, /graphGateCanvasState[\s\S]*editorGraphDraftContract\(contract\)[\s\S]*sublabel\s*=\s*`\$\{draft\.joinLabelPrefix\}\$\{inst\.collection\}`/, "Graph gate canvas join labels must come from MobKit editor_graph_draft metadata");
 assert(!/\[sourceFileNode,\s*\.\.\.state\.instances\]|graphSourceFileNode\(\{ instances: state\.instances \}\)/.test(graph), "Graph view must not assemble source-file adornment rows locally");
 assert(!/const\s+kind\s*=\s*edge\.kind|terminalTarget|kind === ["'](?:cond|fanout)["']|edge\.label \|\| edge\.kind|markerEnd=\{[\s\S]*url\(#arr-red\)|url\(#arr-dim\)/.test(graphEdgeCanvasBlock), "Graph edge canvas must not assemble edge kind classes, labels, glyphs, colors, or markers locally");
 assert(!/memberById|schemaById|function classifyTool|member\.tools|member\.role|member\.model|member\.name|mob\\.toml|launchMode\?\.kind/.test(graphNodeViewBlock), "Graph node canvas must not assemble member, tool, launch, or source-file metadata locally");

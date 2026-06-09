@@ -5493,8 +5493,9 @@
     return sourceFileNode ? [sourceFileNode, ...sourceInstances] : sourceInstances;
   }
 
-  function graphGateCanvasState({ inst, edges = [] } = {}) {
+  function graphGateCanvasState({ inst, edges = [], contract = null } = {}) {
     const gateKind = String(inst?.gateKind || "");
+    const draft = editorGraphDraftContract(contract) || emptyGraphDraftContract();
     const glyph = gateKind === "fork" ? "‖"
       : gateKind === "join" ? "⋈"
         : gateKind === "branch" ? "⑂"
@@ -5504,7 +5505,7 @@
       const incoming = (Array.isArray(edges) ? edges : []).filter((edge) => edge.to === inst?.id).length;
       sublabel = `barrier · ${inst.quorum.n}/${incoming || inst.quorum.m}`;
     } else if (gateKind === "join" && inst?.collection) {
-      sublabel = `join · ${inst.collection}`;
+      sublabel = `${draft.joinLabelPrefix}${inst.collection}`;
     }
     return { glyph, sublabel, gateKind };
   }

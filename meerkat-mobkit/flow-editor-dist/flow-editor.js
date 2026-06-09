@@ -5526,8 +5526,9 @@ window.MOBKIT_BOOT = {
     return sourceFileNode ? [sourceFileNode, ...sourceInstances] : sourceInstances;
   }
 
-  function graphGateCanvasState({ inst, edges = [] } = {}) {
+  function graphGateCanvasState({ inst, edges = [], contract = null } = {}) {
     const gateKind = String(inst?.gateKind || "");
+    const draft = editorGraphDraftContract(contract) || emptyGraphDraftContract();
     const glyph = gateKind === "fork" ? "‖"
       : gateKind === "join" ? "⋈"
         : gateKind === "branch" ? "⑂"
@@ -5537,7 +5538,7 @@ window.MOBKIT_BOOT = {
       const incoming = (Array.isArray(edges) ? edges : []).filter((edge) => edge.to === inst?.id).length;
       sublabel = `barrier · ${inst.quorum.n}/${incoming || inst.quorum.m}`;
     } else if (gateKind === "join" && inst?.collection) {
-      sublabel = `join · ${inst.collection}`;
+      sublabel = `${draft.joinLabelPrefix}${inst.collection}`;
     }
     return { glyph, sublabel, gateKind };
   }
@@ -11389,7 +11390,8 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
           onMouseDown: onNodeDown,
           onPortDown,
           portDragTitle: canvasView.portDragTitle,
-          state
+          state,
+          contract
         }
       );
     }
@@ -11508,9 +11510,9 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
     !nodeState.isCompact && /* @__PURE__ */ React.createElement("div", { className: "node__tools" }, nodeState.toolRows.map((row) => /* @__PURE__ */ React.createElement("span", { key: row.id, className: row.className }, row.id)), nodeState.overflowLabel && /* @__PURE__ */ React.createElement("span", { className: "tag" }, nodeState.overflowLabel))
   );
 }
-function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, state }) {
+function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, state, contract }) {
   const b = nodeBox(g, inst);
-  const gateState = window.MobKitFlowController.graphGateCanvasState({ inst, edges: state.edges });
+  const gateState = window.MobKitFlowController.graphGateCanvasState({ inst, edges: state.edges, contract });
   return /* @__PURE__ */ React.createElement(
     "div",
     {

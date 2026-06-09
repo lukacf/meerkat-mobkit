@@ -7121,6 +7121,19 @@ assert.deepEqual(controller.graphGateCanvasState({
   edges: [{ to: "join_1" }, { to: "join_1" }],
 }), { glyph: "⋈", sublabel: "barrier · 2/2", gateKind: "join" });
 assert.deepEqual(controller.graphGateCanvasState({
+  inst: { id: "join_2", gateKind: "join", collection: "any" },
+  edges: [],
+  contract: {
+    mob_definition: {
+      ...graphShapeContract.mob_definition,
+      editor_graph_draft: {
+        ...testEditorGraphDraft,
+        join_label_prefix: "schema join: ",
+      },
+    },
+  },
+}), { glyph: "⋈", sublabel: "schema join: any", gateKind: "join" });
+assert.deepEqual(controller.graphGateCanvasState({
   inst: { id: "fork_1", gateKind: "fork", label: "forker" },
   edges: [],
 }), { glyph: "‖", sublabel: "forker", gateKind: "fork" });

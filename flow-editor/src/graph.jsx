@@ -492,6 +492,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
           onPortDown={onPortDown}
           portDragTitle={canvasView.portDragTitle}
           state={state}
+          contract={contract}
         />
       );
     }
@@ -645,9 +646,9 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
   );
 }
 
-function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, state }) {
+function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, state, contract }) {
   const b = nodeBox(g, inst);
-  const gateState = window.MobKitFlowController.graphGateCanvasState({ inst, edges: state.edges });
+  const gateState = window.MobKitFlowController.graphGateCanvasState({ inst, edges: state.edges, contract });
 
   return (
     <div data-inst-id={inst.id}
