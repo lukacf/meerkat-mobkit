@@ -2642,7 +2642,7 @@ window.MOBKIT_BOOT = {
     const sourceSchemas = Array.isArray(schemas) ? schemas : [];
     const sourceMembers = Array.isArray(members) ? members : [];
     if (!previousId || !nextId || previousId === nextId) {
-      return { schemas: sourceSchemas, members: sourceMembers, flow, renamed: false };
+      return { schemas: sourceSchemas, members: sourceMembers, flow, renamed: false, selection: null };
     }
     if (sourceSchemas.some((schema) => String(schema?.id || "").trim() === nextId)) {
       return {
@@ -2650,6 +2650,7 @@ window.MOBKIT_BOOT = {
         members: sourceMembers,
         flow,
         renamed: false,
+        selection: null,
         reason: "duplicate_schema_id",
       };
     }
@@ -2665,6 +2666,7 @@ window.MOBKIT_BOOT = {
         members: sourceMembers,
         flow,
         renamed: false,
+        selection: null,
         reason: "unknown_schema_id",
       };
     }
@@ -2673,7 +2675,13 @@ window.MOBKIT_BOOT = {
         ? { ...member, schema: nextId }
         : member
     );
-    return { schemas: nextSchemas, members: nextMembers, flow: reconcileFlowMemberSchemas(flow, nextMembers), renamed: true };
+    return {
+      schemas: nextSchemas,
+      members: nextMembers,
+      flow: reconcileFlowMemberSchemas(flow, nextMembers),
+      renamed: true,
+      selection: { kind: "schema", id: nextId },
+    };
   }
 
   function reconcileFlowMemberSteps(flow, members) {
@@ -13114,7 +13122,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     studio.setSchemas(result.schemas);
     studio.setMembers(result.members);
     if (result.flow !== flow && setFlow) setFlow(result.flow);
-    setAgentSel({ kind: "schema", id: String(newId || "").trim() });
+    setAgentSel(result.selection);
   };
   return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, schemaState.eyebrow), /* @__PURE__ */ React.createElement(
     "input",

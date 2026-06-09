@@ -3318,6 +3318,7 @@ assert.equal(schemaRename.members[0].schema, "RenamedVerdict");
 assert.equal(schemaRename.members[1].schema, "PlanArtifact");
 assert.equal(schemaRename.flow.steps[0].schema, "RenamedVerdict");
 assert.equal(schemaRename.flow.steps[0].expectedSchemaRef, "schemas/RenamedVerdict.json");
+assert.deepEqual(schemaRename.selection, { kind: "schema", id: "RenamedVerdict" });
 
 const duplicateSchemaRename = controller.renameSchemaDefinition({
   schemas: [
@@ -3328,6 +3329,7 @@ const duplicateSchemaRename = controller.renameSchemaDefinition({
   flow: { name: "main", steps: [] },
 }, "ReviewArtifact", "PlanArtifact");
 assert.equal(duplicateSchemaRename.renamed, false);
+assert.equal(duplicateSchemaRename.selection, null);
 assert.equal(duplicateSchemaRename.reason, "duplicate_schema_id");
 assert.equal(duplicateSchemaRename.members[0].schema, "ReviewArtifact");
 assert.deepEqual(duplicateSchemaRename.flow, { name: "main", steps: [] });

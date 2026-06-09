@@ -2609,7 +2609,7 @@
     const sourceSchemas = Array.isArray(schemas) ? schemas : [];
     const sourceMembers = Array.isArray(members) ? members : [];
     if (!previousId || !nextId || previousId === nextId) {
-      return { schemas: sourceSchemas, members: sourceMembers, flow, renamed: false };
+      return { schemas: sourceSchemas, members: sourceMembers, flow, renamed: false, selection: null };
     }
     if (sourceSchemas.some((schema) => String(schema?.id || "").trim() === nextId)) {
       return {
@@ -2617,6 +2617,7 @@
         members: sourceMembers,
         flow,
         renamed: false,
+        selection: null,
         reason: "duplicate_schema_id",
       };
     }
@@ -2632,6 +2633,7 @@
         members: sourceMembers,
         flow,
         renamed: false,
+        selection: null,
         reason: "unknown_schema_id",
       };
     }
@@ -2640,7 +2642,13 @@
         ? { ...member, schema: nextId }
         : member
     );
-    return { schemas: nextSchemas, members: nextMembers, flow: reconcileFlowMemberSchemas(flow, nextMembers), renamed: true };
+    return {
+      schemas: nextSchemas,
+      members: nextMembers,
+      flow: reconcileFlowMemberSchemas(flow, nextMembers),
+      renamed: true,
+      selection: { kind: "schema", id: nextId },
+    };
   }
 
   function reconcileFlowMemberSteps(flow, members) {

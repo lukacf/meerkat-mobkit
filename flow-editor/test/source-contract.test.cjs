@@ -135,6 +135,9 @@ assert.match(controller, /function renameSchemaDefinition/, "controller plane mu
 assert.match(agents, /renameSchemaDefinition\(\{[\s\S]*schemas:\s*studio\.schemas,[\s\S]*members:\s*studio\.members,[\s\S]*flow,[\s\S]*\}, schema\.id, newId\)/, "Agent schema rename must pass Basic flow into the controller cascade");
 assert.match(agents, /if \(result\.flow !== flow && setFlow\) setFlow\(result\.flow\)/, "Agent schema rename must apply controller-reconciled Basic flow immediately");
 assert.match(controller, /renameSchemaDefinition[\s\S]*reconcileFlowMemberSchemas\(flow,\s*nextMembers\)/, "controller schema rename must reconcile Basic member-step schema refs with Agent member refs");
+assert.match(controller, /renameSchemaDefinition[\s\S]*selection:\s*\{\s*kind:\s*["']schema["'],\s*id:\s*nextId\s*\}/, "controller schema rename must own Agent schema selection transitions");
+assert.match(schemaEditorBlock, /const renameSchema = \(newId\) => \{[\s\S]*setAgentSel\(result\.selection\)/, "Agent schema rename must apply controller-projected schema selections");
+assert(!/setAgentSel\(\{\s*kind:\s*["']schema["'],\s*id:\s*String\(newId/.test(schemaEditorBlock), "Agent schema rename must not derive renamed schema selections locally");
 assert(!/studio\.members\.filter\(m => m\.schema === schema\.id\)[\s\S]{0,120}studio\.updateMember/.test(agents), "Agent editor must not rewrite member.schema refs directly when renaming schemas");
 assert.match(app, /MobKitFlowController\.reconcileAuthoringForMembers/, "app shell must ask the controller plane for member-change authoring reconciliation");
 assert.match(app, /reconcileAuthoringForMembers\(\{[\s\S]*flow,[\s\S]*instances:\s*studio\.instances,[\s\S]*edges:\s*studio\.edges,[\s\S]*mobSettings,[\s\S]*previousMembers,[\s\S]*members:\s*studio\.members/, "app member-change reconciliation must pass Basic, Graph, mob settings, and member context into the controller projection");

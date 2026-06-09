@@ -636,7 +636,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     studio.setSchemas(result.schemas);
     studio.setMembers(result.members);
     if (result.flow !== flow && setFlow) setFlow(result.flow);
-    setAgentSel({ kind: "schema", id: String(newId || "").trim() });
+    setAgentSel(result.selection);
   };
 
   return (
