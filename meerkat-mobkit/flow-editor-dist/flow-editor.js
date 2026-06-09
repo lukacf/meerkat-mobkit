@@ -14238,7 +14238,10 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       setFlow(nextFlow);
     }
   };
-  const update = (id, patch, operationType = "update_flow_step", operation = {}) => commitFlow(window.MobKitFlowController.flowStepUpdatePatch(flow, id, patch, { members }), {}, operationType, operation);
+  const update = (id, patch, operationType = "update_flow_step", operation = {}) => {
+    const payload = operationType === "update_flow_step" && !Object.keys(operation || {}).length ? { step_id: id, patch } : operation;
+    commitFlow(window.MobKitFlowController.flowStepUpdatePatch(flow, id, patch, { members }), {}, operationType, payload);
+  };
   const selStep = findStep(flow.steps, sel);
   const applyBasicInteraction = (result) => {
     if (!result) return;
@@ -14250,13 +14253,13 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     if (!newStep) return;
     const result = window.MobKitFlowController.flowStepInsertTransition(flow, laneRef, newStep, { members });
     if (!result.ok) return;
-    commitFlow(result.flow, {}, "insert_flow_step");
+    commitFlow(result.flow, {}, "insert_flow_step", { step: newStep, lane_ref: laneRef });
     setSel(result.selection);
     setPicker(result.picker);
   };
   const removeStep = (id) => {
     const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
-    commitFlow(result.flow, {}, "delete_flow_step");
+    commitFlow(result.flow, {}, "delete_flow_step", { step_id: id });
     setSel(result.selection);
     setPicker(result.picker);
   };

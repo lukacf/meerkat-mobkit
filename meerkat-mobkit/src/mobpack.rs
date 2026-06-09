@@ -987,24 +987,24 @@ pub fn mobpack_authoring_operations() -> Value {
         {
             "type": "insert_flow_step",
             "plane": "basic",
-            "authority": "mobkit_projection",
-            "requires": ["document"],
+            "authority": "mobkit",
+            "requires": ["step", "lane_ref"],
             "mutates": ["document.flow", "document.instances", "document.edges", "document.frames"],
             "projection_document_supported": true
         },
         {
             "type": "update_flow_step",
             "plane": "basic",
-            "authority": "mobkit_projection",
-            "requires": ["document"],
+            "authority": "mobkit",
+            "requires": ["step_id", "patch"],
             "mutates": ["document.flow", "document.instances", "document.edges", "document.frames"],
             "projection_document_supported": true
         },
         {
             "type": "delete_flow_step",
             "plane": "basic",
-            "authority": "mobkit_projection",
-            "requires": ["document"],
+            "authority": "mobkit",
+            "requires": ["step_id"],
             "mutates": ["document.flow", "document.instances", "document.edges", "document.frames"],
             "projection_document_supported": true
         },
@@ -3094,6 +3094,9 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
         "update_input_param" => apply_update_input_param_operation(&mut document, operation)?,
         "rename_input_param" => apply_rename_input_param_operation(&mut document, operation)?,
         "delete_input_param" => apply_delete_input_param_operation(&mut document, operation)?,
+        "insert_flow_step" => apply_insert_flow_step_operation(&mut document, operation)?,
+        "update_flow_step" => apply_update_flow_step_operation(&mut document, operation)?,
+        "delete_flow_step" => apply_delete_flow_step_operation(&mut document, operation)?,
         "insert_graph_node" => apply_insert_graph_node_operation(&mut document, operation)?,
         "update_graph_node" => apply_update_graph_node_operation(&mut document, operation)?,
         "move_graph_node" => apply_move_graph_node_operation(&mut document, operation)?,
@@ -3101,10 +3104,7 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
         "connect_graph_nodes" => apply_connect_graph_nodes_operation(&mut document, operation)?,
         "update_graph_edge" => apply_update_graph_edge_operation(&mut document, operation)?,
         "delete_graph_edge" => apply_delete_graph_edge_operation(&mut document, operation)?,
-        "insert_flow_step"
-        | "update_flow_step"
-        | "delete_flow_step"
-        | "replace_authoring_document" => {
+        "replace_authoring_document" => {
             apply_projected_authoring_document_operation(&mut document, operation)?
         }
         other => {
@@ -4243,6 +4243,394 @@ fn step_mut_by_path<'a>(steps: &'a mut [Value], path: &[StepPathSegment]) -> Opt
         }
         StepPathSegment::Index(_) => None,
     }
+}
+
+fn flow_step_ids(flow: &Value) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    if let Some(steps) = flow.get("steps").and_then(Value::as_array) {
+        collect_flow_step_ids_in_steps(steps, &mut ids);
+    }
+    ids
+}
+
+fn collect_flow_step_ids_in_steps(steps: &[Value], ids: &mut BTreeSet<String>) {
+    for step in steps {
+        if let Some(id) = step
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            ids.insert(id.to_string());
+        }
+        if let Some(nested) = step.get("steps").and_then(Value::as_array) {
+            collect_flow_step_ids_in_steps(nested, ids);
+        }
+        if let Some(branches) = step.get("branches").and_then(Value::as_array) {
+            for branch in branches {
+                if let Some(branch_steps) = branch.get("steps").and_then(Value::as_array) {
+                    collect_flow_step_ids_in_steps(branch_steps, ids);
+                }
+            }
+        }
+        if let Some(fallback) = step.get("fallback").and_then(Value::as_array) {
+            collect_flow_step_ids_in_steps(fallback, ids);
+        }
+    }
+}
+
+fn validate_flow_step(
+    step: &Value,
+    flow: &Value,
+    members: &Value,
+    current_id: Option<&str>,
+) -> Result<String, String> {
+    let id = step
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "flow step requires id".to_string())?
+        .to_string();
+    if let Some(current_id) = current_id {
+        if id != current_id {
+            return Err("update_flow_step cannot change step id".to_string());
+        }
+    }
+    let ids = flow_step_ids(flow);
+    if ids.contains(&id) && current_id.is_none_or(|current_id| current_id != id) {
+        return Err(format!("flow step already exists: {id}"));
+    }
+    if step.get("type").and_then(Value::as_str) == Some("member") {
+        let role = step
+            .get("role")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|role| !role.is_empty())
+            .ok_or_else(|| "member flow step must reference a member".to_string())?;
+        let members = graph_member_ids(members);
+        if !members.contains(role) {
+            return Err(format!(
+                "member flow step must reference an existing member: {role}"
+            ));
+        }
+    }
+    Ok(id)
+}
+
+fn flow_steps_array_mut(flow: &mut Value) -> Result<&mut Vec<Value>, String> {
+    if !flow.is_object() {
+        *flow = json!({ "steps": [] });
+    }
+    if flow.get("steps").is_none() {
+        flow["steps"] = Value::Array(Vec::new());
+    }
+    flow.get_mut("steps")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "flow.steps is not an array".to_string())
+}
+
+fn lane_ref_string(lane_ref: &serde_json::Map<String, Value>, field: &str) -> String {
+    lane_ref
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn lane_ref_index(lane_ref: &serde_json::Map<String, Value>, len: usize) -> usize {
+    lane_ref
+        .get("index")
+        .and_then(Value::as_u64)
+        .map(|index| (index as usize).min(len))
+        .unwrap_or(len)
+}
+
+fn insert_flow_step_into_lane(
+    steps: &mut Vec<Value>,
+    lane_ref: &serde_json::Map<String, Value>,
+    new_step: &Value,
+) -> bool {
+    if lane_ref_string(lane_ref, "lane") == "main" {
+        let index = lane_ref_index(lane_ref, steps.len());
+        steps.insert(index, new_step.clone());
+        return true;
+    }
+    let parent_id = lane_ref_string(lane_ref, "parentId");
+    let branch_id = lane_ref_string(lane_ref, "branchId");
+    for step in steps {
+        if step
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == parent_id)
+        {
+            return insert_flow_step_into_parent_lane(step, &branch_id, lane_ref, new_step);
+        }
+        if let Some(nested) = step.get_mut("steps").and_then(Value::as_array_mut) {
+            if insert_flow_step_into_lane(nested, lane_ref, new_step) {
+                return true;
+            }
+        }
+        if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+            for branch in branches {
+                if let Some(branch_steps) = branch.get_mut("steps").and_then(Value::as_array_mut) {
+                    if insert_flow_step_into_lane(branch_steps, lane_ref, new_step) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if let Some(fallback) = step.get_mut("fallback").and_then(Value::as_array_mut) {
+            if insert_flow_step_into_lane(fallback, lane_ref, new_step) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn insert_flow_step_into_parent_lane(
+    parent: &mut Value,
+    branch_id: &str,
+    lane_ref: &serde_json::Map<String, Value>,
+    new_step: &Value,
+) -> bool {
+    if branch_id == "body" {
+        if !parent.get("steps").is_some_and(Value::is_array) {
+            parent["steps"] = Value::Array(Vec::new());
+        }
+        if let Some(steps) = parent.get_mut("steps").and_then(Value::as_array_mut) {
+            let index = lane_ref_index(lane_ref, steps.len());
+            steps.insert(index, new_step.clone());
+            return true;
+        }
+    }
+    if branch_id == "fallback" {
+        if !parent.get("fallback").is_some_and(Value::is_array) {
+            parent["fallback"] = Value::Array(Vec::new());
+        }
+        if let Some(steps) = parent.get_mut("fallback").and_then(Value::as_array_mut) {
+            let index = lane_ref_index(lane_ref, steps.len());
+            steps.insert(index, new_step.clone());
+            return true;
+        }
+    }
+    if let Some(branches) = parent.get_mut("branches").and_then(Value::as_array_mut) {
+        for branch in branches {
+            if branch
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == branch_id)
+            {
+                if !branch.get("steps").is_some_and(Value::is_array) {
+                    branch["steps"] = Value::Array(Vec::new());
+                }
+                if let Some(steps) = branch.get_mut("steps").and_then(Value::as_array_mut) {
+                    let index = lane_ref_index(lane_ref, steps.len());
+                    steps.insert(index, new_step.clone());
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn remove_flow_step_from_steps(steps: &mut Vec<Value>, step_id: &str) -> bool {
+    let before = steps.len();
+    steps.retain(|step| {
+        step.get("id")
+            .and_then(Value::as_str)
+            .is_none_or(|id| id != step_id)
+    });
+    let mut removed = steps.len() != before;
+    for step in steps {
+        if let Some(nested) = step.get_mut("steps").and_then(Value::as_array_mut) {
+            removed |= remove_flow_step_from_steps(nested, step_id);
+        }
+        if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+            for branch in branches {
+                if let Some(branch_steps) = branch.get_mut("steps").and_then(Value::as_array_mut) {
+                    removed |= remove_flow_step_from_steps(branch_steps, step_id);
+                }
+            }
+        }
+        if let Some(fallback) = step.get_mut("fallback").and_then(Value::as_array_mut) {
+            removed |= remove_flow_step_from_steps(fallback, step_id);
+        }
+    }
+    removed
+}
+
+fn clear_deleted_flow_step_references(flow: &mut Value, deleted_id: &str) {
+    let Some(steps) = flow.get_mut("steps").and_then(Value::as_array_mut) else {
+        return;
+    };
+    clear_deleted_flow_step_references_in_steps(steps, deleted_id);
+}
+
+fn clear_deleted_flow_step_references_in_steps(steps: &mut [Value], deleted_id: &str) {
+    for step in steps {
+        clear_deleted_launch_source(step, deleted_id);
+        match step.get("type").and_then(Value::as_str) {
+            Some("repeat") => {
+                if let Some(cond) = step.get_mut("cond") {
+                    clear_deleted_flow_step_condition(cond, deleted_id);
+                }
+                if let Some(until) = step.get_mut("until") {
+                    clear_deleted_flow_step_condition_text(until, deleted_id);
+                }
+                if let Some(nested) = step.get_mut("steps").and_then(Value::as_array_mut) {
+                    clear_deleted_flow_step_references_in_steps(nested, deleted_id);
+                }
+            }
+            Some("branch") => {
+                if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+                    for branch in branches {
+                        if let Some(cond) = branch.get_mut("cond") {
+                            clear_deleted_flow_step_condition(cond, deleted_id);
+                        }
+                        if let Some(condition) = branch.get_mut("condition") {
+                            clear_deleted_flow_step_condition_text(condition, deleted_id);
+                        }
+                        if let Some(branch_steps) =
+                            branch.get_mut("steps").and_then(Value::as_array_mut)
+                        {
+                            clear_deleted_flow_step_references_in_steps(branch_steps, deleted_id);
+                        }
+                    }
+                }
+                if let Some(fallback) = step.get_mut("fallback").and_then(Value::as_array_mut) {
+                    clear_deleted_flow_step_references_in_steps(fallback, deleted_id);
+                }
+            }
+            Some("parallel") => {
+                if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+                    for branch in branches {
+                        if let Some(branch_steps) =
+                            branch.get_mut("steps").and_then(Value::as_array_mut)
+                        {
+                            clear_deleted_flow_step_references_in_steps(branch_steps, deleted_id);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn clear_deleted_flow_step_condition(cond: &mut Value, deleted_id: &str) {
+    let Some(object) = cond.as_object() else {
+        return;
+    };
+    let step_id = object
+        .get("stepId")
+        .or_else(|| object.get("step_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if step_id == deleted_id {
+        *cond = json!({});
+    }
+}
+
+fn clear_deleted_flow_step_condition_text(text: &mut Value, deleted_id: &str) {
+    let Some(raw) = text.as_str() else {
+        return;
+    };
+    if raw.contains(&format!("steps.{deleted_id}."))
+        || raw.trim_start().starts_with(&format!("{deleted_id}."))
+    {
+        *text = Value::String(String::new());
+    }
+}
+
+fn apply_insert_flow_step_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some() && operation.get("step").is_none() {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let step = operation
+        .get("step")
+        .cloned()
+        .ok_or_else(|| "insert_flow_step requires step object".to_string())?;
+    let lane_ref = operation
+        .get("lane_ref")
+        .or_else(|| operation.get("laneRef"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| "insert_flow_step requires lane_ref object".to_string())?;
+    let step_id = validate_flow_step(&step, &document.flow, &document.members, None)?;
+    let steps = flow_steps_array_mut(&mut document.flow)?;
+    if !insert_flow_step_into_lane(steps, lane_ref, &step) {
+        return Err("insert_flow_step lane_ref did not match a flow lane".to_string());
+    }
+    Ok(json!({ "kind": "step", "id": step_id }))
+}
+
+fn apply_update_flow_step_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("step_id")
+            .or_else(|| operation.get("stepId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let step_id = operation_step_id(operation)?;
+    let patch = operation
+        .get("patch")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "update_flow_step requires patch object".to_string())?;
+    let current = flow_step_mut_by_id(&mut document.flow, &step_id)
+        .ok_or_else(|| format!("flow step not found: {step_id}"))?
+        .clone();
+    let mut next_step = current;
+    let object = next_step
+        .as_object_mut()
+        .ok_or_else(|| format!("flow step is not an object: {step_id}"))?;
+    for (key, value) in patch {
+        if key == "id" {
+            return Err("update_flow_step cannot change step id".to_string());
+        }
+        object.insert(key.clone(), value.clone());
+    }
+    validate_flow_step(
+        &next_step,
+        &document.flow,
+        &document.members,
+        Some(&step_id),
+    )?;
+    *flow_step_mut_by_id(&mut document.flow, &step_id)
+        .ok_or_else(|| format!("flow step not found: {step_id}"))? = next_step;
+    Ok(json!({ "kind": "step", "id": step_id }))
+}
+
+fn apply_delete_flow_step_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("step_id")
+            .or_else(|| operation.get("stepId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let step_id = operation_step_id(operation)?;
+    let steps = flow_steps_array_mut(&mut document.flow)?;
+    if !remove_flow_step_from_steps(steps, &step_id) {
+        return Err(format!("flow step not found: {step_id}"));
+    }
+    clear_deleted_flow_step_references(&mut document.flow, &step_id);
+    Ok(json!({ "kind": null, "id": null }))
 }
 
 fn input_params_mut_for_step<'a>(
@@ -20455,6 +20843,116 @@ model = "gpt-5.5"
                 .expect("schemas")
                 .len(),
             0
+        );
+    }
+
+    #[test]
+    fn apply_operation_mutates_flow_steps_without_projected_document() {
+        let mut document = valid_document();
+        document.mob_toml = None;
+        document.members = json!([
+            {
+                "id": "planner",
+                "name": "planner",
+                "role": "planner",
+                "profileBinding": "inline",
+                "runtimeMode": "turn_driven",
+                "model": "gpt-5.5",
+                "tools": []
+            },
+            {
+                "id": "reviewer",
+                "name": "reviewer",
+                "role": "reviewer",
+                "profileBinding": "inline",
+                "runtimeMode": "turn_driven",
+                "model": "gpt-5.5",
+                "tools": []
+            }
+        ]);
+        document.flow = json!({
+            "id": "main",
+            "steps": [
+                { "type": "member", "id": "plan", "role": "planner", "instruction": "Plan." },
+                {
+                    "type": "branch",
+                    "id": "route",
+                    "branches": [{
+                        "id": "approved",
+                        "cond": { "stepId": "review", "field": "verdict", "op": "==", "val": "green" },
+                        "condition": "steps.review.verdict == green",
+                        "steps": []
+                    }],
+                    "fallback": []
+                }
+            ]
+        });
+
+        let inserted = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "insert_flow_step",
+                "lane_ref": { "lane": "main", "index": 1 },
+                "step": { "type": "member", "id": "review", "role": "reviewer", "instruction": "Review." }
+            }
+        }))
+        .expect("insert flow step");
+        assert_eq!(inserted["selection"]["id"], json!("review"));
+        assert_eq!(
+            inserted["document"]["flow"]["steps"][1]["id"],
+            json!("review")
+        );
+
+        let nested = apply_mobpack_authoring_operation(&json!({
+            "document": inserted["document"],
+            "operation": {
+                "type": "insert_flow_step",
+                "lane_ref": { "parentId": "route", "branchId": "approved", "index": 0 },
+                "step": { "type": "member", "id": "approve", "role": "planner", "instruction": "Approve." }
+            }
+        }))
+        .expect("insert nested flow step");
+        assert_eq!(
+            nested["document"]["flow"]["steps"][2]["branches"][0]["steps"][0]["id"],
+            json!("approve")
+        );
+
+        let updated = apply_mobpack_authoring_operation(&json!({
+            "document": nested["document"],
+            "operation": {
+                "type": "update_flow_step",
+                "step_id": "review",
+                "patch": { "instruction": "Review carefully." }
+            }
+        }))
+        .expect("update flow step");
+        assert_eq!(
+            updated["document"]["flow"]["steps"][1]["instruction"],
+            json!("Review carefully.")
+        );
+
+        let deleted = apply_mobpack_authoring_operation(&json!({
+            "document": updated["document"],
+            "operation": {
+                "type": "delete_flow_step",
+                "step_id": "review"
+            }
+        }))
+        .expect("delete flow step");
+        assert!(
+            !deleted["document"]["flow"]["steps"]
+                .as_array()
+                .expect("steps")
+                .iter()
+                .any(|step| step["id"] == "review")
+        );
+        assert_eq!(
+            deleted["document"]["flow"]["steps"][1]["branches"][0]["cond"],
+            json!({})
+        );
+        assert_eq!(
+            deleted["document"]["flow"]["steps"][1]["branches"][0]["condition"],
+            json!("")
         );
     }
 

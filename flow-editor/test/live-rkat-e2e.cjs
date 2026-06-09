@@ -78,6 +78,9 @@ async function assertAuthoringCapabilities() {
     "add_input_param",
     "rename_input_param",
     "delete_input_param",
+    "insert_flow_step",
+    "update_flow_step",
+    "delete_flow_step",
     "insert_graph_node",
     "update_graph_node",
     "move_graph_node",
@@ -1668,6 +1671,99 @@ async function validateGraphOperations(catalogs) {
   };
 }
 
+async function validateFlowStepOperations(catalogs) {
+  const document = JSON.parse(JSON.stringify(catalogs.blank_mobpack.document));
+  document.members = [
+    {
+      id: "planner",
+      name: "planner",
+      role: "planner",
+      profileBinding: "inline",
+      runtimeMode: "turn_driven",
+      model: "gpt-5.5",
+      tools: [],
+      skills: [],
+    },
+    {
+      id: "reviewer",
+      name: "reviewer",
+      role: "reviewer",
+      profileBinding: "inline",
+      runtimeMode: "turn_driven",
+      model: "gpt-5.5",
+      tools: [],
+      skills: [],
+    },
+  ];
+  document.flow = {
+    id: "main",
+    steps: [
+      { type: "member", id: "plan", role: "planner", instruction: "Plan." },
+      {
+        type: "branch",
+        id: "route",
+        branches: [{
+          id: "approved",
+          cond: { stepId: "review", field: "verdict", op: "==", val: "green" },
+          condition: "steps.review.verdict == green",
+          steps: [],
+        }],
+        fallback: [],
+      },
+    ],
+  };
+  const inserted = await rpc("mobkit/mobpacks/apply_operation", {
+    document,
+    operation: {
+      type: "insert_flow_step",
+      lane_ref: { lane: "main", index: 1 },
+      step: { type: "member", id: "review", role: "reviewer", instruction: "Review." },
+    },
+  });
+  const nested = await rpc("mobkit/mobpacks/apply_operation", {
+    document: inserted.document,
+    operation: {
+      type: "insert_flow_step",
+      lane_ref: { parentId: "route", branchId: "approved", index: 0 },
+      step: { type: "member", id: "approve", role: "planner", instruction: "Approve." },
+    },
+  });
+  if (nested.document.flow.steps[2]?.branches?.[0]?.steps?.[0]?.id !== "approve") {
+    throw new Error(`nested flow step insert did not mutate branch lane: ${JSON.stringify(nested.document.flow)}`);
+  }
+  const updated = await rpc("mobkit/mobpacks/apply_operation", {
+    document: nested.document,
+    operation: {
+      type: "update_flow_step",
+      step_id: "review",
+      patch: { instruction: "Review carefully." },
+    },
+  });
+  if (updated.document.flow.steps[1]?.instruction !== "Review carefully.") {
+    throw new Error(`flow step update did not apply patch: ${JSON.stringify(updated.document.flow.steps)}`);
+  }
+  const deleted = await rpc("mobkit/mobpacks/apply_operation", {
+    document: updated.document,
+    operation: {
+      type: "delete_flow_step",
+      step_id: "review",
+    },
+  });
+  if (deleted.document.flow.steps.some((step) => step.id === "review")) {
+    throw new Error(`flow step delete did not remove step: ${JSON.stringify(deleted.document.flow.steps)}`);
+  }
+  if (Object.keys(deleted.document.flow.steps[1]?.branches?.[0]?.cond || {}).length !== 0 || deleted.document.flow.steps[1]?.branches?.[0]?.condition !== "") {
+    throw new Error(`flow step delete did not clear deleted-step conditions: ${JSON.stringify(deleted.document.flow.steps[1])}`);
+  }
+  return {
+    inserted: inserted.selection.id,
+    nested: nested.document.flow.steps[2].branches[0].steps[0].id,
+    updatedInstruction: updated.document.flow.steps[1].instruction,
+    remainingSteps: deleted.document.flow.steps.map((step) => step.id),
+    operations: [inserted.operation, nested.operation, updated.operation, deleted.operation],
+  };
+}
+
 (async () => {
   run("rkat", ["mob", "--help"]);
 
@@ -1872,6 +1968,7 @@ async function validateGraphOperations(catalogs) {
     documentBackedDeployPreview: await validateDocumentBackedDeployPreview(sample.document),
     namedProjectedOperations: await validateNamedProjectedOperations(catalogs),
     inputParamOperations: await validateInputParamOperations(catalogs),
+    flowStepOperations: await validateFlowStepOperations(catalogs),
     graphOperations: await validateGraphOperations(catalogs),
     deploy: null,
   };
