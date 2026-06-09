@@ -5496,64 +5496,14 @@ const schemaDraftContract = {
     },
   },
 };
-assert.deepEqual(controller.schemaDefinitionAddPatch([{ id: "Artifact1" }], schemaDraftContract), {
-  schema: {
-    id: "Artifact2",
-    description: "",
-    fields: [{ id: "f1", name: "field_one", type: "enum", required: true, description: "", enumValues: [] }],
-  },
-  schemas: [
-    { id: "Artifact1" },
-    { id: "Artifact2", description: "", fields: [{ id: "f1", name: "field_one", type: "enum", required: true, description: "", enumValues: [] }] },
-  ],
-});
-assert.deepEqual(controller.schemaDefinitionAddTransition([{ id: "Artifact1" }], schemaDraftContract), {
-  ok: true,
-  schema: {
-    id: "Artifact2",
-    description: "",
-    fields: [{ id: "f1", name: "field_one", type: "enum", required: true, description: "", enumValues: [] }],
-  },
-  schemas: [
-    { id: "Artifact1" },
-    { id: "Artifact2", description: "", fields: [{ id: "f1", name: "field_one", type: "enum", required: true, description: "", enumValues: [] }] },
-  ],
-  selection: { kind: "schema", id: "Artifact2" },
-});
+assert.equal(controller.schemaDefinitionAddPatch, undefined);
+assert.equal(controller.schemaDefinitionAddTransition, undefined);
 assert.deepEqual(controller.schemaDescriptionPatch(" Review output.\n"), { description: " Review output.\n" });
 assert.equal(controller.uniqueSchemaFieldName([
   { id: "f1", name: "field" },
   { id: "f2", name: "field_2" },
 ], "9 field!"), "_9_field");
-assert.deepEqual(controller.schemaFieldAddPatch({
-  fields: [{ id: "f1", name: "new_field", type: "string" }],
-}, schemaDraftContract), {
-  field: { id: "f2", name: "new_field_2", type: "enum", required: false, description: "", enumValues: [] },
-  patch: { fields: [
-    { id: "f1", name: "new_field", type: "string" },
-    { id: "f2", name: "new_field_2", type: "enum", required: false, description: "", enumValues: [] },
-  ] },
-});
-assert.deepEqual(controller.schemaDefinitionAddPatch([], {
-  mob_definition: {
-    defaults: { schema_field_type: "enum" },
-    editor_schema_field_types: ["enum", "string"],
-  },
-}), {
-  ok: false,
-  error: "MobKit schema is missing mob_definition.editor_schema_draft",
-  schemas: [],
-});
-assert.deepEqual(controller.schemaDefinitionAddTransition([], {
-  mob_definition: {
-    defaults: { schema_field_type: "enum" },
-    editor_schema_field_types: ["enum", "string"],
-  },
-}), {
-  ok: false,
-  error: "MobKit schema is missing mob_definition.editor_schema_draft",
-  schemas: [],
-});
+assert.equal(controller.schemaFieldAddPatch, undefined);
 assert.deepEqual(controller.schemaDefinitionAddErrorState({
   ok: false,
   error: "MobKit schema is missing mob_definition.editor_schema_draft",
@@ -5566,18 +5516,6 @@ assert.deepEqual(controller.schemaDefinitionAddErrorState({ ok: true }), {
   hasError: false,
   text: "",
   rawError: "",
-});
-assert.deepEqual(controller.schemaFieldAddPatch({
-  fields: [{ id: "f1", name: "existing", type: "string" }],
-}, {
-  mob_definition: {
-    defaults: { schema_field_type: "enum" },
-    editor_schema_field_types: ["enum", "string"],
-  },
-}), {
-  ok: false,
-  error: "MobKit schema is missing mob_definition.editor_schema_draft",
-  patch: { fields: [{ id: "f1", name: "existing", type: "string" }] },
 });
 assert.deepEqual(controller.schemaFieldAddErrorState({
   ok: false,

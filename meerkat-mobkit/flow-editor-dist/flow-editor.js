@@ -4177,43 +4177,6 @@ window.MOBKIT_BOOT = {
     return `${base}_${i}`;
   }
 
-  function schemaDefinitionAddPatch(existingSchemas, contract) {
-    const schemas = Array.isArray(existingSchemas) ? existingSchemas : [];
-    const draft = editorSchemaDraftContract(contract);
-    if (!draft) {
-      return {
-        ok: false,
-        error: "MobKit schema is missing mob_definition.editor_schema_draft",
-        schemas,
-      };
-    }
-    let n = 1;
-    while (schemas.some((schema) => schema?.id === `${draft.schemaIdPrefix}${n}`)) n += 1;
-    const schema = {
-      id: `${draft.schemaIdPrefix}${n}`,
-      description: "",
-      fields: [{
-        id: "f1",
-        name: uniqueSchemaFieldName([], draft.initialField.name),
-        type: draft.schemaFieldType,
-        required: draft.initialField.required,
-        description: draft.initialField.description,
-        enumValues: draft.initialField.enumValues,
-      }],
-    };
-    return { schema, schemas: [...schemas, schema] };
-  }
-
-  function schemaDefinitionAddTransition(existingSchemas, contract) {
-    const result = schemaDefinitionAddPatch(existingSchemas, contract);
-    if (result.ok === false) return result;
-    return {
-      ...result,
-      ok: true,
-      selection: { kind: "schema", id: result.schema.id },
-    };
-  }
-
   function schemaDescriptionPatch(rawDescription) {
     return { description: String(rawDescription || "") };
   }
@@ -4453,28 +4416,6 @@ window.MOBKIT_BOOT = {
       flow: reconciled.flow,
       edges: reconciled.edges,
     };
-  }
-
-  function schemaFieldAddPatch(schema, contract) {
-    const fields = Array.isArray(schema?.fields) ? schema.fields : [];
-    const draft = editorSchemaDraftContract(contract);
-    if (!draft) {
-      return {
-        ok: false,
-        error: "MobKit schema is missing mob_definition.editor_schema_draft",
-        patch: { fields },
-      };
-    }
-    const nextNumber = Math.max(0, ...fields.map((field) => Number(String(field?.id || "f0").slice(1)) || 0)) + 1;
-    const field = {
-      id: `f${nextNumber}`,
-      name: uniqueSchemaFieldName(fields, draft.addedField.name),
-      type: draft.schemaFieldType,
-      required: draft.addedField.required,
-      description: draft.addedField.description,
-      enumValues: draft.addedField.enumValues,
-    };
-    return { field, patch: { fields: [...fields, field] } };
   }
 
   function directMemberAddValidation(member, members = [], contract = null) {
@@ -11636,7 +11577,6 @@ window.MOBKIT_BOOT = {
     agentDefinitionAddErrorState,
     memberSchemaChangeErrorState,
     schemaDefinitionAddErrorState,
-    schemaDefinitionAddTransition,
     schemaFieldAddErrorState,
     inputParamAddErrorState,
     basicEditorViewState,
@@ -11751,7 +11691,6 @@ window.MOBKIT_BOOT = {
     uniqueInputParamName,
     schemaFieldName,
     uniqueSchemaFieldName,
-    schemaDefinitionAddPatch,
     schemaDescriptionPatch,
     schemaLikeFieldTypeControlState,
     schemaFieldRowControlState,
@@ -11763,7 +11702,6 @@ window.MOBKIT_BOOT = {
     enumValueCommitPatch,
     enumValueDeletePatch,
     enumValueAddPatch,
-    schemaFieldAddPatch,
     schemaFieldUpdatePatch,
     schemaFieldUpdateCascadePatch,
     schemaFieldRenameCascadePatch,
@@ -13366,21 +13304,28 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
     {
       className: "agents-list__add",
       onClick: () => {
-        const result = window.MobKitFlowController.schemaDefinitionAddTransition(studio.schemas, contract);
-        setSchemaAddResult(result);
-        if (result.ok === false) return;
         if (!applyAuthoringReplacement) {
           setSchemaAddResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
           return;
         }
+        setSchemaAddResult(null);
         applyAuthoringReplacement({
           operationType: "add_schema",
-          operation: { schema: result.schema },
-          studio: { schemas: result.schemas },
-          selection: result.selection
+          operation: {}
+        }).then((result) => {
+          if (result?.ok === false) {
+            setSchemaAddResult(result);
+            return;
+          }
+          const selection = result?.selection;
+          setSchemaAddResult(null);
+          if (selection?.kind) setAgentSel(selection);
+        }).catch((error) => {
+          setSchemaAddResult({
+            ok: false,
+            error: error?.message || String(error || "add_schema failed")
+          });
         });
-        setSchemaAddResult(null);
-        setAgentSel(result.selection);
       }
     },
     listState.addSchemaLabel
@@ -13775,19 +13720,26 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     });
   };
   const addField = () => {
-    const result = window.MobKitFlowController.schemaFieldAddPatch(schema, contract);
-    setFieldAddResult(result);
-    if (result.ok === false) return;
+    if (!applyAuthoringReplacement) {
+      setFieldAddResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      return;
+    }
     setFieldAddResult(null);
-    const next = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas: studio.schemas }, schema.id, result.patch);
-    applySchemaCascade({
-      schemas: next.schemas,
-      members: studio.members,
-      flow,
-      edges: studio.edges
-    }, { kind: "schema", id: schema.id }, "add_schema_field", {
-      schema_id: schema.id,
-      field: result.field
+    applyAuthoringReplacement({
+      operationType: "add_schema_field",
+      operation: { schema_id: schema.id },
+      selection: { kind: "schema", id: schema.id }
+    }).then((result) => {
+      if (result?.ok === false) {
+        setFieldAddResult(result);
+        return;
+      }
+      setFieldAddResult(null);
+    }).catch((error) => {
+      setFieldAddResult({
+        ok: false,
+        error: error?.message || String(error || "add_schema_field failed")
+      });
     });
   };
   const deleteSchema = () => {
@@ -15228,17 +15180,12 @@ function App() {
       });
       return next;
     },
-    addSchema: (schema) => {
-      const next = window.MobKitFlowController.studioAddSchemaPatch({ schemas: studio.schemas }, schema);
-      if (next.ok && next.schema) {
-        applyMobKitAuthoringReplacement({
-          operationType: "add_schema",
-          operation: { schema: next.schema },
-          studio: { schemas: next.schemas },
-          selection: { kind: "schema", id: next.schema.id }
-        });
-      }
-      return next;
+    addSchema: () => {
+      applyMobKitAuthoringReplacement({
+        operationType: "add_schema",
+        operation: {}
+      });
+      return { ok: true };
     },
     updateSchema: (id, patch) => {
       const next = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas: studio.schemas }, id, patch);

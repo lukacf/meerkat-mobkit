@@ -4144,43 +4144,6 @@
     return `${base}_${i}`;
   }
 
-  function schemaDefinitionAddPatch(existingSchemas, contract) {
-    const schemas = Array.isArray(existingSchemas) ? existingSchemas : [];
-    const draft = editorSchemaDraftContract(contract);
-    if (!draft) {
-      return {
-        ok: false,
-        error: "MobKit schema is missing mob_definition.editor_schema_draft",
-        schemas,
-      };
-    }
-    let n = 1;
-    while (schemas.some((schema) => schema?.id === `${draft.schemaIdPrefix}${n}`)) n += 1;
-    const schema = {
-      id: `${draft.schemaIdPrefix}${n}`,
-      description: "",
-      fields: [{
-        id: "f1",
-        name: uniqueSchemaFieldName([], draft.initialField.name),
-        type: draft.schemaFieldType,
-        required: draft.initialField.required,
-        description: draft.initialField.description,
-        enumValues: draft.initialField.enumValues,
-      }],
-    };
-    return { schema, schemas: [...schemas, schema] };
-  }
-
-  function schemaDefinitionAddTransition(existingSchemas, contract) {
-    const result = schemaDefinitionAddPatch(existingSchemas, contract);
-    if (result.ok === false) return result;
-    return {
-      ...result,
-      ok: true,
-      selection: { kind: "schema", id: result.schema.id },
-    };
-  }
-
   function schemaDescriptionPatch(rawDescription) {
     return { description: String(rawDescription || "") };
   }
@@ -4420,28 +4383,6 @@
       flow: reconciled.flow,
       edges: reconciled.edges,
     };
-  }
-
-  function schemaFieldAddPatch(schema, contract) {
-    const fields = Array.isArray(schema?.fields) ? schema.fields : [];
-    const draft = editorSchemaDraftContract(contract);
-    if (!draft) {
-      return {
-        ok: false,
-        error: "MobKit schema is missing mob_definition.editor_schema_draft",
-        patch: { fields },
-      };
-    }
-    const nextNumber = Math.max(0, ...fields.map((field) => Number(String(field?.id || "f0").slice(1)) || 0)) + 1;
-    const field = {
-      id: `f${nextNumber}`,
-      name: uniqueSchemaFieldName(fields, draft.addedField.name),
-      type: draft.schemaFieldType,
-      required: draft.addedField.required,
-      description: draft.addedField.description,
-      enumValues: draft.addedField.enumValues,
-    };
-    return { field, patch: { fields: [...fields, field] } };
   }
 
   function directMemberAddValidation(member, members = [], contract = null) {
@@ -11603,7 +11544,6 @@
     agentDefinitionAddErrorState,
     memberSchemaChangeErrorState,
     schemaDefinitionAddErrorState,
-    schemaDefinitionAddTransition,
     schemaFieldAddErrorState,
     inputParamAddErrorState,
     basicEditorViewState,
@@ -11718,7 +11658,6 @@
     uniqueInputParamName,
     schemaFieldName,
     uniqueSchemaFieldName,
-    schemaDefinitionAddPatch,
     schemaDescriptionPatch,
     schemaLikeFieldTypeControlState,
     schemaFieldRowControlState,
@@ -11730,7 +11669,6 @@
     enumValueCommitPatch,
     enumValueDeletePatch,
     enumValueAddPatch,
-    schemaFieldAddPatch,
     schemaFieldUpdatePatch,
     schemaFieldUpdateCascadePatch,
     schemaFieldRenameCascadePatch,

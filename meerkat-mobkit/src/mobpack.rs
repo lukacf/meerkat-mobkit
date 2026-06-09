@@ -926,7 +926,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "add_schema",
             "plane": "agent",
             "authority": "mobkit",
-            "requires": ["schema"],
+            "requires": [],
             "mutates": ["document.schemas"],
             "projection_document_supported": true
         },
@@ -958,7 +958,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "add_schema_field",
             "plane": "agent",
             "authority": "mobkit",
-            "requires": ["schema_id", "field"],
+            "requires": ["schema_id"],
             "mutates": ["document.schemas"],
             "projection_document_supported": true
         },
@@ -3457,17 +3457,151 @@ fn apply_assign_member_schema_operation(
     Ok(json!({ "kind": "agent", "id": member_id }))
 }
 
+fn next_schema_id(schemas: &[Value], prefix: &str) -> String {
+    let prefix = input_param_name(prefix, "Artifact");
+    let used = schemas
+        .iter()
+        .filter_map(|schema| schema.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .collect::<BTreeSet<_>>();
+    let mut index = 1;
+    loop {
+        let id = format!("{prefix}{index}");
+        if !used.contains(id.as_str()) {
+            return id;
+        }
+        index += 1;
+    }
+}
+
+fn next_schema_field_id(fields: &[Value]) -> String {
+    let used = fields
+        .iter()
+        .filter_map(|field| field.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .collect::<BTreeSet<_>>();
+    let mut index = 1;
+    loop {
+        let id = format!("f{index}");
+        if !used.contains(id.as_str()) {
+            return id;
+        }
+        index += 1;
+    }
+}
+
+fn unique_schema_draft_field_name(fields: &[Value], raw: &str) -> String {
+    let base = input_param_name(raw, "field");
+    let taken = fields
+        .iter()
+        .filter_map(|field| field.get("name").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect::<BTreeSet<_>>();
+    if !taken.contains(base.as_str()) {
+        return base;
+    }
+    let mut index = 2;
+    loop {
+        let candidate = format!("{base}_{index}");
+        if !taken.contains(candidate.as_str()) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn schema_draft_contract() -> Result<(Value, String), String> {
+    let schema = mobpack_schema_response();
+    let mob_definition = schema
+        .get("mob_definition")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "MobKit schema is missing mob_definition".to_string())?;
+    let field_type = mob_definition
+        .get("defaults")
+        .and_then(Value::as_object)
+        .and_then(|defaults| defaults.get("schema_field_type"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("string");
+    if !is_editor_schema_field_type(field_type) {
+        return Err(format!(
+            "MobKit schema default schema_field_type is unsupported: {field_type}"
+        ));
+    }
+    let draft = mob_definition
+        .get("editor_schema_draft")
+        .cloned()
+        .filter(Value::is_object)
+        .ok_or_else(|| "MobKit schema is missing mob_definition.editor_schema_draft".to_string())?;
+    Ok((draft, field_type.to_string()))
+}
+
+fn schema_field_from_draft(fields: &[Value], field_key: &str) -> Result<Value, String> {
+    let (draft, field_type) = schema_draft_contract()?;
+    let field = draft
+        .get(field_key)
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("MobKit schema is missing editor_schema_draft.{field_key}"))?;
+    let name = field
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("field");
+    let enum_values = field
+        .get("enumValues")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok(json!({
+        "id": next_schema_field_id(fields),
+        "name": unique_schema_draft_field_name(fields, name),
+        "type": field_type,
+        "required": field.get("required").and_then(Value::as_bool).unwrap_or(true),
+        "description": field.get("description").and_then(Value::as_str).unwrap_or(""),
+        "enumValues": enum_values,
+    }))
+}
+
+fn schema_from_draft(schemas: &[Value]) -> Result<Value, String> {
+    let (draft, _) = schema_draft_contract()?;
+    let prefix = draft
+        .get("schema_id_prefix")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Artifact");
+    Ok(json!({
+        "id": next_schema_id(schemas, prefix),
+        "description": "",
+        "fields": [schema_field_from_draft(&[], "initial_field")?],
+    }))
+}
+
 fn apply_add_schema_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some() && operation.get("schema").is_none() {
+    if operation.get("document").is_some()
+        && operation.get("schema").is_none()
+        && !operation.contains_key("type")
+    {
         return apply_projected_authoring_document_operation(document, operation);
     }
+    let mut schemas = document
+        .schemas
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
     let schema = operation
         .get("schema")
         .cloned()
-        .ok_or_else(|| "add_schema requires schema object".to_string())?;
+        .map(Ok)
+        .unwrap_or_else(|| schema_from_draft(&schemas))?;
     let schema_id = schema
         .get("id")
         .and_then(Value::as_str)
@@ -3475,11 +3609,6 @@ fn apply_add_schema_operation(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "add_schema requires schema.id".to_string())?
         .to_string();
-    let mut schemas = document
-        .schemas
-        .as_array()
-        .cloned()
-        .unwrap_or_else(Vec::new);
     if schemas.iter().any(|schema| {
         schema
             .get("id")
@@ -3617,10 +3746,6 @@ fn apply_add_schema_field_operation(
         return apply_projected_authoring_document_operation(document, operation);
     }
     let schema_id = operation_schema_id(operation)?;
-    let field = operation
-        .get("field")
-        .cloned()
-        .ok_or_else(|| "add_schema_field requires field object".to_string())?;
     let mut schemas = document
         .schemas
         .as_array()
@@ -3636,6 +3761,11 @@ fn apply_add_schema_field_operation(
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| format!("schema fields is not an array: {schema_id}"))?;
+    let field = operation
+        .get("field")
+        .cloned()
+        .map(Ok)
+        .unwrap_or_else(|| schema_field_from_draft(fields, "added_field"))?;
     let field_id = field
         .get("id")
         .and_then(Value::as_str)
@@ -22283,6 +22413,51 @@ model = "gpt-5.5"
                 }
             ]
         });
+
+        let added_schema = apply_mobpack_authoring_operation(&json!({
+            "document": document.clone(),
+            "operation": {
+                "type": "add_schema"
+            }
+        }))
+        .expect("add schema from semantic operation");
+        assert_eq!(added_schema["selection"]["id"], json!("Artifact1"));
+        assert_eq!(
+            added_schema["document"]["schemas"][1],
+            json!({
+                "id": "Artifact1",
+                "description": "",
+                "fields": [{
+                    "id": "f1",
+                    "name": "field_one",
+                    "type": "string",
+                    "required": true,
+                    "description": "",
+                    "enumValues": []
+                }]
+            })
+        );
+
+        let added_field = apply_mobpack_authoring_operation(&json!({
+            "document": document.clone(),
+            "operation": {
+                "type": "add_schema_field",
+                "schema_id": "Review"
+            }
+        }))
+        .expect("add schema field from semantic operation");
+        assert_eq!(added_field["selection"]["field_id"], json!("f3"));
+        assert_eq!(
+            added_field["document"]["schemas"][0]["fields"][2],
+            json!({
+                "id": "f3",
+                "name": "new_field",
+                "type": "string",
+                "required": false,
+                "description": "",
+                "enumValues": []
+            })
+        );
 
         let renamed = apply_mobpack_authoring_operation(&json!({
             "document": document,

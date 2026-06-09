@@ -711,17 +711,12 @@ function App() {
       });
       return next;
     },
-    addSchema: (schema) => {
-      const next = window.MobKitFlowController.studioAddSchemaPatch({ schemas: studio.schemas }, schema);
-      if (next.ok && next.schema) {
-        applyMobKitAuthoringReplacement({
-          operationType: "add_schema",
-          operation: { schema: next.schema },
-          studio: { schemas: next.schemas },
-          selection: { kind: "schema", id: next.schema.id },
-        });
-      }
-      return next;
+    addSchema: () => {
+      applyMobKitAuthoringReplacement({
+        operationType: "add_schema",
+        operation: {},
+      });
+      return { ok: true };
     },
     updateSchema: (id, patch) => {
       const next = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas: studio.schemas }, id, patch);

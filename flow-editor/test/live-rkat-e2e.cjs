@@ -1554,6 +1554,44 @@ async function validateInputParamOperations(catalogs) {
   };
 }
 
+async function validateSchemaOperations(catalogs) {
+  const document = JSON.parse(JSON.stringify(catalogs.blank_mobpack.document));
+  document.schemas = [{
+    id: "Review",
+    description: "Review result",
+    fields: [{ id: "f1", name: "verdict", type: "string", required: true, description: "", enumValues: [] }],
+  }];
+
+  const addedSchema = await rpc("mobkit/mobpacks/apply_operation", {
+    document,
+    operation: {
+      type: "add_schema",
+    },
+  });
+  if (addedSchema.selection?.id !== "Artifact1" || addedSchema.document.schemas[1]?.fields?.[0]?.name !== "field_one") {
+    throw new Error(`schema add operation did not use MobKit draft defaults: ${JSON.stringify(addedSchema.document.schemas)}`);
+  }
+
+  const addedField = await rpc("mobkit/mobpacks/apply_operation", {
+    document: addedSchema.document,
+    operation: {
+      type: "add_schema_field",
+      schema_id: "Review",
+    },
+  });
+  const field = addedField.document.schemas[0]?.fields?.[1];
+  if (addedField.selection?.field_id !== "f2" || field?.name !== "new_field") {
+    throw new Error(`schema field add operation did not use MobKit draft defaults: ${JSON.stringify(addedField.document.schemas[0])}`);
+  }
+
+  return {
+    schemaId: addedSchema.selection.id,
+    initialField: addedSchema.document.schemas[1].fields[0].name,
+    addedField: field.name,
+    operations: [addedSchema.operation, addedField.operation],
+  };
+}
+
 async function validateGraphOperations(catalogs) {
   const document = JSON.parse(JSON.stringify(catalogs.blank_mobpack.document));
   document.members = [
@@ -1984,6 +2022,7 @@ async function validateFlowStepOperations(catalogs) {
     documentBackedDeployPreview: await validateDocumentBackedDeployPreview(sample.document),
     namedTypedOperations: await validateNamedTypedOperations(catalogs),
     inputParamOperations: await validateInputParamOperations(catalogs),
+    schemaOperations: await validateSchemaOperations(catalogs),
     flowStepOperations: await validateFlowStepOperations(catalogs),
     graphOperations: await validateGraphOperations(catalogs),
     deploy: null,

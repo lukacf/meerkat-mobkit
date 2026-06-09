@@ -88,21 +88,28 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
         <button
           className="agents-list__add"
           onClick={() => {
-            const result = window.MobKitFlowController.schemaDefinitionAddTransition(studio.schemas, contract);
-            setSchemaAddResult(result);
-            if (result.ok === false) return;
             if (!applyAuthoringReplacement) {
               setSchemaAddResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
               return;
             }
+            setSchemaAddResult(null);
             applyAuthoringReplacement({
               operationType: "add_schema",
-              operation: { schema: result.schema },
-              studio: { schemas: result.schemas },
-              selection: result.selection,
+              operation: {},
+            }).then((result) => {
+              if (result?.ok === false) {
+                setSchemaAddResult(result);
+                return;
+              }
+              const selection = result?.selection;
+              setSchemaAddResult(null);
+              if (selection?.kind) setAgentSel(selection);
+            }).catch((error) => {
+              setSchemaAddResult({
+                ok: false,
+                error: error?.message || String(error || "add_schema failed"),
+              });
             });
-            setSchemaAddResult(null);
-            setAgentSel(result.selection);
           }}
         >{listState.addSchemaLabel}</button>
         {schemaAddErrorState.hasError && <div className="hint__line">{schemaAddErrorState.text}</div>}
@@ -698,19 +705,26 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   };
 
   const addField = () => {
-    const result = window.MobKitFlowController.schemaFieldAddPatch(schema, contract);
-    setFieldAddResult(result);
-    if (result.ok === false) return;
+    if (!applyAuthoringReplacement) {
+      setFieldAddResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      return;
+    }
     setFieldAddResult(null);
-    const next = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas: studio.schemas }, schema.id, result.patch);
-    applySchemaCascade({
-      schemas: next.schemas,
-      members: studio.members,
-      flow,
-      edges: studio.edges,
-    }, { kind: "schema", id: schema.id }, "add_schema_field", {
-      schema_id: schema.id,
-      field: result.field,
+    applyAuthoringReplacement({
+      operationType: "add_schema_field",
+      operation: { schema_id: schema.id },
+      selection: { kind: "schema", id: schema.id },
+    }).then((result) => {
+      if (result?.ok === false) {
+        setFieldAddResult(result);
+        return;
+      }
+      setFieldAddResult(null);
+    }).catch((error) => {
+      setFieldAddResult({
+        ok: false,
+        error: error?.message || String(error || "add_schema_field failed"),
+      });
     });
   };
 
