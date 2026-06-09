@@ -1338,6 +1338,7 @@ async function validateCustomDeploySettings(dir) {
     throw new Error(`custom deploy settings failed validation: ${JSON.stringify(result.validation?.diagnostics)}`);
   }
   if (result.executed) throw new Error("custom deploy settings proof unexpectedly executed deploy");
+  if (result.success) throw new Error("custom deploy settings proof reported success without executing deploy");
   const argv = result.argv || [];
   if (preview.command !== result.command || JSON.stringify(preview.argv || []) !== JSON.stringify(argv)) {
     throw new Error(`deploy command preview drifted from deploy plan\npreview=${JSON.stringify(preview)}\nresult=${JSON.stringify({ command: result.command, argv })}`);
@@ -1386,6 +1387,7 @@ async function validateCustomDeploySettings(dir) {
     previewCommand: preview.command,
     argv,
     executed: result.executed,
+    success: result.success,
     packPath: result.pack_path,
     packSha256: result.pack_sha256,
     planTrace,

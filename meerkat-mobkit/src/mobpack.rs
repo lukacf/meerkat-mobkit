@@ -10200,7 +10200,7 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
     } else {
         (None, None, None)
     };
-    let success = !execute || status_code == Some(0);
+    let success = execute && status_code == Some(0);
     let display_rows = deploy_display_rows(
         &export.validation,
         execute,
@@ -23854,6 +23854,7 @@ model = "gpt-5.5"
         }))
         .expect("deploy plan");
         assert!(!result.executed);
+        assert!(!result.success);
         assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
         assert!(std::path::Path::new(&result.pack_path).exists());
         let packed_bytes = std::fs::read(&result.pack_path).expect("read deploy pack");

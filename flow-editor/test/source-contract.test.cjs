@@ -1586,6 +1586,9 @@ assert(!/deploy_settings\?\.(surfaces|trust_policies|realm_backends)\s*\|\|\s*\[
 assert(!/mob_definition\?\.[\w?.]+\s*\|\|\s*\[/.test(controller), "Mob definition option lists must come from MobKit schema, not controller-local catalogs");
 assert(!/function\s+deployCommand\s*\(|args\s*=\s*\[\s*["']rkat["']\s*,\s*["']mob["']\s*,\s*["']deploy["']/.test(controller), "Deploy command previews must come from mobkit/mobpacks/deploy_command, not a controller-local shell renderer");
 assert.match(controller, /mobkit\/mobpacks\/deploy_command/, "controller must use MobKit deploy command preview RPC");
+assert.match(mobpackRust, /let success = execute && status_code == Some\(0\);/, "mobkit/mobpacks/deploy must report success only after rkat mob deploy executed and exited 0");
+assert.match(mobpackRust, /fn plans_rkat_deploy_without_executing_by_default[\s\S]*assert!\(!result\.executed\);[\s\S]*assert!\(!result\.success\);/, "MobKit tests must prove deploy plans are not reported as successful deploys");
+assert.match(testSrc("live-rkat-e2e.cjs"), /if \(result\.success\) throw new Error\("custom deploy settings proof reported success without executing deploy"\)/, "live e2e must reject deploy plans that claim success without execution");
 assert.match(app, /graphAddMenuOpenProjection\(\{\s*col,\s*row,\s*grid:\s*catalogs\.grid\s*\}\)/, "Graph add-menu opening must ask the controller plane for menu placement");
 assert.match(app, /graphAddMenuCloseProjection\(\)/, "Graph add-menu closing must ask the controller plane for close transitions");
 assert.match(controller, /function graphAddMenuOpenProjection/, "controller plane must own Graph add-menu placement transitions");
