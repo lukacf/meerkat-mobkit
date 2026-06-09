@@ -48,6 +48,7 @@ window.MOBKIT_BOOT = {
     get: "mobkit/mobpacks/get",
     save: "mobkit/mobpacks/save",
     delete: "mobkit/mobpacks/delete",
+    applyOperation: "mobkit/mobpacks/apply_operation",
     graphProjection: "mobkit/mobpacks/graph_projection",
     deployCommand: "mobkit/mobpacks/deploy_command",
     deploy: "mobkit/mobpacks/deploy",
@@ -63,6 +64,7 @@ window.MOBKIT_BOOT = {
     get: "get",
     save: "save",
     delete: "delete",
+    applyOperation: "apply_operation",
     graphProjection: "graph_projection",
     deployCommand: "deploy_command",
     deploy: "deploy_rpc",
@@ -6838,6 +6840,7 @@ window.MOBKIT_BOOT = {
     if (!projection || typeof projection !== "object") return { ok: false };
     const studio = current?.studio && typeof current.studio === "object" ? current.studio : {};
     const members = Array.isArray(projection.members) ? projection.members : [];
+    const schemas = Array.isArray(projection.schemas) ? projection.schemas : [];
     const instances = Array.isArray(projection.instances) ? projection.instances : [];
     const edges = Array.isArray(projection.edges) ? projection.edges : [];
     const frames = Array.isArray(projection.frames) ? projection.frames : [];
@@ -6857,6 +6860,10 @@ window.MOBKIT_BOOT = {
       members: {
         changed: !jsonEquivalent(members, studio.members || []),
         value: members,
+      },
+      schemas: {
+        changed: !jsonEquivalent(schemas, studio.schemas || []),
+        value: schemas,
       },
       graph: {
         changed: !!projection.instances && graphSignatureNext !== graphSignatureCurrent,
@@ -8417,6 +8424,10 @@ window.MOBKIT_BOOT = {
     return callRpc(rpcMethod("delete"), { ...(params || {}), id });
   }
 
+  async function applyAuthoringOperationDocument(document, operation) {
+    return callRpc(rpcMethod("applyOperation"), { document, operation });
+  }
+
   async function graphProjectionDocument(document) {
     return callRpc(rpcMethod("graphProjection"), { document });
   }
@@ -8744,6 +8755,35 @@ window.MOBKIT_BOOT = {
       validationRows,
       stage,
     };
+  }
+
+  function authoringProjectionFromMobKitDocument(document, options = {}) {
+    const source = document && typeof document === "object" ? document : {};
+    const flow = flowFromHydratedDocument(source) || emptyAuthoringFlowState();
+    return {
+      document: source,
+      flow,
+      members: Array.isArray(source.members) ? source.members : [],
+      schemas: Array.isArray(source.schemas) ? source.schemas : [],
+      instances: Array.isArray(source.instances) ? source.instances : [],
+      edges: Array.isArray(source.edges) ? source.edges : [],
+      frames: Array.isArray(source.frames) ? source.frames : [],
+      deploySettings: deploySettingsForUi(source.deploy || options.deployDefaults),
+      mobSettings: mobSettingsForUi(source.mob_settings || options.mobDefaults),
+    };
+  }
+
+  function authoringProjectionFromOperationResult(result, options = {}) {
+    const document = result?.document && typeof result.document === "object" ? result.document : null;
+    if (!document) return null;
+    const projection = authoringProjectionFromMobKitDocument(document, options);
+    const graphProjection = graphProjectionFromMobKitResult(result);
+    if (graphProjection) {
+      projection.instances = graphProjection.instances;
+      projection.edges = graphProjection.edges;
+      projection.frames = graphProjection.frames;
+    }
+    return projection;
   }
 
   function flowImportedIdFromDocument(document, result = {}, existingRows = []) {
@@ -11559,6 +11599,8 @@ window.MOBKIT_BOOT = {
     graphProjectionForFlow,
     graphProjectionForDocument,
     graphProjectionFromMobKitResult,
+    authoringProjectionFromMobKitDocument,
+    authoringProjectionFromOperationResult,
     flowFromHydratedDocument,
     hydrateMobpackDocumentState,
     graphToFlow,
@@ -11827,6 +11869,7 @@ window.MOBKIT_BOOT = {
     getDocument,
     saveDocument,
     deleteDocument,
+    applyAuthoringOperationDocument,
     graphProjectionDocument,
     importParamsFromDecodedFile,
     deploySettingsForUi,
@@ -13272,10 +13315,10 @@ window.InlineSourceEditor = InlineSourceEditor;
 /* agents.jsx */
 
 {
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, toolCatalog, modelCatalog, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView, agentDetailView, agentAccessView, schemaView })));
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAuthoringOperation = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAuthoringOperation, toolCatalog, modelCatalog, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView, agentDetailView, agentAccessView, schemaView })));
 }
-function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, toolCatalog = [], modelCatalog = [], agentView = null }) {
+function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAuthoringOperation = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const [schemaAddResult, setSchemaAddResult] = React.useState(null);
   const listState = window.MobKitFlowController.agentListState({
     members: studio.members,
@@ -13297,7 +13340,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
       /* @__PURE__ */ React.createElement("div", { className: "agents-list__col" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "agents-list__sub" }, row.subLabel)),
       /* @__PURE__ */ React.createElement("span", { className: row.placedClass }, row.placedLabel)
     );
-  }), /* @__PURE__ */ React.createElement(AddAgentControl, { studio, setAgentSel, agentDefinitions, contract, deploySettings, toolCatalog, modelCatalog, agentView })), /* @__PURE__ */ React.createElement("div", { className: "agents-list__head agents-list__head--sub" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__title" }, listState.schemasHeading), /* @__PURE__ */ React.createElement("span", { className: "agents-list__count" }, listState.schemaCount)), /* @__PURE__ */ React.createElement("div", { className: "agents-list__scroll" }, listState.schemaRows.map((row) => {
+  }), /* @__PURE__ */ React.createElement(AddAgentControl, { studio, setAgentSel, agentDefinitions, applyAuthoringOperation, contract, deploySettings, toolCatalog, modelCatalog, agentView })), /* @__PURE__ */ React.createElement("div", { className: "agents-list__head agents-list__head--sub" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__title" }, listState.schemasHeading), /* @__PURE__ */ React.createElement("span", { className: "agents-list__count" }, listState.schemaCount)), /* @__PURE__ */ React.createElement("div", { className: "agents-list__scroll" }, listState.schemaRows.map((row) => {
     return /* @__PURE__ */ React.createElement(
       "button",
       {
@@ -13325,26 +13368,23 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
     listState.addSchemaLabel
   ), schemaAddErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaAddErrorState.text)));
 }
-function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
+function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAuthoringOperation = null, contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const [lastAddResult, setLastAddResult] = React.useState(null);
   const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
   const catalogState = window.MobKitFlowController.agentDefinitionCatalogState(agentDefinitions, agentView);
   const definitionErrorState = window.MobKitFlowController.agentDefinitionAddErrorState(lastAddResult, agentView);
-  const createFromDefinition = (definitionId) => {
-    const result = window.MobKitFlowController.agentDefinitionAddByIdPatch(agentDefinitions, definitionId, {
-      members: studio.members,
-      schemas: studio.schemas,
-      contract,
-      deploySettings,
-      modelCatalog,
-      toolCatalog,
-      skillRealms: studio.skillRealms
+  const createFromDefinition = async (definitionId) => {
+    if (!applyAuthoringOperation) {
+      setLastAddResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      return;
+    }
+    if (studio.snap) studio.snap();
+    const result = await applyAuthoringOperation({
+      type: "add_agent_definition",
+      definition_id: definitionId
     });
     setLastAddResult(result);
     if (!result.ok) return;
-    if (studio.snap) studio.snap();
-    if (result.schemas !== studio.schemas) studio.setSchemas(result.schemas);
-    studio.setMembers(result.members);
     setAgentSel(result.selection);
   };
   if (!definitionState.hasDefinitions) {
@@ -14786,7 +14826,8 @@ function App() {
         members: studio.members,
         instances: studio.instances,
         edges: studio.edges,
-        frames: studio.frames
+        frames: studio.frames,
+        schemas: studio.schemas
       },
       deploySettings,
       mobSettings,
@@ -14795,6 +14836,7 @@ function App() {
     if (!plan.ok) return;
     if (plan.flow.changed) setFlow(plan.flow.value);
     if (plan.members.changed) studio.setMembers(plan.members.value);
+    if (plan.schemas.changed) studio.setSchemas(plan.schemas.value);
     if (plan.graph.changed) {
       graphProjectionSig.current = plan.graph.signature;
       studio.setInstances(plan.graph.instances);
@@ -14830,6 +14872,23 @@ function App() {
     beginProjectionSync();
     applyAuthoringDocumentProjection(projection);
     return projection.document;
+  };
+  const applyMobKitAuthoringOperation = async (operation) => {
+    const requestToken = currentAuthoringRevision();
+    const document2 = buildDocument();
+    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, operation);
+    if (!authoringRevisionIsCurrent(requestToken)) {
+      return { ok: false, error: "stale authoring operation" };
+    }
+    const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
+      deployDefaults: catalogs.deployDefaults,
+      mobDefaults: catalogs.mobDefaults
+    });
+    if (!projection) return { ok: false, error: "MobKit authoring operation did not return a document" };
+    beginProjectionSync();
+    applyAuthoringDocumentProjection(projection);
+    markDraft();
+    return result;
   };
   const saveRegistryDocument = (rowPatch) => {
     if (!rowPatch?.document) return;
@@ -15349,6 +15408,7 @@ function App() {
       toolCatalog: catalogs.toolCatalog,
       modelCatalog: catalogs.models,
       agentDefinitions: catalogs.agentDefinitions,
+      applyAuthoringOperation: applyMobKitAuthoringOperation,
       agentView: catalogs.agentView,
       agentDetailView: catalogs.agentDetailView,
       agentAccessView: catalogs.agentAccessView,

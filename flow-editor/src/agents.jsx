@@ -16,10 +16,10 @@
 //   { kind: "schema", id }  → SchemaEditor (visual, field-by-field)
 //   null                    → empty hint
 
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAuthoringOperation = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   return (
     <div className="agents-view">
-      <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} agentDefinitions={agentDefinitions} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} />
+      <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} agentDefinitions={agentDefinitions} applyAuthoringOperation={applyAuthoringOperation} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} />
       <div className="agents-view__main">
         <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} agentDetailView={agentDetailView} agentAccessView={agentAccessView} schemaView={schemaView} />
       </div>
@@ -27,7 +27,7 @@ function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, f
   );
 }
 
-function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, toolCatalog = [], modelCatalog = [], agentView = null }) {
+function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAuthoringOperation = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const [schemaAddResult, setSchemaAddResult] = React.useState(null);
   const listState = window.MobKitFlowController.agentListState({
     members: studio.members,
@@ -62,7 +62,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
             </button>
           );
         })}
-        <AddAgentControl studio={studio} setAgentSel={setAgentSel} agentDefinitions={agentDefinitions} contract={contract} deploySettings={deploySettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} />
+        <AddAgentControl studio={studio} setAgentSel={setAgentSel} agentDefinitions={agentDefinitions} applyAuthoringOperation={applyAuthoringOperation} contract={contract} deploySettings={deploySettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} />
       </div>
 
       <div className="agents-list__head agents-list__head--sub">
@@ -103,26 +103,23 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
   );
 }
 
-function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
+function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAuthoringOperation = null, contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const [lastAddResult, setLastAddResult] = React.useState(null);
   const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
   const catalogState = window.MobKitFlowController.agentDefinitionCatalogState(agentDefinitions, agentView);
   const definitionErrorState = window.MobKitFlowController.agentDefinitionAddErrorState(lastAddResult, agentView);
-  const createFromDefinition = (definitionId) => {
-    const result = window.MobKitFlowController.agentDefinitionAddByIdPatch(agentDefinitions, definitionId, {
-      members: studio.members,
-      schemas: studio.schemas,
-      contract,
-      deploySettings,
-      modelCatalog,
-      toolCatalog,
-      skillRealms: studio.skillRealms,
+  const createFromDefinition = async (definitionId) => {
+    if (!applyAuthoringOperation) {
+      setLastAddResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      return;
+    }
+    if (studio.snap) studio.snap();
+    const result = await applyAuthoringOperation({
+      type: "add_agent_definition",
+      definition_id: definitionId,
     });
     setLastAddResult(result);
     if (!result.ok) return;
-    if (studio.snap) studio.snap();
-    if (result.schemas !== studio.schemas) studio.setSchemas(result.schemas);
-    studio.setMembers(result.members);
     setAgentSel(result.selection);
   };
   if (!definitionState.hasDefinitions) {

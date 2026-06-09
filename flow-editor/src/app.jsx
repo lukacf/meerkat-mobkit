@@ -399,6 +399,7 @@ function App() {
         instances: studio.instances,
         edges: studio.edges,
         frames: studio.frames,
+        schemas: studio.schemas,
       },
       deploySettings,
       mobSettings,
@@ -407,6 +408,7 @@ function App() {
     if (!plan.ok) return;
     if (plan.flow.changed) setFlow(plan.flow.value);
     if (plan.members.changed) studio.setMembers(plan.members.value);
+    if (plan.schemas.changed) studio.setSchemas(plan.schemas.value);
     if (plan.graph.changed) {
       graphProjectionSig.current = plan.graph.signature;
       studio.setInstances(plan.graph.instances);
@@ -442,6 +444,23 @@ function App() {
     beginProjectionSync();
     applyAuthoringDocumentProjection(projection);
     return projection.document;
+  };
+  const applyMobKitAuthoringOperation = async (operation) => {
+    const requestToken = currentAuthoringRevision();
+    const document = buildDocument();
+    const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, operation);
+    if (!authoringRevisionIsCurrent(requestToken)) {
+      return { ok: false, error: "stale authoring operation" };
+    }
+    const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
+      deployDefaults: catalogs.deployDefaults,
+      mobDefaults: catalogs.mobDefaults,
+    });
+    if (!projection) return { ok: false, error: "MobKit authoring operation did not return a document" };
+    beginProjectionSync();
+    applyAuthoringDocumentProjection(projection);
+    markDraft();
+    return result;
   };
   const saveRegistryDocument = (rowPatch) => {
     if (!rowPatch?.document) return;
@@ -980,6 +999,7 @@ function App() {
           toolCatalog={catalogs.toolCatalog}
           modelCatalog={catalogs.models}
           agentDefinitions={catalogs.agentDefinitions}
+          applyAuthoringOperation={applyMobKitAuthoringOperation}
           agentView={catalogs.agentView}
           agentDetailView={catalogs.agentDetailView}
           agentAccessView={catalogs.agentAccessView}

@@ -15,6 +15,7 @@
     get: "mobkit/mobpacks/get",
     save: "mobkit/mobpacks/save",
     delete: "mobkit/mobpacks/delete",
+    applyOperation: "mobkit/mobpacks/apply_operation",
     graphProjection: "mobkit/mobpacks/graph_projection",
     deployCommand: "mobkit/mobpacks/deploy_command",
     deploy: "mobkit/mobpacks/deploy",
@@ -30,6 +31,7 @@
     get: "get",
     save: "save",
     delete: "delete",
+    applyOperation: "apply_operation",
     graphProjection: "graph_projection",
     deployCommand: "deploy_command",
     deploy: "deploy_rpc",
@@ -6805,6 +6807,7 @@
     if (!projection || typeof projection !== "object") return { ok: false };
     const studio = current?.studio && typeof current.studio === "object" ? current.studio : {};
     const members = Array.isArray(projection.members) ? projection.members : [];
+    const schemas = Array.isArray(projection.schemas) ? projection.schemas : [];
     const instances = Array.isArray(projection.instances) ? projection.instances : [];
     const edges = Array.isArray(projection.edges) ? projection.edges : [];
     const frames = Array.isArray(projection.frames) ? projection.frames : [];
@@ -6824,6 +6827,10 @@
       members: {
         changed: !jsonEquivalent(members, studio.members || []),
         value: members,
+      },
+      schemas: {
+        changed: !jsonEquivalent(schemas, studio.schemas || []),
+        value: schemas,
       },
       graph: {
         changed: !!projection.instances && graphSignatureNext !== graphSignatureCurrent,
@@ -8384,6 +8391,10 @@
     return callRpc(rpcMethod("delete"), { ...(params || {}), id });
   }
 
+  async function applyAuthoringOperationDocument(document, operation) {
+    return callRpc(rpcMethod("applyOperation"), { document, operation });
+  }
+
   async function graphProjectionDocument(document) {
     return callRpc(rpcMethod("graphProjection"), { document });
   }
@@ -8711,6 +8722,35 @@
       validationRows,
       stage,
     };
+  }
+
+  function authoringProjectionFromMobKitDocument(document, options = {}) {
+    const source = document && typeof document === "object" ? document : {};
+    const flow = flowFromHydratedDocument(source) || emptyAuthoringFlowState();
+    return {
+      document: source,
+      flow,
+      members: Array.isArray(source.members) ? source.members : [],
+      schemas: Array.isArray(source.schemas) ? source.schemas : [],
+      instances: Array.isArray(source.instances) ? source.instances : [],
+      edges: Array.isArray(source.edges) ? source.edges : [],
+      frames: Array.isArray(source.frames) ? source.frames : [],
+      deploySettings: deploySettingsForUi(source.deploy || options.deployDefaults),
+      mobSettings: mobSettingsForUi(source.mob_settings || options.mobDefaults),
+    };
+  }
+
+  function authoringProjectionFromOperationResult(result, options = {}) {
+    const document = result?.document && typeof result.document === "object" ? result.document : null;
+    if (!document) return null;
+    const projection = authoringProjectionFromMobKitDocument(document, options);
+    const graphProjection = graphProjectionFromMobKitResult(result);
+    if (graphProjection) {
+      projection.instances = graphProjection.instances;
+      projection.edges = graphProjection.edges;
+      projection.frames = graphProjection.frames;
+    }
+    return projection;
   }
 
   function flowImportedIdFromDocument(document, result = {}, existingRows = []) {
@@ -11526,6 +11566,8 @@
     graphProjectionForFlow,
     graphProjectionForDocument,
     graphProjectionFromMobKitResult,
+    authoringProjectionFromMobKitDocument,
+    authoringProjectionFromOperationResult,
     flowFromHydratedDocument,
     hydrateMobpackDocumentState,
     graphToFlow,
@@ -11794,6 +11836,7 @@
     getDocument,
     saveDocument,
     deleteDocument,
+    applyAuthoringOperationDocument,
     graphProjectionDocument,
     importParamsFromDecodedFile,
     deploySettingsForUi,

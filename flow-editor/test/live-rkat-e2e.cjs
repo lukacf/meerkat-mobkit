@@ -56,6 +56,7 @@ async function assertAuthoringCapabilities() {
     "mobkit/mobpacks/get",
     "mobkit/mobpacks/save",
     "mobkit/mobpacks/delete",
+    "mobkit/mobpacks/apply_operation",
     "mobkit/mobpacks/graph_projection",
     "mobkit/mobpacks/deploy_command",
     "mobkit/mobpacks/deploy",
@@ -847,7 +848,7 @@ async function validateFilesystemSkillPacking(dir) {
   };
 }
 
-function buildUnifiedProjectionDocument(catalogs) {
+async function buildUnifiedProjectionDocument(catalogs) {
   const definitions = controller.agentDefinitionsFromCatalogs(catalogs);
   const coderDefinition = definitions.find((definition) => definition.role === "coder") || definitions[0];
   const reviewerDefinition = definitions.find((definition) => definition.role === "reviewer" && definition.sourceOrigin === "mobkit/sample-mobpack")
@@ -891,33 +892,33 @@ function buildUnifiedProjectionDocument(catalogs) {
   };
   const skillRealms = [...catalogSkillRealms, inlineSkillRealm];
 
-  const coderAdd = controller.agentDefinitionAddByIdPatch(definitions, coderDefinition.id, {
-    members: [],
-    schemas: [],
-    contract: contractSchema,
-    deploySettings: testDeploySettings(),
-    modelCatalog,
-    toolCatalog,
-    skillRealms,
-  });
-  if (coderAdd.ok === false || !coderAdd.member?.sourceDefinition) {
-    throw new Error(`unified projection proof could not add coder definition through Agent Editor controller path: ${JSON.stringify(coderAdd)}`);
+  const baseDocument = catalogs.blank_mobpack?.document;
+  if (!baseDocument || typeof baseDocument !== "object") {
+    throw new Error("unified projection proof needs MobKit blank mobpack document");
   }
-  const reviewerAdd = controller.agentDefinitionAddByIdPatch(definitions, reviewerDefinition.id, {
-    members: [coderAdd.member],
-    schemas: coderAdd.schemas,
-    contract: contractSchema,
-    deploySettings: testDeploySettings(),
-    modelCatalog,
-    toolCatalog,
-    skillRealms,
+  const coderAdd = await rpc("mobkit/mobpacks/apply_operation", {
+    document: baseDocument,
+    operation: { type: "add_agent_definition", definition_id: coderDefinition.id },
   });
-  if (reviewerAdd.ok === false || !reviewerAdd.member?.sourceDefinition) {
-    throw new Error(`unified projection proof could not add reviewer definition through Agent Editor controller path: ${JSON.stringify(reviewerAdd)}`);
+  if (coderAdd.ok === false || !coderAdd.document || !coderAdd.selection?.id) {
+    throw new Error(`unified projection proof could not add coder definition through MobKit apply_operation: ${JSON.stringify(coderAdd)}`);
+  }
+  const reviewerAdd = await rpc("mobkit/mobpacks/apply_operation", {
+    document: coderAdd.document,
+    operation: { type: "add_agent_definition", definition_id: reviewerDefinition.id },
+  });
+  if (reviewerAdd.ok === false || !reviewerAdd.document || !reviewerAdd.selection?.id) {
+    throw new Error(`unified projection proof could not add reviewer definition through MobKit apply_operation: ${JSON.stringify(reviewerAdd)}`);
+  }
+  const addedMembers = array(reviewerAdd.document.members, "apply_operation document.members");
+  const coderSource = addedMembers.find((member) => member.sourceDefinition?.definitionId === coderDefinition.id);
+  const reviewerSource = addedMembers.find((member) => member.sourceDefinition?.definitionId === reviewerDefinition.id);
+  if (!coderSource?.sourceDefinition || !reviewerSource?.sourceDefinition) {
+    throw new Error(`MobKit apply_operation did not preserve sourceDefinition provenance: ${JSON.stringify(addedMembers)}`);
   }
 
   const coder = {
-    ...coderAdd.member,
+    ...coderSource,
     id: "m_unified_coder",
     name: "Unified Coder",
     role: "unified_coder",
@@ -932,7 +933,7 @@ function buildUnifiedProjectionDocument(catalogs) {
     providerParams: { thinking_budget: 2048 },
   };
   const reviewer = {
-    ...reviewerAdd.member,
+    ...reviewerSource,
     id: "m_unified_reviewer",
     name: "Unified Reviewer",
     role: "unified_reviewer",
@@ -967,7 +968,7 @@ function buildUnifiedProjectionDocument(catalogs) {
       },
     ],
   }];
-  const mergedDefinitionSchemas = Array.isArray(reviewerAdd.schemas) ? reviewerAdd.schemas : [];
+  const mergedDefinitionSchemas = Array.isArray(reviewerAdd.document.schemas) ? reviewerAdd.document.schemas : [];
   const schemasById = new Map([...mergedDefinitionSchemas, ...schemas].map((schema) => [schema.id, schema]));
   const unifiedSchemas = Array.from(schemasById.values());
 
@@ -1062,7 +1063,7 @@ function buildUnifiedProjectionDocument(catalogs) {
 }
 
 async function validateUnifiedEditorProjection(dir, catalogs) {
-  const document = buildUnifiedProjectionDocument(catalogs);
+  const document = await buildUnifiedProjectionDocument(catalogs);
   const validation = await rpc("mobkit/mobpacks/validate", { document });
   if (!validation.ok) {
     throw new Error(`unified editor projection failed MobKit validation: ${JSON.stringify(validation.diagnostics)}`);

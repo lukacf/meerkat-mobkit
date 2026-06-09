@@ -139,6 +139,11 @@ assert.match(controller, /function configureAuthoringMethodsFromSchema[\s\S]*aut
 assert.match(app, /loadSchema\(\)[\s\S]*configureAuthoringMethodsFromSchema\(schema\)[\s\S]*loadCatalogs\(\)/, "app shell must load schema first, then use schema.commands to request dynamic catalogs");
 assert.match(app, /MobKitFlowController\.loadCatalogs\(\)/, "app shell must hydrate dynamic catalogs through mobkit/mobpacks/catalogs");
 assert.match(app, /MobKitFlowController\.listDocuments\(\)/, "app shell must hydrate saved flow registry rows through mobkit/mobpacks/list");
+assert.match(controller, /async function applyAuthoringOperationDocument\(document, operation\)[\s\S]*rpcMethod\("applyOperation"\)/, "controller plane must apply editor mutations through mobkit/mobpacks/apply_operation");
+assert.match(app, /const applyMobKitAuthoringOperation = async \(operation\) => \{[\s\S]*MobKitFlowController\.applyAuthoringOperationDocument\(document, operation\)[\s\S]*authoringProjectionFromOperationResult\(result/, "app shell must round-trip authoring mutations through MobKit before applying projected state");
+assert.match(app, /<AgentsView[\s\S]*applyAuthoringOperation=\{applyMobKitAuthoringOperation\}/, "Agent Editor must receive a MobKit authoring operation callback from the app shell");
+assert.match(agents, /function AddAgentControl\([\s\S]*applyAuthoringOperation = null[\s\S]*await applyAuthoringOperation\(\{[\s\S]*type:\s*"add_agent_definition"[\s\S]*definition_id:\s*definitionId/, "Agent definition adds must call MobKit apply_operation instead of mutating local member state");
+assert(!/function AddAgentControl[\s\S]*agentDefinitionAddByIdPatch/.test(agents), "AddAgentControl must not add catalog agents through the local controller patch path");
 assert.match(app, /mobKitCatalogsFromSchema\(schema,\s*CATALOG_BOOT,\s*catalogPayload\)/, "app shell must combine schema contracts with catalog RPC data through the controller plane");
 assert.match(app, /flowCatalogBootstrapState\(catalogPayload,[\s\S]*registryResult:\s*registryPayload/, "blank flow, saved registry rows, and sample templates must hydrate through the controller bootstrap projection");
 assert.match(controller, /const catalogSource = catalogPayload && typeof catalogPayload === "object" \? catalogPayload : \{\};/, "controller plane must not fall back to schema for dynamic MobKit catalogs");
@@ -1233,10 +1238,10 @@ assert(!/member\.profileBinding\s*\|\|\s*\(member\.realmProfile \? ["']realm_pro
 assert(!/const\s+defaultRuntimeMode[\s\S]{0,120}member\.runtimeMode\s*\|\|\s*defaultRuntimeMode/.test(agents), "Agent Editor must not display missing runtimeMode as turn_driven");
 assert.match(controller, /missingProfileBindingLabel/, "controller plane must expose missing profile binding through the MobKit view contract");
 assert.match(controller, /missingRuntimeModeLabel/, "controller plane must expose missing runtime mode through the MobKit view contract");
-assert.match(agents, /MobKitFlowController\.agentDefinitionAddByIdPatch/, "Agent Editor must add API-backed agent definitions through one controller-plane operation");
+assert.match(agents, /applyAuthoringOperation\(\{[\s\S]*type:\s*"add_agent_definition"/, "Agent Editor must add API-backed agent definitions through the MobKit authoring operation API");
 assert.match(controller, /function agentDefinitionAddPatch/, "controller plane must own combined agent-definition member and schema mutation semantics");
 assert.match(controller, /function agentDefinitionAddByIdPatch/, "controller plane must own agent-definition id resolution");
-assert.match(controller, /selection:\s*\{\s*kind:\s*["']agent["'],\s*id:\s*member\.id\s*\}/, "controller plane must own Agent add selection transitions");
+assert.match(mobpackRust, /"selection": selection/, "MobKit apply_operation must own Agent add selection transitions");
 assert.match(controller, /addAgentErrorPrefix:\s*String\(view\.add_agent_error_prefix/, "controller plane must hydrate Agent add-definition error copy from the MobKit schema");
 assert.match(controller, /function agentDefinitionAddErrorState/, "controller plane must own rejected agent-definition display state");
 assert.match(addAgentControlBlock, /const \[lastAddResult,\s*setLastAddResult\] = React\.useState\(null\);[\s\S]*MobKitFlowController\.agentDefinitionAddErrorState\(lastAddResult,\s*agentView\)/, "Agent add-control must ask the controller plane to project rejected definition errors");
@@ -1249,8 +1254,8 @@ assert.match(addAgentControlBlock, /setAgentSel\(result\.selection\)/, "Agent ad
 assert(!/unknown agent definition|unavailable tool|unavailable skill|unsupported runtime mode|Agent definition unavailable/.test(addAgentControlBlock), "Agent add-control JSX must not compose rejected definition error copy locally");
 assert.match(agents, /<AgentsList[\s\S]*deploySettings=\{deploySettings\}[\s\S]*toolCatalog=\{toolCatalog\}[\s\S]*modelCatalog=\{modelCatalog\}/, "Agent sidebar must receive live MobKit deploy, tool, and model catalog context");
 assert.match(agents, /<AddAgentControl[\s\S]*toolCatalog=\{toolCatalog\}/, "Agent add-control must receive the live MobKit tool catalog");
-assert.match(addAgentControlBlock, /agentDefinitionAddByIdPatch\(agentDefinitions,\s*definitionId,\s*\{[\s\S]*contract,[\s\S]*deploySettings,[\s\S]*modelCatalog,[\s\S]*toolCatalog,[\s\S]*skillRealms:\s*studio\.skillRealms/, "Agent add-control must pass live schema, deploy, model, tool, and skill catalogs into controller validation");
-assert.match(liveRkatE2eTest, /agentDefinitionAddByIdPatch\(definitions,\s*coderDefinition\.id,[\s\S]*modelCatalog,[\s\S]*toolCatalog,[\s\S]*skillRealms/, "live rkat unified projection proof must add sample agents through the same validated Agent Editor controller operation");
+assert.match(app, /const document = buildDocument\(\);[\s\S]*applyAuthoringOperationDocument\(document, operation\)/, "Agent add-control operations must send the full current deployable document into MobKit validation");
+assert.match(liveRkatE2eTest, /mobkit\/mobpacks\/apply_operation[\s\S]*type:\s*"add_agent_definition"[\s\S]*definition_id:\s*coderDefinition\.id[\s\S]*mobkit\/mobpacks\/apply_operation[\s\S]*definition_id:\s*reviewerDefinition\.id/, "live rkat unified projection proof must add agents through MobKit apply_operation");
 assert(!/memberFromAgentDefinition\(/.test(liveRkatE2eTest), "live rkat proof must not bypass Agent Editor definition validation with lower-level member construction");
 assert.match(liveRkatE2eTest, /sourceDefinition[\s\S]*sourceMobpack[\s\S]*sourceOrigin[\s\S]*document\.members\[/, "live rkat proof must assert sample-agent sourceDefinition provenance survives round trip");
 assert.match(controller, /function validateAgentDefinitionCatalogRefs[\s\S]*options\.modelCatalog[\s\S]*unavailable model[\s\S]*options\.contract[\s\S]*unsupported profile binding[\s\S]*unsupported runtime mode[\s\S]*unsupported backend[\s\S]*options\.toolCatalog[\s\S]*unavailable tool[\s\S]*options\.skillRealms[\s\S]*unavailable skill/, "controller plane must reject agent definitions whose model, runtime, backend, tool, or skill refs are not in MobKit catalogs/contracts");
@@ -1329,7 +1334,7 @@ assert.match(agentsListBlock, /MobKitFlowController\.agentListSelectionProjectio
 assert.match(agentsListBlock, /MobKitFlowController\.agentListSelectionProjection\("schema",\s*row\.id\)/, "Agent sidebar schema selection must route through the controller plane");
 assert(!/setAgentSel\(\{\s*kind:\s*"(?:agent|schema)",\s*id:\s*row\.id\s*\}\)/.test(agentsListBlock), "Agent sidebar must not assemble Agent Editor selection objects locally");
 assert.match(addAgentControlBlock, /MobKitFlowController\.agentDefinitionAddControlState/, "Agent creation select must render control state through the controller plane");
-assert.match(addAgentControlBlock, /MobKitFlowController\.agentDefinitionAddByIdPatch/, "Agent creation must resolve definition ids through the controller plane");
+assert.match(mobpackRust, /fn mobpack_agent_definition_by_id\(definition_id: &str\)[\s\S]*"agent_definitions"[\s\S]*"sample_agent_definitions"/, "Agent creation must resolve definition ids through MobKit apply_operation");
 assert.match(agentsMainBlock, /MobKitFlowController\.agentSelectionState/, "Agent main pane must resolve selected agents/schemas through the controller plane");
 assert.match(agentEditorBlock, /MobKitFlowController\.agentEditorControlState/, "Agent detail pane must render profile/runtime/backend/schema/usage state through the controller plane");
 assert.match(agentEditorBlock, /agentEditorControlState\(\{[\s\S]*agentDetailView/, "Agent detail pane must pass schema-backed view state into controller projection");

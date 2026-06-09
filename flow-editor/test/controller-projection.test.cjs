@@ -10841,6 +10841,30 @@ assert.deepEqual(apiGraphHydrated.graphProjection.frames.map(frame => frame.id),
 assert.equal(apiGraphHydrated.graphProjection.source, "mobkit/mobpacks/graph_projection");
 assert.equal(controller.graphProjectionFromMobKitResult(apiGraphHydrated.graphProjection).instances[0].id, "api_step_1");
 
+const operationProjection = controller.authoringProjectionFromOperationResult({
+  source: "mobkit/mobpacks/apply_operation",
+  operation: "add_agent_definition",
+  document: {
+    ...storedGraphDocument,
+    schemas: [{ id: "AddedVerdict", fields: [{ id: "f_verdict", name: "verdict", type: "string" }] }],
+    members: [
+      ...storedGraphDocument.members,
+      { id: "m_added", name: "Added", role: "added", profileBinding: "inline", runtimeMode: "turn_driven" },
+    ],
+  },
+  selection: { kind: "agent", id: "m_added" },
+  validation: { ok: true },
+}, {
+  deployDefaults: testDeploySettings(),
+  mobDefaults: controller.mobDefaultsFromSchema(TEST_SCHEMA),
+});
+assert.equal(operationProjection.flow.name, "Stored Graph Import");
+assert.equal(operationProjection.members.at(-1).id, "m_added");
+assert.equal(operationProjection.schemas[0].id, "AddedVerdict");
+assert.deepEqual(operationProjection.instances, storedGraphDocument.instances);
+assert.equal(operationProjection.deploySettings.command, "rkat mob deploy");
+assert.equal(operationProjection.mobSettings.backendDefault, "session");
+
 const importedHydrationId = controller.hydrateMobpackDocumentState({
   document: storedGraphDocument,
   validation: { ok: true },

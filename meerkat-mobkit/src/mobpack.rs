@@ -1773,6 +1773,7 @@ pub fn mobpack_schema_response() -> Value {
             "get": "mobkit/mobpacks/get",
             "save": "mobkit/mobpacks/save",
             "delete": "mobkit/mobpacks/delete",
+            "apply_operation": "mobkit/mobpacks/apply_operation",
             "graph_projection": "mobkit/mobpacks/graph_projection",
             "deploy_command": "mobkit/mobpacks/deploy_command",
             "deploy_rpc": "mobkit/mobpacks/deploy",
@@ -2809,6 +2810,297 @@ pub fn delete_mobpack_draft(params: &Value) -> Result<Value, String> {
         "deleted": deleted,
         "rows": sorted_mobpack_draft_rows(&rows),
     }))
+}
+
+pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String> {
+    let mut document = document_from_params(params)?;
+    let operation = params
+        .get("operation")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "mobkit/mobpacks/apply_operation requires operation object".to_string())?;
+    let operation_type = operation
+        .get("type")
+        .or_else(|| operation.get("kind"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "mobkit/mobpacks/apply_operation requires operation.type".to_string())?;
+    let selection = match operation_type {
+        "add_agent_definition" => apply_add_agent_definition_operation(&mut document, operation)?,
+        other => {
+            return Err(format!(
+                "mobkit/mobpacks/apply_operation unsupported operation.type: {other}"
+            ));
+        }
+    };
+    let validation = validate_document(&document);
+    Ok(json!({
+        "source": "mobkit/mobpacks/apply_operation",
+        "operation": operation_type,
+        "ok": validation.ok,
+        "document": document,
+        "selection": selection,
+        "validation": validation,
+    }))
+}
+
+fn apply_add_agent_definition_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let definition_id = operation
+        .get("definition_id")
+        .or_else(|| operation.get("definitionId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "add_agent_definition requires definition_id".to_string())?;
+    let definition = mobpack_agent_definition_by_id(definition_id)
+        .ok_or_else(|| format!("unknown MobKit agent definition: {definition_id}"))?;
+    let member = member_from_agent_definition(&definition, &document.members)?;
+    merge_agent_definition_schema(document, &definition);
+    merge_agent_definition_skills(document, &definition);
+    let mut members = document
+        .members
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let member_id = member
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "MobKit agent definition produced member without id".to_string())?
+        .to_string();
+    members.push(member.clone());
+    document.members = Value::Array(members);
+    Ok(json!({ "kind": "agent", "id": member_id }))
+}
+
+fn mobpack_agent_definition_by_id(definition_id: &str) -> Option<Value> {
+    let catalogs = mobpack_catalogs_response();
+    ["agent_definitions", "sample_agent_definitions"]
+        .into_iter()
+        .filter_map(|key| catalogs.get(key).and_then(Value::as_array))
+        .flat_map(|definitions| definitions.iter())
+        .find(|definition| {
+            definition
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == definition_id)
+        })
+        .cloned()
+}
+
+fn required_definition_string(definition: &Value, field: &str) -> Result<String, String> {
+    definition
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("MobKit agent definition missing {field}"))
+}
+
+fn optional_definition_string(definition: &Value, field: &str) -> String {
+    definition
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn unique_member_document_id(role: &str, members: &Value) -> String {
+    let base = format!("m_{}", sanitize_identifier(role));
+    let used = members
+        .as_array()
+        .map(|members| {
+            members
+                .iter()
+                .filter_map(|member| member.get("id").and_then(Value::as_str))
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    if !used.contains(base.as_str()) {
+        return base;
+    }
+    let mut index = 2;
+    loop {
+        let candidate = format!("{base}_{index}");
+        if !used.contains(candidate.as_str()) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn unique_member_document_name(name: &str, members: &Value) -> String {
+    let base = name.trim();
+    let base = if base.is_empty() { "member" } else { base };
+    let used = members
+        .as_array()
+        .map(|members| {
+            members
+                .iter()
+                .filter_map(|member| member.get("name").and_then(Value::as_str))
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    if !used.contains(base) {
+        return base.to_string();
+    }
+    let mut index = 2;
+    loop {
+        let candidate = format!("{base}-{index}");
+        if !used.contains(candidate.as_str()) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn member_from_agent_definition(definition: &Value, members: &Value) -> Result<Value, String> {
+    if definition.get("definitionType").and_then(Value::as_str) != Some("mobkit/profile-member") {
+        return Err("MobKit agent definition is not a profile-member contract".to_string());
+    }
+    let role = required_definition_string(definition, "role")?;
+    let name = unique_member_document_name(
+        &required_definition_string(definition, "name")
+            .or_else(|_| required_definition_string(definition, "label"))?,
+        members,
+    );
+    let member_id = unique_member_document_id(&role, members);
+    let definition_kind = optional_definition_string(definition, "definitionKind");
+    let source_kind = optional_definition_string(definition, "sourceKind");
+    Ok(json!({
+        "id": member_id,
+        "name": name,
+        "role": role,
+        "model": required_definition_string(definition, "model")?,
+        "schema": optional_definition_string(definition, "schema"),
+        "skills": definition.get("skills").cloned().unwrap_or_else(|| json!([])),
+        "tools": definition.get("tools").cloned().unwrap_or_else(|| json!([])),
+        "profileBinding": required_definition_string(definition, "profileBinding")?,
+        "realmProfile": optional_definition_string(definition, "realmProfile"),
+        "runtimeMode": required_definition_string(definition, "runtimeMode")?,
+        "externalAddressable": definition.get("externalAddressable").and_then(Value::as_bool).unwrap_or(false),
+        "backend": optional_definition_string(definition, "backend"),
+        "maxInlinePeerNotifications": definition.get("maxInlinePeerNotifications").cloned().unwrap_or(Value::Null),
+        "systemPrompt": optional_definition_string(definition, "systemPrompt"),
+        "providerParams": definition.get("providerParams").cloned().unwrap_or(Value::Null),
+        "sourceDefinition": {
+            "definitionType": required_definition_string(definition, "definitionType")?,
+            "definitionKind": definition_kind,
+            "sourceKind": source_kind,
+            "definitionId": required_definition_string(definition, "id")?,
+            "source": required_definition_string(definition, "source")?,
+            "sourceMobpack": required_definition_string(definition, "sourceMobpack")?,
+            "sourceMobpackName": optional_definition_string(definition, "sourceMobpackName"),
+            "sourceOrigin": required_definition_string(definition, "sourceOrigin")?,
+            "sourceDocumentPath": optional_definition_string(definition, "sourceDocumentPath"),
+            "schemaSourceDocumentPath": optional_definition_string(definition, "schemaSourceDocumentPath"),
+            "toolDefinitions": definition.get("toolDefinitions").cloned().unwrap_or_else(|| json!([])),
+            "skillDefinitions": definition.get("skillDefinitions").cloned().unwrap_or_else(|| json!([])),
+        }
+    }))
+}
+
+fn merge_agent_definition_schema(document: &mut MobpackDocument, definition: &Value) {
+    let Some(schema_definition) = definition
+        .get("schemaDefinition")
+        .filter(|value| value.is_object())
+        .cloned()
+    else {
+        return;
+    };
+    let Some(schema_id) = schema_definition
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let mut schemas = document
+        .schemas
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    if let Some(existing) = schemas.iter_mut().find(|schema| {
+        schema
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == schema_id)
+    }) {
+        *existing = schema_definition;
+    } else {
+        schemas.push(schema_definition);
+    }
+    document.schemas = Value::Array(schemas);
+}
+
+fn merge_agent_definition_skills(document: &mut MobpackDocument, definition: &Value) {
+    let Some(skill_definitions) = definition
+        .get("skillDefinitions")
+        .and_then(Value::as_array)
+        .filter(|skills| !skills.is_empty())
+    else {
+        return;
+    };
+    let realm_id = optional_definition_string(definition, "sourceMobpack");
+    let realm_id = if realm_id.is_empty() {
+        "mobkit/agent-definition".to_string()
+    } else {
+        realm_id
+    };
+    let realm_label = optional_definition_string(definition, "sourceMobpackName");
+    let realm_source = optional_definition_string(definition, "sourceOrigin");
+    let mut realms = document
+        .skill_realms
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let realm_index = realms.iter().position(|realm| {
+        realm
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == realm_id)
+    });
+    if realm_index.is_none() {
+        realms.push(json!({
+            "id": realm_id,
+            "label": if realm_label.is_empty() { "MobKit agent definition skills" } else { realm_label.as_str() },
+            "default": realms.is_empty(),
+            "source": if realm_source.is_empty() { "mobkit/mobpacks/apply_operation" } else { realm_source.as_str() },
+            "sourceDocumentPath": "agent_definitions[].skillDefinitions",
+            "skills": []
+        }));
+    }
+    let index = realm_index.unwrap_or(realms.len() - 1);
+    let skills = realms[index]
+        .get_mut("skills")
+        .and_then(Value::as_array_mut);
+    let Some(skills) = skills else {
+        return;
+    };
+    let mut existing_ids = skills
+        .iter()
+        .filter_map(|skill| skill.get("id").and_then(Value::as_str))
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>();
+    for skill in skill_definitions {
+        let Some(skill_id) = skill
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        if existing_ids.insert(skill_id.to_string()) {
+            skills.push(skill.clone());
+        }
+    }
+    document.skill_realms = Value::Array(realms);
 }
 
 pub fn graph_projection_mobpack(params: &Value) -> Result<Value, String> {
@@ -16802,6 +17094,72 @@ model = "gpt-5.5"
     }
 
     #[test]
+    fn apply_operation_adds_agent_definition_as_real_document_member() {
+        let catalogs = mobpack_catalogs_response();
+        let definition = catalogs["agent_definitions"]
+            .as_array()
+            .expect("agent definitions")
+            .iter()
+            .find(|definition| {
+                definition["id"] == "mobkit_authoring_profiles__01_implementer"
+                    && definition["skills"].as_array().is_some_and(|skills| {
+                        skills
+                            .iter()
+                            .any(|skill| skill == "mob.authoring.implement")
+                    })
+            })
+            .expect("implementer definition");
+        let document: MobpackDocument =
+            serde_json::from_value(catalogs["blank_mobpack"]["document"].clone())
+                .expect("blank document");
+
+        let result = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "add_agent_definition",
+                "definition_id": definition["id"],
+            }
+        }))
+        .expect("apply add agent definition");
+
+        assert_eq!(result["source"], json!("mobkit/mobpacks/apply_operation"));
+        assert_eq!(result["operation"], json!("add_agent_definition"));
+        assert!(result["ok"].as_bool().unwrap_or(false));
+        assert!(result["validation"]["ok"].as_bool().unwrap_or(false));
+        assert_eq!(result["selection"]["kind"], json!("agent"));
+        let document = &result["document"];
+        let members = document["members"].as_array().expect("members");
+        let added = members
+            .iter()
+            .find(|member| member["sourceDefinition"]["definitionId"] == definition["id"])
+            .expect("added definition member");
+        assert_eq!(added["id"], result["selection"]["id"]);
+        assert_eq!(added["role"], json!("implementer"));
+        assert_eq!(added["profileBinding"], json!("inline"));
+        assert!(
+            added["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .any(|tool| tool == "shell")
+        );
+        assert!(
+            document["skill_realms"]
+                .as_array()
+                .expect("skill realms")
+                .iter()
+                .flat_map(|realm| realm["skills"].as_array().into_iter().flatten())
+                .any(|skill| {
+                    skill["id"] == "mob.authoring.implement"
+                        && skill["source"] == "inline"
+                        && skill["content"]
+                            .as_str()
+                            .is_some_and(|content| content.contains("MobKit-owned contracts"))
+                })
+        );
+    }
+
+    #[test]
     fn writes_deploy_result_fixture_when_requested() {
         let params = match std::env::var("MOBKIT_MOBPACK_DEPLOY_IN") {
             Ok(path) => serde_json::from_str(
@@ -17354,6 +17712,7 @@ model = "gpt-5.5"
             ("get", "mobkit/mobpacks/get"),
             ("save", "mobkit/mobpacks/save"),
             ("delete", "mobkit/mobpacks/delete"),
+            ("apply_operation", "mobkit/mobpacks/apply_operation"),
             ("graph_projection", "mobkit/mobpacks/graph_projection"),
             ("deploy_command", "mobkit/mobpacks/deploy_command"),
             ("deploy_rpc", "mobkit/mobpacks/deploy"),
