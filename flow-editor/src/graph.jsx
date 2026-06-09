@@ -2,22 +2,6 @@
 // Studio state hook + GraphEditor.
 // Studio has TWO entities: members (registry) and instances (graph nodes).
 
-const NODE_W = 200;
-const NODE_H = 156;
-
-// Compute dynamic grid dims from instances. Always at least the base,
-// and one extra empty col/row past the rightmost/bottommost node so
-// users have somewhere to drop or click-add.
-function dynGrid(instances, gridBase) {
-  let maxCol = gridBase.cols - 1;
-  let maxRow = gridBase.rows - 1;
-  for (const i of instances) {
-    if (i.col > maxCol) maxCol = i.col;
-    if (i.row > maxRow) maxRow = i.row;
-  }
-  return { ...gridBase, cols: maxCol + 2, rows: maxRow + 2 };
-}
-
 function useStudioState(initial, onDirty, authoring = {}) {
   const [members, setMembers] = React.useState(initial.members);
   const [instances, setInstances] = React.useState(initial.instances);
@@ -165,47 +149,6 @@ function useStudioState(initial, onDirty, authoring = {}) {
   };
 }
 
-// ── Geometry ──
-function cellXYFor(g, col, row) {
-  return {
-    x: g.padX + col * (g.cellW + g.gapX),
-    y: g.padY + row * (g.cellH + g.gapY),
-  };
-}
-function nodeBox(g, n) {
-  const { x, y } = cellXYFor(g, n.col, n.row);
-  if (n.isSourceFile) {
-    const sw = 210, sh = 58;
-    return { x: x + (g.cellW - sw) / 2, y: y + (g.cellH - sh) / 2, w: sw, h: sh };
-  }
-  if (n.isGate) {
-    // Gate nodes render smaller — a compact pill in the cell center.
-    const gw = 156, gh = 56;
-    return { x: x + (g.cellW - gw) / 2, y: y + (g.cellH - gh) / 2, w: gw, h: gh };
-  }
-  return {
-    x: x + (g.cellW - NODE_W) / 2,
-    y: y + (g.cellH - NODE_H) / 2,
-    w: NODE_W, h: NODE_H,
-  };
-}
-function portOut(g, n) { const b = nodeBox(g, n); return { x: b.x + b.w, y: b.y + b.h / 2 }; }
-function portIn(g, n)  { const b = nodeBox(g, n); return { x: b.x,         y: b.y + b.h / 2 }; }
-
-function edgePath(a, b) {
-  if (b.x < a.x - 20) {
-    const dropY = Math.max(a.y, b.y) + 90;
-    const dx = 60;
-    return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${a.x + dx} ${dropY}, ${a.x} ${dropY} L ${b.x} ${dropY} C ${b.x - dx} ${dropY}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
-  }
-  const dx = Math.max(40, (b.x - a.x) * 0.5);
-  return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
-}
-function midpoint(a, b) {
-  if (b.x < a.x - 20) return { x: (a.x + b.x) / 2, y: Math.max(a.y, b.y) + 90 };
-  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 6 };
-}
-
 function occMap(insts) {
   const m = new Map();
   for (const i of insts) m.set(i.col + ":" + i.row, i);
@@ -226,9 +169,10 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   React.useEffect(() => { viewRef.current = view; }, [view]);
   const [panDrag, setPanDrag] = React.useState(null);
 
-  const g = dynGrid(state.instances, grid);
-  const totalW = g.padX * 2 + g.cols * g.cellW + (g.cols - 1) * g.gapX;
-  const totalH = g.padY * 2 + g.rows * g.cellH + (g.rows - 1) * g.gapY;
+  const gridState = window.MobKitFlowController.graphGridState({ instances: state.instances, gridBase: grid });
+  const g = gridState.grid;
+  const totalW = gridState.totalW;
+  const totalH = gridState.totalH;
   const occ = occMap(state.instances);
 
   // Fit-to-content (used on mount and on the ⤢ button)
@@ -276,24 +220,17 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     });
   };
 
-  const cellAt = (x, y) => {
-    const col = Math.floor((x - g.padX + g.gapX / 2) / (g.cellW + g.gapX));
-    const row = Math.floor((y - g.padY + g.gapY / 2) / (g.cellH + g.gapY));
-    if (col < 0 || col >= g.cols || row < 0 || row >= g.rows) return null;
-    return { col, row };
-  };
-
   const onNodeDown = (e, inst) => {
     if (e.target.classList.contains("port")) return;
     e.stopPropagation();
     selectInstance(inst.id);
     const w = screenToWorld(e.clientX, e.clientY);
-    const b = nodeBox(g, inst);
+    const b = window.MobKitFlowController.graphNodeBox(g, inst);
     setDrag({ instId: inst.id, dx: w.x - b.x, dy: w.y - b.y, origCol: inst.col, origRow: inst.row });
   };
   const onPortDown = (e, inst) => {
     e.stopPropagation();
-    const p = portOut(g, inst);
+    const p = window.MobKitFlowController.graphPortOut(g, inst);
     setConn({ from: p, fromId: inst.id, to: p });
   };
 
@@ -339,9 +276,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       }
       if (drag) {
         const w = screenToWorld(e.clientX, e.clientY);
-        const cx = w.x - drag.dx + NODE_W / 2;
-        const cy = w.y - drag.dy + NODE_H / 2;
-        const cell = cellAt(cx, cy);
+        const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
         if (cell) setHoverCell(cell);
       }
       if (conn) {
@@ -356,9 +291,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     const up = (e) => {
       if (drag) {
         const w = screenToWorld(e.clientX, e.clientY);
-        const cx = w.x - drag.dx + NODE_W / 2;
-        const cy = w.y - drag.dy + NODE_H / 2;
-        const cell = cellAt(cx, cy);
+        const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
         if (cell && (cell.col !== drag.origCol || cell.row !== drag.origRow)) {
           state.snap();
           const next = window.MobKitFlowController.studioMoveInstancePatch({
@@ -404,7 +337,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   for (let c = 0; c < g.cols; c++) {
     for (let r = 0; r < g.rows; r++) {
       const occupied = occ.has(c + ":" + r);
-      const { x, y } = cellXYFor(g, c, r);
+      const { x, y } = window.MobKitFlowController.graphCellXY(g, c, r);
       cells.push(
         <div key={`cell-${c}-${r}`}
           className={"cell" + (occupied ? " is-occupied" : "") + (hoverCell?.col === c && hoverCell?.row === r ? " is-hover" : "")}
@@ -420,12 +353,12 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
 
   const colHeads = [];
   for (let c = 0; c < g.cols; c++) {
-    const { x } = cellXYFor(g, c, 0);
+    const { x } = window.MobKitFlowController.graphCellXY(g, c, 0);
     colHeads.push(<div key={"col-" + c} className="grid-head grid-head--col" style={{ left: x, top: 28, width: g.cellW }}>{String(c + 1).padStart(2, "0")}</div>);
   }
   const rowHeads = [];
   for (let r = 0; r < g.rows; r++) {
-    const { y } = cellXYFor(g, 0, r);
+    const { y } = window.MobKitFlowController.graphCellXY(g, 0, r);
     rowHeads.push(<div key={"row-" + r} className="grid-head grid-head--row" style={{ left: 14, top: y + g.cellH/2 - 8 }}>{String.fromCharCode(65 + r)}</div>);
   }
 
@@ -443,9 +376,9 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     const fi = state.instances.find(i => i.id === edge.from);
     const ti = state.instances.find(i => i.id === edge.to);
     if (!fi || !ti) return null;
-    const a = portOut(g, fi), b = portIn(g, ti);
-    const d = edgePath(a, b);
-    const mid = midpoint(a, b);
+    const a = window.MobKitFlowController.graphPortOut(g, fi), b = window.MobKitFlowController.graphPortIn(g, ti);
+    const d = window.MobKitFlowController.graphEdgePath(a, b);
+    const mid = window.MobKitFlowController.graphEdgeMidpoint(a, b);
     const isActive = activeStepId === edge.from;
     const isSelected = selection.kind === "edge" && selection.id === edge.id;
     const edgeState = window.MobKitFlowController.graphEdgeCanvasState({
@@ -530,7 +463,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
             <marker id="arr-dim" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--subtle)"/></marker>
           </defs>
           {edgeEls}
-          {conn && <path d={edgePath(conn.from, conn.to)} className="edge-line is-ghost" markerEnd="url(#arr-acc)" />}
+          {conn && <path d={window.MobKitFlowController.graphEdgePath(conn.from, conn.to)} className="edge-line is-ghost" markerEnd="url(#arr-acc)" />}
         </svg>
         {nodeEls}
       </div>
@@ -554,7 +487,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
 }
 
 function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, onOpenSourceFile }) {
-  const b = nodeBox(g, inst);
+  const b = window.MobKitFlowController.graphNodeBox(g, inst);
 
   if (nodeState.isTerminal) {
     const openSourceFile = (event) => {
@@ -645,7 +578,7 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
 }
 
 function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, state, contract, graphView }) {
-  const b = nodeBox(g, inst);
+  const b = window.MobKitFlowController.graphNodeBox(g, inst);
   const gateState = window.MobKitFlowController.graphGateCanvasState({ inst, edges: state.edges, contract, graphView });
 
   return (

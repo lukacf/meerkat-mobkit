@@ -7416,6 +7416,31 @@ assert.equal(controller.graphNodeCanvasState({
   inst: { id: "n_missing", memberId: "m_missing" },
   members: graphProjectionMembers,
 }).hidden, true);
+const graphGridState = controller.graphGridState({
+  instances: [{ id: "n_a", col: 0, row: 1 }, { id: "n_b", col: 3, row: 2 }],
+  gridBase: { cols: 3, rows: 2, padX: 100, padY: 80, cellW: 120, cellH: 90, gapX: 30, gapY: 20 },
+});
+assert.deepEqual(graphGridState, {
+  grid: { cols: 5, rows: 4, padX: 100, padY: 80, cellW: 120, cellH: 90, gapX: 30, gapY: 20 },
+  totalW: 920,
+  totalH: 580,
+});
+assert.deepEqual(controller.graphCellXY(graphGridState.grid, 2, 3), { x: 400, y: 410 });
+assert.deepEqual(controller.graphCellAt(graphGridState.grid, 350, 338), { col: 1, row: 2 });
+assert.deepEqual(controller.graphCellAt(graphGridState.grid, -1, 338), null);
+assert.deepEqual(controller.graphDragCellAt(graphGridState.grid, { x: 250, y: 260 }, { dx: 0, dy: 0 }), { col: 1, row: 2 });
+assert.deepEqual(controller.graphNodeBox(graphGridState.grid, { col: 1, row: 2 }), { x: 210, y: 267, w: 200, h: 156 });
+assert.deepEqual(controller.graphNodeBox(graphGridState.grid, { col: 1, row: 2, isGate: true }), { x: 232, y: 317, w: 156, h: 56 });
+assert.deepEqual(controller.graphNodeBox(graphGridState.grid, { col: 1, row: 2, isSourceFile: true }), { x: 205, y: 316, w: 210, h: 58 });
+assert.deepEqual(controller.graphPortOut(graphGridState.grid, { col: 1, row: 2 }), { x: 410, y: 345 });
+assert.deepEqual(controller.graphPortIn(graphGridState.grid, { col: 1, row: 2 }), { x: 210, y: 345 });
+assert.equal(controller.graphEdgePath({ x: 10, y: 20 }, { x: 110, y: 60 }), "M 10 20 C 60 20, 60 60, 110 60");
+assert.deepEqual(controller.graphEdgeMidpoint({ x: 10, y: 20 }, { x: 110, y: 60 }), { x: 60, y: 34 });
+assert.equal(
+  controller.graphEdgePath({ x: 200, y: 40 }, { x: 100, y: 80 }),
+  "M 200 40 C 260 40, 260 170, 200 170 L 100 170 C 40 170, 40 80, 100 80",
+);
+assert.deepEqual(controller.graphEdgeMidpoint({ x: 200, y: 40 }, { x: 100, y: 80 }), { x: 150, y: 170 });
 assert.deepEqual(controller.graphFrameCanvasState({
   frame: { id: "frame_branch_route", label: "BRANCH · route", colStart: 1, colEnd: 3 },
   grid: { padX: 100, padY: 80, cellW: 120, cellH: 90, gapX: 30, gapY: 20, rows: 3 },

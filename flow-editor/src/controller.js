@@ -5516,6 +5516,109 @@
     return "";
   }
 
+  const GRAPH_NODE_W = 200;
+  const GRAPH_NODE_H = 156;
+
+  function graphGridState({ instances = [], gridBase = {} } = {}) {
+    const baseCols = Math.max(1, Number(gridBase?.cols || 1));
+    const baseRows = Math.max(1, Number(gridBase?.rows || 1));
+    let maxCol = baseCols - 1;
+    let maxRow = baseRows - 1;
+    for (const instance of Array.isArray(instances) ? instances : []) {
+      const col = Number(instance?.col);
+      const row = Number(instance?.row);
+      if (Number.isFinite(col) && col > maxCol) maxCol = col;
+      if (Number.isFinite(row) && row > maxRow) maxRow = row;
+    }
+    const grid = {
+      ...gridBase,
+      cols: maxCol + 2,
+      rows: maxRow + 2,
+    };
+    const totalW = Number(grid.padX || 0) * 2 +
+      Number(grid.cols || 0) * Number(grid.cellW || 0) +
+      Math.max(0, Number(grid.cols || 0) - 1) * Number(grid.gapX || 0);
+    const totalH = Number(grid.padY || 0) * 2 +
+      Number(grid.rows || 0) * Number(grid.cellH || 0) +
+      Math.max(0, Number(grid.rows || 0) - 1) * Number(grid.gapY || 0);
+    return { grid, totalW, totalH };
+  }
+
+  function graphCellXY(grid, col, row) {
+    return {
+      x: Number(grid?.padX || 0) + Number(col || 0) * (Number(grid?.cellW || 0) + Number(grid?.gapX || 0)),
+      y: Number(grid?.padY || 0) + Number(row || 0) * (Number(grid?.cellH || 0) + Number(grid?.gapY || 0)),
+    };
+  }
+
+  function graphNodeBox(grid, inst) {
+    const { x, y } = graphCellXY(grid, inst?.col, inst?.row);
+    if (inst?.isSourceFile) {
+      const sw = 210;
+      const sh = 58;
+      return {
+        x: x + (Number(grid?.cellW || 0) - sw) / 2,
+        y: y + (Number(grid?.cellH || 0) - sh) / 2,
+        w: sw,
+        h: sh,
+      };
+    }
+    if (inst?.isGate) {
+      const gw = 156;
+      const gh = 56;
+      return {
+        x: x + (Number(grid?.cellW || 0) - gw) / 2,
+        y: y + (Number(grid?.cellH || 0) - gh) / 2,
+        w: gw,
+        h: gh,
+      };
+    }
+    return {
+      x: x + (Number(grid?.cellW || 0) - GRAPH_NODE_W) / 2,
+      y: y + (Number(grid?.cellH || 0) - GRAPH_NODE_H) / 2,
+      w: GRAPH_NODE_W,
+      h: GRAPH_NODE_H,
+    };
+  }
+
+  function graphPortOut(grid, inst) {
+    const box = graphNodeBox(grid, inst);
+    return { x: box.x + box.w, y: box.y + box.h / 2 };
+  }
+
+  function graphPortIn(grid, inst) {
+    const box = graphNodeBox(grid, inst);
+    return { x: box.x, y: box.y + box.h / 2 };
+  }
+
+  function graphEdgePath(a, b) {
+    if (b.x < a.x - 20) {
+      const dropY = Math.max(a.y, b.y) + 90;
+      const dx = 60;
+      return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${a.x + dx} ${dropY}, ${a.x} ${dropY} L ${b.x} ${dropY} C ${b.x - dx} ${dropY}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
+    }
+    const dx = Math.max(40, (b.x - a.x) * 0.5);
+    return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
+  }
+
+  function graphEdgeMidpoint(a, b) {
+    if (b.x < a.x - 20) return { x: (a.x + b.x) / 2, y: Math.max(a.y, b.y) + 90 };
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 6 };
+  }
+
+  function graphCellAt(grid, x, y) {
+    const col = Math.floor((Number(x || 0) - Number(grid?.padX || 0) + Number(grid?.gapX || 0) / 2) / (Number(grid?.cellW || 0) + Number(grid?.gapX || 0)));
+    const row = Math.floor((Number(y || 0) - Number(grid?.padY || 0) + Number(grid?.gapY || 0) / 2) / (Number(grid?.cellH || 0) + Number(grid?.gapY || 0)));
+    if (col < 0 || col >= Number(grid?.cols || 0) || row < 0 || row >= Number(grid?.rows || 0)) return null;
+    return { col, row };
+  }
+
+  function graphDragCellAt(grid, world, drag) {
+    const cx = Number(world?.x || 0) - Number(drag?.dx || 0) + GRAPH_NODE_W / 2;
+    const cy = Number(world?.y || 0) - Number(drag?.dy || 0) + GRAPH_NODE_H / 2;
+    return graphCellAt(grid, cx, cy);
+  }
+
   function graphNodeCanvasState({ inst, members = [], density = "", graphView = null } = {}) {
     const view = graphCanvasViewState(graphView);
     const isCompact = density === "compact";
@@ -10375,6 +10478,15 @@
     graphTemplateInspectorState,
     graphInstanceControlState,
     graphToolTagClass,
+    graphGridState,
+    graphCellXY,
+    graphNodeBox,
+    graphPortOut,
+    graphPortIn,
+    graphEdgePath,
+    graphEdgeMidpoint,
+    graphCellAt,
+    graphDragCellAt,
     graphSourceFileNode,
     graphCanvasInstances,
     graphNodeCanvasState,

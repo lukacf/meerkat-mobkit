@@ -5549,6 +5549,109 @@ window.MOBKIT_BOOT = {
     return "";
   }
 
+  const GRAPH_NODE_W = 200;
+  const GRAPH_NODE_H = 156;
+
+  function graphGridState({ instances = [], gridBase = {} } = {}) {
+    const baseCols = Math.max(1, Number(gridBase?.cols || 1));
+    const baseRows = Math.max(1, Number(gridBase?.rows || 1));
+    let maxCol = baseCols - 1;
+    let maxRow = baseRows - 1;
+    for (const instance of Array.isArray(instances) ? instances : []) {
+      const col = Number(instance?.col);
+      const row = Number(instance?.row);
+      if (Number.isFinite(col) && col > maxCol) maxCol = col;
+      if (Number.isFinite(row) && row > maxRow) maxRow = row;
+    }
+    const grid = {
+      ...gridBase,
+      cols: maxCol + 2,
+      rows: maxRow + 2,
+    };
+    const totalW = Number(grid.padX || 0) * 2 +
+      Number(grid.cols || 0) * Number(grid.cellW || 0) +
+      Math.max(0, Number(grid.cols || 0) - 1) * Number(grid.gapX || 0);
+    const totalH = Number(grid.padY || 0) * 2 +
+      Number(grid.rows || 0) * Number(grid.cellH || 0) +
+      Math.max(0, Number(grid.rows || 0) - 1) * Number(grid.gapY || 0);
+    return { grid, totalW, totalH };
+  }
+
+  function graphCellXY(grid, col, row) {
+    return {
+      x: Number(grid?.padX || 0) + Number(col || 0) * (Number(grid?.cellW || 0) + Number(grid?.gapX || 0)),
+      y: Number(grid?.padY || 0) + Number(row || 0) * (Number(grid?.cellH || 0) + Number(grid?.gapY || 0)),
+    };
+  }
+
+  function graphNodeBox(grid, inst) {
+    const { x, y } = graphCellXY(grid, inst?.col, inst?.row);
+    if (inst?.isSourceFile) {
+      const sw = 210;
+      const sh = 58;
+      return {
+        x: x + (Number(grid?.cellW || 0) - sw) / 2,
+        y: y + (Number(grid?.cellH || 0) - sh) / 2,
+        w: sw,
+        h: sh,
+      };
+    }
+    if (inst?.isGate) {
+      const gw = 156;
+      const gh = 56;
+      return {
+        x: x + (Number(grid?.cellW || 0) - gw) / 2,
+        y: y + (Number(grid?.cellH || 0) - gh) / 2,
+        w: gw,
+        h: gh,
+      };
+    }
+    return {
+      x: x + (Number(grid?.cellW || 0) - GRAPH_NODE_W) / 2,
+      y: y + (Number(grid?.cellH || 0) - GRAPH_NODE_H) / 2,
+      w: GRAPH_NODE_W,
+      h: GRAPH_NODE_H,
+    };
+  }
+
+  function graphPortOut(grid, inst) {
+    const box = graphNodeBox(grid, inst);
+    return { x: box.x + box.w, y: box.y + box.h / 2 };
+  }
+
+  function graphPortIn(grid, inst) {
+    const box = graphNodeBox(grid, inst);
+    return { x: box.x, y: box.y + box.h / 2 };
+  }
+
+  function graphEdgePath(a, b) {
+    if (b.x < a.x - 20) {
+      const dropY = Math.max(a.y, b.y) + 90;
+      const dx = 60;
+      return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${a.x + dx} ${dropY}, ${a.x} ${dropY} L ${b.x} ${dropY} C ${b.x - dx} ${dropY}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
+    }
+    const dx = Math.max(40, (b.x - a.x) * 0.5);
+    return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
+  }
+
+  function graphEdgeMidpoint(a, b) {
+    if (b.x < a.x - 20) return { x: (a.x + b.x) / 2, y: Math.max(a.y, b.y) + 90 };
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 6 };
+  }
+
+  function graphCellAt(grid, x, y) {
+    const col = Math.floor((Number(x || 0) - Number(grid?.padX || 0) + Number(grid?.gapX || 0) / 2) / (Number(grid?.cellW || 0) + Number(grid?.gapX || 0)));
+    const row = Math.floor((Number(y || 0) - Number(grid?.padY || 0) + Number(grid?.gapY || 0) / 2) / (Number(grid?.cellH || 0) + Number(grid?.gapY || 0)));
+    if (col < 0 || col >= Number(grid?.cols || 0) || row < 0 || row >= Number(grid?.rows || 0)) return null;
+    return { col, row };
+  }
+
+  function graphDragCellAt(grid, world, drag) {
+    const cx = Number(world?.x || 0) - Number(drag?.dx || 0) + GRAPH_NODE_W / 2;
+    const cy = Number(world?.y || 0) - Number(drag?.dy || 0) + GRAPH_NODE_H / 2;
+    return graphCellAt(grid, cx, cy);
+  }
+
   function graphNodeCanvasState({ inst, members = [], density = "", graphView = null } = {}) {
     const view = graphCanvasViewState(graphView);
     const isCompact = density === "compact";
@@ -10408,6 +10511,15 @@ window.MOBKIT_BOOT = {
     graphTemplateInspectorState,
     graphInstanceControlState,
     graphToolTagClass,
+    graphGridState,
+    graphCellXY,
+    graphNodeBox,
+    graphPortOut,
+    graphPortIn,
+    graphEdgePath,
+    graphEdgeMidpoint,
+    graphCellAt,
+    graphDragCellAt,
     graphSourceFileNode,
     graphCanvasInstances,
     graphNodeCanvasState,
@@ -11103,17 +11215,6 @@ Object.assign(window, {
 /* graph.jsx */
 
 {
-const NODE_W = 200;
-const NODE_H = 156;
-function dynGrid(instances, gridBase) {
-  let maxCol = gridBase.cols - 1;
-  let maxRow = gridBase.rows - 1;
-  for (const i of instances) {
-    if (i.col > maxCol) maxCol = i.col;
-    if (i.row > maxRow) maxRow = i.row;
-  }
-  return { ...gridBase, cols: maxCol + 2, rows: maxRow + 2 };
-}
 function useStudioState(initial, onDirty, authoring = {}) {
   const [members, setMembers] = React.useState(initial.members);
   const [instances, setInstances] = React.useState(initial.instances);
@@ -11274,50 +11375,6 @@ function useStudioState(initial, onDirty, authoring = {}) {
     updateSkillRealms
   };
 }
-function cellXYFor(g, col, row) {
-  return {
-    x: g.padX + col * (g.cellW + g.gapX),
-    y: g.padY + row * (g.cellH + g.gapY)
-  };
-}
-function nodeBox(g, n) {
-  const { x, y } = cellXYFor(g, n.col, n.row);
-  if (n.isSourceFile) {
-    const sw = 210, sh = 58;
-    return { x: x + (g.cellW - sw) / 2, y: y + (g.cellH - sh) / 2, w: sw, h: sh };
-  }
-  if (n.isGate) {
-    const gw = 156, gh = 56;
-    return { x: x + (g.cellW - gw) / 2, y: y + (g.cellH - gh) / 2, w: gw, h: gh };
-  }
-  return {
-    x: x + (g.cellW - NODE_W) / 2,
-    y: y + (g.cellH - NODE_H) / 2,
-    w: NODE_W,
-    h: NODE_H
-  };
-}
-function portOut(g, n) {
-  const b = nodeBox(g, n);
-  return { x: b.x + b.w, y: b.y + b.h / 2 };
-}
-function portIn(g, n) {
-  const b = nodeBox(g, n);
-  return { x: b.x, y: b.y + b.h / 2 };
-}
-function edgePath(a, b) {
-  if (b.x < a.x - 20) {
-    const dropY = Math.max(a.y, b.y) + 90;
-    const dx2 = 60;
-    return `M ${a.x} ${a.y} C ${a.x + dx2} ${a.y}, ${a.x + dx2} ${dropY}, ${a.x} ${dropY} L ${b.x} ${dropY} C ${b.x - dx2} ${dropY}, ${b.x - dx2} ${b.y}, ${b.x} ${b.y}`;
-  }
-  const dx = Math.max(40, (b.x - a.x) * 0.5);
-  return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
-}
-function midpoint(a, b) {
-  if (b.x < a.x - 20) return { x: (a.x + b.x) / 2, y: Math.max(a.y, b.y) + 90 };
-  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 6 };
-}
 function occMap(insts) {
   const m = /* @__PURE__ */ new Map();
   for (const i of insts) m.set(i.col + ":" + i.row, i);
@@ -11336,9 +11393,10 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     viewRef.current = view;
   }, [view]);
   const [panDrag, setPanDrag] = React.useState(null);
-  const g = dynGrid(state.instances, grid);
-  const totalW = g.padX * 2 + g.cols * g.cellW + (g.cols - 1) * g.gapX;
-  const totalH = g.padY * 2 + g.rows * g.cellH + (g.rows - 1) * g.gapY;
+  const gridState = window.MobKitFlowController.graphGridState({ instances: state.instances, gridBase: grid });
+  const g = gridState.grid;
+  const totalW = gridState.totalW;
+  const totalH = gridState.totalH;
   const occ = occMap(state.instances);
   const fitToBounds = React.useCallback(() => {
     const host = hostRef.current;
@@ -11381,23 +11439,17 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       ty: cy - (cy - v.ty) * k
     });
   };
-  const cellAt = (x, y) => {
-    const col = Math.floor((x - g.padX + g.gapX / 2) / (g.cellW + g.gapX));
-    const row = Math.floor((y - g.padY + g.gapY / 2) / (g.cellH + g.gapY));
-    if (col < 0 || col >= g.cols || row < 0 || row >= g.rows) return null;
-    return { col, row };
-  };
   const onNodeDown = (e, inst) => {
     if (e.target.classList.contains("port")) return;
     e.stopPropagation();
     selectInstance(inst.id);
     const w = screenToWorld(e.clientX, e.clientY);
-    const b = nodeBox(g, inst);
+    const b = window.MobKitFlowController.graphNodeBox(g, inst);
     setDrag({ instId: inst.id, dx: w.x - b.x, dy: w.y - b.y, origCol: inst.col, origRow: inst.row });
   };
   const onPortDown = (e, inst) => {
     e.stopPropagation();
-    const p = portOut(g, inst);
+    const p = window.MobKitFlowController.graphPortOut(g, inst);
     setConn({ from: p, fromId: inst.id, to: p });
   };
   const onHostMouseDown = (e) => {
@@ -11433,9 +11485,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       }
       if (drag) {
         const w = screenToWorld(e.clientX, e.clientY);
-        const cx = w.x - drag.dx + NODE_W / 2;
-        const cy = w.y - drag.dy + NODE_H / 2;
-        const cell = cellAt(cx, cy);
+        const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
         if (cell) setHoverCell(cell);
       }
       if (conn) {
@@ -11450,9 +11500,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     const up = (e) => {
       if (drag) {
         const w = screenToWorld(e.clientX, e.clientY);
-        const cx = w.x - drag.dx + NODE_W / 2;
-        const cy = w.y - drag.dy + NODE_H / 2;
-        const cell = cellAt(cx, cy);
+        const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
         if (cell && (cell.col !== drag.origCol || cell.row !== drag.origRow)) {
           state.snap();
           const next = window.MobKitFlowController.studioMoveInstancePatch({
@@ -11501,7 +11549,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   for (let c = 0; c < g.cols; c++) {
     for (let r = 0; r < g.rows; r++) {
       const occupied = occ.has(c + ":" + r);
-      const { x, y } = cellXYFor(g, c, r);
+      const { x, y } = window.MobKitFlowController.graphCellXY(g, c, r);
       cells.push(
         /* @__PURE__ */ React.createElement(
           "div",
@@ -11522,12 +11570,12 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   }
   const colHeads = [];
   for (let c = 0; c < g.cols; c++) {
-    const { x } = cellXYFor(g, c, 0);
+    const { x } = window.MobKitFlowController.graphCellXY(g, c, 0);
     colHeads.push(/* @__PURE__ */ React.createElement("div", { key: "col-" + c, className: "grid-head grid-head--col", style: { left: x, top: 28, width: g.cellW } }, String(c + 1).padStart(2, "0")));
   }
   const rowHeads = [];
   for (let r = 0; r < g.rows; r++) {
-    const { y } = cellXYFor(g, 0, r);
+    const { y } = window.MobKitFlowController.graphCellXY(g, 0, r);
     rowHeads.push(/* @__PURE__ */ React.createElement("div", { key: "row-" + r, className: "grid-head grid-head--row", style: { left: 14, top: y + g.cellH / 2 - 8 } }, String.fromCharCode(65 + r)));
   }
   const frameEls = state.frames.map((fr) => {
@@ -11538,9 +11586,9 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     const fi = state.instances.find((i) => i.id === edge.from);
     const ti = state.instances.find((i) => i.id === edge.to);
     if (!fi || !ti) return null;
-    const a = portOut(g, fi), b = portIn(g, ti);
-    const d = edgePath(a, b);
-    const mid = midpoint(a, b);
+    const a = window.MobKitFlowController.graphPortOut(g, fi), b = window.MobKitFlowController.graphPortIn(g, ti);
+    const d = window.MobKitFlowController.graphEdgePath(a, b);
+    const mid = window.MobKitFlowController.graphEdgeMidpoint(a, b);
     const isActive = activeStepId === edge.from;
     const isSelected = selection.kind === "edge" && selection.id === edge.id;
     const edgeState = window.MobKitFlowController.graphEdgeCanvasState({
@@ -11615,7 +11663,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         if (e.target === hostRef.current || e.target.classList?.contains("canvas")) clearSelection();
       }
     },
-    /* @__PURE__ */ React.createElement("div", { className: "canvas", style: { width: totalW, height: totalH, transform: `translate(${fit.tx}px, ${fit.ty}px) scale(${fit.scale})`, transformOrigin: "0 0" } }, colHeads, rowHeads, frameEls, cells, /* @__PURE__ */ React.createElement("svg", { className: "edges-svg", width: totalW, height: totalH }, /* @__PURE__ */ React.createElement("defs", null, /* @__PURE__ */ React.createElement("marker", { id: "arr", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--ink)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-red", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--danger)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-acc", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--accent)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-dim", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--subtle)" }))), edgeEls, conn && /* @__PURE__ */ React.createElement("path", { d: edgePath(conn.from, conn.to), className: "edge-line is-ghost", markerEnd: "url(#arr-acc)" })), nodeEls),
+    /* @__PURE__ */ React.createElement("div", { className: "canvas", style: { width: totalW, height: totalH, transform: `translate(${fit.tx}px, ${fit.ty}px) scale(${fit.scale})`, transformOrigin: "0 0" } }, colHeads, rowHeads, frameEls, cells, /* @__PURE__ */ React.createElement("svg", { className: "edges-svg", width: totalW, height: totalH }, /* @__PURE__ */ React.createElement("defs", null, /* @__PURE__ */ React.createElement("marker", { id: "arr", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--ink)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-red", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--danger)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-acc", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--accent)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-dim", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--subtle)" }))), edgeEls, conn && /* @__PURE__ */ React.createElement("path", { d: window.MobKitFlowController.graphEdgePath(conn.from, conn.to), className: "edge-line is-ghost", markerEnd: "url(#arr-acc)" })), nodeEls),
     /* @__PURE__ */ React.createElement("div", { className: "zoom-controls", onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", title: canvasView.zoomOutTitle, onClick: () => {
       const r = hostRef.current.getBoundingClientRect();
       zoomAt(1 / 1.2, r.left + r.width / 2, r.top + r.height / 2);
@@ -11626,7 +11674,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   );
 }
 function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, onOpenSourceFile }) {
-  const b = nodeBox(g, inst);
+  const b = window.MobKitFlowController.graphNodeBox(g, inst);
   if (nodeState.isTerminal) {
     const openSourceFile = (event) => {
       if (!nodeState.isSourceFile) return;
@@ -11702,7 +11750,7 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
   );
 }
 function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, state, contract, graphView }) {
-  const b = nodeBox(g, inst);
+  const b = window.MobKitFlowController.graphNodeBox(g, inst);
   const gateState = window.MobKitFlowController.graphGateCanvasState({ inst, edges: state.edges, contract, graphView });
   return /* @__PURE__ */ React.createElement(
     "div",
