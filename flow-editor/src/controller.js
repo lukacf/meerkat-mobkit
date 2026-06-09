@@ -5557,6 +5557,30 @@
     };
   }
 
+  function graphFrameCanvasState({ frame, grid } = {}) {
+    const cell = (col, row) => ({
+      x: Number(grid?.padX || 0) + Number(col || 0) * (Number(grid?.cellW || 0) + Number(grid?.gapX || 0)),
+      y: Number(grid?.padY || 0) + Number(row || 0) * (Number(grid?.cellH || 0) + Number(grid?.gapY || 0)),
+    });
+    const rows = Math.max(1, Number(grid?.rows || 1));
+    const cellW = Number(grid?.cellW || 0);
+    const cellH = Number(grid?.cellH || 0);
+    const startCol = Number.isFinite(Number(frame?.colStart)) ? Number(frame.colStart) : 0;
+    const endCol = Number.isFinite(Number(frame?.colEnd)) ? Number(frame.colEnd) : startCol;
+    const start = cell(startCol, 0);
+    const end = cell(endCol, rows - 1);
+    const x = start.x - 14;
+    const y = start.y - 18;
+    const width = (end.x + cellW) - x + 14;
+    const height = (end.y + cellH) - y + 18;
+    return {
+      id: String(frame?.id || ""),
+      label: String(frame?.label || ""),
+      frameStyle: { left: x, top: y, width, height },
+      labelStyle: { left: x + 12, top: y - 10 },
+    };
+  }
+
   function graphSourceFileNode({ instances = [], graphView = null } = {}) {
     const view = graphCanvasViewState(graphView);
     const sourceInstances = Array.isArray(instances) ? instances : [];
@@ -10354,6 +10378,7 @@
     graphSourceFileNode,
     graphCanvasInstances,
     graphNodeCanvasState,
+    graphFrameCanvasState,
     graphGateCanvasState,
     graphEdgeCanvasState,
     graphGateControlState,

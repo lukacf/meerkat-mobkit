@@ -7416,6 +7416,15 @@ assert.equal(controller.graphNodeCanvasState({
   inst: { id: "n_missing", memberId: "m_missing" },
   members: graphProjectionMembers,
 }).hidden, true);
+assert.deepEqual(controller.graphFrameCanvasState({
+  frame: { id: "frame_branch_route", label: "BRANCH · route", colStart: 1, colEnd: 3 },
+  grid: { padX: 100, padY: 80, cellW: 120, cellH: 90, gapX: 30, gapY: 20, rows: 3 },
+}), {
+  id: "frame_branch_route",
+  label: "BRANCH · route",
+  frameStyle: { left: 236, top: 62, width: 448, height: 346 },
+  labelStyle: { left: 248, top: 52 },
+});
 const terminalSourceState = controller.graphNodeCanvasState({
   inst: { id: "source_mob_toml", label: "mob.toml", kind: "success", isTerminal: true },
   graphView: hydratedCatalogs.graphView,

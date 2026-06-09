@@ -430,15 +430,11 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   }
 
   const frameEls = state.frames.map(fr => {
-    const a = cellXYFor(g, fr.colStart, 0);
-    const b = cellXYFor(g, fr.colEnd, g.rows - 1);
-    const x = a.x - 14, y = a.y - 18;
-    const w = (b.x + g.cellW) - x + 14;
-    const h = (b.y + g.cellH) - y + 18;
+    const frameState = window.MobKitFlowController.graphFrameCanvasState({ frame: fr, grid: g });
     return (
-      <React.Fragment key={fr.id}>
-        <div className="frame" style={{ left: x, top: y, width: w, height: h }} />
-        <div className="frame-label" style={{ left: x + 12, top: y - 10 }}>{fr.label}</div>
+      <React.Fragment key={frameState.id}>
+        <div className="frame" style={frameState.frameStyle} />
+        <div className="frame-label" style={frameState.labelStyle}>{frameState.label}</div>
       </React.Fragment>
     );
   });

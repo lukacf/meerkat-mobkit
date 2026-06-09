@@ -5590,6 +5590,30 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function graphFrameCanvasState({ frame, grid } = {}) {
+    const cell = (col, row) => ({
+      x: Number(grid?.padX || 0) + Number(col || 0) * (Number(grid?.cellW || 0) + Number(grid?.gapX || 0)),
+      y: Number(grid?.padY || 0) + Number(row || 0) * (Number(grid?.cellH || 0) + Number(grid?.gapY || 0)),
+    });
+    const rows = Math.max(1, Number(grid?.rows || 1));
+    const cellW = Number(grid?.cellW || 0);
+    const cellH = Number(grid?.cellH || 0);
+    const startCol = Number.isFinite(Number(frame?.colStart)) ? Number(frame.colStart) : 0;
+    const endCol = Number.isFinite(Number(frame?.colEnd)) ? Number(frame.colEnd) : startCol;
+    const start = cell(startCol, 0);
+    const end = cell(endCol, rows - 1);
+    const x = start.x - 14;
+    const y = start.y - 18;
+    const width = (end.x + cellW) - x + 14;
+    const height = (end.y + cellH) - y + 18;
+    return {
+      id: String(frame?.id || ""),
+      label: String(frame?.label || ""),
+      frameStyle: { left: x, top: y, width, height },
+      labelStyle: { left: x + 12, top: y - 10 },
+    };
+  }
+
   function graphSourceFileNode({ instances = [], graphView = null } = {}) {
     const view = graphCanvasViewState(graphView);
     const sourceInstances = Array.isArray(instances) ? instances : [];
@@ -10387,6 +10411,7 @@ window.MOBKIT_BOOT = {
     graphSourceFileNode,
     graphCanvasInstances,
     graphNodeCanvasState,
+    graphFrameCanvasState,
     graphGateCanvasState,
     graphEdgeCanvasState,
     graphGateControlState,
@@ -11506,12 +11531,8 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     rowHeads.push(/* @__PURE__ */ React.createElement("div", { key: "row-" + r, className: "grid-head grid-head--row", style: { left: 14, top: y + g.cellH / 2 - 8 } }, String.fromCharCode(65 + r)));
   }
   const frameEls = state.frames.map((fr) => {
-    const a = cellXYFor(g, fr.colStart, 0);
-    const b = cellXYFor(g, fr.colEnd, g.rows - 1);
-    const x = a.x - 14, y = a.y - 18;
-    const w = b.x + g.cellW - x + 14;
-    const h = b.y + g.cellH - y + 18;
-    return /* @__PURE__ */ React.createElement(React.Fragment, { key: fr.id }, /* @__PURE__ */ React.createElement("div", { className: "frame", style: { left: x, top: y, width: w, height: h } }), /* @__PURE__ */ React.createElement("div", { className: "frame-label", style: { left: x + 12, top: y - 10 } }, fr.label));
+    const frameState = window.MobKitFlowController.graphFrameCanvasState({ frame: fr, grid: g });
+    return /* @__PURE__ */ React.createElement(React.Fragment, { key: frameState.id }, /* @__PURE__ */ React.createElement("div", { className: "frame", style: frameState.frameStyle }), /* @__PURE__ */ React.createElement("div", { className: "frame-label", style: frameState.labelStyle }, frameState.label));
   });
   const edgeEls = state.edges.map((edge) => {
     const fi = state.instances.find((i) => i.id === edge.from);

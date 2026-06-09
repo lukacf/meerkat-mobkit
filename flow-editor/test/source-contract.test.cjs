@@ -279,6 +279,7 @@ assert.match(graphEdgeCanvasBlock, /MobKitFlowController\.graphEdgeCanvasState/,
 assert.match(graphEdgeCanvasBlock, /graphEdgeCanvasState\(\{[\s\S]*contract/, "Graph canvas edge projection must receive the MobKit graph edge-kind contract");
 assert.match(graphEdgeCanvasBlock, /graphEdgeCanvasState\(\{[\s\S]*graphView:\s*canvasView/, "Graph canvas edge projection must receive schema-backed Graph view metadata");
 assert.match(graph, /MobKitFlowController\.graphNodeCanvasState/, "Graph canvas must render node member/tool/source metadata through the controller plane");
+assert.match(graph, /MobKitFlowController\.graphFrameCanvasState/, "Graph canvas must render frame geometry and labels through the controller plane");
 assert.match(graph, /MobKitFlowController\.graphCanvasInstances/, "Graph canvas must ask the controller plane for renderable graph instances including the mob.toml source-file adornment");
 assert.match(graph, /MobKitFlowController\.graphGateCanvasState/, "Graph canvas must render gate glyph and sublabels through the controller plane");
 assert.match(graphGateViewBlock, /graphGateCanvasState\(\{ inst,\s*edges:\s*state\.edges,\s*contract,\s*graphView \}\)/, "Graph gate canvas projection must receive the MobKit graph draft and graph view contracts");
@@ -294,6 +295,7 @@ assert.match(controller, /function graphEdgeCanvasState/, "controller plane must
 assert.match(controller, /graphEdgeCanvasState[\s\S]*graphCanvasViewState\(graphView\)[\s\S]*labelText\s*=\s*String\(edge\?\.label \|\| view\.edgeKindLabels\[kind\] \|\| ""\)/, "Graph edge fallback labels must come from MobKit editor_graph_view edge-kind labels");
 assert.match(controller, /function graphProjectionEdgeKinds/, "controller plane must own schema-backed graph edge-kind projection");
 assert.match(controller, /function graphNodeCanvasState/, "controller plane must own Graph node canvas projection");
+assert.match(controller, /function graphFrameCanvasState/, "controller plane must own Graph frame canvas projection");
 assert.match(controller, /function graphSourceFileNode/, "controller plane must own Graph source-file adornment projection");
 assert.match(controller, /function graphCanvasInstances/, "controller plane must own Graph canvas instance assembly");
 assert.match(controller, /function graphGateCanvasState/, "controller plane must own Graph gate canvas projection");
@@ -304,6 +306,7 @@ assert.match(controller, /graphGateCanvasState[\s\S]*sublabel\s*=\s*`\$\{draft\.
 assert(!/\[sourceFileNode,\s*\.\.\.state\.instances\]|graphSourceFileNode\(\{ instances: state\.instances \}\)/.test(graph), "Graph view must not assemble source-file adornment rows locally");
 assert(!/const\s+kind\s*=\s*edge\.kind|terminalTarget|kind === ["'](?:cond|fanout)["']|edge\.label \|\| edge\.kind|markerEnd=\{[\s\S]*url\(#arr-red\)|url\(#arr-dim\)/.test(graphEdgeCanvasBlock), "Graph edge canvas must not assemble edge kind classes, labels, glyphs, colors, or markers locally");
 assert(!/memberById|schemaById|function classifyTool|member\.tools|member\.role|member\.model|member\.name|mob\\.toml|launchMode\?\.kind/.test(graphNodeViewBlock), "Graph node canvas must not assemble member, tool, launch, or source-file metadata locally");
+assert(!/fr\.colStart|fr\.colEnd|fr\.label|const a = cellXYFor\(g, fr/.test(graph), "Graph frame canvas must not assemble frame geometry or labels locally");
 assert(!/inst\.gateKind ===|inst\.collection ===|state\.edges\.filter|barrier|join ·/.test(graphGateViewBlock), "Graph gate canvas must not assemble gate glyph, quorum, or collection labels locally");
 assert(!/studio\.instances\.find\(i => i\.id === selection\.id\)|studio\.edges\.find\(e => e\.id === selection\.id\)/.test(inspectorRootBlock), "Graph Inspector root must not resolve selected graph entities locally");
 assert(!/studio\.members\.length|new Set\(studio\.instances\.filter|studio\.instances\.filter\(i => !i\.isTerminal\)|studio\.instances\.filter\(i => i\.isTerminal\)|studio\.edges\.length|studio\.frames\.length/.test(inspectorTemplateBlock), "Graph template inspector must not assemble summary counts locally");
