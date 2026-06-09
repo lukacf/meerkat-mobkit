@@ -715,6 +715,60 @@ assert.equal(controller.newFlowModalState({ step: 2, name: "Draft", template: ""
 assert.equal(controller.newFlowModalState({ step: 2, name: "Draft", template: "ghost" }, [
   { id: "blank", disabled: false },
 ], TEST_NEW_FLOW_VIEW).createDisabled, true);
+assert.deepEqual(controller.newFlowModalPatch({
+  step: 2,
+  name: "Draft",
+  trigger: "label · docs",
+  template: "docs",
+}, { step: 99, name: "Renamed" }), {
+  step: 1,
+  name: "Renamed",
+  trigger: "label · docs",
+  template: "docs",
+});
+assert.deepEqual(controller.newFlowModalFieldPatch({
+  step: 1,
+  name: "Draft",
+  trigger: "label · docs",
+  template: "blank",
+}, "trigger", "label · review"), {
+  step: 1,
+  name: "Draft",
+  trigger: "label · review",
+  template: "blank",
+});
+assert.deepEqual(controller.newFlowModalFieldPatch({
+  step: 2,
+  name: "Draft",
+  trigger: "label · docs",
+  template: "blank",
+}, "unsupported", "ignored"), {
+  step: 2,
+  name: "Draft",
+  trigger: "label · docs",
+  template: "blank",
+});
+assert.deepEqual(controller.newFlowModalStepPatch({
+  step: 1,
+  name: "Draft",
+  trigger: "label · docs",
+  template: "blank",
+}, 2), {
+  step: 2,
+  name: "Draft",
+  trigger: "label · docs",
+  template: "blank",
+});
+assert.deepEqual(controller.newFlowModalCreateSpec({
+  step: 2,
+  name: "Draft",
+  trigger: "label · docs",
+  template: "blank",
+}), {
+  name: "Draft",
+  trigger: "label · docs",
+  template: "blank",
+});
 assert.deepEqual(controller.flowRegistryViewState([
   { id: "f_existing", name: "Existing", trigger: "label · docs", version: "0.1", stage: "valid" },
   { id: "f_draft", name: "Draft", trigger: "", version: "", stage: "" },

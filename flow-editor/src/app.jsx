@@ -1089,7 +1089,8 @@ function FlowsView({ flows, currentFlowId, onOpen, onNew, canCreate, flowRegistr
 
 // ── New Flow modal (3-step) ───────────────────────────────────────
 function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlowView = null }) {
-  const set = (patch) => setState({ ...state, ...patch });
+  const setField = (field, value) => setState((current) => window.MobKitFlowController.newFlowModalFieldPatch(current, field, value));
+  const setStep = (step) => setState((current) => window.MobKitFlowController.newFlowModalStepPatch(current, step));
   const modalState = window.MobKitFlowController.newFlowModalState(state, templateOptions, newFlowView);
 
   return (
@@ -1103,11 +1104,11 @@ function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlow
           <div className="modal__body">
             <div className="field">
               <label className="field__label">{modalState.nameLabel}</label>
-              <input className="field__input" autoFocus placeholder={modalState.namePlaceholder} value={modalState.name} onChange={e => set({ name: e.target.value })} />
+              <input className="field__input" autoFocus placeholder={modalState.namePlaceholder} value={modalState.name} onChange={e => setField("name", e.target.value)} />
             </div>
             <div className="field">
               <label className="field__label">{modalState.triggerLabel}</label>
-              <input className="field__input" placeholder={modalState.triggerPlaceholder} value={modalState.trigger} onChange={e => set({ trigger: e.target.value })} />
+              <input className="field__input" placeholder={modalState.triggerPlaceholder} value={modalState.trigger} onChange={e => setField("trigger", e.target.value)} />
             </div>
           </div>
         )}
@@ -1116,7 +1117,7 @@ function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlow
             <div className="field__label">{modalState.startFromLabel}</div>
             <div className="template-grid">
               {modalState.options.map(opt => (
-                <button key={opt.id} className={opt.className} disabled={opt.disabled} onClick={() => set({ template: opt.id })}>
+                <button key={opt.id} className={opt.className} disabled={opt.disabled} onClick={() => setField("template", opt.id)}>
                   <div className="template-card__tier">{opt.tier}</div>
                   <div className="template-card__name">{opt.label}</div>
                   <div className="template-card__sub">{opt.sub}</div>
@@ -1126,14 +1127,14 @@ function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlow
           </div>
         )}
         <div className="modal__foot">
-          {modalState.step > 1 ? <button className="btn btn--ghost btn--sm" onClick={() => set({ step: modalState.step - 1 })}>{modalState.backLabel}</button> : <span />}
+          {modalState.step > 1 ? <button className="btn btn--ghost btn--sm" onClick={() => setStep(modalState.step - 1)}>{modalState.backLabel}</button> : <span />}
           {modalState.step < 2 ? (
-            <button className="btn btn--primary btn--sm" disabled={modalState.nextDisabled} onClick={() => set({ step: 2 })}>{modalState.nextLabel}</button>
+            <button className="btn btn--primary btn--sm" disabled={modalState.nextDisabled} onClick={() => setStep(2)}>{modalState.nextLabel}</button>
           ) : (
             <button
               className="btn btn--primary btn--sm"
               disabled={modalState.createDisabled}
-              onClick={() => onCreate({ name: modalState.name, trigger: modalState.trigger, template: modalState.template })}
+              onClick={() => onCreate(window.MobKitFlowController.newFlowModalCreateSpec(modalState))}
             >{modalState.createLabel}</button>
           )}
         </div>

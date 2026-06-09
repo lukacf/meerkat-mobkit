@@ -10540,6 +10540,38 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function newFlowModalPatch(state = {}, patch = {}) {
+    const source = state && typeof state === "object" ? state : {};
+    const rawPatch = patch && typeof patch === "object" ? patch : {};
+    const next = { ...source, ...rawPatch };
+    const step = Number(next.step || 1);
+    next.step = step === 2 ? 2 : 1;
+    next.name = String(next.name || "");
+    next.trigger = String(next.trigger || "");
+    next.template = String(next.template || "");
+    return next;
+  }
+
+  function newFlowModalFieldPatch(state = {}, field, value) {
+    const key = String(field || "").trim();
+    if (!key) return newFlowModalPatch(state);
+    if (!["name", "trigger", "template"].includes(key)) return newFlowModalPatch(state);
+    return newFlowModalPatch(state, { [key]: value });
+  }
+
+  function newFlowModalStepPatch(state = {}, step) {
+    return newFlowModalPatch(state, { step });
+  }
+
+  function newFlowModalCreateSpec(state = {}) {
+    const source = newFlowModalPatch(state);
+    return {
+      name: source.name,
+      trigger: source.trigger,
+      template: source.template,
+    };
+  }
+
   function agentDefinitionsFromSchema(schema) {
     const definitions = Array.isArray(schema?.agent_definitions) ? schema.agent_definitions : [];
     return definitions
@@ -11286,6 +11318,10 @@ window.MOBKIT_BOOT = {
     sourceEditorState,
     sampleFlowsFromSchema,
     flowCatalogBootstrapState,
+    newFlowModalPatch,
+    newFlowModalFieldPatch,
+    newFlowModalStepPatch,
+    newFlowModalCreateSpec,
     flowRegistryMarkDraftPatch,
     flowRegistryViewState,
     flowRegistrySelectionState,
@@ -14767,14 +14803,15 @@ function FlowsView({ flows, currentFlowId, onOpen, onNew, canCreate, flowRegistr
   )), /* @__PURE__ */ React.createElement("div", { className: "flows-list" }, /* @__PURE__ */ React.createElement("div", { className: "flows-list__head" }, registryState.columns.map((column) => /* @__PURE__ */ React.createElement("span", { key: column.key }, column.label))), registryState.rows.map((f) => /* @__PURE__ */ React.createElement("button", { key: f.id, className: f.className, onClick: () => onOpen(f.id) }, /* @__PURE__ */ React.createElement("span", { className: "flows-list__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "flows-list__sub" }, f.trigger), /* @__PURE__ */ React.createElement("span", { className: "flows-list__sub" }, f.version), /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": f.stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), f.stage)))));
 }
 function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlowView = null }) {
-  const set = (patch) => setState({ ...state, ...patch });
+  const setField = (field, value) => setState((current) => window.MobKitFlowController.newFlowModalFieldPatch(current, field, value));
+  const setStep = (step) => setState((current) => window.MobKitFlowController.newFlowModalStepPatch(current, step));
   const modalState = window.MobKitFlowController.newFlowModalState(state, templateOptions, newFlowView);
-  return /* @__PURE__ */ React.createElement("div", { className: "modal-backdrop", onClick: () => setState(null) }, /* @__PURE__ */ React.createElement("div", { className: "modal modal--new", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "modal__head" }, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, modalState.eyebrow), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setState(null) }, modalState.closeLabel)), modalState.step === 1 && /* @__PURE__ */ React.createElement("div", { className: "modal__body" }, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, modalState.nameLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", autoFocus: true, placeholder: modalState.namePlaceholder, value: modalState.name, onChange: (e) => set({ name: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, modalState.triggerLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", placeholder: modalState.triggerPlaceholder, value: modalState.trigger, onChange: (e) => set({ trigger: e.target.value }) }))), modalState.step === 2 && /* @__PURE__ */ React.createElement("div", { className: "modal__body" }, /* @__PURE__ */ React.createElement("div", { className: "field__label" }, modalState.startFromLabel), /* @__PURE__ */ React.createElement("div", { className: "template-grid" }, modalState.options.map((opt) => /* @__PURE__ */ React.createElement("button", { key: opt.id, className: opt.className, disabled: opt.disabled, onClick: () => set({ template: opt.id }) }, /* @__PURE__ */ React.createElement("div", { className: "template-card__tier" }, opt.tier), /* @__PURE__ */ React.createElement("div", { className: "template-card__name" }, opt.label), /* @__PURE__ */ React.createElement("div", { className: "template-card__sub" }, opt.sub))))), /* @__PURE__ */ React.createElement("div", { className: "modal__foot" }, modalState.step > 1 ? /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => set({ step: modalState.step - 1 }) }, modalState.backLabel) : /* @__PURE__ */ React.createElement("span", null), modalState.step < 2 ? /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: modalState.nextDisabled, onClick: () => set({ step: 2 }) }, modalState.nextLabel) : /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement("div", { className: "modal-backdrop", onClick: () => setState(null) }, /* @__PURE__ */ React.createElement("div", { className: "modal modal--new", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "modal__head" }, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, modalState.eyebrow), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setState(null) }, modalState.closeLabel)), modalState.step === 1 && /* @__PURE__ */ React.createElement("div", { className: "modal__body" }, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, modalState.nameLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", autoFocus: true, placeholder: modalState.namePlaceholder, value: modalState.name, onChange: (e) => setField("name", e.target.value) })), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, modalState.triggerLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", placeholder: modalState.triggerPlaceholder, value: modalState.trigger, onChange: (e) => setField("trigger", e.target.value) }))), modalState.step === 2 && /* @__PURE__ */ React.createElement("div", { className: "modal__body" }, /* @__PURE__ */ React.createElement("div", { className: "field__label" }, modalState.startFromLabel), /* @__PURE__ */ React.createElement("div", { className: "template-grid" }, modalState.options.map((opt) => /* @__PURE__ */ React.createElement("button", { key: opt.id, className: opt.className, disabled: opt.disabled, onClick: () => setField("template", opt.id) }, /* @__PURE__ */ React.createElement("div", { className: "template-card__tier" }, opt.tier), /* @__PURE__ */ React.createElement("div", { className: "template-card__name" }, opt.label), /* @__PURE__ */ React.createElement("div", { className: "template-card__sub" }, opt.sub))))), /* @__PURE__ */ React.createElement("div", { className: "modal__foot" }, modalState.step > 1 ? /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setStep(modalState.step - 1) }, modalState.backLabel) : /* @__PURE__ */ React.createElement("span", null), modalState.step < 2 ? /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: modalState.nextDisabled, onClick: () => setStep(2) }, modalState.nextLabel) : /* @__PURE__ */ React.createElement(
     "button",
     {
       className: "btn btn--primary btn--sm",
       disabled: modalState.createDisabled,
-      onClick: () => onCreate({ name: modalState.name, trigger: modalState.trigger, template: modalState.template })
+      onClick: () => onCreate(window.MobKitFlowController.newFlowModalCreateSpec(modalState))
     },
     modalState.createLabel
   ))));

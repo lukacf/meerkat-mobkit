@@ -10507,6 +10507,38 @@
     };
   }
 
+  function newFlowModalPatch(state = {}, patch = {}) {
+    const source = state && typeof state === "object" ? state : {};
+    const rawPatch = patch && typeof patch === "object" ? patch : {};
+    const next = { ...source, ...rawPatch };
+    const step = Number(next.step || 1);
+    next.step = step === 2 ? 2 : 1;
+    next.name = String(next.name || "");
+    next.trigger = String(next.trigger || "");
+    next.template = String(next.template || "");
+    return next;
+  }
+
+  function newFlowModalFieldPatch(state = {}, field, value) {
+    const key = String(field || "").trim();
+    if (!key) return newFlowModalPatch(state);
+    if (!["name", "trigger", "template"].includes(key)) return newFlowModalPatch(state);
+    return newFlowModalPatch(state, { [key]: value });
+  }
+
+  function newFlowModalStepPatch(state = {}, step) {
+    return newFlowModalPatch(state, { step });
+  }
+
+  function newFlowModalCreateSpec(state = {}) {
+    const source = newFlowModalPatch(state);
+    return {
+      name: source.name,
+      trigger: source.trigger,
+      template: source.template,
+    };
+  }
+
   function agentDefinitionsFromSchema(schema) {
     const definitions = Array.isArray(schema?.agent_definitions) ? schema.agent_definitions : [];
     return definitions
@@ -11253,6 +11285,10 @@
     sourceEditorState,
     sampleFlowsFromSchema,
     flowCatalogBootstrapState,
+    newFlowModalPatch,
+    newFlowModalFieldPatch,
+    newFlowModalStepPatch,
+    newFlowModalCreateSpec,
     flowRegistryMarkDraftPatch,
     flowRegistryViewState,
     flowRegistrySelectionState,

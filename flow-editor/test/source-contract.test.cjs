@@ -783,6 +783,9 @@ assert.match(controller, /newFlowTemplateOptions[\s\S]*label: hasBlankDocument \
 assert(!/blankTemplate\.trigger \|\| blankTemplate\.source \|\| ["']mobkit\/blank-mobpack["']/.test(controller), "New-flow blank option must not invent blank mobpack provenance when MobKit omits source metadata");
 assert.match(controller, /function newFlowTemplateOptions/, "controller plane must own new-flow template option projection");
 assert.match(controller, /function newFlowModalState/, "controller plane must own new-flow modal template selection and action enablement");
+assert.match(controller, /function newFlowModalFieldPatch/, "controller plane must own new-flow modal field transition semantics");
+assert.match(controller, /function newFlowModalStepPatch/, "controller plane must own new-flow modal step transition semantics");
+assert.match(controller, /function newFlowModalCreateSpec/, "controller plane must own new-flow create spec projection");
 assert.match(controller, /createDisabled:\s*!selectedTemplate \|\| !!selectedTemplate\.disabled/, "New flow creation must be disabled until the controller projection has a selected MobKit template row");
 assert.match(app, /newFlowView=\{catalogs\.newFlowView\}/, "New flow modal must receive schema-backed modal view chrome");
 assert.match(app, /MobKitFlowController\.newFlowModalState\(state, templateOptions, newFlowView\)/, "New flow modal must render controller-projected modal state with MobKit view chrome");
@@ -792,10 +795,14 @@ assert.match(newFlowModalBlock, /modalState\.namePlaceholder/, "New flow modal n
 assert.match(newFlowModalBlock, /modalState\.triggerPlaceholder/, "New flow modal trigger placeholder must render through controller state");
 assert.match(newFlowModalBlock, /modalState\.startFromLabel/, "New flow modal template label must render through controller state");
 assert.match(newFlowModalBlock, /modalState\.createLabel/, "New flow modal action labels must render through controller state");
+assert.match(newFlowModalBlock, /MobKitFlowController\.newFlowModalFieldPatch/, "New flow modal field changes must route through controller state patches");
+assert.match(newFlowModalBlock, /MobKitFlowController\.newFlowModalStepPatch/, "New flow modal step changes must route through controller state patches");
+assert.match(newFlowModalBlock, /MobKitFlowController\.newFlowModalCreateSpec\(modalState\)/, "New flow modal create payload must be projected by the controller plane");
 assert.match(controller, /function newFlowViewFromSchema[\s\S]*editor_new_flow_view/, "controller plane must hydrate New Flow modal chrome from the MobKit schema");
 assert.match(controller, /newFlowView: newFlowViewFromSchema\(schema\)/, "MobKit catalogs must carry New Flow modal view chrome");
 assert.match(controller, /eyebrow:\s*view\.eyebrowTemplate\.replace\("\{step\}", String\(step\)\)/, "controller plane must project the New Flow modal title from MobKit view chrome");
 assert(!/selectedTemplate|templateOptions\.find|templateOptions\.map|template === opt\.id|disabled=\{!!opt\.disabled\}|disabled=\{!!selectedTemplate/.test(newFlowModalBlock), "New flow modal must not derive selected template or create enablement locally");
+assert(!/const\s+set\s*=\s*\(patch\)\s*=>\s*setState\(\{\s*\.\.\.state|set\(\{\s*(?:name|trigger|template|step):|onCreate\(\{\s*name:/.test(newFlowModalBlock), "New flow modal must not merge local modal patches or assemble create specs in JSX");
 assert(!/NEW FLOW · STEP \{modalState\.step\} OF 2|<label className="field__label">(?:Name|Trigger)<\/label>|placeholder=["'](?:docs-only|label · docs)["']|>Start from<\/div>|>← BACK<\/button>|>NEXT →<\/button>|>CREATE<\/button>/.test(newFlowModalBlock), "New flow modal must not compose titles, labels, placeholders, or action copy locally");
 assert(!/eyebrow:\s*`NEW FLOW · STEP|namePlaceholder:\s*["']docs-only["']|triggerPlaceholder:\s*["']label · docs["']|startFromLabel:\s*["']Start from["']|createLabel:\s*["']CREATE["']/.test(controller), "controller plane must not keep New Flow modal labels or placeholders as local literals");
 assert(!/templates\.map\(\(sample\)|sample\.validation\?\.ok|sample\.trigger \|\| sample\.source/.test(app), "app shell must not derive sample template labels, provenance, or validity tiers locally");
