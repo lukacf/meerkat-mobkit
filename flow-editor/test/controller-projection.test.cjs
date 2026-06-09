@@ -1392,6 +1392,12 @@ const hydratedContractAndCatalogFixture = {
       trigger_default_label: "default",
       default_yes_label: "yes",
       default_no_label: "no",
+      summary_members_label: "members",
+      summary_instances_label: "instances",
+      summary_terminals_label: "terminals",
+      summary_edges_label: "edges",
+      summary_frames_label: "frames",
+      summary_members_value_template: "{placed} placed / {total} in library",
       quick_start_title: "QUICK START",
       quick_start_rows: [
         [
@@ -2004,6 +2010,12 @@ assert.deepEqual(hydratedCatalogs.graphTemplateView, {
   triggerDefaultLabel: "default",
   defaultYesLabel: "yes",
   defaultNoLabel: "no",
+  summaryMembersLabel: "members",
+  summaryInstancesLabel: "instances",
+  summaryTerminalsLabel: "terminals",
+  summaryEdgesLabel: "edges",
+  summaryFramesLabel: "frames",
+  summaryMembersValueTemplate: "{placed} placed / {total} in library",
   quickStartTitle: "QUICK START",
   quickStartRows: [
     {
@@ -7065,6 +7077,30 @@ assert.deepEqual(controller.graphTemplateInspectorState({
   ["terminals", 1],
   ["edges", 1],
   ["frames", 1],
+]);
+assert.deepEqual(controller.graphTemplateInspectorState({
+  studio: {
+    members: graphProjectionMembers,
+    instances: graphProjectionInstances,
+    edges: graphProjectionEdges,
+    frames: [{ id: "fr1" }],
+  },
+  template: { name: "Docs Mob", repo: "mob.toml", version: "0.1.0", trigger: "docs", defaultTrigger: true },
+  templateView: {
+    ...hydratedCatalogs.graphTemplateView,
+    summaryMembersLabel: "library profiles",
+    summaryInstancesLabel: "placed nodes",
+    summaryTerminalsLabel: "terminal nodes",
+    summaryEdgesLabel: "wires",
+    summaryFramesLabel: "flow frames",
+    summaryMembersValueTemplate: "{placed} active / {total} defined",
+  },
+}).summaryRows.map((row) => [row.key, row.label, row.value]), [
+  ["members", "library profiles", "2 active / 2 defined"],
+  ["instances", "placed nodes", 2],
+  ["terminals", "terminal nodes", 1],
+  ["edges", "wires", 1],
+  ["frames", "flow frames", 1],
 ]);
 const populatedTemplateInspector = controller.graphTemplateInspectorState({
   studio: {

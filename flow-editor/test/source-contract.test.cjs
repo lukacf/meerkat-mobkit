@@ -282,6 +282,10 @@ assert.match(graph, /MobKitFlowController\.graphGateCanvasState/, "Graph canvas 
 assert.match(graphGateViewBlock, /graphGateCanvasState\(\{ inst,\s*edges:\s*state\.edges,\s*contract,\s*graphView \}\)/, "Graph gate canvas projection must receive the MobKit graph draft and graph view contracts");
 assert.match(controller, /function graphSelectionState/, "controller plane must own Graph Inspector selection projection");
 assert.match(controller, /function graphTemplateInspectorState/, "controller plane must own Graph template summary projection");
+assert.match(controller, /summaryMembersLabel:\s*String\(view\?\.summaryMembersLabel \|\| ""\)/, "Graph template summary labels must hydrate from MobKit editor_graph_template_view state");
+assert.match(controller, /summaryMembersValueTemplate:\s*String\(view\?\.summaryMembersValueTemplate \|\| ""\)/, "Graph template member-summary value copy must hydrate from MobKit editor_graph_template_view state");
+assert(!/label:\s*["'](?:members|instances|terminals|edges|frames)["']/.test((controller.match(/function graphTemplateInspectorState[\s\S]*?function graphInstanceControlState/) || [""])[0]), "Graph template summary row labels must not be hardcoded in the controller projection");
+assert(!/placed\s*\/[\s\S]{0,80}in library/.test((controller.match(/function graphTemplateInspectorState[\s\S]*?function graphInstanceControlState/) || [""])[0]), "Graph template member-summary value copy must not be hardcoded in the controller projection");
 assert.match(controller, /function graphInstanceControlState/, "controller plane must own Graph instance summary and launch-source projection");
 assert.match(controller, /function graphTerminalControlState/, "controller plane must own Graph terminal kind projection");
 assert.match(controller, /function graphEdgeCanvasState/, "controller plane must own Graph edge canvas projection");

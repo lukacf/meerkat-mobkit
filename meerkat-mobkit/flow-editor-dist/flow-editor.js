@@ -1660,11 +1660,19 @@ window.MOBKIT_BOOT = {
       triggerDefaultLabel: String(view.trigger_default_label || "").trim(),
       defaultYesLabel: String(view.default_yes_label || "").trim(),
       defaultNoLabel: String(view.default_no_label || "").trim(),
+      summaryMembersLabel: String(view.summary_members_label || "").trim(),
+      summaryInstancesLabel: String(view.summary_instances_label || "").trim(),
+      summaryTerminalsLabel: String(view.summary_terminals_label || "").trim(),
+      summaryEdgesLabel: String(view.summary_edges_label || "").trim(),
+      summaryFramesLabel: String(view.summary_frames_label || "").trim(),
+      summaryMembersValueTemplate: String(view.summary_members_value_template || "").trim(),
       quickStartTitle: String(view.quick_start_title || "").trim(),
       quickStartRows: graphTemplateQuickStartRowsFromSchema(view.quick_start_rows),
     };
     return out.templateEyebrow && out.summaryTitle && out.triggersTitle && out.triggerLabelsLabel
       && out.triggerDefaultLabel && out.defaultYesLabel && out.defaultNoLabel
+      && out.summaryMembersLabel && out.summaryInstancesLabel && out.summaryTerminalsLabel
+      && out.summaryEdgesLabel && out.summaryFramesLabel && out.summaryMembersValueTemplate
       && out.quickStartTitle && out.quickStartRows.length
       ? out
       : null;
@@ -1690,6 +1698,12 @@ window.MOBKIT_BOOT = {
       triggerDefaultLabel: String(view?.triggerDefaultLabel || ""),
       defaultYesLabel: String(view?.defaultYesLabel || ""),
       defaultNoLabel: String(view?.defaultNoLabel || ""),
+      summaryMembersLabel: String(view?.summaryMembersLabel || ""),
+      summaryInstancesLabel: String(view?.summaryInstancesLabel || ""),
+      summaryTerminalsLabel: String(view?.summaryTerminalsLabel || ""),
+      summaryEdgesLabel: String(view?.summaryEdgesLabel || ""),
+      summaryFramesLabel: String(view?.summaryFramesLabel || ""),
+      summaryMembersValueTemplate: String(view?.summaryMembersValueTemplate || ""),
       quickStartTitle: String(view?.quickStartTitle || ""),
       quickStartRows: Array.isArray(view?.quickStartRows) ? view.quickStartRows : [],
     };
@@ -5343,6 +5357,9 @@ window.MOBKIT_BOOT = {
     const triggerLabel = template?.trigger || (Array.isArray(seed.triggers?.labels) ? seed.triggers.labels.join(", ") : "");
     const labels = triggerLabel ? [triggerLabel] : [];
     const placedMembers = new Set(instances.filter((instance) => instance?.memberId).map((instance) => instance.memberId)).size;
+    const memberSummary = view.summaryMembersValueTemplate
+      .replaceAll("{placed}", String(placedMembers))
+      .replaceAll("{total}", String(members.length));
     return {
       name: template?.name || seed.name || "",
       repo: template?.repo || seed.repo || "",
@@ -5365,11 +5382,11 @@ window.MOBKIT_BOOT = {
         },
       ],
       summaryRows: [
-        { key: "members", label: "members", value: `${placedMembers} placed / ${members.length} in library` },
-        { key: "instances", label: "instances", value: instances.filter((instance) => !instance?.isTerminal).length },
-        { key: "terminals", label: "terminals", value: instances.filter((instance) => instance?.isTerminal).length },
-        { key: "edges", label: "edges", value: edges.length },
-        { key: "frames", label: "frames", value: frames.length },
+        { key: "members", label: view.summaryMembersLabel, value: memberSummary },
+        { key: "instances", label: view.summaryInstancesLabel, value: instances.filter((instance) => !instance?.isTerminal).length },
+        { key: "terminals", label: view.summaryTerminalsLabel, value: instances.filter((instance) => instance?.isTerminal).length },
+        { key: "edges", label: view.summaryEdgesLabel, value: edges.length },
+        { key: "frames", label: view.summaryFramesLabel, value: frames.length },
       ],
     };
   }

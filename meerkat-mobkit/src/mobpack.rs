@@ -1400,6 +1400,12 @@ pub fn mobpack_schema_response() -> Value {
         "trigger_default_label": "default",
         "default_yes_label": "yes",
         "default_no_label": "no",
+        "summary_members_label": "members",
+        "summary_instances_label": "instances",
+        "summary_terminals_label": "terminals",
+        "summary_edges_label": "edges",
+        "summary_frames_label": "frames",
+        "summary_members_value_template": "{placed} placed / {total} in library",
         "quick_start_title": "QUICK START",
         "quick_start_rows": [
             [
@@ -16668,6 +16674,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_template_view"]["quick_start_title"],
             json!("QUICK START")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_template_view"]["summary_members_label"],
+            json!("members")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_template_view"]["summary_frames_label"],
+            json!("frames")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_template_view"]["summary_members_value_template"],
+            json!("{placed} placed / {total} in library")
         );
         assert_eq!(
             mob_definition["editor_graph_template_view"]["quick_start_rows"][0][1]["text"],
