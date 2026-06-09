@@ -73,6 +73,9 @@ async function assertAuthoringCapabilities() {
   if (authoring.runtime_mutation !== false) {
     throw new Error(`flow editor authoring capabilities must not mutate runtime: ${JSON.stringify(authoring)}`);
   }
+  if (capabilities.authenticated !== false || capabilities.auth?.mode !== "none") {
+    throw new Error(`standalone flow editor must not claim authenticated runtime access: ${JSON.stringify(capabilities)}`);
+  }
   if (authoring.deploy_command !== "rkat mob deploy") {
     throw new Error(`flow editor deploy command must be rkat mob deploy: ${JSON.stringify(authoring)}`);
   }

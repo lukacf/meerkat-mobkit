@@ -124,7 +124,11 @@ pub fn handle_flow_editor_rpc(request: JsonRpcRequest) -> Value {
                 response_id,
                 Some(serde_json::json!({
                     "methods": methods,
-                    "authenticated": true,
+                    "authenticated": false,
+                    "auth": {
+                        "mode": "none",
+                        "reason": "standalone Flow Editor authoring server"
+                    },
                     "features": {
                         "flow_editor": true,
                         "mobpack_authoring": true,
@@ -203,6 +207,8 @@ mod tests {
         expected_methods.extend_from_slice(crate::rpc::MOBPACK_AUTHORING_METHODS);
         assert_eq!(methods, expected_methods);
         assert!(!methods.contains(&"mobkit/console/send"));
+        assert_eq!(response["result"]["authenticated"], json!(false));
+        assert_eq!(response["result"]["auth"]["mode"], json!("none"));
         assert_eq!(
             response["result"]["authoring_capabilities"]["domain"],
             json!("mobpack_authoring")
