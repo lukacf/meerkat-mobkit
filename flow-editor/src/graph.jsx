@@ -459,6 +459,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       selected: isSelected,
       edgeStyle,
       contract,
+      graphView: canvasView,
     });
 
     let labelEl;

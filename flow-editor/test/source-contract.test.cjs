@@ -275,6 +275,7 @@ assert.match(inspectorTerminalBlock, /terminalState\.eyebrow/, "Graph terminal i
 assert.match(inspectorTerminalBlock, /terminalState\.labelValue/, "Graph terminal inspector must render terminal label value through the controller plane");
 assert.match(graphEdgeCanvasBlock, /MobKitFlowController\.graphEdgeCanvasState/, "Graph canvas must render edge class, label, glyph, color, and marker metadata through the controller plane");
 assert.match(graphEdgeCanvasBlock, /graphEdgeCanvasState\(\{[\s\S]*contract/, "Graph canvas edge projection must receive the MobKit graph edge-kind contract");
+assert.match(graphEdgeCanvasBlock, /graphEdgeCanvasState\(\{[\s\S]*graphView:\s*canvasView/, "Graph canvas edge projection must receive schema-backed Graph view metadata");
 assert.match(graph, /MobKitFlowController\.graphNodeCanvasState/, "Graph canvas must render node member/tool/source metadata through the controller plane");
 assert.match(graph, /MobKitFlowController\.graphCanvasInstances/, "Graph canvas must ask the controller plane for renderable graph instances including the mob.toml source-file adornment");
 assert.match(graph, /MobKitFlowController\.graphGateCanvasState/, "Graph canvas must render gate glyph and sublabels through the controller plane");
@@ -284,6 +285,7 @@ assert.match(controller, /function graphTemplateInspectorState/, "controller pla
 assert.match(controller, /function graphInstanceControlState/, "controller plane must own Graph instance summary and launch-source projection");
 assert.match(controller, /function graphTerminalControlState/, "controller plane must own Graph terminal kind projection");
 assert.match(controller, /function graphEdgeCanvasState/, "controller plane must own Graph edge canvas projection");
+assert.match(controller, /graphEdgeCanvasState[\s\S]*graphCanvasViewState\(graphView\)[\s\S]*labelText\s*=\s*String\(edge\?\.label \|\| view\.edgeKindLabels\[kind\] \|\| ""\)/, "Graph edge fallback labels must come from MobKit editor_graph_view edge-kind labels");
 assert.match(controller, /function graphProjectionEdgeKinds/, "controller plane must own schema-backed graph edge-kind projection");
 assert.match(controller, /function graphNodeCanvasState/, "controller plane must own Graph node canvas projection");
 assert.match(controller, /function graphSourceFileNode/, "controller plane must own Graph source-file adornment projection");

@@ -5541,10 +5541,11 @@ window.MOBKIT_BOOT = {
     return { glyph, sublabel, gateKind };
   }
 
-  function graphEdgeCanvasState({ edge, to, active = false, selected = false, edgeStyle = "", contract = null } = {}) {
+  function graphEdgeCanvasState({ edge, to, active = false, selected = false, edgeStyle = "", contract = null, graphView = null } = {}) {
     const kind = String(edge?.kind || "next").trim();
     const terminalTarget = !!to?.isTerminal;
-    const labelText = String(edge?.label || edge?.kind || "");
+    const view = graphCanvasViewState(graphView);
+    const labelText = String(edge?.label || view.edgeKindLabels[kind] || "");
     const edgeKinds = graphProjectionEdgeKinds(contract);
     const isCondition = kind === edgeKinds.conditionKind;
     const isFanout = kind === edgeKinds.fanoutKind;
@@ -11360,7 +11361,8 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       active: isActive,
       selected: isSelected,
       edgeStyle,
-      contract
+      contract,
+      graphView: canvasView
     });
     let labelEl;
     if (edgeState.mode === "icons") {

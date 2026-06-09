@@ -7181,7 +7181,20 @@ assert.deepEqual(controller.graphEdgeCanvasState({
   edge: { id: "e_fan", kind: "fanout", label: "" },
   to: { id: "n_done", isTerminal: true },
   edgeStyle: "colored",
+  graphView: {
+    ...hydratedCatalogs.graphView,
+    edgeKindLabels: { ...hydratedCatalogs.graphView.edgeKindLabels, fanout: "schema fanout" },
+  },
 }).markerEnd, "url(#arr-acc)");
+assert.equal(controller.graphEdgeCanvasState({
+  edge: { id: "e_fan", kind: "fanout", label: "" },
+  to: { id: "n_done", isTerminal: true },
+  edgeStyle: "colored",
+  graphView: {
+    ...hydratedCatalogs.graphView,
+    edgeKindLabels: { ...hydratedCatalogs.graphView.edgeKindLabels, fanout: "schema fanout" },
+  },
+}).labelText, "schema fanout");
 assert.deepEqual(controller.graphEdgeCanvasState({
   edge: { id: "e_when", kind: "when", label: "route" },
   to: { id: "n_review" },
