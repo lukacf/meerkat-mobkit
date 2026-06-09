@@ -2736,6 +2736,11 @@ assert.notEqual(
   controller.graphStructureSignature(graphSemanticBaseInstances, graphSemanticBaseEdges),
   controller.graphStructureSignature(graphSemanticBaseInstances, graphSemanticChangedEdges),
 );
+assert.notEqual(
+  controller.graphStructureSignature(graphSemanticBaseInstances, [{ ...graphSemanticBaseEdges[0], kind: "" }]),
+  controller.graphStructureSignature(graphSemanticBaseInstances, [{ ...graphSemanticBaseEdges[0], kind: "next" }]),
+  "Graph signatures must not normalize missing edge kind to a local next default",
+);
 
 const graphOrderMembers = [{ id: "m_reviewer" }];
 const graphOrderPreviousFlow = { steps: [{ id: "input_1", type: "input", task: "", inputParams: [] }] };
@@ -6328,6 +6333,16 @@ const graphMembers = [
   { id: "m_right", name: "Right", role: "right", model: "gpt-5.5", tools: ["builtins"], skills: [] },
   { id: "m_review", name: "Review", role: "review", model: "gpt-5.5", tools: ["builtins"], skills: [], schema: "ReviewArtifact" },
 ];
+const branchGraphEdgeContract = {
+  mob_definition: {
+    defaults: {
+      graph_edge_kind: "next",
+      graph_condition_edge_kind: "cond",
+      graph_fanout_edge_kind: "fanout",
+    },
+    graph_edge_kinds: ["next", "cond", "fanout"],
+  },
+};
 
 const branchFlow = controller.graphToFlow({
   previousFlow: {
@@ -6352,6 +6367,7 @@ const branchFlow = controller.graphToFlow({
     { id: "e3", from: "left", to: "j_branch_route", kind: "next", label: "" },
     { id: "e4", from: "right", to: "j_branch_route", kind: "next", label: "" },
   ],
+  contract: branchGraphEdgeContract,
 });
 
 const branchStep = branchFlow.steps[1];
@@ -6384,6 +6400,7 @@ const branchDocument = controller.buildDocument({
   },
   currentFlow: { name: "branch-projection-proof" },
   deploySettings: testDeploySettings(),
+  contract: branchGraphEdgeContract,
 });
 
 assert.deepEqual(branchDocument.edges.slice(0, 2).map((edge) => edge.cond), [
@@ -6414,6 +6431,7 @@ const branchDocumentWithMissingEdgeKind = controller.buildDocument({
   },
   currentFlow: { name: "branch-missing-kind-proof" },
   deploySettings: testDeploySettings(),
+  contract: branchGraphEdgeContract,
 });
 assert(!branchDocumentWithMissingEdgeKind.edges.some((edge) => edge.id === "stale_missing_kind"));
 assert(branchDocumentWithMissingEdgeKind.edges.some((edge) => edge.from === "left" && edge.to === "j_branch_route" && edge.kind === "next"));
@@ -7050,6 +7068,12 @@ assert.equal(incompleteParallelFork.label, "");
 assert.equal(incompleteParallelJoin.collection, "");
 assert.equal(incompleteParallelJoin.label, "join · missing collection");
 assert.equal(incompleteParallelProjection.frames[0].label, "PARALLEL · missing dispatch · join missing collection");
+const noContractParallelProjection = controller.graphProjectionForFlow(incompleteParallelFlow, graphMembers, null);
+assert.deepEqual(
+  Array.from(new Set(noContractParallelProjection.edges.map((edge) => edge.kind))),
+  [""],
+  "Graph projection must not invent local edge kinds without the MobKit contract",
+);
 
 const incompleteParallelDocument = controller.buildDocument({
   flow: incompleteParallelFlow,
@@ -7081,6 +7105,7 @@ const repeatFlow = controller.graphToFlow({
   edges: [
     { id: "e1", from: "review", to: "review", kind: "cond", label: "until green", cond: { path: "steps.review.verdict", op: "==", value: "green" } },
   ],
+  contract: branchGraphEdgeContract,
 });
 
 const repeatStep = repeatFlow.steps[1];
@@ -7116,6 +7141,7 @@ const authoredRepeatFlow = controller.graphToFlow({
   edges: [
     { id: "e1", from: "review", to: "review", kind: "cond", label: "until green", cond: { path: "steps.review.verdict", op: "==", value: "green" } },
   ],
+  contract: branchGraphEdgeContract,
 });
 assert.equal(authoredRepeatFlow.steps[1].id, "loop_review");
 assert.equal(authoredRepeatFlow.steps[1].loopId, "quality_loop");
@@ -7134,6 +7160,7 @@ const repeatWithoutCondition = controller.graphToFlow({
   edges: [
     { id: "e1", from: "review", to: "review", kind: "cond", label: "", cond: {} },
   ],
+  contract: branchGraphEdgeContract,
 });
 
 assert.equal(repeatWithoutCondition.steps[1].type, "repeat");
@@ -7168,6 +7195,7 @@ const incompleteGraphBranchFlow = controller.graphToFlow({
     { id: "e1", from: "g_branch_route", to: "left", kind: "cond", label: "docs", cond: { source: "params.kind", op: "==" } },
     { id: "e2", from: "g_branch_route", to: "right", kind: "next", label: "fallback" },
   ],
+  contract: branchGraphEdgeContract,
 });
 
 assert.equal(incompleteGraphBranchFlow.steps[1].type, "branch");
@@ -7186,6 +7214,7 @@ const missingOperatorGraphBranchFlow = controller.graphToFlow({
     { id: "e1", from: "g_branch_route", to: "left", kind: "cond", label: "", cond: { source: "params.kind", val: "docs" } },
     { id: "e2", from: "g_branch_route", to: "right", kind: "next", label: "fallback" },
   ],
+  contract: branchGraphEdgeContract,
 });
 
 assert.equal(missingOperatorGraphBranchFlow.steps[1].type, "branch");
@@ -8060,6 +8089,7 @@ assert.deepEqual(controller.graphEdgeCanvasState({
   active: true,
   selected: false,
   edgeStyle: "icons",
+  contract: graphShapeContract,
 }), {
   kind: "cond",
   mode: "icons",
@@ -8076,6 +8106,7 @@ assert.deepEqual(controller.graphEdgeCanvasState({
   edge: { id: "e_fan", kind: "fanout", label: "" },
   to: { id: "n_done", isTerminal: true },
   edgeStyle: "colored",
+  contract: graphShapeContract,
   graphView: {
     ...hydratedCatalogs.graphView,
     edgeKindLabels: { ...hydratedCatalogs.graphView.edgeKindLabels, fanout: "schema fanout" },
@@ -8085,6 +8116,7 @@ assert.equal(controller.graphEdgeCanvasState({
   edge: { id: "e_fan", kind: "fanout", label: "" },
   to: { id: "n_done", isTerminal: true },
   edgeStyle: "colored",
+  contract: graphShapeContract,
   graphView: {
     ...hydratedCatalogs.graphView,
     edgeKindLabels: { ...hydratedCatalogs.graphView.edgeKindLabels, fanout: "schema fanout" },

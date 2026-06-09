@@ -6575,18 +6575,10 @@
 
   function graphProjectionEdgeKinds(contract) {
     return {
-      defaultKind: contractDefaultValue(contract, "graph_edge_kind") || legacyGraphProjectionEdgeKind("graph_edge_kind"),
-      conditionKind: contractDefaultValue(contract, "graph_condition_edge_kind") || legacyGraphProjectionEdgeKind("graph_condition_edge_kind"),
-      fanoutKind: contractDefaultValue(contract, "graph_fanout_edge_kind") || legacyGraphProjectionEdgeKind("graph_fanout_edge_kind"),
+      defaultKind: contractDefaultValue(contract, "graph_edge_kind"),
+      conditionKind: contractDefaultValue(contract, "graph_condition_edge_kind"),
+      fanoutKind: contractDefaultValue(contract, "graph_fanout_edge_kind"),
     };
-  }
-
-  function legacyGraphProjectionEdgeKind(name) {
-    return {
-      graph_edge_kind: "next",
-      graph_condition_edge_kind: "cond",
-      graph_fanout_edge_kind: "fanout",
-    }[name] || "";
   }
 
   function graphProjectionForFlow(flow, members, contract) {
@@ -6976,7 +6968,7 @@
         id: edge.id,
         from: edge.from,
         to: edge.to,
-        kind: edge.kind || "next",
+        kind: edge.kind || "",
         label: edge.label || "",
         cond: edge.cond || null,
       }))
