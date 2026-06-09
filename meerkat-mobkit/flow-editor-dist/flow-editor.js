@@ -10789,21 +10789,8 @@ window.MOBKIT_BOOT = {
       row,
       hasDocument: false,
       hydration: null,
-      fallback: {
-        currentFlowId: selectedId,
-        stage: row.stage || "draft",
-        view: "editor",
-      },
-    };
-  }
-
-  function flowRegistryFallbackOpenTransition(selection) {
-    const fallback = selection?.fallback || null;
-    if (!fallback) return null;
-    return {
-      currentFlowId: String(fallback.currentFlowId || ""),
-      stage: fallback.stage || "draft",
-      view: fallback.view || "editor",
+      fallback: null,
+      error: "missing_registry_document",
     };
   }
 
@@ -11971,7 +11958,6 @@ window.MOBKIT_BOOT = {
     flowRegistryMarkDraftPatch,
     flowRegistryViewState,
     flowRegistrySelectionState,
-    flowRegistryFallbackOpenTransition,
     flowRegistryRowFromDocument,
     flowImportedIdFromDocument,
     flowRegistryRememberDocumentPatch,
@@ -15592,12 +15578,7 @@ function App() {
       hydrateMobpackDocument(selection2.hydration.result, selection2.hydration.options);
       return true;
     }
-    const transition = window.MobKitFlowController.flowRegistryFallbackOpenTransition(selection2);
-    if (!transition) return false;
-    setCurrentFlowId(transition.currentFlowId);
-    setStage(transition.stage);
-    setView(transition.view);
-    return true;
+    return false;
   };
   const handleImportFile = async (event) => {
     const file = event.target.files?.[0];

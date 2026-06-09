@@ -1060,12 +1060,7 @@ function App() {
       hydrateMobpackDocument(selection.hydration.result, selection.hydration.options);
       return true;
     }
-    const transition = window.MobKitFlowController.flowRegistryFallbackOpenTransition(selection);
-    if (!transition) return false;
-    setCurrentFlowId(transition.currentFlowId);
-    setStage(transition.stage);
-    setView(transition.view);
-    return true;
+    return false;
   };
 
   const handleImportFile = async (event) => {

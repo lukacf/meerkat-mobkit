@@ -1616,9 +1616,9 @@ assert.match(app, /flowRegistryPersistDocumentProjection\(flows,\s*\{[\s\S]*curr
 assert.match(app, /flowRegistryPersistDocumentProjection\(flows,\s*\{[\s\S]*previousSignature:\s*persistedDocumentSig\.current,[\s\S]*skipIfUnchanged:\s*true/, "autosave persistence must let the controller projection suppress unchanged document snapshots");
 assert(!/flowRegistryRememberDocumentPatch/.test(app), "app shell must not apply flow registry document row patches locally");
 assert.match(app, /MobKitFlowController\.flowRegistrySelectionState/, "app shell must select and load registry rows through the controller plane");
-assert.match(app, /MobKitFlowController\.flowRegistryFallbackOpenTransition\(selection\)/, "app shell must apply fallback registry opens through a controller transition");
-assert.match(controller, /function flowRegistryFallbackOpenTransition/, "controller plane must own fallback registry open transitions");
-assert.match(app, /setCurrentFlowId\(transition\.currentFlowId\)[\s\S]*setStage\(transition\.stage\)[\s\S]*setView\(transition\.view\)/, "app shell must only apply the controller-projected fallback registry transition");
+assert(!/flowRegistryFallbackOpenTransition/.test(app + "\n" + controller), "flow registry selection must not open rows that lack a MobKit document");
+assert.match(controller, /hasDocument:\s*false,[\s\S]*hydration:\s*null,[\s\S]*fallback:\s*null,[\s\S]*error:\s*"missing_registry_document"/, "controller registry selection must fail closed for documentless rows");
+assert(!/setCurrentFlowId\(transition\.currentFlowId\)[\s\S]*setStage\(transition\.stage\)[\s\S]*setView\(transition\.view\)/.test(app), "app shell must not switch current flow without hydrating a MobKit document");
 assert(!/setCurrentFlowId\(selection\.fallback\.currentFlowId\)|setStage\(selection\.fallback\.stage\)|setView\(selection\.fallback\.view\)/.test(app), "app shell must not read fallback registry transition fields directly");
 assert.match(app, /MobKitFlowController\.createDocument\(spec\)[\s\S]*const row = result\?\.row[\s\S]*hydrateMobpackDocument/, "app shell must hydrate new-flow registry rows returned by MobKit");
 assert.doesNotMatch(app, /MobKitFlowController\.flowRegistryCreateDraftProjection/, "app shell must not derive new-flow registry rows from cloned catalog documents");

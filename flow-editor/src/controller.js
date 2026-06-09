@@ -10756,21 +10756,8 @@
       row,
       hasDocument: false,
       hydration: null,
-      fallback: {
-        currentFlowId: selectedId,
-        stage: row.stage || "draft",
-        view: "editor",
-      },
-    };
-  }
-
-  function flowRegistryFallbackOpenTransition(selection) {
-    const fallback = selection?.fallback || null;
-    if (!fallback) return null;
-    return {
-      currentFlowId: String(fallback.currentFlowId || ""),
-      stage: fallback.stage || "draft",
-      view: fallback.view || "editor",
+      fallback: null,
+      error: "missing_registry_document",
     };
   }
 
@@ -11938,7 +11925,6 @@
     flowRegistryMarkDraftPatch,
     flowRegistryViewState,
     flowRegistrySelectionState,
-    flowRegistryFallbackOpenTransition,
     flowRegistryRowFromDocument,
     flowImportedIdFromDocument,
     flowRegistryRememberDocumentPatch,
