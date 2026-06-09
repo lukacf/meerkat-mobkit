@@ -10423,13 +10423,14 @@ window.MOBKIT_BOOT = {
   function memberSchemaCascadePatch({ memberId, members, flow, edges, instances, schemas } = {}, rawSchema) {
     const id = String(memberId || "").trim();
     const list = Array.isArray(members) ? members : [];
+    const sourceInstances = Array.isArray(instances) ? instances : [];
     const current = list.find((member) => String(member?.id || "").trim() === id) || null;
     if (!current) {
-      return { ok: false, error: "member not found", members: list, flow, edges, patch: null };
+      return { ok: false, error: "member not found", members: list, flow, edges, instances: sourceInstances, patch: null };
     }
     const patch = memberSchemaPatch(rawSchema, schemas);
     if (!Object.prototype.hasOwnProperty.call(patch, "schema")) {
-      return { ok: false, error: "unknown schema", members: list, flow, edges, patch: null };
+      return { ok: false, error: "unknown schema", members: list, flow, edges, instances: sourceInstances, patch: null };
     }
     const nextMember = { ...current, ...patch };
     const nextMembers = list.map((member) => String(member?.id || "").trim() === id ? nextMember : member);
@@ -10437,7 +10438,7 @@ window.MOBKIT_BOOT = {
       flow,
       edges,
       members: nextMembers,
-      instances,
+      instances: sourceInstances,
       schemas,
     });
     return {
@@ -10448,6 +10449,7 @@ window.MOBKIT_BOOT = {
       members: nextMembers,
       flow: reconciled.flow,
       edges: reconciled.edges,
+      instances: sourceInstances,
     };
   }
 
@@ -12358,6 +12360,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     if (studio.snap) studio.snap();
     studio.setMembers(result.members);
     if (result.flow !== flow && setFlow) setFlow(result.flow);
+    if (result.instances !== studio.instances) studio.setInstances(result.instances);
     if (result.edges !== studio.edges) studio.setEdges(result.edges);
   };
   return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, "AGENT \xB7 ", member.role), /* @__PURE__ */ React.createElement(
