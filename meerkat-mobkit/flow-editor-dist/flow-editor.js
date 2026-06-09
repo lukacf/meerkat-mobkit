@@ -8486,6 +8486,7 @@ window.MOBKIT_BOOT = {
       models: [],
       toolCatalog: [],
       agentDefinitions: [],
+      sampleAgentDefinitions: [],
       skillRealms: [],
       blankMobpack: null,
       deployDefaults: deployDefaultsFromSchema(null),
@@ -8522,11 +8523,13 @@ window.MOBKIT_BOOT = {
   function mobKitCatalogsFromSchema(schema, boot = {}, catalogPayload = null) {
     const catalogSource = catalogPayload && typeof catalogPayload === "object" ? catalogPayload : {};
     const agentDefinitions = agentDefinitionsFromCatalogs(catalogSource);
+    const sampleAgentDefinitions = sampleAgentDefinitionsFromCatalogs(catalogSource);
     const blankMobpack = blankMobpackFromCatalogs(catalogSource);
     return {
       models: modelCatalogFromCatalogs(catalogSource),
       toolCatalog: toolCatalogFromCatalogs(catalogSource),
       agentDefinitions,
+      sampleAgentDefinitions,
       skillRealms: skillRealmsFromCatalogs(catalogSource),
       blankMobpack,
       deployDefaults: deployDefaultsFromSchema(schema),
@@ -10110,13 +10113,14 @@ window.MOBKIT_BOOT = {
 
   function deployOutcome(document, result, options = {}) {
     const validation = result?.validation || null;
-    const deployOk = !options.execute || result?.success !== false;
+    const executing = options.execute === true;
+    const deployOk = executing && result?.success !== false;
     return {
       document,
       deployResult: result || null,
       validation,
       validationRows: deployResultToRows(result),
-      stage: validation?.ok && deployOk ? "valid" : "draft",
+      stage: validation?.ok && deployOk ? "deployed" : "draft",
     };
   }
 
@@ -10488,19 +10492,22 @@ window.MOBKIT_BOOT = {
 
   function flowCatalogBootstrapState(catalogPayload, options = {}) {
     const sampleFlows = sampleFlowsFromCatalogs(catalogPayload);
-    const first = sampleFlows[0] || null;
+    const blank = blankMobpackFromCatalogs(catalogPayload);
+    const blankFlow = blank
+      ? { ...blank, stage: "draft", validation: null }
+      : null;
     return {
       templates: sampleFlows,
-      flows: sampleFlows,
-      initialHydration: first
+      flows: blankFlow ? [blankFlow] : [],
+      initialHydration: blankFlow
         ? {
           result: {
-            document: first.document,
-            validation: first.validation,
+            document: blankFlow.document,
+            validation: null,
           },
           options: {
-            id: first.id,
-            flowRow: first,
+            id: blankFlow.id,
+            flowRow: blankFlow,
             addToRegistry: false,
             openEditor: !!options.openEditor,
             deployDefaults: options.deployDefaults,
@@ -10997,6 +11004,15 @@ window.MOBKIT_BOOT = {
 
   function agentDefinitionsFromCatalogs(schema) {
     const definitions = Array.isArray(schema?.agent_definitions) ? schema.agent_definitions : [];
+    return normalizeAgentDefinitionsFromCatalog(definitions);
+  }
+
+  function sampleAgentDefinitionsFromCatalogs(schema) {
+    const definitions = Array.isArray(schema?.sample_agent_definitions) ? schema.sample_agent_definitions : [];
+    return normalizeAgentDefinitionsFromCatalog(definitions);
+  }
+
+  function normalizeAgentDefinitionsFromCatalog(definitions) {
     return definitions
       .filter((template) => template && typeof template === "object")
       .filter((template) => String(template.definitionType || template.definition_type || "") === "mobkit/profile-member")
@@ -11011,6 +11027,8 @@ window.MOBKIT_BOOT = {
         const role = String(template.role || "").trim();
         const name = String(template.name || template.label || "").trim();
         const model = String(template.model || "").trim();
+        const definitionKind = String(template.definitionKind || template.definition_kind || "").trim();
+        const sourceKind = String(template.sourceKind || template.source_kind || "").trim();
         if (!id || !role || !name) return null;
         return {
           id,
@@ -11034,6 +11052,8 @@ window.MOBKIT_BOOT = {
           systemPrompt: String(template.systemPrompt || template.system_prompt || ""),
           providerParams: normalizeProviderParams(template.providerParams || template.provider_params),
           definitionType: String(template.definitionType || template.definition_type),
+          ...(definitionKind ? { definitionKind } : {}),
+          ...(sourceKind ? { sourceKind } : {}),
           source: template.source || "",
           sourceMobpack: template.sourceMobpack || template.source_mobpack || "",
           sourceMobpackName: template.sourceMobpackName || template.source_mobpack_name || "",
@@ -11181,6 +11201,8 @@ window.MOBKIT_BOOT = {
       throw new Error("MobKit agent definition is missing its model contract.");
     }
     validateAgentDefinitionCatalogRefs(source, options);
+    const definitionKind = String(source.definitionKind || source.definition_kind || "").trim();
+    const sourceKind = String(source.sourceKind || source.source_kind || "").trim();
     const baseRole = slug(role, "member").replace(/-/g, "_");
     let id = `m_${baseRole}`;
     let index = 2;
@@ -11205,6 +11227,8 @@ window.MOBKIT_BOOT = {
       providerParams: normalizeProviderParams(source.providerParams || source.provider_params),
       sourceDefinition: {
         definitionType: source.definitionType,
+        ...(definitionKind ? { definitionKind } : {}),
+        ...(sourceKind ? { sourceKind } : {}),
         definitionId: source.id,
         source: source.source,
         sourceMobpack: source.sourceMobpack,
@@ -11771,6 +11795,7 @@ window.MOBKIT_BOOT = {
     sourceFileSelectionTransition,
     sampleFlowsFromCatalogs,
     flowCatalogBootstrapState,
+    sampleAgentDefinitionsFromCatalogs,
     newFlowModalPatch,
     newFlowModalFieldPatch,
     newFlowModalStepPatch,

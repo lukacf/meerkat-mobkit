@@ -1112,8 +1112,14 @@ async function validateUnifiedEditorProjection(dir, catalogs) {
   }
   for (const [label, member] of [["coder", coder], ["reviewer", reviewer]]) {
     const source = member.sourceDefinition || {};
-    if (source.definitionType !== "mobkit/profile-member" || !source.definitionId || !source.sourceMobpack || source.sourceOrigin !== "mobkit/sample-mobpack") {
-      throw new Error(`imported unified ${label} lost source-definition provenance from the real sample profile-member catalog: ${JSON.stringify(source)}`);
+    const sourceKind = String(source.sourceKind || source.definitionKind || "").trim();
+    const sourceOrigin = String(source.sourceOrigin || "").trim();
+    const realCatalogSource = sourceKind === "authoring"
+      || sourceKind === "sample"
+      || sourceOrigin === "mobkit/authoring-agent-definitions"
+      || sourceOrigin === "mobkit/sample-mobpack";
+    if (source.definitionType !== "mobkit/profile-member" || !source.definitionId || !source.sourceMobpack || !realCatalogSource) {
+      throw new Error(`imported unified ${label} lost source-definition provenance from the real profile-member catalog: ${JSON.stringify(source)}`);
     }
     if (!String(source.sourceDocumentPath || "").startsWith("document.members[")) {
       throw new Error(`imported unified ${label} sourceDefinition must carry indexed member source path: ${JSON.stringify(source)}`);
@@ -1391,6 +1397,9 @@ async function validateDocumentBackedDeployPreview(document) {
   if (!Array.isArray(catalogs.agent_definitions) || catalogs.agent_definitions.length === 0) {
     throw new Error("mobkit/mobpacks/catalogs did not expose real agent_definitions");
   }
+  if (!Array.isArray(catalogs.sample_agent_definitions) || catalogs.sample_agent_definitions.length === 0) {
+    throw new Error("mobkit/mobpacks/catalogs did not expose sample_agent_definitions separately from authoring agent_definitions");
+  }
   const authoringDefinition = catalogs.agent_definitions.find((definition) => (
     definition.role === "reviewer"
     && definition.sourceMobpack === "mobkit_authoring_profiles"
@@ -1408,17 +1417,20 @@ async function validateDocumentBackedDeployPreview(document) {
   if (authoringDefinition.schemaDefinition?.id !== "ReviewerOutput") {
     throw new Error(`MobKit authoring reviewer definition did not carry its real schema definition: ${JSON.stringify(authoringDefinition)}`);
   }
+  if (catalogs.agent_definitions.some((definition) => definition.sourceOrigin === "mobkit/sample-mobpack" || definition.sourceKind === "sample")) {
+    throw new Error(`MobKit Agent Editor definitions must not include sample-derived profiles: ${JSON.stringify(catalogs.agent_definitions)}`);
+  }
   const authoringRealm = catalogs.skill_realms.find((realm) => realm.id === "mobkit/authoring-agent-definitions");
   if (!authoringRealm || !String(authoringRealm.source || "").includes("authoring-agent-definition")) {
     throw new Error(`mobkit/mobpacks/catalogs did not expose authoring skill realm metadata: ${JSON.stringify(catalogs.skill_realms)}`);
   }
-  const reviewerDefinitions = catalogs.agent_definitions.filter((definition) => definition.role === "reviewer");
+  const reviewerDefinitions = catalogs.sample_agent_definitions.filter((definition) => definition.role === "reviewer");
   const reviewerSources = new Set(reviewerDefinitions.map((definition) => definition.sourceMobpack).filter(Boolean));
   const reviewerIds = new Set(reviewerDefinitions.map((definition) => definition.id).filter(Boolean));
   if (reviewerDefinitions.length < 2 || reviewerSources.size < 2 || reviewerIds.size !== reviewerDefinitions.length) {
-    throw new Error(`mobkit/mobpacks/catalogs collapsed real reviewer agent definitions: ${JSON.stringify(reviewerDefinitions)}`);
+    throw new Error(`mobkit/mobpacks/catalogs collapsed sample reviewer agent definitions: ${JSON.stringify(reviewerDefinitions)}`);
   }
-  for (const dynamicKey of ["tool_catalog", "skill_realms", "agent_definitions", "sample_mobpacks", "blank_mobpack", "models", "provider_defaults"]) {
+  for (const dynamicKey of ["tool_catalog", "skill_realms", "agent_definitions", "sample_agent_definitions", "sample_mobpacks", "blank_mobpack", "models", "provider_defaults"]) {
     if (Object.prototype.hasOwnProperty.call(schema, dynamicKey)) {
       throw new Error(`mobkit/mobpacks/schema leaked dynamic catalog key ${dynamicKey}`);
     }

@@ -804,18 +804,21 @@ pub fn mobpack_catalogs_response() -> Value {
     let blank_mobpack = blank_mobpack_template();
     let skill_realms = discover_skill_realms(&sample_mobpacks, &authoring_sources);
     let tool_catalog = tool_catalog_response();
-    let agent_definitions = combined_agent_definition_catalog(
+    let agent_definitions = agent_definition_catalog(
         &authoring_sources,
-        &sample_mobpacks,
         &tool_catalog,
         &skill_realms,
+        "authoring",
     );
+    let sample_agent_definitions =
+        agent_definition_catalog(&sample_mobpacks, &tool_catalog, &skill_realms, "sample");
     json!({
         "tool_catalog": tool_catalog,
         "skill_realms": skill_realms,
         "blank_mobpack": blank_mobpack,
         "sample_mobpacks": sample_mobpacks,
         "agent_definitions": agent_definitions,
+        "sample_agent_definitions": sample_agent_definitions,
         "models": models,
         "provider_defaults": provider_defaults,
     })
@@ -1832,32 +1835,11 @@ fn resolved_catalog_refs(ids: &[String], catalog: &BTreeMap<String, Value>) -> V
     )
 }
 
-fn combined_agent_definition_catalog(
-    authoring_sources: &Value,
-    sample_mobpacks: &Value,
-    tool_catalog: &[Value],
-    skill_realms: &Value,
-) -> Value {
-    let mut definitions = BTreeMap::<String, Value>::new();
-    for source in [authoring_sources, sample_mobpacks] {
-        if let Some(rows) = agent_definition_catalog(source, tool_catalog, skill_realms).as_array()
-        {
-            for row in rows {
-                if let Some(id) = row.get("id").and_then(Value::as_str) {
-                    definitions
-                        .entry(id.to_string())
-                        .or_insert_with(|| row.clone());
-                }
-            }
-        }
-    }
-    Value::Array(definitions.into_values().collect())
-}
-
 fn agent_definition_catalog(
     source_mobpacks: &Value,
     tool_catalog: &[Value],
     skill_realms: &Value,
+    source_kind: &'static str,
 ) -> Value {
     let mut templates = BTreeMap::<String, Value>::new();
     let tools_by_id = tool_catalog_by_id(tool_catalog);
@@ -1975,6 +1957,8 @@ fn agent_definition_catalog(
                         "systemPrompt": member.get("systemPrompt").and_then(Value::as_str).unwrap_or_default(),
                         "providerParams": member.get("providerParams").or_else(|| member.get("provider_params")).cloned().unwrap_or(Value::Null),
                         "definitionType": "mobkit/profile-member",
+                        "definitionKind": source_kind,
+                        "sourceKind": source_kind,
                         "source": "mobkit/mobpack-profile-member",
                         "sourceMobpack": source_mobpack,
                         "sourceMobpackName": source_name,
@@ -16904,8 +16888,12 @@ model = "gpt-5.5"
         ]);
 
         let skill_realms = sample_skill_realm(&samples, true).expect("sample skill realm");
-        let definitions =
-            agent_definition_catalog(&samples, &tool_catalog_response(), &json!([skill_realms]));
+        let definitions = agent_definition_catalog(
+            &samples,
+            &tool_catalog_response(),
+            &json!([skill_realms]),
+            "sample",
+        );
         let definitions = definitions.as_array().expect("agent definitions");
         assert_eq!(definitions.len(), 2);
         let first = definitions
@@ -16920,6 +16908,8 @@ model = "gpt-5.5"
         assert_eq!(first["role"], "real");
         assert_eq!(second["role"], "real");
         assert_eq!(first["definitionType"], "mobkit/profile-member");
+        assert_eq!(first["definitionKind"], "sample");
+        assert_eq!(first["sourceKind"], "sample");
         assert_eq!(first["source"], "mobkit/mobpack-profile-member");
         assert_eq!(first["sourceMobpack"], "valid_sample");
         assert_eq!(first["sourceMobpackName"], "Valid Sample");
@@ -17940,7 +17930,10 @@ model = "gpt-5.5"
         let agent_definitions = catalogs["agent_definitions"]
             .as_array()
             .expect("agent definitions");
-        assert!(agent_definitions.iter().any(|definition| {
+        let sample_agent_definitions = catalogs["sample_agent_definitions"]
+            .as_array()
+            .expect("sample agent definitions");
+        assert!(sample_agent_definitions.iter().any(|definition| {
             definition["role"] == "router"
                 && definition["tools"]
                     .as_array()
@@ -17964,17 +17957,30 @@ model = "gpt-5.5"
                     })
             })
             .collect::<BTreeMap<_, _>>();
-        assert!(agent_definitions.iter().any(|definition| {
-            definition["definitionType"] == "mobkit/profile-member"
-                && definition["source"] == "mobkit/mobpack-profile-member"
-                && definition["sourceDocumentPath"]
-                    .as_str()
-                    .is_some_and(|path| path.starts_with("document.members["))
-                && definition["sourceMobpack"]
-                    .as_str()
-                    .is_some_and(|value| value.starts_with("sample_"))
-        }));
-        let sample_agent_definitions = agent_definitions
+        assert!(
+            agent_definitions.iter().all(|definition| {
+                definition["sourceOrigin"] != "mobkit/sample-mobpack"
+                    && definition["sourceKind"] == "authoring"
+                    && definition["definitionKind"] == "authoring"
+            }),
+            "Agent Editor definitions must be authoring-owned, not sample-derived: {agent_definitions:#?}"
+        );
+        assert!(
+            sample_agent_definitions.iter().any(|definition| {
+                definition["definitionType"] == "mobkit/profile-member"
+                    && definition["source"] == "mobkit/mobpack-profile-member"
+                    && definition["sourceKind"] == "sample"
+                    && definition["definitionKind"] == "sample"
+                    && definition["sourceDocumentPath"]
+                        .as_str()
+                        .is_some_and(|path| path.starts_with("document.members["))
+                    && definition["sourceMobpack"]
+                        .as_str()
+                        .is_some_and(|value| value.starts_with("sample_"))
+            }),
+            "catalogs must keep sample-derived agent definitions separate from Agent Editor definitions"
+        );
+        let sample_agent_definitions = sample_agent_definitions
             .iter()
             .filter(|definition| definition["sourceOrigin"] == "mobkit/sample-mobpack")
             .collect::<Vec<_>>();
@@ -18006,7 +18012,7 @@ model = "gpt-5.5"
                     })
                 && definition["schemaDefinition"]["id"] == "ReviewerOutput"
         }));
-        for definition in sample_agent_definitions {
+        for definition in &sample_agent_definitions {
             let source_mobpack = definition["sourceMobpack"]
                 .as_str()
                 .expect("agent definition source mobpack");
@@ -18027,7 +18033,7 @@ model = "gpt-5.5"
                 && member["model"].as_str().is_some()
             {
                 assert!(
-                    agent_definitions.iter().any(|definition| {
+                    sample_agent_definitions.iter().any(|definition| {
                         definition["sourceMobpack"] == json!(source_mobpack)
                             && definition["role"] == json!(role)
                     }),

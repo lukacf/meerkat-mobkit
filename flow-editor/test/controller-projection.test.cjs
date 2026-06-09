@@ -2768,6 +2768,15 @@ assert.deepEqual(sampleRows.map((row) => ({
 ]);
 
 const bootstrapProjection = controller.flowCatalogBootstrapState({
+  blank_mobpack: {
+    id: "blank",
+    name: "Blank MobKit mobpack",
+    source: "mobkit/blank-mobpack",
+    trigger: "blank · authoring",
+    stage: "valid",
+    document: { mob_id: "blank", schema_version: "0.1" },
+    validation: { ok: true },
+  },
   sample_mobpacks: [
     {
       id: "starter",
@@ -2793,11 +2802,13 @@ const bootstrapProjection = controller.flowCatalogBootstrapState({
   mobDefaults: { backend: "session" },
 });
 assert.deepEqual(bootstrapProjection.templates.map((row) => row.id), ["starter", "second"]);
-assert.deepEqual(bootstrapProjection.flows.map((row) => row.id), ["starter", "second"]);
-assert.equal(bootstrapProjection.initialHydration.result.document.mob_id, "starter");
-assert.equal(bootstrapProjection.initialHydration.result.validation.ok, true);
-assert.equal(bootstrapProjection.initialHydration.options.id, "starter");
-assert.equal(bootstrapProjection.initialHydration.options.flowRow.id, "starter");
+assert.deepEqual(bootstrapProjection.flows.map((row) => row.id), ["blank"]);
+assert.equal(bootstrapProjection.flows[0].stage, "draft");
+assert.equal(bootstrapProjection.flows[0].validation, null);
+assert.equal(bootstrapProjection.initialHydration.result.document.mob_id, "blank");
+assert.equal(bootstrapProjection.initialHydration.result.validation, null);
+assert.equal(bootstrapProjection.initialHydration.options.id, "blank");
+assert.equal(bootstrapProjection.initialHydration.options.flowRow.id, "blank");
 assert.equal(bootstrapProjection.initialHydration.options.addToRegistry, false);
 assert.equal(bootstrapProjection.initialHydration.options.openEditor, true);
 assert.deepEqual(bootstrapProjection.initialHydration.options.deployDefaults, { surface: "local" });
@@ -6434,8 +6445,18 @@ const deployPlanOutcome = controller.deployOutcome({ mob_id: "deploy_me" }, {
     ok: true,
   },
 }, { execute: false });
-assert.equal(deployPlanOutcome.stage, "valid");
+assert.equal(deployPlanOutcome.stage, "draft");
 assert.equal(deployPlanOutcome.validationRows[0].head, "planned");
+
+const successfulRunOutcome = controller.deployOutcome({ mob_id: "deploy_me" }, {
+  success: true,
+  display_rows: [{ kind: "ok", glyph: "✓", head: "deployed", sub: "", meta: "deploy" }],
+  validation: {
+    ok: true,
+  },
+}, { execute: true });
+assert.equal(successfulRunOutcome.stage, "deployed");
+assert.equal(successfulRunOutcome.validation.ok, true);
 
 assert.deepEqual(controller.deployPlanTraceState({ mob_id: "deploy_me" }, {
   command: "rkat mob deploy /tmp/deploy.mobpack prompt",

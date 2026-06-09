@@ -78,7 +78,7 @@ for (const [name, source] of [
 assert.match(data, /window\.MOBKIT_BOOT\s*=/, "boot file should expose static layout metadata only");
 assert(!/\b(MEMBERS|INSTANCES|TOOL_CATALOG|AGENT_DEFINITIONS|SKILL_REALMS|MODELS|SCHEMAS|DEPLOY_DEFAULTS|CONTRACT_META)\b/.test(data), "boot data file must not define live MobKit catalogs");
 assert(!/TEMPLATE_META|template:\s*TEMPLATE_META|untitled-mob|mob\.toml/.test(data), "boot data file must not define local template summary metadata");
-assert.match(app, /MobKitFlowController\.flowCatalogBootstrapState\(catalogPayload,/, "flow registry must hydrate samples through the MobKit controller bootstrap projection");
+assert.match(app, /MobKitFlowController\.flowCatalogBootstrapState\(catalogPayload,/, "flow registry must hydrate the MobKit blank document and sample templates through the controller bootstrap projection");
 assert(!/STARTER_FLOWS/.test(app), "flow registry must not keep local seed-flow state");
 assert.equal(packageJson.scripts?.["test:visual-contract"], "node test/handoff-visual-contract.test.cjs", "package scripts must expose the handoff visual fidelity contract directly");
 
@@ -105,6 +105,7 @@ assert(!/replaceArray\(MOBKIT_DATA\.(models|toolCatalog|agentDefinitions|profile
 assert.match(app, /<BuilderView[\s\S]*toolCatalog=\{catalogs\.toolCatalog\}/, "app shell must inject MobKit tool catalog into Basic editor");
 assert.match(app, /<BuilderView[\s\S]*conditionView=\{catalogs\.conditionView\}/, "app shell must inject schema-backed shared condition view into Basic editor");
 assert.match(app, /<AgentsView[\s\S]*agentDefinitions=\{catalogs\.agentDefinitions\}/, "app shell must inject MobKit agent definitions into Agent editor");
+assert.match(controller, /sampleAgentDefinitionsFromCatalogs[\s\S]*sample_agent_definitions/, "controller plane must keep sample-derived agent definitions separate from Agent Editor definitions");
 assert.match(controller, /agentDefinitionsFromCatalogs[\s\S]*sourceMobpack:[\s\S]*template\.sourceMobpack \|\| template\.source_mobpack[\s\S]*sourceOrigin:[\s\S]*template\.sourceOrigin \|\| template\.source_origin/, "Agent Editor definitions must preserve MobKit source mobpack and source-origin provenance");
 assert.match(controller, /memberFromAgentDefinition[\s\S]*sourceMobpack contract[\s\S]*sourceOrigin contract/, "Agent Editor add flow must reject profile-member definitions without MobKit source provenance");
 assert.match(agents, /MobKitFlowController\.agentDefinitionCatalogState\(agentDefinitions,\s*agentView\)/, "Agent definition catalog rows must be projected by the controller plane");
@@ -138,7 +139,7 @@ assert.match(controller, /function configureAuthoringMethodsFromSchema[\s\S]*aut
 assert.match(app, /loadSchema\(\)[\s\S]*configureAuthoringMethodsFromSchema\(schema\)[\s\S]*loadCatalogs\(\)/, "app shell must load schema first, then use schema.commands to request dynamic catalogs");
 assert.match(app, /MobKitFlowController\.loadCatalogs\(\)/, "app shell must hydrate dynamic catalogs through mobkit/mobpacks/catalogs");
 assert.match(app, /mobKitCatalogsFromSchema\(schema,\s*CATALOG_BOOT,\s*catalogPayload\)/, "app shell must combine schema contracts with catalog RPC data through the controller plane");
-assert.match(app, /flowCatalogBootstrapState\(catalogPayload,/, "sample flow templates must hydrate from the MobKit catalogs RPC payload through the controller bootstrap projection");
+assert.match(app, /flowCatalogBootstrapState\(catalogPayload,/, "blank flow and sample templates must hydrate from the MobKit catalogs RPC payload through the controller bootstrap projection");
 assert.match(controller, /const catalogSource = catalogPayload && typeof catalogPayload === "object" \? catalogPayload : \{\};/, "controller plane must not fall back to schema for dynamic MobKit catalogs");
 assert.match(controller, /mob_definition\?\.editor_deploy_view/, "controller plane must hydrate deploy/top-rail chrome from MobKit schema");
 assert.match(app, /MobKitFlowController\.reconcileAuthoringForMembers/, "app shell must keep Basic/Graph member-step schema metadata synchronized through aggregate member reconciliation");
@@ -1039,9 +1040,9 @@ assert(!/const sourceMeta = \{[\s\S]*source_name|document:\s*parsed|content_base
 assert(!(/JSON\.parse|kind:\s*["'](?:toml|json|binary)["']|\.toml|\.json/.test(importParamsFromFileBlock)), "app import adapter must not infer MobKit import kind or parse JSON locally");
 assert.match(app, /hydrateMobpackDocument\(result,\s*\{\s*existingRows:\s*flows\s*\}\)/, "imported mobpack registry identity must be derived by the controller with current registry rows");
 assert.match(app, /hydrateMobpackDocumentState\(result,\s*\{[\s\S]*existingRows:\s*options\.existingRows/, "app hydration wrapper must forward registry rows into the controller import-id derivation");
-assert.match(app, /MobKitFlowController\.flowCatalogBootstrapState\(catalogPayload,\s*\{[\s\S]*deployDefaults:\s*nextCatalogs\.deployDefaults,[\s\S]*mobDefaults:\s*nextCatalogs\.mobDefaults/, "app catalog bootstrap must ask the controller plane for initial sample registry/template rows and hydration options");
-assert.match(app, /setTemplates\(bootstrap\.templates\);[\s\S]*setFlows\(bootstrap\.flows\);[\s\S]*hydrateMobpackDocument\(bootstrap\.initialHydration\.result,\s*bootstrap\.initialHydration\.options\)/, "app bootstrap must apply controller-projected catalog rows and hydration instead of assembling sample rows locally");
-assert.match(controller, /function flowCatalogBootstrapState\(catalogPayload, options = \{\}\)/, "controller plane must own sample catalog bootstrap projection");
+assert.match(app, /MobKitFlowController\.flowCatalogBootstrapState\(catalogPayload,\s*\{[\s\S]*deployDefaults:\s*nextCatalogs\.deployDefaults,[\s\S]*mobDefaults:\s*nextCatalogs\.mobDefaults/, "app catalog bootstrap must ask the controller plane for initial blank registry/template rows and hydration options");
+assert.match(app, /setTemplates\(bootstrap\.templates\);[\s\S]*setFlows\(bootstrap\.flows\);[\s\S]*hydrateMobpackDocument\(bootstrap\.initialHydration\.result,\s*bootstrap\.initialHydration\.options\)/, "app bootstrap must apply controller-projected catalog rows and hydration instead of assembling sample or blank rows locally");
+assert.match(controller, /function flowCatalogBootstrapState\(catalogPayload, options = \{\}\)[\s\S]*blankMobpackFromCatalogs\(catalogPayload\)[\s\S]*flows:\s*blankFlow \? \[blankFlow\] : \[\]/, "controller plane must open the MobKit blank mobpack by default instead of a sample flow");
 assert(!/const sampleFlows = window\.MobKitFlowController\.sampleFlowsFromCatalogs\(catalogPayload\)|sampleFlows\[0\]\.document|sampleFlows\[0\]\.validation|setTemplates\(sampleFlows\)|setFlows\(sampleFlows\)/.test(app), "app shell must not assemble initial sample flow registry or hydration locally");
 assert(!/STARTER_FLOWS/.test(app), "app shell must not keep a local starter-flow catalog");
 assert.match(controller, /function flowImportedIdFromDocument[\s\S]*flowDraftIdFromSpec/, "controller plane must derive imported mobpack registry ids from document/source metadata");
@@ -1477,7 +1478,7 @@ assert.match(controller, /schemaSourceDocumentPath:\s*String\(template\.schemaSo
 assert.match(controller, /function agentSourceProvenanceState/, "controller plane must own Agent Editor source provenance projection");
 assert.match(controller, /sourceProvenance:\s*agentSourceProvenanceState\(member,\s*agentDetailView\)/, "Agent Editor control state must include controller-projected source provenance");
 assert.match(controller, /sourceDefinition:[\s\S]*sourceMobpackName:[\s\S]*schemaSourceDocumentPath:[\s\S]*toolDefinitions:\s*normalizeAgentDefinitionRows[\s\S]*skillDefinitions:\s*normalizeAgentDefinitionRows/, "agent-definition member creation must retain resolved MobKit provenance rows in sourceDefinition");
-assert.match(liveRkatE2eTest, /reviewerDefinitions[\s\S]*reviewerSources[\s\S]*collapsed real reviewer agent definitions/, "live rkat proof must reject collapsed same-role sample agent definitions");
+assert.match(liveRkatE2eTest, /sample_agent_definitions[\s\S]*reviewerDefinitions[\s\S]*reviewerSources[\s\S]*collapsed sample reviewer agent definitions/, "live rkat proof must reject collapsed same-role sample agent definitions");
 assert.match(controller, /memberProfileBindingPatch[\s\S]*profileBindingOptions\(contract,\s*binding\)/, "member profile-binding writes must validate against MobKit profile_binding options and restrictions");
 assert.match(controller, /memberRuntimeModePatch[\s\S]*runtimeModeOptions\(contract,\s*deploySettings,\s*runtimeMode\)/, "member runtime-mode writes must validate against MobKit runtime_modes and deploy surface restrictions");
 assert.match(controller, /runtime_mode_labels/, "member runtime-mode labels must hydrate from the MobKit schema contract");
