@@ -4329,9 +4329,19 @@ const catalogBackedAgentDefinition = {
   tools: ["mob"],
   skills: ["mob.review"],
 };
+const agentDefinitionRuntimeContract = {
+  mob_definition: {
+    profile_binding: ["inline"],
+    runtime_modes: ["turn_driven"],
+    profile_backends: ["sidecar", "session"],
+  },
+};
 const addedCatalogBackedAgent = controller.agentDefinitionAddByIdPatch([catalogBackedAgentDefinition], "reviewer", {
   members: [],
   schemas: [],
+  contract: agentDefinitionRuntimeContract,
+  deploySettings: { surface: "cli" },
+  modelCatalog: [{ id: "gpt-5.5" }],
   toolCatalog: [{ id: "mob" }],
   skillRealms: [{ id: "sample", skills: [{ id: "mob.review" }] }],
 });
@@ -4342,6 +4352,9 @@ assert.match(
   controller.agentDefinitionAddByIdPatch([{ ...catalogBackedAgentDefinition, tools: ["ghost"] }], "reviewer", {
     members: [],
     schemas: [],
+    contract: agentDefinitionRuntimeContract,
+    deploySettings: { surface: "cli" },
+    modelCatalog: [{ id: "gpt-5.5" }],
     toolCatalog: [{ id: "mob" }],
     skillRealms: [{ id: "sample", skills: [{ id: "mob.review" }] }],
   }).error,
@@ -4351,10 +4364,61 @@ assert.match(
   controller.agentDefinitionAddByIdPatch([{ ...catalogBackedAgentDefinition, skills: ["mob.ghost"] }], "reviewer", {
     members: [],
     schemas: [],
+    contract: agentDefinitionRuntimeContract,
+    deploySettings: { surface: "cli" },
+    modelCatalog: [{ id: "gpt-5.5" }],
     toolCatalog: [{ id: "mob" }],
     skillRealms: [{ id: "sample", skills: [{ id: "mob.review" }] }],
   }).error,
   /unavailable skill/,
+);
+assert.match(
+  controller.agentDefinitionAddByIdPatch([{ ...catalogBackedAgentDefinition, model: "ghost-model" }], "reviewer", {
+    members: [],
+    schemas: [],
+    contract: agentDefinitionRuntimeContract,
+    deploySettings: { surface: "cli" },
+    modelCatalog: [{ id: "gpt-5.5" }],
+    toolCatalog: [{ id: "mob" }],
+    skillRealms: [{ id: "sample", skills: [{ id: "mob.review" }] }],
+  }).error,
+  /unavailable model/,
+);
+assert.match(
+  controller.agentDefinitionAddByIdPatch([{ ...catalogBackedAgentDefinition, runtimeMode: "autonomous_host" }], "reviewer", {
+    members: [],
+    schemas: [],
+    contract: agentDefinitionRuntimeContract,
+    deploySettings: { surface: "cli" },
+    modelCatalog: [{ id: "gpt-5.5" }],
+    toolCatalog: [{ id: "mob" }],
+    skillRealms: [{ id: "sample", skills: [{ id: "mob.review" }] }],
+  }).error,
+  /unsupported runtime mode/,
+);
+assert.match(
+  controller.agentDefinitionAddByIdPatch([{ ...catalogBackedAgentDefinition, profileBinding: "realm_profile" }], "reviewer", {
+    members: [],
+    schemas: [],
+    contract: agentDefinitionRuntimeContract,
+    deploySettings: { surface: "cli" },
+    modelCatalog: [{ id: "gpt-5.5" }],
+    toolCatalog: [{ id: "mob" }],
+    skillRealms: [{ id: "sample", skills: [{ id: "mob.review" }] }],
+  }).error,
+  /unsupported profile binding/,
+);
+assert.match(
+  controller.agentDefinitionAddByIdPatch([{ ...catalogBackedAgentDefinition, backend: "external" }], "reviewer", {
+    members: [],
+    schemas: [],
+    contract: agentDefinitionRuntimeContract,
+    deploySettings: { surface: "cli" },
+    modelCatalog: [{ id: "gpt-5.5" }],
+    toolCatalog: [{ id: "mob" }],
+    skillRealms: [{ id: "sample", skills: [{ id: "mob.review" }] }],
+  }).error,
+  /unsupported backend/,
 );
 const agentMembersForProjection = [
   { id: "m_planner", name: "Planner", role: "planner", model: "gpt-5.5", schema: "PlanArtifact" },

@@ -10150,6 +10150,30 @@ window.MOBKIT_BOOT = {
   }
 
   function validateAgentDefinitionCatalogRefs(source, options = {}) {
+    if (Array.isArray(options.modelCatalog)) {
+      const modelIds = new Set(options.modelCatalog
+        .map((model) => String(model?.id || "").trim())
+        .filter(Boolean));
+      const model = String(source?.model || "").trim();
+      if (model && !modelIds.has(model)) {
+        throw new Error(`MobKit agent definition references unavailable model: ${model}`);
+      }
+    }
+    if (options.contract) {
+      const profileBinding = String(source?.profileBinding || "").trim();
+      if (!optionValueAllowed(profileBindingOptions(options.contract, profileBinding), profileBinding, { allowBlank: false })) {
+        throw new Error(`MobKit agent definition references unsupported profile binding: ${profileBinding}`);
+      }
+      const runtimeMode = String(source?.runtimeMode || "").trim();
+      if (!contractValueAllowed(options.contract?.mob_definition?.runtime_modes, runtimeMode, { allowBlank: false })
+        || !optionValueAllowed(runtimeModeOptions(options.contract, options.deploySettings, runtimeMode), runtimeMode, { allowBlank: false })) {
+        throw new Error(`MobKit agent definition references unsupported runtime mode: ${runtimeMode}`);
+      }
+      const backend = normalizeProfileBackend(source?.backend);
+      if (backend && !optionValueAllowed(profileBackendOptions(options.contract, backend, false), backend, { allowBlank: false })) {
+        throw new Error(`MobKit agent definition references unsupported backend: ${backend}`);
+      }
+    }
     if (Array.isArray(options.toolCatalog)) {
       const toolIds = new Set(options.toolCatalog
         .map((tool) => String(tool?.id || "").trim())
@@ -10277,10 +10301,10 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function agentDefinitionAddPatch(definition, { members, schemas, toolCatalog, skillRealms } = {}) {
+  function agentDefinitionAddPatch(definition, { members, schemas, contract, deploySettings, modelCatalog, toolCatalog, skillRealms } = {}) {
     const existingMembers = Array.isArray(members) ? members : [];
     const existingSchemas = Array.isArray(schemas) ? schemas : [];
-    const member = memberFromAgentDefinition(definition, existingMembers, { toolCatalog, skillRealms });
+    const member = memberFromAgentDefinition(definition, existingMembers, { contract, deploySettings, modelCatalog, toolCatalog, skillRealms });
     const nextSchemas = mergeAgentDefinitionSchemas(existingSchemas, definition);
     return {
       member,
@@ -10290,7 +10314,7 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function agentDefinitionAddByIdPatch(agentDefinitions, definitionId, { members, schemas, toolCatalog, skillRealms } = {}) {
+  function agentDefinitionAddByIdPatch(agentDefinitions, definitionId, { members, schemas, contract, deploySettings, modelCatalog, toolCatalog, skillRealms } = {}) {
     const id = String(definitionId || "").trim();
     const definition = (Array.isArray(agentDefinitions) ? agentDefinitions : []).find((candidate) => candidate?.id === id);
     if (!definition) {
@@ -10306,7 +10330,7 @@ window.MOBKIT_BOOT = {
     try {
       return {
         ok: true,
-        ...agentDefinitionAddPatch(definition, { members, schemas, toolCatalog, skillRealms }),
+        ...agentDefinitionAddPatch(definition, { members, schemas, contract, deploySettings, modelCatalog, toolCatalog, skillRealms }),
       };
     } catch (error) {
       return {
@@ -12150,10 +12174,10 @@ window.InlineSourceEditor = InlineSourceEditor;
 /* agents.jsx */
 
 {
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog: toolCatalog2 = [], modelCatalog = [], agentDefinitions = [], agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, agentDefinitions, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog: toolCatalog2, modelCatalog, agentView, agentDetailView, agentAccessView, schemaView })));
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, toolCatalog, modelCatalog, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView, agentDetailView, agentAccessView, schemaView })));
 }
-function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions, agentView = null }) {
+function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const listState = window.MobKitFlowController.agentListState({
     members: studio.members,
     instances: studio.instances,
@@ -12173,7 +12197,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions,
       /* @__PURE__ */ React.createElement("div", { className: "agents-list__col" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "agents-list__sub" }, row.subLabel)),
       /* @__PURE__ */ React.createElement("span", { className: row.placedClass }, row.placedLabel)
     );
-  }), /* @__PURE__ */ React.createElement(AddAgentControl, { studio, setAgentSel, agentDefinitions, toolCatalog, agentView })), /* @__PURE__ */ React.createElement("div", { className: "agents-list__head agents-list__head--sub" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__title" }, listState.schemasHeading), /* @__PURE__ */ React.createElement("span", { className: "agents-list__count" }, listState.schemaCount)), /* @__PURE__ */ React.createElement("div", { className: "agents-list__scroll" }, listState.schemaRows.map((row) => {
+  }), /* @__PURE__ */ React.createElement(AddAgentControl, { studio, setAgentSel, agentDefinitions, contract, deploySettings, toolCatalog, modelCatalog, agentView })), /* @__PURE__ */ React.createElement("div", { className: "agents-list__head agents-list__head--sub" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__title" }, listState.schemasHeading), /* @__PURE__ */ React.createElement("span", { className: "agents-list__count" }, listState.schemaCount)), /* @__PURE__ */ React.createElement("div", { className: "agents-list__scroll" }, listState.schemaRows.map((row) => {
     return /* @__PURE__ */ React.createElement(
       "button",
       {
@@ -12199,13 +12223,16 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions,
     listState.addSchemaLabel
   )));
 }
-function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], toolCatalog: toolCatalog2 = [], agentView = null }) {
+function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
   const createFromDefinition = (definitionId) => {
     const result = window.MobKitFlowController.agentDefinitionAddByIdPatch(agentDefinitions, definitionId, {
       members: studio.members,
       schemas: studio.schemas,
-      toolCatalog: toolCatalog2,
+      contract,
+      deploySettings,
+      modelCatalog,
+      toolCatalog,
       skillRealms: studio.skillRealms
     });
     if (!result.ok) return;
@@ -12242,7 +12269,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], toolCatal
     definitionState.optionRows.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))
   );
 }
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog: toolCatalog2, modelCatalog, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
     selection: agentSel,
     members: studio.members,
@@ -12257,13 +12284,13 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
     return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow, schemaView });
   }
   if (!selectionState.member) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingAgentLabel);
-  return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog: toolCatalog2, modelCatalog, agentDetailView, agentAccessView });
+  return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentDetailView, agentAccessView });
 }
-function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog: toolCatalog2 = [], modelCatalog = [], agentDetailView = null, agentAccessView = null }) {
+function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDetailView = null, agentAccessView = null }) {
   const change = (patch) => studio.updateMember(member.id, patch);
   const [toolDraft, setToolDraft] = React.useState("");
   const [toolDraftError, setToolDraftError] = React.useState("");
-  const toolAccessState = window.MobKitFlowController.memberToolAccessState(member, toolCatalog2, agentAccessView);
+  const toolAccessState = window.MobKitFlowController.memberToolAccessState(member, toolCatalog, agentAccessView);
   const editorState = window.MobKitFlowController.agentEditorControlState({
     member,
     instances: studio.instances,
@@ -12279,7 +12306,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       members: studio.members,
       flow,
       instances: studio.instances
-    }, raw, toolCatalog2, agentAccessView);
+    }, raw, toolCatalog, agentAccessView);
     if (!result.ok) {
       setToolDraftError(result.error || "");
       return;

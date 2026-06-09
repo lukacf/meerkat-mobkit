@@ -10117,6 +10117,30 @@
   }
 
   function validateAgentDefinitionCatalogRefs(source, options = {}) {
+    if (Array.isArray(options.modelCatalog)) {
+      const modelIds = new Set(options.modelCatalog
+        .map((model) => String(model?.id || "").trim())
+        .filter(Boolean));
+      const model = String(source?.model || "").trim();
+      if (model && !modelIds.has(model)) {
+        throw new Error(`MobKit agent definition references unavailable model: ${model}`);
+      }
+    }
+    if (options.contract) {
+      const profileBinding = String(source?.profileBinding || "").trim();
+      if (!optionValueAllowed(profileBindingOptions(options.contract, profileBinding), profileBinding, { allowBlank: false })) {
+        throw new Error(`MobKit agent definition references unsupported profile binding: ${profileBinding}`);
+      }
+      const runtimeMode = String(source?.runtimeMode || "").trim();
+      if (!contractValueAllowed(options.contract?.mob_definition?.runtime_modes, runtimeMode, { allowBlank: false })
+        || !optionValueAllowed(runtimeModeOptions(options.contract, options.deploySettings, runtimeMode), runtimeMode, { allowBlank: false })) {
+        throw new Error(`MobKit agent definition references unsupported runtime mode: ${runtimeMode}`);
+      }
+      const backend = normalizeProfileBackend(source?.backend);
+      if (backend && !optionValueAllowed(profileBackendOptions(options.contract, backend, false), backend, { allowBlank: false })) {
+        throw new Error(`MobKit agent definition references unsupported backend: ${backend}`);
+      }
+    }
     if (Array.isArray(options.toolCatalog)) {
       const toolIds = new Set(options.toolCatalog
         .map((tool) => String(tool?.id || "").trim())
@@ -10244,10 +10268,10 @@
     };
   }
 
-  function agentDefinitionAddPatch(definition, { members, schemas, toolCatalog, skillRealms } = {}) {
+  function agentDefinitionAddPatch(definition, { members, schemas, contract, deploySettings, modelCatalog, toolCatalog, skillRealms } = {}) {
     const existingMembers = Array.isArray(members) ? members : [];
     const existingSchemas = Array.isArray(schemas) ? schemas : [];
-    const member = memberFromAgentDefinition(definition, existingMembers, { toolCatalog, skillRealms });
+    const member = memberFromAgentDefinition(definition, existingMembers, { contract, deploySettings, modelCatalog, toolCatalog, skillRealms });
     const nextSchemas = mergeAgentDefinitionSchemas(existingSchemas, definition);
     return {
       member,
@@ -10257,7 +10281,7 @@
     };
   }
 
-  function agentDefinitionAddByIdPatch(agentDefinitions, definitionId, { members, schemas, toolCatalog, skillRealms } = {}) {
+  function agentDefinitionAddByIdPatch(agentDefinitions, definitionId, { members, schemas, contract, deploySettings, modelCatalog, toolCatalog, skillRealms } = {}) {
     const id = String(definitionId || "").trim();
     const definition = (Array.isArray(agentDefinitions) ? agentDefinitions : []).find((candidate) => candidate?.id === id);
     if (!definition) {
@@ -10273,7 +10297,7 @@
     try {
       return {
         ok: true,
-        ...agentDefinitionAddPatch(definition, { members, schemas, toolCatalog, skillRealms }),
+        ...agentDefinitionAddPatch(definition, { members, schemas, contract, deploySettings, modelCatalog, toolCatalog, skillRealms }),
       };
     } catch (error) {
       return {

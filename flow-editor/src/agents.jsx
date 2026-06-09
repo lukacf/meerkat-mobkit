@@ -19,7 +19,7 @@
 function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   return (
     <div className="agents-view">
-      <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} agentDefinitions={agentDefinitions} agentView={agentView} />
+      <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} agentDefinitions={agentDefinitions} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} />
       <div className="agents-view__main">
         <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} agentDetailView={agentDetailView} agentAccessView={agentAccessView} schemaView={schemaView} />
       </div>
@@ -27,7 +27,7 @@ function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, f
   );
 }
 
-function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions, agentView = null }) {
+function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const listState = window.MobKitFlowController.agentListState({
     members: studio.members,
     instances: studio.instances,
@@ -60,7 +60,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions,
             </button>
           );
         })}
-        <AddAgentControl studio={studio} setAgentSel={setAgentSel} agentDefinitions={agentDefinitions} toolCatalog={toolCatalog} agentView={agentView} />
+        <AddAgentControl studio={studio} setAgentSel={setAgentSel} agentDefinitions={agentDefinitions} contract={contract} deploySettings={deploySettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} />
       </div>
 
       <div className="agents-list__head agents-list__head--sub">
@@ -98,12 +98,15 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, agentDefinitions,
   );
 }
 
-function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], toolCatalog = [], agentView = null }) {
+function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
   const createFromDefinition = (definitionId) => {
     const result = window.MobKitFlowController.agentDefinitionAddByIdPatch(agentDefinitions, definitionId, {
       members: studio.members,
       schemas: studio.schemas,
+      contract,
+      deploySettings,
+      modelCatalog,
       toolCatalog,
       skillRealms: studio.skillRealms,
     });
