@@ -5750,7 +5750,17 @@ assert.deepEqual(memberDeleteCascade.instances[2].launchMode, { kind: "Fresh" })
 assert.deepEqual(memberDeleteCascade.edges.map((edge) => edge.id), ["keep_join", "join_fork"]);
 assert.equal(memberDeleteCascade.mobSettings.orchestrator, "");
 assert.deepEqual(memberDeleteCascade.mobSettings.roleWiring, []);
-assert.equal(controller.memberDeleteCascadePatch({ memberId: "missing", members: [{ id: "m_keep" }] }).ok, false);
+assert.equal(memberDeleteCascade.selection, null);
+assert.deepEqual(controller.memberDeleteCascadePatch({ memberId: "missing", members: [{ id: "m_keep" }] }), {
+  ok: false,
+  error: "member not found",
+  members: [{ id: "m_keep" }],
+  instances: [],
+  edges: [],
+  flow: undefined,
+  mobSettings: controller.normalizeMobSettings(undefined),
+  selection: null,
+});
 assert.deepEqual(controller.studioAddInstancePatch({
   instances: [{ id: "a", memberId: "m_existing" }],
   members: [{ id: "m_existing" }, { id: "m_new" }],

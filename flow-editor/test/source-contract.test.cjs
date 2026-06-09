@@ -164,6 +164,9 @@ assert(!/const change = \(patch\) => studio\.updateMember\(member\.id, patch\)/.
 assert.match(agents, /MobKitFlowController\.memberDeleteCascadePatch/, "Agent Editor must delete agents through a controller-owned mobpack cascade");
 assert.match(agentEditorBlock, /memberDeleteCascadePatch\(\{[\s\S]*memberId:\s*member\.id,[\s\S]*members:\s*studio\.members,[\s\S]*instances:\s*studio\.instances,[\s\S]*edges:\s*studio\.edges,[\s\S]*flow,[\s\S]*mobSettings/, "Agent delete cascade must pass Basic, Graph, Agent, and mob settings state to the controller plane");
 assert.match(agentEditorBlock, /studio\.setMembers\(result\.members\)[\s\S]*studio\.setInstances\(result\.instances\)[\s\S]*studio\.setEdges\(result\.edges\)[\s\S]*setFlow\(result\.flow\)[\s\S]*setMobSettings\(result\.mobSettings\)/, "Agent delete cascade must apply all controller-projected mobpack state together");
+assert.match(controller, /memberDeleteCascadePatch[\s\S]*selection:\s*null/, "controller plane must own Agent delete selection clearing");
+assert.match(agentEditorBlock, /memberDeleteCascadePatch[\s\S]*setAgentSel\(result\.selection\)/, "Agent delete cascade must apply controller-projected selection clearing");
+assert(!/memberDeleteCascadePatch[\s\S]*setAgentSel\(null\)/.test(agentEditorBlock), "Agent delete cascade must not clear selection locally");
 assert.match(graph, /MobKitFlowController\.studioAddInstancePatch/, "Graph state hook must ask controller plane to add instances");
 assert.match(app, /MobKitFlowController\.graphQuickInsertProjection/, "App quick graph insertion must ask controller plane to project inserted graph state");
 assert.match(graph, /MobKitFlowController\.studioUpdateInstancePatch/, "Graph state hook must ask controller plane to update instances");

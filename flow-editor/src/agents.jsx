@@ -309,7 +309,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
             studio.setEdges(result.edges);
             if (setFlow) setFlow(result.flow);
             if (setMobSettings) setMobSettings(result.mobSettings);
-            setAgentSel(null);
+            setAgentSel(result.selection);
           }}>{editorState.deleteLabel}</button>
         </div>
       </div>

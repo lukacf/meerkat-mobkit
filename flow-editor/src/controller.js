@@ -4405,6 +4405,7 @@
         edges: Array.isArray(edges) ? edges : [],
         flow,
         mobSettings: normalizeMobSettings(mobSettings),
+        selection: null,
       };
     }
     const graphDeleted = studioDeleteMemberPatch({ members: sourceMembers, instances, edges }, target);
@@ -4426,6 +4427,7 @@
       edges: graphDeleted.edges,
       flow: nextFlow,
       mobSettings: nextMobSettings,
+      selection: null,
     };
   }
 

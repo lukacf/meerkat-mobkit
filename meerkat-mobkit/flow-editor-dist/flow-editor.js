@@ -4438,6 +4438,7 @@ window.MOBKIT_BOOT = {
         edges: Array.isArray(edges) ? edges : [],
         flow,
         mobSettings: normalizeMobSettings(mobSettings),
+        selection: null,
       };
     }
     const graphDeleted = studioDeleteMemberPatch({ members: sourceMembers, instances, edges }, target);
@@ -4459,6 +4460,7 @@ window.MOBKIT_BOOT = {
       edges: graphDeleted.edges,
       flow: nextFlow,
       mobSettings: nextMobSettings,
+      selection: null,
     };
   }
 
@@ -12958,7 +12960,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     studio.setEdges(result.edges);
     if (setFlow) setFlow(result.flow);
     if (setMobSettings) setMobSettings(result.mobSettings);
-    setAgentSel(null);
+    setAgentSel(result.selection);
   } }, editorState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__body" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__cols" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__col" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.identityTitle), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.profileBindingLabel), /* @__PURE__ */ React.createElement(
     "select",
     {
