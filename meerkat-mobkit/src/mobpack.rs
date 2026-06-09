@@ -8212,6 +8212,17 @@ fn validate_graph_projection(document: &MobpackDocument) -> Vec<MobpackDiagnosti
                         ),
                         path: Some(format!("frames[{index}]")),
                     });
+                } else if let Some(expected_kind) = graph_controls.frame_kinds.get(frame_id)
+                    && kind != expected_kind
+                {
+                    diagnostics.push(MobpackDiagnostic {
+                        severity: "error".to_string(),
+                        code: "graph_frame_kind_mismatch".to_string(),
+                        message: format!(
+                            "graph frame '{frame_id}' must render as {expected_kind}, not {kind}"
+                        ),
+                        path: Some(format!("frames[{index}].kind")),
+                    });
                 }
             }
         }
@@ -8243,9 +8254,17 @@ fn validate_graph_projection(document: &MobpackDocument) -> Vec<MobpackDiagnosti
 struct EditorGraphControls {
     gate_ids: BTreeSet<String>,
     frame_ids: BTreeSet<String>,
+    frame_kinds: BTreeMap<String, String>,
     fork_controls: BTreeMap<String, EditorGraphForkControl>,
     join_controls: BTreeMap<String, EditorGraphJoinControl>,
     expected_edges: Vec<EditorGraphExpectedEdge>,
+}
+
+impl EditorGraphControls {
+    fn register_frame(&mut self, id: String, kind: &str) {
+        self.frame_ids.insert(id.clone());
+        self.frame_kinds.insert(id, kind.to_string());
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8315,7 +8334,7 @@ fn collect_editor_flow_graph_controls(steps: &[Value], controls: &mut EditorGrap
                 let join_id = format!("j_branch_{id}");
                 controls.gate_ids.insert(gate_id.clone());
                 controls.gate_ids.insert(join_id.clone());
-                controls.frame_ids.insert(format!("frame_branch_{id}"));
+                controls.register_frame(format!("frame_branch_{id}"), "Branch");
                 controls
                     .join_controls
                     .insert(join_id.clone(), editor_graph_join_control_for_branch(step));
@@ -8326,7 +8345,7 @@ fn collect_editor_flow_graph_controls(steps: &[Value], controls: &mut EditorGrap
                 let join_id = format!("j_parallel_{id}");
                 controls.gate_ids.insert(gate_id.clone());
                 controls.gate_ids.insert(join_id.clone());
-                controls.frame_ids.insert(format!("frame_parallel_{id}"));
+                controls.register_frame(format!("frame_parallel_{id}"), "Parallel");
                 controls.fork_controls.insert(
                     gate_id.clone(),
                     editor_graph_fork_control_for_parallel(step),
@@ -8342,7 +8361,7 @@ fn collect_editor_flow_graph_controls(steps: &[Value], controls: &mut EditorGrap
                 );
             }
             (Some("repeat"), Some(id)) => {
-                controls.frame_ids.insert(format!("frame_{id}"));
+                controls.register_frame(format!("frame_{id}"), "RepeatUntil");
                 collect_editor_repeat_graph_edges(step, &format!("flow.steps[{index}]"), controls);
             }
             _ => {}
@@ -13391,6 +13410,50 @@ message = "stale"
         assert!(result.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "missing_compiled_graph_frame"
                 && diagnostic.path.as_deref() == Some("frames")
+        }));
+    }
+
+    #[test]
+    fn rejects_graph_frame_kind_drift_from_repeat_flow() {
+        let mut document = document_with_expected_schema_ref();
+        document.flow = json!({
+            "name": "review",
+            "steps": [
+                { "id": "input_1", "type": "input", "task": "Review", "fields": "" },
+                { "id": "plan", "type": "member", "role": "m_planner", "instruction": "Plan" },
+                {
+                    "id": "node_loop",
+                    "type": "repeat",
+                    "loopId": "review_loop",
+                    "maxIterations": 3,
+                    "iterationInput": "carry",
+                    "cond": { "stepId": "review", "field": "verdict", "op": "==", "val": "green" },
+                    "steps": [
+                        { "id": "review", "type": "member", "role": "m_reviewer", "instruction": "Review", "schema": "ReviewArtifact" }
+                    ]
+                }
+            ]
+        });
+        document.edges = json!([
+            { "id": "e1", "from": "plan", "to": "review", "kind": "next", "label": "" },
+            {
+                "id": "e2",
+                "from": "review",
+                "to": "review",
+                "kind": "cond",
+                "label": "until condition",
+                "cond": { "var": "steps.review.verdict", "op": "==", "val": "green" }
+            }
+        ]);
+        document.frames = json!([
+            { "id": "frame_node_loop", "kind": "Branch", "colStart": 1, "colEnd": 1, "label": "BRANCH · wrong frame" }
+        ]);
+        let result = validate_document(&document);
+
+        assert!(!result.ok);
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "graph_frame_kind_mismatch"
+                && diagnostic.path.as_deref() == Some("frames[0].kind")
         }));
     }
 
