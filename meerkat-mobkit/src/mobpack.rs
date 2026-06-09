@@ -1115,6 +1115,14 @@ pub fn mobpack_authoring_operations() -> Value {
             "projection_document_supported": true
         },
         {
+            "type": "apply_graph_node_edit",
+            "plane": "graph",
+            "authority": "mobkit",
+            "requires": ["instance_id", "action"],
+            "mutates": ["document.instances", "document.flow"],
+            "projection_document_supported": false
+        },
+        {
             "type": "move_graph_node",
             "plane": "graph",
             "authority": "mobkit",
@@ -1145,6 +1153,14 @@ pub fn mobpack_authoring_operations() -> Value {
             "requires": ["edge_id", "patch"],
             "mutates": ["document.edges", "document.flow"],
             "projection_document_supported": true
+        },
+        {
+            "type": "apply_graph_edge_edit",
+            "plane": "graph",
+            "authority": "mobkit",
+            "requires": ["edge_id", "action"],
+            "mutates": ["document.edges", "document.flow"],
+            "projection_document_supported": false
         },
         {
             "type": "delete_graph_edge",
@@ -3349,10 +3365,12 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
         "delete_flow_step" => apply_delete_flow_step_operation(&mut document, operation)?,
         "insert_graph_node" => apply_insert_graph_node_operation(&mut document, operation)?,
         "update_graph_node" => apply_update_graph_node_operation(&mut document, operation)?,
+        "apply_graph_node_edit" => apply_graph_node_edit_operation(&mut document, operation)?,
         "move_graph_node" => apply_move_graph_node_operation(&mut document, operation)?,
         "delete_graph_node" => apply_delete_graph_node_operation(&mut document, operation)?,
         "connect_graph_nodes" => apply_connect_graph_nodes_operation(&mut document, operation)?,
         "update_graph_edge" => apply_update_graph_edge_operation(&mut document, operation)?,
+        "apply_graph_edge_edit" => apply_graph_edge_edit_operation(&mut document, operation)?,
         "delete_graph_edge" => apply_delete_graph_edge_operation(&mut document, operation)?,
         "replace_authoring_document" => {
             apply_projected_authoring_document_operation(&mut document, operation)?
@@ -6954,6 +6972,423 @@ fn apply_update_graph_node_operation(
     Ok(json!({ "kind": "instance", "id": instance_id }))
 }
 
+fn operation_action(operation: &serde_json::Map<String, Value>) -> Result<String, String> {
+    operation
+        .get("action")
+        .or_else(|| operation.get("field"))
+        .or_else(|| operation.get("edit"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| "MobKit semantic graph edit requires action".to_string())
+}
+
+fn operation_string_value(operation: &serde_json::Map<String, Value>, fields: &[&str]) -> String {
+    fields
+        .iter()
+        .find_map(|field| operation.get(*field))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn graph_node_bool(instance: &Value, camel: &str, snake: &str) -> bool {
+    instance
+        .get(camel)
+        .or_else(|| instance.get(snake))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn graph_node_member_id(instance: &Value) -> String {
+    instance
+        .get("memberId")
+        .or_else(|| instance.get("member_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn canonical_graph_launch_kind(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "fresh" => "Fresh".to_string(),
+        "resume" => "Resume".to_string(),
+        "fork" => "Fork".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn graph_launch_kind_allowed(kind: &str) -> bool {
+    let lower = kind.trim().to_ascii_lowercase();
+    member_launch_mode_values()
+        .iter()
+        .any(|allowed| allowed == &lower)
+}
+
+fn canonical_graph_budget_kind(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "equal" => "Equal".to_string(),
+        "proportional" => "Proportional".to_string(),
+        "remaining" => "Remaining".to_string(),
+        "fixed" => "Fixed".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn graph_budget_kind_allowed(kind: &str) -> bool {
+    let lower = kind.trim().to_ascii_lowercase();
+    budget_split_policy_values()
+        .iter()
+        .any(|allowed| allowed == &lower)
+}
+
+fn graph_fork_context_allowed(context: &str) -> bool {
+    let value = context.trim();
+    value.is_empty() || fork_context_values().iter().any(|allowed| allowed == value)
+}
+
+fn graph_first_fork_source(instances: &[Value], instance_id: &str) -> String {
+    instances
+        .iter()
+        .find(|instance| {
+            instance
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id != instance_id)
+                && !graph_node_bool(instance, "isTerminal", "is_terminal")
+        })
+        .and_then(|instance| instance.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn graph_fork_source_allowed(instances: &[Value], instance_id: &str, source_id: &str) -> bool {
+    let source_id = source_id.trim();
+    source_id.is_empty()
+        || instances.iter().any(|instance| {
+            instance
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == source_id && id != instance_id)
+                && !graph_node_bool(instance, "isTerminal", "is_terminal")
+        })
+}
+
+fn graph_launch_mode_object(instance: &Value) -> serde_json::Map<String, Value> {
+    instance
+        .get("launchMode")
+        .or_else(|| instance.get("launch_mode"))
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_else(|| {
+            let mut mode = serde_json::Map::new();
+            mode.insert(
+                "kind".to_string(),
+                Value::String(canonical_graph_launch_kind(&mob_definition_default(
+                    "launch_mode",
+                ))),
+            );
+            mode
+        })
+}
+
+fn graph_launch_budget_patch(mode: &serde_json::Map<String, Value>) -> Option<Value> {
+    mode.get("budgetSplitPolicy")
+        .or_else(|| mode.get("budget_split_policy"))
+        .cloned()
+}
+
+fn apply_graph_node_edit_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let instance_id = operation_instance_id(operation)?;
+    let action = operation_action(operation)?;
+    let mut instances = document
+        .instances
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let index = graph_instance_index(&instances, &instance_id)
+        .ok_or_else(|| format!("graph node not found: {instance_id}"))?;
+    let mut next_instance = instances[index].clone();
+    let mut launch_mode = graph_launch_mode_object(&next_instance);
+    {
+        let object = next_instance
+            .as_object_mut()
+            .ok_or_else(|| format!("graph node is not an object: {instance_id}"))?;
+        match action.as_str() {
+            "set_label" => {
+                object.insert(
+                    "label".to_string(),
+                    Value::String(operation_string_value(operation, &["label", "value"])),
+                );
+            }
+            "set_gate_kind" => {
+                let kind =
+                    operation_string_value(operation, &["gate_kind", "gateKind", "kind", "value"]);
+                if !GRAPH_GATE_KINDS.contains(&kind.as_str()) {
+                    return Err(format!("unsupported graph gate kind: {kind}"));
+                }
+                object.insert("gateKind".to_string(), Value::String(kind));
+            }
+            "set_terminal_kind" => {
+                let kind = operation_string_value(
+                    operation,
+                    &["terminal_kind", "terminalKind", "kind", "value"],
+                );
+                if !GRAPH_TERMINAL_KINDS.contains(&kind.as_str()) {
+                    return Err(format!("unsupported graph terminal kind: {kind}"));
+                }
+                object.insert("kind".to_string(), Value::String(kind));
+            }
+            "set_join_collection" => {
+                let collection = operation_string_value(operation, &["collection", "value"]);
+                if !collection.is_empty()
+                    && !collection_policy_values()
+                        .iter()
+                        .any(|allowed| allowed == &collection)
+                {
+                    return Err(format!("unsupported collection policy: {collection}"));
+                }
+                let incoming_count = document
+                    .edges
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|edge| {
+                        edge.get("to").and_then(Value::as_str) == Some(instance_id.as_str())
+                    })
+                    .count()
+                    .max(1);
+                let first_member_id = document
+                    .members
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find_map(|member| member.get("id").and_then(Value::as_str))
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .to_string();
+                object.insert("collection".to_string(), Value::String(collection.clone()));
+                object.insert(
+                    "label".to_string(),
+                    Value::String(format!(
+                        "{}{}",
+                        graph_draft_string("join_label_prefix"),
+                        if collection.is_empty() {
+                            graph_draft_string("parallel_missing_collection_label")
+                        } else {
+                            collection.clone()
+                        }
+                    )),
+                );
+                if collection == "quorum" {
+                    let n = object
+                        .get("quorum")
+                        .and_then(Value::as_object)
+                        .and_then(|quorum| quorum.get("n"))
+                        .and_then(Value::as_i64)
+                        .unwrap_or(incoming_count as i64)
+                        .max(1);
+                    object.insert("quorum".to_string(), json!({ "n": n, "m": incoming_count }));
+                } else {
+                    object.insert("quorum".to_string(), Value::Null);
+                }
+                object.insert(
+                    "controllerRole".to_string(),
+                    Value::String(if !collection.is_empty() && collection != "all" {
+                        object
+                            .get("controllerRole")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|role| !role.is_empty())
+                            .unwrap_or(first_member_id.as_str())
+                            .to_string()
+                    } else {
+                        String::new()
+                    }),
+                );
+            }
+            "set_join_quorum" => {
+                let n = operation
+                    .get("n")
+                    .or_else(|| operation.get("value"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1)
+                    .max(1);
+                let incoming_count = document
+                    .edges
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|edge| {
+                        edge.get("to").and_then(Value::as_str) == Some(instance_id.as_str())
+                    })
+                    .count()
+                    .max(1);
+                object.insert("quorum".to_string(), json!({ "n": n, "m": incoming_count }));
+            }
+            "set_join_controller_role" => {
+                let role = operation_string_value(
+                    operation,
+                    &["controller_role", "controllerRole", "role", "value"],
+                );
+                if !role.is_empty() && !graph_member_ids(&document.members).contains(&role) {
+                    return Err(format!(
+                        "join controller role must reference an existing member: {role}"
+                    ));
+                }
+                object.insert("controllerRole".to_string(), Value::String(role));
+            }
+            "set_fork_dispatch" => {
+                let dispatch = operation_string_value(operation, &["dispatch", "value"]);
+                if !dispatch.is_empty()
+                    && !dispatch_mode_values()
+                        .iter()
+                        .any(|allowed| allowed == &dispatch)
+                {
+                    return Err(format!("unsupported dispatch mode: {dispatch}"));
+                }
+                object.insert("dispatch".to_string(), Value::String(dispatch.clone()));
+                object.insert("label".to_string(), Value::String(dispatch));
+            }
+            "set_launch_kind" => {
+                let kind = canonical_graph_launch_kind(&operation_string_value(
+                    operation,
+                    &["kind", "value"],
+                ));
+                if !graph_launch_kind_allowed(&kind) {
+                    return Err(format!("unsupported launch mode: {kind}"));
+                }
+                let budget = graph_launch_budget_patch(&launch_mode);
+                let mut next = serde_json::Map::new();
+                next.insert("kind".to_string(), Value::String(kind.clone()));
+                if kind == "Fork" {
+                    let from = operation_string_value(
+                        operation,
+                        &["first_fork_source_id", "firstForkSourceId", "from"],
+                    );
+                    let from = if from.is_empty() {
+                        launch_mode
+                            .get("from")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| graph_first_fork_source(&instances, &instance_id))
+                    } else {
+                        from
+                    };
+                    if !graph_fork_source_allowed(&instances, &instance_id, &from) {
+                        return Err(format!(
+                            "launch fork source must reference another graph node: {from}"
+                        ));
+                    }
+                    next.insert("from".to_string(), Value::String(from));
+                    let context = launch_mode
+                        .get("context")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| mob_definition_default("fork_context"));
+                    next.insert("context".to_string(), Value::String(context));
+                } else if kind == "Resume" {
+                    next.insert(
+                        "sessionId".to_string(),
+                        Value::String(
+                            launch_mode
+                                .get("sessionId")
+                                .or_else(|| launch_mode.get("session_id"))
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                        ),
+                    );
+                }
+                if let Some(budget) = budget {
+                    next.insert("budgetSplitPolicy".to_string(), budget);
+                }
+                object.insert("launchMode".to_string(), Value::Object(next));
+            }
+            "set_launch_session" => {
+                launch_mode.insert(
+                    "sessionId".to_string(),
+                    Value::String(operation_string_value(
+                        operation,
+                        &["session_id", "sessionId", "value"],
+                    )),
+                );
+                object.insert("launchMode".to_string(), Value::Object(launch_mode));
+            }
+            "set_launch_fork_source" => {
+                let from =
+                    operation_string_value(operation, &["from", "source_id", "sourceId", "value"]);
+                if !graph_fork_source_allowed(&instances, &instance_id, &from) {
+                    return Err(format!(
+                        "launch fork source must reference another graph node: {from}"
+                    ));
+                }
+                launch_mode.insert("from".to_string(), Value::String(from));
+                object.insert("launchMode".to_string(), Value::Object(launch_mode));
+            }
+            "set_launch_fork_context" => {
+                let context = operation_string_value(operation, &["context", "value"]);
+                if !graph_fork_context_allowed(&context) {
+                    return Err(format!("unsupported fork context: {context}"));
+                }
+                launch_mode.insert("context".to_string(), Value::String(context));
+                object.insert("launchMode".to_string(), Value::Object(launch_mode));
+            }
+            "set_launch_budget_kind" => {
+                let kind = canonical_graph_budget_kind(&operation_string_value(
+                    operation,
+                    &["budget_kind", "budgetKind", "kind", "value"],
+                ));
+                if !graph_budget_kind_allowed(&kind) {
+                    return Err(format!("unsupported budget split policy: {kind}"));
+                }
+                let policy = if kind == "Fixed" {
+                    json!({ "kind": "Fixed", "limit": 4096 })
+                } else {
+                    json!({ "kind": kind })
+                };
+                launch_mode.insert("budgetSplitPolicy".to_string(), policy);
+                object.insert("launchMode".to_string(), Value::Object(launch_mode));
+            }
+            "set_launch_budget_limit" => {
+                let limit = operation
+                    .get("limit")
+                    .or_else(|| operation.get("value"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(4096)
+                    .max(1);
+                launch_mode.insert(
+                    "budgetSplitPolicy".to_string(),
+                    json!({ "kind": "Fixed", "limit": limit }),
+                );
+                object.insert("launchMode".to_string(), Value::Object(launch_mode));
+            }
+            other => return Err(format!("unsupported apply_graph_node_edit action: {other}")),
+        }
+    }
+    validate_graph_instance(
+        &next_instance,
+        &instances,
+        &document.members,
+        Some(&instance_id),
+    )?;
+    instances[index] = next_instance;
+    document.instances = Value::Array(instances);
+    document.flow = graph_to_flow_from_document(document);
+    Ok(json!({ "kind": "instance", "id": instance_id }))
+}
+
 fn apply_move_graph_node_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
@@ -7210,6 +7645,371 @@ fn apply_update_graph_edge_operation(
     edges[index] = next_edge;
     document.edges = Value::Array(edges);
     apply_graph_operation_sections(document, operation, &["flow", "frames"]);
+    Ok(json!({ "kind": "edge", "id": edge_id }))
+}
+
+fn graph_edge_condition_path(edge: &Value) -> String {
+    graph_to_flow_normalized_edge_condition(edge)
+        .map(|(path, _, _)| path)
+        .unwrap_or_default()
+}
+
+fn graph_edge_condition_value(edge: &Value) -> Value {
+    edge.get("cond")
+        .and_then(Value::as_object)
+        .and_then(|cond| cond.get("val").or_else(|| cond.get("value")))
+        .cloned()
+        .unwrap_or_else(|| Value::String(String::new()))
+}
+
+fn graph_condition_label(path: &str, op: &str, value: &Value) -> String {
+    if path.is_empty() || op.is_empty() {
+        return String::new();
+    }
+    format!(
+        "{path} {op} {}",
+        serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
+    )
+}
+
+fn graph_edge_condition_source(edge: &Value) -> (String, String) {
+    let path = graph_edge_condition_path(edge);
+    let mut parts = path.split('.');
+    let namespace = parts.next().unwrap_or_default();
+    let source_id = parts.next().unwrap_or_default();
+    let field = parts.next().unwrap_or_default();
+    if !namespace.is_empty() && !source_id.is_empty() && !field.is_empty() && parts.next().is_none()
+    {
+        return (source_id.to_string(), field.to_string());
+    }
+    (String::new(), String::new())
+}
+
+fn graph_source_schema_id(document: &MobpackDocument, source_id: &str) -> String {
+    let member_schemas = member_schema_index(&document.members);
+    document
+        .instances
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|instance| instance.get("id").and_then(Value::as_str) == Some(source_id))
+        .map(graph_node_member_id)
+        .and_then(|member_id| member_schemas.get(&member_id).cloned())
+        .unwrap_or_default()
+}
+
+fn graph_first_condition_field(document: &MobpackDocument, source_id: &str) -> String {
+    if source_id == "params" {
+        return input_param_field_names(&document.flow)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+    }
+    let schema_id = graph_source_schema_id(document, source_id);
+    document
+        .schemas
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|schema| schema.get("id").and_then(Value::as_str) == Some(schema_id.as_str()))
+        .and_then(|schema| schema.get("fields").and_then(Value::as_array))
+        .into_iter()
+        .flatten()
+        .find_map(|field| field.get("name").and_then(Value::as_str))
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn graph_condition_source_allowed(document: &MobpackDocument, source_id: &str) -> bool {
+    if source_id == "params" {
+        return !input_param_field_names(&document.flow).is_empty();
+    }
+    !graph_source_schema_id(document, source_id).is_empty()
+}
+
+fn graph_condition_field_allowed(document: &MobpackDocument, source_id: &str, field: &str) -> bool {
+    let member_schemas = member_schema_index(&document.members);
+    let graph_step_schemas = graph_step_schema_index(&document.instances, &member_schemas);
+    let input_params = input_param_field_names(&document.flow);
+    let namespace = if source_id == "params" {
+        "params"
+    } else {
+        "steps"
+    };
+    condition_field_available(
+        namespace,
+        source_id,
+        field,
+        &graph_step_schemas,
+        &document.schemas,
+        &input_params,
+    )
+}
+
+fn graph_default_condition_source(document: &MobpackDocument) -> String {
+    if !input_param_field_names(&document.flow).is_empty() {
+        return "params".to_string();
+    }
+    document
+        .instances
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|instance| {
+            let id = instance.get("id").and_then(Value::as_str)?.trim();
+            graph_condition_source_allowed(document, id).then(|| id.to_string())
+        })
+        .unwrap_or_default()
+}
+
+fn graph_condition_path(source_id: &str, field: &str) -> String {
+    if source_id.trim().is_empty() || field.trim().is_empty() {
+        return String::new();
+    }
+    if source_id == "params" {
+        format!("params.{}", field.trim())
+    } else {
+        format!("steps.{}.{}", source_id.trim(), field.trim())
+    }
+}
+
+fn graph_apply_condition(
+    edge: &mut Value,
+    path: String,
+    op: String,
+    val: Value,
+    force_label: bool,
+) {
+    let previous_path = graph_edge_condition_path(edge);
+    let previous = graph_to_flow_normalized_edge_condition(edge)
+        .map(|(path, op, val)| graph_condition_label(&path, &op, &val))
+        .unwrap_or_default();
+    let current_label = edge
+        .get("label")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let should_replace_label = force_label || current_label.is_empty() || current_label == previous;
+    if path.is_empty() {
+        edge["cond"] = json!({ "var": "" });
+        edge["label"] = Value::String(String::new());
+        return;
+    }
+    edge["cond"] = json!({ "var": path, "op": op, "val": val });
+    if should_replace_label || previous_path.is_empty() {
+        let Some(cond) = edge.get("cond") else {
+            return;
+        };
+        let label = graph_to_flow_normalized_edge_condition(&json!({ "cond": cond }))
+            .map(|(path, op, val)| graph_condition_label(&path, &op, &val))
+            .unwrap_or_default();
+        edge["label"] = Value::String(label);
+    }
+}
+
+fn graph_edge_kind_for_condition() -> String {
+    mob_definition_default("graph_condition_edge_kind")
+}
+
+fn apply_graph_edge_edit_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let edge_id = operation_edge_id(operation)?;
+    let action = operation_action(operation)?;
+    let instances = document
+        .instances
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let mut edges = document.edges.as_array().cloned().unwrap_or_else(Vec::new);
+    let index = graph_edge_index(&edges, &edge_id)
+        .ok_or_else(|| format!("graph edge not found: {edge_id}"))?;
+    let mut next_edge = edges[index].clone();
+    match action.as_str() {
+        "set_label" => {
+            next_edge["label"] =
+                Value::String(operation_string_value(operation, &["label", "value"]));
+        }
+        "set_kind" => {
+            let kind =
+                operation_string_value(operation, &["edge_kind", "edgeKind", "kind", "value"]);
+            if !GRAPH_EDGE_KINDS.contains(&kind.as_str()) {
+                return Err(format!("unsupported graph edge kind: {kind}"));
+            }
+            let condition_kind = graph_edge_kind_for_condition();
+            if kind != condition_kind {
+                let previous = graph_to_flow_normalized_edge_condition(&next_edge)
+                    .map(|(path, op, val)| graph_condition_label(&path, &op, &val))
+                    .unwrap_or_default();
+                let current_label = next_edge
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                next_edge["kind"] = Value::String(kind);
+                next_edge["cond"] = Value::Null;
+                if !previous.is_empty() && current_label == previous {
+                    next_edge["label"] = Value::String(String::new());
+                }
+            } else {
+                let (source, field) = graph_edge_condition_source(&next_edge);
+                let source = if source.is_empty() {
+                    graph_default_condition_source(document)
+                } else {
+                    source
+                };
+                let field = if field.is_empty() {
+                    graph_first_condition_field(document, &source)
+                } else {
+                    field
+                };
+                let path = graph_condition_path(&source, &field);
+                let val = graph_edge_condition_value(&next_edge);
+                next_edge["kind"] = Value::String(condition_kind);
+                graph_apply_condition(
+                    &mut next_edge,
+                    path,
+                    mob_definition_default("condition_operator"),
+                    val,
+                    true,
+                );
+            }
+        }
+        "set_condition_mode" => {
+            let mode = operation_string_value(operation, &["mode", "value"]);
+            if mode == "fallback" {
+                next_edge["kind"] = Value::String(mob_definition_default("graph_edge_kind"));
+                next_edge["label"] = Value::String(graph_draft_string("fallback_edge_label"));
+                next_edge["cond"] = Value::Null;
+            } else {
+                let condition_kind = graph_edge_kind_for_condition();
+                if mode != condition_kind {
+                    return Err(format!("unsupported graph branch condition mode: {mode}"));
+                }
+                let source = operation_string_value(
+                    operation,
+                    &[
+                        "owner_instance_id",
+                        "ownerInstanceId",
+                        "source_id",
+                        "sourceId",
+                    ],
+                );
+                let source = if source.is_empty() {
+                    graph_default_condition_source(document)
+                } else {
+                    source
+                };
+                if !graph_condition_source_allowed(document, &source) {
+                    return Err(format!(
+                        "condition source must expose an output field: {source}"
+                    ));
+                }
+                let field = graph_first_condition_field(document, &source);
+                let path = graph_condition_path(&source, &field);
+                let val = graph_edge_condition_value(&next_edge);
+                next_edge["kind"] = Value::String(condition_kind);
+                graph_apply_condition(
+                    &mut next_edge,
+                    path,
+                    mob_definition_default("condition_operator"),
+                    val,
+                    true,
+                );
+            }
+        }
+        "set_condition_owner" => {
+            let source = operation_string_value(
+                operation,
+                &[
+                    "owner_instance_id",
+                    "ownerInstanceId",
+                    "source_id",
+                    "sourceId",
+                    "value",
+                ],
+            );
+            if !graph_condition_source_allowed(document, &source) {
+                return Err(format!(
+                    "condition source must expose an output field: {source}"
+                ));
+            }
+            let field = graph_first_condition_field(document, &source);
+            let path = graph_condition_path(&source, &field);
+            let op = graph_to_flow_normalized_edge_condition(&next_edge)
+                .map(|(_, op, _)| op)
+                .unwrap_or_else(|| mob_definition_default("condition_operator"));
+            let val = graph_edge_condition_value(&next_edge);
+            next_edge["kind"] = Value::String(graph_edge_kind_for_condition());
+            graph_apply_condition(&mut next_edge, path, op, val, true);
+        }
+        "set_condition_field" => {
+            let field =
+                operation_string_value(operation, &["field_name", "fieldName", "field", "value"]);
+            let (mut source, _) = graph_edge_condition_source(&next_edge);
+            if source.is_empty() {
+                source = graph_default_condition_source(document);
+            }
+            if !graph_condition_field_allowed(document, &source, &field) {
+                return Err(format!(
+                    "condition field is not available on source {source}: {field}"
+                ));
+            }
+            let op = graph_to_flow_normalized_edge_condition(&next_edge)
+                .map(|(_, op, _)| op)
+                .unwrap_or_else(|| mob_definition_default("condition_operator"));
+            let val = graph_edge_condition_value(&next_edge);
+            next_edge["kind"] = Value::String(graph_edge_kind_for_condition());
+            graph_apply_condition(
+                &mut next_edge,
+                graph_condition_path(&source, &field),
+                op,
+                val,
+                true,
+            );
+        }
+        "set_condition_operator" => {
+            let op = operation_string_value(operation, &["operator", "op", "value"]);
+            if !editor_condition_operator_supported(&op) {
+                return Err(format!("unsupported condition operator: {op}"));
+            }
+            let (source, field) = graph_edge_condition_source(&next_edge);
+            let val = graph_edge_condition_value(&next_edge);
+            graph_apply_condition(
+                &mut next_edge,
+                graph_condition_path(&source, &field),
+                op,
+                val,
+                false,
+            );
+        }
+        "set_condition_value" => {
+            let value = operation
+                .get("condition_value")
+                .or_else(|| operation.get("conditionValue"))
+                .or_else(|| operation.get("value"))
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new()));
+            let (source, field) = graph_edge_condition_source(&next_edge);
+            let op = graph_to_flow_normalized_edge_condition(&next_edge)
+                .map(|(_, op, _)| op)
+                .unwrap_or_else(|| mob_definition_default("condition_operator"));
+            graph_apply_condition(
+                &mut next_edge,
+                graph_condition_path(&source, &field),
+                op,
+                value,
+                false,
+            );
+        }
+        other => return Err(format!("unsupported apply_graph_edge_edit action: {other}")),
+    }
+    validate_graph_edge(&next_edge, &edges, &instances, Some(&edge_id))?;
+    edges[index] = next_edge;
+    document.edges = Value::Array(edges);
+    document.flow = graph_to_flow_from_document(document);
     Ok(json!({ "kind": "edge", "id": edge_id }))
 }
 
@@ -23445,6 +24245,7 @@ model = "gpt-5.5"
                 "profileBinding": "inline",
                 "runtimeMode": "turn_driven",
                 "model": "gpt-5.5",
+                "schema": "planner_out",
                 "tools": []
             },
             {
@@ -23531,6 +24332,7 @@ model = "gpt-5.5"
                 "profileBinding": "inline",
                 "runtimeMode": "turn_driven",
                 "model": "gpt-5.5",
+                "schema": "planner_out",
                 "tools": []
             },
             {
@@ -23662,6 +24464,7 @@ model = "gpt-5.5"
                 "profileBinding": "inline",
                 "runtimeMode": "turn_driven",
                 "model": "gpt-5.5",
+                "schema": "planner_out",
                 "tools": []
             },
             {
@@ -23674,6 +24477,13 @@ model = "gpt-5.5"
                 "tools": []
             }
         ]);
+        document.schemas = json!([{
+            "id": "planner_out",
+            "name": "Planner output",
+            "fields": [
+                { "id": "status", "name": "status", "type": "string", "required": true }
+            ]
+        }]);
         document.instances = json!([
             { "id": "n_plan", "memberId": "planner", "kind": "member", "col": 0, "row": 0 },
             { "id": "n_review", "memberId": "reviewer", "kind": "member", "col": 1, "row": 0 }
@@ -23817,8 +24627,49 @@ model = "gpt-5.5"
         .expect("update graph edge");
         assert_eq!(edge_updated["document"]["edges"][0]["label"], json!("done"));
 
-        let edge_deleted = apply_mobpack_authoring_operation(&json!({
+        let node_edited = apply_mobpack_authoring_operation(&json!({
             "document": edge_updated["document"],
+            "operation": {
+                "type": "apply_graph_node_edit",
+                "instance_id": "n_review",
+                "action": "set_launch_kind",
+                "kind": "Fork",
+                "first_fork_source_id": "n_plan"
+            }
+        }))
+        .expect("semantic graph node edit");
+        assert_eq!(
+            node_edited["document"]["instances"][1]["launchMode"]["kind"],
+            json!("Fork")
+        );
+        assert_eq!(
+            node_edited["document"]["instances"][1]["launchMode"]["from"],
+            json!("n_plan")
+        );
+
+        let semantic_edge = apply_mobpack_authoring_operation(&json!({
+            "document": node_edited["document"],
+            "operation": {
+                "type": "apply_graph_edge_edit",
+                "edge_id": "e_n_plan_n_done",
+                "action": "set_condition_owner",
+                "owner_instance_id": "n_plan"
+            }
+        }))
+        .expect("semantic graph edge condition owner");
+        assert_eq!(semantic_edge["document"]["edges"][0]["kind"], json!("cond"));
+        assert_eq!(
+            semantic_edge["document"]["edges"][0]["cond"]["var"],
+            json!("steps.n_plan.status")
+        );
+        assert_eq!(
+            semantic_edge["document"]["flow"],
+            graph_to_flow_mobpack(&json!({ "document": semantic_edge["document"] }))
+                .expect("graph sync")["flow"]
+        );
+
+        let edge_deleted = apply_mobpack_authoring_operation(&json!({
+            "document": semantic_edge["document"],
             "operation": {
                 "type": "delete_graph_edge",
                 "edge_id": "e_n_plan_n_done"

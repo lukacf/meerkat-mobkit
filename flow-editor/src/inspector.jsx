@@ -76,7 +76,7 @@ function TemplateInspector({ studio, template, templateSeed, templateView }) {
 
 // ── Gate (fork / join / branch) ───────────────────────────────────
 function GateInspector({ studio, flow, inst, clearSelection, contract, graphView = null, conditionView = null }) {
-  const change = (patch) => studio.updateInstance(inst.id, patch);
+  const change = (action, payload = {}) => studio.editInstance(inst.id, action, payload);
   const kind = inst.gateKind;
   const gateState = window.MobKitFlowController.graphGateControlState(inst, {
     edges: studio.edges,
@@ -112,11 +112,11 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
       <div className="inspector__body">
         <div className="section">
           <div className="section__title">{gateState.labelTitle}</div>
-          <input className="field__input" value={inst.label} onChange={e => change(window.MobKitFlowController.graphInstanceLabelPatch(e.target.value))} />
+          <input className="field__input" value={inst.label} onChange={e => change("set_label", { label: e.target.value })} />
         </div>
         <div className="section">
           <div className="section__title">{gateState.kindTitle}</div>
-          <select className="field__select" value={gateState.gateKind} onChange={e => change(window.MobKitFlowController.graphGateKindPatch(e.target.value, contract))}>
+          <select className="field__select" value={gateState.gateKind} onChange={e => change("set_gate_kind", { gate_kind: e.target.value })}>
             {gateState.gateKindOptions.map(option => (
               <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
             ))}
@@ -126,13 +126,7 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
         {kind === "join" && (
           <div className="section">
             <div className="section__title">{gateState.collectionTitle}</div>
-            <select className="field__select" value={gateState.collection} onChange={e => {
-              change(window.MobKitFlowController.graphJoinCollectionPatch(inst, e.target.value, {
-                incomingCount: gateState.incoming.length,
-                firstMemberId: gateState.firstMemberId,
-                contract,
-              }));
-            }}>
+            <select className="field__select" value={gateState.collection} onChange={e => change("set_join_collection", { collection: e.target.value })}>
               {gateState.collectionOptions.map(option => (
                 <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
               ))}
@@ -142,14 +136,14 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
               <div className="row" style={{ marginTop: 8 }}>
                 <input className="field__input field__input--num" type="number" min="1"
                   value={inst.quorum?.n || gateState.incoming.length || 1}
-                  onChange={e => change(window.MobKitFlowController.graphJoinQuorumPatch(inst, e.target.value, gateState.incoming.length))} />
+                  onChange={e => change("set_join_quorum", { n: Number(e.target.value) || 1 })} />
                 <span className="kv__hint">{gateState.quorumIncomingLabel}</span>
               </div>
             )}
             {gateState.collection && gateState.collection !== "all" && (
               <div className="field" style={{ marginTop: 8 }}>
                 <label className="field__label">{gateState.joinMemberLabel}</label>
-                <select className="field__select" value={inst.controllerRole || ""} onChange={e => change(window.MobKitFlowController.graphJoinControllerRolePatch(e.target.value, studio.members))}>
+                <select className="field__select" value={inst.controllerRole || ""} onChange={e => change("set_join_controller_role", { controller_role: e.target.value })}>
                   <option value={gateState.joinMemberPlaceholderOption.value}>{gateState.joinMemberPlaceholderOption.label}</option>
                   {gateState.memberOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
@@ -161,7 +155,7 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
         {kind === "fork" && (
           <div className="section">
             <div className="section__title">{gateState.dispatchTitle}</div>
-            <select className="field__select" value={gateState.dispatch} onChange={e => change(window.MobKitFlowController.graphForkDispatchPatch(inst, e.target.value, contract))}>
+            <select className="field__select" value={gateState.dispatch} onChange={e => change("set_fork_dispatch", { dispatch: e.target.value })}>
               {gateState.dispatchOptions.map(option => (
                 <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
               ))}
@@ -176,27 +170,13 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
             {branchRows.length === 0 && <div className="kv__hint">{gateState.emptyBranchHint}</div>}
             {branchRows.map(row => {
               const e = row.edge;
-              const setCondOwner = (instanceId) => studio.updateEdge(e.id, window.MobKitFlowController.graphEdgeConditionOwnerPatch(e, row.conditionOptions, instanceId, {
-                defaultOperator: row.defaultOperator,
-                forceLabel: true,
-                includeKind: true,
-              }));
-              const setCondField = (field) => studio.updateEdge(e.id, window.MobKitFlowController.graphEdgeConditionFieldPatch(e, row.conditionOptions, field, {
-                defaultOperator: row.defaultOperator,
-                forceLabel: true,
-                includeKind: true,
-              }));
+              const setCondOwner = (instanceId) => studio.editEdge(e.id, "set_condition_owner", { owner_instance_id: instanceId });
+              const setCondField = (field) => studio.editEdge(e.id, "set_condition_field", { field_name: field });
               return (
                 <div key={e.id} className="branch-cond-row">
                   <div className="row row--gap">
                     <select className="field__select" value={row.modeValue} onChange={ev => {
-                      const patch = window.MobKitFlowController.graphBranchConditionModePatch(e, ev.target.value, {
-                        conditionOptions: row.conditionOptions,
-                        firstOwnerId: row.firstOwnerId,
-                        defaultOperator: row.defaultOperator,
-                        contract,
-                      });
-                      if (patch) studio.updateEdge(e.id, patch);
+                      studio.editEdge(e.id, "set_condition_mode", { mode: ev.target.value, owner_instance_id: row.firstOwnerId });
                     }}>
                       {row.modeOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
@@ -214,12 +194,12 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
                           <option value={row.fieldPlaceholderOption.value}>{row.fieldPlaceholderOption.label}</option>
                           {row.fieldOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                         </select>
-                        <select className="field__select bld-cond__op" value={row.operatorValue} onChange={ev => studio.updateEdge(e.id, window.MobKitFlowController.graphEdgeConditionOperatorPatch(e, ev.target.value, { defaultOperator: row.defaultOperator, contract }))}>
+                        <select className="field__select bld-cond__op" value={row.operatorValue} onChange={ev => studio.editEdge(e.id, "set_condition_operator", { operator: ev.target.value })}>
                           {row.operatorOptions.map(option => (
                             <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
                           ))}
                         </select>
-                        <GraphCondValue field={row.condField} value={e.cond?.val} conditionView={conditionView} onChange={val => studio.updateEdge(e.id, window.MobKitFlowController.graphEdgeConditionValuePatch(e, val, { defaultOperator: row.defaultOperator }))} />
+                        <GraphCondValue field={row.condField} value={e.cond?.val} conditionView={conditionView} onChange={val => studio.editEdge(e.id, "set_condition_value", { value: val })} />
                       </div>
                     )
                   )}
@@ -272,11 +252,11 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
         <div className="inspector__body">
           <div className="section">
             <div className="section__title">{terminalState.labelTitle}</div>
-            <input className="field__input" value={terminalState.labelValue} onChange={e => studio.updateInstance(inst.id, window.MobKitFlowController.graphInstanceLabelPatch(e.target.value))} />
+            <input className="field__input" value={terminalState.labelValue} onChange={e => studio.editInstance(inst.id, "set_label", { label: e.target.value })} />
           </div>
           <div className="section">
             <div className="section__title">{terminalState.kindTitle}</div>
-            <select className="field__select" value={terminalState.terminalKind} onChange={e => studio.updateInstance(inst.id, window.MobKitFlowController.graphTerminalKindPatch(e.target.value, contract))}>
+            <select className="field__select" value={terminalState.terminalKind} onChange={e => studio.editInstance(inst.id, "set_terminal_kind", { terminal_kind: e.target.value })}>
               {terminalState.terminalKindOptions.map(option => (
                 <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
               ))}
@@ -333,7 +313,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
             className="field__select"
             value={launchState.launchKind}
             onChange={e => {
-              studio.updateInstance(inst.id, window.MobKitFlowController.launchModeKindPatch(inst, e.target.value, contract, { firstForkSourceId: instanceState.firstForkSourceId }));
+              studio.editInstance(inst.id, "set_launch_kind", { kind: e.target.value, first_fork_source_id: instanceState.firstForkSourceId });
             }}
           >
             {launchState.launchOptions.map(option => (
@@ -348,7 +328,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
 	                className="field__input"
 	                value={launchState.launchMode.sessionId || ""}
 	                placeholder={launchState.resumeSessionPlaceholder}
-	                onChange={e => studio.updateInstance(inst.id, window.MobKitFlowController.launchModeSessionPatch(inst, e.target.value, contract))}
+	                onChange={e => studio.editInstance(inst.id, "set_launch_session", { session_id: e.target.value })}
 	              />
             </div>
           )}
@@ -356,13 +336,13 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
             <>
               <div className="field" style={{ marginTop: 8 }}>
                 <label className="field__label">{launchState.forkSourceLabel}</label>
-                <select className="field__select" value={launchState.launchMode.from || ""} onChange={e => studio.updateInstance(inst.id, window.MobKitFlowController.launchModeForkSourcePatch(inst, e.target.value, contract, { sourceOptions: instanceState.forkSourceOptions }))}>
+                <select className="field__select" value={launchState.launchMode.from || ""} onChange={e => studio.editInstance(inst.id, "set_launch_fork_source", { from: e.target.value })}>
                   {instanceState.forkSourceOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </div>
               <div className="field">
                 <label className="field__label">{launchState.graphForkContextLabel}</label>
-                <select className="field__select" value={launchState.forkContextValue} onChange={e => studio.updateInstance(inst.id, window.MobKitFlowController.launchModeForkContextPatch(inst, e.target.value, contract))}>
+                <select className="field__select" value={launchState.forkContextValue} onChange={e => studio.editInstance(inst.id, "set_launch_fork_context", { context: e.target.value })}>
                   {launchState.forkContextOptions.map(option => (
                     <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
                   ))}
@@ -373,7 +353,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
           )}
           <div className="field" style={{ marginTop: 8 }}>
             <label className="field__label">{launchState.budgetPolicyLabel}</label>
-            <select className="field__select" value={launchState.budgetSplitPolicy.kind} onChange={e => studio.updateInstance(inst.id, window.MobKitFlowController.launchBudgetKindPatch(inst, e.target.value, contract))}>
+            <select className="field__select" value={launchState.budgetSplitPolicy.kind} onChange={e => studio.editInstance(inst.id, "set_launch_budget_kind", { budget_kind: e.target.value })}>
               {launchState.budgetOptions.map(option => (
                 <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
               ))}
@@ -383,7 +363,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
           {launchState.budgetSplitPolicy.kind === "Fixed" && (
             <div className="field">
               <label className="field__label">{launchState.fixedBudgetLabel}</label>
-              <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => studio.updateInstance(inst.id, window.MobKitFlowController.launchBudgetFixedLimitPatch(inst, e.target.value, contract))} />
+              <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => studio.editInstance(inst.id, "set_launch_budget_limit", { limit: Number(e.target.value) || 1 })} />
             </div>
           )}
         </div>
@@ -451,23 +431,10 @@ function EdgeInspector({ studio, flow, edge, clearSelection, contract, graphView
     contract,
     graphView,
   });
-  const change = (patch) => studio.updateEdge(edge.id, patch);
-  const setEdgeKind = (kind) => change(window.MobKitFlowController.graphEdgeKindPatch(edge, kind, {
-    defaultOperator: edgeState.defaultOperator,
-    conditionPatch: edgeState.conditionPatch,
-    forceLabel: true,
-    contract,
-  }));
-  const setCondOwner = (instanceId) => change(window.MobKitFlowController.graphEdgeConditionOwnerPatch(edge, edgeState.conditionOptions, instanceId, {
-    defaultOperator: edgeState.defaultOperator,
-    forceLabel: true,
-    contract,
-  }));
-  const setCondField = (field) => change(window.MobKitFlowController.graphEdgeConditionFieldPatch(edge, edgeState.conditionOptions, field, {
-    defaultOperator: edgeState.defaultOperator,
-    forceLabel: true,
-    contract,
-  }));
+  const change = (action, payload = {}) => studio.editEdge(edge.id, action, payload);
+  const setEdgeKind = (kind) => change("set_kind", { edge_kind: kind });
+  const setCondOwner = (instanceId) => change("set_condition_owner", { owner_instance_id: instanceId });
+  const setCondField = (field) => change("set_condition_field", { field_name: field });
   return (
     <>
       <div className="inspector__head">
@@ -492,7 +459,7 @@ function EdgeInspector({ studio, flow, edge, clearSelection, contract, graphView
         </div>
         <div className="section">
           <div className="section__title">{edgeState.labelTitle}</div>
-          <input className="field__input" value={edge.label || ""} onChange={e => change(window.MobKitFlowController.graphEdgeLabelPatch(e.target.value))} />
+          <input className="field__input" value={edge.label || ""} onChange={e => change("set_label", { label: e.target.value })} />
         </div>
         {edgeState.isCondition && (
           <div className="section">
@@ -509,12 +476,12 @@ function EdgeInspector({ studio, flow, edge, clearSelection, contract, graphView
                 <option value="">{edgeState.fieldPlaceholder}</option>
                 {edgeState.fieldOptions.map(option => <option key={option.field.id || option.value} value={option.value}>{option.label}</option>)}
               </select>
-              <select className="field__select" style={{ width: 60 }} value={edgeState.operatorValue} onChange={e => change(window.MobKitFlowController.graphEdgeConditionOperatorPatch(edge, e.target.value, { defaultOperator: edgeState.defaultOperator, contract }))}>
+              <select className="field__select" style={{ width: 60 }} value={edgeState.operatorValue} onChange={e => change("set_condition_operator", { operator: e.target.value })}>
                 {edgeState.operatorOptions.map(option => (
                   <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
                 ))}
               </select>
-              <GraphCondValue field={edgeState.condField} value={edge.cond?.val} conditionView={conditionView} onChange={val => change(window.MobKitFlowController.graphEdgeConditionValuePatch(edge, val, { defaultOperator: edgeState.defaultOperator }))} />
+              <GraphCondValue field={edgeState.condField} value={edge.cond?.val} conditionView={conditionView} onChange={val => change("set_condition_value", { value: val })} />
             </div>
             )}
           </div>

@@ -576,6 +576,14 @@ function App() {
       });
       return { ok: true, selection: { kind: "instance", id } };
     },
+    editInstance: (id, action, payload = {}) => {
+      applyMobKitAuthoringReplacement({
+        operationType: "apply_graph_node_edit",
+        operation: { instance_id: id, action, ...payload },
+        selection: { kind: "instance", id },
+      });
+      return { ok: true, selection: { kind: "instance", id } };
+    },
     deleteInstance: (id) => {
       const selection = { kind: null, id: null };
       applyMobKitAuthoringReplacement({
@@ -604,6 +612,14 @@ function App() {
       applyMobKitAuthoringReplacement({
         operationType: "update_graph_edge",
         operation: { edge_id: id, patch },
+        selection: { kind: "edge", id },
+      });
+      return { ok: true, selection: { kind: "edge", id } };
+    },
+    editEdge: (id, action, payload = {}) => {
+      applyMobKitAuthoringReplacement({
+        operationType: "apply_graph_edge_edit",
+        operation: { edge_id: id, action, ...payload },
         selection: { kind: "edge", id },
       });
       return { ok: true, selection: { kind: "edge", id } };
