@@ -10172,7 +10172,7 @@ window.MOBKIT_BOOT = {
   }
 
   function sourceDocumentFromSourceResult(document, result, options = {}) {
-    const apiSource = String(result?.source || "mobkit/mobpacks/source");
+    const apiSource = String(result?.source || "").trim();
     if (apiSource !== "mobkit/mobpacks/source") {
       throw new Error(`source preview expected mobkit/mobpacks/source but received ${apiSource}`);
     }

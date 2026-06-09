@@ -6643,22 +6643,40 @@ assert.throws(
 );
 assert.throws(
   () => controller.sourceDocumentFromSourceResult({ name: "No files" }, { source_files: [] }),
-  /mobkit\/mobpacks\/source did not return source_files/,
+  /source preview expected mobkit\/mobpacks\/source but received\s*$/,
+);
+assert.throws(
+  () => controller.sourceDocumentFromSourceResult({ name: "Missing source" }, {
+    source_files: [{
+      path: "mobkit/mob.toml",
+      media_type: "text/toml",
+      size_bytes: 26,
+      content_base64: "dG9tbA==",
+      sha256: "toml-sha",
+      text: "[mob]\nid = \"missing_source\"\n",
+    }],
+    filename: "missing-source.mobpack",
+    media_type: "application/vnd.mobkit.mobpack",
+  }),
+  /source preview expected mobkit\/mobpacks\/source but received\s*$/,
 );
 assert.throws(
   () => controller.sourceDocumentFromSourceResult({ name: "No TOML file" }, {
+    source: "mobkit/mobpacks/source",
     source_files: [{ path: "manifest.toml", text: "name = \"missing\"" }],
   }),
   /mobkit\/mobpacks\/source did not return mobkit\/mob\.toml source file/,
 );
 assert.throws(
   () => controller.sourceDocumentFromSourceResult({ name: "No TOML text" }, {
+    source: "mobkit/mobpacks/source",
     source_files: [{ path: "mobkit/mob.toml", text: "" }],
   }),
   /mobkit\/mobpacks\/source did not return mobkit\/mob\.toml text/,
 );
 assert.throws(
   () => controller.sourceDocumentFromSourceResult({ name: "No filename" }, {
+    source: "mobkit/mobpacks/source",
     mob_toml: "[mob]\nid = \"no_filename\"\n",
     source_files: [{ path: "mobkit/mob.toml", text: "[mob]\nid = \"no_filename\"\n" }],
     media_type: "application/vnd.mobkit.mobpack",
@@ -6667,6 +6685,7 @@ assert.throws(
 );
 assert.throws(
   () => controller.sourceDocumentFromSourceResult({ name: "No media" }, {
+    source: "mobkit/mobpacks/source",
     mob_toml: "[mob]\nid = \"no_media\"\n",
     source_files: [{ path: "mobkit/mob.toml", text: "[mob]\nid = \"no_media\"\n" }],
     filename: "no-media.mobpack",
@@ -6675,6 +6694,7 @@ assert.throws(
 );
 assert.throws(
   () => controller.sourceDocumentFromSourceResult({ name: "No sha" }, {
+    source: "mobkit/mobpacks/source",
     mob_toml: "[mob]\nid = \"no_sha\"\n",
     source_files: [{ path: "mobkit/mob.toml", text: "[mob]\nid = \"no_sha\"\n" }],
     filename: "no-sha.mobpack",
@@ -6684,6 +6704,7 @@ assert.throws(
 );
 assert.throws(
   () => controller.sourceDocumentFromSourceResult({ name: "No aux content" }, {
+    source: "mobkit/mobpacks/source",
     source_files: [{
       path: "mobkit/mob.toml",
       media_type: "text/toml",
@@ -6705,6 +6726,7 @@ assert.throws(
 );
 assert.throws(
   () => controller.sourceDocumentFromSourceResult({ name: "No aux text" }, {
+    source: "mobkit/mobpacks/source",
     source_files: [{
       path: "mobkit/mob.toml",
       media_type: "text/toml",

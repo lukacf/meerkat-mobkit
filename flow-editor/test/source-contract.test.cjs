@@ -885,6 +885,7 @@ assert.match(src("overlays.jsx"), /traceState\.eyebrow/, "Plan Trace overlay hea
 assert.match(src("overlays.jsx"), /traceState\.firstLabel/, "Plan Trace first action label must render through controller state");
 assert.match(src("overlays.jsx"), /traceState\.stepLabel/, "Plan Trace progress label must render through controller state");
 assert(!/plan\?\.plan_trace|plan\?\.command|document\?\.deploy_command|plan\?\.pack_path|mobkit\/mobpacks\/deploy did not return plan_trace|const title = document\?/.test(src("overlays.jsx")), "Plan Trace overlay must not inspect MobKit deploy results or invent fallback labels locally");
+assert(!/result\?\.source \|\| ["']mobkit\/mobpacks\/source["']/.test(controller), "Source drawer must require MobKit source-preview provenance instead of defaulting missing result.source");
 assert.match(controller, /apiSource !== "mobkit\/mobpacks\/source"[\s\S]*source preview expected mobkit\/mobpacks\/source/, "Source drawer projection must reject export-shaped results");
 assert.match(controller, /did not return source_files/, "Source drawer must fail closed when MobKit source preview omits archive member metadata");
 assert.match(controller, /did not return mobkit\/mob\.toml source file/, "Source drawer must fail closed when MobKit source preview omits the real mob.toml archive member");
