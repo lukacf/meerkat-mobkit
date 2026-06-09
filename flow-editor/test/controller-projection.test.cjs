@@ -4215,6 +4215,10 @@ const memberSchemaCascade = controller.memberSchemaCascadePatch({
 assert.equal(memberSchemaCascade.ok, true);
 assert.deepEqual(memberSchemaCascade.patch, { schema: "SummaryArtifact" });
 assert.deepEqual(memberSchemaCascade.members, [{ id: "m_reviewer", schema: "SummaryArtifact" }]);
+assert.deepEqual(memberSchemaCascade.instances, [
+  { id: "review_inst", memberId: "m_reviewer" },
+  { id: "done", isTerminal: true },
+]);
 assert.deepEqual(memberSchemaCascade.flow.steps[1].branches[0].cond, {});
 assert.equal(memberSchemaCascade.flow.steps[1].branches[0].condition, "");
 assert.deepEqual(memberSchemaCascade.edges[0].cond, null);
@@ -4229,6 +4233,7 @@ assert.deepEqual(controller.memberSchemaCascadePatch({
   members: [{ id: "m_reviewer", schema: "ReviewArtifact" }],
   flow: undefined,
   edges: undefined,
+  instances: [],
   patch: null,
 });
 assert.deepEqual(controller.memberBackendPatch("external", agentContract), { backend: "external" });

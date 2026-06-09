@@ -10390,13 +10390,14 @@
   function memberSchemaCascadePatch({ memberId, members, flow, edges, instances, schemas } = {}, rawSchema) {
     const id = String(memberId || "").trim();
     const list = Array.isArray(members) ? members : [];
+    const sourceInstances = Array.isArray(instances) ? instances : [];
     const current = list.find((member) => String(member?.id || "").trim() === id) || null;
     if (!current) {
-      return { ok: false, error: "member not found", members: list, flow, edges, patch: null };
+      return { ok: false, error: "member not found", members: list, flow, edges, instances: sourceInstances, patch: null };
     }
     const patch = memberSchemaPatch(rawSchema, schemas);
     if (!Object.prototype.hasOwnProperty.call(patch, "schema")) {
-      return { ok: false, error: "unknown schema", members: list, flow, edges, patch: null };
+      return { ok: false, error: "unknown schema", members: list, flow, edges, instances: sourceInstances, patch: null };
     }
     const nextMember = { ...current, ...patch };
     const nextMembers = list.map((member) => String(member?.id || "").trim() === id ? nextMember : member);
@@ -10404,7 +10405,7 @@
       flow,
       edges,
       members: nextMembers,
-      instances,
+      instances: sourceInstances,
       schemas,
     });
     return {
@@ -10415,6 +10416,7 @@
       members: nextMembers,
       flow: reconciled.flow,
       edges: reconciled.edges,
+      instances: sourceInstances,
     };
   }
 

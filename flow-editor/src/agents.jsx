@@ -231,6 +231,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     if (studio.snap) studio.snap();
     studio.setMembers(result.members);
     if (result.flow !== flow && setFlow) setFlow(result.flow);
+    if (result.instances !== studio.instances) studio.setInstances(result.instances);
     if (result.edges !== studio.edges) studio.setEdges(result.edges);
   };
 
