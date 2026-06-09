@@ -9446,6 +9446,21 @@
     };
   }
 
+  function flowRegistryPersistDocumentProjection(rows, options = {}) {
+    const sourceRows = Array.isArray(rows) ? rows : [];
+    const persistence = flowRegistryDocumentPersistence(options);
+    if (!persistence.ok || !persistence.rowPatch) {
+      return {
+        ...persistence,
+        rows: sourceRows,
+      };
+    }
+    return {
+      ...persistence,
+      rows: flowRegistryRememberDocumentPatch(sourceRows, persistence.rowPatch),
+    };
+  }
+
   function flowRegistryAppendRowPatch(rows, row) {
     const list = Array.isArray(rows) ? rows : [];
     if (!row || typeof row !== "object" || !row.id) return list;
@@ -10229,6 +10244,7 @@
     flowImportedIdFromDocument,
     flowRegistryRememberDocumentPatch,
     flowRegistryDocumentPersistence,
+    flowRegistryPersistDocumentProjection,
     flowRegistryAppendRowPatch,
     flowRegistryUpsertRowPatch,
     renameSchemaDefinition,

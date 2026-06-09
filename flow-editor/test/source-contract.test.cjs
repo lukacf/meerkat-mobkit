@@ -1166,8 +1166,10 @@ assert(!/Math\.random\(\)|Date\.now\(\)/.test(controller), "controller authoring
 assert(!/function\s+insertGraphControlShape|function\s+ensureGraphBranchInputParam|launchMode:\s*\{\s*kind:\s*["']Fresh["']\s*\}|dispatch:\s*["']fan_out["']|collection:\s*["']all["']/.test(app), "App shell must not hard-code graph launch/branch/fork semantics");
 assert(!/studioAppendInstancesPatch|studioAppendEdgesPatch|graphControlShape|graphMemberInstanceShape/.test(app), "App quick graph insertion must not assemble or append graph rows locally");
 assert.match(app, /MobKitFlowController\.flowRegistryMarkDraftPatch/, "app shell must mark registry rows draft through the controller plane");
-assert.match(app, /MobKitFlowController\.flowRegistryRememberDocumentPatch/, "app shell must persist document snapshots through the controller plane");
-assert.match(app, /MobKitFlowController\.flowRegistryDocumentPersistence/, "app shell must derive registry persistence signatures and stage transitions through the controller plane");
+assert.match(app, /MobKitFlowController\.flowRegistryPersistDocumentProjection/, "app shell must persist document snapshots through a single controller projection");
+assert.match(app, /flowRegistryPersistDocumentProjection\(flows,\s*\{[\s\S]*currentFlowId,[\s\S]*document,[\s\S]*validation,[\s\S]*stage/, "explicit document persistence must pass flow rows, document, validation, and stage into the controller projection");
+assert.match(app, /flowRegistryPersistDocumentProjection\(flows,\s*\{[\s\S]*previousSignature:\s*persistedDocumentSig\.current,[\s\S]*skipIfUnchanged:\s*true/, "autosave persistence must let the controller projection suppress unchanged document snapshots");
+assert(!/flowRegistryRememberDocumentPatch/.test(app), "app shell must not apply flow registry document row patches locally");
 assert.match(app, /MobKitFlowController\.flowRegistrySelectionState/, "app shell must select and load registry rows through the controller plane");
 assert.match(app, /MobKitFlowController\.createFlowDraftFromSpec/, "app shell must derive new-flow registry rows through controller draft creation");
 assert.match(app, /existingRows:\s*flows/, "app shell must pass existing flow rows into controller-owned new-flow ID creation");
@@ -1181,6 +1183,7 @@ assert(!/JSON\.stringify\(document\)|stage === ["']published["']/.test(app), "ap
 assert.match(controller, /function flowRegistryMarkDraftPatch/, "controller plane must own flow registry draft semantics");
 assert.match(controller, /function flowRegistryRememberDocumentPatch/, "controller plane must own flow registry document persistence semantics");
 assert.match(controller, /function flowRegistryDocumentPersistence/, "controller plane must own registry persistence signatures and stage transitions");
+assert.match(controller, /function flowRegistryPersistDocumentProjection/, "controller plane must own combined registry document persistence and row projection");
 assert.match(controller, /function flowRegistrySelectionState/, "controller plane must own registry row selection and hydrate/fallback decisions");
 assert.match(controller, /function flowRegistryRowFromDocument/, "controller plane must own document-to-registry row projection");
 assert.match(controller, /function flowDraftIdFromSpec/, "controller plane must own new-flow ID creation and collision handling");

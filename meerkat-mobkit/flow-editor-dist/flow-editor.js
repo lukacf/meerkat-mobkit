@@ -9479,6 +9479,21 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function flowRegistryPersistDocumentProjection(rows, options = {}) {
+    const sourceRows = Array.isArray(rows) ? rows : [];
+    const persistence = flowRegistryDocumentPersistence(options);
+    if (!persistence.ok || !persistence.rowPatch) {
+      return {
+        ...persistence,
+        rows: sourceRows,
+      };
+    }
+    return {
+      ...persistence,
+      rows: flowRegistryRememberDocumentPatch(sourceRows, persistence.rowPatch),
+    };
+  }
+
   function flowRegistryAppendRowPatch(rows, row) {
     const list = Array.isArray(rows) ? rows : [];
     if (!row || typeof row !== "object" || !row.id) return list;
@@ -10262,6 +10277,7 @@ window.MOBKIT_BOOT = {
     flowImportedIdFromDocument,
     flowRegistryRememberDocumentPatch,
     flowRegistryDocumentPersistence,
+    flowRegistryPersistDocumentProjection,
     flowRegistryAppendRowPatch,
     flowRegistryUpsertRowPatch,
     renameSchemaDefinition,
@@ -13041,15 +13057,15 @@ function App() {
     contract
   }).document;
   const rememberCurrentDocument = (document2, validation, nextStage = stage) => {
-    const persistence = window.MobKitFlowController.flowRegistryDocumentPersistence({
+    const persistence = window.MobKitFlowController.flowRegistryPersistDocumentProjection(flows, {
       currentFlowId,
       document: document2,
       validation,
       stage: nextStage
     });
-    if (!persistence.ok || !persistence.rowPatch) return;
+    if (!persistence.ok || !persistence.changed) return;
     persistedDocumentSig.current = persistence.signature;
-    setFlows((rows) => window.MobKitFlowController.flowRegistryRememberDocumentPatch(rows, persistence.rowPatch));
+    setFlows(persistence.rows);
   };
   React.useEffect(() => {
     if (!currentFlowId || !currentFlow) return;
@@ -13059,7 +13075,7 @@ function App() {
     } catch {
       return;
     }
-    const persistence = window.MobKitFlowController.flowRegistryDocumentPersistence({
+    const persistence = window.MobKitFlowController.flowRegistryPersistDocumentProjection(flows, {
       currentFlowId,
       document: document2,
       validation: null,
@@ -13067,10 +13083,11 @@ function App() {
       previousSignature: persistedDocumentSig.current,
       skipIfUnchanged: true
     });
-    if (!persistence.changed || !persistence.rowPatch) return;
+    if (!persistence.changed) return;
     persistedDocumentSig.current = persistence.signature;
-    setFlows((rows) => window.MobKitFlowController.flowRegistryRememberDocumentPatch(rows, persistence.rowPatch));
+    setFlows(persistence.rows);
   }, [
+    flows,
     currentFlowId,
     currentFlow,
     stage,

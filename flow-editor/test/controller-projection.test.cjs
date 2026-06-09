@@ -8476,6 +8476,38 @@ assert.equal(unchangedPersistence.changed, false);
 assert.equal(unchangedPersistence.signature, draftPersistence.signature);
 assert.equal(unchangedPersistence.rowPatch, null);
 
+const persistedRegistryProjection = controller.flowRegistryPersistDocumentProjection(registryRows, {
+  currentFlowId: "f_existing",
+  document: registryDocument,
+  validation: { ok: true },
+  stage: "published",
+});
+assert.equal(persistedRegistryProjection.ok, true);
+assert.equal(persistedRegistryProjection.changed, true);
+assert.equal(persistedRegistryProjection.rows[0].stage, "published");
+assert.deepEqual(persistedRegistryProjection.rows[0].validation, { ok: true });
+assert.equal(persistedRegistryProjection.rows[0].document, registryDocument);
+assert.equal(persistedRegistryProjection.rows[1], registryRows[1]);
+
+const unchangedRegistryProjection = controller.flowRegistryPersistDocumentProjection(registryRows, {
+  currentFlowId: "f_existing",
+  document: registryDocument,
+  previousSignature: draftPersistence.signature,
+  skipIfUnchanged: true,
+});
+assert.equal(unchangedRegistryProjection.ok, true);
+assert.equal(unchangedRegistryProjection.changed, false);
+assert.equal(unchangedRegistryProjection.signature, draftPersistence.signature);
+assert.equal(unchangedRegistryProjection.rows, registryRows);
+
+const invalidRegistryProjection = controller.flowRegistryPersistDocumentProjection(registryRows, {
+  currentFlowId: "",
+  document: registryDocument,
+});
+assert.equal(invalidRegistryProjection.ok, false);
+assert.equal(invalidRegistryProjection.changed, false);
+assert.equal(invalidRegistryProjection.rows, registryRows);
+
 const importedRow = controller.flowRegistryRowFromDocument({
   id: "f_imported",
   document: registryDocument,

@@ -371,15 +371,15 @@ function App() {
     contract,
   }).document;
   const rememberCurrentDocument = (document, validation, nextStage = stage) => {
-    const persistence = window.MobKitFlowController.flowRegistryDocumentPersistence({
+    const persistence = window.MobKitFlowController.flowRegistryPersistDocumentProjection(flows, {
       currentFlowId,
       document,
       validation,
       stage: nextStage,
     });
-    if (!persistence.ok || !persistence.rowPatch) return;
+    if (!persistence.ok || !persistence.changed) return;
     persistedDocumentSig.current = persistence.signature;
-    setFlows((rows) => window.MobKitFlowController.flowRegistryRememberDocumentPatch(rows, persistence.rowPatch));
+    setFlows(persistence.rows);
   };
 
   React.useEffect(() => {
@@ -390,7 +390,7 @@ function App() {
     } catch {
       return;
     }
-    const persistence = window.MobKitFlowController.flowRegistryDocumentPersistence({
+    const persistence = window.MobKitFlowController.flowRegistryPersistDocumentProjection(flows, {
       currentFlowId,
       document,
       validation: null,
@@ -398,10 +398,11 @@ function App() {
       previousSignature: persistedDocumentSig.current,
       skipIfUnchanged: true,
     });
-    if (!persistence.changed || !persistence.rowPatch) return;
+    if (!persistence.changed) return;
     persistedDocumentSig.current = persistence.signature;
-    setFlows((rows) => window.MobKitFlowController.flowRegistryRememberDocumentPatch(rows, persistence.rowPatch));
+    setFlows(persistence.rows);
   }, [
+    flows,
     currentFlowId,
     currentFlow,
     stage,
