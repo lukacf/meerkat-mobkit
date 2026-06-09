@@ -48,6 +48,7 @@ window.MOBKIT_BOOT = {
     get: "mobkit/mobpacks/get",
     save: "mobkit/mobpacks/save",
     delete: "mobkit/mobpacks/delete",
+    graphProjection: "mobkit/mobpacks/graph_projection",
     deployCommand: "mobkit/mobpacks/deploy_command",
     deploy: "mobkit/mobpacks/deploy",
   };
@@ -62,6 +63,7 @@ window.MOBKIT_BOOT = {
     get: "get",
     save: "save",
     delete: "delete",
+    graphProjection: "graph_projection",
     deployCommand: "deploy_command",
     deploy: "deploy_rpc",
   };
@@ -8415,6 +8417,10 @@ window.MOBKIT_BOOT = {
     return callRpc(rpcMethod("delete"), { ...(params || {}), id });
   }
 
+  async function graphProjectionDocument(document) {
+    return callRpc(rpcMethod("graphProjection"), { document });
+  }
+
   function importParamsFromDecodedFile(input = {}) {
     const {
       filename = "",
@@ -8657,6 +8663,19 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function graphProjectionFromMobKitResult(result) {
+    const source = result?.graph_projection || result?.graphProjection || result;
+    if (!source || typeof source !== "object") return null;
+    if (!Array.isArray(source.instances) || !Array.isArray(source.edges) || !Array.isArray(source.frames)) return null;
+    return {
+      instances: source.instances,
+      edges: source.edges,
+      frames: source.frames,
+      source: String(source.source || ""),
+      validation: source.validation || null,
+    };
+  }
+
   function hydrateMobpackDocumentState(result, options = {}) {
     const document = result?.document && typeof result.document === "object" ? result.document : {};
     const members = Array.isArray(document.members) ? document.members : [];
@@ -8692,7 +8711,8 @@ window.MOBKIT_BOOT = {
       };
     }
     const skillRealms = mergeSkillRealms(document.skill_realms, options.contractSkillRealms || []);
-    const graphProjection = graphProjectionForDocument({ ...document, flow }, members, options.contract);
+    const graphProjection = graphProjectionFromMobKitResult(result)
+      || graphProjectionForDocument({ ...document, flow }, members, options.contract);
     const hasDeploySettings = document.deploy && typeof document.deploy === "object" && !Array.isArray(document.deploy);
     const hasMobSettings = document.mob_settings && typeof document.mob_settings === "object" && !Array.isArray(document.mob_settings);
     const validation = result?.validation || null;
@@ -11538,6 +11558,7 @@ window.MOBKIT_BOOT = {
     graphStructureSignature,
     graphProjectionForFlow,
     graphProjectionForDocument,
+    graphProjectionFromMobKitResult,
     flowFromHydratedDocument,
     hydrateMobpackDocumentState,
     graphToFlow,
@@ -11806,6 +11827,7 @@ window.MOBKIT_BOOT = {
     getDocument,
     saveDocument,
     deleteDocument,
+    graphProjectionDocument,
     importParamsFromDecodedFile,
     deploySettingsForUi,
     deployDefaultsFromSchema,
@@ -14547,7 +14569,10 @@ function App() {
       setTemplates(bootstrap.templates);
       setFlows(bootstrap.flows);
       if (bootstrap.initialHydration) {
-        hydrateMobpackDocument(bootstrap.initialHydration.result, bootstrap.initialHydration.options);
+        hydrateMobpackDocument(bootstrap.initialHydration.result, {
+          ...bootstrap.initialHydration.options,
+          contract: schema
+        });
       }
       setContract(schema);
     }).catch((error) => {
@@ -14562,7 +14587,7 @@ function App() {
       const projection = pendingGraphProjection.current;
       pendingGraphProjection.current = null;
       skipNextGraphProjection.current = false;
-      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: projection.members || studio.members, contract });
+      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: projection.members || studio.members, contract: projection.contract || contract });
       studio.setInstances(projection.instances || []);
       studio.setEdges(projection.edges || []);
       studio.setFrames(projection.frames || []);
@@ -15080,6 +15105,7 @@ function App() {
   const handleDeployPlan = () => handleDeploy({ execute: false });
   const handleDeployRun = () => handleDeploy({ execute: true });
   const hydrateMobpackDocument = (result, options = {}) => {
+    const activeContract = options.contract || contract;
     const hydration = window.MobKitFlowController.hydrateMobpackDocumentState(result, {
       id: options.id,
       existingRows: options.existingRows,
@@ -15089,7 +15115,7 @@ function App() {
       deployDefaults: options.deployDefaults || catalogs.deployDefaults,
       mobDefaults: options.mobDefaults || catalogs.mobDefaults,
       contractSkillRealms: contractSkillRealms.current,
-      contract,
+      contract: activeContract,
       errorView: catalogs.errorView
     });
     if (hydration.ok === false) {
@@ -15129,6 +15155,24 @@ function App() {
     setStage(hydration.stage);
     setValidationResults(hydration.validationRows);
     if (hydration.openEditor) setView("editor");
+    const graphProjectionToken = currentAuthoringRevision();
+    window.MobKitFlowController.graphProjectionDocument(hydration.document).then((projectionResult) => {
+      if (!authoringRevisionIsCurrent(graphProjectionToken)) return;
+      const projection = window.MobKitFlowController.graphProjectionFromMobKitResult(projectionResult);
+      if (!projection) return;
+      hydratingDocumentRef.current = true;
+      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], {
+        members: hydration.members,
+        contract: activeContract
+      });
+      studio.setInstances(projection.instances || []);
+      studio.setEdges(projection.edges || []);
+      studio.setFrames(projection.frames || []);
+      queueMicrotask(() => {
+        hydratingDocumentRef.current = false;
+      });
+    }).catch(() => {
+    });
   };
   const hydrateImportedDocument = (result) => {
     hydrateMobpackDocument(result, { existingRows: flows });

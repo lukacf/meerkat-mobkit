@@ -68,6 +68,7 @@ pub(crate) const MOBPACK_AUTHORING_METHODS: &[&str] = &[
     "mobkit/mobpacks/get",
     "mobkit/mobpacks/save",
     "mobkit/mobpacks/delete",
+    "mobkit/mobpacks/graph_projection",
     "mobkit/mobpacks/deploy_command",
     "mobkit/mobpacks/deploy",
 ];
@@ -100,6 +101,7 @@ pub(crate) fn handle_mobpack_authoring_rpc(
         "mobkit/mobpacks/get" => crate::mobpack::get_mobpack_draft(params),
         "mobkit/mobpacks/save" => crate::mobpack::save_mobpack_draft(params),
         "mobkit/mobpacks/delete" => crate::mobpack::delete_mobpack_draft(params),
+        "mobkit/mobpacks/graph_projection" => crate::mobpack::graph_projection_mobpack(params),
         "mobkit/mobpacks/deploy_command" => crate::mobpack::deploy_command_preview(params)
             .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
         "mobkit/mobpacks/deploy" => crate::mobpack::deploy_mobpack(params)

@@ -1773,6 +1773,7 @@ pub fn mobpack_schema_response() -> Value {
             "get": "mobkit/mobpacks/get",
             "save": "mobkit/mobpacks/save",
             "delete": "mobkit/mobpacks/delete",
+            "graph_projection": "mobkit/mobpacks/graph_projection",
             "deploy_command": "mobkit/mobpacks/deploy_command",
             "deploy_rpc": "mobkit/mobpacks/deploy",
             "deploy_cli": "rkat mob deploy <pack.mobpack> <prompt>"
@@ -2807,6 +2808,28 @@ pub fn delete_mobpack_draft(params: &Value) -> Result<Value, String> {
         "id": id,
         "deleted": deleted,
         "rows": sorted_mobpack_draft_rows(&rows),
+    }))
+}
+
+pub fn graph_projection_mobpack(params: &Value) -> Result<Value, String> {
+    let mut document = document_from_params(params)?;
+    let steps = document
+        .flow
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "mobkit/mobpacks/graph_projection requires document.flow.steps".to_string()
+        })?;
+    let (instances, edges, frames) = graph_projection_from_visual_steps(steps);
+    document.instances = Value::Array(instances.clone());
+    document.edges = Value::Array(edges.clone());
+    document.frames = Value::Array(frames.clone());
+    Ok(json!({
+        "source": "mobkit/mobpacks/graph_projection",
+        "instances": instances,
+        "edges": edges,
+        "frames": frames,
+        "validation": validate_document(&document),
     }))
 }
 
@@ -16712,6 +16735,73 @@ model = "gpt-5.5"
     }
 
     #[test]
+    fn graph_projection_rpc_projects_editor_flow_controls() {
+        let mut document = valid_document();
+        document.members = json!([
+            { "id": "m_router", "name": "router", "role": "router", "model": "gpt-5.5", "profileBinding": "inline", "runtimeMode": "turn_driven", "skills": [], "tools": ["comms"] },
+            { "id": "m_worker", "name": "worker", "role": "worker", "model": "gpt-5.5", "profileBinding": "inline", "runtimeMode": "turn_driven", "skills": [], "tools": ["comms"] },
+            { "id": "m_reviewer", "name": "reviewer", "role": "reviewer", "model": "gpt-5.5", "profileBinding": "inline", "runtimeMode": "turn_driven", "skills": [], "tools": ["comms"] }
+        ]);
+        document.flow = json!({
+            "name": "main",
+            "steps": [{
+                "id": "input_1",
+                "type": "input",
+                "task": "Route work",
+                "fields": "",
+                "inputParams": [{ "id": "p_route", "name": "route", "type": "enum", "required": true, "enumValues": ["code", "fallback"] }]
+            }, {
+                "id": "branch_route",
+                "type": "branch",
+                "controllerRole": "m_reviewer",
+                "branches": [{
+                    "id": "code",
+                    "condition": "route == \"code\"",
+                    "cond": { "namespace": "params", "stepId": "params", "field": "route", "op": "==", "val": "code" },
+                    "steps": [{ "id": "work", "type": "member", "role": "m_worker", "instruction": "Work" }]
+                }],
+                "fallback": [{ "id": "review", "type": "member", "role": "m_reviewer", "instruction": "Review" }]
+            }]
+        });
+        document.instances = json!([]);
+        document.edges = json!([]);
+        document.frames = json!([]);
+
+        let projection =
+            graph_projection_mobpack(&json!({ "document": document })).expect("graph projection");
+        assert_eq!(
+            projection["source"],
+            json!("mobkit/mobpacks/graph_projection")
+        );
+        assert!(projection["validation"]["ok"].as_bool().unwrap_or(false));
+        let instances = projection["instances"].as_array().expect("instances");
+        assert!(
+            instances.iter().any(|node| {
+                node["id"] == "g_branch_branch_route" && node["gateKind"] == "branch"
+            })
+        );
+        assert!(instances.iter().any(|node| {
+            node["id"] == "j_branch_branch_route"
+                && node["gateKind"] == "join"
+                && node["controllerRole"] == "m_reviewer"
+        }));
+        let edges = projection["edges"].as_array().expect("edges");
+        assert!(edges.iter().any(|edge| {
+            edge["from"] == "g_branch_branch_route"
+                && edge["to"] == "work"
+                && edge["kind"] == "cond"
+                && edge["cond"]["var"] == "params.route"
+        }));
+        assert!(
+            projection["frames"]
+                .as_array()
+                .expect("frames")
+                .iter()
+                .any(|frame| frame["kind"] == "Branch")
+        );
+    }
+
+    #[test]
     fn writes_deploy_result_fixture_when_requested() {
         let params = match std::env::var("MOBKIT_MOBPACK_DEPLOY_IN") {
             Ok(path) => serde_json::from_str(
@@ -17264,6 +17354,7 @@ model = "gpt-5.5"
             ("get", "mobkit/mobpacks/get"),
             ("save", "mobkit/mobpacks/save"),
             ("delete", "mobkit/mobpacks/delete"),
+            ("graph_projection", "mobkit/mobpacks/graph_projection"),
             ("deploy_command", "mobkit/mobpacks/deploy_command"),
             ("deploy_rpc", "mobkit/mobpacks/deploy"),
             ("deploy_cli", "rkat mob deploy <pack.mobpack> <prompt>"),

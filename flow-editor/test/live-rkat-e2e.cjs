@@ -56,6 +56,7 @@ async function assertAuthoringCapabilities() {
     "mobkit/mobpacks/get",
     "mobkit/mobpacks/save",
     "mobkit/mobpacks/delete",
+    "mobkit/mobpacks/graph_projection",
     "mobkit/mobpacks/deploy_command",
     "mobkit/mobpacks/deploy",
   ];

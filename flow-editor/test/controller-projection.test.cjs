@@ -10821,6 +10821,26 @@ assert.equal(hydratedStored.registryRow.source, "file:///tmp/stored.mobpack");
 assert.equal(hydratedStored.validationRows[0].head, "Imported mobpack validated");
 assert.equal(hydratedStored.validationRows[0].meta, "import.ok");
 
+const apiGraphHydrated = controller.hydrateMobpackDocumentState({
+  document: storedGraphDocument,
+  graph_projection: {
+    source: "mobkit/mobpacks/graph_projection",
+    instances: [{ id: "api_step_1", memberId: "reviewer", col: 2, row: 1 }],
+    edges: [{ id: "api_edge_1", from: "api_step_1", to: "done", kind: "next" }],
+    frames: [{ id: "api_frame_1", kind: "Branch", col: 1, row: 1 }],
+    validation: { ok: true },
+  },
+  validation: { ok: true },
+}, {
+  id: "f_api_graph",
+  contract: graphProjectionTestContract,
+});
+assert.deepEqual(apiGraphHydrated.graphProjection.instances.map(instance => instance.id), ["api_step_1"]);
+assert.deepEqual(apiGraphHydrated.graphProjection.edges.map(edge => edge.id), ["api_edge_1"]);
+assert.deepEqual(apiGraphHydrated.graphProjection.frames.map(frame => frame.id), ["api_frame_1"]);
+assert.equal(apiGraphHydrated.graphProjection.source, "mobkit/mobpacks/graph_projection");
+assert.equal(controller.graphProjectionFromMobKitResult(apiGraphHydrated.graphProjection).instances[0].id, "api_step_1");
+
 const importedHydrationId = controller.hydrateMobpackDocumentState({
   document: storedGraphDocument,
   validation: { ok: true },

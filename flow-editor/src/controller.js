@@ -15,6 +15,7 @@
     get: "mobkit/mobpacks/get",
     save: "mobkit/mobpacks/save",
     delete: "mobkit/mobpacks/delete",
+    graphProjection: "mobkit/mobpacks/graph_projection",
     deployCommand: "mobkit/mobpacks/deploy_command",
     deploy: "mobkit/mobpacks/deploy",
   };
@@ -29,6 +30,7 @@
     get: "get",
     save: "save",
     delete: "delete",
+    graphProjection: "graph_projection",
     deployCommand: "deploy_command",
     deploy: "deploy_rpc",
   };
@@ -8382,6 +8384,10 @@
     return callRpc(rpcMethod("delete"), { ...(params || {}), id });
   }
 
+  async function graphProjectionDocument(document) {
+    return callRpc(rpcMethod("graphProjection"), { document });
+  }
+
   function importParamsFromDecodedFile(input = {}) {
     const {
       filename = "",
@@ -8624,6 +8630,19 @@
     };
   }
 
+  function graphProjectionFromMobKitResult(result) {
+    const source = result?.graph_projection || result?.graphProjection || result;
+    if (!source || typeof source !== "object") return null;
+    if (!Array.isArray(source.instances) || !Array.isArray(source.edges) || !Array.isArray(source.frames)) return null;
+    return {
+      instances: source.instances,
+      edges: source.edges,
+      frames: source.frames,
+      source: String(source.source || ""),
+      validation: source.validation || null,
+    };
+  }
+
   function hydrateMobpackDocumentState(result, options = {}) {
     const document = result?.document && typeof result.document === "object" ? result.document : {};
     const members = Array.isArray(document.members) ? document.members : [];
@@ -8659,7 +8678,8 @@
       };
     }
     const skillRealms = mergeSkillRealms(document.skill_realms, options.contractSkillRealms || []);
-    const graphProjection = graphProjectionForDocument({ ...document, flow }, members, options.contract);
+    const graphProjection = graphProjectionFromMobKitResult(result)
+      || graphProjectionForDocument({ ...document, flow }, members, options.contract);
     const hasDeploySettings = document.deploy && typeof document.deploy === "object" && !Array.isArray(document.deploy);
     const hasMobSettings = document.mob_settings && typeof document.mob_settings === "object" && !Array.isArray(document.mob_settings);
     const validation = result?.validation || null;
@@ -11505,6 +11525,7 @@
     graphStructureSignature,
     graphProjectionForFlow,
     graphProjectionForDocument,
+    graphProjectionFromMobKitResult,
     flowFromHydratedDocument,
     hydrateMobpackDocumentState,
     graphToFlow,
@@ -11773,6 +11794,7 @@
     getDocument,
     saveDocument,
     deleteDocument,
+    graphProjectionDocument,
     importParamsFromDecodedFile,
     deploySettingsForUi,
     deployDefaultsFromSchema,

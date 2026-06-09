@@ -171,7 +171,10 @@ function App() {
         setTemplates(bootstrap.templates);
         setFlows(bootstrap.flows);
         if (bootstrap.initialHydration) {
-          hydrateMobpackDocument(bootstrap.initialHydration.result, bootstrap.initialHydration.options);
+          hydrateMobpackDocument(bootstrap.initialHydration.result, {
+            ...bootstrap.initialHydration.options,
+            contract: schema,
+          });
         }
         setContract(schema);
       })
@@ -188,7 +191,7 @@ function App() {
       const projection = pendingGraphProjection.current;
       pendingGraphProjection.current = null;
       skipNextGraphProjection.current = false;
-      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: projection.members || studio.members, contract });
+      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: projection.members || studio.members, contract: projection.contract || contract });
       studio.setInstances(projection.instances || []);
       studio.setEdges(projection.edges || []);
       studio.setFrames(projection.frames || []);
@@ -726,6 +729,7 @@ function App() {
   const handleDeployRun = () => handleDeploy({ execute: true });
 
   const hydrateMobpackDocument = (result, options = {}) => {
+    const activeContract = options.contract || contract;
     const hydration = window.MobKitFlowController.hydrateMobpackDocumentState(result, {
       id: options.id,
       existingRows: options.existingRows,
@@ -735,7 +739,7 @@ function App() {
       deployDefaults: options.deployDefaults || catalogs.deployDefaults,
       mobDefaults: options.mobDefaults || catalogs.mobDefaults,
       contractSkillRealms: contractSkillRealms.current,
-      contract,
+      contract: activeContract,
       errorView: catalogs.errorView,
     });
     if (hydration.ok === false) {
@@ -775,6 +779,25 @@ function App() {
     setStage(hydration.stage);
     setValidationResults(hydration.validationRows);
     if (hydration.openEditor) setView("editor");
+    const graphProjectionToken = currentAuthoringRevision();
+    window.MobKitFlowController.graphProjectionDocument(hydration.document)
+      .then((projectionResult) => {
+        if (!authoringRevisionIsCurrent(graphProjectionToken)) return;
+        const projection = window.MobKitFlowController.graphProjectionFromMobKitResult(projectionResult);
+        if (!projection) return;
+        hydratingDocumentRef.current = true;
+        graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], {
+          members: hydration.members,
+          contract: activeContract,
+        });
+        studio.setInstances(projection.instances || []);
+        studio.setEdges(projection.edges || []);
+        studio.setFrames(projection.frames || []);
+        queueMicrotask(() => {
+          hydratingDocumentRef.current = false;
+        });
+      })
+      .catch(() => {});
   };
 
   const hydrateImportedDocument = (result) => {
