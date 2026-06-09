@@ -7614,6 +7614,16 @@ const emptyAddNodeMenuState = controller.graphAddNodeMenuState({
 });
 assert.equal(emptyAddNodeMenuState.emptyLabel, "No matches for “zzz”");
 assert.equal(emptyAddNodeMenuState.isEmpty, true);
+assert.deepEqual(controller.graphAddMenuOpenProjection({
+  col: 2,
+  row: 3,
+  grid: { padX: 80, padY: 60, cellW: 240, cellH: 180, gapX: 24, gapY: 18 },
+}), {
+  addAt: { col: 2, row: 3, x: 598, y: 90 },
+});
+assert.deepEqual(controller.graphAddMenuCloseProjection(), {
+  addAt: null,
+});
 
 const basicPickerKickoffState = controller.basicStepPickerState({
   isKickoff: true,

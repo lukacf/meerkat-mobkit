@@ -313,7 +313,7 @@ function App() {
         if (e.shiftKey) studio.redo(); else studio.undo();
       }
       if (e.key === "Escape") {
-        clearSelection(); setAddAt(null);
+        clearSelection(); closeGraphAddMenu();
         setDrySim(false); setValidate(false); setSourceOpen(false);
         if (creating) setCreating(null);
       }
@@ -323,8 +323,12 @@ function App() {
   });
 
   const handleRequestAdd = (col, row) => {
-    const { x } = catalogs.cellXY(col, row);
-    setAddAt({ col, row, x: x + catalogs.grid.cellW * 0.5 - 130, y: 90 });
+    const result = window.MobKitFlowController.graphAddMenuOpenProjection({ col, row, grid: catalogs.grid });
+    setAddAt(result.addAt);
+  };
+  const closeGraphAddMenu = () => {
+    const result = window.MobKitFlowController.graphAddMenuCloseProjection();
+    setAddAt(result.addAt);
   };
 
   const handlePick = (pick) => {
@@ -828,7 +832,7 @@ function App() {
       )}
 
       {view === "editor" && editorMode === "advanced" && (
-        <div className="stage-area" onClick={(e) => { if (e.target === e.currentTarget) setAddAt(null); }}>
+        <div className="stage-area" onClick={(e) => { if (e.target === e.currentTarget) closeGraphAddMenu(); }}>
           <GraphEditor
             state={studio}
             selection={selection}
@@ -859,7 +863,7 @@ function App() {
             contract={contract}
             graphView={catalogs.graphView}
             onPick={handlePick}
-            onClose={() => setAddAt(null)}
+            onClose={closeGraphAddMenu}
             onJumpToAgents={handleAgentNavigation}
           />
           <aside className="inspector">

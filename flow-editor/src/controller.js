@@ -8936,6 +8936,22 @@
     };
   }
 
+  function graphAddMenuOpenProjection({ col, row, grid } = {}) {
+    const cell = graphCellXY(grid, col, row);
+    return {
+      addAt: {
+        col,
+        row,
+        x: cell.x + Number(grid?.cellW || 0) * 0.5 - 130,
+        y: 90,
+      },
+    };
+  }
+
+  function graphAddMenuCloseProjection() {
+    return { addAt: null };
+  }
+
   function basicStepPickerState({ members = [], contract = null, query = "", isKickoff = false, basicView = null } = {}) {
     const view = basicEditorViewState(basicView);
     if (isKickoff) {
@@ -11216,6 +11232,8 @@
     editorFlowPrimitiveOptions,
     graphControlNodes,
     graphAddNodeMenuState,
+    graphAddMenuOpenProjection,
+    graphAddMenuCloseProjection,
     basicStepPickerState,
     graphControlShape,
     graphMemberInstanceShape,

@@ -1419,6 +1419,12 @@ assert(!/deploy_settings\?\.(surfaces|trust_policies|realm_backends)\s*\|\|\s*\[
 assert(!/mob_definition\?\.[\w?.]+\s*\|\|\s*\[/.test(controller), "Mob definition option lists must come from MobKit schema, not controller-local catalogs");
 assert(!/function\s+deployCommand\s*\(|args\s*=\s*\[\s*["']rkat["']\s*,\s*["']mob["']\s*,\s*["']deploy["']/.test(controller), "Deploy command previews must come from mobkit/mobpacks/deploy_command, not a controller-local shell renderer");
 assert.match(controller, /mobkit\/mobpacks\/deploy_command/, "controller must use MobKit deploy command preview RPC");
+assert.match(app, /graphAddMenuOpenProjection\(\{\s*col,\s*row,\s*grid:\s*catalogs\.grid\s*\}\)/, "Graph add-menu opening must ask the controller plane for menu placement");
+assert.match(app, /graphAddMenuCloseProjection\(\)/, "Graph add-menu closing must ask the controller plane for close transitions");
+assert.match(controller, /function graphAddMenuOpenProjection/, "controller plane must own Graph add-menu placement transitions");
+assert.match(controller, /function graphAddMenuCloseProjection/, "controller plane must own Graph add-menu close transitions");
+assert(!/catalogs\.cellXY\(col,\s*row\)|setAddAt\(\{\s*col,\s*row,\s*x:/.test(app), "app shell must not compute Graph add-menu coordinates locally");
+assert(!/setAddAt\(null\)/.test(app), "app shell must not close the Graph add-menu by setting null locally");
 assert.match(app, /graphQuickInsertProjection\(\{[\s\S]*pick,[\s\S]*at:\s*addAt,[\s\S]*members:\s*studio\.members,[\s\S]*instances:\s*studio\.instances,[\s\S]*edges:\s*studio\.edges,[\s\S]*flow,[\s\S]*contract,[\s\S]*graphView:\s*catalogs\.graphView/, "Graph quick insertion must pass Basic, Graph, Agent, contract, and schema-backed view context into controller projection");
 assert.match(controller, /function graphQuickInsertResult[\s\S]*addAt:\s*null/, "controller quick insertion must own add-menu close transitions");
 assert.match(app, /setAddAt\(inserted\.addAt\)/, "Graph quick insertion must apply controller-projected add-menu transitions");

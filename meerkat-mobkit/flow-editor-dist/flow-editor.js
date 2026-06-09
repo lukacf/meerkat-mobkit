@@ -8969,6 +8969,22 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function graphAddMenuOpenProjection({ col, row, grid } = {}) {
+    const cell = graphCellXY(grid, col, row);
+    return {
+      addAt: {
+        col,
+        row,
+        x: cell.x + Number(grid?.cellW || 0) * 0.5 - 130,
+        y: 90,
+      },
+    };
+  }
+
+  function graphAddMenuCloseProjection() {
+    return { addAt: null };
+  }
+
   function basicStepPickerState({ members = [], contract = null, query = "", isKickoff = false, basicView = null } = {}) {
     const view = basicEditorViewState(basicView);
     if (isKickoff) {
@@ -11249,6 +11265,8 @@ window.MOBKIT_BOOT = {
     editorFlowPrimitiveOptions,
     graphControlNodes,
     graphAddNodeMenuState,
+    graphAddMenuOpenProjection,
+    graphAddMenuCloseProjection,
     basicStepPickerState,
     graphControlShape,
     graphMemberInstanceShape,
@@ -14254,7 +14272,7 @@ function App() {
       }
       if (e.key === "Escape") {
         clearSelection();
-        setAddAt(null);
+        closeGraphAddMenu();
         setDrySim(false);
         setValidate(false);
         setSourceOpen(false);
@@ -14265,8 +14283,12 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   });
   const handleRequestAdd = (col, row) => {
-    const { x } = catalogs.cellXY(col, row);
-    setAddAt({ col, row, x: x + catalogs.grid.cellW * 0.5 - 130, y: 90 });
+    const result = window.MobKitFlowController.graphAddMenuOpenProjection({ col, row, grid: catalogs.grid });
+    setAddAt(result.addAt);
+  };
+  const closeGraphAddMenu = () => {
+    const result = window.MobKitFlowController.graphAddMenuCloseProjection();
+    setAddAt(result.addAt);
   };
   const handlePick = (pick) => {
     if (!addAt) return;
@@ -14749,7 +14771,7 @@ function App() {
       }
     }
   ), view === "editor" && /* @__PURE__ */ React.createElement(ModeToggle, { mode: editorMode, setMode: setEditorMode, railState: shellState }), view === "editor" && editorMode === "advanced" && /* @__PURE__ */ React.createElement("div", { className: "stage-area", onClick: (e) => {
-    if (e.target === e.currentTarget) setAddAt(null);
+    if (e.target === e.currentTarget) closeGraphAddMenu();
   } }, /* @__PURE__ */ React.createElement(
     GraphEditor,
     {
@@ -14786,7 +14808,7 @@ function App() {
       contract,
       graphView: catalogs.graphView,
       onPick: handlePick,
-      onClose: () => setAddAt(null),
+      onClose: closeGraphAddMenu,
       onJumpToAgents: handleAgentNavigation
     }
   ), /* @__PURE__ */ React.createElement("aside", { className: "inspector" }, /* @__PURE__ */ React.createElement(
