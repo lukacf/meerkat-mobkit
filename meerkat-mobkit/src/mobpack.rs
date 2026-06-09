@@ -3266,7 +3266,48 @@ pub fn create_mobpack_draft(params: &Value) -> Result<Value, String> {
 }
 
 fn sorted_mobpack_draft_rows(rows: &BTreeMap<String, Value>) -> Vec<Value> {
-    rows.values().cloned().collect()
+    rows.values().map(normalize_mobpack_draft_row).collect()
+}
+
+fn normalize_mobpack_draft_row(row: &Value) -> Value {
+    let mut row = row.clone();
+    let Some(artifact) = row.get("artifact") else {
+        return row;
+    };
+    if artifact.get("kind").and_then(Value::as_str) != Some("mobpack_archive") {
+        return row;
+    }
+    let Some(content_base64) = artifact
+        .get("content_base64")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return row;
+    };
+    let import = import_mobpack(&json!({
+        "content_base64": content_base64,
+        "filename": artifact.get("filename").and_then(Value::as_str),
+        "source_media_type": artifact
+            .get("media_type")
+            .and_then(Value::as_str)
+            .unwrap_or(MOBPACK_MEDIA_TYPE),
+    }));
+    match import {
+        Ok(imported) => {
+            row["document_kind"] = json!("editor_projection");
+            row["document_source"] = json!("mobpack_archive");
+            row["document_authority"] = json!("artifact");
+            row["document"] = imported["document"].clone();
+            row["validation"] = imported["validation"].clone();
+        }
+        Err(error) => {
+            row["document_source"] = json!("editor_projection");
+            row["document_authority"] = json!("fallback");
+            row["artifact_import_error"] = json!(error);
+        }
+    }
+    row
 }
 
 pub fn list_mobpack_drafts(params: &Value) -> Result<Value, String> {
@@ -3298,6 +3339,7 @@ pub fn get_mobpack_draft(params: &Value) -> Result<Value, String> {
         .get(id)
         .cloned()
         .ok_or_else(|| format!("mobpack draft not found: {id}"))?;
+    let row = normalize_mobpack_draft_row(&row);
     Ok(json!({
         "source": "mobkit/mobpacks/get",
         "store_path": path,
@@ -3318,6 +3360,7 @@ pub fn save_mobpack_draft(params: &Value) -> Result<Value, String> {
     let mut rows = read_mobpack_draft_store(&path)?;
     rows.insert(id, row.clone());
     write_mobpack_draft_store(&path, &rows)?;
+    let row = normalize_mobpack_draft_row(&row);
     Ok(json!({
         "source": "mobkit/mobpacks/save",
         "store_path": path,
@@ -23918,6 +23961,8 @@ model = "gpt-5.5"
         assert_eq!(saved["row"]["id"], json!("registry_draft"));
         assert_eq!(saved["row"]["document"]["name"], json!("Registry Draft"));
         assert_eq!(saved["row"]["document_kind"], json!("editor_projection"));
+        assert_eq!(saved["row"]["document_source"], json!("mobpack_archive"));
+        assert_eq!(saved["row"]["document_authority"], json!("artifact"));
         assert_eq!(saved["row"]["stage"], json!("valid"));
         assert_eq!(saved["row"]["artifact"]["kind"], json!("mobpack_archive"));
         assert_eq!(saved["row"]["artifact"]["deployable"], json!(true));
@@ -23941,6 +23986,11 @@ model = "gpt-5.5"
         assert_eq!(listed["source"], json!("mobkit/mobpacks/list"));
         assert_eq!(listed["rows"].as_array().expect("rows").len(), 1);
         assert_eq!(listed["rows"][0]["id"], json!("registry_draft"));
+        assert_eq!(
+            listed["rows"][0]["document_source"],
+            json!("mobpack_archive")
+        );
+        assert_eq!(listed["rows"][0]["document_authority"], json!("artifact"));
         assert_eq!(listed["rows"][0]["artifact"]["deployable"], json!(true));
 
         let fetched = get_mobpack_draft(&json!({
@@ -23949,6 +23999,8 @@ model = "gpt-5.5"
         }))
         .expect("get draft");
         assert_eq!(fetched["row"]["document"]["mob_id"], json!("review-pack"));
+        assert_eq!(fetched["row"]["document_source"], json!("mobpack_archive"));
+        assert_eq!(fetched["row"]["document_authority"], json!("artifact"));
         assert_eq!(fetched["row"]["artifact"]["kind"], json!("mobpack_archive"));
 
         let deleted = delete_mobpack_draft(&json!({
@@ -23958,6 +24010,58 @@ model = "gpt-5.5"
         .expect("delete draft");
         assert_eq!(deleted["deleted"], json!(true));
         assert_eq!(deleted["rows"].as_array().expect("rows").len(), 0);
+    }
+
+    #[test]
+    fn mobpack_draft_registry_reopens_deployable_artifact_over_stale_projection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("drafts.json");
+        let mut document = valid_document();
+        document.name = "Artifact Authority".to_string();
+
+        let saved = save_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "artifact_authority",
+            "document": document
+        }))
+        .expect("save draft");
+        let pack_sha256 = saved["row"]["artifact"]["pack_sha256"].clone();
+
+        let mut rows = read_mobpack_draft_store(&store_path).expect("read draft store");
+        let row = rows
+            .get_mut("artifact_authority")
+            .expect("stored draft row");
+        row["document"]["mob_id"] = json!("stale-registry-projection");
+        row["document"]["name"] = json!("Stale Registry Projection");
+        row["validation"] = json!({
+            "ok": false,
+            "diagnostics": [],
+            "display_rows": [{ "kind": "crit", "head": "stale projection", "sub": "", "meta": "" }],
+            "flow_ids": [],
+            "validation_source": "caller",
+            "deploy_command": "stale"
+        });
+        write_mobpack_draft_store(&store_path, &rows).expect("write stale draft store");
+
+        let listed =
+            list_mobpack_drafts(&json!({ "store_path": store_path })).expect("list drafts");
+        let listed_row = &listed["rows"][0];
+        assert_eq!(listed_row["document_source"], json!("mobpack_archive"));
+        assert_eq!(listed_row["document_authority"], json!("artifact"));
+        assert_eq!(listed_row["document"]["mob_id"], json!("review-pack"));
+        assert_eq!(listed_row["document"]["name"], json!("Artifact Authority"));
+        assert_eq!(listed_row["validation"]["ok"], json!(true));
+        assert_eq!(listed_row["artifact"]["pack_sha256"], pack_sha256);
+
+        let fetched = get_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "artifact_authority"
+        }))
+        .expect("get draft");
+        assert_eq!(fetched["row"]["document_source"], json!("mobpack_archive"));
+        assert_eq!(fetched["row"]["document_authority"], json!("artifact"));
+        assert_eq!(fetched["row"]["document"]["mob_id"], json!("review-pack"));
+        assert_eq!(fetched["row"]["validation"]["ok"], json!(true));
     }
 
     #[test]
