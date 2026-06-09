@@ -844,8 +844,8 @@ async function validateFilesystemSkillPacking(dir) {
 
 function buildUnifiedProjectionDocument(catalogs) {
   const definitions = controller.agentDefinitionsFromSchema(catalogs);
-  const coderDefinition = definitions.find((definition) => definition.id === "coder") || definitions[0];
-  const reviewerDefinition = definitions.find((definition) => definition.id === "reviewer") || definitions[1] || definitions[0];
+  const coderDefinition = definitions.find((definition) => definition.role === "coder") || definitions[0];
+  const reviewerDefinition = definitions.find((definition) => definition.role === "reviewer") || definitions[1] || definitions[0];
   if (!coderDefinition || !reviewerDefinition) {
     throw new Error("unified projection proof needs MobKit agent definitions from mobkit/mobpacks/catalogs");
   }
@@ -1344,6 +1344,12 @@ async function validateDocumentBackedDeployPreview(document) {
   }
   if (!Array.isArray(catalogs.agent_definitions) || catalogs.agent_definitions.length === 0) {
     throw new Error("mobkit/mobpacks/catalogs did not expose real agent_definitions");
+  }
+  const reviewerDefinitions = catalogs.agent_definitions.filter((definition) => definition.role === "reviewer");
+  const reviewerSources = new Set(reviewerDefinitions.map((definition) => definition.sourceMobpack).filter(Boolean));
+  const reviewerIds = new Set(reviewerDefinitions.map((definition) => definition.id).filter(Boolean));
+  if (reviewerDefinitions.length < 2 || reviewerSources.size < 2 || reviewerIds.size !== reviewerDefinitions.length) {
+    throw new Error(`mobkit/mobpacks/catalogs collapsed real reviewer agent definitions: ${JSON.stringify(reviewerDefinitions)}`);
   }
   for (const dynamicKey of ["tool_catalog", "skill_realms", "agent_definitions", "sample_mobpacks", "blank_mobpack", "models", "provider_defaults"]) {
     if (Object.prototype.hasOwnProperty.call(schema, dynamicKey)) {

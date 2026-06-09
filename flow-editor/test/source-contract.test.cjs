@@ -1321,6 +1321,7 @@ assert.match(controller, /deleteConfirmMessage/, "controller plane must own Agen
 assert.match(controller, /systemPromptPlaceholder/, "controller plane must own Agent detail presentation labels and placeholders");
 assert.match(controller, /schemaPreviewRows/, "controller plane must own Agent output-schema preview row projection");
 assert.match(controller, /function agentDefinitionOptions/, "controller plane must own API-backed agent definition option rows");
+assert.match(controller, /labelCounts[\s\S]*sourceMobpackName[\s\S]*sourceMobpack[\s\S]*`\$\{label\} · \$\{sourceLabel\}`/, "agent definition option rows must disambiguate same-label definitions with MobKit source mobpack provenance");
 assert.match(controller, /function agentDefinitionAddControlState/, "controller plane must own Agent add-control presentation state");
 assert.match(controller, /mob_definition\?\.editor_agent_view/, "controller plane must hydrate Agent sidebar view labels from MobKit schema");
 assert.match(app, /<AgentsView[\s\S]*agentView=\{catalogs\.agentView\}/, "app shell must inject MobKit Agent sidebar view state");
@@ -1412,6 +1413,7 @@ assert.match(controller, /schemaSourceDocumentPath:\s*String\(template\.schemaSo
 assert.match(controller, /function agentSourceProvenanceState/, "controller plane must own Agent Editor source provenance projection");
 assert.match(controller, /sourceProvenance:\s*agentSourceProvenanceState\(member,\s*agentDetailView\)/, "Agent Editor control state must include controller-projected source provenance");
 assert.match(controller, /sourceDefinition:[\s\S]*sourceMobpackName:[\s\S]*schemaSourceDocumentPath:[\s\S]*toolDefinitions:\s*normalizeAgentDefinitionRows[\s\S]*skillDefinitions:\s*normalizeAgentDefinitionRows/, "agent-definition member creation must retain resolved MobKit provenance rows in sourceDefinition");
+assert.match(liveRkatE2eTest, /reviewerDefinitions[\s\S]*reviewerSources[\s\S]*collapsed real reviewer agent definitions/, "live rkat proof must reject collapsed same-role sample agent definitions");
 assert.match(controller, /memberProfileBindingPatch[\s\S]*profileBindingOptions\(contract,\s*binding\)/, "member profile-binding writes must validate against MobKit profile_binding options and restrictions");
 assert.match(controller, /memberRuntimeModePatch[\s\S]*runtimeModeOptions\(contract,\s*deploySettings,\s*runtimeMode\)/, "member runtime-mode writes must validate against MobKit runtime_modes and deploy surface restrictions");
 assert.match(controller, /runtime_mode_labels/, "member runtime-mode labels must hydrate from the MobKit schema contract");

@@ -1808,7 +1808,7 @@ fn agent_definition_catalog(
             else {
                 continue;
             };
-            for member in members {
+            for (member_index, member) in members.iter().enumerate() {
                 let role = member
                     .get("role")
                     .and_then(Value::as_str)
@@ -1840,7 +1840,12 @@ fn agent_definition_catalog(
                 else {
                     continue;
                 };
-                let key = sanitize_identifier(role);
+                let key = format!(
+                    "{}__{:02}_{}",
+                    sanitize_identifier(source_mobpack),
+                    member_index + 1,
+                    sanitize_identifier(role)
+                );
                 templates.entry(key.clone()).or_insert_with(|| {
                     let name = member.get("name").and_then(Value::as_str).unwrap_or(role);
                     let schema_id = member
@@ -1877,7 +1882,7 @@ fn agent_definition_catalog(
                         "sourceMobpack": source_mobpack,
                         "sourceMobpackName": source_name,
                         "sourceOrigin": sample_source,
-                        "sourceDocumentPath": "document.members[]",
+                        "sourceDocumentPath": format!("document.members[{member_index}]"),
                     })
                 });
             }
@@ -16622,6 +16627,23 @@ model = "gpt-5.5"
                         }]
                     }]
                 }
+            },
+            {
+                "id": "second_valid_sample",
+                "name": "Second Valid Sample",
+                "source": "mobkit/sample-mobpack",
+                "document": {
+                    "members": [{
+                        "role": "real",
+                        "name": "Second Real",
+                        "model": "gpt-5.5",
+                        "profileBinding": "inline",
+                        "runtimeMode": "turn_driven",
+                        "tools": ["builtins"],
+                        "skills": [],
+                        "systemPrompt": "Be independently real."
+                    }]
+                }
             }
         ]);
 
@@ -16629,27 +16651,40 @@ model = "gpt-5.5"
         let definitions =
             agent_definition_catalog(&samples, &tool_catalog_response(), &json!([skill_realms]));
         let definitions = definitions.as_array().expect("agent definitions");
-        assert_eq!(definitions.len(), 1);
-        assert_eq!(definitions[0]["role"], "real");
-        assert_eq!(definitions[0]["definitionType"], "mobkit/profile-member");
-        assert_eq!(definitions[0]["source"], "mobkit/mobpack-profile-member");
-        assert_eq!(definitions[0]["sourceMobpack"], "valid_sample");
-        assert_eq!(definitions[0]["sourceMobpackName"], "Valid Sample");
-        assert_eq!(definitions[0]["sourceOrigin"], "mobkit/sample-mobpack");
-        assert_eq!(definitions[0]["tools"], json!(["builtins"]));
-        assert_eq!(definitions[0]["toolDefinitions"][0]["id"], "builtins");
+        assert_eq!(definitions.len(), 2);
+        let first = definitions
+            .iter()
+            .find(|definition| definition["sourceMobpack"] == "valid_sample")
+            .expect("valid sample definition");
+        let second = definitions
+            .iter()
+            .find(|definition| definition["sourceMobpack"] == "second_valid_sample")
+            .expect("second valid sample definition");
+        assert_ne!(first["id"], second["id"]);
+        assert_eq!(first["role"], "real");
+        assert_eq!(second["role"], "real");
+        assert_eq!(first["definitionType"], "mobkit/profile-member");
+        assert_eq!(first["source"], "mobkit/mobpack-profile-member");
+        assert_eq!(first["sourceMobpack"], "valid_sample");
+        assert_eq!(first["sourceMobpackName"], "Valid Sample");
+        assert_eq!(first["sourceOrigin"], "mobkit/sample-mobpack");
+        assert_eq!(first["sourceDocumentPath"], "document.members[0]");
+        assert_eq!(second["sourceDocumentPath"], "document.members[0]");
+        assert_eq!(first["tools"], json!(["builtins"]));
+        assert_eq!(first["toolDefinitions"][0]["id"], "builtins");
         assert_eq!(
-            definitions[0]["toolDefinitions"][0]["source"],
+            first["toolDefinitions"][0]["source"],
             "meerkat_mob::ToolConfig"
         );
-        assert_eq!(definitions[0]["skills"], json!(["mob.real"]));
-        assert_eq!(definitions[0]["skillDefinitions"][0]["id"], "mob.real");
+        assert_eq!(first["skills"], json!(["mob.real"]));
+        assert_eq!(second["skills"], json!([]));
+        assert_eq!(first["skillDefinitions"][0]["id"], "mob.real");
         assert_eq!(
-            definitions[0]["skillDefinitions"][0]["origin"],
+            first["skillDefinitions"][0]["origin"],
             "mobkit/sample-mobpack"
         );
         assert_eq!(
-            definitions[0]["skillDefinitions"][0]["sourceMobpack"],
+            first["skillDefinitions"][0]["sourceMobpack"],
             "valid_sample"
         );
     }
@@ -17565,7 +17600,9 @@ model = "gpt-5.5"
         assert!(agent_definitions.iter().any(|definition| {
             definition["definitionType"] == "mobkit/profile-member"
                 && definition["source"] == "mobkit/mobpack-profile-member"
-                && definition["sourceDocumentPath"] == "document.members[]"
+                && definition["sourceDocumentPath"]
+                    .as_str()
+                    .is_some_and(|path| path.starts_with("document.members["))
                 && definition["sourceMobpack"]
                     .as_str()
                     .is_some_and(|value| value.starts_with("sample_"))
@@ -17584,6 +17621,20 @@ model = "gpt-5.5"
             assert_eq!(definition["profileBinding"], member["profileBinding"]);
             assert_eq!(definition["runtimeMode"], member["runtimeMode"]);
             assert_eq!(definition["systemPrompt"], member["systemPrompt"]);
+        }
+        for ((source_mobpack, role), member) in &sample_members {
+            if member["profileBinding"].as_str().is_some()
+                && member["runtimeMode"].as_str().is_some()
+                && member["model"].as_str().is_some()
+            {
+                assert!(
+                    agent_definitions.iter().any(|definition| {
+                        definition["sourceMobpack"] == json!(source_mobpack)
+                            && definition["role"] == json!(role)
+                    }),
+                    "missing agent definition for {source_mobpack}:{role}"
+                );
+            }
         }
         assert!(agent_definitions.iter().any(|definition| {
             definition["role"] == "reviewer"

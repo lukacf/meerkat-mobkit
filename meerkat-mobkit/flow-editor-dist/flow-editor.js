@@ -2155,13 +2155,23 @@ window.MOBKIT_BOOT = {
   }
 
   function agentDefinitionOptions(agentDefinitions = []) {
-    const optionRows = (Array.isArray(agentDefinitions) ? agentDefinitions : [])
-      .filter((definition) => definition?.id)
-      .map((definition) => ({
-        value: definition.id,
-        label: definition.label || definition.role || definition.id,
-        definition,
-      }));
+    const definitions = (Array.isArray(agentDefinitions) ? agentDefinitions : [])
+      .filter((definition) => definition?.id);
+    const labelCounts = definitions.reduce((counts, definition) => {
+      const label = String(definition.label || definition.role || definition.id);
+      counts.set(label, (counts.get(label) || 0) + 1);
+      return counts;
+    }, new Map());
+    const optionRows = definitions
+      .map((definition) => {
+        const label = String(definition.label || definition.role || definition.id);
+        const sourceLabel = String(definition.sourceMobpackName || definition.sourceMobpack || "").trim();
+        return {
+          value: definition.id,
+          label: labelCounts.get(label) > 1 && sourceLabel ? `${label} · ${sourceLabel}` : label,
+          definition,
+        };
+      });
     return {
       hasDefinitions: optionRows.length > 0,
       optionRows,

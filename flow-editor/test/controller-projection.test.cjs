@@ -5103,6 +5103,20 @@ assert.deepEqual(controller.agentDefinitionOptions([{
     },
   ],
 });
+assert.deepEqual(controller.agentDefinitionOptions([{
+  id: "sample_a__01_reviewer",
+  role: "reviewer",
+  label: "Reviewer",
+  sourceMobpackName: "Planner Coder Review",
+}, {
+  id: "sample_b__01_reviewer",
+  role: "reviewer",
+  label: "Reviewer",
+  sourceMobpackName: "Docs Only",
+}]).optionRows.map((row) => [row.value, row.label]), [
+  ["sample_a__01_reviewer", "Reviewer · Planner Coder Review"],
+  ["sample_b__01_reviewer", "Reviewer · Docs Only"],
+]);
 assert.deepEqual(controller.agentDefinitionOptions([]), { hasDefinitions: false, optionRows: [] });
 assert.deepEqual(controller.agentDefinitionAddControlState([], hydratedCatalogs.agentView), {
   hasDefinitions: false,
