@@ -827,6 +827,7 @@ function App() {
               templateView={catalogs.graphTemplateView}
               launchView={catalogs.launchView}
               graphView={catalogs.graphView}
+              conditionView={catalogs.conditionView}
               contract={contract}
               deploySettings={deploySettings}
               selectMember={(id) => { setView("agents"); setAgentSel({ kind: "agent", id }); }}
@@ -855,6 +856,7 @@ function App() {
           sourceView={catalogs.sourceView}
           basicView={catalogs.basicView}
           launchView={catalogs.launchView}
+          conditionView={catalogs.conditionView}
         />
       )}
 

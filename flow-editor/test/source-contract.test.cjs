@@ -92,6 +92,7 @@ assert(!/\bMOBKIT_DATA\b/.test(graph), "Graph editor view must receive layout da
 assert(!/\bMOBKIT_DATA\b/.test(inspector), "Inspector view must receive MobKit summary data via props, not UI shell globals");
 assert(!/replaceArray\(MOBKIT_DATA\.(models|toolCatalog|agentDefinitions|profileTemplates|skillRealms)/.test(app), "app shell must store live MobKit catalogs in React state, not mutate global arrays");
 assert.match(app, /<BuilderView[\s\S]*toolCatalog=\{catalogs\.toolCatalog\}/, "app shell must inject MobKit tool catalog into Basic editor");
+assert.match(app, /<BuilderView[\s\S]*conditionView=\{catalogs\.conditionView\}/, "app shell must inject schema-backed shared condition view into Basic editor");
 assert.match(app, /<AgentsView[\s\S]*agentDefinitions=\{catalogs\.agentDefinitions\}/, "app shell must inject MobKit agent definitions into Agent editor");
 assert.match(app, /<GraphEditor[\s\S]*grid=\{catalogs\.grid\}/, "app shell must inject layout data into Graph editor");
 assert.match(app, /<GraphEditor[\s\S]*contract=\{contract\}/, "app shell must inject the MobKit graph contract into Graph editor");
@@ -106,6 +107,7 @@ assert.match(graphEditorBlock, /(?=[\s\S]*canvasView\.zoomOutTitle)(?=[\s\S]*can
 assert(!/title=["'](?:Zoom out|Fit to view|Zoom in|Drag to a member to connect)["']/.test(graph), "Graph editor JSX must not compose canvas affordance titles locally");
 assert.match(app, /<Inspector[\s\S]*templateSeed=\{catalogs\.template\}/, "app shell must inject MobKit summary seed into Inspector");
 assert.match(app, /<Inspector[\s\S]*graphView=\{catalogs\.graphView\}/, "app shell must inject schema-backed Graph view into Inspector");
+assert.match(app, /<Inspector[\s\S]*conditionView=\{catalogs\.conditionView\}/, "app shell must inject schema-backed shared condition view into Graph Inspector");
 assert.match(controller, /template:\s*graphTemplateSeedFromBlankMobpack\(blankMobpack\)/, "Graph template inspector seed must hydrate from the MobKit blank mobpack template");
 assert.match(app, /<Tweaks[\s\S]*modelCatalog=\{catalogs\.models\}/, "deploy settings UI must receive MobKit model catalog via props");
 assert.match(app, /setDeploySettings\(nextCatalogs\.deployDefaults\)/, "app shell must hydrate deploy defaults from MobKit schema");
@@ -351,6 +353,8 @@ assert.match(app, /MobKitFlowController\.hydrateMobpackDocumentState/, "app shel
 assert.match(app, /MobKitFlowController\.catalogSkillRealmsPatch/, "app shell must patch catalog skill realms through the controller plane");
 assert.match(controller, /function emptyMobKitCatalogs/, "controller plane must own empty MobKit catalog shape");
 assert.match(controller, /function mobKitCatalogsFromSchema/, "controller plane must own MobKit schema catalog projection");
+assert.match(controller, /mob_definition\?\.editor_condition_view/, "controller plane must hydrate shared condition value view from MobKit schema");
+assert.match(controller, /conditionView:\s*conditionViewFromSchema\(schema\)/, "schema catalog projection must include shared condition view state");
 assert.match(controller, /function mergeSkillRealms/, "controller plane must own skill realm merge semantics");
 assert.match(controller, /function hydrateMobpackDocumentState/, "controller plane must own imported document hydration semantics");
 assert.match(controller, /function flowFromHydratedDocument/, "controller plane must own hydrated flow reset semantics");
@@ -545,11 +549,11 @@ assert.match(controller, /function basicBranchDefaultLabel/, "controller plane m
 assert(!/label:\s*["']Branch (?:1|2)["']|label:\s*["']Branch ["']\s*\+/.test(controller), "Basic branch default labels must render through MobKit Basic view state");
 assert.match(controller, /reserveFlowBranchId\("br",\s*branchIds\)/, "controller plane must use collision-safe branch IDs for Basic branch lane creation");
 assert.match(controller, /function conditionValueControl/, "controller plane must own schema field type interpretation for condition value controls");
-assert.match(builderCondValueBlock, /MobKitFlowController\.conditionValueControl\(field,\s*value\)/, "Basic condition value widget must request controller render state with current value");
+assert.match(builderCondValueBlock, /MobKitFlowController\.conditionValueControl\(field,\s*value,\s*conditionView\)/, "Basic condition value widget must request controller render state with current value and schema view");
 assert.match(builderCondValueBlock, /control\.optionRows\.map/, "Basic condition value select rows must come from controller state");
 assert.match(builderCondValueBlock, /placeholder=\{control\.placeholder\}/, "Basic condition value placeholder must come from controller state");
 assert.match(builderCondValueBlock, /value=\{control\.value\}/, "Basic condition value display value must come from controller state");
-assert.match(inspectorGraphCondValueBlock, /MobKitFlowController\.conditionValueControl\(field,\s*value\)/, "Graph condition value widget must request controller render state with current value");
+assert.match(inspectorGraphCondValueBlock, /MobKitFlowController\.conditionValueControl\(field,\s*value,\s*conditionView\)/, "Graph condition value widget must request controller render state with current value and schema view");
 assert.match(inspectorGraphCondValueBlock, /control\.optionRows\.map/, "Graph condition value select rows must come from controller state");
 assert.match(inspectorGraphCondValueBlock, /placeholder=\{control\.placeholder\}/, "Graph condition value placeholder must come from controller state");
 assert.match(inspectorGraphCondValueBlock, /value=\{control\.value\}/, "Graph condition value display value must come from controller state");
@@ -560,6 +564,7 @@ assert(!/branches:\s*step\.branches\.map/.test(builder), "Basic editor must not 
 assert(!/branches:\s*\[\.\.\.step\.branches/.test(builder), "Basic editor must not append branch lanes locally");
 assert(!/function isBooleanLikeField/.test(builder + "\n" + inspector), "Basic/Graph editors must not own condition field-type interpretation helpers");
 assert(!/<option value="">—<\/option>|control\.values\.map|placeholder=["']value["']|value=\{value\s*(?:\|\||\?\?)/.test(builderCondValueBlock + "\n" + inspectorGraphCondValueBlock), "Basic/Graph condition value widgets must not compose blank options, option rows, placeholders, or fallback values locally");
+assert(!/label:\s*["']—["']|placeholder:\s*["']value["']/.test((controller.match(/function conditionValueControl[\s\S]*?function inputParamName/) || [""])[0]), "condition value control must read blank labels and placeholders from MobKit condition view state");
 assert(!/function untilExpr/.test(builder), "Basic editor must not own repeat-until expression rendering helpers");
 assert(!/onChange\(\s*\{\s*(?:namespace|stepId|field|op|val):|setCond\(\s*\{\s*(?:stepId|field|op|val):/.test(builderBranchConditionBlock + "\n" + builderStepInspectorBlock), "Basic condition controls must not assemble condition patches locally");
 assert(!/contractDefaultValue\(contract,\s*["']condition_operator["']\)|basicConditionFromText\(|options\.find\(option => option\.stepId === cond\.stepId\)|schemas \|\| \[\]|fields\.find|conditionOperatorOptions\(|basicConditionLabel\(/.test(builderBranchConditionBlock), "Basic branch condition rows must not assemble source, field, operator, or preview projections locally");

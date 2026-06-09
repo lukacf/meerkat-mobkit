@@ -816,6 +816,10 @@ pub fn mobpack_schema_response() -> Value {
     editor_graph_view["edge_row_schema_label"] = json!("schema");
     editor_graph_view["edge_row_missing_value"] = json!("—");
     editor_graph_view["edge_terminal_member_value"] = json!("(terminal)");
+    let editor_condition_view = json!({
+        "empty_value_label": "—",
+        "text_value_placeholder": "value"
+    });
     let editor_agent_view = json!({
         "agents_heading": "AGENTS",
         "schemas_heading": "SCHEMAS",
@@ -1418,6 +1422,7 @@ pub fn mobpack_schema_response() -> Value {
         "collection_policies": collection_policy_values(),
         "dependency_modes": dependency_mode_values()
     });
+    mob_definition["editor_condition_view"] = editor_condition_view;
     mob_definition["editor_agent_detail_view"] = editor_agent_detail_view;
     mob_definition["editor_agent_access_view"] = editor_agent_access_view;
     mob_definition["editor_deploy_view"] = editor_deploy_view;
@@ -15861,6 +15866,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_view"]["edge_terminal_member_value"],
             json!("(terminal)")
+        );
+        assert_eq!(
+            mob_definition["editor_condition_view"]["text_value_placeholder"],
+            json!("value")
+        );
+        assert_eq!(
+            mob_definition["editor_condition_view"]["empty_value_label"],
+            json!("—")
         );
         assert_eq!(
             mob_definition["editor_agent_view"]["agents_heading"],

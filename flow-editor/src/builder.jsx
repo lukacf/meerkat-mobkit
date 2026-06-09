@@ -18,8 +18,8 @@
 // The vertical START → step → step layout mirrors how a FrameSpec reads
 // top-to-bottom along its depends_on chain.
 
-function CondValue({ field, value, onChange }) {
-  const control = window.MobKitFlowController.conditionValueControl(field, value);
+function CondValue({ field, value, onChange, conditionView = null }) {
+  const control = window.MobKitFlowController.conditionValueControl(field, value, conditionView);
   if (control.kind === "enum") {
     return (
       <select className="field__select bld-cond__val" value={control.value} onChange={e => onChange(e.target.value)}>
@@ -101,7 +101,7 @@ function InputParamField({ param, normalizeName, onRename, onChange, onDelete, c
   );
 }
 
-function BranchConditionEditor({ index, branch, options, schemas, onChange, contract, basicView = null }) {
+function BranchConditionEditor({ index, branch, options, schemas, onChange, contract, basicView = null, conditionView = null }) {
   const conditionState = window.MobKitFlowController.basicBranchConditionControlState({
     branch: { ...branch, index },
     options,
@@ -130,7 +130,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
                 <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
               ))}
             </select>
-            <CondValue field={conditionState.field} value={conditionState.cond.val} onChange={v => onChange(window.MobKitFlowController.basicConditionValuePatch(v))} />
+            <CondValue field={conditionState.field} value={conditionState.cond.val} conditionView={conditionView} onChange={v => onChange(window.MobKitFlowController.basicConditionValuePatch(v))} />
           </div>
           <div className="bld-cond__preview">{conditionState.previewPrefix} <code>{conditionState.previewLabel}</code></div>
         </>
@@ -139,7 +139,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
   );
 }
 
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null }) {
+function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null }) {
   const members = studio?.members || [];
   const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [selLocal, setSelLocal] = React.useState(null);
@@ -264,7 +264,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
             onClose={() => setPicker({ open: false })}
           />
         ) : selStep ? (
-          <StepInspector studio={studio} members={members} flow={flow} step={selStep} update={update} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} launchView={launchView} onInputParamReferenceChange={reconcileInputParamReferences} />
+          <StepInspector studio={studio} members={members} flow={flow} step={selStep} update={update} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} launchView={launchView} conditionView={conditionView} onInputParamReferenceChange={reconcileInputParamReferences} />
         ) : (
           <EmptyPanel state={viewState} />
         )}
@@ -453,7 +453,7 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
 }
 
 // ── Inspector ──
-function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, onInputParamReferenceChange }) {
+function StepInspector({ studio, members, flow, step, update, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null, onInputParamReferenceChange }) {
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   if (step.type === "input") {
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
@@ -552,6 +552,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
               onChange={(patch) => setBranchCondition(b, patch)}
               contract={contract}
               basicView={basicView}
+              conditionView={conditionView}
             />
           ))}
           <button className="bld-add-row" onClick={addBranch}>{branchState.addBranchLabel}</button>
@@ -618,7 +619,7 @@ function StepInspector({ studio, members, flow, step, update, onDelete, contract
                 <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
               ))}
             </select>
-            <CondValue field={repeatState.condField} value={repeatState.cond.val} onChange={v => setCond(window.MobKitFlowController.basicConditionValuePatch(v))} />
+            <CondValue field={repeatState.condField} value={repeatState.cond.val} conditionView={conditionView} onChange={v => setCond(window.MobKitFlowController.basicConditionValuePatch(v))} />
           </div>
         )}
         <div className="bld-cond__preview">{repeatState.previewLabel} <code>{repeatState.repeatUntilExpression || repeatState.previewFallback}</code></div>

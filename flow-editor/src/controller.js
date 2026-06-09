@@ -3318,11 +3318,30 @@
       : JSON.stringify(String(value ?? ""));
   }
 
-  function conditionValueControl(field, rawValue = "") {
+  function conditionViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_condition_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      emptyValueLabel: String(view.empty_value_label || "").trim(),
+      textValuePlaceholder: String(view.text_value_placeholder || "").trim(),
+    };
+    return Object.values(out).every(Boolean) ? out : null;
+  }
+
+  function conditionViewForState(conditionView) {
+    const view = conditionView && typeof conditionView === "object" ? conditionView : null;
+    return {
+      emptyValueLabel: String(view?.emptyValueLabel || ""),
+      textValuePlaceholder: String(view?.textValuePlaceholder || ""),
+    };
+  }
+
+  function conditionValueControl(field, rawValue = "", conditionView = null) {
+    const view = conditionViewForState(conditionView);
     const type = String(field?.type || "").trim();
     const value = rawValue == null ? "" : String(rawValue);
     const optionRows = (values) => [
-      { value: "", label: "—" },
+      { value: "", label: view.emptyValueLabel },
       ...values.map((candidate) => ({ value: candidate, label: candidate })),
     ];
     if (type === "enum" && Array.isArray(field?.enumValues) && field.enumValues.length) {
@@ -3333,7 +3352,7 @@
       const values = ["true", "false"];
       return { kind: "boolean", values, value, optionRows: optionRows(values), placeholder: "" };
     }
-    return { kind: "text", values: [], value, optionRows: [], placeholder: "value" };
+    return { kind: "text", values: [], value, optionRows: [], placeholder: view.textValuePlaceholder };
   }
 
   function inputParamName(raw, fallback = "field") {
@@ -7138,6 +7157,7 @@
       basicView: null,
       graphView: null,
       graphTemplateView: null,
+      conditionView: null,
       validationSource: "",
       contractMeta: {
         loaded: false,
@@ -7174,6 +7194,7 @@
       basicView: basicViewFromSchema(schema),
       graphView: graphViewFromSchema(schema),
       graphTemplateView: graphTemplateViewFromSchema(schema),
+      conditionView: conditionViewFromSchema(schema),
       validationSource: schema?.validation_source || "",
       contractMeta: {
         loaded: true,

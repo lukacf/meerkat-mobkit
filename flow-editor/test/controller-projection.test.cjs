@@ -314,6 +314,14 @@ const TEST_LAUNCH_VIEW = {
   forkContextLabels: TEST_LAUNCH_VIEW_SCHEMA.fork_context_labels,
   budgetSplitPolicyLabels: TEST_LAUNCH_VIEW_SCHEMA.budget_split_policy_labels,
 };
+const TEST_CONDITION_VIEW_SCHEMA = {
+  empty_value_label: "—",
+  text_value_placeholder: "value",
+};
+const TEST_CONDITION_VIEW = {
+  emptyValueLabel: "—",
+  textValuePlaceholder: "value",
+};
 const TEST_SCHEMA = {
   deploy_settings: {
     command: "rkat mob deploy",
@@ -341,6 +349,7 @@ const TEST_SCHEMA = {
     editor_agent_access_view: TEST_AGENT_ACCESS_VIEW_SCHEMA,
     editor_settings_view: TEST_SETTINGS_VIEW_SCHEMA,
     editor_launch_view: TEST_LAUNCH_VIEW_SCHEMA,
+    editor_condition_view: TEST_CONDITION_VIEW_SCHEMA,
     mob_settings: {
       defaults: {
         orchestrator: "",
@@ -738,6 +747,7 @@ assert.equal(emptyCatalogs.contractMeta.loaded, false);
 assert.equal(emptyCatalogs.grid, catalogBoot.grid);
 assert.equal(emptyCatalogs.cellXY, catalogBoot.cellXY);
 assert.equal(emptyCatalogs.template, null);
+assert.equal(emptyCatalogs.conditionView, null);
 assert.deepEqual(controller.schemaSkillRealms({ skill_realms: "starter" }), []);
 
 const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
@@ -761,6 +771,7 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       copy_label: "copy",
       close_label: "×",
     },
+    editor_condition_view: TEST_CONDITION_VIEW_SCHEMA,
     editor_agent_view: {
       agents_heading: "AGENTS",
       schemas_heading: "SCHEMAS",
@@ -1172,6 +1183,7 @@ assert.deepEqual(hydratedCatalogs.sourceView, {
   copyLabel: "copy",
   closeLabel: "×",
 });
+assert.deepEqual(hydratedCatalogs.conditionView, TEST_CONDITION_VIEW);
 assert.deepEqual(hydratedCatalogs.agentView, {
   agentsHeading: "AGENTS",
   schemasHeading: "SCHEMAS",
@@ -2770,7 +2782,7 @@ assert.equal(controller.conditionValueLiteral("true"), "true");
 assert.deepEqual(controller.conditionValueControl({
   type: "enum",
   enumValues: ["green", 7],
-}, "green"), {
+}, "green", hydratedCatalogs.conditionView), {
   kind: "enum",
   values: ["green", "7"],
   value: "green",
@@ -2781,7 +2793,7 @@ assert.deepEqual(controller.conditionValueControl({
   ],
   placeholder: "",
 });
-assert.deepEqual(controller.conditionValueControl({ type: "boolean" }), {
+assert.deepEqual(controller.conditionValueControl({ type: "boolean" }, "", hydratedCatalogs.conditionView), {
   kind: "boolean",
   values: ["true", "false"],
   value: "",
@@ -2792,15 +2804,22 @@ assert.deepEqual(controller.conditionValueControl({ type: "boolean" }), {
   ],
   placeholder: "",
 });
-assert.equal(controller.conditionValueControl({ type: "bool" }, false).value, "false");
-assert.deepEqual(controller.conditionValueControl({ type: "string", enumValues: ["ignored"] }, "typed"), {
+assert.equal(controller.conditionValueControl({ type: "bool" }, false, hydratedCatalogs.conditionView).value, "false");
+assert.deepEqual(controller.conditionValueControl({ type: "string", enumValues: ["ignored"] }, "typed", hydratedCatalogs.conditionView), {
   kind: "text",
   values: [],
   value: "typed",
   optionRows: [],
   placeholder: "value",
 });
-assert.deepEqual(controller.conditionValueControl(null), { kind: "text", values: [], value: "", optionRows: [], placeholder: "value" });
+assert.deepEqual(controller.conditionValueControl(null, "", hydratedCatalogs.conditionView), { kind: "text", values: [], value: "", optionRows: [], placeholder: "value" });
+assert.deepEqual(controller.conditionValueControl({ type: "enum", enumValues: ["yes"] }, "", {
+  emptyValueLabel: "(none)",
+  textValuePlaceholder: "literal",
+}).optionRows, [
+  { value: "", label: "(none)" },
+  { value: "yes", label: "yes" },
+]);
 
 const memberStepPrunedFlow = controller.reconcileFlowMemberSteps({
   name: "member-prune-proof",

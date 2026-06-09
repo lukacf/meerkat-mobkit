@@ -9,7 +9,7 @@
 // AddNodeMenu lets the user place existing real members. Flow controls are
 // projected from the Basic Editor's deployable flow model.
 
-function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, launchView = null, graphView = null, flow, contract }) {
+function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
   const selectionState = window.MobKitFlowController.graphSelectionState({
     selection,
     instances: studio.instances,
@@ -17,11 +17,11 @@ function Inspector({ studio, selection, selectMember, selectInstance, clearSelec
   });
   if (selectionState.kind === "instance") {
     if (!selectionState.instance) return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
-    return <InstanceInspector studio={studio} flow={flow} inst={selectionState.instance} selectMember={selectMember} clearSelection={clearSelection} contract={contract} launchView={launchView} graphView={graphView} />;
+    return <InstanceInspector studio={studio} flow={flow} inst={selectionState.instance} selectMember={selectMember} clearSelection={clearSelection} contract={contract} launchView={launchView} graphView={graphView} conditionView={conditionView} />;
   }
   if (selectionState.kind === "edge") {
     if (!selectionState.edge) return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
-    return <EdgeInspector studio={studio} flow={flow} edge={selectionState.edge} clearSelection={clearSelection} contract={contract} graphView={graphView} />;
+    return <EdgeInspector studio={studio} flow={flow} edge={selectionState.edge} clearSelection={clearSelection} contract={contract} graphView={graphView} conditionView={conditionView} />;
   }
   return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
 }
@@ -75,7 +75,7 @@ function TemplateInspector({ studio, template, templateSeed, templateView }) {
 }
 
 // ── Gate (fork / join / branch) ───────────────────────────────────
-function GateInspector({ studio, flow, inst, clearSelection, contract, graphView = null }) {
+function GateInspector({ studio, flow, inst, clearSelection, contract, graphView = null, conditionView = null }) {
   const change = (patch) => studio.updateInstance(inst.id, patch);
   const kind = inst.gateKind;
   const gateState = window.MobKitFlowController.graphGateControlState(inst, {
@@ -219,7 +219,7 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
                             <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
                           ))}
                         </select>
-                        <GraphCondValue field={row.condField} value={e.cond?.val} onChange={val => studio.updateEdge(e.id, window.MobKitFlowController.graphEdgeConditionValuePatch(e, val, { defaultOperator: row.defaultOperator }))} />
+                        <GraphCondValue field={row.condField} value={e.cond?.val} conditionView={conditionView} onChange={val => studio.updateEdge(e.id, window.MobKitFlowController.graphEdgeConditionValuePatch(e, val, { defaultOperator: row.defaultOperator }))} />
                       </div>
                     )
                   )}
@@ -241,7 +241,7 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
 }
 
 // ── Instance (graph node) — TEMPLATE-ONLY fields + member summary ──
-function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, contract, launchView = null, graphView = null }) {
+function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, contract, launchView = null, graphView = null, conditionView = null }) {
   const instanceState = window.MobKitFlowController.graphInstanceControlState({
     inst,
     instances: studio.instances,
@@ -251,7 +251,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
   const member = instanceState.member;
 
   if (inst.isGate) {
-    return <GateInspector studio={studio} flow={flow} inst={inst} clearSelection={clearSelection} contract={contract} graphView={graphView} />;
+    return <GateInspector studio={studio} flow={flow} inst={inst} clearSelection={clearSelection} contract={contract} graphView={graphView} conditionView={conditionView} />;
   }
 
   if (inst.isTerminal) {
@@ -420,8 +420,8 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
   );
 }
 
-function GraphCondValue({ field, value, onChange }) {
-  const control = window.MobKitFlowController.conditionValueControl(field, value);
+function GraphCondValue({ field, value, onChange, conditionView = null }) {
+  const control = window.MobKitFlowController.conditionValueControl(field, value, conditionView);
   if (control.kind === "enum") {
     return (
       <select className="field__select" value={control.value} onChange={e => onChange(e.target.value)}>
@@ -440,7 +440,7 @@ function GraphCondValue({ field, value, onChange }) {
 }
 
 // ── Edge ─────────────────────────────────────────────────────────
-function EdgeInspector({ studio, flow, edge, clearSelection, contract, graphView = null }) {
+function EdgeInspector({ studio, flow, edge, clearSelection, contract, graphView = null, conditionView = null }) {
   const edgeState = window.MobKitFlowController.graphEdgeInspectorState({
     edge,
     instances: studio.instances,
@@ -513,7 +513,7 @@ function EdgeInspector({ studio, flow, edge, clearSelection, contract, graphView
                   <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
                 ))}
               </select>
-              <GraphCondValue field={edgeState.condField} value={edge.cond?.val} onChange={val => change(window.MobKitFlowController.graphEdgeConditionValuePatch(edge, val, { defaultOperator: edgeState.defaultOperator }))} />
+              <GraphCondValue field={edgeState.condField} value={edge.cond?.val} conditionView={conditionView} onChange={val => change(window.MobKitFlowController.graphEdgeConditionValuePatch(edge, val, { defaultOperator: edgeState.defaultOperator }))} />
             </div>
             )}
           </div>
