@@ -4663,6 +4663,7 @@
     const result = {
       schemas: nextSchemas,
       members: nextMembers,
+      selection: null,
     };
     if (flow || edges) {
       const reconciled = reconcileConditionFieldAvailability({

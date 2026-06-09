@@ -622,7 +622,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     studio.setMembers(result.members);
     if (result.flow !== flow && setFlow) setFlow(result.flow);
     if (result.edges !== studio.edges) studio.setEdges(result.edges);
-    setAgentSel(null);
+    setAgentSel(result.selection);
   };
 
   const renameSchema = (newId) => {

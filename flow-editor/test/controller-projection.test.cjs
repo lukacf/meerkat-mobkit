@@ -5985,6 +5985,7 @@ assert.deepEqual(controller.studioDeleteSchemaPatch({
     { id: "m_review", schema: "" },
     { id: "m_plan", schema: "PlanArtifact" },
   ],
+  selection: null,
 });
 const schemaDeleteCascade = controller.studioDeleteSchemaPatch({
   schemas: [
@@ -6032,6 +6033,7 @@ assert.deepEqual(schemaDeleteCascade.members, [
   { id: "m_review", schema: "" },
   { id: "m_plan", schema: "PlanArtifact" },
 ]);
+assert.equal(schemaDeleteCascade.selection, null);
 assert.deepEqual(schemaDeleteCascade.flow.steps[1].branches[0].cond, {});
 assert.equal(schemaDeleteCascade.flow.steps[1].branches[0].condition, "");
 assert.deepEqual(schemaDeleteCascade.edges[0].cond, null);
