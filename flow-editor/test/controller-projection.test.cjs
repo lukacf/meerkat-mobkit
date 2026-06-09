@@ -2592,6 +2592,13 @@ assert.deepEqual(inlineCascade.members[0].skills, ["mob.workpad", "mob.quality.g
 assert.equal(inlineCascade.skillRealms[0].id, "mobkit/editor-inline");
 assert.equal(inlineCascade.skillRealms[0].skills[0].source, "inline");
 assert.equal(inlineCascade.skillRealms[0].skills[0].content, "Review and emit the QualityVerdict schema.");
+assert.deepEqual(inlineCascade.inlineForm, {
+  realmId: "mobkit/editor-inline",
+  label: "",
+  content: "",
+  error: "",
+  open: false,
+});
 assert.throws(
   () => controller.memberInlineSkillPatch(
     { skills: [] },

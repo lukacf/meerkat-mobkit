@@ -508,6 +508,13 @@ window.MOBKIT_BOOT = {
       members: updated.members,
       member: updated.member,
       skillRealms: result.skillRealms,
+      inlineForm: {
+        realmId: result.realmId,
+        label: "",
+        content: "",
+        error: "",
+        open: false,
+      },
     };
   }
 
@@ -13456,11 +13463,12 @@ function SkillAccess({ studio, member, agentAccessView = null }) {
         content: inlineContent
       }, agentAccessView);
       if (!applySkillCascade(result)) return;
-      setRealmId(result.realmId);
-      setInlineLabel("");
-      setInlineContent("");
-      setInlineError("");
-      setInlineOpen(false);
+      const inlineForm = result.inlineForm || {};
+      setRealmId(inlineForm.realmId || result.realmId);
+      setInlineLabel(inlineForm.label || "");
+      setInlineContent(inlineForm.content || "");
+      setInlineError(inlineForm.error || "");
+      setInlineOpen(!!inlineForm.open);
     } catch (err) {
       setInlineError(err?.message || skillState.inlineErrorFallback);
     }

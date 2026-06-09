@@ -475,6 +475,13 @@
       members: updated.members,
       member: updated.member,
       skillRealms: result.skillRealms,
+      inlineForm: {
+        realmId: result.realmId,
+        label: "",
+        content: "",
+        error: "",
+        open: false,
+      },
     };
   }
 
