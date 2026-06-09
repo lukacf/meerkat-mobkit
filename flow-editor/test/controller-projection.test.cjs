@@ -783,6 +783,51 @@ assert.equal(emptyCatalogs.template, null);
 assert.equal(emptyCatalogs.conditionView, null);
 assert.equal(emptyCatalogs.errorView, null);
 assert.deepEqual(controller.schemaSkillRealms({ skill_realms: "starter" }), []);
+const separateCatalogPayloadState = controller.mobKitCatalogsFromSchema({
+  schema_version: "mobpack/v1",
+  media_type: "application/vnd.mobkit.mobpack+json",
+  validation_source: "mobkit/mobpacks/schema",
+  deploy_settings: {
+    defaults: { command: "rkat mob deploy", surface: "cli" },
+  },
+  mob_definition: {
+    mob_settings: { defaults: { backendDefault: "session", advanced: { topology: null } } },
+  },
+}, catalogBoot, {
+  models: [{ id: "openai/gpt-5.5", label: "GPT-5.5", vendor: "openai" }],
+  tool_catalog: [{ id: "shell", label: "shell", desc: "Shell", kind: "runtime", source: "meerkat_mob::ToolConfig" }],
+  skill_realms: [{ id: "mobkit/sample-mobpacks", source: "mobkit/sample-mobpack", skills: [{ id: "mob.review" }] }],
+  agent_definitions: [{
+    id: "sample_reviewer",
+    name: "Reviewer",
+    role: "reviewer",
+    definitionType: "mobkit/profile-member",
+    source: "mobkit/sample-mobpack",
+    model: "gpt-5.5",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+  }],
+  blank_mobpack: {
+    id: "blank",
+    name: "Blank",
+    version: "mobpack/v1",
+    stage: "valid",
+    trigger: "label · small-fix",
+    source: "mobkit/blank-mobpack",
+    document: {
+      name: "Blank",
+      mob_id: "blank",
+      flow: { name: "Blank", steps: [{ id: "work", type: "member", role: "m_worker" }] },
+      members: [{ id: "m_worker", role: "worker" }],
+    },
+  },
+});
+assert.equal(separateCatalogPayloadState.contractMeta.schemaVersion, "mobpack/v1");
+assert.deepEqual(separateCatalogPayloadState.models.map((model) => model.id), ["openai/gpt-5.5"]);
+assert.deepEqual(separateCatalogPayloadState.toolCatalog.map((tool) => tool.id), ["shell"]);
+assert.deepEqual(separateCatalogPayloadState.skillRealms.map((realm) => realm.id), ["mobkit/sample-mobpacks"]);
+assert.deepEqual(separateCatalogPayloadState.agentDefinitions.map((definition) => definition.id), ["sample_reviewer"]);
+assert.equal(separateCatalogPayloadState.template.name, "Blank");
 
 const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
   schema_version: "mobpack/v1",

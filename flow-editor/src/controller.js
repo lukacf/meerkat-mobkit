@@ -6,6 +6,7 @@
   const SCHEMA_VERSION = "0.1.0";
   const RPC_METHODS = {
     schema: "mobkit/mobpacks/schema",
+    catalogs: "mobkit/mobpacks/catalogs",
     validate: "mobkit/mobpacks/validate",
     export: "mobkit/mobpacks/export",
     import: "mobkit/mobpacks/import",
@@ -7068,6 +7069,10 @@
     return callRpc(RPC_METHODS.schema, {});
   }
 
+  async function loadCatalogs() {
+    return callRpc(RPC_METHODS.catalogs, {});
+  }
+
   async function validateDocument(document) {
     return callRpc(RPC_METHODS.validate, { document });
   }
@@ -7226,14 +7231,15 @@
     };
   }
 
-  function mobKitCatalogsFromSchema(schema, boot = {}) {
-    const agentDefinitions = agentDefinitionsFromSchema(schema);
-    const blankMobpack = blankMobpackFromSchema(schema);
+  function mobKitCatalogsFromSchema(schema, boot = {}, catalogPayload = null) {
+    const catalogSource = catalogPayload && typeof catalogPayload === "object" ? catalogPayload : schema;
+    const agentDefinitions = agentDefinitionsFromSchema(catalogSource);
+    const blankMobpack = blankMobpackFromSchema(catalogSource);
     return {
-      models: modelCatalogFromSchema(schema),
-      toolCatalog: toolCatalogFromSchema(schema),
+      models: modelCatalogFromSchema(catalogSource),
+      toolCatalog: toolCatalogFromSchema(catalogSource),
       agentDefinitions,
-      skillRealms: schemaSkillRealms(schema),
+      skillRealms: schemaSkillRealms(catalogSource),
       blankMobpack,
       deployDefaults: deployDefaultsFromSchema(schema),
       mobDefaults: mobDefaultsFromSchema(schema),
@@ -9738,6 +9744,7 @@
     deployCommandPreview,
     callRpc,
     loadSchema,
+    loadCatalogs,
     validateDocument,
     exportDocument,
     deployDocument,

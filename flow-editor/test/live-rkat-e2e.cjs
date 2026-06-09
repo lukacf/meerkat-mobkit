@@ -42,6 +42,7 @@ async function assertAuthoringCapabilities() {
   const authoring = capabilities.authoring_capabilities || {};
   const expectedMethods = [
     "mobkit/mobpacks/schema",
+    "mobkit/mobpacks/catalogs",
     "mobkit/mobpacks/validate",
     "mobkit/mobpacks/export",
     "mobkit/mobpacks/import",
@@ -1287,6 +1288,22 @@ async function validateCustomDeploySettings(dir) {
 
   const authoringCapabilities = await assertAuthoringCapabilities();
   const schema = await rpc("mobkit/mobpacks/schema", {});
+  const catalogs = await rpc("mobkit/mobpacks/catalogs", {});
+  if (!Array.isArray(catalogs.tool_catalog) || catalogs.tool_catalog.length === 0) {
+    throw new Error("mobkit/mobpacks/catalogs did not expose a real tool_catalog");
+  }
+  if (!Array.isArray(catalogs.skill_realms) || catalogs.skill_realms.length === 0) {
+    throw new Error("mobkit/mobpacks/catalogs did not expose real skill_realms");
+  }
+  if (!Array.isArray(catalogs.agent_definitions) || catalogs.agent_definitions.length === 0) {
+    throw new Error("mobkit/mobpacks/catalogs did not expose real agent_definitions");
+  }
+  if (JSON.stringify(schema.tool_catalog) !== JSON.stringify(catalogs.tool_catalog)) {
+    throw new Error("schema.tool_catalog and catalogs.tool_catalog diverged");
+  }
+  if (JSON.stringify(schema.skill_realms) !== JSON.stringify(catalogs.skill_realms)) {
+    throw new Error("schema.skill_realms and catalogs.skill_realms diverged");
+  }
   contractSchema = schema;
   const mobDefaults = schema.mob_definition?.mob_settings?.defaults;
   if (mobDefaults?.backendDefault !== "session" || mobDefaults?.advanced?.topology !== null) {

@@ -626,7 +626,7 @@ fn parse_skill_frontmatter(content: &str) -> BTreeMap<String, String> {
     out
 }
 
-pub fn mobpack_schema_response() -> Value {
+pub fn mobpack_catalogs_response() -> Value {
     let models: Vec<Value> = meerkat_models::catalog()
         .iter()
         .filter_map(|entry| {
@@ -650,6 +650,26 @@ pub fn mobpack_schema_response() -> Value {
     let skill_realms = discover_skill_realms(&sample_mobpacks);
     let agent_definitions = agent_definition_catalog(&sample_mobpacks);
     let tool_catalog = tool_catalog_response();
+    json!({
+        "tool_catalog": tool_catalog,
+        "skill_realms": skill_realms,
+        "blank_mobpack": blank_mobpack,
+        "sample_mobpacks": sample_mobpacks,
+        "agent_definitions": agent_definitions,
+        "models": models,
+        "provider_defaults": provider_defaults,
+    })
+}
+
+pub fn mobpack_schema_response() -> Value {
+    let catalogs = mobpack_catalogs_response();
+    let tool_catalog = catalogs["tool_catalog"].clone();
+    let skill_realms = catalogs["skill_realms"].clone();
+    let blank_mobpack = catalogs["blank_mobpack"].clone();
+    let sample_mobpacks = catalogs["sample_mobpacks"].clone();
+    let agent_definitions = catalogs["agent_definitions"].clone();
+    let models = catalogs["models"].clone();
+    let provider_defaults = catalogs["provider_defaults"].clone();
     let mob_settings_defaults = json!({
         "orchestrator": "",
         "autoWireOrchestrator": false,
@@ -1467,6 +1487,7 @@ pub fn mobpack_schema_response() -> Value {
         "required_fields": ["document"],
         "commands": {
             "schema": "mobkit/mobpacks/schema",
+            "catalogs": "mobkit/mobpacks/catalogs",
             "validate": "mobkit/mobpacks/validate",
             "export": "mobkit/mobpacks/export",
             "import": "mobkit/mobpacks/import",
@@ -15582,6 +15603,7 @@ model = "gpt-5.5"
             .expect("schema commands object");
         let expected = BTreeMap::from([
             ("schema", "mobkit/mobpacks/schema"),
+            ("catalogs", "mobkit/mobpacks/catalogs"),
             ("validate", "mobkit/mobpacks/validate"),
             ("export", "mobkit/mobpacks/export"),
             ("import", "mobkit/mobpacks/import"),
@@ -15613,10 +15635,14 @@ model = "gpt-5.5"
     #[test]
     fn schema_response_exposes_real_tool_catalog_aliases() {
         let schema = mobpack_schema_response();
+        let catalogs = mobpack_catalogs_response();
         let tool_config = schema["tool_config"].as_array().expect("tool_config");
         let tool_catalog = schema["tool_catalog"].as_array().expect("tool_catalog");
 
         assert_eq!(tool_catalog, tool_config);
+        assert_eq!(schema["tool_catalog"], catalogs["tool_catalog"]);
+        assert_eq!(schema["skill_realms"], catalogs["skill_realms"]);
+        assert_eq!(schema["agent_definitions"], catalogs["agent_definitions"]);
         let tool_config_fields = serde_json::to_value(ToolConfig::default())
             .expect("ToolConfig serializes")
             .as_object()

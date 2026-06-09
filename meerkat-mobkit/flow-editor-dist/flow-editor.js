@@ -39,6 +39,7 @@ window.MOBKIT_BOOT = {
   const SCHEMA_VERSION = "0.1.0";
   const RPC_METHODS = {
     schema: "mobkit/mobpacks/schema",
+    catalogs: "mobkit/mobpacks/catalogs",
     validate: "mobkit/mobpacks/validate",
     export: "mobkit/mobpacks/export",
     import: "mobkit/mobpacks/import",
@@ -7101,6 +7102,10 @@ window.MOBKIT_BOOT = {
     return callRpc(RPC_METHODS.schema, {});
   }
 
+  async function loadCatalogs() {
+    return callRpc(RPC_METHODS.catalogs, {});
+  }
+
   async function validateDocument(document) {
     return callRpc(RPC_METHODS.validate, { document });
   }
@@ -7259,14 +7264,15 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function mobKitCatalogsFromSchema(schema, boot = {}) {
-    const agentDefinitions = agentDefinitionsFromSchema(schema);
-    const blankMobpack = blankMobpackFromSchema(schema);
+  function mobKitCatalogsFromSchema(schema, boot = {}, catalogPayload = null) {
+    const catalogSource = catalogPayload && typeof catalogPayload === "object" ? catalogPayload : schema;
+    const agentDefinitions = agentDefinitionsFromSchema(catalogSource);
+    const blankMobpack = blankMobpackFromSchema(catalogSource);
     return {
-      models: modelCatalogFromSchema(schema),
-      toolCatalog: toolCatalogFromSchema(schema),
+      models: modelCatalogFromSchema(catalogSource),
+      toolCatalog: toolCatalogFromSchema(catalogSource),
       agentDefinitions,
-      skillRealms: schemaSkillRealms(schema),
+      skillRealms: schemaSkillRealms(catalogSource),
       blankMobpack,
       deployDefaults: deployDefaultsFromSchema(schema),
       mobDefaults: mobDefaultsFromSchema(schema),
@@ -9771,6 +9777,7 @@ window.MOBKIT_BOOT = {
     deployCommandPreview,
     callRpc,
     loadSchema,
+    loadCatalogs,
     validateDocument,
     exportDocument,
     deployDocument,
@@ -12372,15 +12379,18 @@ function App() {
   React.useEffect(() => {
     let cancelled = false;
     window.MobKitFlowController.configure({ rpcUrl: rpcUrlFromShell() });
-    window.MobKitFlowController.loadSchema().then((schema) => {
+    Promise.all([
+      window.MobKitFlowController.loadSchema(),
+      window.MobKitFlowController.loadCatalogs()
+    ]).then(([schema, catalogPayload]) => {
       if (cancelled) return;
-      const nextCatalogs = window.MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT);
+      const nextCatalogs = window.MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
       setCatalogs(nextCatalogs);
       setDeploySettings(nextCatalogs.deployDefaults);
       setMobSettings(nextCatalogs.mobDefaults);
       contractSkillRealms.current = nextCatalogs.skillRealms;
       studio.setSkillRealms(nextCatalogs.skillRealms);
-      const sampleFlows = window.MobKitFlowController.sampleFlowsFromSchema(schema);
+      const sampleFlows = window.MobKitFlowController.sampleFlowsFromSchema(catalogPayload);
       if (sampleFlows.length) {
         setTemplates(sampleFlows);
         setFlows(sampleFlows);

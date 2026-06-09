@@ -112,6 +112,10 @@ assert.match(controller, /template:\s*graphTemplateSeedFromBlankMobpack\(blankMo
 assert.match(app, /<Tweaks[\s\S]*modelCatalog=\{catalogs\.models\}/, "deploy settings UI must receive MobKit model catalog via props");
 assert.match(app, /setDeploySettings\(nextCatalogs\.deployDefaults\)/, "app shell must hydrate deploy defaults from MobKit schema");
 assert.match(app, /setMobSettings\(nextCatalogs\.mobDefaults\)/, "app shell must hydrate mob settings defaults from MobKit schema");
+assert.match(controller, /catalogs:\s*"mobkit\/mobpacks\/catalogs"/, "controller plane must expose the MobKit authoring catalogs RPC");
+assert.match(app, /MobKitFlowController\.loadCatalogs\(\)/, "app shell must hydrate dynamic catalogs through mobkit/mobpacks/catalogs");
+assert.match(app, /mobKitCatalogsFromSchema\(schema,\s*CATALOG_BOOT,\s*catalogPayload\)/, "app shell must combine schema contracts with catalog RPC data through the controller plane");
+assert.match(app, /sampleFlowsFromSchema\(catalogPayload\)/, "sample flow templates must hydrate from the MobKit catalogs RPC payload");
 assert.match(controller, /mob_definition\?\.editor_deploy_view/, "controller plane must hydrate deploy/top-rail chrome from MobKit schema");
 assert.match(app, /MobKitFlowController\.reconcileFlowMemberSchemas/, "app shell must keep Basic/Graph member-step schema metadata synchronized with Agent definitions");
 assert.match(controller, /function reconcileFlowMemberSchemas/, "controller plane must own member/schema flow reconciliation");

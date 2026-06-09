@@ -153,16 +153,19 @@ function App() {
   React.useEffect(() => {
     let cancelled = false;
     window.MobKitFlowController.configure({ rpcUrl: rpcUrlFromShell() });
-    window.MobKitFlowController.loadSchema()
-      .then((schema) => {
+    Promise.all([
+      window.MobKitFlowController.loadSchema(),
+      window.MobKitFlowController.loadCatalogs(),
+    ])
+      .then(([schema, catalogPayload]) => {
         if (cancelled) return;
-        const nextCatalogs = window.MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT);
+        const nextCatalogs = window.MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
         setCatalogs(nextCatalogs);
         setDeploySettings(nextCatalogs.deployDefaults);
         setMobSettings(nextCatalogs.mobDefaults);
         contractSkillRealms.current = nextCatalogs.skillRealms;
         studio.setSkillRealms(nextCatalogs.skillRealms);
-        const sampleFlows = window.MobKitFlowController.sampleFlowsFromSchema(schema);
+        const sampleFlows = window.MobKitFlowController.sampleFlowsFromSchema(catalogPayload);
         if (sampleFlows.length) {
           setTemplates(sampleFlows);
           setFlows(sampleFlows);

@@ -59,6 +59,7 @@ pub const MOBKIT_CONTRACT_VERSION: &str = "0.4.0";
 pub const MAX_SCHEDULES_PER_REQUEST: usize = 256;
 pub(crate) const MOBPACK_AUTHORING_METHODS: &[&str] = &[
     "mobkit/mobpacks/schema",
+    "mobkit/mobpacks/catalogs",
     "mobkit/mobpacks/validate",
     "mobkit/mobpacks/export",
     "mobkit/mobpacks/import",
@@ -82,6 +83,7 @@ pub(crate) fn handle_mobpack_authoring_rpc(
 ) -> Option<JsonRpcResponse> {
     let result = match method {
         "mobkit/mobpacks/schema" => Ok(crate::mobpack::mobpack_schema_response()),
+        "mobkit/mobpacks/catalogs" => Ok(crate::mobpack::mobpack_catalogs_response()),
         "mobkit/mobpacks/validate" => crate::mobpack::validate_mobpack(params)
             .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
         "mobkit/mobpacks/export" => crate::mobpack::export_mobpack(params)
