@@ -4324,6 +4324,38 @@ assert.equal(addedById.member.id, "m_reviewer");
 assert.equal(addedById.member.sourceDefinition.sourceMobpack, "sample_review_pr");
 assert.equal(addedById.member.sourceDefinition.sourceOrigin, "mobkit/sample-mobpack");
 assert.equal(controller.agentDefinitionAddByIdPatch([agentDefinition], "missing").ok, false);
+const catalogBackedAgentDefinition = {
+  ...agentDefinition,
+  tools: ["mob"],
+  skills: ["mob.review"],
+};
+const addedCatalogBackedAgent = controller.agentDefinitionAddByIdPatch([catalogBackedAgentDefinition], "reviewer", {
+  members: [],
+  schemas: [],
+  toolCatalog: [{ id: "mob" }],
+  skillRealms: [{ id: "sample", skills: [{ id: "mob.review" }] }],
+});
+assert.equal(addedCatalogBackedAgent.ok, true);
+assert.deepEqual(addedCatalogBackedAgent.member.tools, ["mob"]);
+assert.deepEqual(addedCatalogBackedAgent.member.skills, ["mob.review"]);
+assert.match(
+  controller.agentDefinitionAddByIdPatch([{ ...catalogBackedAgentDefinition, tools: ["ghost"] }], "reviewer", {
+    members: [],
+    schemas: [],
+    toolCatalog: [{ id: "mob" }],
+    skillRealms: [{ id: "sample", skills: [{ id: "mob.review" }] }],
+  }).error,
+  /unavailable tool/,
+);
+assert.match(
+  controller.agentDefinitionAddByIdPatch([{ ...catalogBackedAgentDefinition, skills: ["mob.ghost"] }], "reviewer", {
+    members: [],
+    schemas: [],
+    toolCatalog: [{ id: "mob" }],
+    skillRealms: [{ id: "sample", skills: [{ id: "mob.review" }] }],
+  }).error,
+  /unavailable skill/,
+);
 const agentMembersForProjection = [
   { id: "m_planner", name: "Planner", role: "planner", model: "gpt-5.5", schema: "PlanArtifact" },
   {

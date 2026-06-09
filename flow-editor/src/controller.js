@@ -10116,6 +10116,27 @@
       .filter(Boolean);
   }
 
+  function validateAgentDefinitionCatalogRefs(source, options = {}) {
+    if (Array.isArray(options.toolCatalog)) {
+      const toolIds = new Set(options.toolCatalog
+        .map((tool) => String(tool?.id || "").trim())
+        .filter(Boolean));
+      const missingTools = normalizeStringList(source?.tools)
+        .filter((id) => !toolIds.has(id));
+      if (missingTools.length) {
+        throw new Error(`MobKit agent definition references unavailable tool(s): ${missingTools.join(", ")}`);
+      }
+    }
+    if (Array.isArray(options.skillRealms)) {
+      const skillIds = skillIdsFromRealms(options.skillRealms);
+      const missingSkills = normalizeStringList(source?.skills)
+        .filter((id) => !skillIds.has(id));
+      if (missingSkills.length) {
+        throw new Error(`MobKit agent definition references unavailable skill(s): ${missingSkills.join(", ")}`);
+      }
+    }
+  }
+
   function normalizeAgentSchemaDefinition(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const id = String(value.id || "").trim();
@@ -10151,7 +10172,7 @@
     return changed ? merged : schemas;
   }
 
-  function memberFromAgentDefinition(definition, existingMembers = []) {
+  function memberFromAgentDefinition(definition, existingMembers = [], options = {}) {
     const source = definition;
     if (!source) {
       throw new Error("MobKit agent definitions are unavailable; cannot create a member without the schema contract.");
@@ -10189,6 +10210,7 @@
     if (!model) {
       throw new Error("MobKit agent definition is missing its model contract.");
     }
+    validateAgentDefinitionCatalogRefs(source, options);
     const baseRole = slug(role, "member").replace(/-/g, "_");
     let id = `m_${baseRole}`;
     let index = 2;
@@ -10222,10 +10244,10 @@
     };
   }
 
-  function agentDefinitionAddPatch(definition, { members, schemas } = {}) {
+  function agentDefinitionAddPatch(definition, { members, schemas, toolCatalog, skillRealms } = {}) {
     const existingMembers = Array.isArray(members) ? members : [];
     const existingSchemas = Array.isArray(schemas) ? schemas : [];
-    const member = memberFromAgentDefinition(definition, existingMembers);
+    const member = memberFromAgentDefinition(definition, existingMembers, { toolCatalog, skillRealms });
     const nextSchemas = mergeAgentDefinitionSchemas(existingSchemas, definition);
     return {
       member,
@@ -10235,7 +10257,7 @@
     };
   }
 
-  function agentDefinitionAddByIdPatch(agentDefinitions, definitionId, { members, schemas } = {}) {
+  function agentDefinitionAddByIdPatch(agentDefinitions, definitionId, { members, schemas, toolCatalog, skillRealms } = {}) {
     const id = String(definitionId || "").trim();
     const definition = (Array.isArray(agentDefinitions) ? agentDefinitions : []).find((candidate) => candidate?.id === id);
     if (!definition) {
@@ -10248,10 +10270,21 @@
         error: "unknown agent definition",
       };
     }
-    return {
-      ok: true,
-      ...agentDefinitionAddPatch(definition, { members, schemas }),
-    };
+    try {
+      return {
+        ok: true,
+        ...agentDefinitionAddPatch(definition, { members, schemas, toolCatalog, skillRealms }),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        member: null,
+        members: Array.isArray(members) ? members : [],
+        schemas: Array.isArray(schemas) ? schemas : [],
+        schemasChanged: false,
+        error: error?.message || String(error),
+      };
+    }
   }
 
   function memberPromptSkeleton(member) {

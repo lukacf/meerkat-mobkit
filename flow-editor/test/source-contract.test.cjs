@@ -1050,6 +1050,10 @@ assert.match(controller, /missingRuntimeModeLabel/, "controller plane must expos
 assert.match(agents, /MobKitFlowController\.agentDefinitionAddByIdPatch/, "Agent Editor must add API-backed agent definitions through one controller-plane operation");
 assert.match(controller, /function agentDefinitionAddPatch/, "controller plane must own combined agent-definition member and schema mutation semantics");
 assert.match(controller, /function agentDefinitionAddByIdPatch/, "controller plane must own agent-definition id resolution");
+assert.match(agents, /<AddAgentControl[\s\S]*toolCatalog=\{toolCatalog\}/, "Agent add-control must receive the live MobKit tool catalog");
+assert.match(addAgentControlBlock, /agentDefinitionAddByIdPatch\(agentDefinitions,\s*definitionId,\s*\{[\s\S]*toolCatalog,[\s\S]*skillRealms:\s*studio\.skillRealms/, "Agent add-control must pass live tool and skill catalogs into controller validation");
+assert.match(controller, /function validateAgentDefinitionCatalogRefs[\s\S]*options\.toolCatalog[\s\S]*unavailable tool[\s\S]*options\.skillRealms[\s\S]*unavailable skill/, "controller plane must reject agent definitions whose tool or skill refs are not in MobKit catalogs");
+assert.match(controller, /memberFromAgentDefinition\(definition,\s*existingMembers,\s*\{ toolCatalog,\s*skillRealms \}\)/, "agent-definition member creation must validate against live catalog context when adding through the editor");
 assert.match(controller, /memberFromAgentDefinition[\s\S]*sourceDefinition:\s*\{[\s\S]*definitionId:\s*source\.id[\s\S]*sourceMobpack:\s*source\.sourceMobpack[\s\S]*sourceOrigin:\s*source\.sourceOrigin/, "Agent definition member creation must retain MobKit profile-member provenance in editor state");
 assert.match(controller, /function mergeAgentDefinitionSchemas/, "controller plane must own agent-definition schema replacement semantics");
 assert(!/MobKitFlowController\.memberFromAgentDefinition/.test(agents), "Agent Editor must not assemble API-backed member definitions directly");
