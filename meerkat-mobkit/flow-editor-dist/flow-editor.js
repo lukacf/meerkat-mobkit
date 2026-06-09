@@ -5536,7 +5536,7 @@ window.MOBKIT_BOOT = {
     let sublabel = inst?.label || gateKind;
     if (gateKind === "join" && inst?.collection === "quorum" && inst?.quorum) {
       const incoming = (Array.isArray(edges) ? edges : []).filter((edge) => edge.to === inst?.id).length;
-      sublabel = `barrier · ${inst.quorum.n}/${incoming || inst.quorum.m}`;
+      sublabel = `${draft.joinQuorumLabelPrefix}${inst.quorum.n}/${incoming || inst.quorum.m}`;
     } else if (gateKind === "join" && inst?.collection) {
       sublabel = `${draft.joinLabelPrefix}${inst.collection}`;
     }
@@ -8414,6 +8414,7 @@ window.MOBKIT_BOOT = {
       reworkEdgeLabel: String(draft.rework_edge_label || "").trim(),
       terminalEdgeLabelPrefix: String(draft.terminal_edge_label_prefix || ""),
       joinLabelPrefix: String(draft.join_label_prefix || ""),
+      joinQuorumLabelPrefix: String(draft.join_quorum_label_prefix || ""),
       branchFrameLabelPrefix: String(draft.branch_frame_label_prefix || ""),
       branchFrameSingularSuffix: String(draft.branch_frame_singular_suffix || ""),
       branchFramePluralSuffix: String(draft.branch_frame_plural_suffix || ""),
@@ -8430,7 +8431,7 @@ window.MOBKIT_BOOT = {
     if (!out.branchGateLabel || !out.branchConditionLaneLabel || !out.branchFallbackLaneLabel
       || !out.branchJoinLabel || !out.fallbackEdgeLabel || out.parallelLaneLabels.length < 2
       || !out.parallelEdgeLabel || !out.reworkEdgeLabel || !out.terminalEdgeLabelPrefix
-      || !out.joinLabelPrefix || !out.branchFrameLabelPrefix || !out.branchFrameSingularSuffix
+      || !out.joinLabelPrefix || !out.joinQuorumLabelPrefix || !out.branchFrameLabelPrefix || !out.branchFrameSingularSuffix
       || !out.branchFramePluralSuffix || !out.parallelFrameLabelPrefix || !out.parallelFrameJoinInfix
       || !out.parallelMissingDispatchLabel || !out.parallelMissingCollectionLabel
       || !out.repeatFrameLabelPrefix || !out.repeatMaxIterationsPrefix
@@ -8453,6 +8454,7 @@ window.MOBKIT_BOOT = {
       reworkEdgeLabel: "",
       terminalEdgeLabelPrefix: "",
       joinLabelPrefix: "",
+      joinQuorumLabelPrefix: "",
       branchFrameLabelPrefix: "",
       branchFrameSingularSuffix: "",
       branchFramePluralSuffix: "",

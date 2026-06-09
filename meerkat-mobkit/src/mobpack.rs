@@ -736,6 +736,7 @@ pub fn mobpack_schema_response() -> Value {
         "rework_edge_label": "rework",
         "terminal_edge_label_prefix": "to ",
         "join_label_prefix": "join · ",
+        "join_quorum_label_prefix": "barrier · ",
         "branch_frame_label_prefix": "BRANCH · ",
         "branch_frame_singular_suffix": " path",
         "branch_frame_plural_suffix": " paths",
@@ -16262,6 +16263,10 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_draft"]["parallel_missing_dispatch_label"],
             json!("missing dispatch")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_draft"]["join_quorum_label_prefix"],
+            json!("barrier · ")
         );
         assert_eq!(
             mob_definition["editor_graph_draft"]["repeat_missing_max_iterations_label"],

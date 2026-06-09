@@ -6192,6 +6192,7 @@ const testEditorGraphDraft = {
   rework_edge_label: "rework",
   terminal_edge_label_prefix: "to ",
   join_label_prefix: "join · ",
+  join_quorum_label_prefix: "barrier · ",
   branch_frame_label_prefix: "BRANCH · ",
   branch_frame_singular_suffix: " path",
   branch_frame_plural_suffix: " paths",
@@ -7119,7 +7120,21 @@ assert.equal(controller.graphCanvasInstances({
 assert.deepEqual(controller.graphGateCanvasState({
   inst: { id: "join_1", gateKind: "join", collection: "quorum", quorum: { n: 2, m: 3 } },
   edges: [{ to: "join_1" }, { to: "join_1" }],
+  contract: graphShapeContract,
 }), { glyph: "⋈", sublabel: "barrier · 2/2", gateKind: "join" });
+assert.deepEqual(controller.graphGateCanvasState({
+  inst: { id: "join_1", gateKind: "join", collection: "quorum", quorum: { n: 2, m: 3 } },
+  edges: [{ to: "join_1" }, { to: "join_1" }],
+  contract: {
+    mob_definition: {
+      ...graphShapeContract.mob_definition,
+      editor_graph_draft: {
+        ...testEditorGraphDraft,
+        join_quorum_label_prefix: "schema quorum: ",
+      },
+    },
+  },
+}), { glyph: "⋈", sublabel: "schema quorum: 2/2", gateKind: "join" });
 assert.deepEqual(controller.graphGateCanvasState({
   inst: { id: "join_2", gateKind: "join", collection: "any" },
   edges: [],
