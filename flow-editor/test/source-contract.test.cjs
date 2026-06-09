@@ -1671,8 +1671,10 @@ assert.match(tweaksBlock, /deploySettingsFieldPatch\(deploySettings,\s*field,\s*
 assert.match(tweaksBlock, /mobSettingsFieldPatch\(mobSettings,\s*field,\s*value,\s*\{\s*contract\s*\}\)/, "Tweaks mob settings writes must pass MobKit contract into controller validation");
 assert.match(tweaksBlock, /operationType:\s*"update_deploy_settings"[\s\S]*operation:\s*\{\s*deploy:\s*next\s*\}/, "Tweaks deploy settings mutations must round-trip through named MobKit operation payloads");
 assert(!/operationType:\s*"update_deploy_settings"[\s\S]{0,220}deploySettings:\s*next/.test(tweaksBlock), "Tweaks deploy settings must not submit duplicate browser-projected settings fragments");
+assert.match(mobpackRust, /update_deploy_settings requires deploy object/, "MobKit deploy settings operation must reject projected fragments without a deploy payload");
 assert.match(tweaksBlock, /operationType:\s*field === "roleWiring" \? "update_role_wiring" : "update_mob_settings"[\s\S]*operation:\s*field === "roleWiring" \? \{\s*role_wiring:\s*next\.roleWiring \|\| \[\]\s*\} : \{\s*mob_settings:\s*next\s*\}/, "Tweaks mob settings mutations must round-trip through named MobKit operation payloads");
 assert(!/operationType:\s*field === "roleWiring" \? "update_role_wiring" : "update_mob_settings"[\s\S]{0,320}mobSettings:\s*next/.test(tweaksBlock), "Tweaks mob settings must not submit duplicate browser-projected settings fragments");
+assert.match(mobpackRust, /update_mob_settings requires mob_settings object[\s\S]*update_role_wiring requires role_wiring or mob_settings/, "MobKit mob settings operations must reject projected fragments without typed payloads");
 assert.match(tweaksBlock, /MobKitFlowController\.tweaksControlState/, "Tweaks controls must read deploy, mob, profile, and loadable-flow option state through the controller plane");
 assert.match(controller, /mob_definition\?\.editor_settings_view/, "controller plane must hydrate Tweaks/settings chrome from MobKit schema");
 assert.match(app, /<Tweaks[\s\S]*settingsView=\{catalogs\.settingsView\}/, "app shell must inject MobKit Tweaks/settings view state");

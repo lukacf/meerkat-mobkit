@@ -4043,7 +4043,7 @@ fn apply_update_deploy_settings_operation(
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
     let Some(deploy) = operation.get("deploy") else {
-        return apply_projected_authoring_document_operation(document, operation);
+        return Err("update_deploy_settings requires deploy object".to_string());
     };
     document.deploy = deploy.clone();
     Ok(operation
@@ -4060,7 +4060,7 @@ fn apply_update_mob_settings_operation(
         .get("mob_settings")
         .or_else(|| operation.get("mobSettings"))
     else {
-        return apply_projected_authoring_document_operation(document, operation);
+        return Err("update_mob_settings requires mob_settings object".to_string());
     };
     document.mob_settings = settings.clone();
     Ok(operation
@@ -4087,7 +4087,7 @@ fn apply_update_role_wiring_operation(
         }
         document.mob_settings["roleWiring"] = role_wiring.clone();
     } else {
-        return apply_projected_authoring_document_operation(document, operation);
+        return Err("update_role_wiring requires role_wiring or mob_settings".to_string());
     }
     Ok(operation
         .get("selection")
@@ -24535,6 +24535,39 @@ model = "gpt-5.5"
         assert_eq!(
             settings["document"]["deploy"]["prompt"],
             json!("Payload section prompt.")
+        );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": settings["document"],
+                "operation": {
+                    "type": "update_deploy_settings",
+                    "flow": { "name": "fragment fallback must not apply" }
+                }
+            }))
+            .expect_err("deploy settings require typed payload")
+            .contains("update_deploy_settings requires deploy object")
+        );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": settings["document"],
+                "operation": {
+                    "type": "update_mob_settings",
+                    "members": []
+                }
+            }))
+            .expect_err("mob settings require typed payload")
+            .contains("update_mob_settings requires mob_settings object")
+        );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": settings["document"],
+                "operation": {
+                    "type": "update_role_wiring",
+                    "edges": []
+                }
+            }))
+            .expect_err("role wiring requires typed payload")
+            .contains("update_role_wiring requires role_wiring or mob_settings")
         );
     }
 
