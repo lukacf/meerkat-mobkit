@@ -346,7 +346,7 @@ fn default_schema_version() -> String {
     MOBPACK_SCHEMA_VERSION.to_string()
 }
 
-fn discover_skill_realms(sample_mobpacks: &Value, authoring_sources: &Value) -> Value {
+fn discover_skill_realms(authoring_sources: &Value) -> Value {
     let mut realms = Vec::new();
     for (realm_id, label, dir) in skill_catalog_dirs() {
         let skills = discover_skills_in_dir(&dir);
@@ -363,9 +363,6 @@ fn discover_skill_realms(sample_mobpacks: &Value, authoring_sources: &Value) -> 
     }
     if let Some(authoring_realm) = authoring_skill_realm(authoring_sources, realms.is_empty()) {
         realms.push(authoring_realm);
-    }
-    if let Some(sample_realm) = sample_skill_realm(sample_mobpacks, realms.is_empty()) {
-        realms.push(sample_realm);
     }
     Value::Array(realms)
 }
@@ -815,8 +812,7 @@ fn provider_defaults_response() -> Vec<Value> {
 
 fn authoring_skill_realms_response() -> Value {
     let authoring_sources = authoring_agent_definition_mobpack_sources();
-    let sample_mobpacks = sample_mobpack_catalog();
-    discover_skill_realms(&sample_mobpacks, &authoring_sources)
+    discover_skill_realms(&authoring_sources)
 }
 
 pub fn mobpack_tools_catalog_response() -> Value {
@@ -862,9 +858,15 @@ pub fn mobpack_templates_response() -> Value {
     let sample_mobpacks = sample_mobpack_catalog();
     let blank_mobpack = blank_mobpack_template();
     let tool_catalog = tool_catalog_response();
-    let skill_realms = authoring_skill_realms_response();
-    let sample_agent_definitions =
-        agent_definition_catalog(&sample_mobpacks, &tool_catalog, &skill_realms, "sample");
+    let sample_skill_realms = sample_skill_realm(&sample_mobpacks, true)
+        .map(|realm| Value::Array(vec![realm]))
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let sample_agent_definitions = agent_definition_catalog(
+        &sample_mobpacks,
+        &tool_catalog,
+        &sample_skill_realms,
+        "sample",
+    );
     json!({
         "schema_version": MOBPACK_SCHEMA_VERSION,
         "source": "mobkit/mobpack-templates",
@@ -7360,6 +7362,19 @@ fn graph_instance_is_control_node(instance: &Value) -> bool {
     )
 }
 
+fn graph_instance_is_uncompiled_terminal(instance: &Value) -> bool {
+    instance
+        .get("isTerminal")
+        .or_else(|| instance.get("is_terminal"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || instance
+            .get("kind")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|kind| kind == "terminal")
+}
+
 fn validate_graph_instance(
     instance: &Value,
     instances: &[Value],
@@ -7394,6 +7409,11 @@ fn validate_graph_instance(
     });
     if duplicate {
         return Err(format!("graph node already exists: {id}"));
+    }
+    if graph_instance_is_uncompiled_terminal(instance) {
+        return Err(format!(
+            "uncompiled graph terminal nodes cannot be persisted through MobKit graph authoring: {id}"
+        ));
     }
     if !graph_instance_is_control_node(instance) {
         let member_id = instance
@@ -7459,6 +7479,16 @@ fn validate_graph_edge(
     let instance_ids = graph_instance_ids(instances);
     if !instance_ids.contains(from) || !instance_ids.contains(to) {
         return Err("edge endpoints must reference existing graph nodes".to_string());
+    }
+    if instances.iter().any(|instance| {
+        instance
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| {
+                (id == from || id == to) && graph_instance_is_uncompiled_terminal(instance)
+            })
+    }) {
+        return Err("edge endpoints cannot reference uncompiled graph terminal nodes".to_string());
     }
     let duplicate = edges.iter().any(|candidate| {
         let candidate_id = candidate
@@ -10703,7 +10733,94 @@ fn graph_to_flow_first_string(values: &[String]) -> String {
 
 pub fn validate_mobpack(params: &Value) -> Result<MobpackValidationResult, String> {
     let document = document_from_params(params)?;
-    Ok(validate_document(&document))
+    let mut validation = validate_document(&document);
+    if validate_with_rkat_requested(params) && validation.ok {
+        validation = validate_document_with_rkat(params, &document, validation)?;
+    }
+    Ok(validation)
+}
+
+fn validate_with_rkat_requested(params: &Value) -> bool {
+    params
+        .get("rkat_validate")
+        .or_else(|| params.get("rkatValidate"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn validate_document_with_rkat(
+    params: &Value,
+    document: &MobpackDocument,
+    mut validation: MobpackValidationResult,
+) -> Result<MobpackValidationResult, String> {
+    let export = export_mobpack(&json!({ "document": document }))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(export.content_base64.as_bytes())
+        .map_err(|err| format!("failed to decode exported mobpack for validation: {err}"))?;
+    let pack_path = validate_pack_path(params, &export.filename)?;
+    if let Some(parent) = pack_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create validation output directory: {err}"))?;
+    }
+    std::fs::write(&pack_path, bytes)
+        .map_err(|err| format!("failed to write validation mobpack: {err}"))?;
+
+    let rkat_bin = deploy_rkat_bin(params);
+    let argv = vec![
+        rkat_bin,
+        "mob".to_string(),
+        "validate".to_string(),
+        pack_path.to_string_lossy().to_string(),
+    ];
+    let command = shell_command(&argv);
+    let output = run_rkat_validate_command(&argv, rkat_validate_timeout(params));
+    let combined_output = [output.stdout.as_deref(), output.stderr.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if output.status_code == Some(0) {
+        validation.validation_source = "rkat mob validate".to_string();
+        validation.display_rows.push(MobpackDisplayRow {
+            kind: "ok".to_string(),
+            glyph: "✓".to_string(),
+            head: "rkat mob validate executed".to_string(),
+            sub: if combined_output.is_empty() {
+                command
+            } else {
+                combined_output
+            },
+            meta: pack_path.to_string_lossy().to_string(),
+        });
+        return Ok(validation);
+    }
+
+    let message = if combined_output.is_empty() {
+        format!("rkat mob validate failed: {command}")
+    } else {
+        combined_output
+    };
+    validation.ok = false;
+    validation.validation_source = "rkat mob validate".to_string();
+    validation.diagnostics.push(MobpackDiagnostic {
+        severity: "error".to_string(),
+        code: "rkat_mob_validate_failed".to_string(),
+        message: message.clone(),
+        path: Some(pack_path.to_string_lossy().to_string()),
+    });
+    validation.display_rows =
+        validation_display_rows(false, &validation.diagnostics, "rkat mob validate");
+    validation.display_rows.push(MobpackDisplayRow {
+        kind: "crit".to_string(),
+        glyph: "!".to_string(),
+        head: "rkat mob validate failed".to_string(),
+        sub: message,
+        meta: pack_path.to_string_lossy().to_string(),
+    });
+    Ok(validation)
 }
 
 pub fn deploy_command_preview(params: &Value) -> Result<MobpackDeployCommandResult, String> {
@@ -10974,6 +11091,39 @@ fn deploy_pack_path(params: &Value, filename: &str) -> Result<PathBuf, String> {
     Ok(output_dir.join(format!("{stamp}-{filename}")))
 }
 
+fn validate_pack_path(params: &Value, filename: &str) -> Result<PathBuf, String> {
+    if let Some(path) = params
+        .get("validation_pack_path")
+        .or_else(|| params.get("pack_path"))
+        .and_then(Value::as_str)
+    {
+        let path = path.trim();
+        if !path.is_empty() {
+            return Ok(PathBuf::from(path));
+        }
+    }
+    let output_dir = params
+        .get("validation_output_dir")
+        .or_else(|| params.get("output_dir"))
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|err| format!("system clock before unix epoch: {err}"))?
+        .as_millis();
+    Ok(output_dir.join(format!("{stamp}-validate-{filename}")))
+}
+
+fn rkat_validate_timeout(params: &Value) -> std::time::Duration {
+    let millis = params
+        .get("rkat_validate_timeout_ms")
+        .or_else(|| params.get("rkatValidateTimeoutMs"))
+        .and_then(Value::as_u64)
+        .unwrap_or(30_000);
+    std::time::Duration::from_millis(millis.max(1))
+}
+
 #[cfg(test)]
 fn deploy_rkat_bin(params: &Value) -> String {
     params
@@ -11055,6 +11205,84 @@ struct DeployProcessOutput {
     status_code: Option<i32>,
     stdout: Option<String>,
     stderr: Option<String>,
+}
+
+fn run_rkat_validate_command(argv: &[String], timeout: std::time::Duration) -> DeployProcessOutput {
+    if argv.is_empty() {
+        return DeployProcessOutput {
+            status_code: None,
+            stdout: None,
+            stderr: Some("failed to run rkat mob validate: empty argv".to_string()),
+        };
+    }
+    let mut child = match std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) => {
+            return DeployProcessOutput {
+                status_code: None,
+                stdout: None,
+                stderr: Some(format!("failed to run rkat mob validate: {err}")),
+            };
+        }
+    };
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return match child.wait_with_output() {
+                    Ok(output) => DeployProcessOutput {
+                        status_code: output.status.code(),
+                        stdout: Some(String::from_utf8_lossy(&output.stdout).to_string()),
+                        stderr: Some(String::from_utf8_lossy(&output.stderr).to_string()),
+                    },
+                    Err(err) => DeployProcessOutput {
+                        status_code: None,
+                        stdout: None,
+                        stderr: Some(format!("failed to collect rkat mob validate output: {err}")),
+                    },
+                };
+            }
+            Ok(None) if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                return match child.wait_with_output() {
+                    Ok(output) => {
+                        let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                        if !stderr.trim().is_empty() {
+                            stderr.push('\n');
+                        }
+                        stderr.push_str(&format!(
+                            "rkat mob validate timed out after {}ms",
+                            timeout.as_millis()
+                        ));
+                        DeployProcessOutput {
+                            status_code: output.status.code(),
+                            stdout: Some(String::from_utf8_lossy(&output.stdout).to_string()),
+                            stderr: Some(stderr),
+                        }
+                    }
+                    Err(err) => DeployProcessOutput {
+                        status_code: None,
+                        stdout: None,
+                        stderr: Some(format!("failed to stop rkat mob validate: {err}")),
+                    },
+                };
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(err) => {
+                let _ = child.kill();
+                return DeployProcessOutput {
+                    status_code: None,
+                    stdout: None,
+                    stderr: Some(format!("failed to wait for rkat mob validate: {err}")),
+                };
+            }
+        }
+    }
 }
 
 fn run_deploy_command(argv: &[String], timeout: std::time::Duration) -> DeployProcessOutput {
@@ -14910,7 +15138,7 @@ fn validation_display_rows(
             glyph: "✓".to_string(),
             head: "MobKit mobpack validates".to_string(),
             sub: validation_source.to_string(),
-            meta: "rkat mob validate".to_string(),
+            meta: "meerkat_mob::validate_definition".to_string(),
         });
     } else if rows.is_empty() {
         rows.push(MobpackDisplayRow {
@@ -20795,7 +21023,7 @@ depends_on_mode = "all"
                 row.kind == "ok"
                     && row.head == "MobKit mobpack validates"
                     && row.sub == MOBPACK_VALIDATION_SOURCE
-                    && row.meta == "rkat mob validate"
+                    && row.meta == "meerkat_mob::validate_definition"
             }));
         }
         if let Ok(path) = std::env::var("MOBKIT_MOBPACK_VALIDATE_OUT") {
@@ -24550,7 +24778,7 @@ model = "gpt-5.5"
         assert!(result.display_rows.iter().any(|row| {
             row.kind == "ok"
                 && row.head == "MobKit mobpack validates"
-                && row.meta == "rkat mob validate"
+                && row.meta == "meerkat_mob::validate_definition"
         }));
         assert!(result.display_rows.iter().any(|row| {
             row.kind == "warn"
@@ -24558,6 +24786,91 @@ model = "gpt-5.5"
                 && row.sub.contains("rkat mob deploy")
                 && row.meta == result.pack_path
         }));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn validate_mobpack_runs_rkat_validate_when_requested() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rkat_path = dir.path().join("rkat");
+        let args_path = dir.path().join("rkat-args.txt");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho 'valid\\tfake-sha'\n",
+            args_path.to_string_lossy()
+        );
+        std::fs::write(&rkat_path, script).expect("write fake rkat");
+        let mut perms = std::fs::metadata(&rkat_path)
+            .expect("fake rkat metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&rkat_path, perms).expect("chmod fake rkat");
+
+        let result = validate_mobpack(&json!({
+            "document": valid_document(),
+            "rkat_validate": true,
+            "rkat_bin": rkat_path,
+            "validation_output_dir": dir.path()
+        }))
+        .expect("rkat validate");
+
+        assert!(result.ok, "{:?}", result.diagnostics);
+        assert_eq!(result.validation_source, "rkat mob validate");
+        assert!(result.display_rows.iter().any(|row| {
+            row.kind == "ok"
+                && row.head == "rkat mob validate executed"
+                && row.sub.contains("valid")
+        }));
+        let args = std::fs::read_to_string(args_path).expect("read fake rkat args");
+        let args = args.lines().collect::<Vec<_>>();
+        assert_eq!(&args[0..2], ["mob", "validate"]);
+        assert!(
+            args.get(2).is_some_and(
+                |path| path.ends_with(".mobpack") && std::path::Path::new(path).exists()
+            ),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn validate_mobpack_reports_rkat_validate_failures() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rkat_path = dir.path().join("rkat");
+        std::fs::write(
+            &rkat_path,
+            "#!/bin/sh\necho 'fake validation failure' >&2\nexit 7\n",
+        )
+        .expect("write fake rkat");
+        let mut perms = std::fs::metadata(&rkat_path)
+            .expect("fake rkat metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&rkat_path, perms).expect("chmod fake rkat");
+
+        let result = validate_mobpack(&json!({
+            "document": valid_document(),
+            "rkat_validate": true,
+            "rkat_bin": rkat_path,
+            "validation_output_dir": dir.path()
+        }))
+        .expect("rkat validate failure result");
+
+        assert!(!result.ok);
+        assert_eq!(result.validation_source, "rkat mob validate");
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "rkat_mob_validate_failed"
+                && diagnostic.message.contains("fake validation failure")
+        }));
+        assert!(
+            result
+                .display_rows
+                .iter()
+                .any(|row| { row.kind == "crit" && row.head == "rkat mob validate failed" })
+        );
     }
 
     #[test]
@@ -26135,7 +26448,7 @@ model = "gpt-5.5"
             "document": document,
             "operation": {
                 "type": "insert_graph_node",
-                "instance": { "id": "n_done", "kind": "terminal", "col": 2, "row": 0, "isTerminal": true }
+                "instance": { "id": "n_done", "kind": "member", "memberId": "reviewer", "col": 2, "row": 0 }
             }
         }))
         .expect("insert graph node");
@@ -26181,14 +26494,11 @@ model = "gpt-5.5"
             "operation": {
                 "type": "update_graph_node",
                 "instance_id": "n_done",
-                "patch": { "lane": "terminal" }
+                "patch": { "lane": "review" }
             }
         }))
         .expect("update graph node");
-        assert_eq!(
-            updated["document"]["instances"][2]["lane"],
-            json!("terminal")
-        );
+        assert_eq!(updated["document"]["instances"][2]["lane"], json!("review"));
 
         let connected = apply_mobpack_authoring_operation(&json!({
             "document": updated["document"],
@@ -26313,6 +26623,108 @@ model = "gpt-5.5"
                 .expect("edges")
                 .len(),
             0
+        );
+    }
+
+    #[test]
+    fn apply_operation_rejects_uncompiled_graph_terminal_authoring() {
+        let mut document = valid_document();
+        document.mob_toml = None;
+        document.members = json!([
+            {
+                "id": "planner",
+                "name": "planner",
+                "role": "planner",
+                "profileBinding": "inline",
+                "runtimeMode": "turn_driven",
+                "model": "gpt-5.5",
+                "tools": []
+            },
+            {
+                "id": "reviewer",
+                "name": "reviewer",
+                "role": "reviewer",
+                "profileBinding": "inline",
+                "runtimeMode": "turn_driven",
+                "model": "gpt-5.5",
+                "tools": []
+            }
+        ]);
+        document.instances = json!([
+            { "id": "n_plan", "memberId": "planner", "kind": "member", "col": 0, "row": 0 },
+            { "id": "n_review", "memberId": "reviewer", "kind": "member", "col": 1, "row": 0 }
+        ]);
+        document.edges = json!([]);
+        document.flow = json!({
+            "id": "main",
+            "steps": [
+                { "id": "n_plan", "type": "member", "role": "planner", "instruction": "Plan." },
+                { "id": "n_review", "type": "member", "role": "reviewer", "instruction": "Review." }
+            ]
+        });
+
+        let insert_err = apply_mobpack_authoring_operation(&json!({
+            "document": document.clone(),
+            "operation": {
+                "type": "insert_graph_node",
+                "instance": { "id": "n_done", "kind": "terminal", "col": 2, "row": 0, "isTerminal": true }
+            }
+        }))
+        .expect_err("terminal insert must be rejected");
+        assert!(
+            insert_err.contains("uncompiled graph terminal nodes cannot be persisted"),
+            "{insert_err}"
+        );
+
+        let update_err = apply_mobpack_authoring_operation(&json!({
+            "document": document.clone(),
+            "operation": {
+                "type": "update_graph_node",
+                "instance_id": "n_review",
+                "patch": { "kind": "terminal", "isTerminal": true }
+            }
+        }))
+        .expect_err("terminal update must be rejected");
+        assert!(
+            update_err.contains("uncompiled graph terminal nodes cannot be persisted"),
+            "{update_err}"
+        );
+
+        let mut legacy_terminal_document = document.clone();
+        legacy_terminal_document.instances = json!([
+            { "id": "n_plan", "memberId": "planner", "kind": "member", "col": 0, "row": 0 },
+            { "id": "n_done", "kind": "terminal", "isTerminal": true, "col": 1, "row": 0 }
+        ]);
+        let connect_err = apply_mobpack_authoring_operation(&json!({
+            "document": legacy_terminal_document.clone(),
+            "operation": {
+                "type": "connect_graph_nodes",
+                "from_id": "n_plan",
+                "to_id": "n_done"
+            }
+        }))
+        .expect_err("terminal endpoint connect must be rejected");
+        assert!(
+            connect_err.contains("edge endpoints cannot reference uncompiled graph terminal nodes"),
+            "{connect_err}"
+        );
+
+        legacy_terminal_document.edges = json!([
+            { "id": "e1", "from": "n_plan", "to": "n_review", "kind": "next", "label": "" }
+        ]);
+        let reconnect_err = apply_mobpack_authoring_operation(&json!({
+            "document": legacy_terminal_document,
+            "operation": {
+                "type": "update_graph_edge",
+                "edge_id": "e1",
+                "patch": { "to": "n_done" }
+            }
+        }))
+        .expect_err("terminal endpoint reconnect must be rejected");
+        assert!(
+            reconnect_err
+                .contains("edge endpoints cannot reference uncompiled graph terminal nodes"),
+            "{reconnect_err}"
         );
     }
 
@@ -26709,37 +27121,15 @@ model = "gpt-5.5"
         );
         assert!(
             realms.iter().all(|realm| realm["source"] != "starter"),
-            "skill realms must come from filesystem or real sample mobpacks, not starter mocks"
+            "skill realms must come from filesystem or authoring mobpacks, not starter mocks"
         );
-        let sample_realm = realms
-            .iter()
-            .find(|realm| realm["id"] == "mobkit/sample-mobpacks")
-            .expect("sample mobpack skill realm");
-        assert_eq!(sample_realm["source"], "mobkit/sample-mobpack");
-        assert_eq!(
-            sample_realm["sourceDocumentPath"],
-            "sample_mobpacks[].document.skill_realms[]"
+        assert!(
+            realms.iter().all(|realm| {
+                realm["id"] != "mobkit/sample-mobpacks"
+                    && realm["source"] != "mobkit/sample-mobpack"
+            }),
+            "global skill catalog must not leak sample mobpack skill realms"
         );
-        for skill_id in ["mob.workpad", "mob.review"] {
-            let skill = sample_realm["skills"]
-                .as_array()
-                .expect("sample realm skills")
-                .iter()
-                .find(|skill| skill["id"] == skill_id)
-                .unwrap_or_else(|| panic!("missing {skill_id} sample skill"));
-            assert_eq!(skill["source"], "inline");
-            assert_eq!(skill["origin"], "mobkit/sample-mobpack");
-            assert!(
-                skill["content"]
-                    .as_str()
-                    .is_some_and(|content| !content.trim().is_empty())
-            );
-            assert!(
-                skill["sourceMobpack"]
-                    .as_str()
-                    .is_some_and(|id| id.starts_with("sample_"))
-            );
-        }
         let authoring_realm = realms
             .iter()
             .find(|realm| realm["id"] == "mobkit/authoring-agent-definitions")
@@ -26766,6 +27156,36 @@ model = "gpt-5.5"
             authoring_skill["sourceMobpack"],
             "mobkit_authoring_profiles"
         );
+
+        let samples = catalogs["sample_mobpacks"]
+            .as_array()
+            .expect("sample mobpacks");
+        let sample_skills = samples
+            .iter()
+            .filter_map(|sample| sample.get("document"))
+            .flat_map(|document| document["skill_realms"].as_array().into_iter().flatten())
+            .flat_map(|realm| realm["skills"].as_array().into_iter().flatten())
+            .collect::<Vec<_>>();
+        for skill_id in ["mob.workpad", "mob.review"] {
+            let skill = sample_skills
+                .iter()
+                .find(|skill| skill["id"] == skill_id)
+                .unwrap_or_else(|| panic!("missing {skill_id} sample skill"));
+            assert_eq!(skill["source"], "inline");
+            assert!(
+                skill["content"]
+                    .as_str()
+                    .is_some_and(|content| !content.trim().is_empty())
+            );
+        }
+        let sample_agent_definitions = catalogs["sample_agent_definitions"]
+            .as_array()
+            .expect("sample agent definitions");
+        assert!(sample_agent_definitions.iter().any(|definition| {
+            definition["skillDefinitions"]
+                .as_array()
+                .is_some_and(|skills| skills.iter().any(|skill| skill["id"] == "mob.workpad"))
+        }));
     }
 
     #[test]

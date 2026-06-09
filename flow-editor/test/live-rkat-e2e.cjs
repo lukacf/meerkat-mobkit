@@ -26,6 +26,9 @@ function sha256(bytes) {
 }
 
 async function rpc(method, params) {
+  const requestParams = method === "mobkit/mobpacks/validate"
+    ? { ...(params || {}), rkat_validate: true }
+    : (params || {});
   const response = await fetch(rpcUrl, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -33,7 +36,7 @@ async function rpc(method, params) {
       jsonrpc: "2.0",
       id: Math.floor(Math.random() * 1e9),
       method,
-      params: params || {},
+      params: requestParams,
     }),
   });
   if (!response.ok) throw new Error(`${method} HTTP ${response.status}`);
@@ -915,16 +918,27 @@ async function buildUnifiedProjectionDocument(catalogs) {
     if (!toolIds.includes(required)) throw new Error(`unified projection proof missing real tool ${required}`);
   }
   const catalogSkillRealms = controller.skillRealmsFromCatalogs(catalogs);
-  const sampleSkillRealm = catalogSkillRealms
-    .find((realm) => realm.id === "mobkit/sample-mobpacks" || (realm.skills || []).some((skill) => skill.id === "mob.workpad"));
-  const sampleSkills = (sampleSkillRealm?.skills || [])
+  const leakedSampleRealm = catalogSkillRealms
+    .find((realm) => realm.id === "mobkit/sample-mobpacks" || realm.source === "mobkit/sample-mobpack");
+  if (leakedSampleRealm) {
+    throw new Error(`global skill catalog leaked sample mobpack skills: ${JSON.stringify(leakedSampleRealm)}`);
+  }
+  const sampleSkills = (catalogs.sample_mobpacks || [])
+    .flatMap((sample) => sample.document?.skill_realms || [])
+    .flatMap((realm) => realm.skills || [])
     .filter((skill) => ["mob.workpad", "mob.review"].includes(skill.id));
   if (sampleSkills.length < 2) {
-    throw new Error("unified projection proof needs real MobKit sample mobpack skills from mobkit/mobpacks/catalogs");
+    throw new Error("unified projection proof needs real MobKit sample mobpack skills from sample_mobpacks");
   }
-  if (!sampleSkillRealm?.source) {
-    throw new Error(`unified projection proof needs MobKit sample skill realm source metadata: ${JSON.stringify(sampleSkillRealm)}`);
+  if (!sampleSkills.every((skill) => skill.source)) {
+    throw new Error(`unified projection proof needs MobKit sample skill source metadata: ${JSON.stringify(sampleSkills)}`);
   }
+  const sampleSkillRealm = {
+    id: "mobkit/sample-mobpacks",
+    label: "MobKit sample skills",
+    source: "mobkit/sample-mobpack",
+    skills: sampleSkills,
+  };
   const inlineSkillRealm = {
     id: "mobkit/editor-inline",
     label: "This mobpack",
@@ -936,7 +950,7 @@ async function buildUnifiedProjectionDocument(catalogs) {
       content: "Keep Basic, Graph, and Agent editor projections synchronized against the same deployable mobpack.",
     }],
   };
-  const skillRealms = [...catalogSkillRealms, inlineSkillRealm];
+  const skillRealms = [...catalogSkillRealms, sampleSkillRealm, inlineSkillRealm];
 
   const baseDocument = catalogs.blank_mobpack?.document;
   if (!baseDocument || typeof baseDocument !== "object") {
@@ -1661,11 +1675,25 @@ async function validateGraphOperations(catalogs) {
   if (semanticBranch.selection?.id !== "g_branch_1" || semanticBranch.document.edges[1]?.label !== "fallback") {
     throw new Error(`semantic graph branch insert did not use MobKit graph draft: ${JSON.stringify(semanticBranch.document)}`);
   }
+  try {
+    await rpc("mobkit/mobpacks/apply_operation", {
+      document,
+      operation: {
+        type: "insert_graph_node",
+        instance: { id: "n_terminal", kind: "terminal", isTerminal: true, col: 2, row: 0 },
+      },
+    });
+    throw new Error("terminal graph node insert was accepted");
+  } catch (error) {
+    if (!String(error?.message || "").includes("uncompiled graph terminal nodes cannot be persisted")) {
+      throw error;
+    }
+  }
   const inserted = await rpc("mobkit/mobpacks/apply_operation", {
     document,
     operation: {
       type: "insert_graph_node",
-      instance: { id: "n_done", kind: "terminal", isTerminal: true, col: 2, row: 0 },
+      instance: { id: "n_done", kind: "member", memberId: "reviewer", col: 2, row: 0 },
     },
   });
   const moved = await rpc("mobkit/mobpacks/apply_operation", {
@@ -1687,9 +1715,47 @@ async function validateGraphOperations(catalogs) {
     operation: {
       type: "update_graph_node",
       instance_id: "n_done",
-      patch: { lane: "terminal" },
+      patch: { lane: "review" },
     },
   });
+  try {
+    await rpc("mobkit/mobpacks/apply_operation", {
+      document: updated.document,
+      operation: {
+        type: "update_graph_node",
+        instance_id: "n_done",
+        patch: { kind: "terminal", isTerminal: true },
+      },
+    });
+    throw new Error("terminal graph node update was accepted");
+  } catch (error) {
+    if (!String(error?.message || "").includes("uncompiled graph terminal nodes cannot be persisted")) {
+      throw error;
+    }
+  }
+  const legacyTerminalDocument = {
+    ...updated.document,
+    instances: [
+      { id: "n_plan", kind: "member", memberId: "planner", col: 0, row: 0 },
+      { id: "n_done", kind: "terminal", isTerminal: true, col: 1, row: 0 },
+    ],
+    edges: [],
+  };
+  try {
+    await rpc("mobkit/mobpacks/apply_operation", {
+      document: legacyTerminalDocument,
+      operation: {
+        type: "connect_graph_nodes",
+        from_id: "n_plan",
+        to_id: "n_done",
+      },
+    });
+    throw new Error("terminal graph endpoint connect was accepted");
+  } catch (error) {
+    if (!String(error?.message || "").includes("edge endpoints cannot reference uncompiled graph terminal nodes")) {
+      throw error;
+    }
+  }
   const connected = await rpc("mobkit/mobpacks/apply_operation", {
     document: updated.document,
     operation: {
@@ -2043,8 +2109,11 @@ async function validateFlowStepOperations(catalogs) {
   if (!validation.ok) {
     throw new Error(`MobKit validation rejected ${sample.id}: ${JSON.stringify(validation.diagnostics)}`);
   }
-  if (!array(validation.display_rows, "validation.display_rows").some((row) => row.kind === "ok" && row.head === "MobKit mobpack validates" && row.meta === "rkat mob validate")) {
-    throw new Error(`MobKit validation response did not provide API-backed display rows: ${JSON.stringify(validation.display_rows)}`);
+  if (validation.validation_source !== "rkat mob validate") {
+    throw new Error(`MobKit validation response did not run rkat mob validate: ${JSON.stringify(validation)}`);
+  }
+  if (!array(validation.display_rows, "validation.display_rows").some((row) => row.kind === "ok" && row.head === "rkat mob validate executed")) {
+    throw new Error(`MobKit validation response did not provide executed rkat display rows: ${JSON.stringify(validation.display_rows)}`);
   }
 
   const sourcePreview = await rpc("mobkit/mobpacks/source", { document: sample.document });

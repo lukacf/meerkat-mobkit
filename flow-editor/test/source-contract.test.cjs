@@ -66,6 +66,7 @@ const applyAuthoringProjectionBlock = (app.match(/const applyAuthoringDocumentPr
 const graphEdgeCanvasBlock = (graph.match(/const edgeEls = state\.edges\.map[\s\S]*?const canvasInstances =/) || [""])[0];
 const graphNodeViewBlock = (graph.match(/function NodeView[\s\S]*?function GateView/) || [""])[0];
 const graphGateViewBlock = (graph.match(/function GateView[\s\S]*?function computeFit/) || [""])[0];
+const authoringSkillRealmsResponseBlock = (mobpackRust.match(/fn authoring_skill_realms_response\(\) -> Value \{[\s\S]*?pub fn mobpack_tools_catalog_response/) || [""])[0];
 
 for (const [name, source] of [
   ["data.js", data],
@@ -238,6 +239,7 @@ assert.match(mobpackRust, /fn graph_quick_insert_from_pick[\s\S]*memberInstance[
 assert.match(mobpackRust, /"type":\s*"connect_graph_nodes"[\s\S]*"authority":\s*"mobkit"[\s\S]*"requires":\s*\["edge_or_endpoints"\]/, "MobKit operation catalog must advertise graph edge connect as semantic MobKit-owned operation");
 assert.match(mobpackRust, /fn graph_connection_edge_from_endpoints[\s\S]*terminal_edge_label_prefix[\s\S]*rework_edge_label/, "MobKit apply_operation must own graph connection edge id, kind, and label drafts");
 assert.match(mobpackRust, /fn apply_connect_graph_nodes_operation[\s\S]*document\.edges = Value::Array\(edges\);[\s\S]*document\.flow = graph_to_flow_from_document\(document\)/, "MobKit endpoint graph connects must rebuild deployable flow instead of returning graph-only state");
+assert.match(mobpackRust, /fn graph_instance_is_uncompiled_terminal[\s\S]*validate_graph_instance[\s\S]*uncompiled graph terminal nodes cannot be persisted[\s\S]*validate_graph_edge[\s\S]*edge endpoints cannot reference uncompiled graph terminal nodes/, "MobKit graph authoring must reject uncompiled visual terminal nodes before persistence");
 assert.match(mobpackRust, /"move_graph_node"\s*=>\s*apply_move_graph_node_operation/, "MobKit apply_operation must own graph move mutations");
 assert.match(mobpackRust, /fn apply_operation_mutates_graph_without_projected_document/, "MobKit tests must prove graph operations mutate without operation.document");
 assert.match(controller, /function studioDeleteEdgePatch[\s\S]*selection:\s*\{\s*kind:\s*null,\s*id:\s*null\s*\}/, "controller plane must own graph edge-delete selection clearing");
@@ -1062,6 +1064,7 @@ assert.doesNotMatch(app, /renderCurrentSourceDocument = async[\s\S]*persistCurre
 assert.match(app, /const handleInlineSource = async \(surface = "basic"\) => \{[\s\S]*await buildMobKitProjectedDocument\(\);[\s\S]*requestToken = beginSourceProjection\(\);[\s\S]*const nextSourceDocument = await renderCurrentSourceDocument\(requestToken,\s*document\);[\s\S]*if \(!nextSourceDocument \|\| !sourceProjectionIsCurrent\(requestToken\)\) return;[\s\S]*inlineSourceReadyTransition\(nextSourceDocument\)/, "inline source editors must ignore stale source-preview responses after controller-canonical document projection");
 assert.match(app, /const authoringRevision = React\.useRef\(0\);[\s\S]*const currentAuthoringRevision = React\.useCallback\(\(\) => authoringRevision\.current/, "MobKit API validations/deploys must be versioned against the current authoring document");
 assert.match(app, /const handleValidate = async \(\) => \{[\s\S]*const projected = await buildMobKitProjectedDocument\(\);[\s\S]*const document = projected\.document;[\s\S]*requestToken = projected\.requestToken;[\s\S]*MobKitFlowController\.validateDocument\(document\)/, "MobKit API action freshness tokens must be captured after controller-canonical document projection");
+assert.match(controller, /async function validateDocument\(document, options = \{\}\) \{[\s\S]*rkat_validate:\s*options\.rkatValidate \?\? options\.rkat_validate \?\? true/, "Flow Editor validation must request real rkat mob validate evidence by default");
 assert.match(app, /const markDraft = React\.useCallback\(\(\) => \{[\s\S]*authoringRevision\.current \+= 1;[\s\S]*setStage\("draft"\)/, "authoring edits must advance the MobKit API response revision");
 assert.match(controller, /function validationOutcome/, "controller plane must own validate-result stage and display row projection");
 assert.match(controller, /function exportOutcome/, "controller plane must own publish/export-result stage and display row projection");
@@ -1292,6 +1295,8 @@ assert.match(controller, /models:\s*modelCatalogFromCatalogs\(catalogSource\)/, 
 assert.match(controller, /toolCatalog:\s*toolCatalogFromCatalogs\(catalogSource\)/, "MobKit tool catalog must hydrate from the separate catalogs RPC payload");
 assert.match(controller, /agentDefinitionsFromCatalogs\(catalogSource\)/, "MobKit agent definitions must hydrate from the separate catalogs RPC payload");
 assert.match(controller, /skillRealms:\s*skillRealmsFromCatalogs\(catalogSource\)/, "MobKit skill realms must hydrate from the separate catalogs RPC payload");
+assert(!/sample_mobpack_catalog/.test(authoringSkillRealmsResponseBlock), "global MobKit skill catalog must not include sample mobpack skill realms");
+assert.match(liveRkatE2eTest, /global skill catalog leaked sample mobpack skills[\s\S]*sample_mobpacks[\s\S]*mob\.workpad/, "live rkat proof must keep sample skills under sample mobpacks, not global skill_realms");
 assert.match(controllerProjectionTest, /schemaOnlyCatalogLeakState[\s\S]*models:\s*\[\{ id: "schema-leak-model"[\s\S]*assert\.deepEqual\(schemaOnlyCatalogLeakState\.models,\s*\[\]\)[\s\S]*assert\.deepEqual\(schemaOnlyCatalogLeakState\.agentDefinitions,\s*\[\]\)/, "controller tests must prove schema-leaked dynamic catalog data is ignored");
 assert.match(controller, /definitionType[\s\S]*mobkit\/profile-member/, "Agent Editor definitions must require explicit MobKit profile-member contracts");
 assert(!/starter_skills/.test(app + "\n" + controller), "Flow Editor frontend must consume skills from mobkit/mobpacks/catalogs skill_realms, not starter_skills fallback catalogs");

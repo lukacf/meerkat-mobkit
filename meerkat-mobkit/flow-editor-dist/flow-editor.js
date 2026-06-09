@@ -8174,8 +8174,11 @@ window.MOBKIT_BOOT = {
     return callRpc(rpcMethod("catalogs"), {});
   }
 
-  async function validateDocument(document) {
-    return callRpc(rpcMethod("validate"), { document });
+  async function validateDocument(document, options = {}) {
+    return callRpc(rpcMethod("validate"), {
+      document,
+      rkat_validate: options.rkatValidate ?? options.rkat_validate ?? true,
+    });
   }
 
   async function sourceDocument(document) {
