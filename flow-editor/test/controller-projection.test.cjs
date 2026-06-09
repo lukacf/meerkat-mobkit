@@ -99,6 +99,8 @@ const TEST_AGENT_ACCESS_VIEW_SCHEMA = {
   tool_add_button_label: "ADD",
   inline_skill_realm_id: "mobkit/editor-inline",
   inline_skill_realm_label: "This mobpack",
+  inline_skill_realm_source: "mobkit/editor",
+  inline_skill_source: "inline",
   inline_skill_default_description: "Inline MobKit skill stored in this mobpack.",
   skill_default_description: "MobKit skill",
   skill_selected_check_label: "✓",
@@ -134,6 +136,8 @@ const TEST_AGENT_ACCESS_VIEW = {
   toolAddButtonLabel: "ADD",
   inlineSkillRealmId: "mobkit/editor-inline",
   inlineSkillRealmLabel: "This mobpack",
+  inlineSkillRealmSource: "mobkit/editor",
+  inlineSkillSource: "inline",
   inlineSkillDefaultDescription: "Inline MobKit skill stored in this mobpack.",
   skillDefaultDescription: "MobKit skill",
   skillSelectedCheckLabel: "✓",
@@ -2634,6 +2638,7 @@ assert.equal(inlinePatch.id, "mob.quality.gate");
 assert.equal(inlinePatch.realmId, "mobkit/editor-inline");
 assert.deepEqual(inlinePatch.patch, { skills: ["mob.workpad", "mob.quality.gate"] });
 assert.equal(inlinePatch.skillRealms[0].id, "mobkit/editor-inline");
+assert.equal(inlinePatch.skillRealms[0].source, "mobkit/editor");
 assert.equal(inlinePatch.skillRealms[0].skills[0].source, "inline");
 assert.equal(inlinePatch.skillRealms[0].skills[0].content, "Review and emit the QualityVerdict schema.");
 assert.equal(inlinePatch.skillRealms[0].skills[0].desc, "Inline MobKit skill stored in this mobpack.");
@@ -2646,6 +2651,7 @@ assert.equal(inlineCascade.ok, true);
 assert.equal(inlineCascade.id, "mob.quality.gate");
 assert.deepEqual(inlineCascade.members[0].skills, ["mob.workpad", "mob.quality.gate"]);
 assert.equal(inlineCascade.skillRealms[0].id, "mobkit/editor-inline");
+assert.equal(inlineCascade.skillRealms[0].source, "mobkit/editor");
 assert.equal(inlineCascade.skillRealms[0].skills[0].source, "inline");
 assert.equal(inlineCascade.skillRealms[0].skills[0].content, "Review and emit the QualityVerdict schema.");
 assert.deepEqual(inlineCascade.inlineForm, {

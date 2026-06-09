@@ -178,7 +178,7 @@
       realm = {
         id: view.inlineSkillRealmId,
         label: view.inlineSkillRealmLabel,
-        source: "editor",
+        source: view.inlineSkillRealmSource,
         default: nextRealms.length === 0,
         skills: [],
       };
@@ -188,7 +188,7 @@
     realm.skills.push({
       id,
       label,
-      source: "inline",
+      source: view.inlineSkillSource,
       content,
       desc: spec.desc || view.inlineSkillDefaultDescription,
     });
@@ -1017,6 +1017,8 @@
       toolAddButtonLabel: String(view.tool_add_button_label || "").trim(),
       inlineSkillRealmId: String(view.inline_skill_realm_id || "").trim(),
       inlineSkillRealmLabel: String(view.inline_skill_realm_label || "").trim(),
+      inlineSkillRealmSource: String(view.inline_skill_realm_source || "").trim(),
+      inlineSkillSource: String(view.inline_skill_source || "").trim(),
       inlineSkillDefaultDescription: String(view.inline_skill_default_description || "").trim(),
       skillDefaultDescription: String(view.skill_default_description || "").trim(),
       skillSelectedCheckLabel: String(view.skill_selected_check_label || "").trim(),
@@ -1059,6 +1061,8 @@
       toolAddButtonLabel: String(view?.toolAddButtonLabel || ""),
       inlineSkillRealmId: String(view?.inlineSkillRealmId || ""),
       inlineSkillRealmLabel: String(view?.inlineSkillRealmLabel || ""),
+      inlineSkillRealmSource: String(view?.inlineSkillRealmSource || ""),
+      inlineSkillSource: String(view?.inlineSkillSource || ""),
       inlineSkillDefaultDescription: String(view?.inlineSkillDefaultDescription || ""),
       skillDefaultDescription: String(view?.skillDefaultDescription || ""),
       skillSelectedCheckLabel: String(view?.skillSelectedCheckLabel || ""),

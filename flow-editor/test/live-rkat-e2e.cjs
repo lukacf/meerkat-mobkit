@@ -1445,6 +1445,15 @@ async function validateDocumentBackedDeployPreview(document) {
       throw new Error(`flow editor schema did not expose Agent sidebar template ${key}: ${JSON.stringify(agentView)}`);
     }
   }
+  const agentAccessView = schema.mob_definition?.editor_agent_access_view || {};
+  for (const [key, expected] of Object.entries({
+    inline_skill_realm_source: "mobkit/editor",
+    inline_skill_source: "inline",
+  })) {
+    if (agentAccessView[key] !== expected) {
+      throw new Error(`flow editor schema did not expose Agent access provenance ${key}: ${JSON.stringify(agentAccessView)}`);
+    }
+  }
   const schemaView = schema.mob_definition?.editor_schema_view || {};
   for (const [key, expected] of Object.entries({
     fields_title_template: "{prefix} · {count}",

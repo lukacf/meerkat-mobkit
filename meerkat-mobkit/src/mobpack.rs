@@ -1175,6 +1175,8 @@ pub fn mobpack_schema_response() -> Value {
         "tool_add_button_label": "ADD",
         "inline_skill_realm_id": "mobkit/editor-inline",
         "inline_skill_realm_label": "This mobpack",
+        "inline_skill_realm_source": "mobkit/editor",
+        "inline_skill_source": "inline",
         "inline_skill_default_description": "Inline MobKit skill stored in this mobpack.",
         "skill_default_description": "MobKit skill",
         "skill_selected_check_label": "✓",
@@ -17520,6 +17522,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_access_view"]["inline_skill_realm_id"],
             json!("mobkit/editor-inline")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_access_view"]["inline_skill_realm_source"],
+            json!("mobkit/editor")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_access_view"]["inline_skill_source"],
+            json!("inline")
         );
         assert_eq!(
             mob_definition["editor_agent_access_view"]["skill_inline_add_label"],
