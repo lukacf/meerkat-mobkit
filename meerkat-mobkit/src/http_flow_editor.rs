@@ -25,6 +25,10 @@ pub fn flow_editor_router() -> Router {
     flow_editor_frontend_router::<()>().merge(flow_editor_rpc_router::<()>())
 }
 
+pub fn flow_editor_router_with_host_deploy() -> Router {
+    flow_editor_frontend_router::<()>().merge(flow_editor_rpc_router_allowing_host_deploy::<()>())
+}
+
 pub fn protected_flow_editor_router(decisions: RuntimeDecisionState) -> Router {
     flow_editor_frontend_router::<()>().merge(flow_editor_rpc_router_with_decisions(decisions))
 }
@@ -55,6 +59,16 @@ where
     S: Clone + Send + Sync + 'static,
 {
     Router::new().route("/flow-editor/rpc", post(flow_editor_rpc_handler))
+}
+
+pub fn flow_editor_rpc_router_allowing_host_deploy<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new().route(
+        "/flow-editor/rpc",
+        post(flow_editor_rpc_handler_allowing_host_deploy),
+    )
 }
 
 pub fn flow_editor_rpc_router_with_decisions(decisions: RuntimeDecisionState) -> Router {
@@ -110,6 +124,19 @@ pub async fn flow_editor_frontend_app_css_handler() -> impl IntoResponse {
 }
 
 pub async fn flow_editor_rpc_handler(Json(request): Json<Value>) -> impl IntoResponse {
+    flow_editor_rpc_handler_with_policy(request, false)
+}
+
+pub async fn flow_editor_rpc_handler_allowing_host_deploy(
+    Json(request): Json<Value>,
+) -> impl IntoResponse {
+    flow_editor_rpc_handler_with_policy(request, true)
+}
+
+fn flow_editor_rpc_handler_with_policy(
+    request: Value,
+    allow_host_deploy: bool,
+) -> impl IntoResponse {
     let parsed_request = match serde_json::from_value::<JsonRpcRequest>(request) {
         Ok(req) => req,
         Err(_) => {
@@ -127,8 +154,18 @@ pub async fn flow_editor_rpc_handler(Json(request): Json<Value>) -> impl IntoRes
         parsed_request,
         FlowEditorAuthReport {
             authenticated: false,
-            mode: "none",
-            reason: "standalone Flow Editor authoring server",
+            mode: if allow_host_deploy {
+                "standalone_host_deploy"
+            } else {
+                "none"
+            },
+            reason: if allow_host_deploy {
+                "standalone Flow Editor authoring server with explicit host deploy opt-in"
+            } else {
+                "standalone Flow Editor authoring server"
+            },
+            host_mutation_allowed: allow_host_deploy,
+            deploy_execute_allowed: allow_host_deploy,
         },
     );
     (StatusCode::OK, Json::<Value>(response))
@@ -144,6 +181,8 @@ struct FlowEditorAuthReport {
     authenticated: bool,
     mode: &'static str,
     reason: &'static str,
+    host_mutation_allowed: bool,
+    deploy_execute_allowed: bool,
 }
 
 async fn protected_flow_editor_rpc_handler(
@@ -184,6 +223,8 @@ async fn protected_flow_editor_rpc_handler(
             authenticated: true,
             mode: "reference_app",
             reason: "reference app Flow Editor authoring server",
+            host_mutation_allowed: true,
+            deploy_execute_allowed: true,
         },
     );
     (StatusCode::OK, Json::<Value>(response))
@@ -196,6 +237,8 @@ pub fn handle_flow_editor_rpc(request: JsonRpcRequest) -> Value {
             authenticated: false,
             mode: "none",
             reason: "standalone Flow Editor authoring server",
+            host_mutation_allowed: false,
+            deploy_execute_allowed: false,
         },
     )
 }
@@ -207,8 +250,10 @@ fn handle_flow_editor_rpc_with_auth(request: JsonRpcRequest, auth: FlowEditorAut
             let mut methods = vec!["mobkit/capabilities"];
             methods.extend_from_slice(crate::rpc::MOBPACK_AUTHORING_METHODS);
             let mut authoring_capabilities = crate::rpc::mobpack_authoring_capabilities();
-            authoring_capabilities["host_mutation_allowed"] = serde_json::json!(auth.authenticated);
-            authoring_capabilities["deploy_execute_allowed"] = serde_json::json!(auth.authenticated);
+            authoring_capabilities["host_mutation_allowed"] =
+                serde_json::json!(auth.host_mutation_allowed);
+            authoring_capabilities["deploy_execute_allowed"] =
+                serde_json::json!(auth.deploy_execute_allowed);
             response_value(
                 response_id,
                 Some(serde_json::json!({
@@ -227,7 +272,9 @@ fn handle_flow_editor_rpc_with_auth(request: JsonRpcRequest, auth: FlowEditorAut
                 None,
             )
         }
-        "mobkit/mobpacks/deploy" if !auth.authenticated && deploy_execute_requested(&request.params) => {
+        "mobkit/mobpacks/deploy"
+            if !auth.deploy_execute_allowed && deploy_execute_requested(&request.params) =>
+        {
             response_value(
                 response_id,
                 None,
@@ -388,6 +435,101 @@ mod tests {
             response["error"]["data"]["deploy_command"],
             json!("rkat mob deploy")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn standalone_flow_editor_rpc_executes_host_deploy_when_explicitly_enabled() {
+        let catalogs = super::handle_flow_editor_rpc(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: "mobkit/mobpacks/catalogs".to_string(),
+            params: Value::Null,
+        });
+        let sample = catalogs["result"]["sample_mobpacks"]
+            .as_array()
+            .expect("sample mobpacks")
+            .iter()
+            .find(|sample| sample["id"] == "sample_docs_only")
+            .expect("docs sample");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fake_rkat = dir.path().join("rkat");
+        let args_file = dir.path().join("rkat.args");
+        std::fs::write(
+            &fake_rkat,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\necho flow-editor-rkat-ok\n",
+                args_file.to_string_lossy()
+            ),
+        )
+        .expect("write fake rkat");
+        let mut permissions = std::fs::metadata(&fake_rkat)
+            .expect("fake rkat metadata")
+            .permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_rkat, permissions).expect("chmod fake rkat");
+
+        let capabilities = super::handle_flow_editor_rpc_with_auth(
+            JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(json!(2)),
+                method: "mobkit/capabilities".to_string(),
+                params: Value::Null,
+            },
+            super::FlowEditorAuthReport {
+                authenticated: false,
+                mode: "standalone_host_deploy",
+                reason: "standalone Flow Editor authoring server with explicit host deploy opt-in",
+                host_mutation_allowed: true,
+                deploy_execute_allowed: true,
+            },
+        );
+        assert_eq!(
+            capabilities["result"]["authoring_capabilities"]["host_mutation_allowed"],
+            json!(true)
+        );
+        assert_eq!(
+            capabilities["result"]["authoring_capabilities"]["deploy_execute_allowed"],
+            json!(true)
+        );
+
+        let response = super::handle_flow_editor_rpc_with_auth(
+            JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(json!(3)),
+                method: "mobkit/mobpacks/deploy".to_string(),
+                params: json!({
+                    "document": sample["document"].clone(),
+                    "output_dir": dir.path(),
+                    "prompt": "Reply with exactly OK.",
+                    "rkat_bin": fake_rkat,
+                    "execute": true
+                }),
+            },
+            super::FlowEditorAuthReport {
+                authenticated: false,
+                mode: "standalone_host_deploy",
+                reason: "standalone Flow Editor authoring server with explicit host deploy opt-in",
+                host_mutation_allowed: true,
+                deploy_execute_allowed: true,
+            },
+        );
+
+        assert!(response["error"].is_null(), "{response:#?}");
+        assert_eq!(response["result"]["executed"], json!(true));
+        assert_eq!(response["result"]["success"], json!(true));
+        assert_eq!(response["result"]["status_code"], json!(0));
+        assert!(
+            response["result"]["stdout"]
+                .as_str()
+                .is_some_and(|stdout| stdout.contains("flow-editor-rkat-ok")),
+            "{response:#?}"
+        );
+        let argv = std::fs::read_to_string(args_file).expect("recorded fake rkat args");
+        assert!(argv.lines().any(|line| line == "mob"));
+        assert!(argv.lines().any(|line| line == "deploy"));
+        assert!(argv.lines().any(|line| line == "Reply with exactly OK."));
     }
 
     #[test]

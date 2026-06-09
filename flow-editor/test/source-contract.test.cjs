@@ -18,6 +18,8 @@ const topRailBlock = (app.match(/function TopRail[\s\S]*?\/\/ ── Flows regis
 const tweaksPanel = src("tweaks-panel.jsx");
 const devServer = fs.readFileSync(path.join(root, "dev-server.cjs"), "utf8");
 const mobpackRust = fs.readFileSync(path.join(root, "..", "meerkat-mobkit", "src", "mobpack.rs"), "utf8");
+const flowEditorHttpRust = fs.readFileSync(path.join(root, "..", "meerkat-mobkit", "src", "http_flow_editor.rs"), "utf8");
+const flowEditorBinRust = fs.readFileSync(path.join(root, "..", "meerkat-mobkit", "src", "bin", "mobkit_flow_editor.rs"), "utf8");
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const controllerProjectionTest = testSrc("controller-projection.test.cjs");
 const liveRkatE2eTest = testSrc("live-rkat-e2e.cjs");
@@ -1274,6 +1276,10 @@ assert.match(controller, /deployCommand = contract\?\.deploy_settings\?\.command
 assert.match(controller, /deploySurface = deploySettings\?\.surface \|\| contract\?\.deploy_settings\?\.surfaces\?\.\[0\] \|\| "";/, "Top rail deploy surface must stay blank until schema-backed settings exist");
 assert.match(app, /MobKitFlowController\.topRailState\(\{ contract, deploySettings, stage, view, theme: t\.theme, deployView: catalogs\.deployView, capabilities \}\)/, "Top rail must render controller-projected deploy/API display state from MobKit view chrome and capabilities");
 assert.match(app, /disabled=\{railState\.deployRunDisabled\}/, "Top rail must disable host deploy execution through controller-projected capabilities");
+assert.match(flowEditorBinRust, /--allow-host-deploy/, "standalone Flow Editor must expose explicit opt-in host deploy execution for local rkat mob deploy testing");
+assert.match(flowEditorBinRust, /flow_editor_router_with_host_deploy/, "standalone Flow Editor host deploy opt-in must route through the MobKit RPC policy surface");
+assert.match(flowEditorHttpRust, /standalone_flow_editor_rpc_rejects_host_deploy_execution[\s\S]*"execute": true[\s\S]*json!\(-32602\)/, "Flow Editor RPC must deny host deploy execution by default");
+assert.match(flowEditorHttpRust, /standalone_flow_editor_rpc_executes_host_deploy_when_explicitly_enabled[\s\S]*deploy_execute_allowed:\s*true[\s\S]*"execute": true[\s\S]*flow-editor-rkat-ok/, "Flow Editor RPC must prove explicit opt-in executes rkat mob deploy");
 assert.match(app, /MobKitFlowController\.topRailNavigationTransition\(view,\s*target\)/, "Top rail navigation must be routed through the controller plane");
 assert.match(controller, /function topRailNavigationTransition/, "controller plane must own TopRail navigation transitions");
 assert(!/setView\(|view === ["']editor["'] \? ["']flows["'] : ["']editor["']/.test(topRailBlock), "TopRail renderer must not assemble view transitions locally");

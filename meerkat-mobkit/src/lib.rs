@@ -88,8 +88,10 @@ pub use http_console::{
 pub use http_flow_editor::{
     flow_editor_frontend_app_css_handler, flow_editor_frontend_app_js_handler,
     flow_editor_frontend_index_handler, flow_editor_frontend_router,
-    flow_editor_frontend_vendor_js_handler, flow_editor_router, flow_editor_rpc_handler,
-    flow_editor_rpc_router,
+    flow_editor_frontend_vendor_js_handler, flow_editor_router,
+    flow_editor_router_with_host_deploy, flow_editor_rpc_handler,
+    flow_editor_rpc_handler_allowing_host_deploy, flow_editor_rpc_router,
+    flow_editor_rpc_router_allowing_host_deploy,
 };
 pub use http_sse::{
     AgentEventSubscribeFn, MobEventSubscribeFn, agent_event_sse, agent_events_sse_router,
