@@ -6923,11 +6923,16 @@
     return graphSignatureFor(instances, edges, { includeLayout: true });
   }
 
-  function graphStructureSignature(instances, edges) {
-    return graphSignatureFor(instances, edges, { includeLayout: true });
+  function graphStructureSignature(instances, edges, context = {}) {
+    const options = Array.isArray(context) ? { members: context } : (context || {});
+    return graphSignatureFor(instances, edges, {
+      includeLayout: true,
+      members: options.members,
+      contract: options.contract,
+    });
   }
 
-  function graphSignatureFor(instances, edges, { includeLayout }) {
+  function graphSignatureFor(instances, edges, { includeLayout, members, contract }) {
     const nodes = (instances || [])
       .map((inst) => {
         const node = {
@@ -6962,7 +6967,21 @@
         cond: edge.cond || null,
       }))
       .sort((a, b) => a.id.localeCompare(b.id));
-    return JSON.stringify({ nodes, links });
+    const projectionMembers = (members || [])
+      .map((member) => ({
+        id: member.id,
+        name: member.name || "",
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const draft = contract ? editorGraphDraftContract(contract) : null;
+    const projectionContract = contract
+      ? {
+          edgeKinds: graphProjectionEdgeKinds(contract),
+          fallbackEdgeLabel: draft?.fallbackEdgeLabel || "",
+          branchFallbackLaneLabel: draft?.branchFallbackLaneLabel || "",
+        }
+      : null;
+    return JSON.stringify({ nodes, links, members: projectionMembers, contract: projectionContract });
   }
 
   function graphIsConditionEdge(edge, edgeKinds) {

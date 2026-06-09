@@ -201,7 +201,7 @@ function App() {
       const projection = pendingGraphProjection.current;
       pendingGraphProjection.current = null;
       skipNextGraphProjection.current = false;
-      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || []);
+      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: projection.members || studio.members, contract });
       studio.setInstances(projection.instances || []);
       studio.setEdges(projection.edges || []);
       studio.setFrames(projection.frames || []);
@@ -217,7 +217,7 @@ function App() {
     if (editorMode === "advanced") return;
     if (!window.MobKitFlowController?.graphProjectionForFlow) return;
     const { instances, edges, frames } = window.MobKitFlowController.graphProjectionForFlow(flow, studio.members, contract);
-    graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(instances, edges);
+    graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(instances, edges, { members: studio.members, contract });
     studio.setInstances(instances);
     studio.setEdges(edges);
     studio.setFrames(frames || []);
@@ -226,7 +226,7 @@ function App() {
   React.useEffect(() => {
     if (editorMode !== "advanced") return;
     if (!window.MobKitFlowController?.graphToFlow) return;
-    const sig = window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges);
+    const sig = window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges, { members: studio.members, contract });
     if (sig === graphProjectionSig.current) return;
     graphProjectionSig.current = sig;
     markDraft();
@@ -372,8 +372,8 @@ function App() {
     if (!projection) return;
     if (JSON.stringify(projection.flow) !== JSON.stringify(flow)) setFlow(projection.flow);
     if (JSON.stringify(projection.members || []) !== JSON.stringify(studio.members)) studio.setMembers(projection.members || []);
-    if (projection.instances && window.MobKitFlowController.graphStructureSignature(projection.instances, projection.edges || []) !== window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges)) {
-      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || []);
+    if (projection.instances && window.MobKitFlowController.graphStructureSignature(projection.instances, projection.edges || [], { members: projection.members || studio.members, contract }) !== window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges, { members: studio.members, contract })) {
+      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: projection.members || studio.members, contract });
       studio.setInstances(projection.instances || []);
       studio.setEdges(projection.edges || []);
     }

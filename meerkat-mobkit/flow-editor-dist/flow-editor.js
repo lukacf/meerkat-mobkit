@@ -6956,11 +6956,16 @@ window.MOBKIT_BOOT = {
     return graphSignatureFor(instances, edges, { includeLayout: true });
   }
 
-  function graphStructureSignature(instances, edges) {
-    return graphSignatureFor(instances, edges, { includeLayout: true });
+  function graphStructureSignature(instances, edges, context = {}) {
+    const options = Array.isArray(context) ? { members: context } : (context || {});
+    return graphSignatureFor(instances, edges, {
+      includeLayout: true,
+      members: options.members,
+      contract: options.contract,
+    });
   }
 
-  function graphSignatureFor(instances, edges, { includeLayout }) {
+  function graphSignatureFor(instances, edges, { includeLayout, members, contract }) {
     const nodes = (instances || [])
       .map((inst) => {
         const node = {
@@ -6995,7 +7000,21 @@ window.MOBKIT_BOOT = {
         cond: edge.cond || null,
       }))
       .sort((a, b) => a.id.localeCompare(b.id));
-    return JSON.stringify({ nodes, links });
+    const projectionMembers = (members || [])
+      .map((member) => ({
+        id: member.id,
+        name: member.name || "",
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const draft = contract ? editorGraphDraftContract(contract) : null;
+    const projectionContract = contract
+      ? {
+          edgeKinds: graphProjectionEdgeKinds(contract),
+          fallbackEdgeLabel: draft?.fallbackEdgeLabel || "",
+          branchFallbackLaneLabel: draft?.branchFallbackLaneLabel || "",
+        }
+      : null;
+    return JSON.stringify({ nodes, links, members: projectionMembers, contract: projectionContract });
   }
 
   function graphIsConditionEdge(edge, edgeKinds) {
@@ -13538,7 +13557,7 @@ function App() {
       const projection = pendingGraphProjection.current;
       pendingGraphProjection.current = null;
       skipNextGraphProjection.current = false;
-      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || []);
+      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: projection.members || studio.members, contract });
       studio.setInstances(projection.instances || []);
       studio.setEdges(projection.edges || []);
       studio.setFrames(projection.frames || []);
@@ -13554,7 +13573,7 @@ function App() {
     if (editorMode === "advanced") return;
     if (!window.MobKitFlowController?.graphProjectionForFlow) return;
     const { instances, edges, frames } = window.MobKitFlowController.graphProjectionForFlow(flow, studio.members, contract);
-    graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(instances, edges);
+    graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(instances, edges, { members: studio.members, contract });
     studio.setInstances(instances);
     studio.setEdges(edges);
     studio.setFrames(frames || []);
@@ -13562,7 +13581,7 @@ function App() {
   React.useEffect(() => {
     if (editorMode !== "advanced") return;
     if (!window.MobKitFlowController?.graphToFlow) return;
-    const sig = window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges);
+    const sig = window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges, { members: studio.members, contract });
     if (sig === graphProjectionSig.current) return;
     graphProjectionSig.current = sig;
     markDraft();
@@ -13709,8 +13728,8 @@ function App() {
     if (!projection) return;
     if (JSON.stringify(projection.flow) !== JSON.stringify(flow)) setFlow(projection.flow);
     if (JSON.stringify(projection.members || []) !== JSON.stringify(studio.members)) studio.setMembers(projection.members || []);
-    if (projection.instances && window.MobKitFlowController.graphStructureSignature(projection.instances, projection.edges || []) !== window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges)) {
-      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || []);
+    if (projection.instances && window.MobKitFlowController.graphStructureSignature(projection.instances, projection.edges || [], { members: projection.members || studio.members, contract }) !== window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges, { members: studio.members, contract })) {
+      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: projection.members || studio.members, contract });
       studio.setInstances(projection.instances || []);
       studio.setEdges(projection.edges || []);
     }

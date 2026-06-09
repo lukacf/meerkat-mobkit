@@ -2749,6 +2749,28 @@ const graphOrderMoved = controller.graphToFlow({
 assert.deepEqual(graphOrderBase.steps.map((step) => step.id), ["input_1", "draft", "review"]);
 assert.deepEqual(graphOrderMoved.steps.map((step) => step.id), ["input_1", "review", "draft"]);
 
+const graphMemberLabelInstances = [
+  { id: "left", memberId: "m_left", col: 0, row: 0 },
+  { id: "right", memberId: "m_right", col: 0, row: 1 },
+];
+const graphMemberLabelEdges = [
+  { id: "route_left", from: "start", to: "left", kind: "cond", cond: { path: "params.kind", op: "==", value: "docs" } },
+  { id: "route_right", from: "start", to: "right", kind: "cond", cond: { path: "params.kind", op: "==", value: "code" } },
+];
+const graphMemberLabelMembers = [{ id: "m_left", name: "Docs" }, { id: "m_right", name: "Code" }];
+const graphMemberRenamedMembers = [{ id: "m_left", name: "Docs" }, { id: "m_right", name: "Implement" }];
+assert.notEqual(
+  controller.graphStructureSignature(graphMemberLabelInstances, graphMemberLabelEdges, { members: graphMemberLabelMembers }),
+  controller.graphStructureSignature(graphMemberLabelInstances, graphMemberLabelEdges, { members: graphMemberRenamedMembers }),
+);
+const graphMemberLabelFlow = controller.graphToFlow({
+  previousFlow: graphOrderPreviousFlow,
+  members: graphMemberRenamedMembers,
+  instances: graphMemberLabelInstances,
+  edges: graphMemberLabelEdges,
+});
+assert.deepEqual(graphMemberLabelFlow.steps[1].branches.map((branch) => branch.label), ["Docs", "Implement"]);
+
 assert.equal(flow.steps.length, 2);
 assert.deepEqual(flow.steps[1], {
   id: "review_step",
