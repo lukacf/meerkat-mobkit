@@ -1427,6 +1427,10 @@ pub fn mobpack_schema_response() -> Value {
     editor_graph_view["gate_member_option_template"] = json!("{name} · {role}");
     editor_graph_view["terminal_eyebrow_template"] = json!("TERMINAL · {kind}");
     editor_graph_view["terminal_id_line_template"] = json!("{id} · cell ({col},{row})");
+    editor_graph_view["terminal_authoring_locked_title"] = json!("Visual terminal node");
+    editor_graph_view["terminal_authoring_locked_hint"] = json!(
+        "Visual terminal nodes do not compile into deployable MobKit mob.toml. Delete this node or replace it with a real member, branch, join, or loop flow shape."
+    );
     editor_graph_view["edge_eyebrow_template"] = json!("EDGE · {kind}");
     editor_graph_view["edge_title_template"] = json!("{from} → {to}");
     editor_graph_view["edge_id_line_template"] = json!("{id}");
@@ -1690,6 +1694,7 @@ pub fn mobpack_schema_response() -> Value {
         "publish_label": "PUBLISH",
         "deploy_plan_label": "DEPLOY PLAN",
         "deploy_label": "DEPLOY",
+        "overflow_label": "MORE",
         "theme_switch_prefix": "Switch to",
         "theme_switch_suffix": "mode",
         "dark_theme_label": "☾ dark",
@@ -28052,6 +28057,10 @@ model = "gpt-5.5"
             json!("DEPLOY")
         );
         assert_eq!(
+            mob_definition["editor_deploy_view"]["overflow_label"],
+            json!("MORE")
+        );
+        assert_eq!(
             mob_definition["editor_deploy_view"]["validation_eyebrow"],
             json!("VALIDATE · MobKit")
         );
@@ -28282,6 +28291,16 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_view"]["terminal_eyebrow_template"],
             json!("TERMINAL · {kind}")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["terminal_authoring_locked_title"],
+            json!("Visual terminal node")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["terminal_authoring_locked_hint"],
+            json!(
+                "Visual terminal nodes do not compile into deployable MobKit mob.toml. Delete this node or replace it with a real member, branch, join, or loop flow shape."
+            )
         );
         assert_eq!(
             mob_definition["editor_graph_view"]["edge_eyebrow_template"],

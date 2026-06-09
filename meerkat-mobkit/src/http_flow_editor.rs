@@ -206,6 +206,9 @@ fn handle_flow_editor_rpc_with_auth(request: JsonRpcRequest, auth: FlowEditorAut
         "mobkit/capabilities" => {
             let mut methods = vec!["mobkit/capabilities"];
             methods.extend_from_slice(crate::rpc::MOBPACK_AUTHORING_METHODS);
+            let mut authoring_capabilities = crate::rpc::mobpack_authoring_capabilities();
+            authoring_capabilities["host_mutation_allowed"] = serde_json::json!(auth.authenticated);
+            authoring_capabilities["deploy_execute_allowed"] = serde_json::json!(auth.authenticated);
             response_value(
                 response_id,
                 Some(serde_json::json!({
@@ -219,9 +222,24 @@ fn handle_flow_editor_rpc_with_auth(request: JsonRpcRequest, auth: FlowEditorAut
                         "flow_editor": true,
                         "mobpack_authoring": true,
                     },
-                    "authoring_capabilities": crate::rpc::mobpack_authoring_capabilities(),
+                    "authoring_capabilities": authoring_capabilities,
                 })),
                 None,
+            )
+        }
+        "mobkit/mobpacks/deploy" if !auth.authenticated && deploy_execute_requested(&request.params) => {
+            response_value(
+                response_id,
+                None,
+                Some(JsonRpcError {
+                    code: -32602,
+                    message: "standalone Flow Editor RPC cannot execute host deploys; use deploy planning or run rkat mob deploy manually".to_string(),
+                    data: Some(serde_json::json!({
+                        "method": "mobkit/mobpacks/deploy",
+                        "execute": true,
+                        "deploy_command": "rkat mob deploy"
+                    })),
+                }),
             )
         }
         method if crate::rpc::MOBPACK_AUTHORING_METHODS.contains(&method) => serde_json::to_value(
@@ -248,6 +266,13 @@ fn handle_flow_editor_rpc_with_auth(request: JsonRpcRequest, auth: FlowEditorAut
             }),
         ),
     }
+}
+
+fn deploy_execute_requested(params: &Value) -> bool {
+    params
+        .get("execute")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn response_value(id: Value, result: Option<Value>, error: Option<JsonRpcError>) -> Value {
@@ -304,6 +329,14 @@ mod tests {
             json!(false)
         );
         assert_eq!(
+            response["result"]["authoring_capabilities"]["host_mutation_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            response["result"]["authoring_capabilities"]["deploy_execute_allowed"],
+            json!(false)
+        );
+        assert_eq!(
             response["result"]["authoring_capabilities"]["deploy_command"],
             json!("rkat mob deploy")
         );
@@ -315,6 +348,45 @@ mod tests {
                 .filter_map(Value::as_str)
                 .collect::<Vec<_>>(),
             crate::rpc::MOBPACK_AUTHORING_METHODS
+        );
+    }
+
+    #[test]
+    fn standalone_flow_editor_rpc_rejects_host_deploy_execution() {
+        let catalogs = super::handle_flow_editor_rpc(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: "mobkit/mobpacks/catalogs".to_string(),
+            params: Value::Null,
+        });
+        let sample = catalogs["result"]["sample_mobpacks"]
+            .as_array()
+            .expect("sample mobpacks")
+            .iter()
+            .find(|sample| sample["id"] == "sample_docs_only")
+            .expect("docs sample");
+
+        let response = super::handle_flow_editor_rpc(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(2)),
+            method: "mobkit/mobpacks/deploy".to_string(),
+            params: json!({
+                "document": sample["document"].clone(),
+                "prompt": "Reply with exactly OK.",
+                "execute": true
+            }),
+        });
+
+        assert_eq!(response["error"]["code"], json!(-32602));
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("cannot execute host deploys")),
+            "{response:#?}"
+        );
+        assert_eq!(
+            response["error"]["data"]["deploy_command"],
+            json!("rkat mob deploy")
         );
     }
 

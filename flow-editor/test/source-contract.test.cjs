@@ -141,6 +141,7 @@ assert.match(controller, /function authoringOperationAvailability/, "controller 
 assert.match(controller, /function configureAuthoringMethodsFromSchema[\s\S]*authoringRpcMethodsFromSchema\(schema\)/, "controller plane must configure MobKit authoring methods from the loaded schema contract");
 assert.match(controller, /configureAuthoringMethodsFromSchema[\s\S]*controllerConfig\.authoringOperations = authoringOperationsFromSchema\(schema\)/, "controller plane must retain schema-backed operation capabilities after schema load");
 assert.match(app, /loadSchema\(\)[\s\S]*configureAuthoringMethodsFromSchema\(schema\)[\s\S]*loadCatalogs\(\)/, "app shell must load schema first, then use schema.commands to request dynamic catalogs");
+assert.match(app, /MobKitFlowController\.loadCapabilities\(\)/, "app shell must hydrate Flow Editor capabilities before enabling host-sensitive actions");
 assert.match(app, /MobKitFlowController\.loadCatalogs\(\)/, "app shell must hydrate dynamic catalogs through mobkit/mobpacks/catalogs");
 assert.match(app, /MobKitFlowController\.listDocuments\(\)/, "app shell must hydrate saved flow registry rows through mobkit/mobpacks/list");
 assert.match(controller, /create:\s*"mobkit\/mobpacks\/create"/, "controller plane must expose the MobKit draft creation RPC");
@@ -354,7 +355,7 @@ assert.match(inspectorTemplateBlock, /templateView[\s\S]*graphTemplateInspectorS
 assert.match(inspectorTemplateBlock, /templateState\.templateEyebrow[\s\S]*templateState\.summaryTitle[\s\S]*templateState\.triggersTitle[\s\S]*templateState\.triggerRows\.map[\s\S]*templateState\.quickStartTitle[\s\S]*templateState\.quickStartRows\.map/, "Graph template inspector headings, trigger rows, and quick-start rows must render through controller state");
 assert(!/>TEMPLATE<|>SUMMARY<|>TRIGGERS<|>QUICK START<|>labels<|>default<|library member|empty grid cell|right port|selected instance or edge/.test(inspectorTemplateBlock), "Graph template inspector must not compose template headings, trigger labels, or quick-start copy locally");
 assert.match(inspectorInstanceBlock, /MobKitFlowController\.graphInstanceControlState/, "Graph instance inspector must render member, schema, and fork-source state through the controller plane");
-assert.match(inspectorInstanceBlock, /MobKitFlowController\.graphTerminalControlState/, "Graph terminal inspector must render terminal kind state through the controller plane");
+assert.match(inspectorInstanceBlock, /MobKitFlowController\.graphTerminalControlState/, "Graph terminal inspector must render terminal diagnostic state through the controller plane");
 assert.match(inspectorInstanceBlock, /graphTerminalControlState\(inst,\s*contract,\s*graphView\)/, "Graph terminal inspector must pass schema-backed Graph view into controller projection");
 assert.match(inspectorGateBlock, /gateState\.eyebrow/, "Graph gate inspector must render header through controller state");
 assert.match(inspectorGateBlock, /gateState\.collectionTitle/, "Graph gate collection title must come from controller state");
@@ -371,7 +372,7 @@ assert.match(inspectorEdgeBlock, /edgeState\.isCondition/, "Graph edge inspector
 assert.match(inspectorEdgeBlock, /edgeState\.noConditionOptionsHint/, "Graph edge missing-condition warning must come from controller state");
 assert.match(inspectorEdgeBlock, /edgeState\.ownerPlaceholderOption/, "Graph edge condition owner placeholder must come from controller state");
 assert.match(inspectorTerminalBlock, /terminalState\.eyebrow/, "Graph terminal inspector must render terminal header through the controller plane");
-assert.match(inspectorTerminalBlock, /terminalState\.labelValue/, "Graph terminal inspector must render terminal label value through the controller plane");
+assert.match(inspectorTerminalBlock, /terminalState\.authoringLockedTitle[\s\S]*terminalState\.authoringLockedHint/, "Graph terminal inspector must render read-only terminal authoring diagnostics through the controller plane");
 assert.match(graphEdgeCanvasBlock, /MobKitFlowController\.graphEdgeCanvasState/, "Graph canvas must render edge class, label, glyph, color, and marker metadata through the controller plane");
 assert.match(graphEdgeCanvasBlock, /graphEdgeCanvasState\(\{[\s\S]*contract/, "Graph canvas edge projection must receive the MobKit graph edge-kind contract");
 assert.match(graphEdgeCanvasBlock, /graphEdgeCanvasState\(\{[\s\S]*graphView:\s*canvasView/, "Graph canvas edge projection must receive schema-backed Graph view metadata");
@@ -387,7 +388,7 @@ assert.match(controller, /summaryMembersValueTemplate:\s*String\(view\?\.summary
 assert(!/label:\s*["'](?:members|instances|terminals|edges|frames)["']/.test((controller.match(/function graphTemplateInspectorState[\s\S]*?function graphInstanceControlState/) || [""])[0]), "Graph template summary row labels must not be hardcoded in the controller projection");
 assert(!/placed\s*\/[\s\S]{0,80}in library/.test((controller.match(/function graphTemplateInspectorState[\s\S]*?function graphInstanceControlState/) || [""])[0]), "Graph template member-summary value copy must not be hardcoded in the controller projection");
 assert.match(controller, /function graphInstanceControlState/, "controller plane must own Graph instance summary and launch-source projection");
-assert.match(controller, /function graphTerminalControlState/, "controller plane must own Graph terminal kind projection");
+assert.match(controller, /function graphTerminalControlState/, "controller plane must own Graph terminal diagnostic projection");
 assert.match(controller, /function graphEdgeCanvasState/, "controller plane must own Graph edge canvas projection");
 assert.match(controller, /graphEdgeCanvasState[\s\S]*graphCanvasViewState\(graphView\)[\s\S]*labelText\s*=\s*String\(edge\?\.label \|\| view\.edgeKindLabels\[kind\] \|\| ""\)/, "Graph edge fallback labels must come from MobKit editor_graph_view edge-kind labels");
 assert.match(controller, /function graphProjectionEdgeKinds/, "controller plane must own schema-backed graph edge-kind projection");
@@ -446,10 +447,10 @@ assert.match(inspectorGateBlock, /change\("set_join_quorum"/, "Graph Inspector j
 assert.match(inspectorGateBlock, /change\("set_join_controller_role"/, "Graph Inspector join controller-role edits must use semantic MobKit graph node edits");
 assert.match(inspectorGateBlock, /change\("set_fork_dispatch"/, "Graph Inspector fork dispatch edits must use semantic MobKit graph node edits");
 assert.match(controller, /function graphGateKindAllowed/, "controller plane must validate Graph gate-kind writes against MobKit graph_gate_kinds");
-assert.match(inspector, /studio\.editInstance\(inst\.id,\s*"set_label"/, "Graph Inspector instance labels must use semantic MobKit graph node edits");
+assert.match(inspectorGateBlock, /change\("set_label"/, "Graph Inspector gate labels must use semantic MobKit graph node edits");
 assert.match(inspector, /studio\.editEdge\(edge\.id,\s*action,\s*payload/, "Graph Inspector edge edits must use semantic MobKit graph edge edits");
-assert.match(inspector, /studio\.editInstance\(inst\.id,\s*"set_terminal_kind"/, "Graph Inspector terminal-kind edits must use semantic MobKit graph node edits");
-assert.match(controller, /function graphTerminalKindAllowed/, "controller plane must validate Graph terminal-kind writes against MobKit graph_terminal_kinds");
+assert(!/studio\.editInstance\(inst\.id,\s*"set_terminal_kind"/.test(inspector), "Graph Inspector must not expose visual terminal-kind edits because MobKit graph authoring rejects uncompiled terminals");
+assert.match(controller, /terminalAuthoringLockedTitle:\s*String\(view\.terminal_authoring_locked_title/, "controller plane must hydrate Graph terminal authoring diagnostics from MobKit schema");
 assert.match(mobpackRust, /fn apply_graph_node_edit_operation[\s\S]*set_join_collection[\s\S]*graph_draft_string\("join_label_prefix"\)/, "MobKit semantic node edits must label joins from editor_graph_draft metadata");
 assert.doesNotMatch(inspector, /MobKitFlowController\.(?:graphGateKindPatch|graphJoinCollectionPatch|graphJoinQuorumPatch|graphJoinControllerRolePatch|graphForkDispatchPatch|graphTerminalKindPatch|graphInstanceLabelPatch|graphEdgeLabelPatch)/, "Graph Inspector must not compute graph node or edge patches locally");
 assert(!/studio\.members\.map\(member => <option/.test(inspectorGateBlock), "Graph gate inspector must not assemble controller-member option rows locally");
@@ -474,6 +475,7 @@ assert.match(controller, /instanceOutputTitleTemplate:\s*String\(view\.instance_
 assert(!/eyebrow:\s*["']INSTANCE["']|deleteLabel:\s*["']DELETE["']|label:\s*["'](?:model|schema|tools|stage \(col\)|slot \(row\))["']|positionTitle:\s*["']POSITION["']|outputHint:\s*["']Defined on the member\.["']|outputOpenMemberLabel:\s*["']Open member/.test((controller.match(/function graphInstanceControlState[\s\S]*?function graphTemplateText/) || [""])[0]), "Graph instance inspector copy must not be hardcoded in the controller projection");
 assert.match(controller, /terminalEyebrowTemplate:\s*String\(view\.terminal_eyebrow_template/, "controller plane must hydrate Graph terminal eyebrow template from MobKit schema");
 assert.match(controller, /graphTerminalControlState[\s\S]*graphTemplateText\(view\.terminalEyebrowTemplate/, "Graph terminal header must render through schema-backed template state");
+assert.match(controller, /graphTerminalControlState[\s\S]*authoringLockedTitle:\s*view\.terminalAuthoringLockedTitle[\s\S]*authoringLockedHint:\s*view\.terminalAuthoringLockedHint/, "Graph terminal read-only diagnostics must render through schema-backed template state");
 assert.match(controller, /edgeEyebrowTemplate:\s*String\(view\.edge_eyebrow_template/, "controller plane must hydrate Graph edge eyebrow template from MobKit schema");
 assert.match(controller, /gateQuorumIncomingTemplate:\s*String\(view\.gate_quorum_incoming_template/, "controller plane must hydrate Graph gate quorum label template from MobKit schema");
 assert.match(controller, /gateMemberOptionTemplate:\s*String\(view\.gate_member_option_template/, "controller plane must hydrate Graph gate member-option template from MobKit schema");
@@ -497,7 +499,7 @@ assert(!/graphBranchConditionRows[\s\S]*label:\s*`\$\{field\.name\} · \$\{field
 assert(!/INSTANCE<\/div>|inst\.id\} · cell|inst\.col \+ 1|inst\.row \+ 1|>DELETE<\/button>|EDIT MEMBER →|<dt>model<\/dt>|member\.model|member\.name|Editing the member updates every instance that uses it|>POSITION<\/div>|stage \(col\)|slot \(row\)/.test(inspectorInstanceBlock), "Graph instance inspector must not compose instance header, member summary, or position copy locally");
 assert(!/MEMBER OUTPUT · \{member\.schema \|\| "—"\}|instanceState\.outputFields\.map|<span className="sf__req">req<\/span>|Defined on the member\.|Open member →|member\.schema \|\| "—"/.test(inspectorInstanceBlock), "Graph instance inspector must not compose member-output schema title, rows, required badges, or open-member copy locally");
 assert(!/contractDefaultValue\(contract,\s*["']graph_terminal_kind["']\)|graphTerminalKindOptions\(|terminalKindOptions\.find/.test(inspectorInstanceBlock), "Graph terminal inspector must not assemble terminal kind defaults or options locally");
-assert(!/TERMINAL · \{inst\.kind\}|inst\.id\} · cell|inst\.col \+ 1|inst\.row \+ 1|>DELETE<\/button>|>LABEL<\/div>|>KIND<\/div>|value=\{inst\.label\}/.test(inspectorTerminalBlock), "Graph terminal inspector must not compose terminal header, labels, id line, or field values locally");
+assert(!/TERMINAL · \{inst\.kind\}|inst\.id\} · cell|inst\.col \+ 1|inst\.row \+ 1|>DELETE<\/button>|>LABEL<\/div>|>KIND<\/div>|value=\{inst\.label\}|Visual terminal node|deployable MobKit mob\.toml/.test(inspectorTerminalBlock), "Graph terminal inspector must not compose terminal header, labels, id line, field values, or diagnostics locally");
 assert(!/change\(\{\s*label:/.test(inspector), "Graph Inspector must not assemble graph label patches directly");
 assert(!/studio\.updateInstance\(inst\.id,\s*\{\s*label:/.test(inspector), "Graph Inspector must not assemble terminal label patches directly");
 assert(!/change\(\{\s*(?:gateKind|controllerRole):/.test(inspector), "Graph Inspector must not assemble gate semantic patches directly");
@@ -1252,7 +1254,8 @@ assert(!/backendDefault\s*\|\|\s*["']session["']|trustPolicy\s*\|\|\s*["']permis
 assert.match(controller, /function topRailState/, "controller plane must own top-rail deploy/API display projection");
 assert.match(controller, /deployCommand = contract\?\.deploy_settings\?\.command \|\| "";/, "Top rail deploy command must stay blank until MobKit schema provides it");
 assert.match(controller, /deploySurface = deploySettings\?\.surface \|\| contract\?\.deploy_settings\?\.surfaces\?\.\[0\] \|\| "";/, "Top rail deploy surface must stay blank until schema-backed settings exist");
-assert.match(app, /MobKitFlowController\.topRailState\(\{ contract, deploySettings, stage, view, theme: t\.theme, deployView: catalogs\.deployView \}\)/, "Top rail must render controller-projected deploy/API display state from MobKit view chrome");
+assert.match(app, /MobKitFlowController\.topRailState\(\{ contract, deploySettings, stage, view, theme: t\.theme, deployView: catalogs\.deployView, capabilities \}\)/, "Top rail must render controller-projected deploy/API display state from MobKit view chrome and capabilities");
+assert.match(app, /disabled=\{railState\.deployRunDisabled\}/, "Top rail must disable host deploy execution through controller-projected capabilities");
 assert.match(app, /MobKitFlowController\.topRailNavigationTransition\(view,\s*target\)/, "Top rail navigation must be routed through the controller plane");
 assert.match(controller, /function topRailNavigationTransition/, "controller plane must own TopRail navigation transitions");
 assert(!/setView\(|view === ["']editor["'] \? ["']flows["'] : ["']editor["']/.test(topRailBlock), "TopRail renderer must not assemble view transitions locally");

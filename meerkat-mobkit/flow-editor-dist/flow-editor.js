@@ -1100,6 +1100,7 @@ window.MOBKIT_BOOT = {
       publishLabel: String(view.publish_label || "").trim(),
       deployPlanLabel: String(view.deploy_plan_label || "").trim(),
       deployLabel: String(view.deploy_label || "").trim(),
+      overflowLabel: String(view.overflow_label || "").trim(),
       themeSwitchPrefix: String(view.theme_switch_prefix || "").trim(),
       themeSwitchSuffix: String(view.theme_switch_suffix || "").trim(),
       darkThemeLabel: String(view.dark_theme_label || "").trim(),
@@ -1144,6 +1145,7 @@ window.MOBKIT_BOOT = {
       publishLabel: String(view?.publishLabel || ""),
       deployPlanLabel: String(view?.deployPlanLabel || ""),
       deployLabel: String(view?.deployLabel || ""),
+      overflowLabel: String(view?.overflowLabel || ""),
       themeSwitchPrefix: String(view?.themeSwitchPrefix || ""),
       themeSwitchSuffix: String(view?.themeSwitchSuffix || ""),
       darkThemeLabel: String(view?.darkThemeLabel || ""),
@@ -1808,6 +1810,8 @@ window.MOBKIT_BOOT = {
       gateMemberOptionTemplate: String(view.gate_member_option_template || "").trim(),
       terminalEyebrowTemplate: String(view.terminal_eyebrow_template || "").trim(),
       terminalIdLineTemplate: String(view.terminal_id_line_template || "").trim(),
+      terminalAuthoringLockedTitle: String(view.terminal_authoring_locked_title || "").trim(),
+      terminalAuthoringLockedHint: String(view.terminal_authoring_locked_hint || "").trim(),
       edgeEyebrowTemplate: String(view.edge_eyebrow_template || "").trim(),
       edgeTitleTemplate: String(view.edge_title_template || "").trim(),
       edgeIdLineTemplate: String(view.edge_id_line_template || "").trim(),
@@ -1871,7 +1875,9 @@ window.MOBKIT_BOOT = {
       && out.instanceOutputTitleTemplate && out.instanceOutputRequiredLabel && out.instanceOutputHint
       && out.instanceOutputOpenMemberLabel && out.gateEyebrowTemplate && out.gateIdLineTemplate
       && out.gateQuorumIncomingTemplate && out.gateMemberOptionTemplate
-      && out.terminalEyebrowTemplate && out.terminalIdLineTemplate && out.edgeEyebrowTemplate
+      && out.terminalEyebrowTemplate && out.terminalIdLineTemplate
+      && out.terminalAuthoringLockedTitle && out.terminalAuthoringLockedHint
+      && out.edgeEyebrowTemplate
       && out.edgeTitleTemplate && out.edgeIdLineTemplate && out.edgeFieldPlaceholder
       && out.edgeFieldNoSchemaPlaceholder
       && out.gateCollectionTitle
@@ -1957,6 +1963,8 @@ window.MOBKIT_BOOT = {
       gateMemberOptionTemplate: String(view?.gateMemberOptionTemplate || ""),
       terminalEyebrowTemplate: String(view?.terminalEyebrowTemplate || ""),
       terminalIdLineTemplate: String(view?.terminalIdLineTemplate || ""),
+      terminalAuthoringLockedTitle: String(view?.terminalAuthoringLockedTitle || ""),
+      terminalAuthoringLockedHint: String(view?.terminalAuthoringLockedHint || ""),
       edgeEyebrowTemplate: String(view?.edgeEyebrowTemplate || ""),
       edgeTitleTemplate: String(view?.edgeTitleTemplate || ""),
       edgeIdLineTemplate: String(view?.edgeIdLineTemplate || ""),
@@ -6341,6 +6349,9 @@ window.MOBKIT_BOOT = {
       terminalKind,
       terminalKindOptions,
       selectedTerminalKind: terminalKindOptions.find((option) => option.value === terminalKind) || null,
+      authoringLockedTitle: view.terminalAuthoringLockedTitle,
+      authoringLockedHint: view.terminalAuthoringLockedHint,
+      editable: false,
     };
   }
 
@@ -8170,6 +8181,10 @@ window.MOBKIT_BOOT = {
     return callRpc(rpcMethod("schema"), {});
   }
 
+  async function loadCapabilities() {
+    return callRpc("mobkit/capabilities", {});
+  }
+
   async function loadCatalogs() {
     return callRpc(rpcMethod("catalogs"), {});
   }
@@ -9930,13 +9945,14 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function topRailState({ contract, deploySettings, stage, view, theme, deployView } = {}) {
+  function topRailState({ contract, deploySettings, stage, view, theme, deployView, capabilities } = {}) {
     const shell = deployViewForState(deployView);
     const inEditor = view === "editor";
     const contractState = contract?.error ? shell.apiErrorLabel : contract ? shell.apiReadyLabel : shell.apiLoadingLabel;
     const deployCommand = contract?.deploy_settings?.command || "";
     const deploySurface = deploySettings?.surface || contract?.deploy_settings?.surfaces?.[0] || "";
     const deployActionsDisabled = stage !== "valid";
+    const deployExecuteAllowed = capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
     const nextTheme = theme === "dark" ? "light" : "dark";
     return {
       inEditor,
@@ -9957,7 +9973,9 @@ window.MOBKIT_BOOT = {
       publishLabel: shell.publishLabel,
       deployPlanLabel: shell.deployPlanLabel,
       deployLabel: shell.deployLabel,
+      overflowLabel: shell.overflowLabel,
       deployActionsDisabled,
+      deployRunDisabled: deployActionsDisabled || !deployExecuteAllowed,
       themeToggleTitle: `${shell.themeSwitchPrefix} ${nextTheme} ${shell.themeSwitchSuffix}`,
       themeToggleLabel: nextTheme === "light" ? shell.darkThemeLabel : shell.lightThemeLabel,
       basicModeTitle: shell.basicModeTitle,
@@ -11679,6 +11697,7 @@ window.MOBKIT_BOOT = {
     deployCommandPreviewForDocument,
     callRpc,
     loadSchema,
+    loadCapabilities,
     loadCatalogs,
     authoringRpcMethodsFromSchema,
     configureAuthoringMethodsFromSchema,
@@ -12855,7 +12874,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
   }
   if (inst.isTerminal) {
     const terminalState = window.MobKitFlowController.graphTerminalControlState(inst, contract, graphView);
-    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, terminalState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, terminalState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, terminalState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(studio.deleteInstance(inst.id), clearSelection) }, terminalState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: terminalState.labelValue, onChange: (e) => studio.editInstance(inst.id, "set_label", { label: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: terminalState.terminalKind, onChange: (e) => studio.editInstance(inst.id, "set_terminal_kind", { terminal_kind: e.target.value }) }, terminalState.terminalKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), terminalState.selectedTerminalKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, terminalState.selectedTerminalKind.reason))));
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, terminalState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, terminalState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, terminalState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(studio.deleteInstance(inst.id), clearSelection) }, terminalState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: terminalState.labelValue, disabled: true, readOnly: true })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: terminalState.terminalKind, disabled: true }, terminalState.terminalKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), terminalState.selectedTerminalKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, terminalState.selectedTerminalKind.reason)), /* @__PURE__ */ React.createElement("div", { className: "section section--locked" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.authoringLockedTitle), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, terminalState.authoringLockedHint))));
   }
   const launchState = window.MobKitFlowController.launchModeControlState(inst, contract, launchView);
   return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, instanceState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, instanceState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, instanceState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(studio.deleteInstance(inst.id), clearSelection) }, instanceState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, member && /* @__PURE__ */ React.createElement("div", { className: "section section--member-card" }, /* @__PURE__ */ React.createElement("div", { className: "member-card" }, /* @__PURE__ */ React.createElement("div", { className: "member-card__head" }, /* @__PURE__ */ React.createElement("span", { className: "member-card__role" }, instanceState.memberRoleLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => selectMember(instanceState.memberId) }, instanceState.editMemberLabel)), /* @__PURE__ */ React.createElement("div", { className: "member-card__name" }, instanceState.memberName), /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, instanceState.memberSummaryRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))), /* @__PURE__ */ React.createElement("div", { className: "member-card__hint" }, instanceState.memberHint))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, launchState.graphLaunchTitle), /* @__PURE__ */ React.createElement(
@@ -14267,6 +14286,7 @@ function App() {
   const [validationResults, setValidationResults] = React.useState([]);
   const [apiBusy, setApiBusy] = React.useState(false);
   const [contract, setContract] = React.useState(null);
+  const [capabilities, setCapabilities] = React.useState(null);
   const contractSkillRealms = React.useRef([]);
   const [catalogs, setCatalogs] = React.useState(() => window.MobKitFlowController.emptyMobKitCatalogs(CATALOG_BOOT));
   const [sourceOpen, setSourceOpen] = React.useState(false);
@@ -14394,9 +14414,11 @@ function App() {
     window.MobKitFlowController.configure({ rpcUrl: rpcUrlFromShell() });
     window.MobKitFlowController.loadSchema().then(async (schema) => {
       window.MobKitFlowController.configureAuthoringMethodsFromSchema(schema);
+      const capabilityPayload = await window.MobKitFlowController.loadCapabilities();
       const catalogPayload = await window.MobKitFlowController.loadCatalogs();
       const registryPayload = await window.MobKitFlowController.listDocuments().catch(() => ({ rows: [] }));
       if (cancelled) return;
+      setCapabilities(capabilityPayload);
       const nextCatalogs = window.MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
       setCatalogs(nextCatalogs);
       setDeploySettings(nextCatalogs.deployDefaults);
@@ -15281,7 +15303,7 @@ function App() {
       setApiBusy(false);
     }
   };
-  const shellState = window.MobKitFlowController.topRailState({ contract, deploySettings, stage, view, theme: t.theme, deployView: catalogs.deployView });
+  const shellState = window.MobKitFlowController.topRailState({ contract, deploySettings, stage, view, theme: t.theme, deployView: catalogs.deployView, capabilities });
   return /* @__PURE__ */ React.createElement("div", { className: "app density--" + t.density + " inspector--" + t.inspectorLayout + " view--" + view }, /* @__PURE__ */ React.createElement(
     TopRail,
     {
@@ -15526,7 +15548,7 @@ async function importParamsFromFile(file) {
   });
 }
 function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, onToggleTheme, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDrySim, onYaml, contract, deploySettings }) {
-  return /* @__PURE__ */ React.createElement("header", { className: "toprail" }, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "dot" }), /* @__PURE__ */ React.createElement("span", null, railState.brandLabel)), /* @__PURE__ */ React.createElement("nav", { className: "viewtabs" }, /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "flows" || view === "editor" ? " is-current" : ""), onClick: () => onNavigate("flows-tab") }, railState.flowsTabLabel), /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "agents" ? " is-current" : ""), onClick: () => onNavigate("agents-tab") }, railState.agentsTabLabel)), /* @__PURE__ */ React.createElement("div", { className: "mob-status", title: railState.mobStatusTitle }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.mobFileLabel), /* @__PURE__ */ React.createElement("span", { className: "env" }, "\xB7 ", railState.contractState)), /* @__PURE__ */ React.createElement("div", { className: "mob-status mob-status--env", title: railState.deployCommand }, /* @__PURE__ */ React.createElement("span", { className: "env" }, railState.deployPrefixLabel), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.deploySurface)), /* @__PURE__ */ React.createElement("nav", { className: "crumbs" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "crumb crumb--link", onClick: () => onNavigate("flows-crumb") }, railState.flowsCrumbLabel), /* @__PURE__ */ React.createElement("span", { className: "crumb crumb--sep" }, railState.crumbSeparator), /* @__PURE__ */ React.createElement("span", { className: "crumb is-current" }, currentFlowName))), /* @__PURE__ */ React.createElement("div", { className: "actions" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), stage), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onDrySim }, railState.planTraceLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onImport }, railState.importLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onValidate }, railState.validateLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: railState.deployActionsDisabled, onClick: onPublish }, railState.publishLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", disabled: railState.deployActionsDisabled, onClick: onDeployPlan }, railState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: railState.deployActionsDisabled, onClick: onDeployRun }, railState.deployLabel)), /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement("header", { className: "toprail" }, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "dot" }), /* @__PURE__ */ React.createElement("span", null, railState.brandLabel)), /* @__PURE__ */ React.createElement("nav", { className: "viewtabs" }, /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "flows" || view === "editor" ? " is-current" : ""), onClick: () => onNavigate("flows-tab") }, railState.flowsTabLabel), /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "agents" ? " is-current" : ""), onClick: () => onNavigate("agents-tab") }, railState.agentsTabLabel)), /* @__PURE__ */ React.createElement("div", { className: "mob-status", title: railState.mobStatusTitle }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.mobFileLabel), /* @__PURE__ */ React.createElement("span", { className: "env" }, "\xB7 ", railState.contractState)), /* @__PURE__ */ React.createElement("div", { className: "mob-status mob-status--env", title: railState.deployCommand }, /* @__PURE__ */ React.createElement("span", { className: "env" }, railState.deployPrefixLabel), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.deploySurface)), /* @__PURE__ */ React.createElement("nav", { className: "crumbs" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "crumb crumb--link", onClick: () => onNavigate("flows-crumb") }, railState.flowsCrumbLabel), /* @__PURE__ */ React.createElement("span", { className: "crumb crumb--sep" }, railState.crumbSeparator), /* @__PURE__ */ React.createElement("span", { className: "crumb is-current" }, currentFlowName))), /* @__PURE__ */ React.createElement("div", { className: "actions" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), stage), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onValidate }, railState.validateLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: railState.deployActionsDisabled, onClick: onPublish }, railState.publishLabel), /* @__PURE__ */ React.createElement("details", { className: "actions-menu" }, /* @__PURE__ */ React.createElement("summary", { className: "btn btn--ghost btn--sm actions-menu__summary" }, railState.overflowLabel), /* @__PURE__ */ React.createElement("div", { className: "actions-menu__panel" }, /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onDrySim }, railState.planTraceLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onImport }, railState.importLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", disabled: railState.deployActionsDisabled, onClick: onDeployPlan }, railState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item actions-menu__item--primary", disabled: railState.deployRunDisabled, onClick: onDeployRun }, railState.deployLabel)))), /* @__PURE__ */ React.createElement(
     "button",
     {
       className: "btn btn--ghost btn--sm theme-toggle",

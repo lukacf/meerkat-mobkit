@@ -1067,6 +1067,7 @@
       publishLabel: String(view.publish_label || "").trim(),
       deployPlanLabel: String(view.deploy_plan_label || "").trim(),
       deployLabel: String(view.deploy_label || "").trim(),
+      overflowLabel: String(view.overflow_label || "").trim(),
       themeSwitchPrefix: String(view.theme_switch_prefix || "").trim(),
       themeSwitchSuffix: String(view.theme_switch_suffix || "").trim(),
       darkThemeLabel: String(view.dark_theme_label || "").trim(),
@@ -1111,6 +1112,7 @@
       publishLabel: String(view?.publishLabel || ""),
       deployPlanLabel: String(view?.deployPlanLabel || ""),
       deployLabel: String(view?.deployLabel || ""),
+      overflowLabel: String(view?.overflowLabel || ""),
       themeSwitchPrefix: String(view?.themeSwitchPrefix || ""),
       themeSwitchSuffix: String(view?.themeSwitchSuffix || ""),
       darkThemeLabel: String(view?.darkThemeLabel || ""),
@@ -1775,6 +1777,8 @@
       gateMemberOptionTemplate: String(view.gate_member_option_template || "").trim(),
       terminalEyebrowTemplate: String(view.terminal_eyebrow_template || "").trim(),
       terminalIdLineTemplate: String(view.terminal_id_line_template || "").trim(),
+      terminalAuthoringLockedTitle: String(view.terminal_authoring_locked_title || "").trim(),
+      terminalAuthoringLockedHint: String(view.terminal_authoring_locked_hint || "").trim(),
       edgeEyebrowTemplate: String(view.edge_eyebrow_template || "").trim(),
       edgeTitleTemplate: String(view.edge_title_template || "").trim(),
       edgeIdLineTemplate: String(view.edge_id_line_template || "").trim(),
@@ -1838,7 +1842,9 @@
       && out.instanceOutputTitleTemplate && out.instanceOutputRequiredLabel && out.instanceOutputHint
       && out.instanceOutputOpenMemberLabel && out.gateEyebrowTemplate && out.gateIdLineTemplate
       && out.gateQuorumIncomingTemplate && out.gateMemberOptionTemplate
-      && out.terminalEyebrowTemplate && out.terminalIdLineTemplate && out.edgeEyebrowTemplate
+      && out.terminalEyebrowTemplate && out.terminalIdLineTemplate
+      && out.terminalAuthoringLockedTitle && out.terminalAuthoringLockedHint
+      && out.edgeEyebrowTemplate
       && out.edgeTitleTemplate && out.edgeIdLineTemplate && out.edgeFieldPlaceholder
       && out.edgeFieldNoSchemaPlaceholder
       && out.gateCollectionTitle
@@ -1924,6 +1930,8 @@
       gateMemberOptionTemplate: String(view?.gateMemberOptionTemplate || ""),
       terminalEyebrowTemplate: String(view?.terminalEyebrowTemplate || ""),
       terminalIdLineTemplate: String(view?.terminalIdLineTemplate || ""),
+      terminalAuthoringLockedTitle: String(view?.terminalAuthoringLockedTitle || ""),
+      terminalAuthoringLockedHint: String(view?.terminalAuthoringLockedHint || ""),
       edgeEyebrowTemplate: String(view?.edgeEyebrowTemplate || ""),
       edgeTitleTemplate: String(view?.edgeTitleTemplate || ""),
       edgeIdLineTemplate: String(view?.edgeIdLineTemplate || ""),
@@ -6308,6 +6316,9 @@
       terminalKind,
       terminalKindOptions,
       selectedTerminalKind: terminalKindOptions.find((option) => option.value === terminalKind) || null,
+      authoringLockedTitle: view.terminalAuthoringLockedTitle,
+      authoringLockedHint: view.terminalAuthoringLockedHint,
+      editable: false,
     };
   }
 
@@ -8137,6 +8148,10 @@
     return callRpc(rpcMethod("schema"), {});
   }
 
+  async function loadCapabilities() {
+    return callRpc("mobkit/capabilities", {});
+  }
+
   async function loadCatalogs() {
     return callRpc(rpcMethod("catalogs"), {});
   }
@@ -9897,13 +9912,14 @@
     };
   }
 
-  function topRailState({ contract, deploySettings, stage, view, theme, deployView } = {}) {
+  function topRailState({ contract, deploySettings, stage, view, theme, deployView, capabilities } = {}) {
     const shell = deployViewForState(deployView);
     const inEditor = view === "editor";
     const contractState = contract?.error ? shell.apiErrorLabel : contract ? shell.apiReadyLabel : shell.apiLoadingLabel;
     const deployCommand = contract?.deploy_settings?.command || "";
     const deploySurface = deploySettings?.surface || contract?.deploy_settings?.surfaces?.[0] || "";
     const deployActionsDisabled = stage !== "valid";
+    const deployExecuteAllowed = capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
     const nextTheme = theme === "dark" ? "light" : "dark";
     return {
       inEditor,
@@ -9924,7 +9940,9 @@
       publishLabel: shell.publishLabel,
       deployPlanLabel: shell.deployPlanLabel,
       deployLabel: shell.deployLabel,
+      overflowLabel: shell.overflowLabel,
       deployActionsDisabled,
+      deployRunDisabled: deployActionsDisabled || !deployExecuteAllowed,
       themeToggleTitle: `${shell.themeSwitchPrefix} ${nextTheme} ${shell.themeSwitchSuffix}`,
       themeToggleLabel: nextTheme === "light" ? shell.darkThemeLabel : shell.lightThemeLabel,
       basicModeTitle: shell.basicModeTitle,
@@ -11646,6 +11664,7 @@
     deployCommandPreviewForDocument,
     callRpc,
     loadSchema,
+    loadCapabilities,
     loadCatalogs,
     authoringRpcMethodsFromSchema,
     configureAuthoringMethodsFromSchema,

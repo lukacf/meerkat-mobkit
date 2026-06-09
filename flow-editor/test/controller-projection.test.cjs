@@ -27,6 +27,7 @@ const TEST_DEPLOY_VIEW_SCHEMA = {
   publish_label: "PUBLISH",
   deploy_plan_label: "DEPLOY PLAN",
   deploy_label: "DEPLOY",
+  overflow_label: "MORE",
   theme_switch_prefix: "Switch to",
   theme_switch_suffix: "mode",
   dark_theme_label: "☾ dark",
@@ -66,6 +67,7 @@ const TEST_DEPLOY_VIEW = {
   publishLabel: "PUBLISH",
   deployPlanLabel: "DEPLOY PLAN",
   deployLabel: "DEPLOY",
+  overflowLabel: "MORE",
   themeSwitchPrefix: "Switch to",
   themeSwitchSuffix: "mode",
   darkThemeLabel: "☾ dark",
@@ -518,7 +520,9 @@ assert.deepEqual(controller.topRailState({
   publishLabel: "PUBLISH",
   deployPlanLabel: "DEPLOY PLAN",
   deployLabel: "DEPLOY",
+  overflowLabel: "MORE",
   deployActionsDisabled: true,
+  deployRunDisabled: true,
   themeToggleTitle: "Switch to dark mode",
   themeToggleLabel: "☀ light",
   basicModeTitle: "Basic Editor",
@@ -552,7 +556,9 @@ assert.deepEqual(controller.topRailState({
   publishLabel: "PUBLISH",
   deployPlanLabel: "DEPLOY PLAN",
   deployLabel: "DEPLOY",
+  overflowLabel: "MORE",
   deployActionsDisabled: false,
+  deployRunDisabled: false,
   themeToggleTitle: "Switch to light mode",
   themeToggleLabel: "☾ dark",
   basicModeTitle: "Basic Editor",
@@ -567,6 +573,15 @@ assert.equal(controller.topRailState({
   view: "editor",
   deployView: TEST_DEPLOY_VIEW,
 }).contractState, "api error");
+assert.equal(controller.topRailState({
+  contract: TEST_SCHEMA,
+  deploySettings: testDeploySettings(),
+  stage: "valid",
+  view: "editor",
+  theme: "light",
+  deployView: TEST_DEPLOY_VIEW,
+  capabilities: { authoring_capabilities: { deploy_execute_allowed: false } },
+}).deployRunDisabled, true);
 assert.deepEqual(controller.topRailNavigationTransition("editor", "flows-tab"), { view: "flows" });
 assert.deepEqual(controller.topRailNavigationTransition("flows", "flows-tab"), { view: "editor" });
 assert.deepEqual(controller.topRailNavigationTransition("agents", "agents-tab"), { view: "agents" });
@@ -1510,6 +1525,8 @@ const hydratedContractAndCatalogFixture = {
       gate_member_option_template: "{name} · {role}",
       terminal_eyebrow_template: "TERMINAL · {kind}",
       terminal_id_line_template: "{id} · cell ({col},{row})",
+      terminal_authoring_locked_title: "Visual terminal node",
+      terminal_authoring_locked_hint: "Visual terminal nodes do not compile into deployable MobKit mob.toml. Delete this node or replace it with a real member, branch, join, or loop flow shape.",
       edge_eyebrow_template: "EDGE · {kind}",
       edge_title_template: "{from} → {to}",
       edge_id_line_template: "{id}",
@@ -2140,6 +2157,8 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   gateMemberOptionTemplate: "{name} · {role}",
   terminalEyebrowTemplate: "TERMINAL · {kind}",
   terminalIdLineTemplate: "{id} · cell ({col},{row})",
+  terminalAuthoringLockedTitle: "Visual terminal node",
+  terminalAuthoringLockedHint: "Visual terminal nodes do not compile into deployable MobKit mob.toml. Delete this node or replace it with a real member, branch, join, or loop flow shape.",
   edgeEyebrowTemplate: "EDGE · {kind}",
   edgeTitleTemplate: "{from} → {to}",
   edgeIdLineTemplate: "{id}",
@@ -2231,6 +2250,8 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   gateMemberOptionTemplate: "",
   terminalEyebrowTemplate: "",
   terminalIdLineTemplate: "",
+  terminalAuthoringLockedTitle: "",
+  terminalAuthoringLockedHint: "",
   edgeEyebrowTemplate: "",
   edgeTitleTemplate: "",
   edgeIdLineTemplate: "",
@@ -8866,6 +8887,12 @@ assert.equal(terminalControlState.labelValue, "Done");
 assert.equal(terminalControlState.kindTitle, "KIND");
 assert.equal(terminalControlState.terminalKind, "success");
 assert.equal(terminalControlState.selectedTerminalKind.label, "success — done");
+assert.equal(terminalControlState.authoringLockedTitle, "Visual terminal node");
+assert.equal(
+  terminalControlState.authoringLockedHint,
+  "Visual terminal nodes do not compile into deployable MobKit mob.toml. Delete this node or replace it with a real member, branch, join, or loop flow shape."
+);
+assert.equal(terminalControlState.editable, false);
 const reskinnedTerminalControlState = controller.graphTerminalControlState({
   id: "n_done",
   isTerminal: true,

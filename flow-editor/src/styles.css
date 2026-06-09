@@ -118,8 +118,9 @@ body {
 /* ── Topbar (matches MobKit Console .mobkit-topbar pattern) ── */
 .toprail {
   display: grid;
-  grid-template-columns: auto auto auto auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(84px, auto) minmax(0, 1fr) auto;
   align-items: stretch;
+  min-width: 0;
   border-bottom: 1px solid var(--hair);
   background: var(--bg);
   padding: 0;
@@ -153,11 +154,19 @@ body {
   font-family: var(--font-mono);
   font-size: 11.5px;
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
 }
 .mob-status .glyph {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--ok);
   box-shadow: 0 0 0 2px color-mix(in oklch, var(--ok) 18%, transparent);
+}
+.mob-status .name,
+.mob-status .env {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .mob-status .name { color: var(--ink); }
 .mob-status .env { color: var(--subtle); }
@@ -187,7 +196,59 @@ body {
 }
 .crumbs .sep { color: var(--subtle); font-family: var(--font-mono); font-size: 11px; padding: 0 2px; }
 
-.actions { display: flex; gap: 0; align-items: stretch; flex-shrink: 0; white-space: nowrap; }
+.actions { display: flex; gap: 0; align-items: stretch; flex-shrink: 0; white-space: nowrap; min-width: 0; }
+.actions-menu {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  margin: 0;
+}
+.actions-menu__summary {
+  list-style: none;
+}
+.actions-menu__summary::-webkit-details-marker {
+  display: none;
+}
+.actions-menu__panel {
+  position: absolute;
+  right: 0;
+  top: 44px;
+  min-width: 152px;
+  border: 1px solid var(--hair);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  z-index: 10;
+}
+.actions-menu__item {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 1px solid var(--hair);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.actions-menu__item:last-child {
+  border-bottom: 0;
+}
+.actions-menu__item:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--ink-soft);
+}
+.actions-menu__item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.actions-menu__item--primary {
+  color: var(--accent);
+}
 
 .version {
   font-family: var(--font-mono);
@@ -244,6 +305,7 @@ body {
   position: relative;
   overflow: hidden;
   display: grid;
+  min-width: 0;
   grid-template-columns: 1fr 380px;
 }
 .app.inspector--bottom .stage-area {
@@ -253,6 +315,15 @@ body {
 .app.inspector--bottom .inspector { grid-column: 1 / -1; }
 .app.inspector--modal .stage-area {
   grid-template-columns: 1fr;
+}
+
+@media (max-width: 980px) {
+  .toprail {
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+  }
+  .mob-status--env {
+    display: none;
+  }
 }
 
 /* ── Canvas host ────────────────────────────────────────────── */

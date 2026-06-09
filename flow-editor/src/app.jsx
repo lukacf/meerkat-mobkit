@@ -41,6 +41,7 @@ function App() {
   const [validationResults, setValidationResults] = React.useState([]);
   const [apiBusy, setApiBusy] = React.useState(false);
   const [contract, setContract] = React.useState(null);
+  const [capabilities, setCapabilities] = React.useState(null);
   const contractSkillRealms = React.useRef([]);
   const [catalogs, setCatalogs] = React.useState(() => window.MobKitFlowController.emptyMobKitCatalogs(CATALOG_BOOT));
   const [sourceOpen, setSourceOpen] = React.useState(false);
@@ -178,9 +179,11 @@ function App() {
     window.MobKitFlowController.loadSchema()
       .then(async (schema) => {
         window.MobKitFlowController.configureAuthoringMethodsFromSchema(schema);
+        const capabilityPayload = await window.MobKitFlowController.loadCapabilities();
         const catalogPayload = await window.MobKitFlowController.loadCatalogs();
         const registryPayload = await window.MobKitFlowController.listDocuments().catch(() => ({ rows: [] }));
         if (cancelled) return;
+        setCapabilities(capabilityPayload);
         const nextCatalogs = window.MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
         setCatalogs(nextCatalogs);
         setDeploySettings(nextCatalogs.deployDefaults);
@@ -1107,7 +1110,7 @@ function App() {
     }
   };
 
-  const shellState = window.MobKitFlowController.topRailState({ contract, deploySettings, stage, view, theme: t.theme, deployView: catalogs.deployView });
+  const shellState = window.MobKitFlowController.topRailState({ contract, deploySettings, stage, view, theme: t.theme, deployView: catalogs.deployView, capabilities });
 
   return (
     <div className={"app density--" + t.density + " inspector--" + t.inspectorLayout + " view--" + view}>
@@ -1395,12 +1398,17 @@ function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, o
         {railState.inEditor && (
           <>
             <span className="stage" data-state={stage}><span className="glyph" />{stage}</span>
-            <button className="btn btn--ghost btn--sm" onClick={onDrySim}>{railState.planTraceLabel}</button>
-            <button className="btn btn--ghost btn--sm" onClick={onImport}>{railState.importLabel}</button>
             <button className="btn btn--ghost btn--sm" onClick={onValidate}>{railState.validateLabel}</button>
             <button className="btn btn--primary btn--sm" disabled={railState.deployActionsDisabled} onClick={onPublish}>{railState.publishLabel}</button>
-            <button className="btn btn--ghost btn--sm" disabled={railState.deployActionsDisabled} onClick={onDeployPlan}>{railState.deployPlanLabel}</button>
-            <button className="btn btn--primary btn--sm" disabled={railState.deployActionsDisabled} onClick={onDeployRun}>{railState.deployLabel}</button>
+            <details className="actions-menu">
+              <summary className="btn btn--ghost btn--sm actions-menu__summary">{railState.overflowLabel}</summary>
+              <div className="actions-menu__panel">
+                <button className="actions-menu__item" onClick={onDrySim}>{railState.planTraceLabel}</button>
+                <button className="actions-menu__item" onClick={onImport}>{railState.importLabel}</button>
+                <button className="actions-menu__item" disabled={railState.deployActionsDisabled} onClick={onDeployPlan}>{railState.deployPlanLabel}</button>
+                <button className="actions-menu__item actions-menu__item--primary" disabled={railState.deployRunDisabled} onClick={onDeployRun}>{railState.deployLabel}</button>
+              </div>
+            </details>
           </>
         )}
         <button

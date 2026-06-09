@@ -259,16 +259,20 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
         <div className="inspector__body">
           <div className="section">
             <div className="section__title">{terminalState.labelTitle}</div>
-            <input className="field__input" value={terminalState.labelValue} onChange={e => studio.editInstance(inst.id, "set_label", { label: e.target.value })} />
+            <input className="field__input" value={terminalState.labelValue} disabled readOnly />
           </div>
           <div className="section">
             <div className="section__title">{terminalState.kindTitle}</div>
-            <select className="field__select" value={terminalState.terminalKind} onChange={e => studio.editInstance(inst.id, "set_terminal_kind", { terminal_kind: e.target.value })}>
+            <select className="field__select" value={terminalState.terminalKind} disabled>
               {terminalState.terminalKindOptions.map(option => (
                 <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
               ))}
             </select>
             {terminalState.selectedTerminalKind?.reason && <div className="kv__hint" style={{ color: "var(--warn)" }}>{terminalState.selectedTerminalKind.reason}</div>}
+          </div>
+          <div className="section section--locked">
+            <div className="section__title">{terminalState.authoringLockedTitle}</div>
+            <div className="hint__line">{terminalState.authoringLockedHint}</div>
           </div>
         </div>
       </>
