@@ -1273,7 +1273,8 @@ pub fn mobpack_schema_response() -> Value {
             { "kind": "text", "text": " to add a member turn or flow primitive. The result is a " },
             { "kind": "code", "text": "mob.toml" },
             { "kind": "text", "text": " flow." }
-        ]
+        ],
+        "source_toggle_label": "{ } mob.toml"
     });
     editor_basic_view["member_step_panel_title_fallback"] = json!("Member step");
     editor_basic_view["member_step_panel_sub_fallback"] = json!("Assign a member to run this step");
@@ -16920,6 +16921,10 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_basic_view"]["empty_panel_subtitle_parts"][3]["text"],
             json!("mob.toml")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["source_toggle_label"],
+            json!("{ } mob.toml")
         );
         assert_eq!(
             mob_definition["editor_basic_view"]["member_step_instruction_placeholder"],

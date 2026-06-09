@@ -826,6 +826,9 @@ assert.match(controller, /mob_toml:\s*mobTomlFile\.text/, "source-file projectio
 assert.match(controller, /const sourceDigest = String\(mobTomlFile\.sha256[\s\S]*sourceDigest,/, "source-file projection must store the validated mobkit/mob.toml archive digest");
 assert.match(app, /<BuilderView[\s\S]*onShowSource=\{\(\) => handleInlineSource\("basic"\)\}[\s\S]*sourceOpen=\{inlineSourceOpen && inlineSourceSurface === "basic"\}[\s\S]*sourceDocument=\{inlineSourceDocument\}[\s\S]*sourceView=\{catalogs\.sourceView\}/, "Basic editor mob.toml tile must open a Basic-scoped inline export-backed source editor");
 assert.match(builder, /<InlineSourceEditor[\s\S]*state=\{sourceDocument\}[\s\S]*busy=\{sourceBusy\}[\s\S]*sourceView=\{sourceView\}/, "Basic editor must render the real mob.toml content inline, not as a decorative tile");
+assert.match(controller, /sourceToggleLabel:\s*String\(view\.source_toggle_label/, "controller plane must hydrate the Basic source toggle label from MobKit schema");
+assert.match(builder, /bld-toml-toggle[\s\S]*viewState\.sourceToggleLabel/, "Basic source-file tile label must render through controller-projected Basic view state");
+assert(!/\{"\{ \} mob\.toml"\}|\{ \} mob\.toml/.test(builder), "Basic source-file tile must not compose the mob.toml label locally");
 assert.match(app, /<GraphEditor[\s\S]*onOpenSourceFile=\{\(\) => handleInlineSource\("graph"\)\}/, "Graph source-file nodes must request a Graph-scoped export-backed inline editor");
 assert.match(app, /<InlineSourceEditor[\s\S]*open=\{inlineSourceOpen && inlineSourceSurface === "graph"\}[\s\S]*surface="graph"[\s\S]*sourceView=\{catalogs\.sourceView\}/, "Graph source editor must not leak the Basic editor source panel across modes");
 assert.match(app, /<SourceDrawer[\s\S]*state=\{sourceDocument\}[\s\S]*sourceView=\{catalogs\.sourceView\}/, "source drawer must render schema-backed source view labels");

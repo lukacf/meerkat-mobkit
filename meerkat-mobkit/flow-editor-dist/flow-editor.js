@@ -1266,6 +1266,7 @@ window.MOBKIT_BOOT = {
       tipsTitle: String(view.tips_title || "").trim(),
       emptyPanelTitle: String(view.empty_panel_title || "").trim(),
       emptyPanelSubtitleParts: basicViewPartsFromSchema(view.empty_panel_subtitle_parts),
+      sourceToggleLabel: String(view.source_toggle_label || "").trim(),
       memberStepPanelTitleFallback: String(view.member_step_panel_title_fallback || "").trim(),
       memberStepPanelSubFallback: String(view.member_step_panel_sub_fallback || "").trim(),
       memberStepMemberLabel: String(view.member_step_member_label || "").trim(),
@@ -1453,6 +1454,7 @@ window.MOBKIT_BOOT = {
       emptyPanelSubtitleParts: Array.isArray(view?.emptyPanelSubtitleParts)
         ? view.emptyPanelSubtitleParts
         : [],
+      sourceToggleLabel: String(view?.sourceToggleLabel || ""),
       memberStepPanelTitleFallback: String(view?.memberStepPanelTitleFallback || ""),
       memberStepPanelSubFallback: String(view?.memberStepPanelSubFallback || ""),
       memberStepMemberLabel: String(view?.memberStepMemberLabel || ""),
@@ -13096,7 +13098,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       },
       openPicker
     }
-  )), /* @__PURE__ */ React.createElement("button", { className: "bld-toml-toggle", onMouseDown: (e) => e.stopPropagation(), onClick: () => onShowSource && onShowSource() }, "{ } mob.toml"), /* @__PURE__ */ React.createElement(
+  )), /* @__PURE__ */ React.createElement("button", { className: "bld-toml-toggle", onMouseDown: (e) => e.stopPropagation(), onClick: () => onShowSource && onShowSource() }, viewState.sourceToggleLabel), /* @__PURE__ */ React.createElement(
     InlineSourceEditor,
     {
       open: sourceOpen,

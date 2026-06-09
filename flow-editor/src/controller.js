@@ -1233,6 +1233,7 @@
       tipsTitle: String(view.tips_title || "").trim(),
       emptyPanelTitle: String(view.empty_panel_title || "").trim(),
       emptyPanelSubtitleParts: basicViewPartsFromSchema(view.empty_panel_subtitle_parts),
+      sourceToggleLabel: String(view.source_toggle_label || "").trim(),
       memberStepPanelTitleFallback: String(view.member_step_panel_title_fallback || "").trim(),
       memberStepPanelSubFallback: String(view.member_step_panel_sub_fallback || "").trim(),
       memberStepMemberLabel: String(view.member_step_member_label || "").trim(),
@@ -1420,6 +1421,7 @@
       emptyPanelSubtitleParts: Array.isArray(view?.emptyPanelSubtitleParts)
         ? view.emptyPanelSubtitleParts
         : [],
+      sourceToggleLabel: String(view?.sourceToggleLabel || ""),
       memberStepPanelTitleFallback: String(view?.memberStepPanelTitleFallback || ""),
       memberStepPanelSubFallback: String(view?.memberStepPanelSubFallback || ""),
       memberStepMemberLabel: String(view?.memberStepMemberLabel || ""),

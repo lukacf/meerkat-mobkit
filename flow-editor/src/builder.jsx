@@ -220,7 +220,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
         </div>
 
         <button className="bld-toml-toggle" onMouseDown={e => e.stopPropagation()} onClick={() => onShowSource && onShowSource()}>
-          {"{ } mob.toml"}
+          {viewState.sourceToggleLabel}
         </button>
         <InlineSourceEditor
           open={sourceOpen}
