@@ -18,6 +18,7 @@ function App() {
   // Shared mob-flow step-tree — the single source of truth for both the
   // Build (editor) and Flow (diagram) views.
   const [flow, setFlow] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
+  const [authoringDocument, setAuthoringDocument] = React.useState(null);
   const [stepSel, setStepSel] = React.useState(null);
   // Editor sub-mode: "basic" (vertical builder) | "advanced" (grid graph).
   const [editorMode, setEditorMode] = React.useState("basic");
@@ -49,6 +50,7 @@ function App() {
   const [inlineSourceDocument, setInlineSourceDocument] = React.useState(null);
   const [inlineSourceBusy, setInlineSourceBusy] = React.useState(false);
   const authoringRevision = React.useRef(0);
+  const authoringDocumentRef = React.useRef(null);
   const sourceProjectionVersion = React.useRef(0);
   const [addAt, setAddAt] = React.useState(null);
   const [deploySettings, setDeploySettings] = React.useState(() => window.MobKitFlowController.deployDefaultsFromSchema(null));
@@ -75,6 +77,11 @@ function App() {
   const currentAuthoringRevision = React.useCallback(() => authoringRevision.current, []);
   const authoringRevisionIsCurrent = React.useCallback((requestToken) =>
     requestToken === authoringRevision.current, []);
+  const setCurrentAuthoringDocument = React.useCallback((document) => {
+    const next = document && typeof document === "object" ? document : null;
+    authoringDocumentRef.current = next;
+    setAuthoringDocument(next);
+  }, []);
   const applySourceProjectionPatch = React.useCallback((patch) => {
     const next = patch && typeof patch === "object" ? patch : {};
     if (Object.prototype.hasOwnProperty.call(next, "sourceOpen")) setSourceOpen(next.sourceOpen);
@@ -320,6 +327,7 @@ function App() {
     catalogs.models,
     catalogs.toolCatalog,
     catalogs.contractMeta.loaded,
+    authoringDocument,
   ]);
 
   const selectInstance = (id) => setSelection(window.MobKitFlowController.graphSelectionProjection("instance", id));
@@ -428,6 +436,7 @@ function App() {
       contract,
     });
     if (!plan.ok) return;
+    if (projection.document) setCurrentAuthoringDocument(projection.document);
     if (plan.flow.changed) setFlow(plan.flow.value);
     if (plan.members.changed) studio.setMembers(plan.members.value);
     if (plan.skillRealms.changed) studio.setSkillRealms(plan.skillRealms.value);
@@ -475,6 +484,11 @@ function App() {
     applyAuthoringDocumentProjection(projection);
     return projection.document;
   };
+  const currentMobKitDocument = (overrides = {}) => {
+    const hasOverrides = overrides && typeof overrides === "object" && Object.keys(overrides).length > 0;
+    if (!hasOverrides && authoringDocumentRef.current) return authoringDocumentRef.current;
+    return buildDocument(overrides);
+  };
   const graphRowsForProjection = (overrides = {}) => {
     const nextStudio = overrides.studio || {};
     return {
@@ -490,7 +504,7 @@ function App() {
   const buildMobKitProjectedDocument = async (overrides = {}) => {
     const requestToken = currentAuthoringRevision();
     if (editorMode !== "advanced") {
-      const document = buildDocument(overrides);
+      const document = currentMobKitDocument(overrides);
       return { document, requestToken };
     }
     const result = await applyMobKitAuthoringReplacement({
@@ -500,13 +514,13 @@ function App() {
     if (!authoringRevisionIsCurrent(requestToken)) {
       return { document: null, requestToken, stale: true };
     }
-    return { document: result?.document || buildDocument(overrides), requestToken };
+    return { document: result?.document || authoringDocumentRef.current || buildDocument(overrides), requestToken };
   };
   const applyMobKitAuthoringOperation = async (operation) => {
     const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operation?.type);
     if (!availability.supported) return { ok: false, error: availability.error };
     const requestToken = currentAuthoringRevision();
-    const document = buildDocument();
+    const document = currentMobKitDocument();
     const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, operation);
     if (!authoringRevisionIsCurrent(requestToken)) {
       return { ok: false, error: "stale authoring operation" };
@@ -526,7 +540,7 @@ function App() {
     const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operationType);
     if (!availability.supported) return { ok: false, error: availability.error };
     const requestToken = currentAuthoringRevision();
-    const document = buildDocument();
+    const document = currentMobKitDocument();
     const operation = {
       type: operationType,
       ...(overrides.operation || {}),
@@ -714,7 +728,7 @@ function App() {
     if (!currentFlowId || !currentFlow) return;
     let document;
     try {
-      document = buildDocument();
+      document = currentMobKitDocument();
     } catch {
       return;
     }
@@ -749,6 +763,7 @@ function App() {
     catalogs.models,
     catalogs.toolCatalog,
     catalogs.contractMeta.loaded,
+    authoringDocument,
   ]);
 
   const handleDrySim = async () => {
@@ -980,6 +995,7 @@ function App() {
     if (hydrationPersistence.ok) {
       persistedDocumentSig.current = hydrationPersistence.signature;
     }
+    setCurrentAuthoringDocument(hydration.document);
     hydratingDocumentRef.current = true;
     setCatalogs((current) => window.MobKitFlowController.catalogSkillRealmsPatch(current, hydration.skillRealms));
     studio.setSkillRealms(hydration.skillRealms);

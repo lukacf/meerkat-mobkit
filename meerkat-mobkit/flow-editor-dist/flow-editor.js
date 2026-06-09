@@ -8173,15 +8173,6 @@ window.MOBKIT_BOOT = {
     return callRpc(rpcMethod("deploy"), { document, ...(options || {}) });
   }
 
-  async function deployCommandPreview(settings, options) {
-    const deploy = normalizeDeploySettings(settings);
-    return callRpc(rpcMethod("deployCommand"), {
-      deploy,
-      pack_path: options?.packPath || "<pack.mobpack>",
-      prompt: options?.prompt || deploy.prompt || "<prompt>",
-    });
-  }
-
   async function deployCommandPreviewForDocument(document, options = {}) {
     const sourceDocument = document && typeof document === "object" ? document : {};
     const deploy = normalizeDeploySettings(sourceDocument.deploy || options.deploySettings);
@@ -11635,7 +11626,6 @@ window.MOBKIT_BOOT = {
     normalizeDeploySettings,
     deploySettingsPatch,
     deploySettingsFieldPatch,
-    deployCommandPreview,
     deployCommandPreviewForDocument,
     callRpc,
     loadSchema,
@@ -12290,84 +12280,6 @@ function useStudioState(initial, onDirty, authoring = {}) {
     setFuture(next.future);
     return next;
   };
-  const addMember = (m) => {
-    snap();
-    const next = window.MobKitFlowController.studioAddMemberPatch({ members, contract: authoring.contract }, m);
-    setMembers(next.members);
-  };
-  const updateMember = (id, patch) => {
-    snap();
-    const next = window.MobKitFlowController.studioUpdateMemberPatch({ members, contract: authoring.contract }, id, patch);
-    setMembers(next.members);
-  };
-  const deleteMember = (id) => {
-    snap();
-    const next = window.MobKitFlowController.studioDeleteMemberPatch({ members, instances, edges }, id);
-    setMembers(next.members);
-    setInstances(next.instances);
-    setEdges(next.edges);
-  };
-  const addInstance = (i) => {
-    snap();
-    const next = window.MobKitFlowController.studioAddInstancePatch({ instances, members }, i);
-    setInstances(next.instances);
-  };
-  const updateInstance = (id, patch) => {
-    snap();
-    const next = window.MobKitFlowController.studioUpdateInstancePatch({ instances, members }, id, patch);
-    setInstances(next.instances);
-  };
-  const deleteInstance = (id) => {
-    snap();
-    const next = window.MobKitFlowController.studioDeleteInstancePatch({ instances, edges }, id);
-    setInstances(next.instances);
-    setEdges(next.edges);
-    return next;
-  };
-  const addEdge = (e) => {
-    snap();
-    const next = window.MobKitFlowController.studioAddEdgePatch({ edges, instances }, e);
-    setEdges(next.edges);
-  };
-  const updateEdge = (id, patch) => {
-    snap();
-    const next = window.MobKitFlowController.studioUpdateEdgePatch({ edges, instances }, id, patch);
-    setEdges(next.edges);
-  };
-  const deleteEdge = (id) => {
-    snap();
-    const next = window.MobKitFlowController.studioDeleteEdgePatch({ edges }, id);
-    setEdges(next.edges);
-    return next;
-  };
-  const addSchema = (s) => {
-    snap();
-    const next = window.MobKitFlowController.studioAddSchemaPatch({ schemas }, s);
-    setSchemas(next.schemas);
-  };
-  const updateSchema = (id, patch) => {
-    snap();
-    const next = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas }, id, patch);
-    setSchemas(next.schemas);
-  };
-  const deleteSchema = (id) => {
-    snap();
-    const next = window.MobKitFlowController.studioDeleteSchemaPatch({
-      schemas,
-      members,
-      flow: authoring.flow,
-      edges,
-      instances
-    }, id);
-    setSchemas(next.schemas);
-    setMembers(next.members);
-    if (next.flow !== authoring.flow && authoring.setFlow) authoring.setFlow(next.flow);
-    if (next.edges) setEdges(next.edges);
-  };
-  const updateSkillRealms = (next) => {
-    snap();
-    setSkillRealms(Array.isArray(next) ? next : []);
-  };
   return {
     members,
     instances,
@@ -12385,20 +12297,7 @@ function useStudioState(initial, onDirty, authoring = {}) {
     undo,
     redo,
     canUndo: !!history.length,
-    canRedo: !!future.length,
-    addMember,
-    updateMember,
-    deleteMember,
-    addInstance,
-    updateInstance,
-    deleteInstance,
-    addEdge,
-    updateEdge,
-    deleteEdge,
-    addSchema,
-    updateSchema,
-    deleteSchema,
-    updateSkillRealms
+    canRedo: !!future.length
   };
 }
 function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [], applyAuthoringReplacement = null }) {
@@ -12543,12 +12442,6 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const w = screenToWorld(e.clientX, e.clientY);
         const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
         if (cell && (cell.col !== drag.origCol || cell.row !== drag.origRow)) {
-          const next = window.MobKitFlowController.studioMoveInstancePatch({
-            instances: state.instances
-          }, drag.instId, cell, {
-            col: drag.origCol,
-            row: drag.origRow
-          });
           if (applyAuthoringReplacement) {
             applyAuthoringReplacement({
               operationType: "move_graph_node",
@@ -12557,7 +12450,6 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
                 cell,
                 original_cell: { col: drag.origCol, row: drag.origRow }
               },
-              studio: { instances: next.instances },
               selection: { kind: "instance", id: drag.instId }
             });
           }
@@ -14233,6 +14125,7 @@ const CATALOG_BOOT = {
 function App() {
   const [stage, setStage] = React.useState("draft");
   const [flow, setFlow] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
+  const [authoringDocument, setAuthoringDocument] = React.useState(null);
   const [stepSel, setStepSel] = React.useState(null);
   const [editorMode, setEditorMode] = React.useState("basic");
   const [view, setView] = React.useState("editor");
@@ -14260,6 +14153,7 @@ function App() {
   const [inlineSourceDocument, setInlineSourceDocument] = React.useState(null);
   const [inlineSourceBusy, setInlineSourceBusy] = React.useState(false);
   const authoringRevision = React.useRef(0);
+  const authoringDocumentRef = React.useRef(null);
   const sourceProjectionVersion = React.useRef(0);
   const [addAt, setAddAt] = React.useState(null);
   const [deploySettings, setDeploySettings] = React.useState(() => window.MobKitFlowController.deployDefaultsFromSchema(null));
@@ -14284,6 +14178,11 @@ function App() {
   const sourceProjectionIsCurrent = React.useCallback((requestToken) => requestToken === sourceProjectionVersion.current, []);
   const currentAuthoringRevision = React.useCallback(() => authoringRevision.current, []);
   const authoringRevisionIsCurrent = React.useCallback((requestToken) => requestToken === authoringRevision.current, []);
+  const setCurrentAuthoringDocument = React.useCallback((document2) => {
+    const next = document2 && typeof document2 === "object" ? document2 : null;
+    authoringDocumentRef.current = next;
+    setAuthoringDocument(next);
+  }, []);
   const applySourceProjectionPatch = React.useCallback((patch) => {
     const next = patch && typeof patch === "object" ? patch : {};
     if (Object.prototype.hasOwnProperty.call(next, "sourceOpen")) setSourceOpen(next.sourceOpen);
@@ -14515,7 +14414,8 @@ function App() {
     contract,
     catalogs.models,
     catalogs.toolCatalog,
-    catalogs.contractMeta.loaded
+    catalogs.contractMeta.loaded,
+    authoringDocument
   ]);
   const selectInstance = (id) => setSelection(window.MobKitFlowController.graphSelectionProjection("instance", id));
   const selectEdge = (id) => setSelection(window.MobKitFlowController.graphSelectionProjection("edge", id));
@@ -14620,6 +14520,7 @@ function App() {
       contract
     });
     if (!plan.ok) return;
+    if (projection.document) setCurrentAuthoringDocument(projection.document);
     if (plan.flow.changed) setFlow(plan.flow.value);
     if (plan.members.changed) studio.setMembers(plan.members.value);
     if (plan.skillRealms.changed) studio.setSkillRealms(plan.skillRealms.value);
@@ -14665,6 +14566,11 @@ function App() {
     applyAuthoringDocumentProjection(projection);
     return projection.document;
   };
+  const currentMobKitDocument = (overrides = {}) => {
+    const hasOverrides = overrides && typeof overrides === "object" && Object.keys(overrides).length > 0;
+    if (!hasOverrides && authoringDocumentRef.current) return authoringDocumentRef.current;
+    return buildDocument(overrides);
+  };
   const graphRowsForProjection = (overrides = {}) => {
     const nextStudio = overrides.studio || {};
     return {
@@ -14680,7 +14586,7 @@ function App() {
   const buildMobKitProjectedDocument = async (overrides = {}) => {
     const requestToken = currentAuthoringRevision();
     if (editorMode !== "advanced") {
-      const document2 = buildDocument(overrides);
+      const document2 = currentMobKitDocument(overrides);
       return { document: document2, requestToken };
     }
     const result = await applyMobKitAuthoringReplacement({
@@ -14690,13 +14596,13 @@ function App() {
     if (!authoringRevisionIsCurrent(requestToken)) {
       return { document: null, requestToken, stale: true };
     }
-    return { document: result?.document || buildDocument(overrides), requestToken };
+    return { document: result?.document || authoringDocumentRef.current || buildDocument(overrides), requestToken };
   };
   const applyMobKitAuthoringOperation = async (operation) => {
     const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operation?.type);
     if (!availability.supported) return { ok: false, error: availability.error };
     const requestToken = currentAuthoringRevision();
-    const document2 = buildDocument();
+    const document2 = currentMobKitDocument();
     const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, operation);
     if (!authoringRevisionIsCurrent(requestToken)) {
       return { ok: false, error: "stale authoring operation" };
@@ -14716,7 +14622,7 @@ function App() {
     const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operationType);
     if (!availability.supported) return { ok: false, error: availability.error };
     const requestToken = currentAuthoringRevision();
-    const document2 = buildDocument();
+    const document2 = currentMobKitDocument();
     const operation = {
       type: operationType,
       ...overrides.operation || {},
@@ -14744,19 +14650,13 @@ function App() {
   const mobKitStudio = {
     ...studio,
     addInstance: (instance) => {
-      const next = window.MobKitFlowController.studioAddInstancePatch({
-        instances: studio.instances,
-        members: studio.members
-      }, instance);
-      if (next.ok && next.instance) {
-        applyMobKitAuthoringReplacement({
-          operationType: "insert_graph_node",
-          operation: { instance: next.instance },
-          studio: { instances: next.instances },
-          selection: { kind: "instance", id: next.instance.id }
-        });
-      }
-      return next;
+      const id = String(instance?.id || "").trim();
+      applyMobKitAuthoringReplacement({
+        operationType: "insert_graph_node",
+        operation: { instance },
+        selection: id ? { kind: "instance", id } : null
+      });
+      return { ok: true, instance, selection: id ? { kind: "instance", id } : null };
     },
     updateInstance: (id, patch) => {
       applyMobKitAuthoringReplacement({
@@ -14784,19 +14684,16 @@ function App() {
       return { ok: true, selection: selection2 };
     },
     addEdge: (edge) => {
-      const next = window.MobKitFlowController.studioAddEdgePatch({
-        edges: studio.edges,
-        instances: studio.instances
-      }, edge);
-      if (next.ok && next.edge) {
-        applyMobKitAuthoringReplacement({
-          operationType: "connect_graph_nodes",
-          operation: { edge: next.edge },
-          studio: { edges: next.edges },
-          selection: { kind: "edge", id: next.edge.id }
-        });
-      }
-      return next;
+      const fromId = String(edge?.from || "").trim();
+      const toId = String(edge?.to || "").trim();
+      const id = String(edge?.id || "").trim();
+      const operation = fromId && toId ? { from_id: fromId, to_id: toId } : { edge };
+      applyMobKitAuthoringReplacement({
+        operationType: "connect_graph_nodes",
+        operation,
+        selection: id ? { kind: "edge", id } : null
+      });
+      return { ok: true, edge, selection: id ? { kind: "edge", id } : null };
     },
     updateEdge: (id, patch) => {
       applyMobKitAuthoringReplacement({
@@ -14908,7 +14805,7 @@ function App() {
     if (!currentFlowId || !currentFlow) return;
     let document2;
     try {
-      document2 = buildDocument();
+      document2 = currentMobKitDocument();
     } catch {
       return;
     }
@@ -14942,7 +14839,8 @@ function App() {
     contract,
     catalogs.models,
     catalogs.toolCatalog,
-    catalogs.contractMeta.loaded
+    catalogs.contractMeta.loaded,
+    authoringDocument
   ]);
   const handleDrySim = async () => {
     let requestToken = null;
@@ -15164,6 +15062,7 @@ function App() {
     if (hydrationPersistence.ok) {
       persistedDocumentSig.current = hydrationPersistence.signature;
     }
+    setCurrentAuthoringDocument(hydration.document);
     hydratingDocumentRef.current = true;
     setCatalogs((current) => window.MobKitFlowController.catalogSkillRealmsPatch(current, hydration.skillRealms));
     studio.setSkillRealms(hydration.skillRealms);
