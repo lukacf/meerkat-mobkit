@@ -364,6 +364,11 @@ function App() {
     if (!next) return;
     setView(next.view);
   };
+  const handleEditorModeSelection = (target) => {
+    const next = window.MobKitFlowController.editorModeTransition(target);
+    if (!next) return;
+    setEditorMode(next.editorMode);
+  };
 
   const applyAuthoringDocumentProjection = (projection) => {
     const plan = window.MobKitFlowController.authoringProjectionApplyPlan(projection, {
@@ -839,7 +844,7 @@ function App() {
       )}
 
       {view === "editor" && (
-        <ModeToggle mode={editorMode} setMode={setEditorMode} railState={shellState} />
+        <ModeToggle mode={editorMode} onSelectMode={handleEditorModeSelection} railState={shellState} />
       )}
 
       {view === "editor" && editorMode === "advanced" && (
@@ -1170,14 +1175,14 @@ function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlow
   );
 }
 
-function ModeToggle({ mode, setMode, railState }) {
+function ModeToggle({ mode, onSelectMode, railState }) {
   return (
     <div className="modetoggle">
-      <button className={"modetoggle__opt" + (mode === "basic" ? " is-active" : "")} onClick={() => setMode("basic")} title={railState.basicModeTitle}>
+      <button className={"modetoggle__opt" + (mode === "basic" ? " is-active" : "")} onClick={() => onSelectMode("basic")} title={railState.basicModeTitle}>
         <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.3"><rect x="1.5" y="2.2" width="10" height="2.2"/><rect x="1.5" y="6.6" width="10" height="2.2"/></svg>
         <span>{railState.basicModeLabel}</span>
       </button>
-      <button className={"modetoggle__opt" + (mode === "advanced" ? " is-active" : "")} onClick={() => setMode("advanced")} title={railState.graphModeTitle}>
+      <button className={"modetoggle__opt" + (mode === "advanced" ? " is-active" : "")} onClick={() => onSelectMode("advanced")} title={railState.graphModeTitle}>
         <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.3"><rect x="1" y="4.5" width="4" height="4"/><rect x="8" y="1" width="4" height="4"/><rect x="8" y="8" width="4" height="4"/><path d="M5 6.5h1.6M6.6 6.5V3h1.4M6.6 6.5V10h1.4"/></svg>
         <span>{railState.graphModeLabel}</span>
       </button>

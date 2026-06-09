@@ -58,6 +58,7 @@ const roleWiringBlock = (app.match(/function RoleWiringEditor[\s\S]*?function Ad
 const advancedMobSettingsBlock = (app.match(/function AdvancedMobSettingsEditor[\s\S]*?ReactDOM\.createRoot/) || [""])[0];
 const importParamsFromFileBlock = (app.match(/async function importParamsFromFile[\s\S]*?function TopRail/) || [""])[0];
 const newFlowModalBlock = (app.match(/function NewFlowModal[\s\S]*?function ModeToggle/) || [""])[0];
+const modeToggleBlock = (app.match(/function ModeToggle[\s\S]*?function Tweaks/) || [""])[0];
 const applyAuthoringProjectionBlock = (app.match(/const applyAuthoringDocumentProjection = \(projection\) => \{[\s\S]*?const currentFlowSelection/) || [""])[0];
 const graphEdgeCanvasBlock = (graph.match(/const edgeEls = state\.edges\.map[\s\S]*?const canvasInstances =/) || [""])[0];
 const graphNodeViewBlock = (graph.match(/function NodeView[\s\S]*?function GateView/) || [""])[0];
@@ -1117,6 +1118,10 @@ assert(!/setView\(|view === ["']editor["'] \? ["']flows["'] : ["']editor["']/.te
 assert.match(app, /<TopRail[\s\S]*railState=\{shellState\}/, "Top rail must receive the shared controller-projected shell state");
 assert.match(app, /<TopRail[\s\S]*onNavigate=\{handleTopRailNavigation\}/, "Top rail must emit semantic navigation targets to the app shell");
 assert.match(app, /<ModeToggle[\s\S]*railState=\{shellState\}/, "Mode toggle labels must use the shared controller-projected shell state");
+assert.match(app, /MobKitFlowController\.editorModeTransition\(target\)/, "editor mode changes must be routed through the controller plane");
+assert.match(controller, /function editorModeTransition/, "controller plane must own editor mode transitions");
+assert.match(app, /<ModeToggle[\s\S]*onSelectMode=\{handleEditorModeSelection\}/, "Mode toggle must emit semantic editor mode targets to the app shell");
+assert(!/setMode\(|setEditorMode\(|onClick=\{\(\) => onSelectMode\(["']graph["']\)/.test(modeToggleBlock), "ModeToggle renderer must not own editor mode state transitions or non-contract mode names");
 assert.match(app, /<DrySim[\s\S]*deployView=\{catalogs\.deployView\}/, "Deploy plan overlay must receive schema-backed deploy view state");
 assert.match(app, /<ValidateSheet[\s\S]*deployView=\{catalogs\.deployView\}/, "Validation sheet must receive schema-backed deploy view state");
 assert.match(app, /railState\.brandLabel/, "Top rail brand label must render through controller state");

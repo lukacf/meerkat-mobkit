@@ -9875,6 +9875,12 @@
     }
   }
 
+  function editorModeTransition(target) {
+    const editorMode = String(target || "");
+    if (editorMode !== "basic" && editorMode !== "advanced") return null;
+    return { editorMode };
+  }
+
   function validationOutcome(document, result) {
     const validation = result || null;
     return {
@@ -11449,6 +11455,7 @@
     deployPlanTraceState,
     topRailState,
     topRailNavigationTransition,
+    editorModeTransition,
     validationOutcome,
     exportOutcome,
     deployOutcome,

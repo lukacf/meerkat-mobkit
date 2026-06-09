@@ -9908,6 +9908,12 @@ window.MOBKIT_BOOT = {
     }
   }
 
+  function editorModeTransition(target) {
+    const editorMode = String(target || "");
+    if (editorMode !== "basic" && editorMode !== "advanced") return null;
+    return { editorMode };
+  }
+
   function validationOutcome(document, result) {
     const validation = result || null;
     return {
@@ -11482,6 +11488,7 @@ window.MOBKIT_BOOT = {
     deployPlanTraceState,
     topRailState,
     topRailNavigationTransition,
+    editorModeTransition,
     validationOutcome,
     exportOutcome,
     deployOutcome,
@@ -14348,6 +14355,11 @@ function App() {
     if (!next) return;
     setView(next.view);
   };
+  const handleEditorModeSelection = (target) => {
+    const next = window.MobKitFlowController.editorModeTransition(target);
+    if (!next) return;
+    setEditorMode(next.editorMode);
+  };
   const applyAuthoringDocumentProjection = (projection) => {
     const plan = window.MobKitFlowController.authoringProjectionApplyPlan(projection, {
       flow,
@@ -14803,7 +14815,7 @@ function App() {
         setCreating(window.MobKitFlowController.newFlowInitialState({ blankTemplate: catalogs.blankMobpack }));
       }
     }
-  ), view === "editor" && /* @__PURE__ */ React.createElement(ModeToggle, { mode: editorMode, setMode: setEditorMode, railState: shellState }), view === "editor" && editorMode === "advanced" && /* @__PURE__ */ React.createElement("div", { className: "stage-area", onClick: (e) => {
+  ), view === "editor" && /* @__PURE__ */ React.createElement(ModeToggle, { mode: editorMode, onSelectMode: handleEditorModeSelection, railState: shellState }), view === "editor" && editorMode === "advanced" && /* @__PURE__ */ React.createElement("div", { className: "stage-area", onClick: (e) => {
     if (e.target === e.currentTarget) closeGraphAddMenu();
   } }, /* @__PURE__ */ React.createElement(
     GraphEditor,
@@ -15020,8 +15032,8 @@ function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlow
     modalState.createLabel
   ))));
 }
-function ModeToggle({ mode, setMode, railState }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "modetoggle" }, /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "basic" ? " is-active" : ""), onClick: () => setMode("basic"), title: railState.basicModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "2.2", width: "10", height: "2.2" }), /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "6.6", width: "10", height: "2.2" })), /* @__PURE__ */ React.createElement("span", null, railState.basicModeLabel)), /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "advanced" ? " is-active" : ""), onClick: () => setMode("advanced"), title: railState.graphModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1", y: "4.5", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "1", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "8", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("path", { d: "M5 6.5h1.6M6.6 6.5V3h1.4M6.6 6.5V10h1.4" })), /* @__PURE__ */ React.createElement("span", null, railState.graphModeLabel)));
+function ModeToggle({ mode, onSelectMode, railState }) {
+  return /* @__PURE__ */ React.createElement("div", { className: "modetoggle" }, /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "basic" ? " is-active" : ""), onClick: () => onSelectMode("basic"), title: railState.basicModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "2.2", width: "10", height: "2.2" }), /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "6.6", width: "10", height: "2.2" })), /* @__PURE__ */ React.createElement("span", null, railState.basicModeLabel)), /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "advanced" ? " is-active" : ""), onClick: () => onSelectMode("advanced"), title: railState.graphModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1", y: "4.5", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "1", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "8", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("path", { d: "M5 6.5h1.6M6.6 6.5V3h1.4M6.6 6.5V10h1.4" })), /* @__PURE__ */ React.createElement("span", null, railState.graphModeLabel)));
 }
 function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, onLoadFlow }) {
   const setDeployField = (field, value) => setDeploySettings(

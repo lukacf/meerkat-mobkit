@@ -568,6 +568,9 @@ assert.deepEqual(controller.topRailNavigationTransition("flows", "flows-tab"), {
 assert.deepEqual(controller.topRailNavigationTransition("agents", "agents-tab"), { view: "agents" });
 assert.deepEqual(controller.topRailNavigationTransition("editor", "flows-crumb"), { view: "flows" });
 assert.equal(controller.topRailNavigationTransition("editor", "missing"), null);
+assert.deepEqual(controller.editorModeTransition("basic"), { editorMode: "basic" });
+assert.deepEqual(controller.editorModeTransition("advanced"), { editorMode: "advanced" });
+assert.equal(controller.editorModeTransition("graph"), null);
 
 assert.equal(controller.buildBlankDocument, undefined, "blank mobpack documents must come from MobKit schema, not a local builder");
 
