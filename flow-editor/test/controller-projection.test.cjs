@@ -605,6 +605,8 @@ assert.equal(controller.blankMobpackFromCatalogs({
 assert.equal(controller.blankMobpackFromCatalogs({
   blank_mobpack: {
     id: "blank",
+    name: "Blank",
+    source: "mobkit/blank-mobpack",
     document: { mob_id: "blank_mob" },
   },
 }), null);
@@ -2682,6 +2684,7 @@ const sampleRows = controller.sampleFlowsFromCatalogs({
       id: "schema_source",
       name: "Schema source",
       source: "mobkit/sample-mobpack",
+      stage: "valid",
       document: { mob_id: "schema_source", schema_version: "0.1" },
       validation: { ok: true },
     },
@@ -2690,6 +2693,7 @@ const sampleRows = controller.sampleFlowsFromCatalogs({
       name: "Schema source with trigger",
       source: "mobkit/imported",
       trigger: "imported/mob.toml",
+      stage: "draft",
       document: { mob_id: "schema_source_with_trigger" },
     },
   ],
@@ -2721,6 +2725,7 @@ const bootstrapProjection = controller.flowCatalogBootstrapState({
       name: "Starter",
       source: "mobkit/sample-mobpack",
       trigger: "label · starter",
+      stage: "valid",
       document: { mob_id: "starter", schema_version: "0.1" },
       validation: { ok: true },
     },
@@ -2728,6 +2733,7 @@ const bootstrapProjection = controller.flowCatalogBootstrapState({
       id: "second",
       name: "Second",
       source: "mobkit/sample-mobpack",
+      stage: "draft",
       document: { mob_id: "second", schema_version: "0.1" },
       validation: { ok: false },
     },

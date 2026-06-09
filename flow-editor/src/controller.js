@@ -10343,12 +10343,13 @@
         if (!source) return null;
         const id = String(sample.id || "").trim();
         const name = String(sample.name || "").trim();
-        if (!id || !name) return null;
+        const stage = String(sample.stage || "").trim();
+        if (!id || !name || !stage) return null;
         return {
           id,
           name,
           version: String(sample.version || sample.document?.schema_version || ""),
-          stage: String(sample.stage || (sample.validation?.ok ? "valid" : "draft")),
+          stage,
           trigger: String(sample.trigger || source),
           source,
           document: sample.document,
@@ -10389,12 +10390,13 @@
     const source = typeof blank.source === "string" ? blank.source.trim() : "";
     const id = String(blank.id || "").trim();
     const name = String(blank.name || "").trim();
-    if (!id || !name || !source) return null;
+    const stage = String(blank.stage || "").trim();
+    if (!id || !name || !source || !stage) return null;
     return {
       id,
       name,
       version: String(blank.version || blank.document?.schema_version || ""),
-      stage: String(blank.stage || (blank.validation?.ok ? "valid" : "draft")),
+      stage,
       trigger: String(blank.trigger || source),
       source,
       document: blank.document,
