@@ -1091,6 +1091,14 @@ pub fn mobpack_authoring_operations() -> Value {
             "projection_document_supported": true
         },
         {
+            "type": "apply_flow_step_edit",
+            "plane": "basic",
+            "authority": "mobkit",
+            "requires": ["step_id", "action"],
+            "mutates": ["document.flow"],
+            "projection_document_supported": false
+        },
+        {
             "type": "delete_flow_step",
             "plane": "basic",
             "authority": "mobkit",
@@ -3362,6 +3370,7 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
         "delete_input_param" => apply_delete_input_param_operation(&mut document, operation)?,
         "insert_flow_step" => apply_insert_flow_step_operation(&mut document, operation)?,
         "update_flow_step" => apply_update_flow_step_operation(&mut document, operation)?,
+        "apply_flow_step_edit" => apply_flow_step_edit_operation(&mut document, operation)?,
         "delete_flow_step" => apply_delete_flow_step_operation(&mut document, operation)?,
         "insert_graph_node" => apply_insert_graph_node_operation(&mut document, operation)?,
         "update_graph_node" => apply_update_graph_node_operation(&mut document, operation)?,
@@ -5592,6 +5601,165 @@ fn apply_update_flow_step_operation(
             return Err("update_flow_step cannot change step id".to_string());
         }
         object.insert(key.clone(), value.clone());
+    }
+    validate_flow_step(
+        &next_step,
+        &document.flow,
+        &document.members,
+        Some(&step_id),
+    )?;
+    *flow_step_mut_by_id(&mut document.flow, &step_id)
+        .ok_or_else(|| format!("flow step not found: {step_id}"))? = next_step;
+    Ok(json!({ "kind": "step", "id": step_id }))
+}
+
+fn flow_fork_source_allowed(flow: &Value, step_id: &str, source_id: &str) -> bool {
+    let source_id = source_id.trim();
+    source_id.is_empty() || (source_id != step_id && flow_step_ids(flow).contains(source_id))
+}
+
+fn first_flow_fork_source(flow: &Value, step_id: &str) -> String {
+    flow_step_ids(flow)
+        .into_iter()
+        .find(|id| id != step_id)
+        .unwrap_or_default()
+}
+
+fn apply_flow_step_edit_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let step_id = operation_step_id(operation)?;
+    let action = operation_action(operation)?;
+    let current = flow_step_mut_by_id(&mut document.flow, &step_id)
+        .ok_or_else(|| format!("flow step not found: {step_id}"))?
+        .clone();
+    let mut next_step = current;
+    let mut launch_mode = graph_launch_mode_object(&next_step);
+    {
+        let object = next_step
+            .as_object_mut()
+            .ok_or_else(|| format!("flow step is not an object: {step_id}"))?;
+        match action.as_str() {
+            "set_launch_kind" => {
+                let kind = canonical_graph_launch_kind(&operation_string_value(
+                    operation,
+                    &["kind", "value"],
+                ));
+                if !graph_launch_kind_allowed(&kind) {
+                    return Err(format!("unsupported launch mode: {kind}"));
+                }
+                let budget = graph_launch_budget_patch(&launch_mode);
+                let mut next = serde_json::Map::new();
+                next.insert("kind".to_string(), Value::String(kind.clone()));
+                if kind == "Fork" {
+                    let from = operation_string_value(
+                        operation,
+                        &["first_fork_source_id", "firstForkSourceId", "from"],
+                    );
+                    let from = if from.is_empty() {
+                        launch_mode
+                            .get("from")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| first_flow_fork_source(&document.flow, &step_id))
+                    } else {
+                        from
+                    };
+                    if !flow_fork_source_allowed(&document.flow, &step_id, &from) {
+                        return Err(format!(
+                            "launch fork source must reference another flow step: {from}"
+                        ));
+                    }
+                    next.insert("from".to_string(), Value::String(from));
+                    let context = launch_mode
+                        .get("context")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| mob_definition_default("fork_context"));
+                    next.insert("context".to_string(), Value::String(context));
+                } else if kind == "Resume" {
+                    next.insert(
+                        "sessionId".to_string(),
+                        Value::String(
+                            launch_mode
+                                .get("sessionId")
+                                .or_else(|| launch_mode.get("session_id"))
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                        ),
+                    );
+                }
+                if let Some(budget) = budget {
+                    next.insert("budgetSplitPolicy".to_string(), budget);
+                }
+                object.insert("launchMode".to_string(), Value::Object(next));
+            }
+            "set_launch_session" => {
+                launch_mode.insert(
+                    "sessionId".to_string(),
+                    Value::String(operation_string_value(
+                        operation,
+                        &["session_id", "sessionId", "value"],
+                    )),
+                );
+                object.insert("launchMode".to_string(), Value::Object(launch_mode));
+            }
+            "set_launch_fork_source" => {
+                let from =
+                    operation_string_value(operation, &["from", "source_id", "sourceId", "value"]);
+                if !flow_fork_source_allowed(&document.flow, &step_id, &from) {
+                    return Err(format!(
+                        "launch fork source must reference another flow step: {from}"
+                    ));
+                }
+                launch_mode.insert("from".to_string(), Value::String(from));
+                object.insert("launchMode".to_string(), Value::Object(launch_mode));
+            }
+            "set_launch_fork_context" => {
+                let context = operation_string_value(operation, &["context", "value"]);
+                if !graph_fork_context_allowed(&context) {
+                    return Err(format!("unsupported fork context: {context}"));
+                }
+                launch_mode.insert("context".to_string(), Value::String(context));
+                object.insert("launchMode".to_string(), Value::Object(launch_mode));
+            }
+            "set_launch_budget_kind" => {
+                let kind = canonical_graph_budget_kind(&operation_string_value(
+                    operation,
+                    &["budget_kind", "budgetKind", "kind", "value"],
+                ));
+                if !graph_budget_kind_allowed(&kind) {
+                    return Err(format!("unsupported budget split policy: {kind}"));
+                }
+                let policy = if kind == "Fixed" {
+                    json!({ "kind": "Fixed", "limit": 4096 })
+                } else {
+                    json!({ "kind": kind })
+                };
+                launch_mode.insert("budgetSplitPolicy".to_string(), policy);
+                object.insert("launchMode".to_string(), Value::Object(launch_mode));
+            }
+            "set_launch_budget_limit" => {
+                let limit = operation
+                    .get("limit")
+                    .or_else(|| operation.get("value"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(4096)
+                    .max(1);
+                launch_mode.insert(
+                    "budgetSplitPolicy".to_string(),
+                    json!({ "kind": "Fixed", "limit": limit }),
+                );
+                object.insert("launchMode".to_string(), Value::Object(launch_mode));
+            }
+            other => return Err(format!("unsupported apply_flow_step_edit action: {other}")),
+        }
     }
     validate_flow_step(
         &next_step,
@@ -24427,8 +24595,28 @@ model = "gpt-5.5"
             json!("Review carefully.")
         );
 
-        let deleted = apply_mobpack_authoring_operation(&json!({
+        let launch_edited = apply_mobpack_authoring_operation(&json!({
             "document": updated["document"],
+            "operation": {
+                "type": "apply_flow_step_edit",
+                "step_id": "review",
+                "action": "set_launch_kind",
+                "kind": "Fork",
+                "first_fork_source_id": "plan"
+            }
+        }))
+        .expect("semantic flow step launch edit");
+        assert_eq!(
+            launch_edited["document"]["flow"]["steps"][2]["launchMode"]["kind"],
+            json!("Fork")
+        );
+        assert_eq!(
+            launch_edited["document"]["flow"]["steps"][2]["launchMode"]["from"],
+            json!("plan")
+        );
+
+        let deleted = apply_mobpack_authoring_operation(&json!({
+            "document": launch_edited["document"],
             "operation": {
                 "type": "delete_flow_step",
                 "step_id": "review"

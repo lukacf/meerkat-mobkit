@@ -188,6 +188,9 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       : operation;
     commitFlow(operationType, payload);
   };
+  const editStep = (id, action, payload = {}) => {
+    commitFlow("apply_flow_step_edit", { step_id: id, action, ...payload });
+  };
   const selStep = findStep(flow.steps, sel);
   const applyBasicInteraction = (result) => {
     if (!result) return;
@@ -701,7 +704,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
       </select></Field>
       <Field label={launchState.launchTitle}>
         <select className="field__select" value={launchState.launchKind} onChange={e => {
-          update(step.id, window.MobKitFlowController.launchModeKindPatch(step, e.target.value, contract, { firstForkSourceId: memberStepState.firstLaunchSourceId }));
+          editStep(step.id, "set_launch_kind", { kind: e.target.value, first_fork_source_id: memberStepState.firstLaunchSourceId });
         }}>
           {launchState.launchOptions.map(option => (
             <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
@@ -711,18 +714,18 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
       {launchState.selectedLaunchMode?.reason && <div className="bld-hint" style={{ color: "var(--warn)" }}>{launchState.selectedLaunchMode.reason}</div>}
       {launchState.launchKind === "Resume" && (
         <Field label={launchState.resumeSessionLabel}>
-          <input className="field__input" value={launchState.launchMode.sessionId || ""} placeholder={launchState.resumeSessionPlaceholder} onChange={e => update(step.id, window.MobKitFlowController.launchModeSessionPatch(step, e.target.value, contract))} />
+          <input className="field__input" value={launchState.launchMode.sessionId || ""} placeholder={launchState.resumeSessionPlaceholder} onChange={e => editStep(step.id, "set_launch_session", { session_id: e.target.value })} />
         </Field>
       )}
       {launchState.launchKind === "Fork" && (
         <>
           <Field label={launchState.forkSourceLabel}>
-            <select className="field__select" value={launchState.launchMode.from || ""} onChange={e => update(step.id, window.MobKitFlowController.launchModeForkSourcePatch(step, e.target.value, contract, { sourceOptions: memberStepState.launchSourceOptions }))}>
+            <select className="field__select" value={launchState.launchMode.from || ""} onChange={e => editStep(step.id, "set_launch_fork_source", { from: e.target.value })}>
               {memberStepState.launchSourceOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
           </Field>
           <Field label={launchState.forkContextLabel}>
-            <select className="field__select" value={launchState.forkContextValue} onChange={e => update(step.id, window.MobKitFlowController.launchModeForkContextPatch(step, e.target.value, contract))}>
+            <select className="field__select" value={launchState.forkContextValue} onChange={e => editStep(step.id, "set_launch_fork_context", { context: e.target.value })}>
               {launchState.forkContextOptions.map(option => (
                 <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
               ))}
@@ -732,7 +735,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
         </>
       )}
       <Field label={launchState.budgetPolicyLabel}>
-        <select className="field__select" value={launchState.budgetSplitPolicy.kind} onChange={e => update(step.id, window.MobKitFlowController.launchBudgetKindPatch(step, e.target.value, contract))}>
+        <select className="field__select" value={launchState.budgetSplitPolicy.kind} onChange={e => editStep(step.id, "set_launch_budget_kind", { budget_kind: e.target.value })}>
           {launchState.budgetOptions.map(option => (
             <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
           ))}
@@ -741,7 +744,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
       {launchState.selectedBudgetPolicy?.reason && <div className="bld-hint" style={{ color: "var(--warn)" }}>{launchState.selectedBudgetPolicy.reason}</div>}
       {launchState.budgetSplitPolicy.kind === "Fixed" && (
         <Field label={launchState.fixedBudgetLabel}>
-          <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => update(step.id, window.MobKitFlowController.launchBudgetFixedLimitPatch(step, e.target.value, contract))} />
+          <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => editStep(step.id, "set_launch_budget_limit", { limit: Number(e.target.value) || 1 })} />
         </Field>
       )}
       <Field label={memberStepState.instructionLabel}><textarea className="field__textarea" rows={4} placeholder={memberStepState.instructionPlaceholder} value={step.instruction || ""} onChange={e => update(step.id, window.MobKitFlowController.flowStepInstructionPatch(e.target.value))} /></Field>
