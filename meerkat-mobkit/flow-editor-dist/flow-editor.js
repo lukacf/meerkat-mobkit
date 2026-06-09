@@ -10048,6 +10048,14 @@ window.MOBKIT_BOOT = {
       maxInlinePeerNotifications: normalizeMaxInlinePeerNotifications(source.maxInlinePeerNotifications ?? source.max_inline_peer_notifications),
       systemPrompt: source.systemPrompt || "",
       providerParams: normalizeProviderParams(source.providerParams || source.provider_params),
+      sourceDefinition: {
+        definitionType: source.definitionType,
+        definitionId: source.id,
+        source: source.source,
+        sourceMobpack: source.sourceMobpack,
+        sourceOrigin: source.sourceOrigin,
+        sourceDocumentPath: source.sourceDocumentPath || "",
+      },
     };
   }
 

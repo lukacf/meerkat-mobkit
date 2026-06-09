@@ -1010,6 +1010,7 @@ assert.match(controller, /missingRuntimeModeLabel/, "controller plane must expos
 assert.match(agents, /MobKitFlowController\.agentDefinitionAddByIdPatch/, "Agent Editor must add API-backed agent definitions through one controller-plane operation");
 assert.match(controller, /function agentDefinitionAddPatch/, "controller plane must own combined agent-definition member and schema mutation semantics");
 assert.match(controller, /function agentDefinitionAddByIdPatch/, "controller plane must own agent-definition id resolution");
+assert.match(controller, /memberFromAgentDefinition[\s\S]*sourceDefinition:\s*\{[\s\S]*definitionId:\s*source\.id[\s\S]*sourceMobpack:\s*source\.sourceMobpack[\s\S]*sourceOrigin:\s*source\.sourceOrigin/, "Agent definition member creation must retain MobKit profile-member provenance in editor state");
 assert.match(controller, /function mergeAgentDefinitionSchemas/, "controller plane must own agent-definition schema replacement semantics");
 assert(!/MobKitFlowController\.memberFromAgentDefinition/.test(agents), "Agent Editor must not assemble API-backed member definitions directly");
 assert(!/MobKitFlowController\.mergeAgentDefinitionSchemas/.test(agents), "Agent Editor must not merge API-backed schemas directly when adding an agent");

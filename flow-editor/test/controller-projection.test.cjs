@@ -4263,6 +4263,14 @@ const addedAgent = controller.agentDefinitionAddPatch(agentDefinition, {
   schemas: staleAgentSchemas,
 });
 assert.equal(addedAgent.member.id, "m_reviewer_2");
+assert.deepEqual(addedAgent.member.sourceDefinition, {
+  definitionType: "mobkit/profile-member",
+  definitionId: "reviewer",
+  source: "mobkit/mobpack-profile-member",
+  sourceMobpack: "sample_review_pr",
+  sourceOrigin: "mobkit/sample-mobpack",
+  sourceDocumentPath: "document.members[]",
+});
 assert.equal(addedAgent.members.length, 2);
 assert.equal(addedAgent.schemasChanged, true);
 assert.deepEqual(addedAgent.schemas, mergedAgentSchemas);
@@ -4272,6 +4280,8 @@ const addedById = controller.agentDefinitionAddByIdPatch([agentDefinition], "rev
 });
 assert.equal(addedById.ok, true);
 assert.equal(addedById.member.id, "m_reviewer");
+assert.equal(addedById.member.sourceDefinition.sourceMobpack, "sample_review_pr");
+assert.equal(addedById.member.sourceDefinition.sourceOrigin, "mobkit/sample-mobpack");
 assert.equal(controller.agentDefinitionAddByIdPatch([agentDefinition], "missing").ok, false);
 const agentMembersForProjection = [
   { id: "m_planner", name: "Planner", role: "planner", model: "gpt-5.5", schema: "PlanArtifact" },
