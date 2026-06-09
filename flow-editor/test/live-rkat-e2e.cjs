@@ -849,8 +849,9 @@ function buildUnifiedProjectionDocument(catalogs) {
   if (!coderDefinition || !reviewerDefinition) {
     throw new Error("unified projection proof needs MobKit agent definitions from mobkit/mobpacks/catalogs");
   }
-  const model = catalogs.models?.[0]?.id || coderDefinition.model || reviewerDefinition.model || "gpt-5.5";
-  const toolCatalog = Array.isArray(catalogs.tool_catalog) ? catalogs.tool_catalog : [];
+  const modelCatalog = controller.modelCatalogFromCatalogs(catalogs);
+  const model = modelCatalog[0]?.id || coderDefinition.model || reviewerDefinition.model || "gpt-5.5";
+  const toolCatalog = controller.toolCatalogFromCatalogs(catalogs);
   if (!toolCatalog.length) {
     throw new Error("unified projection proof needs real MobKit tools from mobkit/mobpacks/catalogs");
   }
@@ -858,9 +859,57 @@ function buildUnifiedProjectionDocument(catalogs) {
   for (const required of ["builtins", "shell", "comms", "mob"]) {
     if (!toolIds.includes(required)) throw new Error(`unified projection proof missing real tool ${required}`);
   }
+  const catalogSkillRealms = controller.skillRealmsFromCatalogs(catalogs);
+  const sampleSkillRealm = catalogSkillRealms
+    .find((realm) => realm.id === "mobkit/sample-mobpacks" || (realm.skills || []).some((skill) => skill.id === "mob.workpad"));
+  const sampleSkills = (sampleSkillRealm?.skills || [])
+    .filter((skill) => ["mob.workpad", "mob.review"].includes(skill.id));
+  if (sampleSkills.length < 2) {
+    throw new Error("unified projection proof needs real MobKit sample mobpack skills from mobkit/mobpacks/catalogs");
+  }
+  if (!sampleSkillRealm?.source) {
+    throw new Error(`unified projection proof needs MobKit sample skill realm source metadata: ${JSON.stringify(sampleSkillRealm)}`);
+  }
+  const inlineSkillRealm = {
+    id: "mobkit/editor-inline",
+    label: "This mobpack",
+    source: "editor",
+    skills: [{
+      id: "mob.editor.unified",
+      label: "mob.editor.unified",
+      source: "inline",
+      content: "Keep Basic, Graph, and Agent editor projections synchronized against the same deployable mobpack.",
+    }],
+  };
+  const skillRealms = [...catalogSkillRealms, inlineSkillRealm];
+
+  const coderAdd = controller.agentDefinitionAddByIdPatch(definitions, coderDefinition.id, {
+    members: [],
+    schemas: [],
+    contract: contractSchema,
+    deploySettings: testDeploySettings(),
+    modelCatalog,
+    toolCatalog,
+    skillRealms,
+  });
+  if (coderAdd.ok === false || !coderAdd.member?.sourceDefinition) {
+    throw new Error(`unified projection proof could not add coder definition through Agent Editor controller path: ${JSON.stringify(coderAdd)}`);
+  }
+  const reviewerAdd = controller.agentDefinitionAddByIdPatch(definitions, reviewerDefinition.id, {
+    members: [coderAdd.member],
+    schemas: coderAdd.schemas,
+    contract: contractSchema,
+    deploySettings: testDeploySettings(),
+    modelCatalog,
+    toolCatalog,
+    skillRealms,
+  });
+  if (reviewerAdd.ok === false || !reviewerAdd.member?.sourceDefinition) {
+    throw new Error(`unified projection proof could not add reviewer definition through Agent Editor controller path: ${JSON.stringify(reviewerAdd)}`);
+  }
 
   const coder = {
-    ...controller.memberFromAgentDefinition(coderDefinition, []),
+    ...coderAdd.member,
     id: "m_unified_coder",
     name: "Unified Coder",
     role: "unified_coder",
@@ -875,7 +924,7 @@ function buildUnifiedProjectionDocument(catalogs) {
     providerParams: { thinking_budget: 2048 },
   };
   const reviewer = {
-    ...controller.memberFromAgentDefinition(reviewerDefinition, [coder]),
+    ...reviewerAdd.member,
     id: "m_unified_reviewer",
     name: "Unified Reviewer",
     role: "unified_reviewer",
@@ -910,35 +959,9 @@ function buildUnifiedProjectionDocument(catalogs) {
       },
     ],
   }];
-  const sampleSkillRealm = (catalogs.skill_realms || [])
-    .find((realm) => realm.id === "mobkit/sample-mobpacks" || (realm.skills || []).some((skill) => skill.id === "mob.workpad"));
-  const sampleSkills = (sampleSkillRealm?.skills || [])
-    .filter((skill) => ["mob.workpad", "mob.review"].includes(skill.id));
-  if (sampleSkills.length < 2) {
-    throw new Error("unified projection proof needs real MobKit sample mobpack skills from mobkit/mobpacks/catalogs");
-  }
-  if (!sampleSkillRealm?.source) {
-    throw new Error(`unified projection proof needs MobKit sample skill realm source metadata: ${JSON.stringify(sampleSkillRealm)}`);
-  }
-  const skillRealms = [
-    {
-      id: "mobkit/sample-mobpacks",
-      label: "mobkit/sample-mobpacks",
-      source: sampleSkillRealm.source,
-      skills: sampleSkills,
-    },
-    {
-      id: "mobkit/editor-inline",
-      label: "This mobpack",
-      source: "editor",
-      skills: [{
-        id: "mob.editor.unified",
-        label: "mob.editor.unified",
-        source: "inline",
-        content: "Keep Basic, Graph, and Agent editor projections synchronized against the same deployable mobpack.",
-      }],
-    },
-  ];
+  const mergedDefinitionSchemas = Array.isArray(reviewerAdd.schemas) ? reviewerAdd.schemas : [];
+  const schemasById = new Map([...mergedDefinitionSchemas, ...schemas].map((schema) => [schema.id, schema]));
+  const unifiedSchemas = Array.from(schemasById.values());
 
   const previousFlow = {
     name: "unified-projection-proof",
@@ -1017,7 +1040,7 @@ function buildUnifiedProjectionDocument(catalogs) {
     flow,
     studio: {
       members: [coder, reviewer],
-      schemas,
+      schemas: unifiedSchemas,
       instances,
       edges,
       frames: [],
@@ -1060,6 +1083,9 @@ async function validateUnifiedEditorProjection(dir, catalogs) {
       throw new Error(`unified editor mob.toml missing ${required}\n${mobToml}`);
     }
   }
+  if (mobToml.includes("sourceDefinition") || mobToml.includes("sourceMobpack")) {
+    throw new Error(`unified editor mob.toml leaked editor-only source-definition provenance:\n${mobToml}`);
+  }
   const packPath = path.join(dir, exported.filename || "unified-editor-projection.mobpack");
   fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
   const validate = run("rkat", ["mob", "validate", packPath]);
@@ -1081,6 +1107,15 @@ async function validateUnifiedEditorProjection(dir, catalogs) {
   if (reviewer.schema !== "UnifiedVerdict" || !reviewer.skills?.includes("mob.review")) {
     throw new Error(`imported unified reviewer lost schema/skills: ${JSON.stringify(reviewer)}`);
   }
+  for (const [label, member] of [["coder", coder], ["reviewer", reviewer]]) {
+    const source = member.sourceDefinition || {};
+    if (source.definitionType !== "mobkit/profile-member" || !source.definitionId || !source.sourceMobpack || source.sourceOrigin !== "mobkit/sample-mobpack") {
+      throw new Error(`imported unified ${label} lost source-definition provenance from the real sample profile-member catalog: ${JSON.stringify(source)}`);
+    }
+    if (!String(source.sourceDocumentPath || "").startsWith("document.members[")) {
+      throw new Error(`imported unified ${label} sourceDefinition must carry indexed member source path: ${JSON.stringify(source)}`);
+    }
+  }
   const frameKinds = (imported.document.frames || []).map((frame) => frame.kind);
   if (!frameKinds.includes("Branch")) {
     throw new Error(`imported unified editor projection lost Branch frame: ${JSON.stringify(imported.document.frames)}`);
@@ -1096,6 +1131,7 @@ async function validateUnifiedEditorProjection(dir, catalogs) {
     frameKinds,
     schemaIds: (imported.document.schemas || []).map((candidate) => candidate.id),
     skillIds: (imported.document.skill_realms || []).flatMap((realm) => (realm.skills || []).map((skill) => skill.id)),
+    sourceDefinitions: [coder.sourceDefinition.sourceMobpack, reviewer.sourceDefinition.sourceMobpack],
   };
 }
 
