@@ -849,6 +849,46 @@ pub fn mobpack_authoring_operations() -> Value {
             "projection_document_supported": false
         },
         {
+            "type": "add_member_tool",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["member_id", "tool_id"],
+            "mutates": ["document.members"],
+            "projection_document_supported": false
+        },
+        {
+            "type": "remove_member_tool",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["member_id", "tool_id"],
+            "mutates": ["document.members"],
+            "projection_document_supported": false
+        },
+        {
+            "type": "toggle_member_skill",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["member_id", "skill_id"],
+            "mutates": ["document.members"],
+            "projection_document_supported": false
+        },
+        {
+            "type": "remove_member_skill",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["member_id", "skill_id"],
+            "mutates": ["document.members"],
+            "projection_document_supported": false
+        },
+        {
+            "type": "create_inline_skill",
+            "plane": "agent",
+            "authority": "mobkit",
+            "requires": ["member_id", "label", "content"],
+            "mutates": ["document.members", "document.skill_realms"],
+            "projection_document_supported": false
+        },
+        {
             "type": "delete_member",
             "plane": "agent",
             "authority": "mobkit",

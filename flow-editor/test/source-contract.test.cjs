@@ -1340,6 +1340,7 @@ assert(!/function\s+uniqueFieldName/.test(agents), "Agent Editor must not own sc
 assert.match(agents, /type:\s*"add_member_tool"[\s\S]*member_id:\s*member\.id[\s\S]*tool_id:\s*toolId/, "Agent Editor must add tool access through MobKit apply_operation");
 assert.match(agents, /type:\s*"remove_member_tool"[\s\S]*member_id:\s*member\.id[\s\S]*tool_id:\s*toolId/, "Agent Editor must remove tool access through MobKit apply_operation");
 assert(!/memberToolAccessCascadePatch\(\{[\s\S]*memberId:\s*member\.id/.test(agentEditorBlock), "Agent Editor must not mutate tool access through local controller cascades");
+assert.match(mobpackRust, /"type":\s*"add_member_tool"[\s\S]*"authority":\s*"mobkit"[\s\S]*"requires":\s*\["member_id",\s*"tool_id"\]/, "MobKit operation catalog must advertise member tool add operations");
 assert.match(mobpackRust, /"add_member_tool"\s*=>\s*apply_member_tool_operation\(&mut document, operation, true\)/, "MobKit apply_operation must own tool-add mutations");
 assert.match(mobpackRust, /"remove_member_tool"\s*=>\s*apply_member_tool_operation\(&mut document, operation, false\)/, "MobKit apply_operation must own tool-remove mutations");
 assert.match(agents, /MobKitFlowController\.memberToolAccessState\(member, toolCatalog, agentAccessView\)/, "Agent Editor must render tool access rows through schema-backed controller projection");
@@ -1350,6 +1351,7 @@ assert.match(agents, /type:\s*"remove_member_skill"[\s\S]*skill_id:\s*sid/, "Age
 assert.match(agents, /type:\s*"create_inline_skill"[\s\S]*label:\s*inlineLabel[\s\S]*content:\s*inlineContent/, "Agent Editor must create inline skill definitions and member bindings through MobKit apply_operation");
 assert(!/memberSkillToggleCascadePatch\(\{[\s\S]*memberId:\s*member\.id/.test(agentsSkillAccessBlock), "Agent Editor must not mutate skill access through local controller cascades");
 assert(!/memberInlineSkillCascadePatch\(\{[\s\S]*memberId:\s*member\.id/.test(agentsSkillAccessBlock), "Agent Editor must not create inline skills through local controller cascades");
+assert.match(mobpackRust, /"type":\s*"create_inline_skill"[\s\S]*"authority":\s*"mobkit"[\s\S]*"requires":\s*\["member_id",\s*"label",\s*"content"\]/, "MobKit operation catalog must advertise inline skill creation operations");
 assert.match(mobpackRust, /"toggle_member_skill"\s*=>\s*\{[\s\S]*apply_member_skill_operation\(&mut document, operation, SkillOperation::Toggle\)/, "MobKit apply_operation must own skill toggle mutations");
 assert.match(mobpackRust, /"create_inline_skill"\s*=>\s*apply_create_inline_skill_operation/, "MobKit apply_operation must own inline skill creation");
 assert.match(agentsSkillAccessBlock, /setRealmId\("mobkit\/editor-inline"\)[\s\S]*setInlineOpen\(false\)/, "Agent inline skill creation must reset the form after the MobKit operation succeeds");

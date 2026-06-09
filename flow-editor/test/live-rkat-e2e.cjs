@@ -73,6 +73,11 @@ async function assertAuthoringCapabilities() {
   const operations = array(authoring.operations, "authoring.operations");
   for (const operationType of [
     "delete_member",
+    "add_member_tool",
+    "remove_member_tool",
+    "toggle_member_skill",
+    "remove_member_skill",
+    "create_inline_skill",
     "rename_schema_field",
     "delete_schema",
     "add_input_param",
