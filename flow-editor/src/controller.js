@@ -9367,6 +9367,15 @@
     return graphQuickInsertResult({ flow: sourceFlow, instances: sourceInstances, edges: sourceEdges });
   }
 
+  function agentNavigationProjection(memberId = null) {
+    const id = String(memberId || "").trim();
+    return {
+      view: "agents",
+      addAt: null,
+      selection: id ? { kind: "agent", id } : null,
+    };
+  }
+
   function flowStepTemplate(pick, contract, options = {}) {
     const kind = String(pick?.kind || "").trim();
     const id = uniqueFlowStepId("s", options.flow);
@@ -11163,6 +11172,7 @@
     graphControlShape,
     graphMemberInstanceShape,
     graphQuickInsertProjection,
+    agentNavigationProjection,
     flowStepTemplate,
     graphFirstConditionPatch,
     graphEdgeConditionOwnerPatch,

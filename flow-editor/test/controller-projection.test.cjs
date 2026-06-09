@@ -10013,6 +10013,17 @@ assert.deepEqual(quickBranchInsert.edges.map((edge) => edge.id), [
 assert.equal(quickBranchInsert.edges[0].kind, "cond");
 assert.equal(quickBranchInsert.edges[1].label, "fallback");
 
+assert.deepEqual(controller.agentNavigationProjection("m_left"), {
+  view: "agents",
+  addAt: null,
+  selection: { kind: "agent", id: "m_left" },
+});
+assert.deepEqual(controller.agentNavigationProjection("  "), {
+  view: "agents",
+  addAt: null,
+  selection: null,
+});
+
 assert.equal(controller.flowStepTemplate({ kind: "parallel" }, {
   mob_definition: {
     editor_flow_step_types: ["parallel"],

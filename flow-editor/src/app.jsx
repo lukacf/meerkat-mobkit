@@ -349,6 +349,13 @@ function App() {
     setAddAt(inserted.addAt);
   };
 
+  const handleAgentNavigation = (id) => {
+    const next = window.MobKitFlowController.agentNavigationProjection(id);
+    setAddAt(next.addAt);
+    setView(next.view);
+    setAgentSel(next.selection);
+  };
+
   const applyAuthoringDocumentProjection = (projection) => {
     const plan = window.MobKitFlowController.authoringProjectionApplyPlan(projection, {
       flow,
@@ -853,7 +860,7 @@ function App() {
             graphView={catalogs.graphView}
             onPick={handlePick}
             onClose={() => setAddAt(null)}
-            onJumpToAgents={(id) => { setAddAt(null); setView("agents"); setAgentSel({ kind: "agent", id }); }}
+            onJumpToAgents={handleAgentNavigation}
           />
           <aside className="inspector">
             <Inspector
@@ -868,7 +875,7 @@ function App() {
               conditionView={catalogs.conditionView}
               contract={contract}
               deploySettings={deploySettings}
-              selectMember={(id) => { setView("agents"); setAgentSel({ kind: "agent", id }); }}
+              selectMember={handleAgentNavigation}
               selectInstance={selectInstance}
               clearSelection={clearSelection}
             />

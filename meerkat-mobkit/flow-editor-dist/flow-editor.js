@@ -9400,6 +9400,15 @@ window.MOBKIT_BOOT = {
     return graphQuickInsertResult({ flow: sourceFlow, instances: sourceInstances, edges: sourceEdges });
   }
 
+  function agentNavigationProjection(memberId = null) {
+    const id = String(memberId || "").trim();
+    return {
+      view: "agents",
+      addAt: null,
+      selection: id ? { kind: "agent", id } : null,
+    };
+  }
+
   function flowStepTemplate(pick, contract, options = {}) {
     const kind = String(pick?.kind || "").trim();
     const id = uniqueFlowStepId("s", options.flow);
@@ -11196,6 +11205,7 @@ window.MOBKIT_BOOT = {
     graphControlShape,
     graphMemberInstanceShape,
     graphQuickInsertProjection,
+    agentNavigationProjection,
     flowStepTemplate,
     graphFirstConditionPatch,
     graphEdgeConditionOwnerPatch,
@@ -14215,6 +14225,12 @@ function App() {
     }
     setAddAt(inserted.addAt);
   };
+  const handleAgentNavigation = (id) => {
+    const next = window.MobKitFlowController.agentNavigationProjection(id);
+    setAddAt(next.addAt);
+    setView(next.view);
+    setAgentSel(next.selection);
+  };
   const applyAuthoringDocumentProjection = (projection) => {
     const plan = window.MobKitFlowController.authoringProjectionApplyPlan(projection, {
       flow,
@@ -14707,11 +14723,7 @@ function App() {
       graphView: catalogs.graphView,
       onPick: handlePick,
       onClose: () => setAddAt(null),
-      onJumpToAgents: (id) => {
-        setAddAt(null);
-        setView("agents");
-        setAgentSel({ kind: "agent", id });
-      }
+      onJumpToAgents: handleAgentNavigation
     }
   ), /* @__PURE__ */ React.createElement("aside", { className: "inspector" }, /* @__PURE__ */ React.createElement(
     Inspector,
@@ -14727,10 +14739,7 @@ function App() {
       conditionView: catalogs.conditionView,
       contract,
       deploySettings,
-      selectMember: (id) => {
-        setView("agents");
-        setAgentSel({ kind: "agent", id });
-      },
+      selectMember: handleAgentNavigation,
       selectInstance,
       clearSelection
     }

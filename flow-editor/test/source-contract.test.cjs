@@ -1402,6 +1402,11 @@ assert.match(app, /graphQuickInsertProjection\(\{[\s\S]*pick,[\s\S]*at:\s*addAt,
 assert.match(controller, /function graphQuickInsertResult[\s\S]*addAt:\s*null/, "controller quick insertion must own add-menu close transitions");
 assert.match(app, /setAddAt\(inserted\.addAt\)/, "Graph quick insertion must apply controller-projected add-menu transitions");
 assert(!/graphQuickInsertProjection[\s\S]{0,900}setAddAt\(null\)/.test(app), "Graph quick insertion must not close the add menu locally after controller projection");
+assert.match(app, /MobKitFlowController\.agentNavigationProjection\(id\)/, "Graph-to-Agent navigation must ask the controller plane for view, menu, and selection transitions");
+assert.match(controller, /function agentNavigationProjection/, "controller plane must own graph-to-Agent Editor navigation projection");
+assert.match(app, /onJumpToAgents=\{handleAgentNavigation\}/, "Graph add menu must route Agent navigation through the controller projection");
+assert.match(app, /selectMember=\{handleAgentNavigation\}/, "Graph inspector must route Agent navigation through the controller projection");
+assert(!/setView\("agents"\);\s*setAgentSel\(\{\s*kind:\s*"agent",\s*id\s*\}\)/.test(app), "Graph-to-Agent navigation must not assemble Agent Editor selection locally");
 assert.match(controller, /graphQuickInsertProjection[\s\S]*graphControlShape\(\{[\s\S]*instances:\s*sourceInstances,[\s\S]*edges:\s*sourceEdges,[\s\S]*graphView/, "controller quick insertion must derive MobKit-backed Graph control shapes");
 assert.match(controller, /graphQuickInsertProjection[\s\S]*graphMemberInstanceShape\(\{[\s\S]*instances:\s*sourceInstances/, "controller quick insertion must derive MobKit-backed member-instance shapes with current graph IDs");
 assert.match(controller, /function uniqueGraphControlSuffix/, "controller plane must own graph control ID collision handling");
