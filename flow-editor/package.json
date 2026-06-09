@@ -5,6 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "build": "node build.cjs",
+    "test:dist-freshness": "node build.cjs --check",
     "test:controller": "node test/source-contract.test.cjs && node test/controller-projection.test.cjs",
     "test:handoff-contract": "node test/handoff-visual-contract.test.cjs",
     "test:visual-contract": "node test/handoff-visual-contract.test.cjs",

@@ -2,6 +2,7 @@
 
 const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
+const os = require("node:os");
 const path = require("node:path");
 let esbuild;
 try {
@@ -13,8 +14,8 @@ const { build, transform } = esbuild;
 
 const root = __dirname;
 const srcDir = path.join(root, "src");
-const outDir = path.join(root, "dist");
-const rustOutDir = path.join(root, "../meerkat-mobkit/flow-editor-dist");
+const defaultOutDir = path.join(root, "dist");
+const defaultRustOutDir = path.join(root, "../meerkat-mobkit/flow-editor-dist");
 
 const scriptOrder = [
   "data.js",
@@ -74,7 +75,7 @@ function renderHtml({ vendorVersion, appVersion, cssVersion }) {
 `;
 }
 
-async function main() {
+async function buildAssets({ outDir, rustOutDir }) {
   await cleanDir(outDir);
   await fs.mkdir(rustOutDir, { recursive: true });
 
@@ -138,6 +139,38 @@ async function main() {
       fs.copyFile(path.join(outDir, file), path.join(rustOutDir, file)),
     ),
   );
+}
+
+async function assertFresh(generatedDir, expectedDir) {
+  const files = ["index.html", "react-globals.js", "flow-editor.js", "flow-editor.css"];
+  const mismatches = [];
+  for (const file of files) {
+    const [generated, expected] = await Promise.all([
+      fs.readFile(path.join(generatedDir, file)),
+      fs.readFile(path.join(expectedDir, file)).catch(() => null),
+    ]);
+    if (!expected || !generated.equals(expected)) mismatches.push(file);
+  }
+  if (mismatches.length) {
+    throw new Error(`flow-editor-dist is stale; rebuild with npm --prefix flow-editor run build (${mismatches.join(", ")})`);
+  }
+}
+
+async function main() {
+  const checkOnly = process.argv.includes("--check");
+  if (!checkOnly) {
+    await buildAssets({ outDir: defaultOutDir, rustOutDir: defaultRustOutDir });
+    return;
+  }
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mobkit-flow-editor-build-"));
+  try {
+    const generatedDist = path.join(tempRoot, "dist");
+    const generatedRustDist = path.join(tempRoot, "flow-editor-dist");
+    await buildAssets({ outDir: generatedDist, rustOutDir: generatedRustDist });
+    await assertFresh(generatedRustDist, defaultRustOutDir);
+  } finally {
+    await fs.rm(tempRoot, { force: true, recursive: true });
+  }
 }
 
 main().catch((error) => {

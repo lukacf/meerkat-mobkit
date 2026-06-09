@@ -833,6 +833,24 @@ pub fn mobpack_catalogs_response() -> Value {
 pub fn mobpack_authoring_operations() -> Value {
     json!([
         {
+            "type": "replace_authoring_document",
+            "plane": "document",
+            "authority": "mobkit",
+            "requires": ["document"],
+            "mutates": [
+                "document.flow",
+                "document.members",
+                "document.schemas",
+                "document.skill_realms",
+                "document.instances",
+                "document.edges",
+                "document.frames",
+                "document.deploy",
+                "document.mob_settings"
+            ],
+            "projection_document_supported": true
+        },
+        {
             "type": "add_agent_definition",
             "plane": "agent",
             "authority": "mobkit",

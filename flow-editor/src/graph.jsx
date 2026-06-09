@@ -326,9 +326,6 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
               studio: { instances: next.instances },
               selection: { kind: "instance", id: drag.instId },
             });
-          } else {
-            state.snap();
-            state.setInstances(next.instances);
           }
         }
         setDrag(null); setHoverCell(null);
@@ -352,9 +349,6 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
                 studio: { edges: result.edges },
                 selection: { kind: "edge", id: result.selectId },
               }).then(() => selectEdge(result.selectId));
-            } else {
-              state.setEdges(result.edges);
-              selectEdge(result.selectId);
             }
           }
         }

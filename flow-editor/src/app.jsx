@@ -235,19 +235,28 @@ function App() {
     const sig = window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges, { members: studio.members, contract });
     if (sig === graphProjectionSig.current) return;
     graphProjectionSig.current = sig;
-    markDraft();
     skipNextGraphProjection.current = true;
-    setFlow((current) => window.MobKitFlowController.graphToFlow({
+    const nextFlow = window.MobKitFlowController.graphToFlow({
       instances: studio.instances,
       edges: studio.edges,
       members: studio.members,
-      previousFlow: current,
+      previousFlow: flow,
       contract,
-    }));
-  }, [editorMode, studio.instances, studio.edges, studio.members, markDraft, contract]);
+    });
+    if (nextFlow === flow) return;
+    applyMobKitAuthoringReplacement({
+      operationType: "replace_authoring_document",
+      operation: { reason: "project_graph_to_flow" },
+      flow: nextFlow,
+    });
+  }, [editorMode, studio.instances, studio.edges, studio.members, flow, contract]);
 
   React.useEffect(() => {
     const previousMembers = previousMembersRef.current || [];
+    if (hydratingDocumentRef.current) {
+      previousMembersRef.current = studio.members;
+      return;
+    }
     const result = window.MobKitFlowController.reconcileAuthoringForMembers({
       flow,
       instances: studio.instances,
@@ -256,12 +265,23 @@ function App() {
       previousMembers,
       members: studio.members,
     });
-    if (result.flow !== flow) setFlow(result.flow);
-    if (result.edges !== studio.edges) studio.setEdges(result.edges);
-    if (result.instances !== studio.instances) studio.setInstances(result.instances);
-    if (result.mobSettings !== mobSettings) setMobSettings(result.mobSettings);
+    const changed = result.flow !== flow
+      || result.edges !== studio.edges
+      || result.instances !== studio.instances
+      || result.mobSettings !== mobSettings;
     previousMembersRef.current = studio.members;
-  }, [studio.members]);
+    if (!changed) return;
+    applyMobKitAuthoringReplacement({
+      operationType: "replace_authoring_document",
+      operation: { reason: "reconcile_members" },
+      flow: result.flow,
+      mobSettings: result.mobSettings,
+      studio: {
+        instances: result.instances,
+        edges: result.edges,
+      },
+    });
+  }, [studio.members, flow, studio.instances, studio.edges, mobSettings]);
 
   React.useEffect(() => {
     if (!window.MobKitFlowController?.reconcileConditionFieldAvailability) return;
@@ -276,16 +296,18 @@ function App() {
     const flowChanged = result.flow !== flow;
     const edgesChanged = result.edges !== studio.edges;
     if (!flowChanged && !edgesChanged) return;
-    if (edgesChanged && studio.snap) {
-      studio.snap();
-    } else {
-      markDraft();
-    }
-    if (flowChanged) setFlow(result.flow);
-    if (edgesChanged) studio.setEdges(result.edges);
-  }, [flow, studio.edges, studio.instances, studio.members, studio.schemas, markDraft]);
+    applyMobKitAuthoringReplacement({
+      operationType: "replace_authoring_document",
+      operation: { reason: "reconcile_condition_fields" },
+      flow: result.flow,
+      studio: {
+        edges: result.edges,
+      },
+    });
+  }, [flow, studio.edges, studio.instances, studio.members, studio.schemas]);
 
   React.useEffect(() => {
+    if (hydratingDocumentRef.current) return;
     const result = window.MobKitFlowController.reconcileAuthoringWithContract({
       members: studio.members,
       skillRealms: studio.skillRealms,
@@ -300,13 +322,19 @@ function App() {
       toolCatalog: catalogs.toolCatalog,
       contractLoaded: !!catalogs.contractMeta.loaded,
     });
-    if (result.changed && !hydratingDocumentRef.current) markDraft();
-    if (result.members !== studio.members) studio.setMembers(result.members);
-    if (result.deploySettings !== deploySettings) setDeploySettings(result.deploySettings);
-    if (result.flow !== flow) setFlow(result.flow);
-    if (result.instances !== studio.instances) studio.setInstances(result.instances);
-    if (result.edges !== studio.edges) studio.setEdges(result.edges);
-    if (result.mobSettings !== mobSettings) setMobSettings(result.mobSettings);
+    if (!result.changed) return;
+    applyMobKitAuthoringReplacement({
+      operationType: "replace_authoring_document",
+      operation: { reason: "reconcile_contract_refs" },
+      flow: result.flow,
+      deploySettings: result.deploySettings,
+      mobSettings: result.mobSettings,
+      studio: {
+        members: result.members,
+        instances: result.instances,
+        edges: result.edges,
+      },
+    });
   }, [
     studio.members,
     studio.skillRealms,
@@ -320,7 +348,6 @@ function App() {
     catalogs.models,
     catalogs.toolCatalog,
     catalogs.contractMeta.loaded,
-    markDraft,
   ]);
 
   const selectInstance = (id) => setSelection(window.MobKitFlowController.graphSelectionProjection("instance", id));

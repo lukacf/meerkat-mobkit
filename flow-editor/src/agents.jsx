@@ -91,17 +91,16 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
             const result = window.MobKitFlowController.schemaDefinitionAddTransition(studio.schemas, contract);
             setSchemaAddResult(result);
             if (result.ok === false) return;
-            if (applyAuthoringReplacement) {
-              applyAuthoringReplacement({
-                operationType: "add_schema",
-                operation: { schema: result.schema },
-                studio: { schemas: result.schemas },
-                selection: result.selection,
-              });
-            } else {
-              if (studio.snap) studio.snap();
-              studio.setSchemas(result.schemas);
+            if (!applyAuthoringReplacement) {
+              setSchemaAddResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+              return;
             }
+            applyAuthoringReplacement({
+              operationType: "add_schema",
+              operation: { schema: result.schema },
+              studio: { schemas: result.schemas },
+              selection: result.selection,
+            });
             setSchemaAddResult(null);
             setAgentSel(result.selection);
           }}
@@ -316,25 +315,21 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     }, rawSchema);
     setSchemaChangeResult(result);
     if (!result.ok) return;
-    if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({
-        operationType: "assign_member_schema",
-        operation: { member_id: member.id, schema_id: rawSchema },
-        flow: result.flow,
-        studio: {
-          members: result.members,
-          instances: result.instances,
-          edges: result.edges,
-        },
-        selection: { kind: "agent", id: member.id },
-      });
-    } else {
-      if (studio.snap) studio.snap();
-      studio.setMembers(result.members);
-      if (result.flow !== flow && setFlow) setFlow(result.flow);
-      if (result.instances !== studio.instances) studio.setInstances(result.instances);
-      if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    if (!applyAuthoringReplacement) {
+      setSchemaChangeResult({ ok: false, error: "MobKit authoring operation API is unavailable" });
+      return;
     }
+    applyAuthoringReplacement({
+      operationType: "assign_member_schema",
+      operation: { member_id: member.id, schema_id: rawSchema },
+      flow: result.flow,
+      studio: {
+        members: result.members,
+        instances: result.instances,
+        edges: result.edges,
+      },
+      selection: { kind: "agent", id: member.id },
+    });
     setSchemaChangeResult(null);
   };
   const deleteConfirmState = window.MobKitFlowController.agentDeleteConfirmationState(editorState, deleteConfirmOpen);
@@ -348,27 +343,19 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       mobSettings,
     });
     if (!result.ok) return;
-    if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({
-        operationType: "delete_member",
-        operation: { member_id: member.id },
-        flow: result.flow,
-        mobSettings: result.mobSettings,
-        studio: {
-          members: result.members,
-          instances: result.instances,
-          edges: result.edges,
-        },
-        selection: result.selection,
-      });
-    } else {
-      if (studio.snap) studio.snap();
-      studio.setMembers(result.members);
-      studio.setInstances(result.instances);
-      studio.setEdges(result.edges);
-      if (setFlow) setFlow(result.flow);
-      if (setMobSettings) setMobSettings(result.mobSettings);
-    }
+    if (!applyAuthoringReplacement) return;
+    applyAuthoringReplacement({
+      operationType: "delete_member",
+      operation: { member_id: member.id },
+      flow: result.flow,
+      mobSettings: result.mobSettings,
+      studio: {
+        members: result.members,
+        instances: result.instances,
+        edges: result.edges,
+      },
+      selection: result.selection,
+    });
     setAgentSel(result.selection);
     setDeleteConfirmOpen(false);
   };
@@ -632,7 +619,6 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
 
 // ── Schema editor (visual, field-by-field) ──────────────────────────
 function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null, applyAuthoringReplacement = null }) {
-  const change = (patch) => studio.updateSchema(schema.id, patch);
   const [fieldAddResult, setFieldAddResult] = React.useState(null);
   React.useEffect(() => setFieldAddResult(null), [schema?.id]);
   const schemaState = window.MobKitFlowController.schemaEditorControlState({
@@ -642,25 +628,26 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   });
   const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult);
   const applySchemaCascade = (result, selection = { kind: "schema", id: schema.id }, operationType = "update_schema", operation = {}) => {
-    if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({
-        operationType,
-        operation,
-        flow: result.flow || flow,
-        studio: {
-          schemas: result.schemas,
-          members: result.members || studio.members,
-          edges: result.edges || studio.edges,
-        },
-        selection,
-      });
-      return;
-    }
-    if (studio.snap) studio.snap();
-    if (result.schemas) studio.setSchemas(result.schemas);
-    if (result.members) studio.setMembers(result.members);
-    if (result.flow !== flow && setFlow) setFlow(result.flow);
-    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    if (!applyAuthoringReplacement) return;
+    applyAuthoringReplacement({
+      operationType,
+      operation,
+      flow: result.flow || flow,
+      studio: {
+        schemas: result.schemas,
+        members: result.members || studio.members,
+        edges: result.edges || studio.edges,
+      },
+      selection,
+    });
+  };
+
+  const change = (patch) => {
+    const result = window.MobKitFlowController.studioUpdateSchemaPatch({ schemas: studio.schemas }, schema.id, patch);
+    applySchemaCascade(result, { kind: "schema", id: schema.id }, "update_schema", {
+      schema_id: schema.id,
+      patch,
+    });
   };
 
   const renameField = (fieldId, oldName, newName) => {
