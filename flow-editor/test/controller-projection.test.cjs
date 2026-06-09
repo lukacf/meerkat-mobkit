@@ -4858,6 +4858,9 @@ assert.equal(invalidOutcome.stage, "draft");
 assert.equal(invalidOutcome.validationRows[0].kind, "crit");
 
 const publishOutcome = controller.exportOutcome({ mob_id: "publish_me" }, {
+  content_base64: "cGFjaw==",
+  media_type: "application/vnd.meerkat.mobpack",
+  filename: "publish-me.mobpack",
   validation: {
     ok: true,
     display_rows: [{ kind: "ok", glyph: "✓", head: "exported", sub: "", meta: "export" }],
@@ -4865,6 +4868,30 @@ const publishOutcome = controller.exportOutcome({ mob_id: "publish_me" }, {
 });
 assert.equal(publishOutcome.stage, "published");
 assert.equal(publishOutcome.validationRows[0].head, "exported");
+assert.throws(
+  () => controller.exportOutcome({ mob_id: "publish_me" }, {
+    media_type: "application/vnd.meerkat.mobpack",
+    filename: "publish-me.mobpack",
+    validation: { ok: true, display_rows: [] },
+  }),
+  /content_base64/,
+);
+assert.throws(
+  () => controller.exportOutcome({ mob_id: "publish_me" }, {
+    content_base64: "cGFjaw==",
+    filename: "publish-me.mobpack",
+    validation: { ok: true, display_rows: [] },
+  }),
+  /media_type/,
+);
+assert.throws(
+  () => controller.exportOutcome({ mob_id: "publish_me" }, {
+    content_base64: "cGFjaw==",
+    media_type: "application/vnd.meerkat.mobpack",
+    validation: { ok: true, display_rows: [] },
+  }),
+  /filename/,
+);
 
 const rejectedPublishOutcome = controller.exportOutcome({ mob_id: "publish_me" }, {
   validation: {

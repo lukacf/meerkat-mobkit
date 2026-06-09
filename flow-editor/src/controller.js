@@ -8639,6 +8639,9 @@
 
   function exportOutcome(document, result, options = {}) {
     const validation = result?.validation || null;
+    if (validation?.ok) {
+      requireExportArchiveMetadata(result);
+    }
     const publishedStage = options.publishedStage || "published";
     return {
       document,
@@ -8647,6 +8650,18 @@
       validationRows: diagnosticsToRows(validation),
       stage: validation?.ok ? publishedStage : "draft",
     };
+  }
+
+  function requireExportArchiveMetadata(result) {
+    if (!String(result?.content_base64 || "").trim()) {
+      throw new Error("mobkit/mobpacks/export did not return content_base64");
+    }
+    if (!String(result?.media_type || "").trim()) {
+      throw new Error("mobkit/mobpacks/export did not return media_type");
+    }
+    if (!String(result?.filename || "").trim()) {
+      throw new Error("mobkit/mobpacks/export did not return filename");
+    }
   }
 
   function deployOutcome(document, result, options = {}) {

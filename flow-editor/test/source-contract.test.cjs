@@ -716,6 +716,7 @@ assert.match(app, /const authoringRevision = React\.useRef\(0\);[\s\S]*const cur
 assert.match(app, /const markDraft = React\.useCallback\(\(\) => \{[\s\S]*authoringRevision\.current \+= 1;[\s\S]*setStage\("draft"\)/, "authoring edits must advance the MobKit API response revision");
 assert.match(controller, /function validationOutcome/, "controller plane must own validate-result stage and display row projection");
 assert.match(controller, /function exportOutcome/, "controller plane must own publish/export-result stage and display row projection");
+assert.match(controller, /function exportOutcome[\s\S]*if \(validation\?\.ok\) \{[\s\S]*requireExportArchiveMetadata\(result\);[\s\S]*stage:\s*validation\?\.ok \? publishedStage : "draft"/, "controller publish outcome must verify MobKit export archive metadata before returning a published stage");
 assert.match(controller, /function deployOutcome/, "controller plane must own deploy-result stage and display row projection");
 assert.match(controller, /function deployErrorOutcome/, "controller plane must own deploy error diagnostic rows");
 assert.match(controller, /function sourceErrorOutcome/, "controller plane must own source export error diagnostic rows");
