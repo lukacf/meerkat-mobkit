@@ -5632,7 +5632,7 @@ const branchFlow = controller.graphToFlow({
     { id: "g_branch_route", isGate: true, gateKind: "branch", col: 0, row: 0 },
     { id: "left", memberId: "m_left", col: 1, row: 0 },
     { id: "right", memberId: "m_right", col: 1, row: 1 },
-    { id: "j_branch_route", isGate: true, gateKind: "join", col: 2, row: 0 },
+    { id: "j_branch_route", isGate: true, gateKind: "join", collection: "any", controllerRole: "m_review", col: 2, row: 0 },
   ],
   edges: [
     { id: "e1", from: "g_branch_route", to: "left", kind: "cond", label: "docs", cond: { source: "params.kind", op: "==", value: "docs" } },
@@ -5644,6 +5644,7 @@ const branchFlow = controller.graphToFlow({
 
 const branchStep = branchFlow.steps[1];
 assert.equal(branchStep.type, "branch");
+assert.equal(branchStep.controllerRole, "m_review");
 assert.deepEqual(branchStep.branches.map((branch) => branch.cond), [
   { namespace: "params", stepId: "params", field: "kind", op: "==", val: "docs" },
   { namespace: "params", stepId: "params", field: "kind", op: "==", val: "code" },
@@ -5658,7 +5659,7 @@ const branchDocument = controller.buildDocument({
       { id: "g_branch_route", isGate: true, gateKind: "branch", col: 0, row: 0 },
       { id: "left", memberId: "m_left", col: 1, row: 0 },
       { id: "right", memberId: "m_right", col: 1, row: 1 },
-      { id: "j_branch_route", isGate: true, gateKind: "join", col: 2, row: 0 },
+      { id: "j_branch_route", isGate: true, gateKind: "join", collection: "any", controllerRole: "m_review", col: 2, row: 0 },
     ],
     edges: [
       { id: "e1", from: "g_branch_route", to: "left", kind: "cond", label: "docs", cond: { source: "params.kind", op: "==", value: "docs" } },
@@ -8207,7 +8208,8 @@ assert.equal(branchShape.instances[0].label, "branch");
 assert.equal(branchShape.instances[1].launchMode.kind, "Fresh");
 assert.equal(branchShape.instances[1].lane, "condition");
 assert.equal(branchShape.instances[2].lane, "fallback");
-assert.equal(branchShape.instances[3].collection, "all");
+assert.equal(branchShape.instances[3].collection, "any");
+assert.equal(branchShape.instances[3].controllerRole, "m_left");
 assert.equal(branchShape.instances[3].label, "join · branch paths");
 assert.equal(branchShape.edges[0].kind, "cond");
 assert.equal(branchShape.edges[0].label, "");

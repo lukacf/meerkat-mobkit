@@ -3657,7 +3657,7 @@ fn emit_visual_graph_fork_step(
         "label": if is_parallel { format!("join · {}", explicit_visual_collection_policy(step)) } else { "join · branch paths".to_string() },
         "col": max_col,
         "row": row,
-        "collection": if is_parallel { explicit_visual_collection_policy(step) } else { "all".to_string() },
+        "collection": if is_parallel { explicit_visual_collection_policy(step) } else { "any".to_string() },
         "controllerRole": step.get("controllerRole").or_else(|| step.get("controllerMemberId")).or_else(|| step.get("controlRole")).cloned().unwrap_or(Value::Null),
         "quorum": if step.get("collection").and_then(Value::as_str) == Some("quorum") { json!({ "mode": "NofM", "n": step.get("quorum").and_then(Value::as_u64).unwrap_or(2), "m": lane_exits.len().max(1) }) } else { Value::Null },
     }));
@@ -3969,9 +3969,12 @@ fn visual_steps_from_frame(frame: &FrameSpec, flow: &FlowSpec) -> Vec<Value> {
                             for (candidate_node_id, _, _) in &branch_nodes {
                                 consumed.insert((*candidate_node_id).clone());
                             }
+                            let controller_role =
+                                branch_controller_role_from_depends_on(frame, flow, &branch_nodes);
                             out.push(json!({
                                 "id": format!("branch_{}", sanitize_identifier(&branch_id.to_string())),
                                 "type": "branch",
+                                "controllerRole": controller_role,
                                 "dependsMode": dependency_mode_string(&step.depends_on_mode),
                                 "branches": branch_nodes.iter().enumerate().map(|(_, (_, candidate_frame_step, candidate_step))| json!({
                                     "id": format!("br_{}", sanitize_identifier(&candidate_frame_step.step_id.to_string())),
@@ -4004,6 +4007,30 @@ fn visual_steps_from_frame(frame: &FrameSpec, flow: &FlowSpec) -> Vec<Value> {
         }
     }
     out
+}
+
+fn branch_controller_role_from_depends_on(
+    frame: &FrameSpec,
+    flow: &FlowSpec,
+    branch_nodes: &[(
+        &meerkat_mob::FlowNodeId,
+        &meerkat_mob::definition::FrameStepSpec,
+        &FlowStepSpec,
+    )],
+) -> Option<String> {
+    let (_, frame_step, _) = branch_nodes.first()?;
+    for node_id in &frame_step.depends_on {
+        let Some(FlowNodeSpec::Step(dep_step)) = frame.nodes.get(node_id) else {
+            continue;
+        };
+        let Some(step) = flow.steps.get(&dep_step.step_id) else {
+            continue;
+        };
+        if step.branch.is_none() {
+            return Some(member_id_for_profile(&step.role.to_string()));
+        }
+    }
+    None
 }
 
 fn parallel_sibling_nodes<'a>(
@@ -7021,6 +7048,19 @@ fn collect_editor_flow_control_member_diagnostics(
                 path: Some(format!("{step_path}.controllerRole")),
             });
         }
+        if step_type == "branch"
+            && controller_role.is_none()
+            && editor_branch_requires_join_member(step)
+        {
+            diagnostics.push(MobpackDiagnostic {
+                severity: "error".to_string(),
+                code: "missing_branch_join_member".to_string(),
+                message:
+                    "branch convergence requires a real Join member declared in document.members"
+                        .to_string(),
+                path: Some(format!("{step_path}.controllerRole")),
+            });
+        }
         if step_type == "parallel" && controller_role.is_none() {
             let collection = step
                 .get("collection")
@@ -7070,6 +7110,19 @@ fn collect_editor_flow_control_member_diagnostics(
             diagnostics,
         );
     }
+}
+
+fn editor_branch_requires_join_member(step: &Value) -> bool {
+    let branch_count = step
+        .get("branches")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let has_fallback = step
+        .get("fallback")
+        .and_then(Value::as_array)
+        .is_some_and(|steps| !steps.is_empty());
+    branch_count + usize::from(has_fallback) > 1
 }
 
 fn validate_editor_flow_conditions(flow: &Value) -> Vec<MobpackDiagnostic> {
@@ -8263,6 +8316,9 @@ fn collect_editor_flow_graph_controls(steps: &[Value], controls: &mut EditorGrap
                 controls.gate_ids.insert(gate_id.clone());
                 controls.gate_ids.insert(join_id.clone());
                 controls.frame_ids.insert(format!("frame_branch_{id}"));
+                controls
+                    .join_controls
+                    .insert(join_id.clone(), editor_graph_join_control_for_branch(step));
                 collect_editor_branch_graph_edges(step, &gate_id, &join_id, controls);
             }
             (Some("parallel"), Some(id)) => {
@@ -8547,6 +8603,22 @@ fn editor_graph_join_control_for_parallel(step: &Value) -> EditorGraphJoinContro
     EditorGraphJoinControl {
         collection,
         quorum,
+        controller_role: step
+            .get("controllerRole")
+            .or_else(|| step.get("controllerMemberId"))
+            .or_else(|| step.get("controlRole"))
+            .or_else(|| step.get("joinRole"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string),
+    }
+}
+
+fn editor_graph_join_control_for_branch(step: &Value) -> EditorGraphJoinControl {
+    EditorGraphJoinControl {
+        collection: "any".to_string(),
+        quorum: None,
         controller_role: step
             .get("controllerRole")
             .or_else(|| step.get("controllerMemberId"))
@@ -11634,6 +11706,65 @@ depends_on = ["plan"]
         document
     }
 
+    fn document_with_branch_graph_controls() -> MobpackDocument {
+        let mut document = document_with_real_launch_modes();
+        document.flow = json!({
+            "name": "review",
+            "steps": [
+                { "id": "input_1", "type": "input", "task": "Route review", "fields": "route: enum" },
+                {
+                    "id": "branch_route",
+                    "type": "branch",
+                    "controllerRole": "m_reviewer",
+                    "branches": [
+                        {
+                            "id": "br_plan",
+                            "label": "Plan",
+                            "condition": "route == plan",
+                            "cond": { "field": "route", "namespace": "params", "op": "==", "val": "plan" },
+                            "steps": [
+                                { "id": "plan", "type": "member", "role": "m_planner", "instruction": "Plan" }
+                            ]
+                        }
+                    ],
+                    "fallback": [
+                        { "id": "review", "type": "member", "role": "m_reviewer", "instruction": "Review" }
+                    ]
+                }
+            ]
+        });
+        document.instances = json!([
+            { "id": "g_branch_branch_route", "isGate": true, "gateKind": "branch", "label": "branch", "col": 0, "row": 1 },
+            { "id": "plan", "memberId": "m_planner", "col": 1, "row": 1, "launchMode": { "kind": "Fresh" } },
+            { "id": "review", "memberId": "m_reviewer", "col": 1, "row": 2, "launchMode": { "kind": "Fresh" } },
+            { "id": "j_branch_branch_route", "isGate": true, "gateKind": "join", "label": "join · branch paths", "collection": "any", "controllerRole": "m_reviewer", "col": 2, "row": 1 }
+        ]);
+        document.edges = json!([
+            { "id": "e1", "from": "g_branch_branch_route", "to": "plan", "kind": "cond", "label": "route == plan", "cond": { "var": "params.route", "op": "==", "val": "plan" } },
+            { "id": "e2", "from": "g_branch_branch_route", "to": "review", "kind": "next", "label": "fallback" },
+            { "id": "e3", "from": "plan", "to": "j_branch_branch_route", "kind": "next", "label": "" },
+            { "id": "e4", "from": "review", "to": "j_branch_branch_route", "kind": "next", "label": "" }
+        ]);
+        document.frames = json!([
+            { "id": "frame_branch_branch_route", "kind": "Branch", "colStart": 0, "colEnd": 2, "label": "BRANCH · 2 paths" }
+        ]);
+        document.launch_modes = json!([
+            {
+                "step_id": "plan",
+                "member_id": "m_planner",
+                "profile": "planner",
+                "launch_mode": { "kind": "Fresh" }
+            },
+            {
+                "step_id": "review",
+                "member_id": "m_reviewer",
+                "profile": "reviewer",
+                "launch_mode": { "kind": "Fresh" }
+            }
+        ]);
+        document
+    }
+
     fn importable_mob_toml() -> String {
         r#"
 [mob]
@@ -12590,6 +12721,7 @@ description = "Generated by MobKit Flow Editor"
                 {
                     "id": "kind_branch",
                     "type": "branch",
+                    "controllerRole": "m_reviewer",
                     "dependsMode": "all",
                     "branches": [{
                         "id": "br_docs",
@@ -12610,7 +12742,7 @@ description = "Generated by MobKit Flow Editor"
             { "id": "g_branch_kind_branch", "isGate": true, "gateKind": "branch", "label": "branch", "col": 0, "row": 0 },
             { "id": "plan", "memberId": "m_planner", "col": 1, "row": 0, "launchMode": { "kind": "Fresh" } },
             { "id": "review", "memberId": "m_reviewer", "col": 1, "row": 1, "launchMode": { "kind": "Fresh" } },
-            { "id": "j_branch_kind_branch", "isGate": true, "gateKind": "join", "label": "join · branch paths", "col": 2, "row": 0 }
+            { "id": "j_branch_kind_branch", "isGate": true, "gateKind": "join", "label": "join · branch paths", "collection": "any", "controllerRole": "m_reviewer", "col": 2, "row": 0 }
         ]);
         document.edges = json!([
             {
@@ -12656,10 +12788,11 @@ description = "Generated by MobKit Flow Editor"
                     "enumValues": ["docs", "code"]
                 }]
             },
-            {
-                "id": "branch_review",
-                "type": "branch",
-                "branches": [
+                {
+                    "id": "branch_review",
+                    "type": "branch",
+                    "controllerRole": "m_reviewer",
+                    "branches": [
                     {
                         "id": "br_plan",
                         "label": "Plan",
@@ -12706,6 +12839,7 @@ description = "Generated by MobKit Flow Editor"
                 {
                     "id": "branch_review",
                     "type": "branch",
+                    "controllerRole": "m_reviewer",
                     "branches": [{
                         "id": "br_plan",
                         "label": "Plan",
@@ -13182,6 +13316,55 @@ message = "stale"
         let result = validate_document(&document);
 
         assert!(result.ok, "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn validates_branch_join_member_as_real_profile_step() {
+        let document = document_with_branch_graph_controls();
+        let result = validate_document(&document);
+        assert!(result.ok, "{:?}", result.diagnostics);
+
+        let export = export_mobpack(&json!({ "document": document })).expect("export");
+        assert!(export.validation.ok, "{:?}", export.validation.diagnostics);
+        assert!(export.mob_toml.contains("Join branch paths."));
+        assert!(export.mob_toml.contains(r#"role = "reviewer""#));
+    }
+
+    #[test]
+    fn rejects_branch_convergence_without_real_join_member() {
+        let mut document = document_with_branch_graph_controls();
+        let steps = document
+            .flow
+            .get_mut("steps")
+            .and_then(Value::as_array_mut)
+            .expect("flow steps");
+        steps[1].as_object_mut().unwrap().remove("controllerRole");
+        let instances = document.instances.as_array_mut().expect("graph instances");
+        instances[3]
+            .as_object_mut()
+            .unwrap()
+            .remove("controllerRole");
+        let result = validate_document(&document);
+
+        assert!(!result.ok);
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "missing_branch_join_member"
+                && diagnostic.path.as_deref() == Some("flow.steps[1].controllerRole")
+        }));
+    }
+
+    #[test]
+    fn rejects_graph_join_controller_drift_from_branch_flow() {
+        let mut document = document_with_branch_graph_controls();
+        let instances = document.instances.as_array_mut().expect("graph instances");
+        instances[3]["controllerRole"] = json!("m_planner");
+        let result = validate_document(&document);
+
+        assert!(!result.ok);
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "graph_join_controller_mismatch"
+                && diagnostic.path.as_deref() == Some("instances[3].controllerRole")
+        }));
     }
 
     #[test]
@@ -16799,6 +16982,7 @@ branch = "choice"
             .iter()
             .find(|step| step["type"] == "branch")
             .expect("branch projected");
+        assert_eq!(branch["controllerRole"], json!("m_router"));
         assert_eq!(branch["branches"].as_array().unwrap().len(), 2);
         assert!(
             branch["branches"]

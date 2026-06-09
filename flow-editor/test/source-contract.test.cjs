@@ -1161,6 +1161,8 @@ assert.match(controller, /id:\s*id\s*\|\|\s*uniqueGraphEdgeId\(from\.id,\s*to\.i
 assert.match(controller, /id:\s*uniqueFlowStepId\("input",\s*prior\)/, "graph-to-flow fallback input steps must use controller-owned deterministic flow-step IDs");
 assert.match(controller, /function graphIsConditionEdge/, "controller plane must own graph condition edge classification");
 assert.match(controller, /graphSegmentsToFlowSteps\(\{[\s\S]*contract,[\s\S]*\}\)/, "graph-to-flow reconstruction must pass the MobKit graph contract into segment classification");
+assert.match(controller, /collection = isBranch \? "any" : collectionModeFromStepSource\(step\)/, "flow-to-graph branch joins must project MobKit branch convergence as any-collection joins");
+assert.match(controller, /controllerRole:\s*join\?\.controllerRole \|\| join\?\.controllerMemberId \|\| join\?\.controlRole[\s\S]*prior\.controlRole \|\| ""/, "graph-to-flow branch reconstruction must preserve the real join member from the Graph join gate");
 assert.match(controller, /authoringFlowForDocument[\s\S]*graphToFlow\(\{[\s\S]*instances,[\s\S]*edges,[\s\S]*members,[\s\S]*previousFlow:\s*flow,[\s\S]*contract/, "Graph-mode export/validate/deploy must reconstruct the authoritative flow through the MobKit schema contract in the controller plane");
 assert(!/function\s+effectiveAuthoringFlow|const\s+effectiveAuthoringFlow/.test(app), "app shell must not own effective flow selection for deployable mobpack documents");
 assert(!/Math\.random\(\)|Date\.now\(\)/.test(controller), "controller authoring state must not depend on random or wall-clock IDs");

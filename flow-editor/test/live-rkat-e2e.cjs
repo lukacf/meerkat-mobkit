@@ -211,7 +211,7 @@ function buildGraphBranchShapeDocument() {
     { id: "g_branch_route", isGate: true, gateKind: "branch", label: "branch", col: 0, row: 0 },
     { id: "branch_writer", memberId: "m_writer", col: 1, row: 0, lane: "route = a", launchMode: { kind: "Fresh" } },
     { id: "branch_reviewer", memberId: "m_reviewer", col: 1, row: 1, lane: "fallback", launchMode: { kind: "Fresh" } },
-    { id: "j_branch_route", isGate: true, gateKind: "join", label: "join · branch paths", collection: "all", col: 2, row: 0 },
+    { id: "j_branch_route", isGate: true, gateKind: "join", label: "join · branch paths", collection: "any", controllerRole: "m_reviewer", col: 2, row: 0 },
   ];
   const edges = [
     { id: "e_gate_writer", from: "g_branch_route", to: "branch_writer", kind: "cond", label: "route == \"a\"", cond: { var: "params.route", op: "==", val: "a" } },
@@ -228,6 +228,7 @@ function buildGraphBranchShapeDocument() {
   });
   const branch = flow.steps.find((step) => step.type === "branch");
   if (!branch) throw new Error("graph branch shape did not compile to a branch step");
+  if (branch.controllerRole !== "m_reviewer") throw new Error(`graph branch shape dropped real join member: ${JSON.stringify(branch)}`);
   if (branch.branches.length !== 1) throw new Error(`expected one conditional branch, got ${branch.branches.length}`);
   if (branch.fallback.length !== 1) throw new Error(`expected one fallback step, got ${branch.fallback.length}`);
   return controller.buildDocument({
@@ -260,12 +261,16 @@ async function validateGraphBranchShape(dir) {
   if (!exported.validation?.ok) {
     throw new Error(`graph branch shape export failed validation: ${JSON.stringify(exported.validation?.diagnostics)}`);
   }
+  if (!String(exported.mob_toml || "").includes("Join branch paths.")) {
+    throw new Error(`graph branch export did not render a real branch join step:\n${exported.mob_toml}`);
+  }
   const packPath = path.join(dir, exported.filename || "graph-branch-shape.mobpack");
   fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
   const validate = run("rkat", ["mob", "validate", packPath]);
   const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
   const branch = imported.document?.flow?.steps?.find((step) => step.type === "branch");
   if (!branch) throw new Error("imported graph branch shape dropped branch step");
+  if (branch.controllerRole !== "m_reviewer") throw new Error(`imported graph branch shape dropped join member: ${JSON.stringify(branch)}`);
   if (!branch.branches?.[0]?.cond || branch.branches[0].cond.field !== "route") {
     throw new Error(`imported graph branch shape dropped route condition: ${JSON.stringify(branch.branches?.[0])}`);
   }
@@ -275,6 +280,7 @@ async function validateGraphBranchShape(dir) {
   return {
     validate,
     branchCount: branch.branches.length,
+    joinMember: branch.controllerRole,
     fallbackCount: branch.fallback.length,
     frameKinds: (imported.document.frames || []).map((frame) => frame.kind),
     edgeKinds: (imported.document.edges || []).map((edge) => edge.kind),
@@ -978,7 +984,7 @@ function buildUnifiedProjectionDocument(catalogs) {
       allowedTools: ["builtins", "comms"],
       outputFormat: "json",
     },
-    { id: "j_branch_unified", isGate: true, gateKind: "join", label: "join · branch paths", collection: "all", col: 2, row: 0 },
+    { id: "j_branch_unified", isGate: true, gateKind: "join", label: "join · branch paths", collection: "any", controllerRole: reviewer.id, col: 2, row: 0 },
   ];
   const edges = [
     { id: "e_unified_code", from: "g_branch_unified", to: "unified_code_turn", kind: "cond", label: "route == \"code\"", cond: { var: "params.route", op: "==", val: "code" } },
@@ -996,6 +1002,9 @@ function buildUnifiedProjectionDocument(catalogs) {
   const branch = flow.steps.find((step) => step.type === "branch");
   if (!branch || branch.branches?.length !== 1 || branch.fallback?.length !== 1) {
     throw new Error(`unified projection graph did not compile to a Basic branch: ${JSON.stringify(flow.steps)}`);
+  }
+  if (branch.controllerRole !== reviewer.id) {
+    throw new Error(`unified projection graph dropped branch join member: ${JSON.stringify(branch)}`);
   }
 
   return controller.buildDocument({
@@ -1036,7 +1045,9 @@ async function validateUnifiedEditorProjection(dir, catalogs) {
     "skills = [\"mob.review\", \"mob.editor.unified\"]",
     "[profiles.unified_reviewer.output_schema]",
     "[skills.\"mob.editor.unified\"]",
-    "[flows.main.root.nodes.node_01_unified_coder]",
+    "[flows.main.root.nodes.node_02_unified_coder]",
+    "[flows.main.root.nodes.node_05_unified_reviewer]",
+    "Join branch paths.",
     "branch = \"branch_unified\"",
   ]) {
     if (!mobToml.includes(required)) {

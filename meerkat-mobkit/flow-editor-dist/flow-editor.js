@@ -6220,7 +6220,7 @@ window.MOBKIT_BOOT = {
           const joinId = `j_${step.type}_${step.id}`;
           const gateCol = col;
           const dispatch = isBranch ? "" : dispatchModeFromStepSource(step);
-          const collection = isBranch ? "" : collectionModeFromStepSource(step);
+          const collection = isBranch ? "any" : collectionModeFromStepSource(step);
           projection.instances.push({
             id: gateId,
             isGate: true,
@@ -6738,7 +6738,7 @@ window.MOBKIT_BOOT = {
               const out = {
                 id,
                 type: "branch",
-                controllerRole: prior.controllerRole || prior.controllerMemberId || prior.controlRole || "",
+                controllerRole: join?.controllerRole || join?.controllerMemberId || join?.controlRole || gate.controllerRole || gate.controllerMemberId || gate.controlRole || prior.controllerRole || prior.controllerMemberId || prior.controlRole || "",
                 branches: conditionalLanes.map((lane) => ({
                   id: lane.id,
                   label: lane.label,
@@ -8445,7 +8445,7 @@ window.MOBKIT_BOOT = {
     const leftId = `${gateId}_a`;
     const rightId = `${gateId}_b`;
     const joinId = isBranch ? `j_branch_${suffix}` : `j_parallel_${suffix}`;
-    const collection = contractDefaultValue(contract, "collection_policy");
+    const collection = isBranch ? "any" : contractDefaultValue(contract, "collection_policy");
     if (!collection) return null;
     const dispatch = isBranch ? "" : contractDefaultValue(contract, "dispatch_mode");
     if (!isBranch && !dispatch) return null;
@@ -8482,6 +8482,7 @@ window.MOBKIT_BOOT = {
         gateKind: "join",
         label: isBranch ? draft.branchJoinLabel : `${draft.joinLabelPrefix}${collection}`,
         collection,
+        controllerRole: isBranch ? memberA.id : "",
         col: cells.join.col,
         row: cells.join.row,
       },
