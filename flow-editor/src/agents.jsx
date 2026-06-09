@@ -382,6 +382,22 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
               </div>
             )}
 
+            <div className="section">
+              <div className="section__title">{editorState.sourceProvenance.title}</div>
+              {editorState.sourceProvenance.hasRows ? (
+                <dl className="kv kv--small">
+                  {editorState.sourceProvenance.rows.map(row => (
+                    <React.Fragment key={row.label}>
+                      <dt>{row.label}</dt>
+                      <dd>{row.value}</dd>
+                    </React.Fragment>
+                  ))}
+                </dl>
+              ) : (
+                <div className="hint__line">{editorState.sourceProvenance.emptyHint}</div>
+              )}
+            </div>
+
           </div>
 
           {/* RIGHT COLUMN — tools, schema, usage */}

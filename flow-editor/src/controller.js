@@ -853,6 +853,15 @@
       schemaRequiredLabel: String(view.schema_required_label || "").trim(),
       editSchemaLabel: String(view.edit_schema_label || "").trim(),
       emptySchemaHint: String(view.empty_schema_hint || "").trim(),
+      sourceTitle: String(view.source_title || "").trim(),
+      sourceEmptyHint: String(view.source_empty_hint || "").trim(),
+      sourceDefinitionLabel: String(view.source_definition_label || "").trim(),
+      sourceMobpackLabel: String(view.source_mobpack_label || "").trim(),
+      sourceOriginLabel: String(view.source_origin_label || "").trim(),
+      sourceDocumentPathLabel: String(view.source_document_path_label || "").trim(),
+      sourceSchemaPathLabel: String(view.source_schema_path_label || "").trim(),
+      sourceToolsLabel: String(view.source_tools_label || "").trim(),
+      sourceSkillsLabel: String(view.source_skills_label || "").trim(),
     };
     return out.usedInLabel && out.instanceSingular && out.instancePlural && out.deleteLabel
       && out.deleteConfirmIntro && out.deleteConfirmPlacedPrefix && out.cellSingular && out.cellPlural
@@ -867,6 +876,9 @@
       && out.providerParamsInvalidJsonLabel && out.providerParamsObjectRequiredError
       && out.systemPromptTitle && out.applySkeletonLabel && out.applySkeletonTitle && out.systemPromptPlaceholder
       && out.outputSchemaTitle && out.schemaNoneLabel && out.schemaRequiredLabel && out.editSchemaLabel && out.emptySchemaHint
+      && out.sourceTitle && out.sourceEmptyHint && out.sourceDefinitionLabel && out.sourceMobpackLabel
+      && out.sourceOriginLabel && out.sourceDocumentPathLabel && out.sourceSchemaPathLabel
+      && out.sourceToolsLabel && out.sourceSkillsLabel
       ? out
       : null;
   }
@@ -915,6 +927,15 @@
       schemaRequiredLabel: String(view?.schemaRequiredLabel || ""),
       editSchemaLabel: String(view?.editSchemaLabel || ""),
       emptySchemaHint: String(view?.emptySchemaHint || ""),
+      sourceTitle: String(view?.sourceTitle || ""),
+      sourceEmptyHint: String(view?.sourceEmptyHint || ""),
+      sourceDefinitionLabel: String(view?.sourceDefinitionLabel || ""),
+      sourceMobpackLabel: String(view?.sourceMobpackLabel || ""),
+      sourceOriginLabel: String(view?.sourceOriginLabel || ""),
+      sourceDocumentPathLabel: String(view?.sourceDocumentPathLabel || ""),
+      sourceSchemaPathLabel: String(view?.sourceSchemaPathLabel || ""),
+      sourceToolsLabel: String(view?.sourceToolsLabel || ""),
+      sourceSkillsLabel: String(view?.sourceSkillsLabel || ""),
     };
   }
 
@@ -2042,6 +2063,45 @@
       editSchemaSelection: schema ? { kind: "schema", id: schema.id } : null,
       emptySchemaHint: view.emptySchemaHint,
       modelOptions,
+      sourceProvenance: agentSourceProvenanceState(member, agentDetailView),
+    };
+  }
+
+  function sourceDefinitionRefRows(refs) {
+    return normalizeAgentDefinitionRows(refs)
+      .map((ref) => {
+        const id = String(ref.id || "").trim();
+        if (!id) return "";
+        const source = String(ref.sourceMobpack || ref.source_mobpack || ref.source || "").trim();
+        return source ? `${id} (${source})` : id;
+      })
+      .filter(Boolean);
+  }
+
+  function agentSourceProvenanceState(member, agentDetailView = null) {
+    const view = agentDetailViewForState(agentDetailView);
+    const source = member?.sourceDefinition && typeof member.sourceDefinition === "object"
+      ? member.sourceDefinition
+      : null;
+    const toolRefs = sourceDefinitionRefRows(source?.toolDefinitions || source?.tool_definitions);
+    const skillRefs = sourceDefinitionRefRows(source?.skillDefinitions || source?.skill_definitions);
+    const rows = [];
+    const push = (label, value) => {
+      const text = String(value || "").trim();
+      if (label && text) rows.push({ label, value: text });
+    };
+    push(view.sourceDefinitionLabel, source?.definitionId || source?.definition_id || "");
+    push(view.sourceMobpackLabel, source?.sourceMobpackName || source?.source_mobpack_name || source?.sourceMobpack || source?.source_mobpack || "");
+    push(view.sourceOriginLabel, source?.sourceOrigin || source?.source_origin || source?.source || "");
+    push(view.sourceDocumentPathLabel, source?.sourceDocumentPath || source?.source_document_path || "");
+    push(view.sourceSchemaPathLabel, source?.schemaSourceDocumentPath || source?.schema_source_document_path || "");
+    push(view.sourceToolsLabel, toolRefs.join(", "));
+    push(view.sourceSkillsLabel, skillRefs.join(", "));
+    return {
+      title: view.sourceTitle,
+      emptyHint: view.sourceEmptyHint,
+      hasRows: rows.length > 0,
+      rows,
     };
   }
 
@@ -10456,8 +10516,12 @@
         definitionId: source.id,
         source: source.source,
         sourceMobpack: source.sourceMobpack,
+        sourceMobpackName: source.sourceMobpackName || "",
         sourceOrigin: source.sourceOrigin,
         sourceDocumentPath: source.sourceDocumentPath || "",
+        schemaSourceDocumentPath: source.schemaSourceDocumentPath || "",
+        toolDefinitions: normalizeAgentDefinitionRows(source.toolDefinitions || source.tool_definitions),
+        skillDefinitions: normalizeAgentDefinitionRows(source.skillDefinitions || source.skill_definitions),
       },
     };
   }
@@ -10726,6 +10790,7 @@
     agentListState,
     agentSelectionState,
     agentEditorControlState,
+    agentSourceProvenanceState,
     agentDefinitionOptions,
     agentDefinitionAddControlState,
     agentDefinitionAddErrorState,

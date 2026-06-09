@@ -1114,6 +1114,15 @@ const hydratedContractAndCatalogFixture = {
       schema_required_label: "req",
       edit_schema_label: "Edit schema →",
       empty_schema_hint: "No structured output. Agent returns free-form text.",
+      source_title: "SOURCE",
+      source_empty_hint: "Created in this editor.",
+      source_definition_label: "Definition",
+      source_mobpack_label: "Mobpack",
+      source_origin_label: "Origin",
+      source_document_path_label: "Member path",
+      source_schema_path_label: "Schema path",
+      source_tools_label: "Tool refs",
+      source_skills_label: "Skill refs",
     },
     editor_agent_access_view: TEST_AGENT_ACCESS_VIEW_SCHEMA,
     editor_deploy_view: TEST_DEPLOY_VIEW_SCHEMA,
@@ -1569,6 +1578,15 @@ assert.deepEqual(hydratedCatalogs.agentDetailView, {
   schemaRequiredLabel: "req",
   editSchemaLabel: "Edit schema →",
   emptySchemaHint: "No structured output. Agent returns free-form text.",
+  sourceTitle: "SOURCE",
+  sourceEmptyHint: "Created in this editor.",
+  sourceDefinitionLabel: "Definition",
+  sourceMobpackLabel: "Mobpack",
+  sourceOriginLabel: "Origin",
+  sourceDocumentPathLabel: "Member path",
+  sourceSchemaPathLabel: "Schema path",
+  sourceToolsLabel: "Tool refs",
+  sourceSkillsLabel: "Skill refs",
 });
 assert.deepEqual(hydratedCatalogs.agentAccessView, TEST_AGENT_ACCESS_VIEW);
 assert.deepEqual(hydratedCatalogs.deployView, TEST_DEPLOY_VIEW);
@@ -4452,8 +4470,12 @@ assert.deepEqual(addedAgent.member.sourceDefinition, {
   definitionId: "reviewer",
   source: "mobkit/mobpack-profile-member",
   sourceMobpack: "sample_review_pr",
+  sourceMobpackName: "Review PR",
   sourceOrigin: "mobkit/sample-mobpack",
   sourceDocumentPath: "document.members[]",
+  schemaSourceDocumentPath: "document.schemas[]",
+  toolDefinitions: [{ id: "mob", kind: "runtime", source: "meerkat_mob::ToolConfig" }],
+  skillDefinitions: [{ id: "mob.review", source: "inline", sourceMobpack: "sample_review_pr" }],
 });
 assert.equal(addedAgent.members.length, 2);
 assert.equal(addedAgent.schemasChanged, true);
@@ -4592,6 +4614,18 @@ const agentMembersForProjection = [
     profileBinding: "inline",
     runtimeMode: "turn_driven",
     backend: "session",
+    sourceDefinition: {
+      definitionType: "mobkit/profile-member",
+      definitionId: "reviewer",
+      source: "mobkit/mobpack-profile-member",
+      sourceMobpack: "sample_review_pr",
+      sourceMobpackName: "Review PR",
+      sourceOrigin: "mobkit/sample-mobpack",
+      sourceDocumentPath: "document.members[]",
+      schemaSourceDocumentPath: "document.schemas[]",
+      toolDefinitions: [{ id: "mob", source: "meerkat_mob::ToolConfig" }],
+      skillDefinitions: [{ id: "mob.review", sourceMobpack: "sample_review_pr" }],
+    },
   },
 ];
 const agentSchemasForProjection = [
@@ -4775,6 +4809,15 @@ const agentEditorState = controller.agentEditorControlState({
     schemaRequiredLabel: "required",
     editSchemaLabel: "Open schema",
     emptySchemaHint: "Free-form output.",
+    sourceTitle: "SOURCE",
+    sourceEmptyHint: "Created here.",
+    sourceDefinitionLabel: "Definition",
+    sourceMobpackLabel: "Mobpack",
+    sourceOriginLabel: "Origin",
+    sourceDocumentPathLabel: "Member path",
+    sourceSchemaPathLabel: "Schema path",
+    sourceToolsLabel: "Tool refs",
+    sourceSkillsLabel: "Skill refs",
   },
   deploySettings: { surface: "cli" },
   contract: {
@@ -4837,6 +4880,24 @@ assert.deepEqual(agentEditorState.schemaPreviewRows, [
 assert.equal(agentEditorState.editSchemaLabel, "Open schema");
 assert.deepEqual(agentEditorState.editSchemaSelection, { kind: "schema", id: "ReviewArtifact" });
 assert.equal(agentEditorState.emptySchemaHint, "Free-form output.");
+assert.deepEqual(agentEditorState.sourceProvenance, {
+  title: "SOURCE",
+  emptyHint: "Created here.",
+  hasRows: true,
+  rows: [
+    { label: "Definition", value: "reviewer" },
+    { label: "Mobpack", value: "Review PR" },
+    { label: "Origin", value: "mobkit/sample-mobpack" },
+    { label: "Member path", value: "document.members[]" },
+    { label: "Schema path", value: "document.schemas[]" },
+    { label: "Tool refs", value: "mob (meerkat_mob::ToolConfig)" },
+    { label: "Skill refs", value: "mob.review (sample_review_pr)" },
+  ],
+});
+assert.deepEqual(controller.agentSourceProvenanceState({ id: "m_local" }, {
+  sourceTitle: "SOURCE",
+  sourceEmptyHint: "Created here.",
+}).hasRows, false);
 assert.equal(agentEditorState.profileBinding, "inline");
 assert.equal(agentEditorState.runtimeMode, "turn_driven");
 assert.equal(agentEditorState.backendValue, "session");

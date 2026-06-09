@@ -1282,6 +1282,8 @@ assert.match(agentEditorBlock, /memberBackendPatch\(e\.target\.value,\s*contract
 assert.match(agents, /MobKitFlowController\.memberMaxInlinePeerNotificationsPatch/, "Agent Editor must update inline peer notification limits through the controller plane");
 assert.match(providerParamsBlock, /MobKitFlowController\.memberProviderParamsEditorState/, "Agent Editor must render provider params textarea state through the controller plane");
 assert.match(providerParamsBlock, /paramsState\.label/, "Agent Editor provider params label must render through controller state");
+assert.match(agentEditorBlock, /editorState\.sourceProvenance\.title[\s\S]*editorState\.sourceProvenance\.rows\.map/, "Agent Editor source provenance must render through controller-projected state");
+assert(!/SOURCE|Definition|Mobpack|Origin|Member path|Schema path|Tool refs|Skill refs/.test(agentEditorBlock), "Agent Editor must not compose source provenance labels locally");
 assert.match(agents, /MobKitFlowController\.memberProviderParamsPatch/, "Agent Editor must parse provider params through the controller plane");
 assert.match(controller, /function memberProfileBindingPatch/, "controller plane must own profile binding patch semantics");
 assert.match(controller, /function memberRuntimeModePatch/, "controller plane must own runtime mode patch semantics");
@@ -1294,6 +1296,9 @@ assert.match(controller, /toolDefinitions:\s*normalizeAgentDefinitionRows/, "age
 assert.match(controller, /skillDefinitions:\s*normalizeAgentDefinitionRows/, "agent definition hydration must preserve MobKit-resolved skill definition rows");
 assert.match(controller, /sourceMobpackName:\s*template\.sourceMobpackName/, "agent definition hydration must preserve the MobKit sample mobpack display name");
 assert.match(controller, /schemaSourceDocumentPath:\s*String\(template\.schemaSourceDocumentPath/, "agent definition hydration must preserve schema provenance from the MobKit catalog");
+assert.match(controller, /function agentSourceProvenanceState/, "controller plane must own Agent Editor source provenance projection");
+assert.match(controller, /sourceProvenance:\s*agentSourceProvenanceState\(member,\s*agentDetailView\)/, "Agent Editor control state must include controller-projected source provenance");
+assert.match(controller, /sourceDefinition:[\s\S]*sourceMobpackName:[\s\S]*schemaSourceDocumentPath:[\s\S]*toolDefinitions:\s*normalizeAgentDefinitionRows[\s\S]*skillDefinitions:\s*normalizeAgentDefinitionRows/, "agent-definition member creation must retain resolved MobKit provenance rows in sourceDefinition");
 assert.match(controller, /memberProfileBindingPatch[\s\S]*profileBindingOptions\(contract,\s*binding\)/, "member profile-binding writes must validate against MobKit profile_binding options and restrictions");
 assert.match(controller, /memberRuntimeModePatch[\s\S]*runtimeModeOptions\(contract,\s*deploySettings,\s*runtimeMode\)/, "member runtime-mode writes must validate against MobKit runtime_modes and deploy surface restrictions");
 assert.match(controller, /runtime_mode_labels/, "member runtime-mode labels must hydrate from the MobKit schema contract");

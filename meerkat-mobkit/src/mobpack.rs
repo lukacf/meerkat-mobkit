@@ -1035,7 +1035,7 @@ pub fn mobpack_schema_response() -> Value {
         "field_enum_add_label": "+ value",
         "field_enum_add_value": "value"
     });
-    let editor_agent_detail_view = json!({
+    let mut editor_agent_detail_view = json!({
         "used_in_label": "used in",
         "instance_singular": "instance",
         "instance_plural": "instances",
@@ -1078,6 +1078,15 @@ pub fn mobpack_schema_response() -> Value {
         "edit_schema_label": "Edit schema →",
         "empty_schema_hint": "No structured output. Agent returns free-form text."
     });
+    editor_agent_detail_view["source_title"] = json!("SOURCE");
+    editor_agent_detail_view["source_empty_hint"] = json!("Created in this editor.");
+    editor_agent_detail_view["source_definition_label"] = json!("Definition");
+    editor_agent_detail_view["source_mobpack_label"] = json!("Mobpack");
+    editor_agent_detail_view["source_origin_label"] = json!("Origin");
+    editor_agent_detail_view["source_document_path_label"] = json!("Member path");
+    editor_agent_detail_view["source_schema_path_label"] = json!("Schema path");
+    editor_agent_detail_view["source_tools_label"] = json!("Tool refs");
+    editor_agent_detail_view["source_skills_label"] = json!("Skill refs");
     let editor_agent_access_view = json!({
         "tool_invalid_error": "Use a MobKit-listed runtime tool or configured MCP/Rust source.",
         "tool_title": "TOOL ACCESS",
@@ -17070,6 +17079,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["empty_schema_hint"],
             json!("No structured output. Agent returns free-form text.")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["source_title"],
+            json!("SOURCE")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["source_mobpack_label"],
+            json!("Mobpack")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["source_tools_label"],
+            json!("Tool refs")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["source_skills_label"],
+            json!("Skill refs")
         );
         assert_eq!(
             mob_definition["editor_agent_access_view"]["tool_title"],
