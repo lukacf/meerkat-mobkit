@@ -7452,12 +7452,13 @@
     const document = result?.document && typeof result.document === "object" ? result.document : {};
     const members = Array.isArray(document.members) ? document.members : [];
     const schemas = Array.isArray(document.schemas) ? document.schemas : [];
+    const id = String(options.id || flowImportedIdFromDocument(document, result, options.existingRows)).trim();
     const flow = flowFromHydratedDocument(document);
     const errorView = errorViewForState(options.errorView);
     if (!flow) {
       return {
         ok: false,
-        id: String(options.id || "f_imported"),
+        id,
         document,
         members,
         schemas,
@@ -7485,7 +7486,6 @@
     const graphProjection = graphProjectionForDocument({ ...document, flow }, members, options.contract);
     const hasDeploySettings = document.deploy && typeof document.deploy === "object" && !Array.isArray(document.deploy);
     const hasMobSettings = document.mob_settings && typeof document.mob_settings === "object" && !Array.isArray(document.mob_settings);
-    const id = String(options.id || "f_imported");
     const validation = result?.validation || null;
     const validationRows = diagnosticsToRows(validation);
     const stage = validation?.ok ? "valid" : "draft";
@@ -7518,6 +7518,13 @@
       validationRows,
       stage,
     };
+  }
+
+  function flowImportedIdFromDocument(document, result = {}, existingRows = []) {
+    const source = result?.source_name || result?.sourceName || result?.filename || result?.source;
+    return flowDraftIdFromSpec({
+      name: document?.name || document?.mob_id || document?.flow?.name || source || "imported-mob",
+    }, existingRows);
   }
 
   function runtimeModeOptions(contract, deploySettings, currentMode) {
@@ -9928,6 +9935,7 @@
     flowRegistryViewState,
     flowRegistrySelectionState,
     flowRegistryRowFromDocument,
+    flowImportedIdFromDocument,
     flowRegistryRememberDocumentPatch,
     flowRegistryDocumentPersistence,
     flowRegistryAppendRowPatch,

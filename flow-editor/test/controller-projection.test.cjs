@@ -8064,6 +8064,16 @@ assert.equal(missingSelection.row, null);
 assert.equal(missingSelection.hydration, null);
 assert.equal(missingSelection.fallback, null);
 
+assert.equal(controller.flowImportedIdFromDocument({
+  name: "Imported Quality Flow",
+}, {}, []), "f_imported_quality_flow");
+assert.equal(controller.flowImportedIdFromDocument({
+  mob_id: "imported_quality_flow",
+}, {}, [{ id: "f_imported_quality_flow" }]), "f_imported_quality_flow_2");
+assert.equal(controller.flowImportedIdFromDocument({}, {
+  source_name: "special.mobpack",
+}, []), "f_specialmobpack");
+
 const rememberedRows = controller.flowRegistryRememberDocumentPatch(registryRows, {
   currentFlowId: "f_existing",
   document: registryDocument,
@@ -8190,6 +8200,15 @@ assert.equal(hydratedStored.registryRow.name, "Stored Graph Import");
 assert.equal(hydratedStored.registryRow.source, "file:///tmp/stored.mobpack");
 assert.equal(hydratedStored.validationRows[0].head, "Imported mobpack validated");
 assert.equal(hydratedStored.validationRows[0].meta, "import.ok");
+
+const importedHydrationId = controller.hydrateMobpackDocumentState({
+  document: storedGraphDocument,
+  validation: { ok: true },
+}, {
+  existingRows: [{ id: "f_stored_graph_import" }],
+});
+assert.equal(importedHydrationId.id, "f_stored_graph_import_2");
+assert.equal(importedHydrationId.registryRow.id, "f_stored_graph_import_2");
 
 const flowOnlyHydrated = controller.hydrateMobpackDocumentState({
   document: {

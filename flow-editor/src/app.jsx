@@ -707,7 +707,7 @@ function App() {
   };
 
   const hydrateImportedDocument = (result) => {
-    hydrateMobpackDocument(result, { id: "f_imported" });
+    hydrateMobpackDocument(result, { existingRows: flows });
   };
 
   const handleImportFile = async (event) => {
