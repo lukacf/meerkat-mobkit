@@ -99,7 +99,9 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
 }
 
 function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
+  const [lastAddResult, setLastAddResult] = React.useState(null);
   const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
+  const definitionErrorState = window.MobKitFlowController.agentDefinitionAddErrorState(lastAddResult, agentView);
   const createFromDefinition = (definitionId) => {
     const result = window.MobKitFlowController.agentDefinitionAddByIdPatch(agentDefinitions, definitionId, {
       members: studio.members,
@@ -110,6 +112,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract 
       toolCatalog,
       skillRealms: studio.skillRealms,
     });
+    setLastAddResult(result);
     if (!result.ok) return;
     if (studio.snap) studio.snap();
     if (result.schemas !== studio.schemas) studio.setSchemas(result.schemas);
@@ -118,30 +121,36 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract 
   };
   if (!definitionState.hasDefinitions) {
     return (
-      <button
-        className={definitionState.controlClass}
-        disabled
-        title={definitionState.title}
-      >{definitionState.unavailableLabel}</button>
+      <>
+        <button
+          className={definitionState.controlClass}
+          disabled
+          title={definitionState.title}
+        >{definitionState.unavailableLabel}</button>
+        {definitionErrorState.hasError && <div className="hint__line">{definitionErrorState.text}</div>}
+      </>
     );
   }
   return (
-    <select
-      className={definitionState.controlClass}
-      value={definitionState.value}
-      title={definitionState.title}
-      onChange={e => {
-        const id = e.target.value;
-        if (!id) return;
-        createFromDefinition(id);
-        e.target.value = "";
-      }}
-    >
-      <option value={definitionState.placeholderOption.value}>{definitionState.placeholderOption.label}</option>
-      {definitionState.optionRows.map(option => (
-        <option key={option.value} value={option.value}>{option.label}</option>
-      ))}
-    </select>
+    <>
+      <select
+        className={definitionState.controlClass}
+        value={definitionState.value}
+        title={definitionState.title}
+        onChange={e => {
+          const id = e.target.value;
+          if (!id) return;
+          createFromDefinition(id);
+          e.target.value = "";
+        }}
+      >
+        <option value={definitionState.placeholderOption.value}>{definitionState.placeholderOption.label}</option>
+        {definitionState.optionRows.map(option => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+      {definitionErrorState.hasError && <div className="hint__line">{definitionErrorState.text}</div>}
+    </>
   );
 }
 

@@ -1055,6 +1055,7 @@ const hydratedContractAndCatalogFixture = {
       add_agent_unavailable_title: "MobKit schema contract has not provided agent definitions yet.",
       add_agent_unavailable_label: "agents unavailable",
       add_agent_placeholder_label: "+ new agent...",
+      add_agent_error_prefix: "Agent definition unavailable: ",
       empty_title: "AGENT LIBRARY",
       empty_lines: [
         "Select an agent or schema on the left.",
@@ -1508,6 +1509,7 @@ assert.deepEqual(hydratedCatalogs.agentView, {
   addAgentUnavailableTitle: "MobKit schema contract has not provided agent definitions yet.",
   addAgentUnavailableLabel: "agents unavailable",
   addAgentPlaceholderLabel: "+ new agent...",
+  addAgentErrorPrefix: "Agent definition unavailable:",
   emptyTitle: "AGENT LIBRARY",
   emptyLines: [
     "Select an agent or schema on the left.",
@@ -4751,6 +4753,19 @@ assert.deepEqual(controller.agentDefinitionAddControlState([], hydratedCatalogs.
   unavailableLabel: "agents unavailable",
   placeholderOption: { value: "", label: "+ new agent..." },
   value: "",
+});
+assert.deepEqual(controller.agentDefinitionAddErrorState({
+  ok: false,
+  error: "MobKit agent definition references unavailable tool(s): ghost",
+}, hydratedCatalogs.agentView), {
+  hasError: true,
+  text: "Agent definition unavailable: MobKit agent definition references unavailable tool(s): ghost",
+  rawError: "MobKit agent definition references unavailable tool(s): ghost",
+});
+assert.deepEqual(controller.agentDefinitionAddErrorState({ ok: true }, hydratedCatalogs.agentView), {
+  hasError: false,
+  text: "",
+  rawError: "",
 });
 assert.deepEqual(controller.agentDefinitionAddControlState([{
   id: "reviewer",

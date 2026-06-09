@@ -1050,6 +1050,11 @@ assert.match(controller, /missingRuntimeModeLabel/, "controller plane must expos
 assert.match(agents, /MobKitFlowController\.agentDefinitionAddByIdPatch/, "Agent Editor must add API-backed agent definitions through one controller-plane operation");
 assert.match(controller, /function agentDefinitionAddPatch/, "controller plane must own combined agent-definition member and schema mutation semantics");
 assert.match(controller, /function agentDefinitionAddByIdPatch/, "controller plane must own agent-definition id resolution");
+assert.match(controller, /addAgentErrorPrefix:\s*String\(view\.add_agent_error_prefix/, "controller plane must hydrate Agent add-definition error copy from the MobKit schema");
+assert.match(controller, /function agentDefinitionAddErrorState/, "controller plane must own rejected agent-definition display state");
+assert.match(addAgentControlBlock, /const \[lastAddResult,\s*setLastAddResult\] = React\.useState\(null\);[\s\S]*MobKitFlowController\.agentDefinitionAddErrorState\(lastAddResult,\s*agentView\)/, "Agent add-control must ask the controller plane to project rejected definition errors");
+assert.match(addAgentControlBlock, /setLastAddResult\(result\);[\s\S]*definitionErrorState\.hasError[\s\S]*definitionErrorState\.text/, "Agent add-control must render controller-projected add-definition errors");
+assert(!/unknown agent definition|unavailable tool|unavailable skill|unsupported runtime mode|Agent definition unavailable/.test(addAgentControlBlock), "Agent add-control JSX must not compose rejected definition error copy locally");
 assert.match(agents, /<AgentsList[\s\S]*deploySettings=\{deploySettings\}[\s\S]*toolCatalog=\{toolCatalog\}[\s\S]*modelCatalog=\{modelCatalog\}/, "Agent sidebar must receive live MobKit deploy, tool, and model catalog context");
 assert.match(agents, /<AddAgentControl[\s\S]*toolCatalog=\{toolCatalog\}/, "Agent add-control must receive the live MobKit tool catalog");
 assert.match(addAgentControlBlock, /agentDefinitionAddByIdPatch\(agentDefinitions,\s*definitionId,\s*\{[\s\S]*contract,[\s\S]*deploySettings,[\s\S]*modelCatalog,[\s\S]*toolCatalog,[\s\S]*skillRealms:\s*studio\.skillRealms/, "Agent add-control must pass live schema, deploy, model, tool, and skill catalogs into controller validation");

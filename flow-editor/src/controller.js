@@ -626,6 +626,7 @@
       addAgentUnavailableTitle: String(view.add_agent_unavailable_title || "").trim(),
       addAgentUnavailableLabel: String(view.add_agent_unavailable_label || "").trim(),
       addAgentPlaceholderLabel: String(view.add_agent_placeholder_label || "").trim(),
+      addAgentErrorPrefix: String(view.add_agent_error_prefix || "").trim(),
       emptyTitle: String(view.empty_title || "").trim(),
       emptyLines: Array.isArray(view.empty_lines)
         ? view.empty_lines.map((line) => String(line || "").trim()).filter(Boolean)
@@ -651,6 +652,7 @@
       addAgentUnavailableTitle: String(view?.addAgentUnavailableTitle || ""),
       addAgentUnavailableLabel: String(view?.addAgentUnavailableLabel || ""),
       addAgentPlaceholderLabel: String(view?.addAgentPlaceholderLabel || ""),
+      addAgentErrorPrefix: String(view?.addAgentErrorPrefix || ""),
       emptyTitle: String(view?.emptyTitle || ""),
       emptyLines: Array.isArray(view?.emptyLines) ? view.emptyLines : [],
       missingSchemaLabel: String(view?.missingSchemaLabel || ""),
@@ -2068,6 +2070,19 @@
       unavailableLabel: view.addAgentUnavailableLabel,
       placeholderOption: { value: "", label: view.addAgentPlaceholderLabel },
       value: "",
+    };
+  }
+
+  function agentDefinitionAddErrorState(result = null, agentView = null) {
+    const view = agentViewForState(agentView);
+    const error = String(result?.error || "").trim();
+    const prefix = view.addAgentErrorPrefix
+      ? `${view.addAgentErrorPrefix}${/\s$/.test(view.addAgentErrorPrefix) ? "" : " "}`
+      : "";
+    return {
+      hasError: !!error,
+      text: error ? `${prefix}${error}` : "",
+      rawError: error,
     };
   }
 
@@ -10545,6 +10560,7 @@
     agentEditorControlState,
     agentDefinitionOptions,
     agentDefinitionAddControlState,
+    agentDefinitionAddErrorState,
     basicEditorViewState,
     schemaEditorControlState,
     memberPromptSkeleton,

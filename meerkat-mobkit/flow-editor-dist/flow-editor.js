@@ -659,6 +659,7 @@ window.MOBKIT_BOOT = {
       addAgentUnavailableTitle: String(view.add_agent_unavailable_title || "").trim(),
       addAgentUnavailableLabel: String(view.add_agent_unavailable_label || "").trim(),
       addAgentPlaceholderLabel: String(view.add_agent_placeholder_label || "").trim(),
+      addAgentErrorPrefix: String(view.add_agent_error_prefix || "").trim(),
       emptyTitle: String(view.empty_title || "").trim(),
       emptyLines: Array.isArray(view.empty_lines)
         ? view.empty_lines.map((line) => String(line || "").trim()).filter(Boolean)
@@ -684,6 +685,7 @@ window.MOBKIT_BOOT = {
       addAgentUnavailableTitle: String(view?.addAgentUnavailableTitle || ""),
       addAgentUnavailableLabel: String(view?.addAgentUnavailableLabel || ""),
       addAgentPlaceholderLabel: String(view?.addAgentPlaceholderLabel || ""),
+      addAgentErrorPrefix: String(view?.addAgentErrorPrefix || ""),
       emptyTitle: String(view?.emptyTitle || ""),
       emptyLines: Array.isArray(view?.emptyLines) ? view.emptyLines : [],
       missingSchemaLabel: String(view?.missingSchemaLabel || ""),
@@ -2101,6 +2103,19 @@ window.MOBKIT_BOOT = {
       unavailableLabel: view.addAgentUnavailableLabel,
       placeholderOption: { value: "", label: view.addAgentPlaceholderLabel },
       value: "",
+    };
+  }
+
+  function agentDefinitionAddErrorState(result = null, agentView = null) {
+    const view = agentViewForState(agentView);
+    const error = String(result?.error || "").trim();
+    const prefix = view.addAgentErrorPrefix
+      ? `${view.addAgentErrorPrefix}${/\s$/.test(view.addAgentErrorPrefix) ? "" : " "}`
+      : "";
+    return {
+      hasError: !!error,
+      text: error ? `${prefix}${error}` : "",
+      rawError: error,
     };
   }
 
@@ -10578,6 +10593,7 @@ window.MOBKIT_BOOT = {
     agentEditorControlState,
     agentDefinitionOptions,
     agentDefinitionAddControlState,
+    agentDefinitionAddErrorState,
     basicEditorViewState,
     schemaEditorControlState,
     memberPromptSkeleton,
@@ -12238,7 +12254,9 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
   )));
 }
 function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
+  const [lastAddResult, setLastAddResult] = React.useState(null);
   const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
+  const definitionErrorState = window.MobKitFlowController.agentDefinitionAddErrorState(lastAddResult, agentView);
   const createFromDefinition = (definitionId) => {
     const result = window.MobKitFlowController.agentDefinitionAddByIdPatch(agentDefinitions, definitionId, {
       members: studio.members,
@@ -12249,6 +12267,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract 
       toolCatalog,
       skillRealms: studio.skillRealms
     });
+    setLastAddResult(result);
     if (!result.ok) return;
     if (studio.snap) studio.snap();
     if (result.schemas !== studio.schemas) studio.setSchemas(result.schemas);
@@ -12256,7 +12275,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract 
     setAgentSel({ kind: "agent", id: result.member.id });
   };
   if (!definitionState.hasDefinitions) {
-    return /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
       "button",
       {
         className: definitionState.controlClass,
@@ -12264,9 +12283,9 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract 
         title: definitionState.title
       },
       definitionState.unavailableLabel
-    );
+    ), definitionErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, definitionErrorState.text));
   }
-  return /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
     "select",
     {
       className: definitionState.controlClass,
@@ -12281,7 +12300,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract 
     },
     /* @__PURE__ */ React.createElement("option", { value: definitionState.placeholderOption.value }, definitionState.placeholderOption.label),
     definitionState.optionRows.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))
-  );
+  ), definitionErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, definitionErrorState.text));
 }
 function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
