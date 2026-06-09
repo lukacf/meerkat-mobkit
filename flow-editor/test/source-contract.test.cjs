@@ -1060,6 +1060,12 @@ assert.match(controller, /memberBackendPatch[\s\S]*profileBackendOptions\(contra
 assert.match(controller, /function memberMaxInlinePeerNotificationsPatch/, "controller plane must own inline peer notification limit semantics");
 assert.match(controller, /function memberProviderParamsEditorState/, "controller plane must own provider params textarea projection");
 assert.match(controller, /function memberProviderParamsPatch/, "controller plane must own provider params parsing semantics");
+assert.match(controller, /providerParamsLabel:\s*String\(view\.provider_params_label/, "controller plane must hydrate provider params labels from MobKit schema");
+assert.match(controller, /memberProviderParamsEditorState\(member, agentDetailView = null\)/, "provider params display projection must accept schema-backed Agent detail view state");
+assert.match(controller, /memberProviderParamsPatch\(rawText, agentDetailView = null\)/, "provider params patch validation must accept schema-backed Agent detail view state");
+assert.match(providerParamsBlock, /memberProviderParamsEditorState\(member, agentDetailView\)/, "Agent Editor provider params display must pass schema-backed Agent detail view state");
+assert.match(providerParamsBlock, /memberProviderParamsPatch\(next, agentDetailView\)/, "Agent Editor provider params patch must pass schema-backed Agent detail view state");
+assert(!/Provider params|invalid JSON|provider_params must be a JSON object|thinking_budget/.test(controller), "controller plane must not keep provider params label, placeholder, or validation copy as local literals");
 assert(!/function applyPromptSkeleton|window\.applyPromptSkeleton/.test(agents), "Agent Editor must not own export-facing profile prompt skeleton helpers");
 assert(!/change\(\{\s*(?:name|realmProfile|systemPrompt|description):/.test(agents), "Agent Editor must not assemble profile/schema text patches directly");
 assert(!/profileBinding:\s*binding/.test(agents), "Agent Editor must not assemble profile binding patches directly");

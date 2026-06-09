@@ -724,6 +724,11 @@
       backendDefinitionDefaultLabel: String(view.backend_definition_default_label || "").trim(),
       inlinePeerNotificationsLabel: String(view.inline_peer_notifications_label || "").trim(),
       inlinePeerNotificationsPlaceholder: String(view.inline_peer_notifications_placeholder || "").trim(),
+      providerParamsLabel: String(view.provider_params_label || "").trim(),
+      providerParamsPlaceholder: String(view.provider_params_placeholder || "").trim(),
+      providerParamsRows: Number(view.provider_params_rows || 0),
+      providerParamsInvalidJsonLabel: String(view.provider_params_invalid_json_label || "").trim(),
+      providerParamsObjectRequiredError: String(view.provider_params_object_required_error || "").trim(),
       systemPromptTitle: String(view.system_prompt_title || "").trim(),
       applySkeletonLabel: String(view.apply_skeleton_label || "").trim(),
       applySkeletonTitle: String(view.apply_skeleton_title || "").trim(),
@@ -743,6 +748,8 @@
       && out.modelLabel && out.runtimeModeLabel && out.missingRuntimeModeLabel && out.backendLabel
       && out.backendDefinitionDefaultLabel
       && out.inlinePeerNotificationsLabel && out.inlinePeerNotificationsPlaceholder
+      && out.providerParamsLabel && out.providerParamsPlaceholder && Number.isFinite(out.providerParamsRows) && out.providerParamsRows > 0
+      && out.providerParamsInvalidJsonLabel && out.providerParamsObjectRequiredError
       && out.systemPromptTitle && out.applySkeletonLabel && out.applySkeletonTitle && out.systemPromptPlaceholder
       && out.outputSchemaTitle && out.schemaNoneLabel && out.schemaRequiredLabel && out.editSchemaLabel && out.emptySchemaHint
       ? out
@@ -779,6 +786,11 @@
       backendDefinitionDefaultLabel: String(view?.backendDefinitionDefaultLabel || ""),
       inlinePeerNotificationsLabel: String(view?.inlinePeerNotificationsLabel || ""),
       inlinePeerNotificationsPlaceholder: String(view?.inlinePeerNotificationsPlaceholder || ""),
+      providerParamsLabel: String(view?.providerParamsLabel || ""),
+      providerParamsPlaceholder: String(view?.providerParamsPlaceholder || ""),
+      providerParamsRows: Number(view?.providerParamsRows || 0),
+      providerParamsInvalidJsonLabel: String(view?.providerParamsInvalidJsonLabel || ""),
+      providerParamsObjectRequiredError: String(view?.providerParamsObjectRequiredError || ""),
       systemPromptTitle: String(view?.systemPromptTitle || ""),
       applySkeletonLabel: String(view?.applySkeletonLabel || ""),
       applySkeletonTitle: String(view?.applySkeletonTitle || ""),
@@ -9290,28 +9302,30 @@
     return { maxInlinePeerNotifications: normalizeMaxInlinePeerNotifications(rawValue) };
   }
 
-  function memberProviderParamsEditorState(member) {
+  function memberProviderParamsEditorState(member, agentDetailView = null) {
+    const view = agentDetailViewForState(agentDetailView);
     return {
-      label: "Provider params",
+      label: view.providerParamsLabel,
       text: member?.providerParams ? JSON.stringify(member.providerParams, null, 2) : "",
-      placeholder: '{"thinking_budget":4096}',
-      rows: 4,
-      invalidJsonLabel: "invalid JSON",
+      placeholder: view.providerParamsPlaceholder,
+      rows: view.providerParamsRows,
+      invalidJsonLabel: view.providerParamsInvalidJsonLabel,
     };
   }
 
-  function memberProviderParamsPatch(rawText) {
+  function memberProviderParamsPatch(rawText, agentDetailView = null) {
+    const view = agentDetailViewForState(agentDetailView);
     const text = String(rawText || "").trim();
     if (!text) return { ok: true, patch: { providerParams: null }, error: "" };
     try {
       const parsed = JSON.parse(text);
       const normalized = normalizeProviderParams(parsed);
       if (!normalized) {
-        return { ok: false, patch: null, error: "provider_params must be a JSON object" };
+        return { ok: false, patch: null, error: view.providerParamsObjectRequiredError };
       }
       return { ok: true, patch: { providerParams: normalized }, error: "" };
     } catch (err) {
-      return { ok: false, patch: null, error: err?.message || "invalid JSON" };
+      return { ok: false, patch: null, error: err?.message || view.providerParamsInvalidJsonLabel };
     }
   }
 

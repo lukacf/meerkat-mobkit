@@ -885,6 +885,11 @@ pub fn mobpack_schema_response() -> Value {
         "backend_definition_default_label": "definition default",
         "inline_peer_notifications_label": "Inline peer notifications",
         "inline_peer_notifications_placeholder": "runtime default",
+        "provider_params_label": "Provider params",
+        "provider_params_placeholder": "{\"thinking_budget\":4096}",
+        "provider_params_rows": 4,
+        "provider_params_invalid_json_label": "invalid JSON",
+        "provider_params_object_required_error": "provider_params must be a JSON object",
         "system_prompt_title": "SYSTEM PROMPT",
         "apply_skeleton_label": "APPLY SKELETON",
         "apply_skeleton_title": "Apply a MobKit profile prompt skeleton",
@@ -15892,6 +15897,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["backend_definition_default_label"],
             json!("definition default")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["provider_params_label"],
+            json!("Provider params")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["provider_params_object_required_error"],
+            json!("provider_params must be a JSON object")
         );
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["system_prompt_title"],

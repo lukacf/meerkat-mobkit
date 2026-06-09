@@ -805,6 +805,11 @@ const hydratedCatalogs = controller.mobKitCatalogsFromSchema({
       backend_definition_default_label: "definition default",
       inline_peer_notifications_label: "Inline peer notifications",
       inline_peer_notifications_placeholder: "runtime default",
+      provider_params_label: "Provider params",
+      provider_params_placeholder: '{"thinking_budget":4096}',
+      provider_params_rows: 4,
+      provider_params_invalid_json_label: "invalid JSON",
+      provider_params_object_required_error: "provider_params must be a JSON object",
       system_prompt_title: "SYSTEM PROMPT",
       apply_skeleton_label: "APPLY SKELETON",
       apply_skeleton_title: "Apply a MobKit profile prompt skeleton",
@@ -1211,6 +1216,11 @@ assert.deepEqual(hydratedCatalogs.agentDetailView, {
   backendDefinitionDefaultLabel: "definition default",
   inlinePeerNotificationsLabel: "Inline peer notifications",
   inlinePeerNotificationsPlaceholder: "runtime default",
+  providerParamsLabel: "Provider params",
+  providerParamsPlaceholder: '{"thinking_budget":4096}',
+  providerParamsRows: 4,
+  providerParamsInvalidJsonLabel: "invalid JSON",
+  providerParamsObjectRequiredError: "provider_params must be a JSON object",
   systemPromptTitle: "SYSTEM PROMPT",
   applySkeletonLabel: "APPLY SKELETON",
   applySkeletonTitle: "Apply a MobKit profile prompt skeleton",
@@ -3486,26 +3496,46 @@ assert.deepEqual(controller.memberMaxInlinePeerNotificationsPatch(""), { maxInli
 assert.deepEqual(controller.memberMaxInlinePeerNotificationsPatch("-2"), { maxInlinePeerNotifications: null });
 assert.deepEqual(controller.memberProviderParamsEditorState({
   providerParams: { thinking_budget: 4096, top_k: 20 },
-}), {
+}, hydratedCatalogs.agentDetailView), {
   label: "Provider params",
   text: '{\n  "thinking_budget": 4096,\n  "top_k": 20\n}',
   placeholder: '{"thinking_budget":4096}',
   rows: 4,
   invalidJsonLabel: "invalid JSON",
 });
-assert.equal(controller.memberProviderParamsEditorState({ providerParams: null }).text, "");
-assert.deepEqual(controller.memberProviderParamsPatch('{"thinking_budget":4096}'), {
+assert.deepEqual(controller.memberProviderParamsEditorState({ providerParams: { top_k: 20 } }, {
+  ...hydratedCatalogs.agentDetailView,
+  providerParamsLabel: "Provider settings",
+  providerParamsPlaceholder: '{"top_k":20}',
+  providerParamsRows: 6,
+  providerParamsInvalidJsonLabel: "bad JSON",
+}), {
+  label: "Provider settings",
+  text: '{\n  "top_k": 20\n}',
+  placeholder: '{"top_k":20}',
+  rows: 6,
+  invalidJsonLabel: "bad JSON",
+});
+assert.equal(controller.memberProviderParamsEditorState({ providerParams: null }, hydratedCatalogs.agentDetailView).text, "");
+assert.deepEqual(controller.memberProviderParamsPatch('{"thinking_budget":4096}', hydratedCatalogs.agentDetailView), {
   ok: true,
   patch: { providerParams: { thinking_budget: 4096 } },
   error: "",
 });
-assert.deepEqual(controller.memberProviderParamsPatch(""), {
+assert.deepEqual(controller.memberProviderParamsPatch("", hydratedCatalogs.agentDetailView), {
   ok: true,
   patch: { providerParams: null },
   error: "",
 });
-assert.equal(controller.memberProviderParamsPatch("[]").ok, false);
-assert.equal(controller.memberProviderParamsPatch("{").ok, false);
+assert.deepEqual(controller.memberProviderParamsPatch("[]", {
+  ...hydratedCatalogs.agentDetailView,
+  providerParamsObjectRequiredError: "provider settings must be an object",
+}), {
+  ok: false,
+  patch: null,
+  error: "provider settings must be an object",
+});
+assert.equal(controller.memberProviderParamsPatch("{", hydratedCatalogs.agentDetailView).ok, false);
 
 assert.deepEqual(controller.schemaDefinitionsFromAgentDefinition(agentDefinition), [{
   id: "ReviewArtifact",
@@ -3722,6 +3752,11 @@ const agentEditorState = controller.agentEditorControlState({
     backendDefinitionDefaultLabel: "use definition backend",
     inlinePeerNotificationsLabel: "Inline notifications",
     inlinePeerNotificationsPlaceholder: "default",
+    providerParamsLabel: "Provider settings",
+    providerParamsPlaceholder: '{"top_k":20}',
+    providerParamsRows: 6,
+    providerParamsInvalidJsonLabel: "bad JSON",
+    providerParamsObjectRequiredError: "provider settings must be an object",
     systemPromptTitle: "PEER DESCRIPTION",
     applySkeletonLabel: "SKELETON",
     applySkeletonTitle: "Apply skeleton",

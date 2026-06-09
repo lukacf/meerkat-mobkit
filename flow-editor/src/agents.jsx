@@ -337,7 +337,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
                   onChange={e => change(window.MobKitFlowController.memberMaxInlinePeerNotificationsPatch(e.target.value))}
                 />
               </div>
-              <ProviderParamsEditor member={member} change={change} />
+              <ProviderParamsEditor member={member} change={change} agentDetailView={agentDetailView} />
                 </>
               )}
             </div>
@@ -717,8 +717,8 @@ function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contr
   );
 }
 
-function ProviderParamsEditor({ member, change }) {
-  const paramsState = window.MobKitFlowController.memberProviderParamsEditorState(member);
+function ProviderParamsEditor({ member, change, agentDetailView = null }) {
+  const paramsState = window.MobKitFlowController.memberProviderParamsEditorState(member, agentDetailView);
   const [draft, setDraft] = React.useState(paramsState.text);
   const [error, setError] = React.useState("");
   React.useEffect(() => {
@@ -727,7 +727,7 @@ function ProviderParamsEditor({ member, change }) {
   }, [member.id, paramsState.text]);
   const commit = (next) => {
     setDraft(next);
-    const result = window.MobKitFlowController.memberProviderParamsPatch(next);
+    const result = window.MobKitFlowController.memberProviderParamsPatch(next, agentDetailView);
     if (!result.ok) {
       setError(result.error || paramsState.invalidJsonLabel);
       return;
