@@ -266,46 +266,38 @@ function App() {
   }, [flow, studio.edges, studio.instances, studio.members, studio.schemas, markDraft]);
 
   React.useEffect(() => {
-    if (!window.MobKitFlowController?.reconcileMemberSkillRefs) return;
-    studio.setMembers((current) => window.MobKitFlowController.reconcileMemberSkillRefs(
-      current,
-      studio.skillRealms,
-      { strictEmpty: !!catalogs.contractMeta.loaded },
-    ));
-  }, [studio.members, studio.skillRealms, catalogs.contractMeta.loaded]);
-
-  React.useEffect(() => {
-    if (!window.MobKitFlowController?.reconcileDeploySettingsWithContract) return;
-    setDeploySettings((current) => window.MobKitFlowController.reconcileDeploySettingsWithContract(
-      current,
-      contract,
-      catalogs.models,
-      { strictEmptyModels: !!catalogs.contractMeta.loaded },
-    ));
-  }, [contract, catalogs.models, catalogs.contractMeta.loaded]);
-
-  React.useEffect(() => {
-    if (!window.MobKitFlowController?.reconcileMembersWithContract) return;
-    studio.setMembers((current) => window.MobKitFlowController.reconcileMembersWithContract(
-      current,
-      contract,
+    const result = window.MobKitFlowController.reconcileAuthoringWithContract({
+      members: studio.members,
+      skillRealms: studio.skillRealms,
       deploySettings,
-      catalogs.models,
-      catalogs.toolCatalog,
-      {
-        strictEmptyModels: !!catalogs.contractMeta.loaded,
-        strictEmptyTools: !!catalogs.contractMeta.loaded,
-      },
-    ));
-  }, [studio.members, contract, deploySettings, catalogs.models, catalogs.toolCatalog, catalogs.contractMeta.loaded]);
-
-  React.useEffect(() => {
-    if (!window.MobKitFlowController?.reconcileMobSettingsWithContract) return;
-    setMobSettings((current) => window.MobKitFlowController.reconcileMobSettingsWithContract(
-      current,
+      mobSettings,
+      flow,
+      instances: studio.instances,
+      edges: studio.edges,
       contract,
-    ));
-  }, [contract]);
+      modelCatalog: catalogs.models,
+      toolCatalog: catalogs.toolCatalog,
+      contractLoaded: !!catalogs.contractMeta.loaded,
+    });
+    if (result.members !== studio.members) studio.setMembers(result.members);
+    if (result.deploySettings !== deploySettings) setDeploySettings(result.deploySettings);
+    if (result.flow !== flow) setFlow(result.flow);
+    if (result.instances !== studio.instances) studio.setInstances(result.instances);
+    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    if (result.mobSettings !== mobSettings) setMobSettings(result.mobSettings);
+  }, [
+    studio.members,
+    studio.skillRealms,
+    deploySettings,
+    mobSettings,
+    flow,
+    studio.instances,
+    studio.edges,
+    contract,
+    catalogs.models,
+    catalogs.toolCatalog,
+    catalogs.contractMeta.loaded,
+  ]);
 
   const selectInstance = (id) => setSelection({ kind: "instance", id });
   const selectEdge = (id) => setSelection({ kind: "edge", id });

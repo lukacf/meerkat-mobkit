@@ -2756,6 +2756,60 @@
     return { ...source, backendDefault: "" };
   }
 
+  function reconcileAuthoringWithContract({
+    members,
+    skillRealms,
+    deploySettings,
+    mobSettings,
+    flow,
+    instances,
+    edges,
+    contract,
+    modelCatalog,
+    toolCatalog,
+    contractLoaded = false,
+  } = {}) {
+    const strictEmpty = !!contractLoaded;
+    let nextMembers = reconcileMemberSkillRefs(
+      members,
+      skillRealms,
+      { strictEmpty },
+    );
+    const nextDeploySettings = reconcileDeploySettingsWithContract(
+      deploySettings,
+      contract,
+      modelCatalog,
+      { strictEmptyModels: strictEmpty },
+    );
+    nextMembers = reconcileMembersWithContract(
+      nextMembers,
+      contract,
+      nextDeploySettings,
+      modelCatalog,
+      toolCatalog,
+      {
+        strictEmptyModels: strictEmpty,
+        strictEmptyTools: strictEmpty,
+      },
+    );
+    const authoring = reconcileAuthoringForMembers({
+      flow,
+      instances,
+      edges,
+      mobSettings,
+      previousMembers: members,
+      members: nextMembers,
+    });
+    return {
+      members: nextMembers,
+      deploySettings: nextDeploySettings,
+      flow: authoring.flow,
+      instances: authoring.instances,
+      edges: authoring.edges,
+      mobSettings: reconcileMobSettingsWithContract(authoring.mobSettings, contract),
+    };
+  }
+
   function reconcileStringField(source, write, key, values) {
     const allowed = contractStringValues(values);
     if (!allowed.length) return;
@@ -10144,6 +10198,7 @@
     reconcileFlowStepToolScopes,
     reconcileGraphStepToolScopes,
     reconcileAuthoringForMembers,
+    reconcileAuthoringWithContract,
     reconcileMemberSkillRefs,
     mobSettingsPatch,
     reconcileDeploySettingsWithContract,

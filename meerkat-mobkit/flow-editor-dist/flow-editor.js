@@ -2789,6 +2789,60 @@ window.MOBKIT_BOOT = {
     return { ...source, backendDefault: "" };
   }
 
+  function reconcileAuthoringWithContract({
+    members,
+    skillRealms,
+    deploySettings,
+    mobSettings,
+    flow,
+    instances,
+    edges,
+    contract,
+    modelCatalog,
+    toolCatalog,
+    contractLoaded = false,
+  } = {}) {
+    const strictEmpty = !!contractLoaded;
+    let nextMembers = reconcileMemberSkillRefs(
+      members,
+      skillRealms,
+      { strictEmpty },
+    );
+    const nextDeploySettings = reconcileDeploySettingsWithContract(
+      deploySettings,
+      contract,
+      modelCatalog,
+      { strictEmptyModels: strictEmpty },
+    );
+    nextMembers = reconcileMembersWithContract(
+      nextMembers,
+      contract,
+      nextDeploySettings,
+      modelCatalog,
+      toolCatalog,
+      {
+        strictEmptyModels: strictEmpty,
+        strictEmptyTools: strictEmpty,
+      },
+    );
+    const authoring = reconcileAuthoringForMembers({
+      flow,
+      instances,
+      edges,
+      mobSettings,
+      previousMembers: members,
+      members: nextMembers,
+    });
+    return {
+      members: nextMembers,
+      deploySettings: nextDeploySettings,
+      flow: authoring.flow,
+      instances: authoring.instances,
+      edges: authoring.edges,
+      mobSettings: reconcileMobSettingsWithContract(authoring.mobSettings, contract),
+    };
+  }
+
   function reconcileStringField(source, write, key, values) {
     const allowed = contractStringValues(values);
     if (!allowed.length) return;
@@ -10177,6 +10231,7 @@ window.MOBKIT_BOOT = {
     reconcileFlowStepToolScopes,
     reconcileGraphStepToolScopes,
     reconcileAuthoringForMembers,
+    reconcileAuthoringWithContract,
     reconcileMemberSkillRefs,
     mobSettingsPatch,
     reconcileDeploySettingsWithContract,
@@ -12833,43 +12888,38 @@ function App() {
     if (edgesChanged) studio.setEdges(result.edges);
   }, [flow, studio.edges, studio.instances, studio.members, studio.schemas, markDraft]);
   React.useEffect(() => {
-    if (!window.MobKitFlowController?.reconcileMemberSkillRefs) return;
-    studio.setMembers((current) => window.MobKitFlowController.reconcileMemberSkillRefs(
-      current,
-      studio.skillRealms,
-      { strictEmpty: !!catalogs.contractMeta.loaded }
-    ));
-  }, [studio.members, studio.skillRealms, catalogs.contractMeta.loaded]);
-  React.useEffect(() => {
-    if (!window.MobKitFlowController?.reconcileDeploySettingsWithContract) return;
-    setDeploySettings((current) => window.MobKitFlowController.reconcileDeploySettingsWithContract(
-      current,
-      contract,
-      catalogs.models,
-      { strictEmptyModels: !!catalogs.contractMeta.loaded }
-    ));
-  }, [contract, catalogs.models, catalogs.contractMeta.loaded]);
-  React.useEffect(() => {
-    if (!window.MobKitFlowController?.reconcileMembersWithContract) return;
-    studio.setMembers((current) => window.MobKitFlowController.reconcileMembersWithContract(
-      current,
-      contract,
+    const result = window.MobKitFlowController.reconcileAuthoringWithContract({
+      members: studio.members,
+      skillRealms: studio.skillRealms,
       deploySettings,
-      catalogs.models,
-      catalogs.toolCatalog,
-      {
-        strictEmptyModels: !!catalogs.contractMeta.loaded,
-        strictEmptyTools: !!catalogs.contractMeta.loaded
-      }
-    ));
-  }, [studio.members, contract, deploySettings, catalogs.models, catalogs.toolCatalog, catalogs.contractMeta.loaded]);
-  React.useEffect(() => {
-    if (!window.MobKitFlowController?.reconcileMobSettingsWithContract) return;
-    setMobSettings((current) => window.MobKitFlowController.reconcileMobSettingsWithContract(
-      current,
-      contract
-    ));
-  }, [contract]);
+      mobSettings,
+      flow,
+      instances: studio.instances,
+      edges: studio.edges,
+      contract,
+      modelCatalog: catalogs.models,
+      toolCatalog: catalogs.toolCatalog,
+      contractLoaded: !!catalogs.contractMeta.loaded
+    });
+    if (result.members !== studio.members) studio.setMembers(result.members);
+    if (result.deploySettings !== deploySettings) setDeploySettings(result.deploySettings);
+    if (result.flow !== flow) setFlow(result.flow);
+    if (result.instances !== studio.instances) studio.setInstances(result.instances);
+    if (result.edges !== studio.edges) studio.setEdges(result.edges);
+    if (result.mobSettings !== mobSettings) setMobSettings(result.mobSettings);
+  }, [
+    studio.members,
+    studio.skillRealms,
+    deploySettings,
+    mobSettings,
+    flow,
+    studio.instances,
+    studio.edges,
+    contract,
+    catalogs.models,
+    catalogs.toolCatalog,
+    catalogs.contractMeta.loaded
+  ]);
   const selectInstance = (id) => setSelection({ kind: "instance", id });
   const selectEdge = (id) => setSelection({ kind: "edge", id });
   const clearSelection = () => setSelection({ kind: null, id: null });

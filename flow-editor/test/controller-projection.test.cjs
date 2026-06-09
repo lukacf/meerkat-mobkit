@@ -3223,6 +3223,84 @@ assert.deepEqual(aggregateMemberReconcile.edges.map((edge) => edge.id), ["keep_j
 assert.equal(aggregateMemberReconcile.mobSettings.orchestrator, "reviewer");
 assert.deepEqual(aggregateMemberReconcile.mobSettings.roleWiring, []);
 
+const aggregateContractReconcile = controller.reconcileAuthoringWithContract({
+  contractLoaded: true,
+  contract: {
+    deploy_settings: {
+      command: "rkat mob deploy",
+      surfaces: ["cli"],
+      trust_policies: ["permissive"],
+      realm_backends: ["sqlite"],
+    },
+    mob_definition: {
+      runtime_modes: ["turn_driven"],
+      profile_binding: ["inline"],
+      profile_backends: ["session"],
+    },
+  },
+  modelCatalog: [{ id: "gpt-5.5", label: "GPT-5.5" }],
+  toolCatalog: [{ id: "shell", label: "Shell" }],
+  skillRealms: [{ id: "main", skills: [{ id: "mob.review" }] }],
+  deploySettings: {
+    command: "wrong",
+    surface: "desktop",
+    trustPolicy: "strict",
+    realmBackend: "memory",
+    model: "bad-model",
+  },
+  members: [{
+    id: "m_worker",
+    name: "Worker",
+    role: "worker",
+    profileBinding: "realm",
+    runtimeMode: "autonomous_host",
+    backend: "external",
+    model: "bad-model",
+    tools: ["shell", "git"],
+    skills: ["mob.review", "missing.skill"],
+  }],
+  mobSettings: {
+    orchestrator: "worker",
+    backendDefault: "external",
+    roleWiring: [{ a: "worker", b: "worker" }],
+  },
+  flow: {
+    name: "contract-reconcile",
+    steps: [{ id: "work", type: "member", role: "m_worker", allowedTools: ["shell", "git"], blockedTools: ["git"] }],
+  },
+  instances: [{ id: "i_worker", memberId: "m_worker", allowedTools: ["shell", "git"], blockedTools: ["git"] }],
+  edges: [],
+});
+assert.deepEqual(aggregateContractReconcile.deploySettings, {
+  command: "rkat mob deploy",
+  surface: "",
+  trustPolicy: "",
+  model: "",
+  maxDuration: "",
+  maxToolCalls: null,
+  maxTotalTokens: null,
+  isolated: false,
+  realm: "",
+  instance: "",
+  realmBackend: "",
+  contextRoot: "",
+  stateRoot: "",
+  userConfigRoot: "",
+  prompt: "",
+});
+assert.deepEqual(aggregateContractReconcile.members[0].skills, ["mob.review"]);
+assert.deepEqual(aggregateContractReconcile.members[0].tools, ["shell"]);
+assert.equal(aggregateContractReconcile.members[0].profileBinding, "");
+assert.equal(aggregateContractReconcile.members[0].runtimeMode, "");
+assert.equal(aggregateContractReconcile.members[0].backend, "");
+assert.equal(aggregateContractReconcile.members[0].model, "");
+assert.deepEqual(aggregateContractReconcile.flow.steps[0].allowedTools, ["shell"]);
+assert.deepEqual(aggregateContractReconcile.flow.steps[0].blockedTools, []);
+assert.deepEqual(aggregateContractReconcile.instances[0].allowedTools, ["shell"]);
+assert.deepEqual(aggregateContractReconcile.instances[0].blockedTools, []);
+assert.equal(aggregateContractReconcile.mobSettings.backendDefault, "");
+assert.equal(aggregateContractReconcile.mobSettings.orchestrator, "worker");
+
 const launchSourceFlow = controller.reconcileFlowLaunchSources({
   name: "launch-source-proof",
   steps: [
