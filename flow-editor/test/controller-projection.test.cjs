@@ -4789,6 +4789,19 @@ assert.deepEqual(controller.diagnosticsToRows({
   sub: "MobKit source",
   meta: "rkat mob validate",
 }]);
+assert.deepEqual(controller.diagnosticsToRows({
+  ok: true,
+  display_rows: [
+    { kind: "ok", head: "server omitted glyph" },
+    null,
+  ],
+}), [{
+  kind: "ok",
+  glyph: "",
+  head: "server omitted glyph",
+  sub: "",
+  meta: "",
+}]);
 
 assert.deepEqual(controller.diagnosticsToRows(null), []);
 assert.deepEqual(controller.diagnosticsToRows({}), []);
@@ -4813,6 +4826,15 @@ assert.deepEqual(controller.deployResultToRows({
   head: "server deploy row",
   sub: "rkat mob deploy",
   meta: "/tmp/example.mobpack",
+}]);
+assert.deepEqual(controller.deployResultToRows({
+  display_rows: [{ glyph: "△", head: "server omitted kind" }],
+}), [{
+  kind: "",
+  glyph: "△",
+  head: "server omitted kind",
+  sub: "",
+  meta: "",
 }]);
 
 assert.deepEqual(controller.deployResultToRows({

@@ -8548,28 +8548,28 @@ window.MOBKIT_BOOT = {
 
   function diagnosticsToRows(validation) {
     if (Array.isArray(validation?.display_rows)) {
-      return validation.display_rows.map((row) => ({
-        kind: row.kind || "warn",
-        glyph: row.glyph || (row.kind === "crit" ? "!" : row.kind === "ok" ? "✓" : "△"),
-        head: row.head || "",
-        sub: row.sub || "",
-        meta: row.meta || "",
-      }));
+      return apiDisplayRows(validation.display_rows);
     }
     return [];
   }
 
   function deployResultToRows(result) {
     if (Array.isArray(result?.display_rows)) {
-      return result.display_rows.map((row) => ({
-        kind: row.kind || "warn",
-        glyph: row.glyph || (row.kind === "crit" ? "!" : row.kind === "ok" ? "✓" : "△"),
-        head: row.head || "",
-        sub: row.sub || "",
-        meta: row.meta || "",
-      }));
+      return apiDisplayRows(result.display_rows);
     }
     return [];
+  }
+
+  function apiDisplayRows(rows) {
+    return (Array.isArray(rows) ? rows : [])
+      .filter((row) => row && typeof row === "object")
+      .map((row) => ({
+        kind: String(row.kind || ""),
+        glyph: String(row.glyph || ""),
+        head: String(row.head || ""),
+        sub: String(row.sub || ""),
+        meta: String(row.meta || ""),
+      }));
   }
 
   function validationSheetState(results, options = {}) {
