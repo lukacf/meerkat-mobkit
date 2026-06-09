@@ -496,6 +496,7 @@ function App() {
     const replacement = buildAuthoringProjection(overrides);
     const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, {
       type: operationType,
+      ...(overrides.operation || {}),
       document: replacement.document,
       selection: overrides.selection || null,
     });

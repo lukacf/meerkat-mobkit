@@ -71,7 +71,7 @@ async function assertAuthoringCapabilities() {
     throw new Error(`flow editor deploy command must be rkat mob deploy: ${JSON.stringify(authoring)}`);
   }
   const operations = array(authoring.operations, "authoring.operations");
-  for (const operationType of ["delete_member", "rename_schema_field", "delete_schema", "update_deploy_settings"]) {
+  for (const operationType of ["delete_member", "rename_schema_field", "delete_schema", "add_input_param", "rename_input_param", "delete_input_param", "update_deploy_settings"]) {
     const operation = operations.find((candidate) => candidate?.type === operationType);
     if (!operation) {
       throw new Error(`flow editor authoring capabilities missing operation ${operationType}: ${JSON.stringify(operations)}`);
@@ -1447,6 +1447,91 @@ async function validateNamedProjectedOperations(catalogs) {
   };
 }
 
+async function validateInputParamOperations(catalogs) {
+  const document = JSON.parse(JSON.stringify(catalogs.blank_mobpack.document));
+  document.members = [{
+    id: "m_worker",
+    name: "worker",
+    role: "worker",
+    profileBinding: "inline",
+    runtimeMode: "turn_driven",
+    model: "gpt-5.5",
+    tools: [],
+    skills: [],
+  }];
+  document.flow = {
+    id: "main",
+    steps: [
+      {
+        type: "input",
+        id: "input",
+        task: "Route the work.",
+        inputParams: [{ id: "p1", name: "route", type: "enum", required: true, enumValues: ["code", "docs"] }],
+        fields: "route: enum",
+      },
+      {
+        type: "branch",
+        id: "branch_route",
+        branches: [{
+          cond: { namespace: "params", stepId: "params", field: "route", op: "==", val: "code" },
+          condition: "params.route == code",
+          steps: [{ type: "member", id: "worker_step", role: "m_worker" }],
+        }],
+      },
+    ],
+  };
+  document.instances = [
+    { id: "input", kind: "source" },
+    { id: "worker", kind: "member", memberId: "m_worker" },
+  ];
+  document.edges = [{
+    id: "edge_route",
+    from: "input",
+    to: "worker",
+    kind: "cond",
+    cond: { var: "params.route", op: "==", val: "code" },
+    label: "params.route == code",
+  }];
+
+  const added = await rpc("mobkit/mobpacks/apply_operation", {
+    document,
+    operation: {
+      type: "add_input_param",
+      step_id: "input",
+      param: { id: "p2", name: "priority", type: "string", required: false, description: "" },
+    },
+  });
+  const renamed = await rpc("mobkit/mobpacks/apply_operation", {
+    document: added.document,
+    operation: {
+      type: "rename_input_param",
+      step_id: "input",
+      param_id: "p1",
+      new_name: "kind",
+    },
+  });
+  if (renamed.document.flow.steps[1].branches[0].cond.field !== "kind" || renamed.document.edges[0].cond.var !== "params.kind") {
+    throw new Error(`input param rename operation did not rewrite references: ${JSON.stringify(renamed.document)}`);
+  }
+  const deleted = await rpc("mobkit/mobpacks/apply_operation", {
+    document: renamed.document,
+    operation: {
+      type: "delete_input_param",
+      step_id: "input",
+      param_id: "p1",
+    },
+  });
+  if (deleted.document.edges[0].cond !== null || Object.keys(deleted.document.flow.steps[1].branches[0].cond || {}).length !== 0) {
+    throw new Error(`input param delete operation did not clear references: ${JSON.stringify(deleted.document)}`);
+  }
+  return {
+    addedFields: added.document.flow.steps[0].fields,
+    renamedField: renamed.document.flow.steps[1].branches[0].cond.field,
+    deletedEdgeCond: deleted.document.edges[0].cond,
+    operations: [added.operation, renamed.operation, deleted.operation],
+  };
+}
+
 (async () => {
   run("rkat", ["mob", "--help"]);
 
@@ -1650,6 +1735,7 @@ async function validateNamedProjectedOperations(catalogs) {
     customDeploySettings: await validateCustomDeploySettings(dir),
     documentBackedDeployPreview: await validateDocumentBackedDeployPreview(sample.document),
     namedProjectedOperations: await validateNamedProjectedOperations(catalogs),
+    inputParamOperations: await validateInputParamOperations(catalogs),
     deploy: null,
   };
 

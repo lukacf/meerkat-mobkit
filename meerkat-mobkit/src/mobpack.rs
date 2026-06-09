@@ -953,6 +953,38 @@ pub fn mobpack_authoring_operations() -> Value {
             "projection_document_supported": true
         },
         {
+            "type": "add_input_param",
+            "plane": "basic",
+            "authority": "mobkit",
+            "requires": ["step_id", "param"],
+            "mutates": ["document.flow"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "update_input_param",
+            "plane": "basic",
+            "authority": "mobkit",
+            "requires": ["step_id", "param_id", "patch"],
+            "mutates": ["document.flow", "document.edges"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "rename_input_param",
+            "plane": "basic",
+            "authority": "mobkit",
+            "requires": ["step_id", "param_id", "new_name"],
+            "mutates": ["document.flow", "document.edges"],
+            "projection_document_supported": true
+        },
+        {
+            "type": "delete_input_param",
+            "plane": "basic",
+            "authority": "mobkit",
+            "requires": ["step_id", "param_id"],
+            "mutates": ["document.flow", "document.edges"],
+            "projection_document_supported": true
+        },
+        {
             "type": "insert_flow_step",
             "plane": "basic",
             "authority": "mobkit_projection",
@@ -3058,13 +3090,13 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
         }
         "update_mob_settings" => apply_update_mob_settings_operation(&mut document, operation)?,
         "update_role_wiring" => apply_update_role_wiring_operation(&mut document, operation)?,
+        "add_input_param" => apply_add_input_param_operation(&mut document, operation)?,
+        "update_input_param" => apply_update_input_param_operation(&mut document, operation)?,
+        "rename_input_param" => apply_rename_input_param_operation(&mut document, operation)?,
+        "delete_input_param" => apply_delete_input_param_operation(&mut document, operation)?,
         "insert_flow_step"
         | "update_flow_step"
         | "delete_flow_step"
-        | "add_input_param"
-        | "update_input_param"
-        | "rename_input_param"
-        | "delete_input_param"
         | "insert_graph_node"
         | "update_graph_node"
         | "move_graph_node"
@@ -3638,6 +3670,28 @@ fn operation_field_id(operation: &serde_json::Map<String, Value>) -> Result<Stri
         .ok_or_else(|| "MobKit authoring operation requires field_id".to_string())
 }
 
+fn operation_step_id(operation: &serde_json::Map<String, Value>) -> Result<String, String> {
+    operation
+        .get("step_id")
+        .or_else(|| operation.get("stepId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| "MobKit authoring operation requires step_id".to_string())
+}
+
+fn operation_param_id(operation: &serde_json::Map<String, Value>) -> Result<String, String> {
+    operation
+        .get("param_id")
+        .or_else(|| operation.get("paramId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| "MobKit authoring operation requires param_id".to_string())
+}
+
 fn schema_index_by_id(schemas: &Value, schema_id: &str) -> Option<usize> {
     schemas
         .as_array()
@@ -4057,6 +4111,571 @@ fn rewrite_schema_field_references_in_edges(
         } else {
             let next_path = format!("steps.{step_id}.{new_name}");
             cond_object.insert("var".to_string(), Value::String(next_path));
+        }
+    }
+}
+
+fn flow_step_mut_by_id<'a>(flow: &'a mut Value, step_id: &str) -> Option<&'a mut Value> {
+    let path = {
+        let steps = flow.get("steps")?.as_array()?;
+        let mut path = Vec::new();
+        if !find_step_path_in_steps(steps, step_id, &mut path) {
+            return None;
+        }
+        path
+    };
+    let steps = flow.get_mut("steps")?.as_array_mut()?;
+    step_mut_by_path(steps, &path)
+}
+
+#[derive(Clone, Copy)]
+enum StepPathSegment {
+    Index(usize),
+    Steps,
+    Branch(usize),
+    Fallback,
+}
+
+fn find_step_path_in_steps(
+    steps: &[Value],
+    step_id: &str,
+    path: &mut Vec<StepPathSegment>,
+) -> bool {
+    for (index, step) in steps.iter().enumerate() {
+        path.push(StepPathSegment::Index(index));
+        if step
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == step_id)
+        {
+            return true;
+        }
+        if let Some(nested) = step.get("steps").and_then(Value::as_array) {
+            path.push(StepPathSegment::Steps);
+            if find_step_path_in_steps(nested, step_id, path) {
+                return true;
+            }
+            path.pop();
+        }
+        if let Some(branches) = step.get("branches").and_then(Value::as_array) {
+            for (branch_index, branch) in branches.iter().enumerate() {
+                if let Some(branch_steps) = branch.get("steps").and_then(Value::as_array) {
+                    path.push(StepPathSegment::Branch(branch_index));
+                    path.push(StepPathSegment::Steps);
+                    if find_step_path_in_steps(branch_steps, step_id, path) {
+                        return true;
+                    }
+                    path.pop();
+                    path.pop();
+                }
+            }
+        }
+        if let Some(fallback) = step.get("fallback").and_then(Value::as_array) {
+            path.push(StepPathSegment::Fallback);
+            if find_step_path_in_steps(fallback, step_id, path) {
+                return true;
+            }
+            path.pop();
+        }
+        path.pop();
+    }
+    false
+}
+
+fn step_mut_by_path<'a>(steps: &'a mut [Value], path: &[StepPathSegment]) -> Option<&'a mut Value> {
+    let (StepPathSegment::Index(index), rest) = path.split_first()? else {
+        return None;
+    };
+    let step = steps.get_mut(*index)?;
+    let Some((segment, tail)) = rest.split_first() else {
+        return Some(step);
+    };
+    match segment {
+        StepPathSegment::Steps => {
+            let nested = step.get_mut("steps")?.as_array_mut()?;
+            step_mut_by_path(nested, tail)
+        }
+        StepPathSegment::Branch(branch_index) => {
+            let (StepPathSegment::Steps, branch_tail) = tail.split_first()? else {
+                return None;
+            };
+            let branches = step.get_mut("branches")?.as_array_mut()?;
+            let branch_steps = branches
+                .get_mut(*branch_index)?
+                .get_mut("steps")?
+                .as_array_mut()?;
+            step_mut_by_path(branch_steps, branch_tail)
+        }
+        StepPathSegment::Fallback => {
+            let fallback = step.get_mut("fallback")?.as_array_mut()?;
+            step_mut_by_path(fallback, tail)
+        }
+        StepPathSegment::Index(_) => None,
+    }
+}
+
+fn input_params_mut_for_step<'a>(
+    step: &'a mut Value,
+    step_id: &str,
+) -> Result<&'a mut Vec<Value>, String> {
+    if !step.get("inputParams").is_some_and(Value::is_array) {
+        step["inputParams"] = Value::Array(Vec::new());
+    }
+    step.get_mut("inputParams")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| format!("inputParams is not an array for step {step_id}"))
+}
+
+fn input_param_index(params: &[Value], param_id: &str) -> Option<usize> {
+    params.iter().position(|param| {
+        param
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == param_id)
+    })
+}
+
+fn refresh_input_param_summary(step: &mut Value) {
+    let params = step
+        .get("inputParams")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    step["fields"] = Value::String(input_param_summary(&params));
+}
+
+fn apply_add_input_param_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("step_id")
+            .or_else(|| operation.get("stepId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let step_id = operation_step_id(operation)?;
+    let param = operation
+        .get("param")
+        .cloned()
+        .ok_or_else(|| "add_input_param requires param object".to_string())?;
+    let param_id = param
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "add_input_param requires param.id".to_string())?
+        .to_string();
+    let step = flow_step_mut_by_id(&mut document.flow, &step_id)
+        .ok_or_else(|| format!("flow step not found: {step_id}"))?;
+    let params = input_params_mut_for_step(step, &step_id)?;
+    if input_param_index(params, &param_id).is_some() {
+        return Err(format!("input param already exists: {param_id}"));
+    }
+    params.push(param);
+    refresh_input_param_summary(step);
+    Ok(json!({ "kind": "step", "id": step_id, "param_id": param_id }))
+}
+
+fn apply_update_input_param_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("step_id")
+            .or_else(|| operation.get("stepId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let step_id = operation_step_id(operation)?;
+    let param_id = operation_param_id(operation)?;
+    let patch = operation
+        .get("patch")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "update_input_param requires patch object".to_string())?;
+    update_input_param(document, &step_id, &param_id, patch)
+}
+
+fn apply_rename_input_param_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("step_id")
+            .or_else(|| operation.get("stepId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let step_id = operation_step_id(operation)?;
+    let param_id = operation_param_id(operation)?;
+    let new_name = operation
+        .get("new_name")
+        .or_else(|| operation.get("newName"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "rename_input_param requires new_name".to_string())?;
+    let mut patch = serde_json::Map::new();
+    patch.insert("name".to_string(), Value::String(new_name.to_string()));
+    update_input_param(document, &step_id, &param_id, &patch)
+}
+
+fn apply_delete_input_param_operation(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    if operation.get("document").is_some()
+        && operation
+            .get("step_id")
+            .or_else(|| operation.get("stepId"))
+            .is_none()
+    {
+        return apply_projected_authoring_document_operation(document, operation);
+    }
+    let step_id = operation_step_id(operation)?;
+    let param_id = operation_param_id(operation)?;
+    let old_name = {
+        let step = flow_step_mut_by_id(&mut document.flow, &step_id)
+            .ok_or_else(|| format!("flow step not found: {step_id}"))?;
+        let params = input_params_mut_for_step(step, &step_id)?;
+        let index = input_param_index(params, &param_id)
+            .ok_or_else(|| format!("input param not found: {param_id}"))?;
+        let old_name = params[index]
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        params.remove(index);
+        refresh_input_param_summary(step);
+        old_name
+    };
+    if !old_name.is_empty() {
+        rewrite_input_param_references(document, &old_name, "");
+    }
+    Ok(json!({ "kind": "step", "id": step_id }))
+}
+
+fn update_input_param(
+    document: &mut MobpackDocument,
+    step_id: &str,
+    param_id: &str,
+    patch: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let (old_name, new_name) = {
+        let step = flow_step_mut_by_id(&mut document.flow, step_id)
+            .ok_or_else(|| format!("flow step not found: {step_id}"))?;
+        let params = input_params_mut_for_step(step, step_id)?;
+        let index = input_param_index(params, param_id)
+            .ok_or_else(|| format!("input param not found: {param_id}"))?;
+        let old_name = params[index]
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let param = params[index]
+            .as_object_mut()
+            .ok_or_else(|| format!("input param is not an object: {param_id}"))?;
+        for (key, value) in patch {
+            if key == "id" {
+                return Err("update_input_param cannot change param id".to_string());
+            }
+            param.insert(key.clone(), value.clone());
+        }
+        let new_name = param
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        refresh_input_param_summary(step);
+        (old_name, new_name)
+    };
+    if !old_name.is_empty() && old_name != new_name {
+        rewrite_input_param_references(document, &old_name, &new_name);
+    } else {
+        clear_unavailable_input_param_conditions(document);
+    }
+    Ok(json!({ "kind": "step", "id": step_id, "param_id": param_id }))
+}
+
+fn input_param_names(flow: &Value) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    if let Some(steps) = flow.get("steps").and_then(Value::as_array) {
+        collect_input_param_names_in_steps(steps, &mut names);
+    }
+    names
+}
+
+fn collect_input_param_names_in_steps(steps: &[Value], names: &mut BTreeSet<String>) {
+    for step in steps {
+        if step.get("type").and_then(Value::as_str) == Some("input") {
+            if let Some(params) = step.get("inputParams").and_then(Value::as_array) {
+                names.extend(params.iter().filter_map(|param| {
+                    param
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(ToString::to_string)
+                }));
+            }
+        }
+        if let Some(nested) = step.get("steps").and_then(Value::as_array) {
+            collect_input_param_names_in_steps(nested, names);
+        }
+        if let Some(branches) = step.get("branches").and_then(Value::as_array) {
+            for branch in branches {
+                if let Some(branch_steps) = branch.get("steps").and_then(Value::as_array) {
+                    collect_input_param_names_in_steps(branch_steps, names);
+                }
+            }
+        }
+        if let Some(fallback) = step.get("fallback").and_then(Value::as_array) {
+            collect_input_param_names_in_steps(fallback, names);
+        }
+    }
+}
+
+fn rewrite_input_param_references(document: &mut MobpackDocument, old_name: &str, new_name: &str) {
+    if let Some(steps) = document.flow.get_mut("steps").and_then(Value::as_array_mut) {
+        rewrite_input_param_references_in_steps(steps, old_name, new_name);
+    }
+    rewrite_input_param_references_in_edges(&mut document.edges, old_name, new_name);
+}
+
+fn rewrite_input_param_references_in_steps(steps: &mut [Value], old_name: &str, new_name: &str) {
+    for step in steps {
+        match step.get("type").and_then(Value::as_str) {
+            Some("repeat") => {
+                if let Some(cond) = step.get_mut("cond") {
+                    rewrite_input_param_condition(cond, old_name, new_name);
+                }
+                if let Some(until) = step.get_mut("until") {
+                    rewrite_input_param_condition_text(until, old_name, new_name);
+                }
+                if let Some(nested) = step.get_mut("steps").and_then(Value::as_array_mut) {
+                    rewrite_input_param_references_in_steps(nested, old_name, new_name);
+                }
+            }
+            Some("branch") => {
+                if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+                    for branch in branches {
+                        if let Some(cond) = branch.get_mut("cond") {
+                            rewrite_input_param_condition(cond, old_name, new_name);
+                        }
+                        if let Some(condition) = branch.get_mut("condition") {
+                            rewrite_input_param_condition_text(condition, old_name, new_name);
+                        }
+                        if let Some(branch_steps) =
+                            branch.get_mut("steps").and_then(Value::as_array_mut)
+                        {
+                            rewrite_input_param_references_in_steps(
+                                branch_steps,
+                                old_name,
+                                new_name,
+                            );
+                        }
+                    }
+                }
+                if let Some(fallback) = step.get_mut("fallback").and_then(Value::as_array_mut) {
+                    rewrite_input_param_references_in_steps(fallback, old_name, new_name);
+                }
+            }
+            Some("parallel") => {
+                if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+                    for branch in branches {
+                        if let Some(branch_steps) =
+                            branch.get_mut("steps").and_then(Value::as_array_mut)
+                        {
+                            rewrite_input_param_references_in_steps(
+                                branch_steps,
+                                old_name,
+                                new_name,
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_input_param_condition(cond: &mut Value, old_name: &str, new_name: &str) {
+    let Some(object) = cond.as_object_mut() else {
+        return;
+    };
+    let is_param = object
+        .get("namespace")
+        .and_then(Value::as_str)
+        .is_some_and(|namespace| namespace == "params")
+        || object
+            .get("stepId")
+            .or_else(|| object.get("step_id"))
+            .and_then(Value::as_str)
+            .is_some_and(|step_id| step_id == "params");
+    let field = object
+        .get("field")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !is_param || field != old_name {
+        return;
+    }
+    if new_name.is_empty() {
+        *cond = json!({});
+    } else {
+        object.insert("namespace".to_string(), Value::String("params".to_string()));
+        object.insert("stepId".to_string(), Value::String("params".to_string()));
+        object.insert("field".to_string(), Value::String(new_name.to_string()));
+    }
+}
+
+fn rewrite_input_param_condition_text(text: &mut Value, old_name: &str, new_name: &str) {
+    let Some(raw) = text.as_str() else {
+        return;
+    };
+    let prefix = format!("params.{old_name}");
+    if !raw.trim_start().starts_with(&prefix) {
+        return;
+    }
+    if new_name.is_empty() {
+        *text = Value::String(String::new());
+    } else {
+        *text = Value::String(raw.replacen(&prefix, &format!("params.{new_name}"), 1));
+    }
+}
+
+fn rewrite_input_param_references_in_edges(edges: &mut Value, old_name: &str, new_name: &str) {
+    let Some(edges) = edges.as_array_mut() else {
+        return;
+    };
+    for edge in edges {
+        let Some(cond) = edge.get_mut("cond") else {
+            continue;
+        };
+        let Some(cond_object) = cond.as_object_mut() else {
+            continue;
+        };
+        let path = cond_object
+            .get("var")
+            .or_else(|| cond_object.get("path"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let expected = format!("params.{old_name}");
+        if path != expected {
+            continue;
+        }
+        if new_name.is_empty() {
+            edge["cond"] = Value::Null;
+            edge["label"] = Value::String(String::new());
+        } else {
+            cond_object.insert(
+                "var".to_string(),
+                Value::String(format!("params.{new_name}")),
+            );
+        }
+    }
+}
+
+fn clear_unavailable_input_param_conditions(document: &mut MobpackDocument) {
+    let names = input_param_names(&document.flow);
+    if let Some(steps) = document.flow.get_mut("steps").and_then(Value::as_array_mut) {
+        clear_unavailable_input_param_conditions_in_steps(steps, &names);
+    }
+    clear_unavailable_input_param_conditions_in_edges(&mut document.edges, &names);
+}
+
+fn clear_unavailable_input_param_conditions_in_steps(
+    steps: &mut [Value],
+    names: &BTreeSet<String>,
+) {
+    for step in steps {
+        match step.get("type").and_then(Value::as_str) {
+            Some("repeat") => {
+                if let Some(cond) = step.get_mut("cond") {
+                    clear_unavailable_input_param_condition(cond, names);
+                }
+                if let Some(nested) = step.get_mut("steps").and_then(Value::as_array_mut) {
+                    clear_unavailable_input_param_conditions_in_steps(nested, names);
+                }
+            }
+            Some("branch") => {
+                if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+                    for branch in branches {
+                        if let Some(cond) = branch.get_mut("cond") {
+                            clear_unavailable_input_param_condition(cond, names);
+                        }
+                        if let Some(branch_steps) =
+                            branch.get_mut("steps").and_then(Value::as_array_mut)
+                        {
+                            clear_unavailable_input_param_conditions_in_steps(branch_steps, names);
+                        }
+                    }
+                }
+                if let Some(fallback) = step.get_mut("fallback").and_then(Value::as_array_mut) {
+                    clear_unavailable_input_param_conditions_in_steps(fallback, names);
+                }
+            }
+            Some("parallel") => {
+                if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+                    for branch in branches {
+                        if let Some(branch_steps) =
+                            branch.get_mut("steps").and_then(Value::as_array_mut)
+                        {
+                            clear_unavailable_input_param_conditions_in_steps(branch_steps, names);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn clear_unavailable_input_param_condition(cond: &mut Value, names: &BTreeSet<String>) {
+    let Some(object) = cond.as_object() else {
+        return;
+    };
+    let is_param = object
+        .get("namespace")
+        .and_then(Value::as_str)
+        .is_some_and(|namespace| namespace == "params")
+        || object
+            .get("stepId")
+            .or_else(|| object.get("step_id"))
+            .and_then(Value::as_str)
+            .is_some_and(|step_id| step_id == "params");
+    let field = object
+        .get("field")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if is_param && !field.is_empty() && !names.contains(field) {
+        *cond = json!({});
+    }
+}
+
+fn clear_unavailable_input_param_conditions_in_edges(edges: &mut Value, names: &BTreeSet<String>) {
+    let Some(edges) = edges.as_array_mut() else {
+        return;
+    };
+    for edge in edges {
+        let path = edge
+            .get("cond")
+            .and_then(Value::as_object)
+            .and_then(|cond| cond.get("var").or_else(|| cond.get("path")))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let Some(field) = path.strip_prefix("params.") else {
+            continue;
+        };
+        if !names.contains(field) {
+            edge["cond"] = Value::Null;
+            edge["label"] = Value::String(String::new());
         }
     }
 }
@@ -19204,6 +19823,108 @@ model = "gpt-5.5"
                 .len(),
             0
         );
+    }
+
+    #[test]
+    fn apply_operation_mutates_input_params_without_projected_document() {
+        let mut document = valid_document();
+        document.mob_toml = None;
+        document.members = json!([{
+            "id": "worker",
+            "name": "worker",
+            "role": "worker",
+            "profileBinding": "inline",
+            "runtimeMode": "turn_driven",
+            "model": "gpt-5.5",
+            "tools": []
+        }]);
+        document.flow = json!({
+            "id": "main",
+            "steps": [
+                {
+                    "type": "input",
+                    "id": "input",
+                    "task": "Route the work.",
+                    "inputParams": [
+                        { "id": "p1", "name": "route", "type": "enum", "required": true, "enumValues": ["code", "docs"] }
+                    ],
+                    "fields": "route: enum"
+                },
+                {
+                    "type": "branch",
+                    "id": "branch_route",
+                    "branches": [{
+                        "cond": { "namespace": "params", "stepId": "params", "field": "route", "op": "==", "val": "code" },
+                        "condition": "params.route == code",
+                        "steps": [{ "type": "member", "id": "worker_step", "role": "worker" }]
+                    }]
+                }
+            ]
+        });
+        document.edges = json!([{
+            "id": "edge_route",
+            "from": "input",
+            "to": "worker",
+            "kind": "cond",
+            "cond": { "var": "params.route", "op": "==", "val": "code" },
+            "label": "params.route == code"
+        }]);
+
+        let added = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "add_input_param",
+                "step_id": "input",
+                "param": { "id": "p2", "name": "priority", "type": "string", "required": false, "description": "" }
+            }
+        }))
+        .expect("add input param");
+        assert_eq!(
+            added["document"]["flow"]["steps"][0]["fields"],
+            json!("route: enum, priority: string?")
+        );
+
+        let renamed = apply_mobpack_authoring_operation(&json!({
+            "document": added["document"],
+            "operation": {
+                "type": "rename_input_param",
+                "step_id": "input",
+                "param_id": "p1",
+                "new_name": "kind"
+            }
+        }))
+        .expect("rename input param");
+        assert_eq!(
+            renamed["document"]["flow"]["steps"][1]["branches"][0]["cond"]["field"],
+            json!("kind")
+        );
+        assert_eq!(
+            renamed["document"]["flow"]["steps"][1]["branches"][0]["condition"],
+            json!("params.kind == code")
+        );
+        assert_eq!(
+            renamed["document"]["edges"][0]["cond"]["var"],
+            json!("params.kind")
+        );
+
+        let deleted = apply_mobpack_authoring_operation(&json!({
+            "document": renamed["document"],
+            "operation": {
+                "type": "delete_input_param",
+                "step_id": "input",
+                "param_id": "p1"
+            }
+        }))
+        .expect("delete input param");
+        assert_eq!(
+            deleted["document"]["flow"]["steps"][1]["branches"][0]["cond"],
+            json!({})
+        );
+        assert_eq!(
+            deleted["document"]["flow"]["steps"][1]["branches"][0]["condition"],
+            json!("")
+        );
+        assert_eq!(deleted["document"]["edges"][0]["cond"], Value::Null);
     }
 
     #[test]

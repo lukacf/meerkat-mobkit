@@ -14225,14 +14225,14 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const isFlow = mode === "flow";
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   const canvasView = Math.abs(view.ty) > 1200 ? { ...view, ty: 0 } : view;
-  const commitFlow = (nextFlow, studioPatch = {}, operationType = "update_flow_step") => {
+  const commitFlow = (nextFlow, studioPatch = {}, operationType = "update_flow_step", operation = {}) => {
     if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({ operationType, flow: nextFlow, studio: studioPatch });
+      applyAuthoringReplacement({ operationType, operation, flow: nextFlow, studio: studioPatch });
     } else {
       setFlow(nextFlow);
     }
   };
-  const update = (id, patch, operationType = "update_flow_step") => commitFlow(window.MobKitFlowController.flowStepUpdatePatch(flow, id, patch, { members }), {}, operationType);
+  const update = (id, patch, operationType = "update_flow_step", operation = {}) => commitFlow(window.MobKitFlowController.flowStepUpdatePatch(flow, id, patch, { members }), {}, operationType, operation);
   const selStep = findStep(flow.steps, sel);
   const applyBasicInteraction = (result) => {
     if (!result) return;
@@ -14383,10 +14383,11 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
     const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult);
-    const applyInputCascade = (result, operationType) => {
+    const applyInputCascade = (result, operationType, operation = {}) => {
       if (applyAuthoringReplacement) {
         applyAuthoringReplacement({
           operationType,
+          operation,
           flow: result.flow,
           studio: { edges: result.edges }
         });
@@ -14405,26 +14406,26 @@ function StepInspector({ studio, members, flow, setFlow, step, update, onDelete,
         members: studio?.members || [],
         instances: studio?.instances || [],
         schemas: studio?.schemas || []
-      }, step.id, id, patch, contract), "update_input_param");
+      }, step.id, id, patch, contract), "update_input_param", { step_id: step.id, param_id: id, patch });
     };
     const deleteParam = (id) => {
       applyInputCascade(window.MobKitFlowController.inputParamDeleteCascadePatch({
         flow,
         edges: studio?.edges || []
-      }, step.id, id, contract), "delete_input_param");
+      }, step.id, id, contract), "delete_input_param", { step_id: step.id, param_id: id });
     };
     const renameParam = (id, rawName, previousName) => {
       applyInputCascade(window.MobKitFlowController.inputParamRenameCascadePatch({
         flow,
         edges: studio?.edges || []
-      }, step.id, id, rawName, previousName, contract), "rename_input_param");
+      }, step.id, id, rawName, previousName, contract), "rename_input_param", { step_id: step.id, param_id: id, new_name: rawName });
     };
     const addParam = () => {
       const result = window.MobKitFlowController.inputParamAddPatch(params, contract);
       setParamAddResult(result);
       if (result.ok === false) return;
       setParamAddResult(null);
-      update(step.id, result.patch, "add_input_param");
+      update(step.id, result.patch, "add_input_param", { step_id: step.id, param: result.param });
     };
     return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: inputState.panelIcon, iconTint: "member", title: inputState.panelTitle, sub: inputState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: inputState.taskLabel }, /* @__PURE__ */ React.createElement("textarea", { className: "field__textarea", rows: 3, placeholder: inputState.taskPlaceholder, value: step.task || "", onChange: (e) => update(step.id, window.MobKitFlowController.flowStepTaskPatch(e.target.value)) })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, inputState.paramsTitle), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: addParam }, inputState.addParamLabel)), paramAddErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, paramAddErrorState.text), /* @__PURE__ */ React.createElement("div", { className: "schema-builder" }, /* @__PURE__ */ React.createElement("div", { className: "schema-builder__header" }, inputState.headerRows.map((row) => /* @__PURE__ */ React.createElement("span", { key: row.key, className: row.className }, row.label))), params.map((param) => /* @__PURE__ */ React.createElement(
       InputParamField,
@@ -15052,6 +15053,7 @@ function App() {
     const replacement = buildAuthoringProjection(overrides);
     const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, {
       type: operationType,
+      ...overrides.operation || {},
       document: replacement.document,
       selection: overrides.selection || null
     });
