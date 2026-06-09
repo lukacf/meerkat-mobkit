@@ -1877,6 +1877,10 @@ window.MOBKIT_BOOT = {
       sourceFileAriaLabel: String(view.source_file_aria_label || "").trim(),
       sourceFileGlyph: String(view.source_file_glyph || "").trim(),
       sourceFileRoleLabel: String(view.source_file_role_label || "").trim(),
+      sourceFileNodeId: String(view.source_file_node_id || "").trim(),
+      sourceFileNodeKind: String(view.source_file_node_kind || "").trim(),
+      sourceFileNodeColOffset: Number(view.source_file_node_col_offset || 0),
+      sourceFileNodeRowOffset: Number(view.source_file_node_row_offset || 0),
       branchConditionFieldPlaceholder: String(view.branch_condition_field_placeholder || "").trim(),
       branchConditionNoOptionsHint: String(view.branch_condition_no_options_hint || "").trim(),
       edgeConditionTitle: String(view.edge_condition_title || "").trim(),
@@ -1920,6 +1924,8 @@ window.MOBKIT_BOOT = {
       && out.graphConditionFieldOptionTemplate
       && out.graphInputParamSourceLabel && out.sourceFileLabel
       && out.sourceFileAriaLabel && out.sourceFileGlyph && out.sourceFileRoleLabel
+      && out.sourceFileNodeId && out.sourceFileNodeKind
+      && Number.isFinite(out.sourceFileNodeColOffset) && Number.isFinite(out.sourceFileNodeRowOffset)
       && out.branchConditionFieldPlaceholder && out.branchConditionNoOptionsHint
       && out.edgeConditionTitle && out.edgeNoConditionOptionsHint && out.edgeOwnerPlaceholder
       && out.edgeFromTitle && out.edgeToTitle && out.edgeRowInstanceLabel
@@ -2017,6 +2023,10 @@ window.MOBKIT_BOOT = {
       sourceFileAriaLabel: String(view?.sourceFileAriaLabel || ""),
       sourceFileGlyph: String(view?.sourceFileGlyph || ""),
       sourceFileRoleLabel: String(view?.sourceFileRoleLabel || ""),
+      sourceFileNodeId: String(view?.sourceFileNodeId || ""),
+      sourceFileNodeKind: String(view?.sourceFileNodeKind || ""),
+      sourceFileNodeColOffset: Number(view?.sourceFileNodeColOffset || 0),
+      sourceFileNodeRowOffset: Number(view?.sourceFileNodeRowOffset || 0),
       branchConditionFieldPlaceholder: String(view?.branchConditionFieldPlaceholder || ""),
       branchConditionNoOptionsHint: String(view?.branchConditionNoOptionsHint || ""),
       edgeConditionTitle: String(view?.edgeConditionTitle || ""),
@@ -6189,7 +6199,7 @@ window.MOBKIT_BOOT = {
     const view = graphCanvasViewState(graphView);
     const isCompact = density === "compact";
     if (inst?.isTerminal) {
-      const isSourceFile = !!inst.isSourceFile || /mob\.toml/i.test([inst.id, inst.label, inst.kind].filter(Boolean).join(" "));
+      const isSourceFile = !!inst.isSourceFile;
       return {
         hidden: false,
         isTerminal: true,
@@ -6252,8 +6262,9 @@ window.MOBKIT_BOOT = {
 
   function graphSourceFileNode({ instances = [], graphView = null } = {}) {
     const view = graphCanvasViewState(graphView);
+    if (!view.sourceFileNodeId || !view.sourceFileNodeKind || !view.sourceFileLabel) return null;
     const sourceInstances = Array.isArray(instances) ? instances : [];
-    if (sourceInstances.some((instance) => instance?.isSourceFile || /mob\.toml/i.test([instance?.id, instance?.label, instance?.kind].filter(Boolean).join(" ")))) {
+    if (sourceInstances.some((instance) => instance?.isSourceFile || String(instance?.id || "") === view.sourceFileNodeId)) {
       return null;
     }
     const positioned = sourceInstances
@@ -6265,14 +6276,14 @@ window.MOBKIT_BOOT = {
       ? Math.min(...positioned.map((instance) => Number(instance.row)))
       : 0;
     return {
-      id: "source_mob_toml",
+      id: view.sourceFileNodeId,
       isTerminal: true,
       isSourceFile: true,
       isGraphAdornment: true,
-      kind: "source",
+      kind: view.sourceFileNodeKind,
       label: view.sourceFileLabel,
-      col: minCol,
-      row: minRow - 1,
+      col: minCol + view.sourceFileNodeColOffset,
+      row: minRow + view.sourceFileNodeRowOffset,
     };
   }
 

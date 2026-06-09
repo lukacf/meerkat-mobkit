@@ -1018,6 +1018,10 @@ pub fn mobpack_schema_response() -> Value {
     editor_graph_view["source_file_aria_label"] = json!("Open mob.toml read-only source editor");
     editor_graph_view["source_file_glyph"] = json!("{ }");
     editor_graph_view["source_file_role_label"] = json!("source file");
+    editor_graph_view["source_file_node_id"] = json!("source_mob_toml");
+    editor_graph_view["source_file_node_kind"] = json!("source");
+    editor_graph_view["source_file_node_col_offset"] = json!(0);
+    editor_graph_view["source_file_node_row_offset"] = json!(-1);
     editor_graph_view["branch_condition_field_placeholder"] = json!("— field —");
     editor_graph_view["branch_condition_no_options_hint"] =
         json!("add input params or an upstream schema field for this condition");
@@ -17375,6 +17379,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_view"]["source_file_role_label"],
             json!("source file")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["source_file_node_id"],
+            json!("source_mob_toml")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["source_file_node_kind"],
+            json!("source")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["source_file_node_col_offset"],
+            json!(0)
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["source_file_node_row_offset"],
+            json!(-1)
         );
         assert_eq!(
             mob_definition["editor_graph_view"]["gate_dispatch_hint"],

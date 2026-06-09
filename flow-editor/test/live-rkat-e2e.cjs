@@ -1469,6 +1469,17 @@ async function validateDocumentBackedDeployPreview(document) {
   if (sourceView.primary_source_path !== "mobkit/mob.toml") {
     throw new Error(`flow editor schema did not expose primary source path: ${JSON.stringify(sourceView)}`);
   }
+  const graphView = schema.mob_definition?.editor_graph_view || {};
+  for (const [key, expected] of Object.entries({
+    source_file_node_id: "source_mob_toml",
+    source_file_node_kind: "source",
+    source_file_node_col_offset: 0,
+    source_file_node_row_offset: -1,
+  })) {
+    if (graphView[key] !== expected) {
+      throw new Error(`flow editor schema did not expose Graph source-file node contract ${key}: ${JSON.stringify(graphView)}`);
+    }
+  }
   const samples = catalogs.sample_mobpacks || [];
   const sample = samples.find((candidate) => candidate.id === sampleId) || samples[0];
   if (!sample?.document) throw new Error("flow editor schema did not return any sample mobpack documents");

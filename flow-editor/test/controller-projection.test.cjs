@@ -1514,6 +1514,10 @@ const hydratedContractAndCatalogFixture = {
       source_file_aria_label: "Open mob.toml read-only source editor",
       source_file_glyph: "{ }",
       source_file_role_label: "source file",
+      source_file_node_id: "source_mob_toml",
+      source_file_node_kind: "source",
+      source_file_node_col_offset: 0,
+      source_file_node_row_offset: -1,
       branch_condition_field_placeholder: "— field —",
       branch_condition_no_options_hint: "add input params or an upstream schema field for this condition",
       edge_condition_title: "CONDITION",
@@ -2138,6 +2142,10 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   sourceFileAriaLabel: "Open mob.toml read-only source editor",
   sourceFileGlyph: "{ }",
   sourceFileRoleLabel: "source file",
+  sourceFileNodeId: "source_mob_toml",
+  sourceFileNodeKind: "source",
+  sourceFileNodeColOffset: 0,
+  sourceFileNodeRowOffset: -1,
   branchConditionFieldPlaceholder: "— field —",
   branchConditionNoOptionsHint: "add input params or an upstream schema field for this condition",
   edgeConditionTitle: "CONDITION",
@@ -2223,6 +2231,10 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   sourceFileAriaLabel: "",
   sourceFileGlyph: "",
   sourceFileRoleLabel: "",
+  sourceFileNodeId: "",
+  sourceFileNodeKind: "",
+  sourceFileNodeColOffset: 0,
+  sourceFileNodeRowOffset: 0,
   branchConditionFieldPlaceholder: "",
   branchConditionNoOptionsHint: "",
   edgeConditionTitle: "",
@@ -8735,7 +8747,7 @@ assert.deepEqual(controller.graphFrameCanvasState({
   labelStyle: { left: 248, top: 52 },
 });
 const terminalSourceState = controller.graphNodeCanvasState({
-  inst: { id: "source_mob_toml", label: "mob.toml", kind: "success", isTerminal: true },
+  inst: { id: "source_mob_toml", label: "mob.toml", kind: "success", isTerminal: true, isSourceFile: true },
   graphView: hydratedCatalogs.graphView,
 });
 assert.equal(terminalSourceState.isSourceFile, true);
@@ -8745,6 +8757,10 @@ assert.equal(terminalSourceState.sourceGlyph, "{ }");
 assert.equal(terminalSourceState.roleLabel, "source file");
 assert.equal(terminalSourceState.title, "mob.toml");
 assert.equal(terminalSourceState.subtitle, "");
+assert.equal(controller.graphNodeCanvasState({
+  inst: { id: "looks_like_source", label: "mob.toml", kind: "success", isTerminal: true },
+  graphView: hydratedCatalogs.graphView,
+}).isSourceFile, false);
 const graphSourceFileNode = controller.graphSourceFileNode({
   instances: graphProjectionInstances,
   graphView: hydratedCatalogs.graphView,
@@ -8761,13 +8777,16 @@ assert.deepEqual(graphSourceFileNode, {
 });
 assert.equal(controller.graphSourceFileNode({
   instances: [{ id: "source_mob_toml", label: "mob.toml", isTerminal: true }],
+  graphView: hydratedCatalogs.graphView,
 }), null);
 assert.deepEqual(controller.graphCanvasInstances({
   instances: graphProjectionInstances,
+  graphView: hydratedCatalogs.graphView,
 }).map((instance) => instance.id), ["source_mob_toml", "n_writer", "n_review", "n_done"]);
 const existingSourceInstances = [{ id: "source_mob_toml", label: "mob.toml", isTerminal: true }];
 assert.equal(controller.graphCanvasInstances({
   instances: existingSourceInstances,
+  graphView: hydratedCatalogs.graphView,
 }), existingSourceInstances);
 assert.deepEqual(controller.graphGateCanvasState({
   inst: { id: "join_1", gateKind: "join", collection: "quorum", quorum: { n: 2, m: 3 } },
