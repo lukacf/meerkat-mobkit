@@ -309,4 +309,49 @@ mod tests {
             "{response:#?}"
         );
     }
+
+    #[test]
+    fn flow_editor_rpc_previews_source_without_exporting_archive_payload() {
+        let catalogs = super::handle_flow_editor_rpc(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: "mobkit/mobpacks/catalogs".to_string(),
+            params: Value::Null,
+        });
+        let sample = catalogs["result"]["sample_mobpacks"]
+            .as_array()
+            .expect("sample mobpacks")
+            .iter()
+            .find(|sample| sample["id"] == "sample_docs_only")
+            .expect("docs sample");
+
+        let response = super::handle_flow_editor_rpc(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(2)),
+            method: "mobkit/mobpacks/source".to_string(),
+            params: json!({ "document": sample["document"].clone() }),
+        });
+
+        assert!(response["error"].is_null(), "{response:#?}");
+        assert_eq!(
+            response["result"]["source"],
+            json!("mobkit/mobpacks/source")
+        );
+        assert!(
+            response["result"].get("content_base64").is_none(),
+            "{response:#?}"
+        );
+        let source_files = response["result"]["source_files"]
+            .as_array()
+            .expect("source files");
+        assert!(
+            source_files
+                .iter()
+                .any(|file| file["path"] == "mobkit/mob.toml"
+                    && file["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("[mob]"))),
+            "{response:#?}"
+        );
+    }
 }

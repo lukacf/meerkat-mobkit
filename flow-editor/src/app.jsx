@@ -546,10 +546,10 @@ function App() {
     }
   };
 
-  const exportCurrentSourceDocument = async (requestToken, projectedDocument = null) => {
+  const renderCurrentSourceDocument = async (requestToken, projectedDocument = null) => {
     const document = projectedDocument || buildDocument();
     const result = await window.MobKitFlowController.sourceDocument(document);
-    const projection = window.MobKitFlowController.sourceDocumentFromExport(document, result, {
+    const projection = window.MobKitFlowController.sourceDocumentFromSourceResult(document, result, {
       sourceView: catalogs.sourceView,
     });
     if (!sourceProjectionIsCurrent(requestToken)) return null;
@@ -571,7 +571,7 @@ function App() {
     try {
       const document = buildDocument();
       requestToken = beginSourceProjection();
-      const nextSourceDocument = await exportCurrentSourceDocument(requestToken, document);
+      const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document);
       if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
       setSourceDocument(nextSourceDocument);
       setSourceOpen(true);
@@ -602,7 +602,7 @@ function App() {
       setInlineSourceSurface(surface);
       setInlineSourceOpen(true);
       setInlineSourceBusy(true);
-      const nextSourceDocument = await exportCurrentSourceDocument(requestToken, document);
+      const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document);
       if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
       setInlineSourceDocument(nextSourceDocument);
     } catch (error) {

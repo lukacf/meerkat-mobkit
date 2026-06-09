@@ -10011,8 +10011,11 @@
     });
   }
 
-  function sourceDocumentFromExport(document, result, options = {}) {
-    const apiSource = String(result?.source || (result?.content_base64 ? "mobkit/mobpacks/export" : "mobkit/mobpacks/source"));
+  function sourceDocumentFromSourceResult(document, result, options = {}) {
+    const apiSource = String(result?.source || "mobkit/mobpacks/source");
+    if (apiSource !== "mobkit/mobpacks/source") {
+      throw new Error(`source preview expected mobkit/mobpacks/source but received ${apiSource}`);
+    }
     const files = Array.isArray(result?.source_files) ? result.source_files : [];
     if (!files.length) throw new Error(`${apiSource} did not return source_files`);
     const mobTomlFile = files.find((file) => String(file?.path || "") === "mobkit/mob.toml");
@@ -11481,7 +11484,7 @@
     validationErrorOutcome,
     exportErrorOutcome,
     importErrorOutcome,
-    sourceDocumentFromExport,
+    sourceDocumentFromSourceResult,
     exportDownloadPayload,
     sourceEditorState,
     sourceFileSelectionTransition,

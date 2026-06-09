@@ -10044,8 +10044,11 @@ window.MOBKIT_BOOT = {
     });
   }
 
-  function sourceDocumentFromExport(document, result, options = {}) {
-    const apiSource = String(result?.source || (result?.content_base64 ? "mobkit/mobpacks/export" : "mobkit/mobpacks/source"));
+  function sourceDocumentFromSourceResult(document, result, options = {}) {
+    const apiSource = String(result?.source || "mobkit/mobpacks/source");
+    if (apiSource !== "mobkit/mobpacks/source") {
+      throw new Error(`source preview expected mobkit/mobpacks/source but received ${apiSource}`);
+    }
     const files = Array.isArray(result?.source_files) ? result.source_files : [];
     if (!files.length) throw new Error(`${apiSource} did not return source_files`);
     const mobTomlFile = files.find((file) => String(file?.path || "") === "mobkit/mob.toml");
@@ -11514,7 +11517,7 @@ window.MOBKIT_BOOT = {
     validationErrorOutcome,
     exportErrorOutcome,
     importErrorOutcome,
-    sourceDocumentFromExport,
+    sourceDocumentFromSourceResult,
     exportDownloadPayload,
     sourceEditorState,
     sourceFileSelectionTransition,
@@ -14547,10 +14550,10 @@ function App() {
       setApiBusy(false);
     }
   };
-  const exportCurrentSourceDocument = async (requestToken, projectedDocument = null) => {
+  const renderCurrentSourceDocument = async (requestToken, projectedDocument = null) => {
     const document2 = projectedDocument || buildDocument();
     const result = await window.MobKitFlowController.sourceDocument(document2);
-    const projection = window.MobKitFlowController.sourceDocumentFromExport(document2, result, {
+    const projection = window.MobKitFlowController.sourceDocumentFromSourceResult(document2, result, {
       sourceView: catalogs.sourceView
     });
     if (!sourceProjectionIsCurrent(requestToken)) return null;
@@ -14571,7 +14574,7 @@ function App() {
     try {
       const document2 = buildDocument();
       requestToken = beginSourceProjection();
-      const nextSourceDocument = await exportCurrentSourceDocument(requestToken, document2);
+      const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document2);
       if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
       setSourceDocument(nextSourceDocument);
       setSourceOpen(true);
@@ -14600,7 +14603,7 @@ function App() {
       setInlineSourceSurface(surface);
       setInlineSourceOpen(true);
       setInlineSourceBusy(true);
-      const nextSourceDocument = await exportCurrentSourceDocument(requestToken, document2);
+      const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document2);
       if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
       setInlineSourceDocument(nextSourceDocument);
     } catch (error) {
