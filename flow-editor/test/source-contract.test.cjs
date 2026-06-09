@@ -113,6 +113,9 @@ assert.match(app, /<Tweaks[\s\S]*modelCatalog=\{catalogs\.models\}/, "deploy set
 assert.match(app, /setDeploySettings\(nextCatalogs\.deployDefaults\)/, "app shell must hydrate deploy defaults from MobKit schema");
 assert.match(app, /setMobSettings\(nextCatalogs\.mobDefaults\)/, "app shell must hydrate mob settings defaults from MobKit schema");
 assert.match(controller, /catalogs:\s*"mobkit\/mobpacks\/catalogs"/, "controller plane must expose the MobKit authoring catalogs RPC");
+assert.match(controller, /function authoringRpcMethodsFromSchema[\s\S]*schema\?\.commands/, "controller plane must derive authoring RPC methods from schema.commands");
+assert.match(controller, /function configureAuthoringMethodsFromSchema[\s\S]*authoringRpcMethodsFromSchema\(schema\)/, "controller plane must configure MobKit authoring methods from the loaded schema contract");
+assert.match(app, /loadSchema\(\)[\s\S]*configureAuthoringMethodsFromSchema\(schema\)[\s\S]*loadCatalogs\(\)/, "app shell must load schema first, then use schema.commands to request dynamic catalogs");
 assert.match(app, /MobKitFlowController\.loadCatalogs\(\)/, "app shell must hydrate dynamic catalogs through mobkit/mobpacks/catalogs");
 assert.match(app, /mobKitCatalogsFromSchema\(schema,\s*CATALOG_BOOT,\s*catalogPayload\)/, "app shell must combine schema contracts with catalog RPC data through the controller plane");
 assert.match(app, /sampleFlowsFromSchema\(catalogPayload\)/, "sample flow templates must hydrate from the MobKit catalogs RPC payload");

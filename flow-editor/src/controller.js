@@ -13,6 +13,15 @@
     deployCommand: "mobkit/mobpacks/deploy_command",
     deploy: "mobkit/mobpacks/deploy",
   };
+  const SCHEMA_COMMAND_KEYS = {
+    schema: "schema",
+    catalogs: "catalogs",
+    validate: "validate",
+    export: "export",
+    import: "import",
+    deployCommand: "deploy_command",
+    deploy: "deploy_rpc",
+  };
   const EMPTY_DEPLOY_SETTINGS = {
     command: "",
     surface: "",
@@ -47,6 +56,7 @@
   const MOB_SETTINGS_PATCH_KEYS = new Set(Object.keys(EMPTY_MOB_SETTINGS));
   const controllerConfig = {
     rpcUrl: "/flow-editor/rpc",
+    rpcMethods: { ...RPC_METHODS },
   };
 
   function configure(options) {
@@ -58,6 +68,27 @@
 
   function rpcPath() {
     return controllerConfig.rpcUrl || "/flow-editor/rpc";
+  }
+
+  function rpcMethod(name) {
+    return controllerConfig.rpcMethods?.[name] || RPC_METHODS[name] || "";
+  }
+
+  function authoringRpcMethodsFromSchema(schema) {
+    const commands = schema?.commands;
+    if (!commands || typeof commands !== "object") return {};
+    const out = {};
+    for (const [name, commandKey] of Object.entries(SCHEMA_COMMAND_KEYS)) {
+      const value = String(commands[commandKey] || "").trim();
+      if (value) out[name] = value;
+    }
+    return out;
+  }
+
+  function configureAuthoringMethodsFromSchema(schema) {
+    const methods = authoringRpcMethodsFromSchema(schema);
+    controllerConfig.rpcMethods = { ...RPC_METHODS, ...methods };
+    return { ...controllerConfig.rpcMethods };
   }
 
   let requestId = 0;
@@ -7066,28 +7097,28 @@
   }
 
   async function loadSchema() {
-    return callRpc(RPC_METHODS.schema, {});
+    return callRpc(rpcMethod("schema"), {});
   }
 
   async function loadCatalogs() {
-    return callRpc(RPC_METHODS.catalogs, {});
+    return callRpc(rpcMethod("catalogs"), {});
   }
 
   async function validateDocument(document) {
-    return callRpc(RPC_METHODS.validate, { document });
+    return callRpc(rpcMethod("validate"), { document });
   }
 
   async function exportDocument(document) {
-    return callRpc(RPC_METHODS.export, { document });
+    return callRpc(rpcMethod("export"), { document });
   }
 
   async function deployDocument(document, options) {
-    return callRpc(RPC_METHODS.deploy, { document, ...(options || {}) });
+    return callRpc(rpcMethod("deploy"), { document, ...(options || {}) });
   }
 
   async function deployCommandPreview(settings, options) {
     const deploy = normalizeDeploySettings(settings);
-    return callRpc(RPC_METHODS.deployCommand, {
+    return callRpc(rpcMethod("deployCommand"), {
       deploy,
       pack_path: options?.packPath || "<pack.mobpack>",
       prompt: options?.prompt || deploy.prompt || "<prompt>",
@@ -7095,7 +7126,7 @@
   }
 
   async function importDocument(params) {
-    return callRpc(RPC_METHODS.import, params || {});
+    return callRpc(rpcMethod("import"), params || {});
   }
 
   function importParamsFromDecodedFile(input = {}) {
@@ -9745,6 +9776,8 @@
     callRpc,
     loadSchema,
     loadCatalogs,
+    authoringRpcMethodsFromSchema,
+    configureAuthoringMethodsFromSchema,
     validateDocument,
     exportDocument,
     deployDocument,

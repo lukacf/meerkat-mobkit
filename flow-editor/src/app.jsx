@@ -153,11 +153,10 @@ function App() {
   React.useEffect(() => {
     let cancelled = false;
     window.MobKitFlowController.configure({ rpcUrl: rpcUrlFromShell() });
-    Promise.all([
-      window.MobKitFlowController.loadSchema(),
-      window.MobKitFlowController.loadCatalogs(),
-    ])
-      .then(([schema, catalogPayload]) => {
+    window.MobKitFlowController.loadSchema()
+      .then(async (schema) => {
+        window.MobKitFlowController.configureAuthoringMethodsFromSchema(schema);
+        const catalogPayload = await window.MobKitFlowController.loadCatalogs();
         if (cancelled) return;
         const nextCatalogs = window.MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
         setCatalogs(nextCatalogs);

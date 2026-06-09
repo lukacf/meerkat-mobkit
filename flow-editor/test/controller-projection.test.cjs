@@ -735,6 +735,26 @@ assert.equal(controller.createFlowDraftFromSpec({
   templates: [],
 }), null);
 assert.equal(controller.createFlowDraftFromSpec({ id: "", spec: {} }), null);
+assert.deepEqual(controller.authoringRpcMethodsFromSchema({
+  commands: {
+    schema: "mobkit/mobpacks/schema",
+    catalogs: "mobkit/editor/catalogs",
+    validate: "mobkit/editor/validate",
+    export: "mobkit/editor/export",
+    import: "mobkit/editor/import",
+    deploy_command: "mobkit/editor/deploy_command",
+    deploy_rpc: "mobkit/editor/deploy",
+  },
+}), {
+  schema: "mobkit/mobpacks/schema",
+  catalogs: "mobkit/editor/catalogs",
+  validate: "mobkit/editor/validate",
+  export: "mobkit/editor/export",
+  import: "mobkit/editor/import",
+  deployCommand: "mobkit/editor/deploy_command",
+  deploy: "mobkit/editor/deploy",
+});
+assert.deepEqual(controller.authoringRpcMethodsFromSchema({ commands: { catalogs: "" } }), {});
 
 assert.deepEqual(controller.modelCatalogFromSchema({
   models: [
