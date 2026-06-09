@@ -10116,6 +10116,28 @@
     });
   }
 
+  function sourceFileRequiresText(file) {
+    const path = String(file?.path || "");
+    const mediaType = String(file?.media_type || "");
+    return /\.toml$/i.test(path)
+      || /\.json$/i.test(path)
+      || /^text\//i.test(mediaType)
+      || mediaType === "application/json";
+  }
+
+  function validateSourceFileMetadata(apiSource, file, index) {
+    const prefix = `${apiSource} source_files[${index}]`;
+    if (!String(file?.path || "").trim()) throw new Error(`${prefix} did not return path`);
+    if (!String(file?.media_type || "").trim()) throw new Error(`${prefix} did not return media_type`);
+    if (!String(file?.content_base64 || "").trim()) throw new Error(`${prefix} did not return content_base64`);
+    if (!String(file?.sha256 || "").trim()) throw new Error(`${prefix} did not return sha256`);
+    const size = Number(file?.size_bytes);
+    if (!Number.isFinite(size) || size < 0) throw new Error(`${prefix} did not return size_bytes`);
+    if (sourceFileRequiresText(file) && typeof file?.text !== "string") {
+      throw new Error(`${prefix} did not return text`);
+    }
+  }
+
   function sourceDocumentFromSourceResult(document, result, options = {}) {
     const apiSource = String(result?.source || "mobkit/mobpacks/source");
     if (apiSource !== "mobkit/mobpacks/source") {
@@ -10133,6 +10155,7 @@
     if (!mediaType) throw new Error(`${apiSource} did not return media_type`);
     const sourceDigest = String(mobTomlFile.sha256 || "").trim();
     if (!sourceDigest) throw new Error(`${apiSource} did not return mobkit/mob.toml sha256`);
+    files.forEach((file, index) => validateSourceFileMetadata(apiSource, file, index));
     const sourceView = sourceViewForState(null, options.sourceView);
     const renderedDocument = {
       ...(document && typeof document === "object" ? document : {}),

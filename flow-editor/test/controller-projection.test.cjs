@@ -6682,6 +6682,48 @@ assert.throws(
   }),
   /mobkit\/mobpacks\/source did not return mobkit\/mob.toml sha256/,
 );
+assert.throws(
+  () => controller.sourceDocumentFromSourceResult({ name: "No aux content" }, {
+    source_files: [{
+      path: "mobkit/mob.toml",
+      media_type: "text/toml",
+      size_bytes: 27,
+      content_base64: "dG9tbA==",
+      sha256: "toml-sha",
+      text: "[mob]\nid = \"no_aux_content\"\n",
+    }, {
+      path: "definition.json",
+      media_type: "application/json",
+      size_bytes: 2,
+      sha256: "json-sha",
+      text: "{}",
+    }],
+    filename: "no-aux-content.mobpack",
+    media_type: "application/vnd.mobkit.mobpack",
+  }),
+  /mobkit\/mobpacks\/source source_files\[1\] did not return content_base64/,
+);
+assert.throws(
+  () => controller.sourceDocumentFromSourceResult({ name: "No aux text" }, {
+    source_files: [{
+      path: "mobkit/mob.toml",
+      media_type: "text/toml",
+      size_bytes: 24,
+      content_base64: "dG9tbA==",
+      sha256: "toml-sha",
+      text: "[mob]\nid = \"no_aux_text\"\n",
+    }, {
+      path: "definition.json",
+      media_type: "application/json",
+      size_bytes: 2,
+      content_base64: "e30=",
+      sha256: "json-sha",
+    }],
+    filename: "no-aux-text.mobpack",
+    media_type: "application/vnd.mobkit.mobpack",
+  }),
+  /mobkit\/mobpacks\/source source_files\[1\] did not return text/,
+);
 
 assert.deepEqual(controller.exportDownloadPayload({
   content_base64: "YWJj",
