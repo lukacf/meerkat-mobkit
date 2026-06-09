@@ -370,16 +370,15 @@ function App() {
     mobSettings,
     contract,
   }).document;
-  const rememberCurrentDocument = (document, validation, nextStage = stage) => {
-    const persistence = window.MobKitFlowController.flowRegistryPersistDocumentProjection(flows, {
+  const persistCurrentOutcome = (outcome) => {
+    const projection = window.MobKitFlowController.flowRegistryPersistOutcomeProjection(flows, {
       currentFlowId,
-      document,
-      validation,
-      stage: nextStage,
+      outcome,
     });
-    if (!persistence.ok || !persistence.changed) return;
-    persistedDocumentSig.current = persistence.signature;
-    setFlows(persistence.rows);
+    if (!projection.ok || !projection.changed) return projection;
+    persistedDocumentSig.current = projection.signature;
+    setFlows(projection.rows);
+    return projection;
   };
 
   React.useEffect(() => {
@@ -430,7 +429,7 @@ function App() {
       window.__mobkitFlowLastDeployPlanTrace = plan;
       setDrySimDocument(document);
       setDrySimPlan(plan);
-      rememberCurrentDocument(outcome.document, outcome.validation, outcome.stage);
+      persistCurrentOutcome(outcome);
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
       setDrySim(true);
@@ -455,7 +454,7 @@ function App() {
     if (!sourceProjectionIsCurrent(requestToken)) return null;
     window.__mobkitFlowLastDocument = projection.document;
     window.__mobkitFlowLastSource = result;
-    rememberCurrentDocument(projection.document, projection.validation, projection.stage);
+    persistCurrentOutcome(projection);
     setValidationResults(projection.validationRows);
     setStage(projection.stage);
     return projection.sourceDocument;
@@ -520,7 +519,7 @@ function App() {
       const outcome = window.MobKitFlowController.validationOutcome(document, result);
       window.__mobkitFlowLastDocument = document;
       window.__mobkitFlowLastValidation = result;
-      rememberCurrentDocument(outcome.document, outcome.validation, outcome.stage);
+      persistCurrentOutcome(outcome);
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
     } catch (error) {
@@ -546,7 +545,7 @@ function App() {
       const outcome = window.MobKitFlowController.exportOutcome(document, result);
       window.__mobkitFlowLastDocument = document;
       window.__mobkitFlowLastExport = result;
-      rememberCurrentDocument(outcome.document, outcome.validation, outcome.stage);
+      persistCurrentOutcome(outcome);
       if (!window.__mobkitFlowDisableDownload) {
         downloadExportResult(result);
       }
@@ -574,7 +573,7 @@ function App() {
       const outcome = window.MobKitFlowController.deployOutcome(document, result, { execute });
       window.__mobkitFlowLastDocument = document;
       window.__mobkitFlowLastDeploy = result;
-      rememberCurrentDocument(outcome.document, outcome.validation, outcome.stage);
+      persistCurrentOutcome(outcome);
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
       setValidate(true);

@@ -9494,6 +9494,26 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function flowRegistryPersistOutcomeProjection(rows, { currentFlowId, outcome, previousSignature = "", skipIfUnchanged = false } = {}) {
+    const sourceOutcome = outcome && typeof outcome === "object" ? outcome : {};
+    const persistence = flowRegistryPersistDocumentProjection(rows, {
+      currentFlowId,
+      document: sourceOutcome.document,
+      validation: sourceOutcome.validation,
+      stage: sourceOutcome.stage,
+      previousSignature,
+      skipIfUnchanged,
+    });
+    return {
+      ...sourceOutcome,
+      persistence,
+      rows: persistence.rows,
+      signature: persistence.signature,
+      changed: persistence.changed,
+      ok: persistence.ok,
+    };
+  }
+
   function flowRegistryAppendRowPatch(rows, row) {
     const list = Array.isArray(rows) ? rows : [];
     if (!row || typeof row !== "object" || !row.id) return list;
@@ -10278,6 +10298,7 @@ window.MOBKIT_BOOT = {
     flowRegistryRememberDocumentPatch,
     flowRegistryDocumentPersistence,
     flowRegistryPersistDocumentProjection,
+    flowRegistryPersistOutcomeProjection,
     flowRegistryAppendRowPatch,
     flowRegistryUpsertRowPatch,
     renameSchemaDefinition,
@@ -13056,16 +13077,15 @@ function App() {
     mobSettings,
     contract
   }).document;
-  const rememberCurrentDocument = (document2, validation, nextStage = stage) => {
-    const persistence = window.MobKitFlowController.flowRegistryPersistDocumentProjection(flows, {
+  const persistCurrentOutcome = (outcome) => {
+    const projection = window.MobKitFlowController.flowRegistryPersistOutcomeProjection(flows, {
       currentFlowId,
-      document: document2,
-      validation,
-      stage: nextStage
+      outcome
     });
-    if (!persistence.ok || !persistence.changed) return;
-    persistedDocumentSig.current = persistence.signature;
-    setFlows(persistence.rows);
+    if (!projection.ok || !projection.changed) return projection;
+    persistedDocumentSig.current = projection.signature;
+    setFlows(projection.rows);
+    return projection;
   };
   React.useEffect(() => {
     if (!currentFlowId || !currentFlow) return;
@@ -13114,7 +13134,7 @@ function App() {
       window.__mobkitFlowLastDeployPlanTrace = plan;
       setDrySimDocument(document2);
       setDrySimPlan(plan);
-      rememberCurrentDocument(outcome.document, outcome.validation, outcome.stage);
+      persistCurrentOutcome(outcome);
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
       setDrySim(true);
@@ -13138,7 +13158,7 @@ function App() {
     if (!sourceProjectionIsCurrent(requestToken)) return null;
     window.__mobkitFlowLastDocument = projection.document;
     window.__mobkitFlowLastSource = result;
-    rememberCurrentDocument(projection.document, projection.validation, projection.stage);
+    persistCurrentOutcome(projection);
     setValidationResults(projection.validationRows);
     setStage(projection.stage);
     return projection.sourceDocument;
@@ -13199,7 +13219,7 @@ function App() {
       const outcome = window.MobKitFlowController.validationOutcome(document2, result);
       window.__mobkitFlowLastDocument = document2;
       window.__mobkitFlowLastValidation = result;
-      rememberCurrentDocument(outcome.document, outcome.validation, outcome.stage);
+      persistCurrentOutcome(outcome);
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
     } catch (error) {
@@ -13224,7 +13244,7 @@ function App() {
       const outcome = window.MobKitFlowController.exportOutcome(document2, result);
       window.__mobkitFlowLastDocument = document2;
       window.__mobkitFlowLastExport = result;
-      rememberCurrentDocument(outcome.document, outcome.validation, outcome.stage);
+      persistCurrentOutcome(outcome);
       if (!window.__mobkitFlowDisableDownload) {
         downloadExportResult(result);
       }
@@ -13251,7 +13271,7 @@ function App() {
       const outcome = window.MobKitFlowController.deployOutcome(document2, result, { execute });
       window.__mobkitFlowLastDocument = document2;
       window.__mobkitFlowLastDeploy = result;
-      rememberCurrentDocument(outcome.document, outcome.validation, outcome.stage);
+      persistCurrentOutcome(outcome);
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
       setValidate(true);

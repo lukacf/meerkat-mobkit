@@ -8508,6 +8508,32 @@ assert.equal(invalidRegistryProjection.ok, false);
 assert.equal(invalidRegistryProjection.changed, false);
 assert.equal(invalidRegistryProjection.rows, registryRows);
 
+const persistedOutcomeProjection = controller.flowRegistryPersistOutcomeProjection(registryRows, {
+  currentFlowId: "f_existing",
+  outcome: {
+    document: registryDocument,
+    validation: { ok: true },
+    validationRows: [{ kind: "ok", head: "valid" }],
+    stage: "valid",
+  },
+});
+assert.equal(persistedOutcomeProjection.ok, true);
+assert.equal(persistedOutcomeProjection.changed, true);
+assert.equal(persistedOutcomeProjection.stage, "valid");
+assert.deepEqual(persistedOutcomeProjection.validationRows, [{ kind: "ok", head: "valid" }]);
+assert.deepEqual(persistedOutcomeProjection.rows[0].validation, { ok: true });
+assert.equal(persistedOutcomeProjection.rows[0].stage, "valid");
+
+const invalidOutcomeProjection = controller.flowRegistryPersistOutcomeProjection(registryRows, {
+  currentFlowId: "f_existing",
+  outcome: { stage: "draft", validationRows: [{ kind: "crit" }] },
+});
+assert.equal(invalidOutcomeProjection.ok, false);
+assert.equal(invalidOutcomeProjection.changed, false);
+assert.equal(invalidOutcomeProjection.stage, "draft");
+assert.deepEqual(invalidOutcomeProjection.validationRows, [{ kind: "crit" }]);
+assert.equal(invalidOutcomeProjection.rows, registryRows);
+
 const importedRow = controller.flowRegistryRowFromDocument({
   id: "f_imported",
   document: registryDocument,
