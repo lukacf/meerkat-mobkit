@@ -658,6 +658,44 @@
     };
   }
 
+  function newFlowViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_new_flow_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      eyebrowTemplate: String(view.eyebrow_template || "").trim(),
+      closeLabel: String(view.close_label || "").trim(),
+      nameLabel: String(view.name_label || "").trim(),
+      namePlaceholder: String(view.name_placeholder || "").trim(),
+      triggerLabel: String(view.trigger_label || "").trim(),
+      triggerPlaceholder: String(view.trigger_placeholder || "").trim(),
+      startFromLabel: String(view.start_from_label || "").trim(),
+      backLabel: String(view.back_label || "").trim(),
+      nextLabel: String(view.next_label || "").trim(),
+      createLabel: String(view.create_label || "").trim(),
+    };
+    return out.eyebrowTemplate && out.closeLabel && out.nameLabel && out.namePlaceholder
+      && out.triggerLabel && out.triggerPlaceholder && out.startFromLabel && out.backLabel
+      && out.nextLabel && out.createLabel
+      ? out
+      : null;
+  }
+
+  function newFlowViewForState(newFlowView) {
+    const view = newFlowView && typeof newFlowView === "object" ? newFlowView : null;
+    return {
+      eyebrowTemplate: String(view?.eyebrowTemplate || ""),
+      closeLabel: String(view?.closeLabel || ""),
+      nameLabel: String(view?.nameLabel || ""),
+      namePlaceholder: String(view?.namePlaceholder || ""),
+      triggerLabel: String(view?.triggerLabel || ""),
+      triggerPlaceholder: String(view?.triggerPlaceholder || ""),
+      startFromLabel: String(view?.startFromLabel || ""),
+      backLabel: String(view?.backLabel || ""),
+      nextLabel: String(view?.nextLabel || ""),
+      createLabel: String(view?.createLabel || ""),
+    };
+  }
+
   function schemaViewFromSchema(schema) {
     const view = schema?.mob_definition?.editor_schema_view;
     if (!view || typeof view !== "object") return null;
@@ -7238,6 +7276,7 @@
       mobDefinition: null,
       sourceView: null,
       agentView: null,
+      newFlowView: null,
       agentDetailView: null,
       agentAccessView: null,
       deployView: null,
@@ -7277,6 +7316,7 @@
       mobDefinition: schema?.mob_definition || null,
       sourceView: sourceViewFromSchema(schema),
       agentView: agentViewFromSchema(schema),
+      newFlowView: newFlowViewFromSchema(schema),
       agentDetailView: agentDetailViewFromSchema(schema),
       agentAccessView: agentAccessViewFromSchema(schema),
       deployView: deployViewFromSchema(schema),
@@ -9182,7 +9222,8 @@
     return options;
   }
 
-  function newFlowModalState(state = {}, templateOptions = []) {
+  function newFlowModalState(state = {}, templateOptions = [], newFlowView = null) {
+    const view = newFlowViewForState(newFlowView);
     const step = Number(state.step || 1);
     const name = String(state.name || "");
     const trigger = String(state.trigger || "");
@@ -9201,16 +9242,16 @@
     const selectedTemplate = options.find((option) => option.id === template) || null;
     return {
       step,
-      eyebrow: `NEW FLOW · STEP ${step} OF 2`,
-      closeLabel: "×",
-      nameLabel: "Name",
-      namePlaceholder: "docs-only",
-      triggerLabel: "Trigger",
-      triggerPlaceholder: "label · docs",
-      startFromLabel: "Start from",
-      backLabel: "← BACK",
-      nextLabel: "NEXT →",
-      createLabel: "CREATE",
+      eyebrow: view.eyebrowTemplate.replace("{step}", String(step)),
+      closeLabel: view.closeLabel,
+      nameLabel: view.nameLabel,
+      namePlaceholder: view.namePlaceholder,
+      triggerLabel: view.triggerLabel,
+      triggerPlaceholder: view.triggerPlaceholder,
+      startFromLabel: view.startFromLabel,
+      backLabel: view.backLabel,
+      nextLabel: view.nextLabel,
+      createLabel: view.createLabel,
       name,
       trigger,
       template,

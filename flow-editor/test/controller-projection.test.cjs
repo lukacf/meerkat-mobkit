@@ -354,6 +354,30 @@ const TEST_ERROR_VIEW = {
   missingEditorFlowSub: "mobkit/mobpacks/import did not return document.flow.steps",
   missingEditorFlowMeta: "missing_editor_flow",
 };
+const TEST_NEW_FLOW_VIEW_SCHEMA = {
+  eyebrow_template: "CREATE MOB · STEP {step} / 2",
+  close_label: "close",
+  name_label: "Mob name",
+  name_placeholder: "sample-mob",
+  trigger_label: "Mob trigger",
+  trigger_placeholder: "label · task",
+  start_from_label: "Template",
+  back_label: "BACK",
+  next_label: "NEXT",
+  create_label: "CREATE MOB",
+};
+const TEST_NEW_FLOW_VIEW = {
+  eyebrowTemplate: "CREATE MOB · STEP {step} / 2",
+  closeLabel: "close",
+  nameLabel: "Mob name",
+  namePlaceholder: "sample-mob",
+  triggerLabel: "Mob trigger",
+  triggerPlaceholder: "label · task",
+  startFromLabel: "Template",
+  backLabel: "BACK",
+  nextLabel: "NEXT",
+  createLabel: "CREATE MOB",
+};
 const TEST_SCHEMA = {
   deploy_settings: {
     command: "rkat mob deploy",
@@ -383,6 +407,7 @@ const TEST_SCHEMA = {
     editor_launch_view: TEST_LAUNCH_VIEW_SCHEMA,
     editor_condition_view: TEST_CONDITION_VIEW_SCHEMA,
     editor_error_view: TEST_ERROR_VIEW_SCHEMA,
+    editor_new_flow_view: TEST_NEW_FLOW_VIEW_SCHEMA,
     mob_settings: {
       defaults: {
         orchestrator: "",
@@ -571,18 +596,18 @@ assert.deepEqual(controller.newFlowModalState({
   template: "docs",
 }, controller.newFlowTemplateOptions([
   { id: "docs", name: "Docs", trigger: "label · docs", validation: { ok: true } },
-], { canCreateBlank: false, blankTemplate: schemaBlankMobpack })), {
+], { canCreateBlank: false, blankTemplate: schemaBlankMobpack }), TEST_NEW_FLOW_VIEW), {
   step: 2,
-  eyebrow: "NEW FLOW · STEP 2 OF 2",
-  closeLabel: "×",
-  nameLabel: "Name",
-  namePlaceholder: "docs-only",
-  triggerLabel: "Trigger",
-  triggerPlaceholder: "label · docs",
-  startFromLabel: "Start from",
-  backLabel: "← BACK",
-  nextLabel: "NEXT →",
-  createLabel: "CREATE",
+  eyebrow: "CREATE MOB · STEP 2 / 2",
+  closeLabel: "close",
+  nameLabel: "Mob name",
+  namePlaceholder: "sample-mob",
+  triggerLabel: "Mob trigger",
+  triggerPlaceholder: "label · task",
+  startFromLabel: "Template",
+  backLabel: "BACK",
+  nextLabel: "NEXT",
+  createLabel: "CREATE MOB",
   name: "New Mob",
   trigger: "label · docs",
   template: "docs",
@@ -908,6 +933,7 @@ const hydratedContractAndCatalogFixture = {
     },
     editor_condition_view: TEST_CONDITION_VIEW_SCHEMA,
     editor_error_view: TEST_ERROR_VIEW_SCHEMA,
+    editor_new_flow_view: TEST_NEW_FLOW_VIEW_SCHEMA,
     editor_agent_view: {
       agents_heading: "AGENTS",
       schemas_heading: "SCHEMAS",
@@ -1313,6 +1339,7 @@ assert.deepEqual(hydratedCatalogs.models.map((model) => model.id), ["openai/gpt-
 assert.deepEqual(hydratedCatalogs.toolCatalog.map((tool) => tool.id), ["builtins"]);
 assert.deepEqual(hydratedCatalogs.skillRealms.map((realm) => realm.id), ["mobkit/sample-mobpacks"]);
 assert.deepEqual(hydratedCatalogs.agentDefinitions.map((definition) => definition.id), ["sample_reviewer"]);
+assert.deepEqual(hydratedCatalogs.newFlowView, TEST_NEW_FLOW_VIEW);
 assert.deepEqual(hydratedCatalogs.sourceView, {
   drawerEyebrow: "SOURCE · mob.toml",
   inlineTitle: "mob.toml",

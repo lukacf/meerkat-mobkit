@@ -893,6 +893,7 @@ function App() {
             canCreateBlank: canCreateAuthoring,
             blankTemplate: catalogs.blankMobpack,
           })}
+          newFlowView={catalogs.newFlowView}
           onCreate={(spec) => {
             if (!canCreateAuthoring) return;
             const draft = window.MobKitFlowController.createFlowDraftFromSpec({
@@ -1069,9 +1070,9 @@ function FlowsView({ flows, currentFlowId, onOpen, onNew, canCreate }) {
 }
 
 // ── New Flow modal (3-step) ───────────────────────────────────────
-function NewFlowModal({ state, setState, onCreate, templateOptions = [] }) {
+function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlowView = null }) {
   const set = (patch) => setState({ ...state, ...patch });
-  const modalState = window.MobKitFlowController.newFlowModalState(state, templateOptions);
+  const modalState = window.MobKitFlowController.newFlowModalState(state, templateOptions, newFlowView);
 
   return (
     <div className="modal-backdrop" onClick={() => setState(null)}>

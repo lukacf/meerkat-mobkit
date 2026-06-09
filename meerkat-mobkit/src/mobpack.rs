@@ -976,6 +976,18 @@ pub fn mobpack_schema_response() -> Value {
         "skill_unavailable_heading": "Unavailable in MobKit skill realms:",
         "skill_outside_realm_heading": "Selected from other realms:"
     });
+    let editor_new_flow_view = json!({
+        "eyebrow_template": "NEW FLOW · STEP {step} OF 2",
+        "close_label": "×",
+        "name_label": "Name",
+        "name_placeholder": "docs-only",
+        "trigger_label": "Trigger",
+        "trigger_placeholder": "label · docs",
+        "start_from_label": "Start from",
+        "back_label": "← BACK",
+        "next_label": "NEXT →",
+        "create_label": "CREATE"
+    });
     let editor_deploy_view = json!({
         "brand_label": "MobKit · Flow Editor",
         "flows_tab_label": "FLOWS",
@@ -1466,6 +1478,7 @@ pub fn mobpack_schema_response() -> Value {
     mob_definition["editor_error_view"] = editor_error_view;
     mob_definition["editor_agent_detail_view"] = editor_agent_detail_view;
     mob_definition["editor_agent_access_view"] = editor_agent_access_view;
+    mob_definition["editor_new_flow_view"] = editor_new_flow_view;
     mob_definition["editor_deploy_view"] = editor_deploy_view;
     mob_definition["editor_settings_view"] = editor_settings_view;
     mob_definition["editor_launch_view"] = editor_launch_view;
@@ -16010,6 +16023,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_access_view"]["skill_inline_add_label"],
             json!("ADD SKILL")
+        );
+        assert_eq!(
+            mob_definition["editor_new_flow_view"]["eyebrow_template"],
+            json!("NEW FLOW · STEP {step} OF 2")
+        );
+        assert_eq!(
+            mob_definition["editor_new_flow_view"]["name_placeholder"],
+            json!("docs-only")
+        );
+        assert_eq!(
+            mob_definition["editor_new_flow_view"]["create_label"],
+            json!("CREATE")
         );
         assert_eq!(
             mob_definition["editor_deploy_view"]["brand_label"],
