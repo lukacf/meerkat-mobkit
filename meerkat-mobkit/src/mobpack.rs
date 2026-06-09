@@ -3442,45 +3442,11 @@ fn apply_projected_authoring_document_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if let Some(next_document) = operation.get("document") {
-        *document = serde_json::from_value(next_document.clone()).map_err(|error| {
-            format!("operation.document is not a valid mobpack document: {error}")
-        })?;
-    } else {
-        if let Some(value) = operation.get("flow") {
-            document.flow = value.clone();
-        }
-        if let Some(value) = operation.get("members") {
-            document.members = value.clone();
-        }
-        if let Some(value) = operation.get("instances") {
-            document.instances = value.clone();
-        }
-        if let Some(value) = operation.get("edges") {
-            document.edges = value.clone();
-        }
-        if let Some(value) = operation.get("frames") {
-            document.frames = value.clone();
-        }
-        if let Some(value) = operation.get("schemas") {
-            document.schemas = value.clone();
-        }
-        if let Some(value) = operation
-            .get("skill_realms")
-            .or_else(|| operation.get("skillRealms"))
-        {
-            document.skill_realms = value.clone();
-        }
-        if let Some(value) = operation.get("deploy") {
-            document.deploy = value.clone();
-        }
-        if let Some(value) = operation
-            .get("mob_settings")
-            .or_else(|| operation.get("mobSettings"))
-        {
-            document.mob_settings = value.clone();
-        }
-    }
+    let next_document = operation
+        .get("document")
+        .ok_or_else(|| "replace_authoring_document requires document object".to_string())?;
+    *document = serde_json::from_value(next_document.clone())
+        .map_err(|error| format!("operation.document is not a valid mobpack document: {error}"))?;
     Ok(operation
         .get("selection")
         .cloned()
@@ -24531,6 +24497,17 @@ model = "gpt-5.5"
         assert_eq!(
             replaced["selection"],
             json!({ "kind": "schema", "id": "PlanArtifact" })
+        );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": replaced["document"],
+                "operation": {
+                    "type": "replace_authoring_document",
+                    "flow": { "name": "fragment fallback must not apply" }
+                }
+            }))
+            .expect_err("replace operation requires a full document")
+            .contains("replace_authoring_document requires document object")
         );
 
         let mut deploy = replaced["document"]["deploy"].clone();
