@@ -88,13 +88,13 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
         <button
           className="agents-list__add"
           onClick={() => {
-            const result = window.MobKitFlowController.schemaDefinitionAddPatch(studio.schemas, contract);
+            const result = window.MobKitFlowController.schemaDefinitionAddTransition(studio.schemas, contract);
             setSchemaAddResult(result);
             if (result.ok === false) return;
             if (studio.snap) studio.snap();
             studio.setSchemas(result.schemas);
             setSchemaAddResult(null);
-            setAgentSel({ kind: "schema", id: result.schema.id });
+            setAgentSel(result.selection);
           }}
         >{listState.addSchemaLabel}</button>
         {schemaAddErrorState.hasError && <div className="hint__line">{schemaAddErrorState.text}</div>}
@@ -122,7 +122,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract 
     if (studio.snap) studio.snap();
     if (result.schemas !== studio.schemas) studio.setSchemas(result.schemas);
     studio.setMembers(result.members);
-    setAgentSel({ kind: "agent", id: result.member.id });
+    setAgentSel(result.selection);
   };
   if (!definitionState.hasDefinitions) {
     return (

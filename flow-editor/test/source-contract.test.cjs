@@ -1116,6 +1116,7 @@ assert.match(controller, /missingRuntimeModeLabel/, "controller plane must expos
 assert.match(agents, /MobKitFlowController\.agentDefinitionAddByIdPatch/, "Agent Editor must add API-backed agent definitions through one controller-plane operation");
 assert.match(controller, /function agentDefinitionAddPatch/, "controller plane must own combined agent-definition member and schema mutation semantics");
 assert.match(controller, /function agentDefinitionAddByIdPatch/, "controller plane must own agent-definition id resolution");
+assert.match(controller, /selection:\s*\{\s*kind:\s*["']agent["'],\s*id:\s*member\.id\s*\}/, "controller plane must own Agent add selection transitions");
 assert.match(controller, /addAgentErrorPrefix:\s*String\(view\.add_agent_error_prefix/, "controller plane must hydrate Agent add-definition error copy from the MobKit schema");
 assert.match(controller, /function agentDefinitionAddErrorState/, "controller plane must own rejected agent-definition display state");
 assert.match(addAgentControlBlock, /const \[lastAddResult,\s*setLastAddResult\] = React\.useState\(null\);[\s\S]*MobKitFlowController\.agentDefinitionAddErrorState\(lastAddResult,\s*agentView\)/, "Agent add-control must ask the controller plane to project rejected definition errors");
@@ -1124,6 +1125,7 @@ assert.match(controller, /function memberSchemaChangeErrorState/, "controller pl
 assert.match(controller, /function schemaDefinitionAddErrorState/, "controller plane must own rejected schema-definition add display state");
 assert.match(agentsListBlock, /const \[schemaAddResult,\s*setSchemaAddResult\] = React\.useState\(null\);[\s\S]*MobKitFlowController\.schemaDefinitionAddErrorState\(schemaAddResult\)/, "Agent schema list must ask the controller plane to project rejected schema-add errors");
 assert.match(agentsListBlock, /setSchemaAddResult\(result\);[\s\S]*if \(result\.ok === false\) return;[\s\S]*setSchemaAddResult\(null\);[\s\S]*schemaAddErrorState\.hasError[\s\S]*schemaAddErrorState\.text/, "Agent schema add must render rejected controller results instead of silently dropping them");
+assert.match(addAgentControlBlock, /setAgentSel\(result\.selection\)/, "Agent add-control must apply controller-projected agent selections");
 assert(!/unknown agent definition|unavailable tool|unavailable skill|unsupported runtime mode|Agent definition unavailable/.test(addAgentControlBlock), "Agent add-control JSX must not compose rejected definition error copy locally");
 assert.match(agents, /<AgentsList[\s\S]*deploySettings=\{deploySettings\}[\s\S]*toolCatalog=\{toolCatalog\}[\s\S]*modelCatalog=\{modelCatalog\}/, "Agent sidebar must receive live MobKit deploy, tool, and model catalog context");
 assert.match(agents, /<AddAgentControl[\s\S]*toolCatalog=\{toolCatalog\}/, "Agent add-control must receive the live MobKit tool catalog");
@@ -1137,8 +1139,10 @@ assert.match(controller, /function mergeAgentDefinitionSchemas/, "controller pla
 assert(!/MobKitFlowController\.memberFromAgentDefinition/.test(agents), "Agent Editor must not assemble API-backed member definitions directly");
 assert(!/MobKitFlowController\.mergeAgentDefinitionSchemas/.test(agents), "Agent Editor must not merge API-backed schemas directly when adding an agent");
 assert(!/if \(!studio\.schemas\.some[\s\S]{0,180}studio\.addSchema/.test(agents), "Agent Editor must not keep stale same-id schemas when adding API-backed agent definitions");
-assert.match(agents, /MobKitFlowController\.schemaDefinitionAddPatch/, "Agent Editor must create schema drafts through the controller plane");
+assert.match(agents, /MobKitFlowController\.schemaDefinitionAddTransition/, "Agent Editor must create schema drafts and selections through the controller plane");
 assert.match(controller, /function schemaDefinitionAddPatch/, "controller plane must own schema draft creation");
+assert.match(controller, /function schemaDefinitionAddTransition[\s\S]*selection:\s*\{\s*kind:\s*["']schema["'],\s*id:\s*result\.schema\.id\s*\}/, "controller plane must own schema-add selection transitions");
+assert.match(agentsListBlock, /setAgentSel\(result\.selection\)/, "Agent schema add must apply controller-projected schema selections");
 assert.match(agents, /MobKitFlowController\.schemaFieldAddPatch/, "Agent Editor must add schema fields through the controller plane");
 assert.match(controller, /function schemaFieldAddErrorState/, "controller plane must own rejected schema-field add display state");
 assert.match(schemaEditorBlock, /const \[fieldAddResult,\s*setFieldAddResult\] = React\.useState\(null\);[\s\S]*MobKitFlowController\.schemaFieldAddErrorState\(fieldAddResult\)/, "Schema editor must ask the controller plane to project rejected field-add errors");

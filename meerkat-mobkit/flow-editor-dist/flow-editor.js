@@ -3948,6 +3948,16 @@ window.MOBKIT_BOOT = {
     return { schema, schemas: [...schemas, schema] };
   }
 
+  function schemaDefinitionAddTransition(existingSchemas, contract) {
+    const result = schemaDefinitionAddPatch(existingSchemas, contract);
+    if (result.ok === false) return result;
+    return {
+      ...result,
+      ok: true,
+      selection: { kind: "schema", id: result.schema.id },
+    };
+  }
+
   function schemaDescriptionPatch(rawDescription) {
     return { description: String(rawDescription || "") };
   }
@@ -10806,6 +10816,7 @@ window.MOBKIT_BOOT = {
       members: [...existingMembers, member],
       schemas: nextSchemas,
       schemasChanged: nextSchemas !== existingSchemas,
+      selection: { kind: "agent", id: member.id },
     };
   }
 
@@ -10819,6 +10830,7 @@ window.MOBKIT_BOOT = {
         members: Array.isArray(members) ? members : [],
         schemas: Array.isArray(schemas) ? schemas : [],
         schemasChanged: false,
+        selection: null,
         error: "unknown agent definition",
       };
     }
@@ -10834,6 +10846,7 @@ window.MOBKIT_BOOT = {
         members: Array.isArray(members) ? members : [],
         schemas: Array.isArray(schemas) ? schemas : [],
         schemasChanged: false,
+        selection: null,
         error: error?.message || String(error),
       };
     }
@@ -11066,6 +11079,7 @@ window.MOBKIT_BOOT = {
     agentDefinitionAddErrorState,
     memberSchemaChangeErrorState,
     schemaDefinitionAddErrorState,
+    schemaDefinitionAddTransition,
     schemaFieldAddErrorState,
     inputParamAddErrorState,
     basicEditorViewState,
@@ -12741,13 +12755,13 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
     {
       className: "agents-list__add",
       onClick: () => {
-        const result = window.MobKitFlowController.schemaDefinitionAddPatch(studio.schemas, contract);
+        const result = window.MobKitFlowController.schemaDefinitionAddTransition(studio.schemas, contract);
         setSchemaAddResult(result);
         if (result.ok === false) return;
         if (studio.snap) studio.snap();
         studio.setSchemas(result.schemas);
         setSchemaAddResult(null);
-        setAgentSel({ kind: "schema", id: result.schema.id });
+        setAgentSel(result.selection);
       }
     },
     listState.addSchemaLabel
@@ -12772,7 +12786,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], contract 
     if (studio.snap) studio.snap();
     if (result.schemas !== studio.schemas) studio.setSchemas(result.schemas);
     studio.setMembers(result.members);
-    setAgentSel({ kind: "agent", id: result.member.id });
+    setAgentSel(result.selection);
   };
   if (!definitionState.hasDefinitions) {
     return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(

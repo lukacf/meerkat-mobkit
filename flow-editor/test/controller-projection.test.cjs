@@ -4600,6 +4600,7 @@ assert.deepEqual(addedAgent.member.sourceDefinition, {
 });
 assert.equal(addedAgent.members.length, 2);
 assert.equal(addedAgent.schemasChanged, true);
+assert.deepEqual(addedAgent.selection, { kind: "agent", id: "m_reviewer_2" });
 assert.deepEqual(addedAgent.schemas, mergedAgentSchemas);
 const addedById = controller.agentDefinitionAddByIdPatch([agentDefinition], "reviewer", {
   members: [],
@@ -4607,10 +4608,19 @@ const addedById = controller.agentDefinitionAddByIdPatch([agentDefinition], "rev
 });
 assert.equal(addedById.ok, true);
 assert.equal(addedById.member.id, "m_reviewer");
+assert.deepEqual(addedById.selection, { kind: "agent", id: "m_reviewer" });
 assert.equal(addedById.schemas[0].id, "ReviewArtifact");
 assert.equal(addedById.member.sourceDefinition.sourceMobpack, "sample_review_pr");
 assert.equal(addedById.member.sourceDefinition.sourceOrigin, "mobkit/sample-mobpack");
-assert.equal(controller.agentDefinitionAddByIdPatch([agentDefinition], "missing").ok, false);
+assert.deepEqual(controller.agentDefinitionAddByIdPatch([agentDefinition], "missing"), {
+  ok: false,
+  member: null,
+  members: [],
+  schemas: [],
+  schemasChanged: false,
+  selection: null,
+  error: "unknown agent definition",
+});
 const schemaRefOnlyDefinition = {
   ...agentDefinition,
   schemaDefinition: null,
@@ -5202,6 +5212,19 @@ assert.deepEqual(controller.schemaDefinitionAddPatch([{ id: "Artifact1" }], sche
     { id: "Artifact2", description: "", fields: [{ id: "f1", name: "field_one", type: "enum", required: true, description: "", enumValues: [] }] },
   ],
 });
+assert.deepEqual(controller.schemaDefinitionAddTransition([{ id: "Artifact1" }], schemaDraftContract), {
+  ok: true,
+  schema: {
+    id: "Artifact2",
+    description: "",
+    fields: [{ id: "f1", name: "field_one", type: "enum", required: true, description: "", enumValues: [] }],
+  },
+  schemas: [
+    { id: "Artifact1" },
+    { id: "Artifact2", description: "", fields: [{ id: "f1", name: "field_one", type: "enum", required: true, description: "", enumValues: [] }] },
+  ],
+  selection: { kind: "schema", id: "Artifact2" },
+});
 assert.deepEqual(controller.schemaDescriptionPatch(" Review output.\n"), { description: " Review output.\n" });
 assert.equal(controller.uniqueSchemaFieldName([
   { id: "f1", name: "field" },
@@ -5217,6 +5240,16 @@ assert.deepEqual(controller.schemaFieldAddPatch({
   ] },
 });
 assert.deepEqual(controller.schemaDefinitionAddPatch([], {
+  mob_definition: {
+    defaults: { schema_field_type: "enum" },
+    editor_schema_field_types: ["enum", "string"],
+  },
+}), {
+  ok: false,
+  error: "MobKit schema is missing mob_definition.editor_schema_draft",
+  schemas: [],
+});
+assert.deepEqual(controller.schemaDefinitionAddTransition([], {
   mob_definition: {
     defaults: { schema_field_type: "enum" },
     editor_schema_field_types: ["enum", "string"],

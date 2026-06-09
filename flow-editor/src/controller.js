@@ -3915,6 +3915,16 @@
     return { schema, schemas: [...schemas, schema] };
   }
 
+  function schemaDefinitionAddTransition(existingSchemas, contract) {
+    const result = schemaDefinitionAddPatch(existingSchemas, contract);
+    if (result.ok === false) return result;
+    return {
+      ...result,
+      ok: true,
+      selection: { kind: "schema", id: result.schema.id },
+    };
+  }
+
   function schemaDescriptionPatch(rawDescription) {
     return { description: String(rawDescription || "") };
   }
@@ -10773,6 +10783,7 @@
       members: [...existingMembers, member],
       schemas: nextSchemas,
       schemasChanged: nextSchemas !== existingSchemas,
+      selection: { kind: "agent", id: member.id },
     };
   }
 
@@ -10786,6 +10797,7 @@
         members: Array.isArray(members) ? members : [],
         schemas: Array.isArray(schemas) ? schemas : [],
         schemasChanged: false,
+        selection: null,
         error: "unknown agent definition",
       };
     }
@@ -10801,6 +10813,7 @@
         members: Array.isArray(members) ? members : [],
         schemas: Array.isArray(schemas) ? schemas : [],
         schemasChanged: false,
+        selection: null,
         error: error?.message || String(error),
       };
     }
@@ -11033,6 +11046,7 @@
     agentDefinitionAddErrorState,
     memberSchemaChangeErrorState,
     schemaDefinitionAddErrorState,
+    schemaDefinitionAddTransition,
     schemaFieldAddErrorState,
     inputParamAddErrorState,
     basicEditorViewState,
