@@ -186,13 +186,18 @@ function App() {
 
   React.useEffect(() => {
     let cancelled = false;
+    const abort = new AbortController();
     window.MobKitFlowController.configure({ rpcUrl: rpcUrlFromShell() });
-    window.MobKitFlowController.loadSchema()
+    const rpcOptions = { signal: abort.signal };
+    window.MobKitFlowController.loadSchema(rpcOptions)
       .then(async (schema) => {
         window.MobKitFlowController.configureAuthoringMethodsFromSchema(schema);
-        const capabilityPayload = await window.MobKitFlowController.loadCapabilities();
-        const catalogPayload = await window.MobKitFlowController.loadCatalogs();
-        const registryPayload = await window.MobKitFlowController.listDocuments().catch(() => ({ rows: [] }));
+        const capabilityPayload = await window.MobKitFlowController.loadCapabilities(rpcOptions);
+        const catalogPayload = await window.MobKitFlowController.loadCatalogs(rpcOptions);
+        const registryPayload = await window.MobKitFlowController.listDocuments({}, rpcOptions).catch((error) => {
+          if (abort.signal.aborted) throw error;
+          return { rows: [] };
+        });
         if (cancelled) return;
         setCapabilities(capabilityPayload);
         const nextCatalogs = window.MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
@@ -218,9 +223,13 @@ function App() {
         setContract(schema);
       })
       .catch((error) => {
+        if (abort.signal.aborted) return;
         if (!cancelled) setContract({ error: error?.message || String(error) });
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      abort.abort();
+    };
   }, []);
 
   // Keep the Flow grid in sync with the shared step-tree, so a mob loaded /
@@ -724,16 +733,18 @@ function App() {
   };
   React.useEffect(() => {
     let cancelled = false;
+    const abort = new AbortController();
     setDeployCommandPreview("");
     if (!deployContractLoaded) {
       return () => {
         cancelled = true;
+        abort.abort();
       };
     }
     buildMobKitProjectedDocument()
       .then(({ document, stale }) => {
         if (cancelled || stale || !document) return null;
-        return window.MobKitFlowController.deployCommandPreviewForDocument(document);
+        return window.MobKitFlowController.deployCommandPreviewForDocument(document, { signal: abort.signal });
       })
       .then((preview) => {
         if (!cancelled) {
@@ -741,12 +752,14 @@ function App() {
         }
       })
       .catch(() => {
+        if (abort.signal.aborted) return;
         if (!cancelled) {
           setDeployCommandPreview("");
         }
       });
     return () => {
       cancelled = true;
+      abort.abort();
     };
   }, [
     deployContractLoaded,

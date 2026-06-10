@@ -149,10 +149,11 @@
   }
 
   let requestId = 0;
-  async function callRpc(method, params) {
+  async function callRpc(method, params, options = {}) {
     const response = await fetch(rpcPath(), {
       method: "POST",
       headers: { "content-type": "application/json" },
+      ...(options.signal ? { signal: options.signal } : {}),
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: ++requestId,
@@ -8210,35 +8211,36 @@
     }
   }
 
-  async function loadSchema() {
-    return callRpc(rpcMethod("schema"), {});
+  async function loadSchema(options = {}) {
+    return callRpc(rpcMethod("schema"), {}, options);
   }
 
-  async function loadCapabilities() {
-    return callRpc("mobkit/capabilities", {});
+  async function loadCapabilities(options = {}) {
+    return callRpc("mobkit/capabilities", {}, options);
   }
 
-  async function loadCatalogs() {
-    return callRpc(rpcMethod("catalogs"), {});
+  async function loadCatalogs(options = {}) {
+    return callRpc(rpcMethod("catalogs"), {}, options);
   }
 
   async function validateDocument(document, options = {}) {
     return callRpc(rpcMethod("validate"), {
       document,
       rkat_validate: options.rkatValidate ?? options.rkat_validate ?? true,
-    });
+    }, options);
   }
 
-  async function sourceDocument(document) {
-    return callRpc(rpcMethod("source"), { document });
+  async function sourceDocument(document, options = {}) {
+    return callRpc(rpcMethod("source"), { document }, options);
   }
 
-  async function exportDocument(document) {
-    return callRpc(rpcMethod("export"), { document });
+  async function exportDocument(document, options = {}) {
+    return callRpc(rpcMethod("export"), { document }, options);
   }
 
-  async function deployDocument(document, options) {
-    return callRpc(rpcMethod("deploy"), { document, ...(options || {}) });
+  async function deployDocument(document, options = {}) {
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("deploy"), { document, ...requestOptions }, { signal });
   }
 
   async function deployCommandPreviewForDocument(document, options = {}) {
@@ -8253,26 +8255,26 @@
     };
     if (String(options.packPath || "").trim()) request.pack_path = String(options.packPath).trim();
     if (prompt) request.prompt = prompt;
-    return callRpc(rpcMethod("deployCommand"), request);
+    return callRpc(rpcMethod("deployCommand"), request, options);
   }
 
-  async function importDocument(params) {
-    return callRpc(rpcMethod("import"), params || {});
+  async function importDocument(params, options = {}) {
+    return callRpc(rpcMethod("import"), params || {}, options);
   }
 
-  async function listDocuments(params = {}) {
-    return callRpc(rpcMethod("list"), params || {});
+  async function listDocuments(params = {}, options = {}) {
+    return callRpc(rpcMethod("list"), params || {}, options);
   }
 
-  async function getDocument(id, params = {}) {
-    return callRpc(rpcMethod("get"), { ...(params || {}), id });
+  async function getDocument(id, params = {}, options = {}) {
+    return callRpc(rpcMethod("get"), { ...(params || {}), id }, options);
   }
 
-  async function createDocument(spec = {}) {
-    return callRpc(rpcMethod("create"), spec || {});
+  async function createDocument(spec = {}, options = {}) {
+    return callRpc(rpcMethod("create"), spec || {}, options);
   }
 
-  async function saveDocument(row = {}) {
+  async function saveDocument(row = {}, options = {}) {
     const document = row.document;
     const request = {
       id: row.id || row.currentFlowId,
@@ -8290,23 +8292,23 @@
     if (expectedEtag) {
       request.expected_etag = String(expectedEtag);
     }
-    return callRpc(rpcMethod("save"), request);
+    return callRpc(rpcMethod("save"), request, options);
   }
 
-  async function deleteDocument(id, params = {}) {
-    return callRpc(rpcMethod("delete"), { ...(params || {}), id });
+  async function deleteDocument(id, params = {}, options = {}) {
+    return callRpc(rpcMethod("delete"), { ...(params || {}), id }, options);
   }
 
-  async function applyAuthoringOperationDocument(document, operation) {
-    return callRpc(rpcMethod("applyOperation"), { document, operation });
+  async function applyAuthoringOperationDocument(document, operation, options = {}) {
+    return callRpc(rpcMethod("applyOperation"), { document, operation }, options);
   }
 
-  async function graphProjectionDocument(document) {
-    return callRpc(rpcMethod("graphProjection"), { document });
+  async function graphProjectionDocument(document, options = {}) {
+    return callRpc(rpcMethod("graphProjection"), { document }, options);
   }
 
-  async function graphToFlowDocument(document) {
-    return callRpc(rpcMethod("graphToFlow"), { document });
+  async function graphToFlowDocument(document, options = {}) {
+    return callRpc(rpcMethod("graphToFlow"), { document }, options);
   }
 
   function importParamsFromDecodedFile(input = {}) {
