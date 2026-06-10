@@ -745,7 +745,7 @@ function App() {
     buildMobKitProjectedDocument()
       .then(({ document, stale }) => {
         if (cancelled || stale || !document) return null;
-        return window.MobKitFlowController.deployCommandPreviewForDocument(document, { signal: abort.signal });
+        return window.MobKitFlowController.deployCommandPreviewForDocument(document, { ...currentDraftGuard(), signal: abort.signal });
       })
       .then((preview) => {
         if (!cancelled) {
@@ -841,7 +841,7 @@ function App() {
       if (projected.stale || !projected.document) return;
       const document = projected.document;
       requestToken = projected.requestToken;
-      const plan = await window.MobKitFlowController.deployDocument(document, { execute: false });
+      const plan = await window.MobKitFlowController.deployDocument(document, { execute: false, ...currentDraftGuard() });
       if (!authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.deployOutcome(document, plan, { execute: false });
       window.__mobkitFlowLastDocument = document;
@@ -864,7 +864,7 @@ function App() {
   const renderCurrentSourceDocument = async (requestToken, projectedDocument = null) => {
     const document = projectedDocument || (await buildMobKitProjectedDocument()).document;
     if (!document) return null;
-    const result = await window.MobKitFlowController.sourceDocument(document);
+    const result = await window.MobKitFlowController.sourceDocument(document, currentDraftGuard());
     const projection = window.MobKitFlowController.sourceDocumentFromSourceResult(document, result, {
       sourceView: catalogs.sourceView,
     });
@@ -951,7 +951,7 @@ function App() {
       if (projected.stale || !projected.document) return;
       const document = projected.document;
       requestToken = projected.requestToken;
-      const result = await window.MobKitFlowController.validateDocument(document);
+      const result = await window.MobKitFlowController.validateDocument(document, currentDraftGuard());
       if (!authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.validationOutcome(document, result);
       window.__mobkitFlowLastDocument = document;
@@ -980,7 +980,7 @@ function App() {
       if (projected.stale || !projected.document) return;
       const document = projected.document;
       requestToken = projected.requestToken;
-      const result = await window.MobKitFlowController.exportDocument(document);
+      const result = await window.MobKitFlowController.exportDocument(document, currentDraftGuard());
       if (!authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.exportOutcome(document, result);
       window.__mobkitFlowLastDocument = document;
@@ -1011,7 +1011,7 @@ function App() {
       if (projected.stale || !projected.document) return;
       const document = projected.document;
       requestToken = projected.requestToken;
-      const result = await window.MobKitFlowController.deployDocument(document, { execute });
+      const result = await window.MobKitFlowController.deployDocument(document, { execute, ...currentDraftGuard() });
       if (!authoringRevisionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.deployOutcome(document, result, { execute });
       window.__mobkitFlowLastDocument = document;

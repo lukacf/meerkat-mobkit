@@ -8224,18 +8224,22 @@
   }
 
   async function validateDocument(document, options = {}) {
+    const { signal, rkatValidate, rkat_validate, ...requestOptions } = options || {};
     return callRpc(rpcMethod("validate"), {
       document,
-      rkat_validate: options.rkatValidate ?? options.rkat_validate ?? true,
-    }, options);
+      rkat_validate: rkatValidate ?? rkat_validate ?? true,
+      ...requestOptions,
+    }, { signal });
   }
 
   async function sourceDocument(document, options = {}) {
-    return callRpc(rpcMethod("source"), { document }, options);
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("source"), { document, ...requestOptions }, { signal });
   }
 
   async function exportDocument(document, options = {}) {
-    return callRpc(rpcMethod("export"), { document }, options);
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("export"), { document, ...requestOptions }, { signal });
   }
 
   async function deployDocument(document, options = {}) {
@@ -8244,18 +8248,20 @@
   }
 
   async function deployCommandPreviewForDocument(document, options = {}) {
+    const { signal, packPath, prompt: optionPrompt, deploySettings, ...requestOptions } = options || {};
     const sourceDocument = document && typeof document === "object" ? document : {};
-    const deploy = normalizeDeploySettings(sourceDocument.deploy || options.deploySettings);
-    const prompt = String(options.prompt || deploy.prompt || "").trim();
+    const deploy = normalizeDeploySettings(sourceDocument.deploy || deploySettings);
+    const prompt = String(optionPrompt || deploy.prompt || "").trim();
     const request = {
       document: {
         ...sourceDocument,
         deploy,
       },
+      ...requestOptions,
     };
-    if (String(options.packPath || "").trim()) request.pack_path = String(options.packPath).trim();
+    if (String(packPath || "").trim()) request.pack_path = String(packPath).trim();
     if (prompt) request.prompt = prompt;
-    return callRpc(rpcMethod("deployCommand"), request, options);
+    return callRpc(rpcMethod("deployCommand"), request, { signal });
   }
 
   async function importDocument(params, options = {}) {

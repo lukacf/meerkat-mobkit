@@ -10969,6 +10969,7 @@ fn graph_to_flow_first_string(values: &[String]) -> String {
 }
 
 pub fn validate_mobpack(params: &Value) -> Result<MobpackValidationResult, String> {
+    enforce_mobpack_draft_expected_revision(params, "mobkit/mobpacks/validate")?;
     let document = document_from_params(params)?;
     let mut validation = validate_document(&document);
     if validate_with_rkat_requested(params) && validation.ok {
@@ -11065,8 +11066,12 @@ pub fn deploy_command_preview(params: &Value) -> Result<MobpackDeployCommandResu
         .get("document")
         .ok_or_else(|| "mobkit/mobpacks/deploy_command requires document".to_string())
         .and_then(document_from_value)?;
-    let rendered =
-        render_mobpack_source(&json!({ "document": document.clone() })).map_err(|err| {
+    let mut render_params = params.clone();
+    if let Some(object) = render_params.as_object_mut() {
+        object.insert("document".to_string(), json!(document.clone()));
+    }
+    let rendered = render_mobpack_source_for(&render_params, "mobkit/mobpacks/deploy_command")
+        .map_err(|err| {
             if err == "cannot render source for invalid mobpack document" {
                 "cannot preview deploy command for invalid mobpack document".to_string()
             } else {
@@ -11115,6 +11120,14 @@ struct RenderedMobpackSource {
 }
 
 fn render_mobpack_source(params: &Value) -> Result<RenderedMobpackSource, String> {
+    render_mobpack_source_for(params, "mobkit/mobpacks/source")
+}
+
+fn render_mobpack_source_for(
+    params: &Value,
+    guard_source: &str,
+) -> Result<RenderedMobpackSource, String> {
+    enforce_mobpack_draft_expected_revision(params, guard_source)?;
     let mut document = document_from_params(params)?;
     let validation = canonicalize_deployable_authoring_document(&mut document)?;
     if !validation.ok {
@@ -11161,7 +11174,7 @@ pub fn source_mobpack(params: &Value) -> Result<MobpackSourceResult, String> {
 }
 
 pub fn export_mobpack(params: &Value) -> Result<MobpackExportResult, String> {
-    let rendered = render_mobpack_source(params).map_err(|err| {
+    let rendered = render_mobpack_source_for(params, "mobkit/mobpacks/export").map_err(|err| {
         if err == "cannot render source for invalid mobpack document" {
             "cannot export invalid mobpack document".to_string()
         } else {
@@ -11180,6 +11193,7 @@ pub fn export_mobpack(params: &Value) -> Result<MobpackExportResult, String> {
 }
 
 pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
+    enforce_mobpack_draft_expected_revision(params, "mobkit/mobpacks/deploy")?;
     let export = export_mobpack(params)?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(export.content_base64.as_bytes())
@@ -25173,6 +25187,101 @@ model = "gpt-5.5"
             }))
             .expect_err("deploy command preview requires document")
             .contains("mobkit/mobpacks/deploy_command requires document")
+        );
+    }
+
+    #[test]
+    fn guarded_document_actions_reject_stale_draft_revision() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("drafts.json");
+        let output_dir = dir.path().join("deploy");
+        let saved = save_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "action_guard",
+            "document": valid_document(),
+        }))
+        .expect("save guarded draft");
+        let document = saved["row"]["document"].clone();
+
+        let stale_params = json!({
+            "store_path": store_path,
+            "id": "action_guard",
+            "expected_revision": 0,
+            "document": document,
+            "output_dir": output_dir,
+            "prompt": "Reply with exactly OK.",
+            "execute": false,
+        });
+
+        let validation = validate_mobpack(&stale_params).expect_err("stale validate must fail");
+        assert!(
+            validation
+                .contains("mobkit/mobpacks/validate draft revision conflict for action_guard"),
+            "{validation}"
+        );
+
+        let source = source_mobpack(&stale_params).expect_err("stale source must fail");
+        assert!(
+            source.contains("mobkit/mobpacks/source draft revision conflict for action_guard"),
+            "{source}"
+        );
+
+        let exported = export_mobpack(&stale_params).expect_err("stale export must fail");
+        assert!(
+            exported.contains("mobkit/mobpacks/export draft revision conflict for action_guard"),
+            "{exported}"
+        );
+
+        let preview =
+            deploy_command_preview(&stale_params).expect_err("stale deploy command must fail");
+        assert!(
+            preview.contains(
+                "mobkit/mobpacks/deploy_command draft revision conflict for action_guard"
+            ),
+            "{preview}"
+        );
+
+        let deployed = deploy_mobpack(&stale_params).expect_err("stale deploy must fail");
+        assert!(
+            deployed.contains("mobkit/mobpacks/deploy draft revision conflict for action_guard"),
+            "{deployed}"
+        );
+
+        let fresh_params = json!({
+            "store_path": store_path,
+            "id": "action_guard",
+            "expected_revision": 1,
+            "expected_etag": "action_guard:1",
+            "document": saved["row"]["document"].clone(),
+            "output_dir": dir.path().join("fresh-deploy"),
+            "prompt": "Reply with exactly OK.",
+            "execute": false,
+        });
+        assert!(validate_mobpack(&fresh_params).expect("fresh validate").ok);
+        assert!(
+            source_mobpack(&fresh_params)
+                .expect("fresh source")
+                .source_files
+                .iter()
+                .any(|file| file.path.ends_with("mob.toml"))
+        );
+        assert!(
+            export_mobpack(&fresh_params)
+                .expect("fresh export")
+                .validation
+                .ok
+        );
+        assert!(
+            deploy_command_preview(&fresh_params)
+                .expect("fresh deploy command")
+                .validation
+                .ok
+        );
+        assert!(
+            deploy_mobpack(&fresh_params)
+                .expect("fresh deploy")
+                .validation
+                .ok
         );
     }
 
