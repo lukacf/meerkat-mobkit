@@ -8497,6 +8497,14 @@ window.MOBKIT_BOOT = {
   }
 
   async function saveDocument(row = {}, options = {}) {
+    if (flowRegistryRowIsRuntimeProjection(row)) {
+      return {
+        ok: false,
+        error: "runtime_projection_read_only",
+        row: null,
+        reason: "Runtime flow projections must be forked into a MobKit draft before saving.",
+      };
+    }
     const document = row.document;
     const request = {
       id: row.id || row.currentFlowId,
@@ -10582,10 +10590,10 @@ window.MOBKIT_BOOT = {
     const sampleFlows = sampleFlowsFromCatalogs(catalogPayload);
     const registryFlows = flowRegistryRowsFromBackend(options.registryRows || options.registryResult?.rows);
     const runtimeFlows = flowRegistryRowsFromBackend(catalogPayload?.runtime_flows);
-    const existingIds = new Set(registryFlows.map((row) => row.id));
+    const existingIds = new Set(runtimeFlows.map((row) => row.id));
     const flows = [
-      ...registryFlows,
-      ...runtimeFlows.filter((row) => !existingIds.has(row.id)),
+      ...runtimeFlows,
+      ...registryFlows.filter((row) => !existingIds.has(row.id)),
     ];
     const first = flows[0] || null;
     return {
@@ -10781,7 +10789,21 @@ window.MOBKIT_BOOT = {
       source: String(flowRow?.source || source || ""),
       document,
       validation: validation ?? null,
+      ...(flowRow?.registry_source ? { registry_source: String(flowRow.registry_source) } : {}),
+      ...(flowRow?.document_kind ? { document_kind: String(flowRow.document_kind) } : {}),
+      ...(flowRow?.runtime_projection === true ? { runtime_projection: true } : {}),
+      ...(flowRow?.runtime_mob_id ? { runtime_mob_id: String(flowRow.runtime_mob_id) } : {}),
+      ...(flowRow?.runtime_flow_id ? { runtime_flow_id: String(flowRow.runtime_flow_id) } : {}),
+      ...(flowRow?.deployability ? { deployability: flowRow.deployability } : {}),
+      ...(flowRow?.provenance ? { provenance: flowRow.provenance } : {}),
     };
+  }
+
+  function flowRegistryRowIsRuntimeProjection(row) {
+    return row?.runtime_projection === true
+      || row?.document_kind === "runtime_projection"
+      || row?.source === "mobkit/runtime/flow_projection"
+      || row?.registry_source === "mobkit/runtime/flow_projection";
   }
 
   function flowRegistryRememberDocumentPatch(rows, {
@@ -10877,6 +10899,16 @@ window.MOBKIT_BOOT = {
   function flowRegistryPersistDocumentProjection(rows, options = {}) {
     const sourceRows = Array.isArray(rows) ? rows : [];
     const currentRow = sourceRows.find((row) => row?.id === options.currentFlowId) || null;
+    if (flowRegistryRowIsRuntimeProjection(currentRow)) {
+      return {
+        ok: false,
+        changed: false,
+        reason: "runtime_projection_read_only",
+        signature: String(options.previousSignature || ""),
+        rowPatch: null,
+        rows: sourceRows,
+      };
+    }
     const persistence = flowRegistryDocumentPersistence({
       expectedRevision: flowRegistryRowRevision(currentRow),
       expectedEtag: flowRegistryRowEtag(currentRow),
@@ -11636,6 +11668,7 @@ window.MOBKIT_BOOT = {
     flowRegistryViewState,
     flowRegistrySelectionState,
     flowRegistryRowFromDocument,
+    flowRegistryRowIsRuntimeProjection,
     flowImportedIdFromDocument,
     flowRegistryDraftGuard,
     flowRegistryRememberDocumentPatch,

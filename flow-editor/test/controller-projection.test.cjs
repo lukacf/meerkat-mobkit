@@ -3001,6 +3001,13 @@ const runtimeDedupedBootstrap = controller.flowCatalogBootstrapState({
     id: "saved_flow",
     name: "Runtime duplicate",
     source: "mobkit/runtime/flow_projection",
+    registry_source: "mobkit/runtime/flow_projection",
+    document_kind: "runtime_projection",
+    runtime_projection: true,
+    runtime_mob_id: "runtime_duplicate",
+    runtime_flow_id: "main",
+    deployability: { ready: true },
+    provenance: { catalog: "mobkit/runtime/flow_projection" },
     document: { mob_id: "runtime_duplicate", flow: { name: "main", steps: [] } },
   }],
 }, {
@@ -3017,8 +3024,14 @@ const runtimeDedupedBootstrap = controller.flowCatalogBootstrapState({
   },
 });
 assert.deepEqual(runtimeDedupedBootstrap.flows.map((row) => [row.id, row.source]), [
-  ["saved_flow", "mobkit/mobpacks/save"],
+  ["saved_flow", "mobkit/runtime/flow_projection"],
 ]);
+assert.equal(runtimeDedupedBootstrap.flows[0].runtime_projection, true);
+assert.equal(runtimeDedupedBootstrap.flows[0].document_kind, "runtime_projection");
+assert.equal(runtimeDedupedBootstrap.flows[0].runtime_mob_id, "runtime_duplicate");
+assert.equal(runtimeDedupedBootstrap.flows[0].runtime_flow_id, "main");
+assert.deepEqual(runtimeDedupedBootstrap.flows[0].deployability, { ready: true });
+assert.deepEqual(runtimeDedupedBootstrap.flows[0].provenance, { catalog: "mobkit/runtime/flow_projection" });
 
 assert.deepEqual(controller.flowCatalogBootstrapState({ sample_mobpacks: [] }), {
   templates: [],
@@ -10350,6 +10363,27 @@ assert.equal(persistedRegistryProjection.rows[0].stage, "published");
 assert.deepEqual(persistedRegistryProjection.rows[0].validation, { ok: true });
 assert.equal(persistedRegistryProjection.rows[0].document, registryDocument);
 assert.equal(persistedRegistryProjection.rows[1], registryRows[1]);
+const runtimeProjectionRows = [{
+  id: "runtime_main",
+  source: "mobkit/runtime/flow_projection",
+  document_kind: "runtime_projection",
+  runtime_projection: true,
+  runtime_mob_id: "runtime_mob",
+  runtime_flow_id: "main",
+  document: registryDocument,
+}];
+assert.equal(controller.flowRegistryRowIsRuntimeProjection(runtimeProjectionRows[0]), true);
+const runtimeProjectionPersistence = controller.flowRegistryPersistDocumentProjection(runtimeProjectionRows, {
+  currentFlowId: "runtime_main",
+  document: registryDocument,
+  validation: { ok: true },
+  stage: "valid",
+});
+assert.equal(runtimeProjectionPersistence.ok, false);
+assert.equal(runtimeProjectionPersistence.changed, false);
+assert.equal(runtimeProjectionPersistence.reason, "runtime_projection_read_only");
+assert.equal(runtimeProjectionPersistence.rowPatch, null);
+assert.equal(runtimeProjectionPersistence.rows, runtimeProjectionRows);
 assert.deepEqual(controller.flowRegistryDraftGuard(registryRows[0], "fallback_id"), {
   id: "f_existing",
   expected_revision: 7,
