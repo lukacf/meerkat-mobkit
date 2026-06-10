@@ -3921,6 +3921,13 @@ pub fn delete_mobpack_draft(params: &Value) -> Result<Value, String> {
 }
 
 pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String> {
+    apply_mobpack_authoring_operation_with_runtime(params, None)
+}
+
+pub fn apply_mobpack_authoring_operation_with_runtime(
+    params: &Value,
+    runtime: Option<&MobpackRuntimeCatalogState>,
+) -> Result<Value, String> {
     enforce_mobpack_draft_expected_revision(params, "mobkit/mobpacks/apply_operation")?;
     let mut document = document_from_params(params)?;
     let operation = params
@@ -3939,7 +3946,7 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
             "{operation_type} does not accept operation.document; use mobkit/mobpacks/import or create/save for document replacement"
         ));
     }
-    enforce_expected_catalog_snapshot(params, operation, operation_type)?;
+    enforce_expected_catalog_snapshot(params, operation, operation_type, runtime)?;
     let selection = match operation_type {
         "sync_graph_to_flow" => apply_sync_graph_to_flow_operation(&mut document, operation)?,
         "reconcile_members" => apply_reconcile_members_operation(&mut document, operation)?,
@@ -4016,6 +4023,7 @@ fn enforce_expected_catalog_snapshot(
     params: &Value,
     operation: &serde_json::Map<String, Value>,
     operation_type: &str,
+    runtime: Option<&MobpackRuntimeCatalogState>,
 ) -> Result<(), String> {
     if !operation_uses_authoring_catalog(operation_type) {
         return Ok(());
@@ -4023,7 +4031,7 @@ fn enforce_expected_catalog_snapshot(
     let Some(expected) = expected_catalog_snapshot_id(params, operation) else {
         return Ok(());
     };
-    let current = current_authoring_catalog_snapshot_id()
+    let current = current_authoring_catalog_snapshot_id(runtime)
         .ok_or_else(|| "MobKit authoring catalog did not expose catalog_snapshot.id".to_string())?;
     if expected == current {
         return Ok(());
@@ -4071,8 +4079,10 @@ fn value_catalog_snapshot_id(value: &Value) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn current_authoring_catalog_snapshot_id() -> Option<String> {
-    mobpack_catalogs_response()["catalog_snapshot"]["id"]
+fn current_authoring_catalog_snapshot_id(
+    runtime: Option<&MobpackRuntimeCatalogState>,
+) -> Option<String> {
+    mobpack_catalogs_response_with_runtime(runtime)["catalog_snapshot"]["id"]
         .as_str()
         .map(ToString::to_string)
 }
@@ -26234,6 +26244,102 @@ model = "gpt-5.5"
             stale.contains("catalog snapshot conflict for add_agent_definition"),
             "{stale}"
         );
+    }
+
+    #[test]
+    fn runtime_bound_apply_operation_uses_runtime_catalog_snapshot() {
+        let runtime = MobpackRuntimeCatalogState {
+            loaded_modules: vec!["editor-host".to_string()],
+            runtime_methods: vec!["mobkit/mobpacks/apply_operation".to_string()],
+            has_contact_directory: true,
+            has_peer_mob_handles: false,
+            has_inproc_contacts: false,
+        };
+        let runtime_catalogs = mobpack_catalogs_response_with_runtime(Some(&runtime));
+        let standalone_catalogs = mobpack_catalogs_response();
+        let runtime_snapshot = runtime_catalogs["catalog_snapshot"]["id"]
+            .as_str()
+            .expect("runtime snapshot id");
+        assert_ne!(
+            runtime_snapshot,
+            standalone_catalogs["catalog_snapshot"]["id"]
+                .as_str()
+                .expect("standalone snapshot id")
+        );
+        let blank_definition = runtime_catalogs["agent_definitions"]
+            .as_array()
+            .expect("agent definitions")
+            .iter()
+            .find(|definition| {
+                definition["role"] == "agent"
+                    && definition["sourceOrigin"] == "mobkit/authoring-agent-definitions"
+            })
+            .expect("blank authoring agent definition");
+        let document: MobpackDocument =
+            serde_json::from_value(runtime_catalogs["blank_mobpack"]["document"].clone())
+                .expect("blank document");
+
+        let standalone_rejects_runtime_snapshot = apply_mobpack_authoring_operation(&json!({
+            "document": document.clone(),
+            "expected_catalog_snapshot_id": runtime_snapshot,
+            "operation": {
+                "type": "add_agent_definition",
+                "definition_id": blank_definition["id"].clone()
+            }
+        }))
+        .expect_err("standalone apply_operation must not accept runtime snapshot");
+        assert!(
+            standalone_rejects_runtime_snapshot
+                .contains("catalog snapshot conflict for add_agent_definition"),
+            "{standalone_rejects_runtime_snapshot}"
+        );
+
+        let added = apply_mobpack_authoring_operation_with_runtime(
+            &json!({
+                "document": document,
+                "expected_catalog_snapshot_id": runtime_snapshot,
+                "operation": {
+                    "type": "add_agent_definition",
+                    "definition_id": blank_definition["id"].clone()
+                }
+            }),
+            Some(&runtime),
+        )
+        .expect("runtime apply_operation accepts runtime agent catalog snapshot");
+        let member_id = added["selection"]["id"]
+            .as_str()
+            .expect("member id")
+            .to_string();
+
+        let tool_added = apply_mobpack_authoring_operation_with_runtime(
+            &json!({
+                "document": added["document"].clone(),
+                "expected_catalog_snapshot_id": runtime_snapshot,
+                "operation": {
+                    "type": "add_member_tool",
+                    "member_id": member_id,
+                    "tool_id": "shell"
+                }
+            }),
+            Some(&runtime),
+        )
+        .expect("runtime apply_operation accepts runtime tool catalog snapshot");
+        assert_eq!(tool_added["operation"], json!("add_member_tool"));
+
+        let skill_toggled = apply_mobpack_authoring_operation_with_runtime(
+            &json!({
+                "document": tool_added["document"].clone(),
+                "expected_catalog_snapshot_id": runtime_snapshot,
+                "operation": {
+                    "type": "toggle_member_skill",
+                    "member_id": member_id,
+                    "skill_id": "mob.authoring.review"
+                }
+            }),
+            Some(&runtime),
+        )
+        .expect("runtime apply_operation accepts runtime skill catalog snapshot");
+        assert_eq!(skill_toggled["operation"], json!("toggle_member_skill"));
     }
 
     #[test]

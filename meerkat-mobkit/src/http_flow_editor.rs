@@ -356,8 +356,13 @@ fn handle_flow_editor_rpc_with_auth(
             )
         }
         method if crate::rpc::MOBPACK_AUTHORING_METHODS.contains(&method) => serde_json::to_value(
-            crate::rpc::handle_mobpack_authoring_rpc(method, &request.params, response_id)
-                .expect("known mobpack authoring method"),
+            crate::rpc::handle_mobpack_authoring_rpc_with_runtime(
+                method,
+                &request.params,
+                response_id,
+                runtime_catalog,
+            )
+            .expect("known mobpack authoring method"),
         )
         .unwrap_or_else(|_| {
             serde_json::json!({

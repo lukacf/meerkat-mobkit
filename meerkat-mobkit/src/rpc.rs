@@ -142,7 +142,8 @@ async fn handle_unified_mobpack_authoring_rpc(
         | "mobkit/tools/catalog"
         | "mobkit/skills/catalog"
         | "mobkit/agent_definitions/list"
-        | "mobkit/mobpacks/templates" => Some(mobpack_runtime_catalog_state(runtime).await),
+        | "mobkit/mobpacks/templates"
+        | "mobkit/mobpacks/apply_operation" => Some(mobpack_runtime_catalog_state(runtime).await),
         _ => None,
     };
     let result = match method {
@@ -166,8 +167,13 @@ async fn handle_unified_mobpack_authoring_rpc(
             runtime_catalog_state.as_ref(),
         )),
         _ => {
-            return handle_mobpack_authoring_rpc(method, params, response_id)
-                .expect("known mobpack authoring method");
+            return handle_mobpack_authoring_rpc_with_runtime(
+                method,
+                params,
+                response_id,
+                runtime_catalog_state.as_ref(),
+            )
+            .expect("known mobpack authoring method");
         }
     };
     match result {
@@ -195,6 +201,15 @@ pub(crate) fn handle_mobpack_authoring_rpc(
     params: &Value,
     response_id: Value,
 ) -> Option<JsonRpcResponse> {
+    handle_mobpack_authoring_rpc_with_runtime(method, params, response_id, None)
+}
+
+pub(crate) fn handle_mobpack_authoring_rpc_with_runtime(
+    method: &str,
+    params: &Value,
+    response_id: Value,
+    runtime: Option<&crate::mobpack::MobpackRuntimeCatalogState>,
+) -> Option<JsonRpcResponse> {
     let result = match method {
         "mobkit/mobpacks/schema" => Ok(crate::mobpack::mobpack_schema_response()),
         "mobkit/mobpacks/catalogs" => Ok(crate::mobpack::mobpack_catalogs_response()),
@@ -215,7 +230,7 @@ pub(crate) fn handle_mobpack_authoring_rpc(
         "mobkit/mobpacks/save" => crate::mobpack::save_mobpack_draft(params),
         "mobkit/mobpacks/delete" => crate::mobpack::delete_mobpack_draft(params),
         "mobkit/mobpacks/apply_operation" => {
-            crate::mobpack::apply_mobpack_authoring_operation(params)
+            crate::mobpack::apply_mobpack_authoring_operation_with_runtime(params, runtime)
         }
         "mobkit/mobpacks/graph_projection" => crate::mobpack::graph_projection_mobpack(params),
         "mobkit/mobpacks/graph_to_flow" => crate::mobpack::graph_to_flow_mobpack(params),
