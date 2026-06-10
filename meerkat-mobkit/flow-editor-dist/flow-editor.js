@@ -13997,7 +13997,8 @@ function App() {
     if (!window.MobKitFlowController?.graphProjectionDocument) return;
     let cancelled = false;
     const abort = new AbortController();
-    const projectionDocument = buildAuthoringProjection().document;
+    if (!authoringDocumentRef.current) return;
+    const projectionDocument = currentMobKitDocument();
     window.MobKitFlowController.graphProjectionDocument({
       ...projectionDocument,
       instances: [],
@@ -14131,14 +14132,9 @@ function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
         e.preventDefault();
-        const result = e.shiftKey ? studio.redo() : studio.undo();
-        if (result?.state) {
-          applyMobKitAuthoringReplacement({
-            intent: "system.replaceAuthoringDocument",
-            reason: e.shiftKey ? "redo" : "undo",
-            studio: result.state
-          });
-        }
+        showAuthoringFailure({
+          error: catalogs.errorView.authoringOperationUnavailableError || "MobKit authoring operation history is unavailable"
+        }, authoringFailureHead(e.shiftKey ? "redo" : "undo"));
       }
       if (e.key === "Escape") {
         clearSelection();
@@ -14239,47 +14235,20 @@ function App() {
     if (plan.deploySettings.changed) setDeploySettings(plan.deploySettings.value);
     if (plan.mobSettings.changed) setMobSettings(plan.mobSettings.value);
   };
-  const buildAuthoringProjection = (overrides = {}) => {
-    const nextStudio = {
-      members: studio.members,
-      schemas: studio.schemas,
-      instances: studio.instances,
-      edges: studio.edges,
-      frames: studio.frames,
-      skillRealms: studio.skillRealms,
-      ...overrides.studio || {}
-    };
-    const projectionMode = Object.prototype.hasOwnProperty.call(overrides, "editorMode") ? overrides.editorMode : editorMode === "advanced" ? "basic" : editorMode;
-    return window.MobKitFlowController.authoringDocumentFromState({
-      editorMode: projectionMode,
-      flow: overrides.flow || flow,
-      studio: nextStudio,
-      currentFlow,
-      deploySettings: overrides.deploySettings || deploySettings,
-      mobSettings: overrides.mobSettings || mobSettings,
-      contract,
-      modelCatalog: catalogs.models,
-      toolCatalog: catalogs.toolCatalog,
-      contractLoaded: !!catalogs.contractMeta.loaded
-    });
-  };
-  const buildDocument = (overrides = {}) => {
-    const projection = buildAuthoringProjection(overrides);
-    beginProjectionSync();
-    applyAuthoringDocumentProjection(projection);
-    return projection.document;
-  };
-  const currentMobKitDocument = (overrides = {}) => {
-    const hasOverrides = overrides && typeof overrides === "object" && Object.keys(overrides).length > 0;
-    if (!hasOverrides && authoringDocumentRef.current) return authoringDocumentRef.current;
-    return buildDocument(overrides);
+  const currentMobKitDocument = () => {
+    if (authoringDocumentRef.current) return authoringDocumentRef.current;
+    throw new Error(catalogs.errorView.authoringOperationMissingDocumentError || "MobKit authoring operation did not return a document");
   };
   const currentDraftGuard = () => window.MobKitFlowController.flowRegistryDraftGuard(currentFlow, currentFlowId);
   const buildMobKitProjectedDocument = async (overrides = {}) => {
     const requestToken = currentAuthoringRevision();
     if (editorMode !== "advanced") {
-      const document2 = currentMobKitDocument(overrides);
-      return { document: document2, requestToken };
+      try {
+        const document2 = currentMobKitDocument();
+        return { document: document2, requestToken };
+      } catch (error) {
+        return { document: null, requestToken, error: error?.message || String(error) };
+      }
     }
     const result = await applyMobKitAuthoringOperation({
       intent: "system.syncGraphToFlow",
@@ -14303,43 +14272,13 @@ function App() {
       const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, translatedOperation?.type);
       if (!availability.supported) return { ok: false, error: availability.error };
       const requestToken = currentAuthoringRevision();
-      const document2 = currentMobKitDocument();
+      let document2;
+      try {
+        document2 = currentMobKitDocument();
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) };
+      }
       const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, translatedOperation, currentDraftGuard());
-      if (!authoringRevisionIsCurrent(requestToken)) {
-        return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
-      }
-      const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
-        deployDefaults: catalogs.deployDefaults,
-        mobDefaults: catalogs.mobDefaults
-      });
-      if (!projection) return { ok: false, error: catalogs.errorView.authoringOperationMissingDocumentError };
-      beginProjectionSync();
-      applyAuthoringDocumentProjection(projection);
-      markDraft();
-      return result;
-    });
-  };
-  const applyMobKitAuthoringReplacement = async (overrides = {}) => {
-    return enqueueMobKitAuthoringTask(async () => {
-      const normalizedOverrides = window.MobKitFlowController.authoringReplacementFromIntent(
-        overrides?.intent || overrides?.operationType ? overrides : { intent: "system.replaceAuthoringDocument", ...overrides }
-      );
-      const operationType = normalizedOverrides.operationType;
-      const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operationType);
-      if (!availability.supported) return { ok: false, error: availability.error };
-      const requestToken = currentAuthoringRevision();
-      const document2 = currentMobKitDocument();
-      const operation = {
-        type: operationType,
-        ...normalizedOverrides.operation || {},
-        selection: normalizedOverrides.selection || null
-      };
-      if (normalizedOverrides.useAuthoringProjection) {
-        operation.document = buildAuthoringProjection(normalizedOverrides).document;
-      }
-      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, {
-        ...operation
-      }, currentDraftGuard());
       if (!authoringRevisionIsCurrent(requestToken)) {
         return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
       }
