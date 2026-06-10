@@ -6335,7 +6335,9 @@ assert.equal(deployPlanOutcome.stage, "draft");
 assert.equal(deployPlanOutcome.validationRows[0].head, "planned");
 
 const successfulRunOutcome = controller.deployOutcome({ mob_id: "deploy_me" }, {
+  executed: true,
   success: true,
+  status_code: 0,
   display_rows: [{ kind: "ok", glyph: "✓", head: "deployed", sub: "", meta: "deploy" }],
   validation: {
     ok: true,
@@ -6343,6 +6345,22 @@ const successfulRunOutcome = controller.deployOutcome({ mob_id: "deploy_me" }, {
 }, { execute: true });
 assert.equal(successfulRunOutcome.stage, "deployed");
 assert.equal(successfulRunOutcome.validation.ok, true);
+
+for (const [label, result] of [
+  ["missing success", { executed: true, status_code: 0 }],
+  ["missing executed", { success: true, status_code: 0 }],
+  ["missing status", { executed: true, success: true }],
+  ["nonzero status", { executed: true, success: true, status_code: 1 }],
+  ["plan-shaped response", { command: "rkat mob deploy /tmp/deploy.mobpack prompt" }],
+]) {
+  const incompleteRunOutcome = controller.deployOutcome({ mob_id: "deploy_me" }, {
+    ...result,
+    validation: {
+      ok: true,
+    },
+  }, { execute: true });
+  assert.equal(incompleteRunOutcome.stage, "draft", label);
+}
 
 assert.deepEqual(controller.deployPlanTraceState({ mob_id: "deploy_me" }, {
   command: "rkat mob deploy /tmp/deploy.mobpack prompt",
@@ -6384,7 +6402,9 @@ assert.deepEqual(controller.deployPlanTraceState({ name: "fallback mob" }, {}, {
 });
 
 const failedRunOutcome = controller.deployOutcome({ mob_id: "deploy_me" }, {
+  executed: true,
   success: false,
+  status_code: 1,
   display_rows: [{ kind: "crit", glyph: "!", head: "run failed", sub: "", meta: "deploy" }],
   validation: {
     ok: true,

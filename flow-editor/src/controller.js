@@ -10140,7 +10140,11 @@
   function deployOutcome(document, result, options = {}) {
     const validation = result?.validation || null;
     const executing = options.execute === true;
-    const deployOk = executing && result?.success !== false;
+    const deployOk =
+      executing &&
+      result?.executed === true &&
+      result?.success === true &&
+      result?.status_code === 0;
     return {
       document,
       deployResult: result || null,

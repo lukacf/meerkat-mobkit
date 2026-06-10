@@ -212,11 +212,21 @@ pub(crate) fn handle_mobpack_authoring_rpc_with_runtime(
 ) -> Option<JsonRpcResponse> {
     let result = match method {
         "mobkit/mobpacks/schema" => Ok(crate::mobpack::mobpack_schema_response()),
-        "mobkit/mobpacks/catalogs" => Ok(crate::mobpack::mobpack_catalogs_response()),
-        "mobkit/tools/catalog" => Ok(crate::mobpack::mobpack_tools_catalog_response()),
-        "mobkit/skills/catalog" => Ok(crate::mobpack::mobpack_skills_catalog_response()),
-        "mobkit/agent_definitions/list" => Ok(crate::mobpack::mobpack_agent_definitions_response()),
-        "mobkit/mobpacks/templates" => Ok(crate::mobpack::mobpack_templates_response()),
+        "mobkit/mobpacks/catalogs" => Ok(crate::mobpack::mobpack_catalogs_response_with_runtime(
+            runtime,
+        )),
+        "mobkit/tools/catalog" => Ok(crate::mobpack::mobpack_tools_catalog_response_with_runtime(
+            runtime,
+        )),
+        "mobkit/skills/catalog" => {
+            Ok(crate::mobpack::mobpack_skills_catalog_response_with_runtime(runtime))
+        }
+        "mobkit/agent_definitions/list" => {
+            Ok(crate::mobpack::mobpack_agent_definitions_response_with_runtime(runtime))
+        }
+        "mobkit/mobpacks/templates" => Ok(crate::mobpack::mobpack_templates_response_with_runtime(
+            runtime,
+        )),
         "mobkit/mobpacks/validate" => crate::mobpack::validate_mobpack(params)
             .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
         "mobkit/mobpacks/source" => crate::mobpack::source_mobpack(params)
@@ -4442,6 +4452,80 @@ comms = true
                 .as_array()
                 .is_some_and(|methods| methods.contains(&json!("mobkit/mobpacks/deploy"))),
             "{catalogs:#?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn mobpack_authoring_rpc_helper_preserves_runtime_catalog_binding()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = crate::mobpack::MobpackRuntimeCatalogState {
+            loaded_modules: vec!["editor-host".to_string()],
+            runtime_methods: vec![
+                "mobkit/mobpacks/catalogs".to_string(),
+                "mobkit/mobpacks/apply_operation".to_string(),
+                "mobkit/mobpacks/deploy".to_string(),
+            ],
+            has_contact_directory: true,
+            has_peer_mob_handles: false,
+            has_inproc_contacts: false,
+        };
+
+        let catalogs = super::handle_mobpack_authoring_rpc_with_runtime(
+            "mobkit/mobpacks/catalogs",
+            &json!({}),
+            json!(1),
+            Some(&runtime),
+        )
+        .expect("catalogs method");
+        let catalogs: Value = serde_json::to_value(catalogs)?;
+        assert_eq!(catalogs["result"]["runtime_backed"], json!(true));
+        assert_eq!(
+            catalogs["result"]["authoring_provider"]["runtime_binding"],
+            json!("bound")
+        );
+
+        let tools = super::handle_mobpack_authoring_rpc_with_runtime(
+            "mobkit/tools/catalog",
+            &json!({}),
+            json!(2),
+            Some(&runtime),
+        )
+        .expect("tools catalog method");
+        let tools: Value = serde_json::to_value(tools)?;
+        let mob_tool = tools["result"]["tool_catalog"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool["id"] == "mob")
+            .expect("mob tool");
+        assert_eq!(mob_tool["runtime_availability"]["available"], json!(false));
+
+        let agents = super::handle_mobpack_authoring_rpc_with_runtime(
+            "mobkit/agent_definitions/list",
+            &json!({}),
+            json!(3),
+            Some(&runtime),
+        )
+        .expect("agent definitions method");
+        let agents: Value = serde_json::to_value(agents)?;
+        assert_eq!(agents["result"]["runtime_backed"], json!(true));
+        let planner = agents["result"]["agent_definitions"]
+            .as_array()
+            .expect("agent definitions")
+            .iter()
+            .find(|definition| definition["role"] == "planner")
+            .expect("planner definition");
+        let planner_mob_tool = planner["toolDefinitions"]
+            .as_array()
+            .expect("planner tools")
+            .iter()
+            .find(|tool| tool["id"] == "mob")
+            .expect("planner mob tool");
+        assert_eq!(
+            planner_mob_tool["runtimeAvailability"]["state"],
+            json!("unavailable")
         );
 
         Ok(())

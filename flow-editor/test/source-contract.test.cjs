@@ -19,6 +19,7 @@ const tweaksPanel = src("tweaks-panel.jsx");
 const devServer = fs.readFileSync(path.join(root, "dev-server.cjs"), "utf8");
 const mobpackRust = fs.readFileSync(path.join(root, "..", "meerkat-mobkit", "src", "mobpack.rs"), "utf8");
 const flowEditorHttpRust = fs.readFileSync(path.join(root, "..", "meerkat-mobkit", "src", "http_flow_editor.rs"), "utf8");
+const rpcRust = fs.readFileSync(path.join(root, "..", "meerkat-mobkit", "src", "rpc.rs"), "utf8");
 const unifiedRuntimeHttpRust = fs.readFileSync(path.join(root, "..", "meerkat-mobkit", "src", "unified_runtime", "http.rs"), "utf8");
 const flowEditorBinRust = fs.readFileSync(path.join(root, "..", "meerkat-mobkit", "src", "bin", "mobkit_flow_editor.rs"), "utf8");
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
@@ -133,6 +134,9 @@ assert.match(mobpackRust, /fn mobpack_agent_definition_by_id\([\s\S]*runtime: Op
 assert.match(mobpackRust, /fn apply_member_tool_operation\([\s\S]*runtime: Option<&MobpackRuntimeCatalogState>[\s\S]*tool_catalog_response_with_runtime_state\(runtime\)[\s\S]*MobKit tool is unavailable in current runtime/, "MobKit tool mutations must validate against runtime-backed tool availability");
 assert.match(mobpackRust, /fn mobpack_agent_definitions_response_with_runtime\([\s\S]*runtime: Option<&MobpackRuntimeCatalogState>[\s\S]*let tool_catalog = tool_catalog_response_with_runtime_state\(runtime\)/, "Agent definitions must embed the runtime-backed tool catalog when a MobKit runtime is bound");
 assert.match(mobpackRust, /fn mobpack_templates_response_with_runtime\([\s\S]*runtime: Option<&MobpackRuntimeCatalogState>[\s\S]*let tool_catalog = tool_catalog_response_with_runtime_state\(runtime\)/, "Sample template agent definitions must embed the runtime-backed tool catalog when a MobKit runtime is bound");
+assert.match(rpcRust, /handle_mobpack_authoring_rpc_with_runtime[\s\S]*"mobkit\/mobpacks\/catalogs" => Ok\(crate::mobpack::mobpack_catalogs_response_with_runtime\([\s\S]*runtime,[\s\S]*\)\)/, "MobKit authoring RPC helper must preserve runtime-backed composed catalogs");
+assert.match(rpcRust, /handle_mobpack_authoring_rpc_with_runtime[\s\S]*"mobkit\/tools\/catalog" => Ok\(crate::mobpack::mobpack_tools_catalog_response_with_runtime\([\s\S]*runtime,[\s\S]*\)\)/, "MobKit authoring RPC helper must preserve runtime-backed tools catalog");
+assert.match(rpcRust, /handle_mobpack_authoring_rpc_with_runtime[\s\S]*"mobkit\/agent_definitions\/list" => \{[\s\S]*mobpack_agent_definitions_response_with_runtime\(runtime\)/, "MobKit authoring RPC helper must preserve runtime-backed agent definitions");
 assert.match(mobpackRust, /fn standalone_authoring_provider[\s\S]*"runtime_binding":\s*"unbound"[\s\S]*"runtime_unavailable_reason":\s*STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON/, "MobKit catalog APIs must expose explicit standalone authoring provider metadata instead of implying runtime backing");
 assert.match(mobpackRust, /fn runtime_authoring_provider[\s\S]*"id":\s*"unified_runtime"[\s\S]*"runtime_binding":\s*"bound"[\s\S]*"deploy_target"[\s\S]*"command":\s*"rkat mob deploy"/, "MobKit catalog APIs must expose a runtime-bound authoring provider for live UnifiedRuntime surfaces");
 assert.match(mobpackRust, /pub fn mobpack_catalogs_response\(\)[\s\S]*mobpack_catalogs_response_with_runtime\(None\)[\s\S]*pub fn mobpack_catalogs_response_with_runtime\([\s\S]*runtime: Option<&MobpackRuntimeCatalogState>[\s\S]*\) -> Value \{[\s\S]*"authoring_provider":\s*provider\.clone\(\)[\s\S]*"runtime_binding":\s*runtime_binding/, "Composed MobKit catalogs must keep standalone and runtime-bound provider paths explicit");
@@ -1135,6 +1139,7 @@ assert.match(controller, /function validationOutcome/, "controller plane must ow
 assert.match(controller, /function exportOutcome/, "controller plane must own publish/export-result stage and display row projection");
 assert.match(controller, /function exportOutcome[\s\S]*if \(validation\?\.ok\) \{[\s\S]*requireExportArchiveMetadata\(result\);[\s\S]*stage:\s*validation\?\.ok \? publishedStage : "draft"/, "controller publish outcome must verify MobKit export archive metadata before returning a published stage");
 assert.match(controller, /function deployOutcome/, "controller plane must own deploy-result stage and display row projection");
+assert.match(controller, /function deployOutcome[\s\S]*result\?\.executed === true[\s\S]*result\?\.success === true[\s\S]*result\?\.status_code === 0[\s\S]*stage:\s*validation\?\.ok && deployOk \? "deployed" : "draft"/, "controller deploy outcome must require explicit executed success and zero rkat exit status before showing deployed");
 assert.match(controller, /function deployErrorOutcome/, "controller plane must own deploy error diagnostic rows");
 assert.match(controller, /function sourceErrorOutcome/, "controller plane must own source export error diagnostic rows");
 assert.match(controller, /function validationSheetState/, "controller plane must own validation sheet severity counts and action enablement");
