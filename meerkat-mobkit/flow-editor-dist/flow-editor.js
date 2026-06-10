@@ -8550,7 +8550,13 @@ window.MOBKIT_BOOT = {
   function createAuthoringOperationRunner(options = {}) {
     const hooks = options && typeof options === "object" ? options : {};
     let queue = Promise.resolve();
-    const runOperation = async (operation) => {
+    const runOperation = async (operation, enqueuedRevision) => {
+      if (hooks.isRevisionCurrent && !hooks.isRevisionCurrent(enqueuedRevision)) {
+        return {
+          ok: false,
+          error: hooks.getStaleError?.() || "MobKit authoring operation result is stale",
+        };
+      }
       const translatedOperation = authoringOperationFromIntent(operation);
       const availability = authoringOperationAvailability(
         hooks.getAuthoringOperations?.() || hooks.authoringOperations || {},
@@ -8587,7 +8593,8 @@ window.MOBKIT_BOOT = {
       return result;
     };
     return (operation) => {
-      const run = queue.catch(() => null).then(() => runOperation(operation));
+      const enqueuedRevision = hooks.getCurrentRevision?.();
+      const run = queue.catch(() => null).then(() => runOperation(operation, enqueuedRevision));
       queue = run.catch(() => null);
       return run;
     };
@@ -9320,10 +9327,7 @@ window.MOBKIT_BOOT = {
     const supportedRows = stepTypes
       .filter((type) => metadata[type])
       .map((type) => metadata[type]);
-    const supported = new Set(stepTypes);
-    const disabledRows = (view.flowPrimitiveRows || [])
-      .filter((row) => row?.disabled && !supported.has(row.id));
-    return [...supportedRows, ...disabledRows];
+    return supportedRows;
   }
 
   function graphControlNodes(contract, graphView = null) {
@@ -9384,26 +9388,7 @@ window.MOBKIT_BOOT = {
         pick: { kind: "gate", gateKind: node.gateKind },
       }))
       .filter((row) => row.id);
-    const terminalRows = (view.terminalPaletteRows || [])
-      .filter((node) => {
-        if (!ql) return true;
-        return [
-          node?.label,
-          node?.meta,
-          node?.id,
-        ].map((part) => String(part || "")).join(" ").toLowerCase().includes(ql);
-      })
-      .map((node) => ({
-        id: String(node.id || ""),
-        kind: String(node.id || ""),
-        glyph: String(node.glyph || ""),
-        label: String(node.label || ""),
-        meta: String(node.meta || view.terminalAuthoringLockedHint || ""),
-        disabled: true,
-        disabledTitle: view.terminalAuthoringLockedHint,
-        pick: { kind: "terminal", terminalKind: node.id },
-      }))
-      .filter((row) => row.id);
+    const terminalRows = [];
     return {
       searchIcon: view.addNodeSearchIcon,
       searchPlaceholder: view.addNodeSearchPlaceholder,
@@ -10166,7 +10151,11 @@ window.MOBKIT_BOOT = {
   function deployOutcome(document, result, options = {}) {
     const validation = result?.validation || null;
     const executing = options.execute === true;
-    const deployOk = executing && result?.success !== false;
+    const deployOk =
+      executing &&
+      result?.executed === true &&
+      result?.success === true &&
+      result?.status_code === 0;
     return {
       document,
       deployResult: result || null,
@@ -12810,7 +12799,7 @@ function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose,
         if (e.key === "Escape") onClose();
       }
     }
-  ), /* @__PURE__ */ React.createElement("button", { className: "add-menu__x", onClick: onClose, title: menuState.closeTitle }, menuState.closeLabel)), /* @__PURE__ */ React.createElement("div", { className: "add-menu__scroll" }, menuState.hasMembers && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.agentsLabel), menuState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__dot", "data-role": row.role, style: row.dotStyle }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.model))), menuState.hasControls && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.controlsLabel), menuState.controlRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__glyph" }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.meta))), menuState.hasTerminals && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.terminalsLabel), menuState.terminalRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row is-disabled", disabled: true, title: row.disabledTitle }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__sq", "data-kind": row.id }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label))), menuState.isEmpty && /* @__PURE__ */ React.createElement("div", { className: "add-menu__empty" }, menuState.emptyLabel)), onJumpToAgents && /* @__PURE__ */ React.createElement("button", { className: "add-menu__foot", onClick: () => onJumpToAgents(null) }, menuState.jumpLabel));
+  ), /* @__PURE__ */ React.createElement("button", { className: "add-menu__x", onClick: onClose, title: menuState.closeTitle }, menuState.closeLabel)), /* @__PURE__ */ React.createElement("div", { className: "add-menu__scroll" }, menuState.hasMembers && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.agentsLabel), menuState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__dot", "data-role": row.role, style: row.dotStyle }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.model))), menuState.hasControls && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.controlsLabel), menuState.controlRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__glyph" }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.meta))), menuState.isEmpty && /* @__PURE__ */ React.createElement("div", { className: "add-menu__empty" }, menuState.emptyLabel)), onJumpToAgents && /* @__PURE__ */ React.createElement("button", { className: "add-menu__foot", onClick: () => onJumpToAgents(null) }, menuState.jumpLabel));
 }
 window.Inspector = Inspector;
 window.AddNodeMenu = AddNodeMenu;
@@ -13180,18 +13169,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       onChange: (e) => change(window.MobKitFlowController.memberSystemPromptPatch(e.target.value)),
       placeholder: editorState.systemPromptPlaceholder
     }
-  )), !editorState.isRealmProfile && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.budgetSection.title), /* @__PURE__ */ React.createElement(
-    "select",
-    {
-      className: "field__select",
-      value: editorState.budgetSection.value,
-      disabled: editorState.budgetSection.disabled,
-      title: editorState.budgetSection.disabledReason,
-      onChange: () => {
-      }
-    },
-    editorState.budgetSection.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
-  ), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 8 } }, editorState.budgetSection.disabledReason), editorState.budgetSection.showWeight && /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.budgetSection.weightLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", value: editorState.budgetSection.weightValue, disabled: true, readOnly: true })), editorState.budgetSection.showTokenCap && /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.budgetSection.tokenCapLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", value: editorState.budgetSection.tokenCapValue, disabled: true, readOnly: true }))), /* @__PURE__ */ React.createElement("details", { className: "section agent-runtime" }, /* @__PURE__ */ React.createElement("summary", { className: "section__title agent-runtime__summary" }, /* @__PURE__ */ React.createElement("span", null, editorState.runtimeSectionTitle)), /* @__PURE__ */ React.createElement("div", { className: "agent-runtime__body" }, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.profileBindingLabel), /* @__PURE__ */ React.createElement(
+  )), /* @__PURE__ */ React.createElement("details", { className: "section agent-runtime" }, /* @__PURE__ */ React.createElement("summary", { className: "section__title agent-runtime__summary" }, /* @__PURE__ */ React.createElement("span", null, editorState.runtimeSectionTitle)), /* @__PURE__ */ React.createElement("div", { className: "agent-runtime__body" }, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.profileBindingLabel), /* @__PURE__ */ React.createElement(
     "select",
     {
       className: "field__select",
@@ -14192,6 +14170,10 @@ function App() {
       setFlows((rows) => window.MobKitFlowController.flowRegistryMarkDraftPatch(rows, currentFlowId));
     }
   }, [clearSourceProjection, currentFlowId]);
+  const beginDocumentHydration = React.useCallback(() => {
+    authoringRevision.current += 1;
+    clearSourceProjection();
+  }, [clearSourceProjection]);
   const showAuthoringFailure = React.useCallback((resultOrError, fallbackHead = "") => {
     const errorView = catalogs.errorView || {};
     const authoringHead = fallbackHead || errorView.authoringOperationFailedHead;
@@ -15012,6 +14994,7 @@ function App() {
     if (hydrationPersistence.ok) {
       persistedDocumentSig.current = hydrationPersistence.signature;
     }
+    beginDocumentHydration();
     setCurrentAuthoringDocument(hydration.document);
     hydratingDocumentRef.current = true;
     setCatalogs((current) => window.MobKitFlowController.catalogSkillRealmsPatch(current, hydration.skillRealms));
