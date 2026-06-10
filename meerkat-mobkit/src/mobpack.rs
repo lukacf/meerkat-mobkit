@@ -8452,22 +8452,18 @@ fn graph_connection_edge_from_endpoints(
     }))
 }
 
-fn apply_graph_operation_sections(
-    document: &mut MobpackDocument,
+fn reject_raw_graph_operation_sections(
     operation: &serde_json::Map<String, Value>,
     fields: &[&str],
-) {
+) -> Result<(), String> {
     for field in fields {
-        if let Some(value) = operation.get(*field) {
-            match *field {
-                "flow" => document.flow = value.clone(),
-                "edges" => document.edges = value.clone(),
-                "frames" => document.frames = value.clone(),
-                "instances" => document.instances = value.clone(),
-                _ => {}
-            }
+        if operation.get(*field).is_some() {
+            return Err(format!(
+                "graph authoring operations do not accept raw {field}; use semantic graph operations"
+            ));
         }
     }
+    Ok(())
 }
 
 fn apply_insert_graph_node_operation(
@@ -8528,7 +8524,7 @@ fn apply_insert_graph_node_operation(
         }
         document.edges = Value::Array(edges);
     }
-    apply_graph_operation_sections(document, operation, &["frames"]);
+    reject_raw_graph_operation_sections(operation, &["frames"])?;
     document.flow = graph_to_flow_from_document(document);
     let selected_id = semantic_selection.unwrap_or(selected_id);
     Ok(json!({ "kind": "instance", "id": selected_id, "inserted_ids": inserted_ids }))
@@ -8568,7 +8564,7 @@ fn apply_update_graph_node_operation(
     )?;
     instances[index] = next_instance;
     document.instances = Value::Array(instances);
-    apply_graph_operation_sections(document, operation, &["frames"]);
+    reject_raw_graph_operation_sections(operation, &["frames"])?;
     document.flow = graph_to_flow_from_document(document);
     Ok(json!({ "kind": "instance", "id": instance_id }))
 }
@@ -9154,7 +9150,7 @@ fn apply_delete_graph_node_operation(
     clear_deleted_graph_condition_edges(&mut edges, &instance_id);
     document.instances = Value::Array(instances);
     document.edges = Value::Array(edges);
-    apply_graph_operation_sections(document, operation, &["frames"]);
+    reject_raw_graph_operation_sections(operation, &["frames"])?;
     document.flow = graph_to_flow_from_document(document);
     Ok(json!({ "kind": null, "id": null }))
 }
@@ -9179,7 +9175,7 @@ fn apply_connect_graph_nodes_operation(
     edges.push(edge);
     document.edges = Value::Array(edges);
     document.flow = graph_to_flow_from_document(document);
-    apply_graph_operation_sections(document, operation, &["frames"]);
+    reject_raw_graph_operation_sections(operation, &["frames"])?;
     Ok(json!({ "kind": "edge", "id": id }))
 }
 
@@ -9213,7 +9209,7 @@ fn apply_update_graph_edge_operation(
     validate_graph_edge(&next_edge, &edges, &instances, Some(&edge_id))?;
     edges[index] = next_edge;
     document.edges = Value::Array(edges);
-    apply_graph_operation_sections(document, operation, &["frames"]);
+    reject_raw_graph_operation_sections(operation, &["frames"])?;
     document.flow = graph_to_flow_from_document(document);
     Ok(json!({ "kind": "edge", "id": edge_id }))
 }
@@ -9600,7 +9596,7 @@ fn apply_delete_graph_edge_operation(
         return Err(format!("graph edge not found: {edge_id}"));
     }
     document.edges = Value::Array(edges);
-    apply_graph_operation_sections(document, operation, &["frames"]);
+    reject_raw_graph_operation_sections(operation, &["frames"])?;
     document.flow = graph_to_flow_from_document(document);
     Ok(json!({ "kind": null, "id": null }))
 }
@@ -27010,6 +27006,37 @@ model = "gpt-5.5"
             raw_edge.contains("connect_graph_nodes does not accept raw edge"),
             "{raw_edge}"
         );
+
+        for operation in [
+            json!({
+                "type": "insert_graph_node",
+                "pick": { "kind": "memberInstance", "memberId": "reviewer" },
+                "cell": { "col": 2, "row": 0 },
+                "frames": [{ "id": "ui_frame", "kind": "Branch" }]
+            }),
+            json!({
+                "type": "update_graph_node",
+                "instance_id": "n_review",
+                "patch": { "label": "Review" },
+                "frames": [{ "id": "ui_frame", "kind": "Branch" }]
+            }),
+            json!({
+                "type": "connect_graph_nodes",
+                "from_id": "n_plan",
+                "to_id": "n_review",
+                "frames": [{ "id": "ui_frame", "kind": "Branch" }]
+            }),
+        ] {
+            let err = apply_mobpack_authoring_operation(&json!({
+                "document": graph_apply_operation_document(),
+                "operation": operation
+            }))
+            .expect_err("raw graph frames must fail");
+            assert!(
+                err.contains("graph authoring operations do not accept raw frames"),
+                "{err}"
+            );
+        }
     }
 
     #[test]
