@@ -242,10 +242,16 @@ window.MOBKIT_BOOT = {
         return { type: "delete_schema_field", schema_id: input.schemaId, field_id: input.fieldId };
       case "settings.updateDeploy":
         return { type: "update_deploy_settings", deploy: input.deploy, selection: input.selection || null };
+      case "settings.updateDeployField":
+        return { type: "update_deploy_settings", field: input.field, value: input.value, selection: input.selection || null };
       case "settings.updateMob":
         return { type: "update_mob_settings", mob_settings: input.mobSettings, selection: input.selection || null };
+      case "settings.updateMobField":
+        return { type: "update_mob_settings", field: input.field, value: input.value, selection: input.selection || null };
       case "settings.updateRoleWiring":
         return { type: "update_role_wiring", role_wiring: input.roleWiring || [], selection: input.selection || null };
+      case "settings.editRoleWiring":
+        return { type: "update_role_wiring", action: input.action, index: input.index, field: input.field, value: input.value, selection: input.selection || null };
       case "basic.updateStep":
         return { type: "update_flow_step", step_id: input.stepId, patch: input.patch || {} };
       case "basic.editStep":
@@ -15104,8 +15110,9 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     const next = window.MobKitFlowController.deploySettingsFieldPatch(deploySettings, field, value, { contract, modelCatalog });
     if (applyAuthoringIntent) {
       applyAuthoringIntent({
-        intent: "settings.updateDeploy",
-        deploy: next
+        intent: "settings.updateDeployField",
+        field,
+        value
       });
     } else {
       setDeploySettings(next);
@@ -15115,13 +15122,34 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     const next = window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, field, value, { contract });
     if (applyAuthoringIntent) {
       applyAuthoringIntent({
-        intent: field === "roleWiring" ? "settings.updateRoleWiring" : "settings.updateMob",
-        roleWiring: next.roleWiring || [],
-        mobSettings: next
+        intent: "settings.updateMobField",
+        field,
+        value
       });
     } else {
       setMobSettings(next);
     }
+  };
+  const editRoleWiring = (operation) => {
+    if (applyAuthoringIntent) {
+      applyAuthoringIntent({
+        intent: "settings.editRoleWiring",
+        ...operation
+      });
+      return;
+    }
+    const current = mobSettings.roleWiring || [];
+    let next = current;
+    if (operation.action === "add") {
+      next = window.MobKitFlowController.mobRoleWiringAddPatch(current, controlState.profileChoices);
+    } else if (operation.action === "delete") {
+      next = window.MobKitFlowController.mobRoleWiringDeletePatch(current, operation.index);
+    } else if (operation.action === "set_source") {
+      next = window.MobKitFlowController.mobRoleWiringSourcePatch(current, operation.index, operation.value, controlState.profileChoices);
+    } else if (operation.action === "set_target") {
+      next = window.MobKitFlowController.mobRoleWiringTargetPatch(current, operation.index, operation.value, controlState.profileChoices);
+    }
+    setMobSettings(window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, "roleWiring", next, { contract }));
   };
   const controlState = window.MobKitFlowController.tweaksControlState({
     flows,
@@ -15188,7 +15216,7 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
       value: mobSettings.roleWiring || [],
       profileOptions: controlState.profileChoices,
       settingsView,
-      onChange: (roleWiring) => setMobField("roleWiring", roleWiring)
+      onAction: editRoleWiring
     }
   ), /* @__PURE__ */ React.createElement(
     TweakSelect,
@@ -15255,19 +15283,19 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     }
   )));
 }
-function RoleWiringEditor({ value, profileOptions, settingsView, onChange }) {
+function RoleWiringEditor({ value, profileOptions, settingsView, onAction }) {
   const wiringState = window.MobKitFlowController.mobRoleWiringEditorState(value, profileOptions, settingsView);
   const updateSource = (index, value2) => {
-    onChange(window.MobKitFlowController.mobRoleWiringSourcePatch(wiringState.wiring, index, value2, wiringState.options));
+    onAction && onAction({ action: "set_source", index, value: value2 });
   };
   const updateTarget = (index, value2) => {
-    onChange(window.MobKitFlowController.mobRoleWiringTargetPatch(wiringState.wiring, index, value2, wiringState.options));
+    onAction && onAction({ action: "set_target", index, value: value2 });
   };
   const removeRule = (index) => {
-    onChange(window.MobKitFlowController.mobRoleWiringDeletePatch(wiringState.wiring, index));
+    onAction && onAction({ action: "delete", index });
   };
   const addRule = () => {
-    onChange(window.MobKitFlowController.mobRoleWiringAddPatch(wiringState.wiring, wiringState.options));
+    onAction && onAction({ action: "add" });
   };
   return /* @__PURE__ */ React.createElement("div", { className: "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, wiringState.label), /* @__PURE__ */ React.createElement("span", null, wiringState.countLabel)), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 6 } }, wiringState.wiring.map((rule, index) => /* @__PURE__ */ React.createElement("div", { key: `${rule.a}:${rule.b}:${index}`, style: { display: "grid", gridTemplateColumns: "1fr 1fr 26px", gap: 6 } }, /* @__PURE__ */ React.createElement("select", { className: "twk-field", value: rule.a, onChange: (e) => updateSource(index, e.target.value) }, wiringState.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "twk-field", value: rule.b, onChange: (e) => updateTarget(index, e.target.value) }, wiringState.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("button", { className: "twk-field", style: { padding: 0 }, type: "button", onClick: () => removeRule(index) }, "\xD7"))), /* @__PURE__ */ React.createElement("button", { className: "twk-field", type: "button", disabled: wiringState.addDisabled, onClick: addRule }, wiringState.addLabel)));
 }

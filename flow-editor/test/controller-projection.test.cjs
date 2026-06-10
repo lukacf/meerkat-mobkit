@@ -5,6 +5,49 @@ global.window = {};
 require("../src/controller.js");
 
 const controller = global.window.MobKitFlowController;
+assert.deepEqual(
+  controller.authoringOperationFromIntent({
+    intent: "settings.updateDeployField",
+    field: "prompt",
+    value: "Named field prompt.",
+    selection: { kind: null, id: null },
+  }),
+  {
+    type: "update_deploy_settings",
+    field: "prompt",
+    value: "Named field prompt.",
+    selection: { kind: null, id: null },
+  },
+);
+assert.deepEqual(
+  controller.authoringOperationFromIntent({
+    intent: "settings.updateMobField",
+    field: "backendDefault",
+    value: "external",
+  }),
+  {
+    type: "update_mob_settings",
+    field: "backendDefault",
+    value: "external",
+    selection: null,
+  },
+);
+assert.deepEqual(
+  controller.authoringOperationFromIntent({
+    intent: "settings.editRoleWiring",
+    action: "set_target",
+    index: 0,
+    value: "m_reviewer",
+  }),
+  {
+    type: "update_role_wiring",
+    action: "set_target",
+    index: 0,
+    field: undefined,
+    value: "m_reviewer",
+    selection: null,
+  },
+);
 assert.deepEqual(controller.emptyAuthoringFlowState(), {
   name: "",
   steps: [],

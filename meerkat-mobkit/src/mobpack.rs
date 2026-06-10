@@ -1312,7 +1312,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "update_deploy_settings",
             "plane": "deploy",
             "authority": "mobkit",
-            "requires": ["deploy"],
+            "requires": ["deploy_or_field"],
             "mutates": ["document.deploy"],
             "projection_document_supported": false
         },
@@ -1320,7 +1320,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "update_mob_settings",
             "plane": "deploy",
             "authority": "mobkit",
-            "requires": ["mob_settings"],
+            "requires": ["mob_settings_or_field"],
             "mutates": ["document.mob_settings"],
             "projection_document_supported": false
         },
@@ -1328,7 +1328,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "update_role_wiring",
             "plane": "deploy",
             "authority": "mobkit",
-            "requires": ["role_wiring"],
+            "requires": ["role_wiring_or_action"],
             "mutates": ["document.mob_settings.roleWiring"],
             "projection_document_supported": false
         },
@@ -4477,31 +4477,57 @@ fn apply_update_deploy_settings_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    let Some(deploy) = operation.get("deploy") else {
-        return Err("update_deploy_settings requires deploy object".to_string());
-    };
-    document.deploy = deploy.clone();
-    Ok(operation
-        .get("selection")
+    if let Some(deploy) = operation.get("deploy") {
+        document.deploy = deploy.clone();
+        return Ok(operation_selection_or_clear(operation));
+    }
+    let field = operation
+        .get("field")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "update_deploy_settings requires deploy object or field".to_string())?;
+    let value = operation.get("value").cloned().unwrap_or(Value::Null);
+    let key = deploy_settings_field_key(field)
+        .ok_or_else(|| format!("unsupported deploy settings field: {field}"))?;
+    let mut settings = document
+        .deploy
+        .as_object()
         .cloned()
-        .unwrap_or_else(|| json!({ "kind": null, "id": null })))
+        .unwrap_or_else(serde_json::Map::new);
+    settings.insert(key.to_string(), value);
+    document.deploy = Value::Object(settings);
+    Ok(operation_selection_or_clear(operation))
 }
 
 fn apply_update_mob_settings_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    let Some(settings) = operation
+    if let Some(settings) = operation
         .get("mob_settings")
         .or_else(|| operation.get("mobSettings"))
-    else {
-        return Err("update_mob_settings requires mob_settings object".to_string());
-    };
-    document.mob_settings = settings.clone();
-    Ok(operation
-        .get("selection")
+    {
+        document.mob_settings = settings.clone();
+        return Ok(operation_selection_or_clear(operation));
+    }
+    let field = operation
+        .get("field")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "update_mob_settings requires mob_settings object or field".to_string())?;
+    let value = operation.get("value").cloned().unwrap_or(Value::Null);
+    let key = mob_settings_field_key(field)
+        .ok_or_else(|| format!("unsupported mob settings field: {field}"))?;
+    let mut settings = document
+        .mob_settings
+        .as_object()
         .cloned()
-        .unwrap_or_else(|| json!({ "kind": null, "id": null })))
+        .unwrap_or_else(serde_json::Map::new);
+    settings.insert(key.to_string(), value);
+    document.mob_settings = Value::Object(settings);
+    Ok(operation_selection_or_clear(operation))
 }
 
 fn apply_update_role_wiring_operation(
@@ -4517,17 +4543,164 @@ fn apply_update_role_wiring_operation(
         .get("role_wiring")
         .or_else(|| operation.get("roleWiring"))
     {
-        if !document.mob_settings.is_object() {
-            document.mob_settings = json!({});
-        }
-        document.mob_settings["roleWiring"] = role_wiring.clone();
+        set_document_role_wiring(document, role_wiring.clone());
+    } else if let Some(action) = operation
+        .get("action")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        apply_role_wiring_action(document, operation, action)?;
     } else {
-        return Err("update_role_wiring requires role_wiring or mob_settings".to_string());
+        return Err("update_role_wiring requires role_wiring, mob_settings, or action".to_string());
     }
-    Ok(operation
-        .get("selection")
+    Ok(operation_selection_or_clear(operation))
+}
+
+fn deploy_settings_field_key(field: &str) -> Option<&'static str> {
+    match field {
+        "command" => Some("command"),
+        "surface" => Some("surface"),
+        "trustPolicy" | "trust_policy" => Some("trust_policy"),
+        "model" => Some("model"),
+        "maxDuration" | "max_duration" => Some("max_duration"),
+        "maxToolCalls" | "max_tool_calls" => Some("max_tool_calls"),
+        "maxTotalTokens" | "max_total_tokens" => Some("max_total_tokens"),
+        "isolated" => Some("isolated"),
+        "realm" => Some("realm"),
+        "instance" => Some("instance"),
+        "realmBackend" | "realm_backend" => Some("realm_backend"),
+        "contextRoot" | "context_root" => Some("context_root"),
+        "stateRoot" | "state_root" => Some("state_root"),
+        "userConfigRoot" | "user_config_root" => Some("user_config_root"),
+        "prompt" => Some("prompt"),
+        _ => None,
+    }
+}
+
+fn mob_settings_field_key(field: &str) -> Option<&'static str> {
+    match field {
+        "orchestrator" => Some("orchestrator"),
+        "autoWireOrchestrator" | "auto_wire_orchestrator" => Some("autoWireOrchestrator"),
+        "backendDefault" | "backend_default" => Some("backendDefault"),
+        "externalAddressBase" | "external_address_base" => Some("externalAddressBase"),
+        "advanced" => Some("advanced"),
+        _ => None,
+    }
+}
+
+fn set_document_role_wiring(document: &mut MobpackDocument, role_wiring: Value) {
+    let mut settings = document
+        .mob_settings
+        .as_object()
         .cloned()
-        .unwrap_or_else(|| json!({ "kind": null, "id": null })))
+        .unwrap_or_else(serde_json::Map::new);
+    settings.insert("roleWiring".to_string(), role_wiring);
+    document.mob_settings = Value::Object(settings);
+}
+
+fn apply_role_wiring_action(
+    document: &mut MobpackDocument,
+    operation: &serde_json::Map<String, Value>,
+    action: &str,
+) -> Result<(), String> {
+    let mut wiring = editor_role_wiring_pairs(
+        document
+            .mob_settings
+            .get("roleWiring")
+            .or_else(|| document.mob_settings.get("role_wiring")),
+    );
+    let member_ids = document_member_ids(document);
+    match action {
+        "add" => {
+            let first = member_ids
+                .first()
+                .cloned()
+                .ok_or_else(|| "update_role_wiring add requires at least one member".to_string())?;
+            let second = member_ids.get(1).cloned().unwrap_or_else(|| first.clone());
+            wiring.push((first, second));
+        }
+        "delete" | "remove" => {
+            let index = operation_index(operation, "update_role_wiring delete")?;
+            if index >= wiring.len() {
+                return Err(format!("role wiring index out of range: {index}"));
+            }
+            wiring.remove(index);
+        }
+        "set_source" | "set_target" => {
+            let index = operation_index(operation, "update_role_wiring set")?;
+            if index >= wiring.len() {
+                return Err(format!("role wiring index out of range: {index}"));
+            }
+            let value = operation
+                .get("value")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "update_role_wiring set requires value".to_string())?;
+            if !member_ids.is_empty() && !member_ids.iter().any(|id| id == value) {
+                return Err(format!("role wiring value is not a member id: {value}"));
+            }
+            if action == "set_source" {
+                wiring[index].0 = value.to_string();
+            } else {
+                wiring[index].1 = value.to_string();
+            }
+        }
+        other => return Err(format!("unsupported update_role_wiring action: {other}")),
+    }
+    set_document_role_wiring(
+        document,
+        Value::Array(
+            wiring
+                .into_iter()
+                .filter(|(a, b)| !a.trim().is_empty() && !b.trim().is_empty())
+                .map(|(a, b)| json!({ "a": a, "b": b }))
+                .collect(),
+        ),
+    );
+    Ok(())
+}
+
+fn operation_index(
+    operation: &serde_json::Map<String, Value>,
+    context: &str,
+) -> Result<usize, String> {
+    let index = operation
+        .get("index")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("{context} requires index"))?;
+    usize::try_from(index).map_err(|_| format!("{context} index is too large"))
+}
+
+fn document_member_ids(document: &MobpackDocument) -> Vec<String> {
+    document
+        .members
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|member| {
+            member
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        })
+        .collect()
+}
+
+fn editor_role_wiring_pairs(value: Option<&Value>) -> Vec<(String, String)> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|rule| {
+            let a = rule.get("a").and_then(Value::as_str)?.trim();
+            let b = rule.get("b").and_then(Value::as_str)?.trim();
+            (!a.is_empty() && !b.is_empty()).then(|| (a.to_string(), b.to_string()))
+        })
+        .collect()
 }
 
 fn apply_add_agent_definition_operation(
@@ -26129,38 +26302,104 @@ model = "gpt-5.5"
             settings["document"]["deploy"]["prompt"],
             json!("Payload section prompt.")
         );
+        let field_settings = apply_mobpack_authoring_operation(&json!({
+            "document": settings["document"],
+            "operation": {
+                "type": "update_deploy_settings",
+                "field": "prompt",
+                "value": "Field section prompt.",
+                "selection": { "kind": null, "id": null }
+            }
+        }))
+        .expect("apply deploy settings field");
+        assert_eq!(
+            field_settings["document"]["deploy"]["prompt"],
+            json!("Field section prompt.")
+        );
+        let mob_settings = apply_mobpack_authoring_operation(&json!({
+            "document": field_settings["document"],
+            "operation": {
+                "type": "update_mob_settings",
+                "field": "backendDefault",
+                "value": "external"
+            }
+        }))
+        .expect("apply mob settings field");
+        assert_eq!(
+            mob_settings["document"]["mob_settings"]["backendDefault"],
+            json!("external")
+        );
+        let role_wiring_added = apply_mobpack_authoring_operation(&json!({
+            "document": mob_settings["document"],
+            "operation": {
+                "type": "update_role_wiring",
+                "action": "add"
+            }
+        }))
+        .expect("add role wiring by action");
+        let role_source = role_wiring_added["document"]["mob_settings"]["roleWiring"][0]["a"]
+            .as_str()
+            .expect("role wiring source")
+            .to_string();
+        assert!(!role_source.is_empty());
+        let role_wiring_target = apply_mobpack_authoring_operation(&json!({
+            "document": role_wiring_added["document"],
+            "operation": {
+                "type": "update_role_wiring",
+                "action": "set_target",
+                "index": 0,
+                "value": role_source
+            }
+        }))
+        .expect("set role wiring target by action");
+        assert_eq!(
+            role_wiring_target["document"]["mob_settings"]["roleWiring"][0],
+            json!({ "a": role_source, "b": role_source })
+        );
         assert!(
             apply_mobpack_authoring_operation(&json!({
-                "document": settings["document"],
+                "document": role_wiring_target["document"],
+                "operation": {
+                    "type": "update_deploy_settings",
+                    "field": "notASetting",
+                    "value": true
+                }
+            }))
+            .expect_err("unknown deploy field rejected")
+            .contains("unsupported deploy settings field: notASetting")
+        );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": role_wiring_target["document"],
                 "operation": {
                     "type": "update_deploy_settings",
                     "flow": { "name": "fragment fallback must not apply" }
                 }
             }))
             .expect_err("deploy settings require typed payload")
-            .contains("update_deploy_settings requires deploy object")
+            .contains("update_deploy_settings requires deploy object or field")
         );
         assert!(
             apply_mobpack_authoring_operation(&json!({
-                "document": settings["document"],
+                "document": role_wiring_target["document"],
                 "operation": {
                     "type": "update_mob_settings",
                     "members": []
                 }
             }))
             .expect_err("mob settings require typed payload")
-            .contains("update_mob_settings requires mob_settings object")
+            .contains("update_mob_settings requires mob_settings object or field")
         );
         assert!(
             apply_mobpack_authoring_operation(&json!({
-                "document": settings["document"],
+                "document": role_wiring_target["document"],
                 "operation": {
                     "type": "update_role_wiring",
                     "edges": []
                 }
             }))
             .expect_err("role wiring requires typed payload")
-            .contains("update_role_wiring requires role_wiring or mob_settings")
+            .contains("update_role_wiring requires role_wiring, mob_settings, or action")
         );
     }
 

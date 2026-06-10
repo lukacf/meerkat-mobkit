@@ -1546,8 +1546,9 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     const next = window.MobKitFlowController.deploySettingsFieldPatch(deploySettings, field, value, { contract, modelCatalog });
     if (applyAuthoringIntent) {
       applyAuthoringIntent({
-        intent: "settings.updateDeploy",
-        deploy: next,
+        intent: "settings.updateDeployField",
+        field,
+        value,
       });
     } else {
       setDeploySettings(next);
@@ -1557,13 +1558,34 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     const next = window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, field, value, { contract });
     if (applyAuthoringIntent) {
       applyAuthoringIntent({
-        intent: field === "roleWiring" ? "settings.updateRoleWiring" : "settings.updateMob",
-        roleWiring: next.roleWiring || [],
-        mobSettings: next,
+        intent: "settings.updateMobField",
+        field,
+        value,
       });
     } else {
       setMobSettings(next);
     }
+  };
+  const editRoleWiring = (operation) => {
+    if (applyAuthoringIntent) {
+      applyAuthoringIntent({
+        intent: "settings.editRoleWiring",
+        ...operation,
+      });
+      return;
+    }
+    const current = mobSettings.roleWiring || [];
+    let next = current;
+    if (operation.action === "add") {
+      next = window.MobKitFlowController.mobRoleWiringAddPatch(current, controlState.profileChoices);
+    } else if (operation.action === "delete") {
+      next = window.MobKitFlowController.mobRoleWiringDeletePatch(current, operation.index);
+    } else if (operation.action === "set_source") {
+      next = window.MobKitFlowController.mobRoleWiringSourcePatch(current, operation.index, operation.value, controlState.profileChoices);
+    } else if (operation.action === "set_target") {
+      next = window.MobKitFlowController.mobRoleWiringTargetPatch(current, operation.index, operation.value, controlState.profileChoices);
+    }
+    setMobSettings(window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, "roleWiring", next, { contract }));
   };
   const controlState = window.MobKitFlowController.tweaksControlState({
     flows,
@@ -1607,7 +1629,7 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
           value={mobSettings.roleWiring || []}
           profileOptions={controlState.profileChoices}
           settingsView={settingsView}
-          onChange={(roleWiring) => setMobField("roleWiring", roleWiring)}
+          onAction={editRoleWiring}
         />
         <TweakSelect label={controlState.defaultBackendLabel} value={mobSettings.backendDefault || ""} onChange={v => setMobField("backendDefault", v)}
           options={controlState.mobBackendOptions} />
@@ -1653,19 +1675,19 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
   );
 }
 
-function RoleWiringEditor({ value, profileOptions, settingsView, onChange }) {
+function RoleWiringEditor({ value, profileOptions, settingsView, onAction }) {
   const wiringState = window.MobKitFlowController.mobRoleWiringEditorState(value, profileOptions, settingsView);
   const updateSource = (index, value) => {
-    onChange(window.MobKitFlowController.mobRoleWiringSourcePatch(wiringState.wiring, index, value, wiringState.options));
+    onAction && onAction({ action: "set_source", index, value });
   };
   const updateTarget = (index, value) => {
-    onChange(window.MobKitFlowController.mobRoleWiringTargetPatch(wiringState.wiring, index, value, wiringState.options));
+    onAction && onAction({ action: "set_target", index, value });
   };
   const removeRule = (index) => {
-    onChange(window.MobKitFlowController.mobRoleWiringDeletePatch(wiringState.wiring, index));
+    onAction && onAction({ action: "delete", index });
   };
   const addRule = () => {
-    onChange(window.MobKitFlowController.mobRoleWiringAddPatch(wiringState.wiring, wiringState.options));
+    onAction && onAction({ action: "add" });
   };
   return (
     <div className="twk-row">

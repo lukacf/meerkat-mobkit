@@ -1484,22 +1484,46 @@ async function validateNamedTypedOperations(catalogs) {
     document: updated.document,
     operation: {
       type: "update_deploy_settings",
-      deploy: { ...(updated.document.deploy || {}), prompt: "Named section payload prompt." },
+      field: "prompt",
+      value: "Named section payload prompt.",
     },
   });
   if (!settings.ok || settings.document.deploy.prompt !== "Named section payload prompt.") {
-    throw new Error(`named deploy settings operation did not apply operation.deploy: ${JSON.stringify(settings)}`);
+    throw new Error(`named deploy settings operation did not apply field payload: ${JSON.stringify(settings)}`);
   }
-  const validation = await rpc("mobkit/mobpacks/validate", { document: settings.document });
+  const mobSettings = await rpc("mobkit/mobpacks/apply_operation", {
+    document: settings.document,
+    operation: {
+      type: "update_mob_settings",
+      field: "backendDefault",
+      value: "external",
+    },
+  });
+  if (!mobSettings.ok || mobSettings.document.mob_settings?.backendDefault !== "external") {
+    throw new Error(`named mob settings operation did not apply field payload: ${JSON.stringify(mobSettings)}`);
+  }
+  const roleWiring = await rpc("mobkit/mobpacks/apply_operation", {
+    document: mobSettings.document,
+    operation: {
+      type: "update_role_wiring",
+      action: "add",
+    },
+  });
+  if (!roleWiring.ok || !Array.isArray(roleWiring.document.mob_settings?.roleWiring) || roleWiring.document.mob_settings.roleWiring.length < 1) {
+    throw new Error(`named role wiring operation did not apply action payload: ${JSON.stringify(roleWiring)}`);
+  }
+  const validation = await rpc("mobkit/mobpacks/validate", { document: roleWiring.document });
   if (!validation.ok) {
     throw new Error(`named projected operation document failed validation: ${JSON.stringify(validation.diagnostics)}`);
   }
   return {
     memberId,
-    name: settings.document.name,
-    prompt: settings.document.deploy.prompt,
+    name: roleWiring.document.name,
+    prompt: roleWiring.document.deploy.prompt,
     operationDocumentApplied: updated.operation === "update_flow_step",
     sectionPayloadApplied: settings.operation === "update_deploy_settings",
+    mobFieldApplied: mobSettings.operation === "update_mob_settings",
+    roleActionApplied: roleWiring.operation === "update_role_wiring",
   };
 }
 

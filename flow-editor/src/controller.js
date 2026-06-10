@@ -209,10 +209,16 @@
         return { type: "delete_schema_field", schema_id: input.schemaId, field_id: input.fieldId };
       case "settings.updateDeploy":
         return { type: "update_deploy_settings", deploy: input.deploy, selection: input.selection || null };
+      case "settings.updateDeployField":
+        return { type: "update_deploy_settings", field: input.field, value: input.value, selection: input.selection || null };
       case "settings.updateMob":
         return { type: "update_mob_settings", mob_settings: input.mobSettings, selection: input.selection || null };
+      case "settings.updateMobField":
+        return { type: "update_mob_settings", field: input.field, value: input.value, selection: input.selection || null };
       case "settings.updateRoleWiring":
         return { type: "update_role_wiring", role_wiring: input.roleWiring || [], selection: input.selection || null };
+      case "settings.editRoleWiring":
+        return { type: "update_role_wiring", action: input.action, index: input.index, field: input.field, value: input.value, selection: input.selection || null };
       case "basic.updateStep":
         return { type: "update_flow_step", step_id: input.stepId, patch: input.patch || {} };
       case "basic.editStep":
