@@ -1136,12 +1136,29 @@ const separateCatalogPayloadState = controller.mobKitCatalogsFromSchema({
       members: [{ id: "m_worker", role: "worker" }],
     },
   },
+  runtime_flows: [{
+    id: "runtime_loaded_main",
+    name: "Runtime Loaded Main",
+    source: "mobkit/runtime/flow_projection",
+    stage: "valid",
+    trigger: "runtime · main",
+    document: {
+      mob_id: "runtime_loaded",
+      name: "Runtime Loaded Main",
+      flow: { name: "main", steps: [] },
+      members: [],
+    },
+    validation: { ok: true },
+  }],
 });
 assert.equal(separateCatalogPayloadState.contractMeta.schemaVersion, "mobpack/v1");
 assert.deepEqual(separateCatalogPayloadState.models.map((model) => model.id), ["openai/gpt-5.5"]);
 assert.deepEqual(separateCatalogPayloadState.toolCatalog.map((tool) => tool.id), ["shell"]);
 assert.deepEqual(separateCatalogPayloadState.skillRealms.map((realm) => realm.id), ["mobkit/sample-mobpacks"]);
 assert.deepEqual(separateCatalogPayloadState.agentDefinitions.map((definition) => definition.id), ["sample_reviewer"]);
+assert.deepEqual(separateCatalogPayloadState.runtimeFlows.map((row) => [row.id, row.source]), [
+  ["runtime_loaded_main", "mobkit/runtime/flow_projection"],
+]);
 assert.equal(separateCatalogPayloadState.template.name, "Blank");
 
 const hydratedContractAndCatalogFixture = {
@@ -2948,6 +2965,60 @@ const savedRegistryBootstrap = controller.flowCatalogBootstrapState({
 assert.deepEqual(savedRegistryBootstrap.flows.map((row) => row.id), ["saved_flow"]);
 assert.equal(savedRegistryBootstrap.initialHydration.result.document.mob_id, "saved_flow");
 assert.equal(savedRegistryBootstrap.initialHydration.options.flowRow.source, "mobkit/mobpacks/save");
+
+const runtimeRegistryBootstrap = controller.flowCatalogBootstrapState({
+  sample_mobpacks: [],
+  runtime_flows: [
+    {
+      id: "runtime_live_main",
+      name: "live-mob · main",
+      source: "mobkit/runtime/flow_projection",
+      trigger: "runtime · main",
+      stage: "valid",
+      document: {
+        mob_id: "live-mob",
+        name: "live-mob · main",
+        schema_version: "0.1",
+        flow: { name: "main", steps: [{ id: "input_1", type: "input", task: "Run.", inputParams: [] }] },
+        members: [],
+      },
+      validation: { ok: true },
+    },
+  ],
+}, {
+  registryResult: { rows: [] },
+  openEditor: true,
+});
+assert.deepEqual(runtimeRegistryBootstrap.flows.map((row) => row.id), ["runtime_live_main"]);
+assert.equal(runtimeRegistryBootstrap.flows[0].source, "mobkit/runtime/flow_projection");
+assert.equal(runtimeRegistryBootstrap.initialHydration.result.document.mob_id, "live-mob");
+assert.equal(runtimeRegistryBootstrap.initialHydration.options.id, "runtime_live_main");
+assert.equal(runtimeRegistryBootstrap.initialHydration.options.flowRow.trigger, "runtime · main");
+
+const runtimeDedupedBootstrap = controller.flowCatalogBootstrapState({
+  sample_mobpacks: [],
+  runtime_flows: [{
+    id: "saved_flow",
+    name: "Runtime duplicate",
+    source: "mobkit/runtime/flow_projection",
+    document: { mob_id: "runtime_duplicate", flow: { name: "main", steps: [] } },
+  }],
+}, {
+  registryResult: {
+    rows: [{
+      id: "saved_flow",
+      name: "Saved Flow",
+      source: "mobkit/mobpacks/save",
+      trigger: "saved",
+      stage: "draft",
+      document: { mob_id: "saved_flow", name: "Saved Flow", schema_version: "0.1" },
+      validation: null,
+    }],
+  },
+});
+assert.deepEqual(runtimeDedupedBootstrap.flows.map((row) => [row.id, row.source]), [
+  ["saved_flow", "mobkit/mobpacks/save"],
+]);
 
 assert.deepEqual(controller.flowCatalogBootstrapState({ sample_mobpacks: [] }), {
   templates: [],

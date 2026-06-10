@@ -389,6 +389,9 @@ impl UnifiedRuntime {
             has_contact_directory: self.has_contact_directory(),
             has_peer_mob_handles,
             has_inproc_contacts: self.has_inproc_contacts(),
+            runtime_flow_rows: crate::mobpack::runtime_flow_registry_rows_from_definition(
+                self.mob_handle().definition(),
+            ),
         }
     }
 

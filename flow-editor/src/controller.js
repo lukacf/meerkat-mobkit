@@ -8705,6 +8705,7 @@
       conditionView: null,
       errorView: null,
       authoringOperations: {},
+      runtimeFlows: [],
       validationSource: "",
       contractMeta: {
         loaded: false,
@@ -8728,6 +8729,7 @@
       toolCatalog: toolCatalogFromCatalogs(catalogSource),
       agentDefinitions,
       sampleAgentDefinitions,
+      runtimeFlows: flowRegistryRowsFromBackend(catalogSource.runtime_flows),
       skillRealms: skillRealmsFromCatalogs(catalogSource),
       blankMobpack,
       catalogSnapshot: catalogSource.catalog_snapshot || null,
@@ -10546,7 +10548,12 @@
   function flowCatalogBootstrapState(catalogPayload, options = {}) {
     const sampleFlows = sampleFlowsFromCatalogs(catalogPayload);
     const registryFlows = flowRegistryRowsFromBackend(options.registryRows || options.registryResult?.rows);
-    const flows = registryFlows;
+    const runtimeFlows = flowRegistryRowsFromBackend(catalogPayload?.runtime_flows);
+    const existingIds = new Set(registryFlows.map((row) => row.id));
+    const flows = [
+      ...registryFlows,
+      ...runtimeFlows.filter((row) => !existingIds.has(row.id)),
+    ];
     const first = flows[0] || null;
     return {
       templates: sampleFlows,

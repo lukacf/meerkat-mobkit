@@ -97,6 +97,9 @@ async fn mobpack_runtime_catalog_state(
     runtime: &UnifiedRuntime,
 ) -> crate::mobpack::MobpackRuntimeCatalogState {
     let loaded_modules = runtime.loaded_modules().await;
+    let runtime_flow_rows = crate::mobpack::runtime_flow_registry_rows_from_definition(
+        runtime.mob_handle().definition(),
+    );
     let mut runtime_methods = vec![
         "mobkit/capabilities".to_string(),
         "mobkit/models/catalog".to_string(),
@@ -128,6 +131,7 @@ async fn mobpack_runtime_catalog_state(
         has_contact_directory: runtime.has_contact_directory(),
         has_peer_mob_handles: runtime.has_peer_mob_handles().await,
         has_inproc_contacts: runtime.has_inproc_contacts(),
+        runtime_flow_rows,
     }
 }
 
@@ -4470,6 +4474,16 @@ comms = true
             has_contact_directory: true,
             has_peer_mob_handles: false,
             has_inproc_contacts: false,
+            runtime_flow_rows: vec![json!({
+                "id": "runtime_rpc_main",
+                "source": "mobkit/runtime/flow_projection",
+                "document": {
+                    "mob_id": "runtime_rpc",
+                    "flow": { "name": "main", "steps": [] },
+                    "members": []
+                },
+                "validation": { "ok": true }
+            })],
         };
 
         let catalogs = super::handle_mobpack_authoring_rpc_with_runtime(
@@ -4484,6 +4498,10 @@ comms = true
         assert_eq!(
             catalogs["result"]["authoring_provider"]["runtime_binding"],
             json!("bound")
+        );
+        assert_eq!(
+            catalogs["result"]["runtime_flows"][0]["id"],
+            json!("runtime_rpc_main")
         );
 
         let tools = super::handle_mobpack_authoring_rpc_with_runtime(

@@ -553,6 +553,7 @@ mod tests {
                 has_contact_directory: true,
                 has_peer_mob_handles: false,
                 has_inproc_contacts: false,
+                runtime_flow_rows: Vec::new(),
             }),
         );
 

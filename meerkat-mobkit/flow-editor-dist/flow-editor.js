@@ -8738,6 +8738,7 @@ window.MOBKIT_BOOT = {
       conditionView: null,
       errorView: null,
       authoringOperations: {},
+      runtimeFlows: [],
       validationSource: "",
       contractMeta: {
         loaded: false,
@@ -8761,6 +8762,7 @@ window.MOBKIT_BOOT = {
       toolCatalog: toolCatalogFromCatalogs(catalogSource),
       agentDefinitions,
       sampleAgentDefinitions,
+      runtimeFlows: flowRegistryRowsFromBackend(catalogSource.runtime_flows),
       skillRealms: skillRealmsFromCatalogs(catalogSource),
       blankMobpack,
       catalogSnapshot: catalogSource.catalog_snapshot || null,
@@ -10579,7 +10581,12 @@ window.MOBKIT_BOOT = {
   function flowCatalogBootstrapState(catalogPayload, options = {}) {
     const sampleFlows = sampleFlowsFromCatalogs(catalogPayload);
     const registryFlows = flowRegistryRowsFromBackend(options.registryRows || options.registryResult?.rows);
-    const flows = registryFlows;
+    const runtimeFlows = flowRegistryRowsFromBackend(catalogPayload?.runtime_flows);
+    const existingIds = new Set(registryFlows.map((row) => row.id));
+    const flows = [
+      ...registryFlows,
+      ...runtimeFlows.filter((row) => !existingIds.has(row.id)),
+    ];
     const first = flows[0] || null;
     return {
       templates: sampleFlows,
@@ -14247,7 +14254,8 @@ function App() {
         if (abort.signal.aborted) throw error;
         return { rows: [] };
       });
-      if (!Array.isArray(registryPayload?.rows) || registryPayload.rows.length === 0) {
+      const hasRuntimeRows = Array.isArray(catalogPayload?.runtime_flows) && catalogPayload.runtime_flows.length > 0;
+      if ((!Array.isArray(registryPayload?.rows) || registryPayload.rows.length === 0) && !hasRuntimeRows) {
         registryPayload = await window.MobKitFlowController.createDocument({
           template: "blank",
           trigger: "MobKit editor startup draft"

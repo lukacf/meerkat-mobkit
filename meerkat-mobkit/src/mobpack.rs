@@ -56,6 +56,7 @@ pub struct MobpackRuntimeCatalogState {
     pub has_contact_directory: bool,
     pub has_peer_mob_handles: bool,
     pub has_inproc_contacts: bool,
+    pub runtime_flow_rows: Vec<Value>,
 }
 
 fn editor_input_step_default_task() -> &'static str {
@@ -1174,6 +1175,9 @@ pub fn mobpack_catalogs_response_with_runtime(
             "skill_realms": skills["skill_realms"].clone(),
             "blank_mobpack": templates["blank_mobpack"].clone(),
             "sample_mobpacks": templates["sample_mobpacks"].clone(),
+            "runtime_flows": runtime
+                .map(|state| Value::Array(state.runtime_flow_rows.clone()))
+                .unwrap_or_else(|| Value::Array(Vec::new())),
             "agent_definitions": agents["agent_definitions"].clone(),
             "sample_agent_definitions": templates["sample_agent_definitions"].clone(),
             "models": model_catalog_response(),
@@ -2919,6 +2923,70 @@ step_id = "review"
 depends_on = ["node_implement"]
 depends_on_mode = "all"
 "#
+}
+
+pub fn runtime_flow_registry_rows_from_definition(definition: &MobDefinition) -> Vec<Value> {
+    definition
+        .flows
+        .keys()
+        .filter_map(|flow_id| {
+            runtime_flow_registry_row_from_definition(definition, &flow_id.to_string()).ok()
+        })
+        .collect()
+}
+
+fn runtime_flow_registry_row_from_definition(
+    definition: &MobDefinition,
+    flow_id: &str,
+) -> Result<Value, String> {
+    let flow_id = flow_id.trim();
+    if flow_id.is_empty() {
+        return Err("runtime flow id is empty".to_string());
+    }
+    let mob_id = definition.id.to_string();
+    let name = if definition.flows.len() > 1 {
+        format!("{mob_id} · {flow_id}")
+    } else {
+        mob_id.clone()
+    };
+    let mut document = project_definition_to_editor_document_for_flow(
+        definition,
+        "",
+        Some(&name),
+        Value::Null,
+        Some(flow_id),
+    )?;
+    document.mob_toml = None;
+    let validation = validate_document(&document);
+    let validation_value = serde_json::to_value(&validation).unwrap_or(Value::Null);
+    Ok(json!({
+        "id": format!(
+            "runtime_{}_{}",
+            sanitize_identifier(&mob_id),
+            sanitize_identifier(flow_id)
+        ),
+        "name": name,
+        "version": MOBPACK_SCHEMA_VERSION,
+        "stage": if validation.ok { "valid" } else { "draft" },
+        "trigger": format!("runtime · {flow_id}"),
+        "source": "mobkit/runtime/flow_projection",
+        "registry_source": "mobkit/runtime/flow_projection",
+        "document_kind": "runtime_projection",
+        "runtime_projection": true,
+        "runtime_mob_id": mob_id,
+        "runtime_flow_id": flow_id,
+        "document": document,
+        "validation": validation_value,
+        "deployability": catalog_deployability(
+            validation.ok,
+            "runtime flow projection can be exported as a deployable single-flow MobKit mobpack draft"
+        ),
+        "provenance": catalog_provenance(
+            "mobkit/runtime/flow_projection",
+            "UnifiedRuntime.MobDefinition",
+            &format!("{mob_id}:flows.{flow_id}")
+        ),
+    }))
 }
 
 fn sample_mobpack_catalog() -> Value {
@@ -13223,6 +13291,22 @@ fn project_definition_to_editor_document(
     fallback_name: Option<&str>,
     deploy: Value,
 ) -> Result<MobpackDocument, String> {
+    project_definition_to_editor_document_for_flow(
+        definition,
+        mob_toml,
+        fallback_name,
+        deploy,
+        None,
+    )
+}
+
+fn project_definition_to_editor_document_for_flow(
+    definition: &MobDefinition,
+    mob_toml: &str,
+    fallback_name: Option<&str>,
+    deploy: Value,
+    selected_flow_id: Option<&str>,
+) -> Result<MobpackDocument, String> {
     let deploy = projected_deploy_for_runtime_modes(definition, deploy);
     let mut schemas = Vec::new();
     let mut members = Vec::new();
@@ -13283,7 +13367,19 @@ fn project_definition_to_editor_document(
         }
     }
 
-    let primary = definition.flows.iter().next();
+    let primary = match selected_flow_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(selected) => Some(
+            definition
+                .flows
+                .iter()
+                .find(|(flow_id, _)| flow_id.to_string() == selected)
+                .ok_or_else(|| format!("runtime flow not found in MobDefinition: {selected}"))?,
+        ),
+        None => definition.flows.iter().next(),
+    };
     let (flow, instances, edges, frames) = if let Some((flow_id, flow_spec)) = primary {
         project_flow(flow_id.to_string().as_str(), flow_spec)
     } else {
@@ -26808,6 +26904,7 @@ model = "gpt-5.5"
             has_contact_directory: true,
             has_peer_mob_handles: false,
             has_inproc_contacts: false,
+            runtime_flow_rows: Vec::new(),
         };
         let runtime_catalogs = mobpack_catalogs_response_with_runtime(Some(&runtime));
         let standalone_catalogs = mobpack_catalogs_response();
@@ -26958,6 +27055,7 @@ model = "gpt-5.5"
             has_contact_directory: true,
             has_peer_mob_handles: true,
             has_inproc_contacts: true,
+            runtime_flow_rows: Vec::new(),
         };
         let cross_mob_catalogs = mobpack_catalogs_response_with_runtime(Some(&cross_mob_runtime));
         let cross_mob_tool = cross_mob_catalogs["tool_catalog"]
@@ -26999,6 +27097,81 @@ model = "gpt-5.5"
         assert_eq!(
             copied_skill["sourceMobpack"],
             json!("mobkit_authoring_profiles")
+        );
+    }
+
+    #[test]
+    fn runtime_flow_registry_rows_project_each_loaded_runtime_flow() {
+        let definition = MobDefinition::from_toml(
+            r#"
+[mob]
+id = "runtime-editor-proof"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+
+[profiles.worker.tools]
+builtins = true
+
+[flows.main]
+description = "Run the main runtime flow."
+
+[flows.main.steps.work]
+role = "worker"
+message = "Work."
+
+[flows.main.root.nodes.node_work]
+kind = "step"
+step_id = "work"
+depends_on = []
+depends_on_mode = "all"
+
+[flows.audit]
+description = "Run the audit runtime flow."
+
+[flows.audit.steps.audit]
+role = "worker"
+message = "Audit."
+
+[flows.audit.root.nodes.node_audit]
+kind = "step"
+step_id = "audit"
+depends_on = []
+depends_on_mode = "all"
+"#,
+        )
+        .expect("runtime definition");
+
+        let rows = runtime_flow_registry_rows_from_definition(&definition);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["runtime_flow_id"].as_str().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec!["audit", "main"]
+        );
+        for row in &rows {
+            assert_eq!(row["source"], json!("mobkit/runtime/flow_projection"));
+            assert_eq!(row["runtime_projection"], json!(true));
+            assert_eq!(row["validation"]["ok"], json!(true));
+            assert_eq!(row["document"]["mob_id"], json!("runtime-editor-proof"));
+            assert_eq!(row["document"]["flow"]["name"], row["runtime_flow_id"]);
+        }
+
+        let runtime = MobpackRuntimeCatalogState {
+            loaded_modules: vec!["runtime-editor-proof".to_string()],
+            runtime_methods: vec!["mobkit/list_flows".to_string()],
+            has_contact_directory: false,
+            has_peer_mob_handles: false,
+            has_inproc_contacts: false,
+            runtime_flow_rows: rows.clone(),
+        };
+        let catalogs = mobpack_catalogs_response_with_runtime(Some(&runtime));
+        assert_eq!(catalogs["runtime_flows"], json!(rows));
+        assert_eq!(
+            catalogs["runtime_flows"][0]["provenance"]["catalog"],
+            json!("mobkit/runtime/flow_projection")
         );
     }
 

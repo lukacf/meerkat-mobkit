@@ -219,7 +219,8 @@ function App() {
           if (abort.signal.aborted) throw error;
           return { rows: [] };
         });
-        if (!Array.isArray(registryPayload?.rows) || registryPayload.rows.length === 0) {
+        const hasRuntimeRows = Array.isArray(catalogPayload?.runtime_flows) && catalogPayload.runtime_flows.length > 0;
+        if ((!Array.isArray(registryPayload?.rows) || registryPayload.rows.length === 0) && !hasRuntimeRows) {
           registryPayload = await window.MobKitFlowController.createDocument({
             template: "blank",
             trigger: "MobKit editor startup draft",
