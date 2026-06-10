@@ -8517,7 +8517,13 @@
   function createAuthoringOperationRunner(options = {}) {
     const hooks = options && typeof options === "object" ? options : {};
     let queue = Promise.resolve();
-    const runOperation = async (operation) => {
+    const runOperation = async (operation, enqueuedRevision) => {
+      if (hooks.isRevisionCurrent && !hooks.isRevisionCurrent(enqueuedRevision)) {
+        return {
+          ok: false,
+          error: hooks.getStaleError?.() || "MobKit authoring operation result is stale",
+        };
+      }
       const translatedOperation = authoringOperationFromIntent(operation);
       const availability = authoringOperationAvailability(
         hooks.getAuthoringOperations?.() || hooks.authoringOperations || {},
@@ -8554,7 +8560,8 @@
       return result;
     };
     return (operation) => {
-      const run = queue.catch(() => null).then(() => runOperation(operation));
+      const enqueuedRevision = hooks.getCurrentRevision?.();
+      const run = queue.catch(() => null).then(() => runOperation(operation, enqueuedRevision));
       queue = run.catch(() => null);
       return run;
     };

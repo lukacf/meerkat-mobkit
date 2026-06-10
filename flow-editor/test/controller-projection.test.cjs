@@ -10916,6 +10916,75 @@ async function exerciseAuthoringOperationRunner() {
     assert.deepEqual(staleResult, { ok: false, error: "stale authoring revision" });
     assert.equal(projections.length, 2);
     assert.equal(markedDrafts, 2);
+
+    let queuedRevision = 1;
+    const queuedRpcCalls = [];
+    let releaseFirstQueuedFetch = null;
+    let firstQueuedFetchStarted = null;
+    const firstQueuedFetchStartedPromise = new Promise((resolve) => {
+      firstQueuedFetchStarted = resolve;
+    });
+    global.fetch = async (url, options) => {
+      const request = JSON.parse(options.body);
+      queuedRpcCalls.push({ url, request });
+      if (request.params.operation.value === "first stale prompt") {
+        firstQueuedFetchStarted();
+        await new Promise((resolve) => {
+          releaseFirstQueuedFetch = resolve;
+        });
+      }
+      const document = {
+        ...storedGraphDocument,
+        deploy: {
+          ...(storedGraphDocument.deploy || {}),
+          prompt: request.params.operation.value,
+        },
+      };
+      return {
+        ok: true,
+        json: async () => ({
+          jsonrpc: "2.0",
+          id: request.id,
+          result: {
+            source: "mobkit/mobpacks/apply_operation",
+            operation: request.params.operation.type,
+            document,
+            selection: null,
+            validation: { ok: true },
+          },
+        }),
+      };
+    };
+    const queuedRunner = controller.createAuthoringOperationRunner({
+      getAuthoringOperations: () => ({
+        update_deploy_settings: { type: "update_deploy_settings" },
+      }),
+      getCurrentDocument: () => storedGraphDocument,
+      getCurrentRevision: () => queuedRevision,
+      isRevisionCurrent: (revision) => revision === queuedRevision,
+      getStaleError: () => "stale authoring revision",
+      getProjectionDefaults: () => ({
+        deployDefaults: testDeploySettings(),
+        mobDefaults: controller.mobDefaultsFromSchema(TEST_SCHEMA),
+      }),
+      applyProjection: (projection) => {
+        projections.push(projection);
+      },
+      markDraft: () => {
+        markedDrafts += 1;
+      },
+    });
+    const firstQueuedResultPromise = queuedRunner({ intent: "settings.updateDeployField", field: "prompt", value: "first stale prompt" });
+    await firstQueuedFetchStartedPromise;
+    const secondQueuedResultPromise = queuedRunner({ intent: "settings.updateDeployField", field: "prompt", value: "second stale prompt" });
+    queuedRevision = 2;
+    releaseFirstQueuedFetch();
+    assert.deepEqual(await firstQueuedResultPromise, { ok: false, error: "stale authoring revision" });
+    assert.deepEqual(await secondQueuedResultPromise, { ok: false, error: "stale authoring revision" });
+    assert.equal(queuedRpcCalls.length, 1);
+    assert.equal(queuedRpcCalls[0].request.params.operation.value, "first stale prompt");
+    assert.equal(projections.length, 2);
+    assert.equal(markedDrafts, 2);
   } finally {
     global.fetch = originalFetch;
     controller.configure({ rpcUrl: "/flow-editor/rpc" });

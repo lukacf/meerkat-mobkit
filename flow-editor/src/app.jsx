@@ -135,6 +135,10 @@ function App() {
       setFlows((rows) => window.MobKitFlowController.flowRegistryMarkDraftPatch(rows, currentFlowId));
     }
   }, [clearSourceProjection, currentFlowId]);
+  const beginDocumentHydration = React.useCallback(() => {
+    authoringRevision.current += 1;
+    clearSourceProjection();
+  }, [clearSourceProjection]);
   const showAuthoringFailure = React.useCallback((resultOrError, fallbackHead = "") => {
     const errorView = catalogs.errorView || {};
     const authoringHead = fallbackHead || errorView.authoringOperationFailedHead;
@@ -997,6 +1001,7 @@ function App() {
     if (hydrationPersistence.ok) {
       persistedDocumentSig.current = hydrationPersistence.signature;
     }
+    beginDocumentHydration();
     setCurrentAuthoringDocument(hydration.document);
     hydratingDocumentRef.current = true;
     setCatalogs((current) => window.MobKitFlowController.catalogSkillRealmsPatch(current, hydration.skillRealms));
