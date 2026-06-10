@@ -255,13 +255,14 @@ function App() {
     if (editorMode === "advanced") return;
     if (!window.MobKitFlowController?.graphProjectionDocument) return;
     let cancelled = false;
+    const abort = new AbortController();
     const projectionDocument = buildAuthoringProjection().document;
     window.MobKitFlowController.graphProjectionDocument({
       ...projectionDocument,
       instances: [],
       edges: [],
       frames: [],
-    })
+    }, { signal: abort.signal })
       .then((projectionResult) => {
         if (cancelled) return;
         const projection = window.MobKitFlowController.graphProjectionFromMobKitResult(projectionResult);
@@ -272,11 +273,13 @@ function App() {
         studio.setFrames(projection.frames || []);
       })
       .catch((error) => {
+        if (abort.signal.aborted) return;
         if (cancelled) return;
         showAuthoringFailure(error, authoringFailureHead("graph_projection"));
       });
     return () => {
       cancelled = true;
+      abort.abort();
     };
   }, [flow, editorMode, contract, studio.members]);
 
@@ -1104,6 +1107,7 @@ function App() {
         });
       })
       .catch((error) => {
+        if (!authoringRevisionIsCurrent(graphProjectionToken)) return;
         showAuthoringFailure(error, authoringFailureHead("graph_projection"));
       });
   };

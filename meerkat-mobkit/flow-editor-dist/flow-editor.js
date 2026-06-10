@@ -8344,11 +8344,13 @@ window.MOBKIT_BOOT = {
   }
 
   async function graphProjectionDocument(document, options = {}) {
-    return callRpc(rpcMethod("graphProjection"), { document }, options);
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("graphProjection"), { document, ...requestOptions }, { signal });
   }
 
   async function graphToFlowDocument(document, options = {}) {
-    return callRpc(rpcMethod("graphToFlow"), { document }, options);
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("graphToFlow"), { document, ...requestOptions }, { signal });
   }
 
   function importParamsFromDecodedFile(input = {}) {
@@ -14574,13 +14576,14 @@ function App() {
     if (editorMode === "advanced") return;
     if (!window.MobKitFlowController?.graphProjectionDocument) return;
     let cancelled = false;
+    const abort = new AbortController();
     const projectionDocument = buildAuthoringProjection().document;
     window.MobKitFlowController.graphProjectionDocument({
       ...projectionDocument,
       instances: [],
       edges: [],
       frames: []
-    }).then((projectionResult) => {
+    }, { signal: abort.signal }).then((projectionResult) => {
       if (cancelled) return;
       const projection = window.MobKitFlowController.graphProjectionFromMobKitResult(projectionResult);
       if (!projection) return;
@@ -14589,11 +14592,13 @@ function App() {
       studio.setEdges(projection.edges || []);
       studio.setFrames(projection.frames || []);
     }).catch((error) => {
+      if (abort.signal.aborted) return;
       if (cancelled) return;
       showAuthoringFailure(error, authoringFailureHead("graph_projection"));
     });
     return () => {
       cancelled = true;
+      abort.abort();
     };
   }, [flow, editorMode, contract, studio.members]);
   React.useEffect(() => {
@@ -15387,6 +15392,7 @@ function App() {
         hydratingDocumentRef.current = false;
       });
     }).catch((error) => {
+      if (!authoringRevisionIsCurrent(graphProjectionToken)) return;
       showAuthoringFailure(error, authoringFailureHead("graph_projection"));
     });
   };

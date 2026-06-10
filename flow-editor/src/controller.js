@@ -8311,11 +8311,13 @@
   }
 
   async function graphProjectionDocument(document, options = {}) {
-    return callRpc(rpcMethod("graphProjection"), { document }, options);
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("graphProjection"), { document, ...requestOptions }, { signal });
   }
 
   async function graphToFlowDocument(document, options = {}) {
-    return callRpc(rpcMethod("graphToFlow"), { document }, options);
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("graphToFlow"), { document, ...requestOptions }, { signal });
   }
 
   function importParamsFromDecodedFile(input = {}) {
