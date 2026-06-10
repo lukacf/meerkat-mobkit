@@ -1291,6 +1291,7 @@ assert.match(flowEditorBinRust, /--allow-host-deploy/, "standalone Flow Editor m
 assert.match(flowEditorBinRust, /flow_editor_router_with_host_deploy/, "standalone Flow Editor host deploy opt-in must route through the MobKit RPC policy surface");
 assert.match(flowEditorHttpRust, /standalone_flow_editor_rpc_rejects_host_deploy_execution[\s\S]*"execute": true[\s\S]*json!\(-32602\)/, "Flow Editor RPC must deny host deploy execution by default");
 assert.match(flowEditorHttpRust, /standalone_flow_editor_rpc_executes_host_deploy_when_explicitly_enabled[\s\S]*deploy_execute_allowed:\s*true[\s\S]*"execute": true[\s\S]*flow-editor-rkat-ok/, "Flow Editor RPC must prove explicit opt-in executes rkat mob deploy");
+assert.match(liveRkatE2eTest, /async function validateHostDeployRpc[\s\S]*mobkit\/mobpacks\/deploy[\s\S]*execute:\s*true[\s\S]*rkat mob deploy executed/, "live rkat e2e must prove Flow Editor deploy RPC execution, not only direct CLI deploy");
 assert.match(app, /MobKitFlowController\.topRailNavigationTransition\(view,\s*target\)/, "Top rail navigation must be routed through the controller plane");
 assert.match(controller, /function topRailNavigationTransition/, "controller plane must own TopRail navigation transitions");
 assert(!/setView\(|view === ["']editor["'] \? ["']flows["'] : ["']editor["']/.test(topRailBlock), "TopRail renderer must not assemble view transitions locally");

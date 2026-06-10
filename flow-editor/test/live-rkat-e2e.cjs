@@ -1453,6 +1453,47 @@ async function validateDocumentBackedDeployPreview(document) {
   };
 }
 
+async function validateHostDeployRpc(document, dir) {
+  const deployDocument = JSON.parse(JSON.stringify(document));
+  deployDocument.deploy = controller.normalizeDeploySettings({
+    ...testDeploySettings(),
+    surface: "cli",
+    trustPolicy: "permissive",
+    maxDuration: "30s",
+    maxToolCalls: 0,
+    maxTotalTokens: 64,
+    isolated: true,
+    realmBackend: "jsonl",
+    contextRoot: path.join(dir, "host-context"),
+    stateRoot: path.join(dir, "host-state"),
+    userConfigRoot: path.join(dir, "host-config"),
+    prompt: "Reply with exactly OK.",
+  });
+  const result = await rpc("mobkit/mobpacks/deploy", {
+    document: deployDocument,
+    execute: true,
+    pack_path: path.join(dir, "host-deploy-rpc.mobpack"),
+  });
+  if (!result.executed || !result.success || result.status_code !== 0) {
+    throw new Error(`host deploy RPC did not execute successfully: ${JSON.stringify(result)}`);
+  }
+  const output = [result.stdout || "", result.stderr || ""].join("\n");
+  if (!/^deployed\tmob=/m.test(output)) {
+    throw new Error(`host deploy RPC output did not include rkat deploy success: ${output}`);
+  }
+  if (!array(result.display_rows, "hostDeployRpc.display_rows").some((row) => row.kind === "ok" && row.head === "rkat mob deploy executed")) {
+    throw new Error(`host deploy RPC did not report executed display row: ${JSON.stringify(result.display_rows)}`);
+  }
+  return {
+    executed: result.executed,
+    success: result.success,
+    statusCode: result.status_code,
+    stdout: result.stdout,
+    command: result.command,
+    packPath: result.pack_path,
+  };
+}
+
 async function validateNamedTypedOperations(catalogs) {
   let document = catalogs.blank_mobpack.document;
   const added = await rpc("mobkit/mobpacks/apply_operation", {
@@ -2220,6 +2261,7 @@ async function validateFlowStepOperations(catalogs) {
     blankMobpackTemplate: await validateBlankMobpackTemplate(dir, catalogs),
     customDeploySettings: await validateCustomDeploySettings(dir),
     documentBackedDeployPreview: await validateDocumentBackedDeployPreview(sample.document),
+    hostDeployRpc: null,
     namedTypedOperations: await validateNamedTypedOperations(catalogs),
     inputParamOperations: await validateInputParamOperations(catalogs),
     schemaOperations: await validateSchemaOperations(catalogs),
@@ -2229,6 +2271,9 @@ async function validateFlowStepOperations(catalogs) {
   };
 
   if (runDeploy) {
+    if (expectHostDeploy) {
+      result.hostDeployRpc = await validateHostDeployRpc(sample.document, dir);
+    }
     result.deploy = run("rkat", [
       "mob",
       "deploy",
