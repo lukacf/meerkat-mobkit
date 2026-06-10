@@ -1304,6 +1304,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "plane": "agent",
             "authority": "mobkit",
             "requires": ["schema_id", "patch"],
+            "patch_fields": ["description"],
             "mutates": ["document.schemas"],
             "projection_document_supported": false
         },
@@ -1336,6 +1337,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "plane": "agent",
             "authority": "mobkit",
             "requires": ["schema_id", "field_id", "patch"],
+            "patch_fields": ["name", "type", "required", "description", "enumValues"],
             "mutates": ["document.schemas", "document.flow", "document.edges"],
             "projection_document_supported": false
         },
@@ -1392,6 +1394,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "plane": "basic",
             "authority": "mobkit",
             "requires": ["step_id", "param_id", "patch"],
+            "patch_fields": ["name", "type", "required", "description", "enumValues"],
             "mutates": ["document.flow", "document.edges"],
             "projection_document_supported": false
         },
@@ -4480,14 +4483,34 @@ fn apply_update_schema_operation(
     let schema = schemas[index]
         .as_object_mut()
         .ok_or_else(|| format!("schema is not an object: {schema_id}"))?;
-    for (key, value) in patch {
-        if key == "id" {
-            return Err("update_schema cannot change schema id".to_string());
-        }
-        schema.insert(key.clone(), value.clone());
+    let normalized_patch = normalize_schema_update_patch(patch)?;
+    for (key, value) in normalized_patch {
+        schema.insert(key, value);
     }
     document.schemas = Value::Array(schemas);
     Ok(json!({ "kind": "schema", "id": schema_id }))
+}
+
+fn normalize_schema_update_patch(
+    patch: &serde_json::Map<String, Value>,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let mut normalized = serde_json::Map::new();
+    for (key, value) in patch {
+        match key.as_str() {
+            "id" => return Err("update_schema cannot change schema id".to_string()),
+            "description" => {
+                let description = value
+                    .as_str()
+                    .ok_or_else(|| "update_schema description must be a string".to_string())?;
+                normalized.insert(
+                    "description".to_string(),
+                    Value::String(description.to_string()),
+                );
+            }
+            other => return Err(format!("unsupported update_schema patch field: {other}")),
+        }
+    }
+    Ok(normalized)
 }
 
 fn apply_rename_schema_operation(
@@ -5097,14 +5120,13 @@ fn update_schema_field(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    let normalized_patch =
+        normalize_schema_field_update_patch(&fields[field_index], fields, field_id, patch)?;
     let field = fields[field_index]
         .as_object_mut()
         .ok_or_else(|| format!("schema field is not an object: {field_id}"))?;
-    for (key, value) in patch {
-        if key == "id" {
-            return Err("update_schema_field cannot change field id".to_string());
-        }
-        field.insert(key.clone(), value.clone());
+    for (key, value) in normalized_patch {
+        field.insert(key, value);
     }
     let new_name = field
         .get("name")
@@ -5116,6 +5138,113 @@ fn update_schema_field(
         rewrite_schema_field_references(document, schema_id, &old_name, &new_name);
     }
     Ok(json!({ "kind": "schema", "id": schema_id, "field_id": field_id }))
+}
+
+fn normalize_schema_field_update_patch(
+    current_field: &Value,
+    fields: &[Value],
+    field_id: &str,
+    patch: &serde_json::Map<String, Value>,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let mut normalized = serde_json::Map::new();
+    for (key, value) in patch {
+        match key.as_str() {
+            "id" => return Err("update_schema_field cannot change field id".to_string()),
+            "name" => {
+                let name = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        "update_schema_field name must be a non-empty string".to_string()
+                    })?
+                    .to_string();
+                let duplicate = fields.iter().any(|field| {
+                    field.get("id").and_then(Value::as_str) != Some(field_id)
+                        && field
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .is_some_and(|candidate| candidate == name)
+                });
+                if duplicate {
+                    return Err(format!("schema field name already exists: {name}"));
+                }
+                normalized.insert("name".to_string(), Value::String(name));
+            }
+            "type" => {
+                let field_type = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        "update_schema_field type must be a non-empty string".to_string()
+                    })?
+                    .to_string();
+                if !is_editor_schema_field_type(&field_type) {
+                    return Err(format!(
+                        "unsupported update_schema_field type: {field_type}"
+                    ));
+                }
+                normalized.insert("type".to_string(), Value::String(field_type));
+            }
+            "required" => {
+                let required = value
+                    .as_bool()
+                    .ok_or_else(|| "update_schema_field required must be a boolean".to_string())?;
+                normalized.insert("required".to_string(), Value::Bool(required));
+            }
+            "description" => {
+                let description = value.as_str().ok_or_else(|| {
+                    "update_schema_field description must be a string".to_string()
+                })?;
+                normalized.insert(
+                    "description".to_string(),
+                    Value::String(description.to_string()),
+                );
+            }
+            "enumValues" | "enum_values" => {
+                let values = normalized_schema_enum_values(value)?;
+                normalized.insert("enumValues".to_string(), Value::Array(values));
+            }
+            other => {
+                return Err(format!(
+                    "unsupported update_schema_field patch field: {other}"
+                ));
+            }
+        }
+    }
+    let next_type = normalized
+        .get("type")
+        .and_then(Value::as_str)
+        .or_else(|| current_field.get("type").and_then(Value::as_str))
+        .unwrap_or_default();
+    if next_type != "enum"
+        && (normalized.contains_key("type") || normalized.contains_key("enumValues"))
+    {
+        normalized.insert("enumValues".to_string(), Value::Array(Vec::new()));
+    }
+    Ok(normalized)
+}
+
+fn normalized_schema_enum_values(value: &Value) -> Result<Vec<Value>, String> {
+    let Some(values) = value.as_array() else {
+        return Err("update_schema_field enumValues must be an array".to_string());
+    };
+    let mut seen = BTreeSet::new();
+    let mut normalized = Vec::new();
+    for raw in values {
+        let enum_value = raw
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "update_schema_field enumValues must contain strings".to_string())?
+            .to_string();
+        if seen.insert(enum_value.clone()) {
+            normalized.push(Value::String(enum_value));
+        }
+    }
+    Ok(normalized)
 }
 
 fn member_identity_values(member: &Value) -> BTreeSet<String> {
@@ -7573,13 +7702,12 @@ fn update_input_param(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        let normalized_patch =
+            normalize_input_param_update_patch(&params[index], params, param_id, patch)?;
         let param = params[index]
             .as_object_mut()
             .ok_or_else(|| format!("input param is not an object: {param_id}"))?;
-        for (key, value) in patch {
-            if key == "id" {
-                return Err("update_input_param cannot change param id".to_string());
-            }
+        for (key, value) in normalized_patch {
             param.insert(key.clone(), value.clone());
         }
         let new_name = param
@@ -7596,6 +7724,105 @@ fn update_input_param(
         clear_unavailable_input_param_conditions(document);
     }
     Ok(json!({ "kind": "step", "id": step_id, "param_id": param_id }))
+}
+
+fn normalize_input_param_update_patch(
+    current_param: &Value,
+    params: &[Value],
+    param_id: &str,
+    patch: &serde_json::Map<String, Value>,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let mut normalized = serde_json::Map::new();
+    for (key, value) in patch {
+        match key.as_str() {
+            "id" => return Err("update_input_param cannot change param id".to_string()),
+            "name" => {
+                let raw_name = value
+                    .as_str()
+                    .ok_or_else(|| "update_input_param name must be a string".to_string())?;
+                let name = unique_input_param_name_for_update(params, raw_name, param_id);
+                normalized.insert("name".to_string(), Value::String(name));
+            }
+            "type" => {
+                let field_type = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        "update_input_param type must be a non-empty string".to_string()
+                    })?
+                    .to_string();
+                if !is_editor_schema_field_type(&field_type) {
+                    return Err(format!("unsupported update_input_param type: {field_type}"));
+                }
+                normalized.insert("type".to_string(), Value::String(field_type));
+            }
+            "required" => {
+                let required = value
+                    .as_bool()
+                    .ok_or_else(|| "update_input_param required must be a boolean".to_string())?;
+                normalized.insert("required".to_string(), Value::Bool(required));
+            }
+            "description" => {
+                let description = value
+                    .as_str()
+                    .ok_or_else(|| "update_input_param description must be a string".to_string())?;
+                normalized.insert(
+                    "description".to_string(),
+                    Value::String(description.to_string()),
+                );
+            }
+            "enumValues" | "enum_values" => {
+                let values = normalized_schema_enum_values(value)?;
+                normalized.insert("enumValues".to_string(), Value::Array(values));
+            }
+            other => {
+                return Err(format!(
+                    "unsupported update_input_param patch field: {other}"
+                ));
+            }
+        }
+    }
+    let next_type = normalized
+        .get("type")
+        .and_then(Value::as_str)
+        .or_else(|| current_param.get("type").and_then(Value::as_str))
+        .unwrap_or("string");
+    if next_type == "enum" {
+        if !normalized.contains_key("enumValues")
+            && current_param
+                .get("enumValues")
+                .and_then(Value::as_array)
+                .is_none_or(Vec::is_empty)
+        {
+            normalized.insert("enumValues".to_string(), json!(["value"]));
+        }
+    } else if normalized.contains_key("type") || normalized.contains_key("enumValues") {
+        normalized.insert("enumValues".to_string(), Value::Array(Vec::new()));
+    }
+    Ok(normalized)
+}
+
+fn unique_input_param_name_for_update(params: &[Value], raw: &str, param_id: &str) -> String {
+    let base = input_param_name(raw, "param");
+    let taken = params
+        .iter()
+        .filter(|param| param.get("id").and_then(Value::as_str) != Some(param_id))
+        .filter_map(|param| param.get("name").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect::<BTreeSet<_>>();
+    if !taken.contains(base.as_str()) {
+        return base;
+    }
+    let mut index = 2;
+    loop {
+        let candidate = format!("{base}_{index}");
+        if !taken.contains(candidate.as_str()) {
+            return candidate;
+        }
+        index += 1;
+    }
 }
 
 fn input_param_names(flow: &Value) -> BTreeSet<String> {
@@ -27384,6 +27611,76 @@ model = "gpt-5.5"
             })
         );
 
+        let updated_schema = apply_mobpack_authoring_operation(&json!({
+            "document": document.clone(),
+            "operation": {
+                "type": "update_schema",
+                "schema_id": "Review",
+                "patch": { "description": "Updated by MobKit schema operation." }
+            }
+        }))
+        .expect("update schema description");
+        assert_eq!(
+            updated_schema["document"]["schemas"][0]["description"],
+            json!("Updated by MobKit schema operation.")
+        );
+
+        let bad_schema_patch = apply_mobpack_authoring_operation(&json!({
+            "document": document.clone(),
+            "operation": {
+                "type": "update_schema",
+                "schema_id": "Review",
+                "patch": { "fields": [] }
+            }
+        }))
+        .expect_err("schema fields must use field operations");
+        assert!(
+            bad_schema_patch.contains("unsupported update_schema patch field: fields"),
+            "{bad_schema_patch}"
+        );
+
+        let updated_field = apply_mobpack_authoring_operation(&json!({
+            "document": document.clone(),
+            "operation": {
+                "type": "update_schema_field",
+                "schema_id": "Review",
+                "field_id": "f2",
+                "patch": {
+                    "type": "enum",
+                    "enumValues": ["needs_work", "approved", "approved"],
+                    "required": true,
+                    "description": "Decision state."
+                }
+            }
+        }))
+        .expect("update schema field through MobKit allowlist");
+        assert_eq!(
+            updated_field["document"]["schemas"][0]["fields"][1],
+            json!({
+                "id": "f2",
+                "name": "notes",
+                "type": "enum",
+                "required": true,
+                "description": "Decision state.",
+                "enumValues": ["needs_work", "approved"]
+            })
+        );
+
+        let bad_field_patch = apply_mobpack_authoring_operation(&json!({
+            "document": document.clone(),
+            "operation": {
+                "type": "update_schema_field",
+                "schema_id": "Review",
+                "field_id": "f2",
+                "patch": { "tools": ["shell"] }
+            }
+        }))
+        .expect_err("schema field unknown patch must fail");
+        assert!(
+            bad_field_patch.contains("unsupported update_schema_field patch field: tools"),
+            "{bad_field_patch}"
+        );
+
         let renamed = apply_mobpack_authoring_operation(&json!({
             "document": document,
             "operation": {
@@ -28358,8 +28655,55 @@ model = "gpt-5.5"
             json!("route: enum, param: string")
         );
 
-        let renamed = apply_mobpack_authoring_operation(&json!({
+        let updated = apply_mobpack_authoring_operation(&json!({
             "document": added["document"],
+            "operation": {
+                "type": "update_input_param",
+                "step_id": "input",
+                "param_id": "p2",
+                "patch": {
+                    "name": "route",
+                    "type": "enum",
+                    "required": false,
+                    "description": "Where this run should go.",
+                    "enumValues": ["code", "docs", "docs"]
+                }
+            }
+        }))
+        .expect("update input param");
+        assert_eq!(
+            updated["document"]["flow"]["steps"][0]["inputParams"][1],
+            json!({
+                "id": "p2",
+                "name": "route_2",
+                "type": "enum",
+                "required": false,
+                "description": "Where this run should go.",
+                "enumValues": ["code", "docs"]
+            })
+        );
+        assert_eq!(
+            updated["document"]["flow"]["steps"][0]["fields"],
+            json!("route: enum, route_2: enum?")
+        );
+
+        let bad_param_patch = apply_mobpack_authoring_operation(&json!({
+            "document": updated["document"],
+            "operation": {
+                "type": "update_input_param",
+                "step_id": "input",
+                "param_id": "p2",
+                "patch": { "tools": ["shell"] }
+            }
+        }))
+        .expect_err("raw input-param patch field must be rejected");
+        assert!(
+            bad_param_patch.contains("unsupported update_input_param patch field: tools"),
+            "{bad_param_patch}"
+        );
+
+        let renamed = apply_mobpack_authoring_operation(&json!({
+            "document": updated["document"],
             "operation": {
                 "type": "rename_input_param",
                 "step_id": "input",
