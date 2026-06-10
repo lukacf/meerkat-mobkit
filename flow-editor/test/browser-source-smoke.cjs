@@ -108,6 +108,43 @@ async function main() {
     await inlineEditor.locator(".bld-toml__head .btn--ghost").click();
     await inlineEditor.waitFor({ state: "hidden", timeout: 10_000 });
 
+    await page.locator("button.modetoggle__opt", { hasText: "Graph" }).click();
+    const graphSource = page.locator(".node--source-file").first();
+    await graphSource.waitFor({ state: "visible", timeout: 10_000 });
+    const graphSourceClass = await graphSource.getAttribute("class");
+    if ((graphSourceClass || "").split(/\s+/).includes("node")) {
+      throw new Error(`graph source file affordance must not inherit graph node chrome: ${graphSourceClass}`);
+    }
+    await graphSource.click();
+    const graphInlineEditor = page.locator(".bld-toml--graph");
+    await graphInlineEditor.waitFor({ timeout: 10_000 });
+    const graphSourceBox = graphInlineEditor.locator('[role="textbox"][aria-readonly="true"]');
+    await page.waitForFunction(() => {
+      const source = document.querySelector('.bld-toml--graph [role="textbox"][aria-readonly="true"]');
+      return source?.innerText.includes("[profiles.") && source?.innerText.includes("[flows.");
+    }, null, { timeout: 10_000 });
+    const graphReadonly = await graphSourceBox.getAttribute("aria-readonly");
+    if (graphReadonly !== "true") {
+      throw new Error(`graph inline source editor must be read-only, got aria-readonly=${graphReadonly}`);
+    }
+    await graphInlineEditor.locator(".bld-toml__head .btn--ghost").click();
+    await graphInlineEditor.waitFor({ state: "hidden", timeout: 10_000 });
+
+    await page.locator("button.viewtab", { hasText: "AGENTS" }).click();
+    const runtimeDetails = page.locator("details.agent-runtime").first();
+    await runtimeDetails.waitFor({ state: "visible", timeout: 10_000 });
+    const runtimeState = await runtimeDetails.evaluate((el) => {
+      const body = el.querySelector(".agent-runtime__body");
+      return {
+        open: el.open,
+        summary: el.querySelector("summary")?.textContent?.trim() || "",
+        bodyDisplay: body ? getComputedStyle(body).display : "",
+      };
+    });
+    if (runtimeState.open || runtimeState.summary !== "RUNTIME" || runtimeState.bodyDisplay !== "none") {
+      throw new Error(`agent runtime section must render collapsed behind schema-backed title: ${JSON.stringify(runtimeState)}`);
+    }
+
     if (consoleMessages.length) {
       throw new Error(`browser console errors:\n${consoleMessages.join("\n")}`);
     }
