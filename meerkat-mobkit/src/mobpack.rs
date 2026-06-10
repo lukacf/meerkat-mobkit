@@ -1075,7 +1075,7 @@ pub fn mobpack_agent_definitions_response_with_runtime(
 ) -> Value {
     let provider = authoring_provider("mobkit/agent_definitions/list", runtime);
     let runtime_backed = authoring_provider_is_runtime_backed(&provider);
-    let tool_catalog = tool_catalog_response();
+    let tool_catalog = tool_catalog_response_with_runtime_state(runtime);
     let skill_realms = authoring_skill_realms_response();
     let authoring_sources = authoring_agent_definition_mobpack_sources();
     let agent_definitions = agent_definition_catalog(
@@ -1109,7 +1109,7 @@ pub fn mobpack_templates_response_with_runtime(
     let runtime_backed = authoring_provider_is_runtime_backed(&provider);
     let sample_mobpacks = sample_mobpack_catalog();
     let blank_mobpack = blank_mobpack_template();
-    let tool_catalog = tool_catalog_response();
+    let tool_catalog = tool_catalog_response_with_runtime_state(runtime);
     let sample_skill_realms = sample_skill_realm(&sample_mobpacks, true)
         .map(|realm| Value::Array(vec![realm]))
         .unwrap_or_else(|| Value::Array(Vec::new()));
@@ -26825,6 +26825,48 @@ model = "gpt-5.5"
             runtime_mob_tool["runtimeAvailability"]["available"],
             json!(false)
         );
+        let runtime_planner_definition = runtime_catalogs["agent_definitions"]
+            .as_array()
+            .expect("agent definitions")
+            .iter()
+            .find(|definition| {
+                definition["role"] == "planner"
+                    && definition["sourceOrigin"] == "mobkit/authoring-agent-definitions"
+            })
+            .expect("runtime authoring planner definition");
+        let runtime_planner_mob_tool = runtime_planner_definition["toolDefinitions"]
+            .as_array()
+            .expect("planner tool definitions")
+            .iter()
+            .find(|tool| tool["id"] == "mob")
+            .expect("planner mob tool definition");
+        assert_eq!(
+            runtime_planner_mob_tool["runtime_availability"]["available"],
+            json!(false)
+        );
+        assert_eq!(
+            runtime_planner_mob_tool["runtimeAvailability"]["state"],
+            json!("unavailable")
+        );
+        let runtime_agent_definition = runtime_catalogs["agent_definitions"]
+            .as_array()
+            .expect("agent definitions")
+            .iter()
+            .find(|definition| {
+                definition["role"] == "agent"
+                    && definition["sourceOrigin"] == "mobkit/authoring-agent-definitions"
+            })
+            .expect("blank authoring agent definition");
+        let runtime_agent_builtins = runtime_agent_definition["toolDefinitions"]
+            .as_array()
+            .expect("agent tool definitions")
+            .iter()
+            .find(|tool| tool["id"] == "builtins")
+            .expect("agent builtins tool definition");
+        assert_eq!(
+            runtime_agent_builtins["runtime_availability"]["state"],
+            json!("available")
+        );
         let runtime_snapshot = runtime_catalogs["catalog_snapshot"]["id"]
             .as_str()
             .expect("runtime snapshot id");
@@ -26834,28 +26876,21 @@ model = "gpt-5.5"
                 .as_str()
                 .expect("standalone snapshot id")
         );
-        let blank_definition = runtime_catalogs["agent_definitions"]
-            .as_array()
-            .expect("agent definitions")
-            .iter()
-            .find(|definition| {
-                definition["role"] == "agent"
-                    && definition["sourceOrigin"] == "mobkit/authoring-agent-definitions"
-            })
-            .expect("blank authoring agent definition");
         let document: MobpackDocument =
             serde_json::from_value(runtime_catalogs["blank_mobpack"]["document"].clone())
                 .expect("blank document");
 
-        let standalone_rejects_runtime_snapshot = apply_mobpack_authoring_operation(&json!({
+        let standalone_add_request = json!({
             "document": document.clone(),
             "expected_catalog_snapshot_id": runtime_snapshot,
             "operation": {
                 "type": "add_agent_definition",
-                "definition_id": blank_definition["id"].clone()
+                "definition_id": runtime_agent_definition["id"].clone()
             }
-        }))
-        .expect_err("standalone apply_operation must not accept runtime snapshot");
+        });
+        let standalone_rejects_runtime_snapshot =
+            apply_mobpack_authoring_operation(&standalone_add_request)
+                .expect_err("standalone apply_operation must not accept runtime snapshot");
         assert!(
             standalone_rejects_runtime_snapshot
                 .contains("catalog snapshot conflict for add_agent_definition"),
@@ -26868,7 +26903,7 @@ model = "gpt-5.5"
                 "expected_catalog_snapshot_id": runtime_snapshot,
                 "operation": {
                     "type": "add_agent_definition",
-                    "definition_id": blank_definition["id"].clone()
+                    "definition_id": runtime_agent_definition["id"].clone()
                 }
             }),
             Some(&runtime),
