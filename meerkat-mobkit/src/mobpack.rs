@@ -1338,7 +1338,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["step_id"],
             "mutates": ["document.flow"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "update_input_param",
@@ -1346,7 +1346,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["step_id", "param_id", "patch"],
             "mutates": ["document.flow", "document.edges"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "rename_input_param",
@@ -1354,7 +1354,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["step_id", "param_id", "new_name"],
             "mutates": ["document.flow", "document.edges"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "delete_input_param",
@@ -1362,7 +1362,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["step_id", "param_id"],
             "mutates": ["document.flow", "document.edges"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "insert_flow_step",
@@ -1370,7 +1370,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["step_or_pick", "lane_ref"],
             "mutates": ["document.flow", "document.instances", "document.edges", "document.frames"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "update_flow_step",
@@ -1378,7 +1378,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["step_id", "patch"],
             "mutates": ["document.flow", "document.instances", "document.edges", "document.frames"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "apply_flow_step_edit",
@@ -1394,7 +1394,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["step_id"],
             "mutates": ["document.flow", "document.instances", "document.edges", "document.frames"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "insert_graph_node",
@@ -6115,9 +6115,6 @@ fn apply_insert_flow_step_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some() && operation.get("step").is_none() {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let step = operation
         .get("step")
         .cloned()
@@ -6140,14 +6137,6 @@ fn apply_update_flow_step_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("step_id")
-            .or_else(|| operation.get("stepId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let step_id = operation_step_id(operation)?;
     let patch = operation
         .get("patch")
@@ -7038,14 +7027,6 @@ fn apply_delete_flow_step_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("step_id")
-            .or_else(|| operation.get("stepId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let step_id = operation_step_id(operation)?;
     let steps = flow_steps_array_mut(&mut document.flow)?;
     if !remove_flow_step_from_steps(steps, &step_id) {
@@ -7209,14 +7190,6 @@ fn apply_add_input_param_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("step_id")
-            .or_else(|| operation.get("stepId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let step_id = operation_step_id(operation)?;
     let step = flow_step_mut_by_id(&mut document.flow, &step_id)
         .ok_or_else(|| format!("flow step not found: {step_id}"))?;
@@ -7245,14 +7218,6 @@ fn apply_update_input_param_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("step_id")
-            .or_else(|| operation.get("stepId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let step_id = operation_step_id(operation)?;
     let param_id = operation_param_id(operation)?;
     let patch = operation
@@ -7266,14 +7231,6 @@ fn apply_rename_input_param_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("step_id")
-            .or_else(|| operation.get("stepId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let step_id = operation_step_id(operation)?;
     let param_id = operation_param_id(operation)?;
     let new_name = operation
@@ -7292,14 +7249,6 @@ fn apply_delete_input_param_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("step_id")
-            .or_else(|| operation.get("stepId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let step_id = operation_step_id(operation)?;
     let param_id = operation_param_id(operation)?;
     let old_name = {

@@ -196,22 +196,6 @@ window.MOBKIT_BOOT = {
           studio: input.studio,
           useAuthoringProjection: true,
         });
-      case "basic.updateStep":
-        return withSelection({ operationType: "update_flow_step", operation: { step_id: input.stepId, patch: input.patch || {} } });
-      case "basic.editStep":
-        return withSelection({ operationType: "apply_flow_step_edit", operation: { step_id: input.stepId, action: input.action, ...(input.payload || {}) } });
-      case "basic.insertStep":
-        return withSelection({ operationType: "insert_flow_step", operation: { pick: input.pick, lane_ref: input.laneRef } });
-      case "basic.deleteStep":
-        return withSelection({ operationType: "delete_flow_step", operation: { step_id: input.stepId } });
-      case "basic.addInputParam":
-        return withSelection({ operationType: "add_input_param", operation: { step_id: input.stepId } });
-      case "basic.updateInputParam":
-        return withSelection({ operationType: "update_input_param", operation: { step_id: input.stepId, param_id: input.paramId, patch: input.patch || {} } });
-      case "basic.renameInputParam":
-        return withSelection({ operationType: "rename_input_param", operation: { step_id: input.stepId, param_id: input.paramId, new_name: input.newName } });
-      case "basic.deleteInputParam":
-        return withSelection({ operationType: "delete_input_param", operation: { step_id: input.stepId, param_id: input.paramId } });
       case "schema.add":
         return withSelection({ operationType: "add_schema", operation: {} });
       case "schema.update":
@@ -262,6 +246,22 @@ window.MOBKIT_BOOT = {
         return { type: "remove_member_skill", member_id: input.memberId, skill_id: input.skillId };
       case "agent.createInlineSkill":
         return { type: "create_inline_skill", member_id: input.memberId, label: input.label, content: input.content };
+      case "basic.updateStep":
+        return { type: "update_flow_step", step_id: input.stepId, patch: input.patch || {} };
+      case "basic.editStep":
+        return { type: "apply_flow_step_edit", step_id: input.stepId, action: input.action, ...(input.payload || {}) };
+      case "basic.insertStep":
+        return { type: "insert_flow_step", pick: input.pick, lane_ref: input.laneRef };
+      case "basic.deleteStep":
+        return { type: "delete_flow_step", step_id: input.stepId };
+      case "basic.addInputParam":
+        return { type: "add_input_param", step_id: input.stepId };
+      case "basic.updateInputParam":
+        return { type: "update_input_param", step_id: input.stepId, param_id: input.paramId, patch: input.patch || {} };
+      case "basic.renameInputParam":
+        return { type: "rename_input_param", step_id: input.stepId, param_id: input.paramId, new_name: input.newName };
+      case "basic.deleteInputParam":
+        return { type: "delete_input_param", step_id: input.stepId, param_id: input.paramId };
       case "graph.insertNode":
         return { type: "insert_graph_node", ...(input.operation || { pick: input.pick, cell: input.cell, instance: input.instance }) };
       case "graph.updateNode":
@@ -15638,7 +15638,7 @@ function App() {
       basicView: catalogs.basicView,
       launchView: catalogs.launchView,
       conditionView: catalogs.conditionView,
-      applyAuthoringIntent: applyMobKitAuthoringReplacement
+      applyAuthoringIntent: applyMobKitAuthoringOperation
     }
   ), view === "agents" && /* @__PURE__ */ React.createElement(
     AgentsView,

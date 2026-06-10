@@ -1276,7 +1276,7 @@ function App() {
           basicView={catalogs.basicView}
           launchView={catalogs.launchView}
           conditionView={catalogs.conditionView}
-          applyAuthoringIntent={applyMobKitAuthoringReplacement}
+          applyAuthoringIntent={applyMobKitAuthoringOperation}
         />
       )}
 
