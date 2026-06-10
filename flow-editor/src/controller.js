@@ -89,10 +89,12 @@
   }
 
   function operationErrorText(result = null, fallback = "") {
+    if (!result || typeof result !== "object") return "";
     const validationHead = String(result?.validation?.display_rows?.[0]?.head || "").trim();
     if (validationHead) return validationHead;
     const error = String(result?.error || "").trim();
-    return error || String(fallback || "").trim();
+    if (error) return error;
+    return result.ok === false ? String(fallback || "").trim() : "";
   }
 
   function rpcMethod(name) {

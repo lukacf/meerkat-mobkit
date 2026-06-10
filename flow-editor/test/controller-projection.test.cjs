@@ -5279,6 +5279,16 @@ assert.deepEqual(controller.memberSchemaChangeErrorState({ ok: true }), {
   text: "",
   rawError: "",
 });
+assert.deepEqual(controller.memberSchemaChangeErrorState(null, "schema update failed"), {
+  hasError: false,
+  text: "",
+  rawError: "",
+});
+assert.deepEqual(controller.memberSchemaChangeErrorState({ ok: false }, "schema update failed"), {
+  hasError: true,
+  text: "schema update failed",
+  rawError: "schema update failed",
+});
 assert.deepEqual(controller.agentDefinitionAddControlState([{
   id: "reviewer",
   role: "reviewer",
@@ -5427,6 +5437,11 @@ assert.deepEqual(controller.schemaDefinitionAddErrorState({
   rawError: "MobKit schema is missing mob_definition.editor_schema_draft",
 });
 assert.deepEqual(controller.schemaDefinitionAddErrorState({ ok: true }), {
+  hasError: false,
+  text: "",
+  rawError: "",
+});
+assert.deepEqual(controller.schemaDefinitionAddErrorState(null, "add_schema failed"), {
   hasError: false,
   text: "",
   rawError: "",
