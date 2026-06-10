@@ -6117,21 +6117,20 @@ window.MOBKIT_BOOT = {
     const view = graphCanvasViewState(graphView);
     const isCompact = density === "compact";
     if (inst?.isTerminal) {
-      const isSourceFile = !!inst.isSourceFile;
       return {
         hidden: false,
         isTerminal: true,
-        isSourceFile,
+        isSourceFile: false,
         dataKind: inst.kind,
-        role: isSourceFile ? "button" : undefined,
-        tabIndex: isSourceFile ? 0 : undefined,
-        ariaLabel: isSourceFile ? view.sourceFileAriaLabel : undefined,
-        sourceGlyph: isSourceFile ? view.sourceFileGlyph : "",
-        sourceActivationHash: isSourceFile ? view.sourceFileActivationHash : "",
-        sourceActivationSelector: isSourceFile ? view.sourceFileActivationSelector : "",
-        roleLabel: isSourceFile ? view.sourceFileRoleLabel : `terminal · ${inst.kind}`,
+        role: undefined,
+        tabIndex: undefined,
+        ariaLabel: undefined,
+        sourceGlyph: "",
+        sourceActivationHash: "",
+        sourceActivationSelector: "",
+        roleLabel: `terminal · ${inst.kind}`,
         title: inst.label,
-        subtitle: isSourceFile ? "" : inst.kind,
+        subtitle: inst.kind,
       };
     }
     const member = inst?.memberId
@@ -6180,13 +6179,10 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function graphSourceFileNode({ instances = [], graphView = null } = {}) {
+  function graphSourceFileAdornment({ instances = [], graphView = null } = {}) {
     const view = graphCanvasViewState(graphView);
     if (!view.sourceFileNodeId || !view.sourceFileNodeKind || !view.sourceFileLabel) return null;
-    const sourceInstances = Array.isArray(instances) ? instances : [];
-    if (sourceInstances.some((instance) => instance?.isSourceFile || String(instance?.id || "") === view.sourceFileNodeId)) {
-      return null;
-    }
+    const sourceInstances = graphCanvasInstances({ instances, graphView });
     const positioned = sourceInstances
       .filter((instance) => Number.isFinite(Number(instance?.col)) && Number.isFinite(Number(instance?.row)));
     const minCol = positioned.length
@@ -6197,9 +6193,9 @@ window.MOBKIT_BOOT = {
       : 0;
     return {
       id: view.sourceFileNodeId,
-      isTerminal: true,
       isSourceFile: true,
       isGraphAdornment: true,
+      adornmentKind: "source_file",
       kind: view.sourceFileNodeKind,
       label: view.sourceFileLabel,
       col: minCol + view.sourceFileNodeColOffset,
@@ -6208,9 +6204,35 @@ window.MOBKIT_BOOT = {
   }
 
   function graphCanvasInstances({ instances = [], graphView = null } = {}) {
-    const sourceInstances = Array.isArray(instances) ? instances : [];
-    const sourceFileNode = graphSourceFileNode({ instances: sourceInstances, graphView });
-    return sourceFileNode ? [sourceFileNode, ...sourceInstances] : sourceInstances;
+    const view = graphCanvasViewState(graphView);
+    return (Array.isArray(instances) ? instances : [])
+      .filter((instance) => {
+        if (!instance || typeof instance !== "object") return false;
+        if (instance.isGraphAdornment || instance.isSourceFile) return false;
+        return String(instance.id || "") !== view.sourceFileNodeId;
+      });
+  }
+
+  function graphCanvasAdornments({ instances = [], graphView = null } = {}) {
+    const sourceFileAdornment = graphSourceFileAdornment({ instances, graphView });
+    return sourceFileAdornment ? [sourceFileAdornment] : [];
+  }
+
+  function graphSourceFileAdornmentCanvasState({ adornment = null, graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
+    return {
+      hidden: !adornment,
+      isSourceFile: true,
+      role: "button",
+      tabIndex: 0,
+      dataKind: String(adornment?.kind || view.sourceFileNodeKind || ""),
+      ariaLabel: view.sourceFileAriaLabel,
+      sourceGlyph: view.sourceFileGlyph,
+      sourceActivationHash: view.sourceFileActivationHash,
+      sourceActivationSelector: view.sourceFileActivationSelector,
+      roleLabel: view.sourceFileRoleLabel,
+      title: String(adornment?.label || view.sourceFileLabel || ""),
+    };
   }
 
   function graphGateCanvasState({ inst, edges = [], contract = null, graphView = null } = {}) {
@@ -11151,9 +11173,11 @@ window.MOBKIT_BOOT = {
     graphDragCellAt,
     graphCellCanvasRows,
     graphGridHeaderCanvasRows,
-    graphSourceFileNode,
+    graphSourceFileAdornment,
     graphCanvasInstances,
+    graphCanvasAdornments,
     graphNodeCanvasState,
+    graphSourceFileAdornmentCanvasState,
     graphFrameCanvasState,
     graphGateCanvasState,
     graphEdgeCanvasState,
@@ -11951,13 +11975,14 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   const [hoverInId, setHoverInId] = React.useState(null);
   const [hoverCell, setHoverCell] = React.useState(null);
   const canvasView = window.MobKitFlowController.graphCanvasViewState(graphView);
+  const modelInstances = window.MobKitFlowController.graphCanvasInstances({ instances: state.instances, graphView: canvasView });
   const [view, setView] = React.useState({ scale: 1, tx: 0, ty: 0 });
   const viewRef = React.useRef(view);
   React.useEffect(() => {
     viewRef.current = view;
   }, [view]);
   const [panDrag, setPanDrag] = React.useState(null);
-  const gridState = window.MobKitFlowController.graphGridState({ instances: state.instances, gridBase: grid });
+  const gridState = window.MobKitFlowController.graphGridState({ instances: modelInstances, gridBase: grid });
   const g = gridState.grid;
   const totalW = gridState.totalW;
   const totalH = gridState.totalH;
@@ -12052,7 +12077,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     e.preventDefault();
     e.stopPropagation();
     onOpenSourceFile?.({
-      id: sourceEl.dataset.instId || "",
+      id: sourceEl.dataset.sourceId || "",
       kind: sourceEl.dataset.kind || canvasView.sourceFileNodeKind
     });
     return true;
@@ -12144,7 +12169,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     };
   });
   const fit = view;
-  const cellRows = window.MobKitFlowController.graphCellCanvasRows({ grid: g, instances: state.instances, hoverCell });
+  const cellRows = window.MobKitFlowController.graphCellCanvasRows({ grid: g, instances: modelInstances, hoverCell });
   const headerRows = window.MobKitFlowController.graphGridHeaderCanvasRows({ grid: g });
   const cells = cellRows.map((row) => /* @__PURE__ */ React.createElement(
     "div",
@@ -12197,8 +12222,17 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       selectEdge(edge.id);
     } }, /* @__PURE__ */ React.createElement("path", { d, className: "edge-hit" }), /* @__PURE__ */ React.createElement("path", { d, className: edgeState.lineClass, markerEnd: edgeState.markerEnd }), labelEl);
   });
-  const canvasInstances = window.MobKitFlowController.graphCanvasInstances({ instances: state.instances, graphView: canvasView });
-  const nodeEls = canvasInstances.map((inst) => {
+  const canvasAdornments = window.MobKitFlowController.graphCanvasAdornments({ instances: state.instances, graphView: canvasView });
+  const adornmentEls = canvasAdornments.map((adornment) => /* @__PURE__ */ React.createElement(
+    SourceFileAdornmentView,
+    {
+      key: adornment.id,
+      g,
+      adornment,
+      adornmentState: window.MobKitFlowController.graphSourceFileAdornmentCanvasState({ adornment, graphView: canvasView })
+    }
+  ));
+  const nodeEls = modelInstances.map((inst) => {
     if (inst.isGate) {
       return /* @__PURE__ */ React.createElement(
         GateView,
@@ -12232,8 +12266,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         hoverIn: hoverInId === inst.id,
         onMouseDown: onNodeDown,
         onPortDown,
-        portDragTitle: canvasView.portDragTitle,
-        onOpenSourceFile
+        portDragTitle: canvasView.portDragTitle
       }
     );
   });
@@ -12249,7 +12282,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         if (e.target === hostRef.current || e.target.classList?.contains("canvas")) clearSelection();
       }
     },
-    /* @__PURE__ */ React.createElement("div", { className: "canvas", style: { width: totalW, height: totalH, transform: `translate(${fit.tx}px, ${fit.ty}px) scale(${fit.scale})`, transformOrigin: "0 0" } }, colHeads, rowHeads, frameEls, cells, /* @__PURE__ */ React.createElement("svg", { className: "edges-svg", width: totalW, height: totalH }, /* @__PURE__ */ React.createElement("defs", null, /* @__PURE__ */ React.createElement("marker", { id: "arr", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--ink)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-red", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--danger)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-acc", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--accent)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-dim", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--subtle)" }))), edgeEls, conn && /* @__PURE__ */ React.createElement("path", { d: window.MobKitFlowController.graphEdgePath(conn.from, conn.to), className: "edge-line is-ghost", markerEnd: "url(#arr-acc)" })), nodeEls),
+    /* @__PURE__ */ React.createElement("div", { className: "canvas", style: { width: totalW, height: totalH, transform: `translate(${fit.tx}px, ${fit.ty}px) scale(${fit.scale})`, transformOrigin: "0 0" } }, colHeads, rowHeads, frameEls, cells, /* @__PURE__ */ React.createElement("svg", { className: "edges-svg", width: totalW, height: totalH }, /* @__PURE__ */ React.createElement("defs", null, /* @__PURE__ */ React.createElement("marker", { id: "arr", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--ink)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-red", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--danger)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-acc", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--accent)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-dim", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--subtle)" }))), edgeEls, conn && /* @__PURE__ */ React.createElement("path", { d: window.MobKitFlowController.graphEdgePath(conn.from, conn.to), className: "edge-line is-ghost", markerEnd: "url(#arr-acc)" })), adornmentEls, nodeEls),
     operationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, operationError),
     /* @__PURE__ */ React.createElement("div", { className: "zoom-controls", onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", title: canvasView.zoomOutTitle, onClick: () => {
       const r = hostRef.current.getBoundingClientRect();
@@ -12260,56 +12293,43 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     } }, "+"))
   );
 }
-function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, onOpenSourceFile }) {
+function SourceFileAdornmentView({ g, adornment, adornmentState }) {
+  if (adornmentState.hidden) return null;
+  const b = window.MobKitFlowController.graphNodeBox(g, adornment);
+  return /* @__PURE__ */ React.createElement(
+    "a",
+    {
+      href: adornmentState.sourceActivationHash,
+      "data-source-id": adornment.id,
+      className: "node node--term node--source-file",
+      "data-kind": adornmentState.dataKind,
+      role: adornmentState.role,
+      tabIndex: adornmentState.tabIndex,
+      "aria-label": adornmentState.ariaLabel,
+      style: { left: b.x, top: b.y, width: b.w, height: b.h },
+      onMouseDown: (e) => {
+        e.stopPropagation();
+      }
+    },
+    /* @__PURE__ */ React.createElement("span", { className: "source-file__glyph" }, adornmentState.sourceGlyph),
+    /* @__PURE__ */ React.createElement("span", { className: "source-file__label" }, adornmentState.title)
+  );
+}
+function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle }) {
   const b = window.MobKitFlowController.graphNodeBox(g, inst);
   if (nodeState.isTerminal) {
-    const openSourceFile = (event) => {
-      if (!nodeState.isSourceFile) return;
-      event.stopPropagation();
-      onOpenSourceFile?.(inst);
-    };
-    if (nodeState.isSourceFile) {
-      return /* @__PURE__ */ React.createElement(
-        "a",
-        {
-          href: nodeState.sourceActivationHash,
-          "data-inst-id": inst.id,
-          className: "node node--term node--source-file" + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : ""),
-          "data-kind": nodeState.dataKind,
-          role: nodeState.role,
-          tabIndex: nodeState.tabIndex,
-          "aria-label": nodeState.ariaLabel,
-          style: { left: b.x, top: b.y, width: b.w, height: b.h },
-          onMouseDown: (e) => {
-            e.stopPropagation();
-          }
-        },
-        /* @__PURE__ */ React.createElement("span", { className: "source-file__glyph" }, nodeState.sourceGlyph),
-        /* @__PURE__ */ React.createElement("span", { className: "source-file__label" }, nodeState.title)
-      );
-    }
     return /* @__PURE__ */ React.createElement(
       "div",
       {
         "data-inst-id": inst.id,
-        className: "node node--term" + (nodeState.isSourceFile ? " node--source-file" : "") + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : ""),
+        className: "node node--term" + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : ""),
         "data-kind": nodeState.dataKind,
         role: nodeState.role,
         tabIndex: nodeState.tabIndex,
         "aria-label": nodeState.ariaLabel,
         style: { left: b.x, top: b.y, width: b.w, height: b.h },
         onMouseDown: (e) => {
-          if (nodeState.isSourceFile) {
-            e.stopPropagation();
-            return;
-          }
           onMouseDown(e, inst);
-        },
-        onClick: openSourceFile,
-        onKeyDown: (e) => {
-          if (!nodeState.isSourceFile || e.key !== "Enter" && e.key !== " ") return;
-          e.preventDefault();
-          openSourceFile(e);
         }
       },
       /* @__PURE__ */ React.createElement("div", { className: "node__head" }, /* @__PURE__ */ React.createElement("span", { className: "node__role" }, nodeState.roleLabel)),

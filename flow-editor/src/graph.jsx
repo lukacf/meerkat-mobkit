@@ -62,6 +62,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   const [hoverInId, setHoverInId] = React.useState(null);
   const [hoverCell, setHoverCell] = React.useState(null);
   const canvasView = window.MobKitFlowController.graphCanvasViewState(graphView);
+  const modelInstances = window.MobKitFlowController.graphCanvasInstances({ instances: state.instances, graphView: canvasView });
 
   // ── View transform (pan + zoom) ──
   const [view, setView] = React.useState({ scale: 1, tx: 0, ty: 0 });
@@ -69,7 +70,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   React.useEffect(() => { viewRef.current = view; }, [view]);
   const [panDrag, setPanDrag] = React.useState(null);
 
-  const gridState = window.MobKitFlowController.graphGridState({ instances: state.instances, gridBase: grid });
+  const gridState = window.MobKitFlowController.graphGridState({ instances: modelInstances, gridBase: grid });
   const g = gridState.grid;
   const totalW = gridState.totalW;
   const totalH = gridState.totalH;
@@ -173,7 +174,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     e.preventDefault();
     e.stopPropagation();
     onOpenSourceFile?.({
-      id: sourceEl.dataset.instId || "",
+      id: sourceEl.dataset.sourceId || "",
       kind: sourceEl.dataset.kind || canvasView.sourceFileNodeKind,
     });
     return true;
@@ -268,7 +269,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
 
   const fit = view;
 
-  const cellRows = window.MobKitFlowController.graphCellCanvasRows({ grid: g, instances: state.instances, hoverCell });
+  const cellRows = window.MobKitFlowController.graphCellCanvasRows({ grid: g, instances: modelInstances, hoverCell });
   const headerRows = window.MobKitFlowController.graphGridHeaderCanvasRows({ grid: g });
   const cells = cellRows.map(row => (
     <div key={row.key}
@@ -334,8 +335,16 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     );
   });
 
-  const canvasInstances = window.MobKitFlowController.graphCanvasInstances({ instances: state.instances, graphView: canvasView });
-  const nodeEls = canvasInstances.map(inst => {
+  const canvasAdornments = window.MobKitFlowController.graphCanvasAdornments({ instances: state.instances, graphView: canvasView });
+  const adornmentEls = canvasAdornments.map(adornment => (
+    <SourceFileAdornmentView
+      key={adornment.id}
+      g={g}
+      adornment={adornment}
+      adornmentState={window.MobKitFlowController.graphSourceFileAdornmentCanvasState({ adornment, graphView: canvasView })}
+    />
+  ));
+  const nodeEls = modelInstances.map(inst => {
     if (inst.isGate) {
       return (
         <GateView key={inst.id}
@@ -365,7 +374,6 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         onMouseDown={onNodeDown}
         onPortDown={onPortDown}
         portDragTitle={canvasView.portDragTitle}
-        onOpenSourceFile={onOpenSourceFile}
       />
     );
   });
@@ -392,6 +400,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
           {edgeEls}
           {conn && <path d={window.MobKitFlowController.graphEdgePath(conn.from, conn.to)} className="edge-line is-ghost" markerEnd="url(#arr-acc)" />}
         </svg>
+        {adornmentEls}
         {nodeEls}
       </div>
 
@@ -414,53 +423,41 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   );
 }
 
-function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, onOpenSourceFile }) {
+function SourceFileAdornmentView({ g, adornment, adornmentState }) {
+  if (adornmentState.hidden) return null;
+  const b = window.MobKitFlowController.graphNodeBox(g, adornment);
+  return (
+    <a href={adornmentState.sourceActivationHash} data-source-id={adornment.id}
+      className="node node--term node--source-file"
+      data-kind={adornmentState.dataKind}
+      role={adornmentState.role}
+      tabIndex={adornmentState.tabIndex}
+      aria-label={adornmentState.ariaLabel}
+      style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
+      onMouseDown={(e) => {
+        e.stopPropagation();
+      }}
+    >
+      <span className="source-file__glyph">{adornmentState.sourceGlyph}</span>
+      <span className="source-file__label">{adornmentState.title}</span>
+    </a>
+  );
+}
+
+function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle }) {
   const b = window.MobKitFlowController.graphNodeBox(g, inst);
 
   if (nodeState.isTerminal) {
-    const openSourceFile = (event) => {
-      if (!nodeState.isSourceFile) return;
-      event.stopPropagation();
-      onOpenSourceFile?.(inst);
-    };
-    if (nodeState.isSourceFile) {
-      return (
-        <a href={nodeState.sourceActivationHash} data-inst-id={inst.id}
-          className={"node node--term node--source-file" + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : "")}
-          data-kind={nodeState.dataKind}
-          role={nodeState.role}
-          tabIndex={nodeState.tabIndex}
-          aria-label={nodeState.ariaLabel}
-          style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
-          onMouseDown={(e) => {
-            e.stopPropagation();
-          }}
-        >
-          <span className="source-file__glyph">{nodeState.sourceGlyph}</span>
-          <span className="source-file__label">{nodeState.title}</span>
-        </a>
-      );
-    }
     return (
       <div data-inst-id={inst.id}
-        className={"node node--term" + (nodeState.isSourceFile ? " node--source-file" : "") + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : "")}
+        className={"node node--term" + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : "")}
         data-kind={nodeState.dataKind}
         role={nodeState.role}
         tabIndex={nodeState.tabIndex}
         aria-label={nodeState.ariaLabel}
         style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
         onMouseDown={(e) => {
-          if (nodeState.isSourceFile) {
-            e.stopPropagation();
-            return;
-          }
           onMouseDown(e, inst);
-        }}
-        onClick={openSourceFile}
-        onKeyDown={(e) => {
-          if (!nodeState.isSourceFile || (e.key !== "Enter" && e.key !== " ")) return;
-          e.preventDefault();
-          openSourceFile(e);
         }}
       >
         <div className="node__head"><span className="node__role">{nodeState.roleLabel}</span></div>

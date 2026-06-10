@@ -8284,50 +8284,53 @@ assert.deepEqual(controller.graphFrameCanvasState({
   frameStyle: { left: 236, top: 62, width: 448, height: 346 },
   labelStyle: { left: 248, top: 52 },
 });
-const terminalSourceState = controller.graphNodeCanvasState({
-  inst: { id: "source_mob_toml", label: "mob.toml", kind: "success", isTerminal: true, isSourceFile: true },
-  graphView: hydratedCatalogs.graphView,
-});
-assert.equal(terminalSourceState.isSourceFile, true);
-assert.equal(terminalSourceState.role, "button");
-assert.equal(terminalSourceState.ariaLabel, "Open mob.toml read-only source editor");
-assert.equal(terminalSourceState.sourceGlyph, "{ }");
-assert.equal(terminalSourceState.sourceActivationHash, "#mobkit-graph-source");
-assert.equal(terminalSourceState.sourceActivationSelector, ".node--source-file");
-assert.equal(terminalSourceState.roleLabel, "source file");
-assert.equal(terminalSourceState.title, "mob.toml");
-assert.equal(terminalSourceState.subtitle, "");
-assert.equal(controller.graphNodeCanvasState({
-  inst: { id: "looks_like_source", label: "mob.toml", kind: "success", isTerminal: true },
-  graphView: hydratedCatalogs.graphView,
-}).isSourceFile, false);
-const graphSourceFileNode = controller.graphSourceFileNode({
+const sourceFileAdornment = controller.graphSourceFileAdornment({
   instances: graphProjectionInstances,
   graphView: hydratedCatalogs.graphView,
 });
-assert.deepEqual(graphSourceFileNode, {
+assert.deepEqual(sourceFileAdornment, {
   id: "source_mob_toml",
-  isTerminal: true,
   isSourceFile: true,
   isGraphAdornment: true,
+  adornmentKind: "source_file",
   kind: "source",
   label: "mob.toml",
   col: 0,
   row: -1,
 });
-assert.equal(controller.graphSourceFileNode({
-  instances: [{ id: "source_mob_toml", label: "mob.toml", isTerminal: true }],
+const sourceFileAdornmentState = controller.graphSourceFileAdornmentCanvasState({
+  adornment: sourceFileAdornment,
   graphView: hydratedCatalogs.graphView,
-}), null);
+});
+assert.equal(sourceFileAdornmentState.isSourceFile, true);
+assert.equal(sourceFileAdornmentState.role, "button");
+assert.equal(sourceFileAdornmentState.ariaLabel, "Open mob.toml read-only source editor");
+assert.equal(sourceFileAdornmentState.sourceGlyph, "{ }");
+assert.equal(sourceFileAdornmentState.sourceActivationHash, "#mobkit-graph-source");
+assert.equal(sourceFileAdornmentState.sourceActivationSelector, ".node--source-file");
+assert.equal(sourceFileAdornmentState.roleLabel, "source file");
+assert.equal(sourceFileAdornmentState.title, "mob.toml");
+assert.equal(controller.graphNodeCanvasState({
+  inst: { id: "looks_like_source", label: "mob.toml", kind: "success", isTerminal: true },
+  graphView: hydratedCatalogs.graphView,
+}).isSourceFile, false);
 assert.deepEqual(controller.graphCanvasInstances({
   instances: graphProjectionInstances,
   graphView: hydratedCatalogs.graphView,
-}).map((instance) => instance.id), ["source_mob_toml", "n_writer", "n_review", "n_done"]);
+}).map((instance) => instance.id), ["n_writer", "n_review", "n_done"]);
+assert.deepEqual(controller.graphCanvasAdornments({
+  instances: graphProjectionInstances,
+  graphView: hydratedCatalogs.graphView,
+}).map((adornment) => adornment.id), ["source_mob_toml"]);
 const existingSourceInstances = [{ id: "source_mob_toml", label: "mob.toml", isTerminal: true }];
-assert.equal(controller.graphCanvasInstances({
+assert.deepEqual(controller.graphCanvasInstances({
   instances: existingSourceInstances,
   graphView: hydratedCatalogs.graphView,
-}), existingSourceInstances);
+}), []);
+assert.deepEqual(controller.graphCanvasAdornments({
+  instances: existingSourceInstances,
+  graphView: hydratedCatalogs.graphView,
+}).map((adornment) => adornment.id), ["source_mob_toml"]);
 assert.deepEqual(controller.graphGateCanvasState({
   inst: { id: "join_1", gateKind: "join", collection: "quorum", quorum: { n: 2, m: 3 } },
   edges: [{ to: "join_1" }, { to: "join_1" }],

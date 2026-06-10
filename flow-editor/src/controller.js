@@ -6084,21 +6084,20 @@
     const view = graphCanvasViewState(graphView);
     const isCompact = density === "compact";
     if (inst?.isTerminal) {
-      const isSourceFile = !!inst.isSourceFile;
       return {
         hidden: false,
         isTerminal: true,
-        isSourceFile,
+        isSourceFile: false,
         dataKind: inst.kind,
-        role: isSourceFile ? "button" : undefined,
-        tabIndex: isSourceFile ? 0 : undefined,
-        ariaLabel: isSourceFile ? view.sourceFileAriaLabel : undefined,
-        sourceGlyph: isSourceFile ? view.sourceFileGlyph : "",
-        sourceActivationHash: isSourceFile ? view.sourceFileActivationHash : "",
-        sourceActivationSelector: isSourceFile ? view.sourceFileActivationSelector : "",
-        roleLabel: isSourceFile ? view.sourceFileRoleLabel : `terminal · ${inst.kind}`,
+        role: undefined,
+        tabIndex: undefined,
+        ariaLabel: undefined,
+        sourceGlyph: "",
+        sourceActivationHash: "",
+        sourceActivationSelector: "",
+        roleLabel: `terminal · ${inst.kind}`,
         title: inst.label,
-        subtitle: isSourceFile ? "" : inst.kind,
+        subtitle: inst.kind,
       };
     }
     const member = inst?.memberId
@@ -6147,13 +6146,10 @@
     };
   }
 
-  function graphSourceFileNode({ instances = [], graphView = null } = {}) {
+  function graphSourceFileAdornment({ instances = [], graphView = null } = {}) {
     const view = graphCanvasViewState(graphView);
     if (!view.sourceFileNodeId || !view.sourceFileNodeKind || !view.sourceFileLabel) return null;
-    const sourceInstances = Array.isArray(instances) ? instances : [];
-    if (sourceInstances.some((instance) => instance?.isSourceFile || String(instance?.id || "") === view.sourceFileNodeId)) {
-      return null;
-    }
+    const sourceInstances = graphCanvasInstances({ instances, graphView });
     const positioned = sourceInstances
       .filter((instance) => Number.isFinite(Number(instance?.col)) && Number.isFinite(Number(instance?.row)));
     const minCol = positioned.length
@@ -6164,9 +6160,9 @@
       : 0;
     return {
       id: view.sourceFileNodeId,
-      isTerminal: true,
       isSourceFile: true,
       isGraphAdornment: true,
+      adornmentKind: "source_file",
       kind: view.sourceFileNodeKind,
       label: view.sourceFileLabel,
       col: minCol + view.sourceFileNodeColOffset,
@@ -6175,9 +6171,35 @@
   }
 
   function graphCanvasInstances({ instances = [], graphView = null } = {}) {
-    const sourceInstances = Array.isArray(instances) ? instances : [];
-    const sourceFileNode = graphSourceFileNode({ instances: sourceInstances, graphView });
-    return sourceFileNode ? [sourceFileNode, ...sourceInstances] : sourceInstances;
+    const view = graphCanvasViewState(graphView);
+    return (Array.isArray(instances) ? instances : [])
+      .filter((instance) => {
+        if (!instance || typeof instance !== "object") return false;
+        if (instance.isGraphAdornment || instance.isSourceFile) return false;
+        return String(instance.id || "") !== view.sourceFileNodeId;
+      });
+  }
+
+  function graphCanvasAdornments({ instances = [], graphView = null } = {}) {
+    const sourceFileAdornment = graphSourceFileAdornment({ instances, graphView });
+    return sourceFileAdornment ? [sourceFileAdornment] : [];
+  }
+
+  function graphSourceFileAdornmentCanvasState({ adornment = null, graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
+    return {
+      hidden: !adornment,
+      isSourceFile: true,
+      role: "button",
+      tabIndex: 0,
+      dataKind: String(adornment?.kind || view.sourceFileNodeKind || ""),
+      ariaLabel: view.sourceFileAriaLabel,
+      sourceGlyph: view.sourceFileGlyph,
+      sourceActivationHash: view.sourceFileActivationHash,
+      sourceActivationSelector: view.sourceFileActivationSelector,
+      roleLabel: view.sourceFileRoleLabel,
+      title: String(adornment?.label || view.sourceFileLabel || ""),
+    };
   }
 
   function graphGateCanvasState({ inst, edges = [], contract = null, graphView = null } = {}) {
@@ -11118,9 +11140,11 @@
     graphDragCellAt,
     graphCellCanvasRows,
     graphGridHeaderCanvasRows,
-    graphSourceFileNode,
+    graphSourceFileAdornment,
     graphCanvasInstances,
+    graphCanvasAdornments,
     graphNodeCanvasState,
+    graphSourceFileAdornmentCanvasState,
     graphFrameCanvasState,
     graphGateCanvasState,
     graphEdgeCanvasState,
