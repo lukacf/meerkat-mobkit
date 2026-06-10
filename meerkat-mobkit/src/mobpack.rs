@@ -3328,6 +3328,58 @@ fn mobpack_draft_expected_etag(params: &Value) -> Option<String> {
     })
 }
 
+fn mobpack_draft_guard_id(params: &Value) -> Option<String> {
+    [
+        "id",
+        "currentFlowId",
+        "current_flow_id",
+        "draft_id",
+        "draftId",
+    ]
+    .iter()
+    .find_map(|key| {
+        params
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    })
+}
+
+fn enforce_mobpack_draft_expected_revision(params: &Value, source: &str) -> Result<(), String> {
+    let expected_revision = mobpack_draft_expected_revision(params);
+    let expected_etag = mobpack_draft_expected_etag(params);
+    if expected_revision.is_none() && expected_etag.is_none() {
+        return Ok(());
+    }
+    let id = mobpack_draft_guard_id(params)
+        .ok_or_else(|| format!("{source} expected revision/etag requires draft id"))?;
+    let _guard = MOBPACK_DRAFT_STORE_LOCK
+        .lock()
+        .map_err(|_| "mobpack draft store lock poisoned".to_string())?;
+    let path = mobpack_draft_store_path(params);
+    let rows = read_mobpack_draft_store(&path)?;
+    let existing = rows.get(&id);
+    let current_revision = mobpack_draft_revision_from_row(existing);
+    if let Some(expected_revision) = expected_revision {
+        if expected_revision != current_revision {
+            return Err(format!(
+                "{source} draft revision conflict for {id}: expected {expected_revision}, found {current_revision}"
+            ));
+        }
+    }
+    if let Some(expected_etag) = expected_etag {
+        let current_etag = mobpack_draft_etag(&id, current_revision);
+        if expected_etag != current_etag {
+            return Err(format!(
+                "{source} draft etag conflict for {id}: expected {expected_etag}, found {current_etag}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn mobpack_draft_row_from_params(params: &Value, revision: u64) -> Result<Value, String> {
     let mut document = document_from_params(params)?;
     let id = mobpack_draft_id_from_params(params, &document)?;
@@ -3732,6 +3784,7 @@ pub fn delete_mobpack_draft(params: &Value) -> Result<Value, String> {
 }
 
 pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String> {
+    enforce_mobpack_draft_expected_revision(params, "mobkit/mobpacks/apply_operation")?;
     let mut document = document_from_params(params)?;
     let operation = params
         .get("operation")
@@ -25692,6 +25745,57 @@ model = "gpt-5.5"
                             .as_str()
                             .is_some_and(|content| content.contains("MobKit-owned contracts"))
                 })
+        );
+    }
+
+    #[test]
+    fn apply_operation_rejects_stale_draft_revision_when_guarded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("drafts.json");
+        let document = valid_document();
+        let saved = save_mobpack_draft(&json!({
+            "id": "f_apply_guard",
+            "document": document,
+            "store_path": store_path,
+        }))
+        .expect("save guarded draft");
+        let draft_document = saved["row"]["document"].clone();
+
+        let accepted = apply_mobpack_authoring_operation(&json!({
+            "id": "f_apply_guard",
+            "expected_revision": 1,
+            "expected_etag": "f_apply_guard:1",
+            "store_path": store_path,
+            "document": draft_document,
+            "operation": {
+                "type": "update_deploy_settings",
+                "deploy": {
+                    "prompt": "Guarded operation."
+                }
+            }
+        }))
+        .expect("guarded apply operation");
+        assert_eq!(
+            accepted["document"]["deploy"]["prompt"],
+            json!("Guarded operation.")
+        );
+
+        let stale = apply_mobpack_authoring_operation(&json!({
+            "id": "f_apply_guard",
+            "expected_revision": 0,
+            "store_path": store_path,
+            "document": accepted["document"].clone(),
+            "operation": {
+                "type": "update_deploy_settings",
+                "deploy": {
+                    "prompt": "Stale operation."
+                }
+            }
+        }))
+        .expect_err("stale apply operation must fail");
+        assert!(
+            stale.contains("mobkit/mobpacks/apply_operation draft revision conflict"),
+            "{stale}"
         );
     }
 

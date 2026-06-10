@@ -8333,7 +8333,8 @@ window.MOBKIT_BOOT = {
   }
 
   async function applyAuthoringOperationDocument(document, operation, options = {}) {
-    return callRpc(rpcMethod("applyOperation"), { document, operation }, options);
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("applyOperation"), { document, operation, ...requestOptions }, { signal });
   }
 
   async function graphProjectionDocument(document, options = {}) {
@@ -10735,6 +10736,18 @@ window.MOBKIT_BOOT = {
     return value ? String(value) : "";
   }
 
+  function flowRegistryDraftGuard(row, currentFlowId = "") {
+    const id = String(row?.id || currentFlowId || "").trim();
+    const expectedRevision = flowRegistryRowRevision(row);
+    const expectedEtag = flowRegistryRowEtag(row);
+    if (!id || expectedRevision === null) return {};
+    return {
+      id,
+      expected_revision: expectedRevision,
+      ...(expectedEtag ? { expected_etag: expectedEtag } : {}),
+    };
+  }
+
   function flowRegistryDocumentPersistence({
     currentFlowId,
     document,
@@ -11845,6 +11858,7 @@ window.MOBKIT_BOOT = {
     flowRegistrySelectionState,
     flowRegistryRowFromDocument,
     flowImportedIdFromDocument,
+    flowRegistryDraftGuard,
     flowRegistryRememberDocumentPatch,
     flowRegistryDocumentPersistence,
     flowRegistryPersistDocumentProjection,
@@ -14835,6 +14849,7 @@ function App() {
     if (!hasOverrides && authoringDocumentRef.current) return authoringDocumentRef.current;
     return buildDocument(overrides);
   };
+  const currentDraftGuard = () => window.MobKitFlowController.flowRegistryDraftGuard(currentFlow, currentFlowId);
   const graphRowsForProjection = (overrides = {}) => {
     const nextStudio = overrides.studio || {};
     return {
@@ -14868,7 +14883,7 @@ function App() {
       if (!availability.supported) return { ok: false, error: availability.error };
       const requestToken = currentAuthoringRevision();
       const document2 = currentMobKitDocument();
-      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, operation);
+      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, operation, currentDraftGuard());
       if (!authoringRevisionIsCurrent(requestToken)) {
         return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
       }
@@ -14900,7 +14915,7 @@ function App() {
       }
       const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, {
         ...operation
-      });
+      }, currentDraftGuard());
       if (!authoringRevisionIsCurrent(requestToken)) {
         return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
       }

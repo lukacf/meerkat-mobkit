@@ -552,6 +552,7 @@ function App() {
     if (!hasOverrides && authoringDocumentRef.current) return authoringDocumentRef.current;
     return buildDocument(overrides);
   };
+  const currentDraftGuard = () => window.MobKitFlowController.flowRegistryDraftGuard(currentFlow, currentFlowId);
   const graphRowsForProjection = (overrides = {}) => {
     const nextStudio = overrides.studio || {};
     return {
@@ -585,7 +586,7 @@ function App() {
       if (!availability.supported) return { ok: false, error: availability.error };
       const requestToken = currentAuthoringRevision();
       const document = currentMobKitDocument();
-      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, operation);
+      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, operation, currentDraftGuard());
       if (!authoringRevisionIsCurrent(requestToken)) {
         return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
       }
@@ -617,7 +618,7 @@ function App() {
       }
       const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, {
         ...operation,
-      });
+      }, currentDraftGuard());
       if (!authoringRevisionIsCurrent(requestToken)) {
         return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
       }

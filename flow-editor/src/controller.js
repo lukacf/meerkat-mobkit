@@ -8300,7 +8300,8 @@
   }
 
   async function applyAuthoringOperationDocument(document, operation, options = {}) {
-    return callRpc(rpcMethod("applyOperation"), { document, operation }, options);
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("applyOperation"), { document, operation, ...requestOptions }, { signal });
   }
 
   async function graphProjectionDocument(document, options = {}) {
@@ -10702,6 +10703,18 @@
     return value ? String(value) : "";
   }
 
+  function flowRegistryDraftGuard(row, currentFlowId = "") {
+    const id = String(row?.id || currentFlowId || "").trim();
+    const expectedRevision = flowRegistryRowRevision(row);
+    const expectedEtag = flowRegistryRowEtag(row);
+    if (!id || expectedRevision === null) return {};
+    return {
+      id,
+      expected_revision: expectedRevision,
+      ...(expectedEtag ? { expected_etag: expectedEtag } : {}),
+    };
+  }
+
   function flowRegistryDocumentPersistence({
     currentFlowId,
     document,
@@ -11812,6 +11825,7 @@
     flowRegistrySelectionState,
     flowRegistryRowFromDocument,
     flowImportedIdFromDocument,
+    flowRegistryDraftGuard,
     flowRegistryRememberDocumentPatch,
     flowRegistryDocumentPersistence,
     flowRegistryPersistDocumentProjection,

@@ -10621,6 +10621,12 @@ assert.equal(persistedRegistryProjection.rows[0].stage, "published");
 assert.deepEqual(persistedRegistryProjection.rows[0].validation, { ok: true });
 assert.equal(persistedRegistryProjection.rows[0].document, registryDocument);
 assert.equal(persistedRegistryProjection.rows[1], registryRows[1]);
+assert.deepEqual(controller.flowRegistryDraftGuard(registryRows[0], "fallback_id"), {
+  id: "f_existing",
+  expected_revision: 7,
+  expected_etag: "f_existing:7",
+});
+assert.deepEqual(controller.flowRegistryDraftGuard({ id: "new_draft" }), {});
 
 const unchangedRegistryProjection = controller.flowRegistryPersistDocumentProjection(registryRows, {
   currentFlowId: "f_existing",
