@@ -291,7 +291,7 @@ function App() {
     if (sig === graphProjectionSig.current) return;
     graphProjectionSig.current = sig;
     skipNextGraphProjection.current = true;
-    applyMobKitAuthoringReplacement({
+    applyMobKitAuthoringOperation({
       intent: "system.syncGraphToFlow",
       reason: "advanced_graph_changed",
     }).then((result) => {
@@ -319,7 +319,7 @@ function App() {
       || result.mobSettings !== mobSettings;
     previousMembersRef.current = studio.members;
     if (!changed) return;
-    applyMobKitAuthoringReplacement({
+    applyMobKitAuthoringOperation({
       intent: "system.reconcileMembers",
     });
   }, [studio.members, flow, studio.instances, studio.edges, mobSettings]);
@@ -337,7 +337,7 @@ function App() {
     const flowChanged = result.flow !== flow;
     const edgesChanged = result.edges !== studio.edges;
     if (!flowChanged && !edgesChanged) return;
-    applyMobKitAuthoringReplacement({
+    applyMobKitAuthoringOperation({
       intent: "system.reconcileConditionFields",
     });
   }, [flow, studio.edges, studio.instances, studio.members, studio.schemas]);
@@ -359,7 +359,7 @@ function App() {
       contractLoaded: !!catalogs.contractMeta.loaded,
     });
     if (!result.changed) return;
-    applyMobKitAuthoringReplacement({
+    applyMobKitAuthoringOperation({
       intent: "system.reconcileContractRefs",
     });
   }, [
@@ -552,32 +552,27 @@ function App() {
     return buildDocument(overrides);
   };
   const currentDraftGuard = () => window.MobKitFlowController.flowRegistryDraftGuard(currentFlow, currentFlowId);
-  const graphRowsForProjection = (overrides = {}) => {
-    const nextStudio = overrides.studio || {};
-    return {
-      instances: Object.prototype.hasOwnProperty.call(nextStudio, "instances") ? nextStudio.instances : studio.instances,
-      edges: Object.prototype.hasOwnProperty.call(nextStudio, "edges") ? nextStudio.edges : studio.edges,
-      frames: Object.prototype.hasOwnProperty.call(nextStudio, "frames") ? nextStudio.frames : studio.frames,
-    };
-  };
-  const graphDocumentFromProjection = (projection, overrides = {}) => ({
-    ...(projection?.document || {}),
-    ...graphRowsForProjection(overrides),
-  });
   const buildMobKitProjectedDocument = async (overrides = {}) => {
     const requestToken = currentAuthoringRevision();
     if (editorMode !== "advanced") {
       const document = currentMobKitDocument(overrides);
       return { document, requestToken };
     }
-    const result = await applyMobKitAuthoringReplacement({
+    const result = await applyMobKitAuthoringOperation({
       intent: "system.syncGraphToFlow",
       reason: "build_projected_document",
     });
     if (!authoringRevisionIsCurrent(requestToken)) {
       return { document: null, requestToken, stale: true };
     }
-    return { document: result?.document || authoringDocumentRef.current || buildDocument(overrides), requestToken };
+    if (!result?.document) {
+      return {
+        document: null,
+        requestToken,
+        error: result?.error || catalogs.errorView.authoringOperationMissingDocumentError,
+      };
+    }
+    return { document: result.document, requestToken };
   };
   const applyMobKitAuthoringOperation = async (operation) => {
     return enqueueMobKitAuthoringTask(async () => {
@@ -701,25 +696,6 @@ function App() {
       return applyMobKitAuthoringOperation({
         intent: "graph.deleteEdge",
         edgeId: id,
-      });
-    },
-    addSchema: () => {
-      return applyMobKitAuthoringReplacement({ intent: "schema.add" });
-    },
-    updateSchema: (id, patch) => {
-      return applyMobKitAuthoringReplacement({
-        intent: "schema.update",
-        schemaId: id,
-        patch,
-        selection: { kind: "schema", id },
-      });
-    },
-    deleteSchema: (id) => {
-      const selection = { kind: null, id: null };
-      return applyMobKitAuthoringReplacement({
-        intent: "schema.delete",
-        schemaId: id,
-        selection,
       });
     },
   };
@@ -1295,7 +1271,6 @@ function App() {
           modelCatalog={catalogs.models}
           agentDefinitions={catalogs.agentDefinitions}
           applyAgentIntent={applyMobKitAuthoringOperation}
-          applyAgentReplacementIntent={applyMobKitAuthoringReplacement}
           agentView={catalogs.agentView}
           agentDetailView={catalogs.agentDetailView}
           agentAccessView={catalogs.agentAccessView}
@@ -1359,7 +1334,7 @@ function App() {
         contract={contract}
         deployCommandPreview={deployCommandPreview}
         settingsView={catalogs.settingsView}
-        applyAuthoringReplacement={applyMobKitAuthoringReplacement}
+        applyAuthoringIntent={applyMobKitAuthoringOperation}
         onLoadFlow={(id) => {
           const selection = window.MobKitFlowController.flowRegistrySelectionState(flows, id);
           openFlowRegistrySelection(selection);
@@ -1566,11 +1541,11 @@ function ModeToggle({ mode, onSelectMode, railState }) {
   );
 }
 
-function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, applyAuthoringReplacement = null, onLoadFlow }) {
+function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, applyAuthoringIntent = null, onLoadFlow }) {
   const setDeployField = (field, value) => {
     const next = window.MobKitFlowController.deploySettingsFieldPatch(deploySettings, field, value, { contract, modelCatalog });
-    if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({
+    if (applyAuthoringIntent) {
+      applyAuthoringIntent({
         intent: "settings.updateDeploy",
         deploy: next,
       });
@@ -1580,8 +1555,8 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
   };
   const setMobField = (field, value) => {
     const next = window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, field, value, { contract });
-    if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({
+    if (applyAuthoringIntent) {
+      applyAuthoringIntent({
         intent: field === "roleWiring" ? "settings.updateRoleWiring" : "settings.updateMob",
         roleWiring: next.roleWiring || [],
         mobSettings: next,

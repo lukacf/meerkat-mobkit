@@ -181,14 +181,6 @@ window.MOBKIT_BOOT = {
     const selection = Object.prototype.hasOwnProperty.call(input, "selection") ? input.selection : undefined;
     const withSelection = (payload) => selection === undefined ? payload : { ...payload, selection };
     switch (intent) {
-      case "system.syncGraphToFlow":
-        return withSelection({ operationType: "sync_graph_to_flow", operation: { reason: input.reason || "sync_graph_to_flow" } });
-      case "system.reconcileMembers":
-        return withSelection({ operationType: "reconcile_members", operation: { reason: input.reason || "reconcile_members" } });
-      case "system.reconcileConditionFields":
-        return withSelection({ operationType: "reconcile_condition_fields", operation: { reason: input.reason || "reconcile_condition_fields" } });
-      case "system.reconcileContractRefs":
-        return withSelection({ operationType: "reconcile_contract_refs", operation: { reason: input.reason || "reconcile_contract_refs" } });
       case "system.replaceAuthoringDocument":
         return withSelection({
           operationType: "replace_authoring_document",
@@ -196,32 +188,6 @@ window.MOBKIT_BOOT = {
           studio: input.studio,
           useAuthoringProjection: true,
         });
-      case "schema.add":
-        return withSelection({ operationType: "add_schema", operation: {} });
-      case "schema.update":
-        return withSelection({ operationType: "update_schema", operation: { schema_id: input.schemaId, patch: input.patch || {} } });
-      case "schema.rename":
-        return withSelection({ operationType: "rename_schema", operation: { schema_id: input.schemaId, new_id: input.newId } });
-      case "schema.delete":
-        return withSelection({ operationType: "delete_schema", operation: { schema_id: input.schemaId } });
-      case "schema.addField":
-        return withSelection({ operationType: "add_schema_field", operation: { schema_id: input.schemaId } });
-      case "schema.updateField":
-        return withSelection({ operationType: "update_schema_field", operation: { schema_id: input.schemaId, field_id: input.fieldId, patch: input.patch || {} } });
-      case "schema.renameField":
-        return withSelection({ operationType: "rename_schema_field", operation: { schema_id: input.schemaId, field_id: input.fieldId, new_name: input.newName } });
-      case "schema.deleteField":
-        return withSelection({ operationType: "delete_schema_field", operation: { schema_id: input.schemaId, field_id: input.fieldId } });
-      case "agent.assignSchema":
-        return withSelection({ operationType: "assign_member_schema", operation: { member_id: input.memberId, schema_id: input.schemaId } });
-      case "agent.deleteMember":
-        return withSelection({ operationType: "delete_member", operation: { member_id: input.memberId } });
-      case "settings.updateDeploy":
-        return withSelection({ operationType: "update_deploy_settings", operation: { deploy: input.deploy } });
-      case "settings.updateMob":
-        return withSelection({ operationType: "update_mob_settings", operation: { mob_settings: input.mobSettings } });
-      case "settings.updateRoleWiring":
-        return withSelection({ operationType: "update_role_wiring", operation: { role_wiring: input.roleWiring || [] } });
       default:
         return input;
     }
@@ -232,6 +198,14 @@ window.MOBKIT_BOOT = {
     if (input.type) return input;
     const intent = String(input.intent || "").trim();
     switch (intent) {
+      case "system.syncGraphToFlow":
+        return { type: "sync_graph_to_flow", reason: input.reason || "sync_graph_to_flow", selection: input.selection || null };
+      case "system.reconcileMembers":
+        return { type: "reconcile_members", reason: input.reason || "reconcile_members", selection: input.selection || null };
+      case "system.reconcileConditionFields":
+        return { type: "reconcile_condition_fields", reason: input.reason || "reconcile_condition_fields", selection: input.selection || null };
+      case "system.reconcileContractRefs":
+        return { type: "reconcile_contract_refs", reason: input.reason || "reconcile_contract_refs", selection: input.selection || null };
       case "agent.addDefinition":
         return { type: "add_agent_definition", definition_id: input.definitionId };
       case "agent.updateMember":
@@ -246,6 +220,32 @@ window.MOBKIT_BOOT = {
         return { type: "remove_member_skill", member_id: input.memberId, skill_id: input.skillId };
       case "agent.createInlineSkill":
         return { type: "create_inline_skill", member_id: input.memberId, label: input.label, content: input.content };
+      case "agent.assignSchema":
+        return { type: "assign_member_schema", member_id: input.memberId, schema_id: input.schemaId };
+      case "agent.deleteMember":
+        return { type: "delete_member", member_id: input.memberId };
+      case "schema.add":
+        return { type: "add_schema" };
+      case "schema.update":
+        return { type: "update_schema", schema_id: input.schemaId, patch: input.patch || {} };
+      case "schema.rename":
+        return { type: "rename_schema", schema_id: input.schemaId, new_id: input.newId };
+      case "schema.delete":
+        return { type: "delete_schema", schema_id: input.schemaId };
+      case "schema.addField":
+        return { type: "add_schema_field", schema_id: input.schemaId };
+      case "schema.updateField":
+        return { type: "update_schema_field", schema_id: input.schemaId, field_id: input.fieldId, patch: input.patch || {} };
+      case "schema.renameField":
+        return { type: "rename_schema_field", schema_id: input.schemaId, field_id: input.fieldId, new_name: input.newName };
+      case "schema.deleteField":
+        return { type: "delete_schema_field", schema_id: input.schemaId, field_id: input.fieldId };
+      case "settings.updateDeploy":
+        return { type: "update_deploy_settings", deploy: input.deploy, selection: input.selection || null };
+      case "settings.updateMob":
+        return { type: "update_mob_settings", mob_settings: input.mobSettings, selection: input.selection || null };
+      case "settings.updateRoleWiring":
+        return { type: "update_role_wiring", role_wiring: input.roleWiring || [], selection: input.selection || null };
       case "basic.updateStep":
         return { type: "update_flow_step", step_id: input.stepId, patch: input.patch || {} };
       case "basic.editStep":
@@ -10995,85 +10995,6 @@ window.MOBKIT_BOOT = {
     return replaced ? next : [...list, row];
   }
 
-  function cloneDocument(document, options = {}) {
-    const next = JSON.parse(JSON.stringify(document || {}));
-    const name = String(options.name || next.name || next.flow?.name || next.mob_id || "mobkit_flow").trim();
-    if (name) {
-      next.name = name;
-      next.mob_id = slug(name, next.mob_id || "mobkit_flow");
-      if (next.flow && typeof next.flow === "object") next.flow.name = name;
-      delete next.mob_toml;
-    }
-    return next;
-  }
-
-  function createFlowDraftFromSpec({
-    id,
-    spec,
-    templates,
-    blankTemplate,
-    deploySettings,
-    mobSettings,
-    existingRows,
-  } = {}) {
-    const rowId = String(id || flowDraftIdFromSpec(spec, existingRows)).trim();
-    if (!rowId) return null;
-    const draftSpec = spec && typeof spec === "object" ? spec : {};
-    const template = draftSpec.template === "blank" && blankTemplate?.document
-      ? blankTemplate
-      : (Array.isArray(templates) ? templates : [])
-        .find((candidate) => candidate?.id === draftSpec.template);
-    const trigger = String(draftSpec.trigger || "");
-    let source = "";
-    let document;
-    if (template?.document) {
-      source = String(template.source || "");
-      document = cloneDocument(template.document, {
-        name: draftSpec.name || template.name,
-      });
-    } else {
-      return null;
-    }
-    const row = flowRegistryRowFromDocument({
-      id: rowId,
-      document,
-      stage: "draft",
-      trigger,
-      source,
-      validation: null,
-    });
-    return { id: rowId, document, row, template: template || null };
-  }
-
-  function flowRegistryCreateDraftProjection(rows, options = {}) {
-    const sourceRows = Array.isArray(rows) ? rows : [];
-    const draft = createFlowDraftFromSpec({
-      ...options,
-      existingRows: options.existingRows || sourceRows,
-    });
-    if (!draft?.document || !draft?.row) {
-      return {
-        ok: false,
-        draft: null,
-        rows: sourceRows,
-        hydration: null,
-      };
-    }
-    return {
-      ok: true,
-      draft,
-      rows: flowRegistryAppendRowPatch(sourceRows, draft.row),
-      hydration: {
-        result: { document: draft.document, validation: null },
-        options: {
-          id: draft.id,
-          flowRow: draft.row,
-          addToRegistry: false,
-        },
-      },
-    };
-  }
-
   function flowDraftIdFromSpec(spec, existingRows = []) {
     const draftSpec = spec && typeof spec === "object" ? spec : {};
     const base = slug(draftSpec.name || draftSpec.template || "mobkit_flow", "mobkit_flow");
@@ -11674,8 +11595,6 @@ window.MOBKIT_BOOT = {
     authoringFlowForDocument,
     authoringDocumentFromState,
     authoringProjectionApplyPlan,
-    createFlowDraftFromSpec,
-    flowRegistryCreateDraftProjection,
     flowDraftIdFromSpec,
     newFlowTemplateOptions,
     newFlowInitialState,
@@ -12046,7 +11965,6 @@ window.MOBKIT_BOOT = {
     mobRoleWiringAddPatch,
     advancedMobSettingsEditorState,
     advancedMobSettingsDraftPatch,
-    cloneDocument,
     agentDefinitionsFromCatalogs,
     agentDefinitionCatalogState,
     agentDeleteConfirmationState,
@@ -13276,10 +13194,10 @@ window.InlineSourceEditor = InlineSourceEditor;
 /* agents.jsx */
 
 {
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAgentIntent = null, applyAgentReplacementIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAgentIntent, applyAgentReplacementIntent, toolCatalog, modelCatalog, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent, applyAgentReplacementIntent, agentView, agentDetailView, agentAccessView, schemaView })));
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAgentIntent, toolCatalog, modelCatalog, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent, agentView, agentDetailView, agentAccessView, schemaView })));
 }
-function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAgentIntent = null, applyAgentReplacementIntent = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
+function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAgentIntent = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const [schemaAddResult, setSchemaAddResult] = React.useState(null);
   const listState = window.MobKitFlowController.agentListState({
     members: studio.members,
@@ -13317,12 +13235,12 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
     {
       className: "agents-list__add",
       onClick: () => {
-        if (!applyAgentReplacementIntent) {
+        if (!applyAgentIntent) {
           setSchemaAddResult({ ok: false, error: listState.authoringOperationUnavailableError });
           return;
         }
         setSchemaAddResult(null);
-        applyAgentReplacementIntent({ intent: "schema.add" }).then((result) => {
+        applyAgentIntent({ intent: "schema.add" }).then((result) => {
           if (result?.ok === false) {
             setSchemaAddResult(result);
             return;
@@ -13398,7 +13316,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAgen
     row.skills && /* @__PURE__ */ React.createElement("span", { className: "agent-def-card__meta" }, /* @__PURE__ */ React.createElement("strong", null, row.skillsLabel), row.skills)
   )) : /* @__PURE__ */ React.createElement("div", { className: "agent-def-catalog__empty" }, catalogState.empty)), definitionErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, definitionErrorState.text));
 }
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent = null, applyAgentReplacementIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
     selection: agentSel,
     members: studio.members,
@@ -13410,12 +13328,12 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
   }
   if (selectionState.kind === "schema") {
     if (!selectionState.schema) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingSchemaLabel);
-    return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow, schemaView, applyAgentReplacementIntent });
+    return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow, schemaView, applyAgentIntent });
   }
   if (!selectionState.member) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingAgentLabel);
-  return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent, applyAgentReplacementIntent, agentView, agentDetailView, agentAccessView });
+  return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent, agentView, agentDetailView, agentAccessView });
 }
-function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAgentIntent = null, applyAgentReplacementIntent = null, agentView = null, agentDetailView = null, agentAccessView = null }) {
+function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null }) {
   const [memberEditError, setMemberEditError] = React.useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
   React.useEffect(() => {
@@ -13499,11 +13417,11 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     }
   };
   const changeSchema = (rawSchema) => {
-    if (!applyAgentReplacementIntent) {
+    if (!applyAgentIntent) {
       setSchemaChangeResult({ ok: false, error: unavailableError });
       return;
     }
-    applyAgentReplacementIntent({
+    applyAgentIntent({
       intent: "agent.assignSchema",
       memberId: member.id,
       schemaId: rawSchema,
@@ -13516,9 +13434,9 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
   };
   const deleteConfirmState = window.MobKitFlowController.agentDeleteConfirmationState(editorState, deleteConfirmOpen);
   const deleteMember = () => {
-    if (!applyAgentReplacementIntent) return;
+    if (!applyAgentIntent) return;
     const selection = null;
-    applyAgentReplacementIntent({
+    applyAgentIntent({
       intent: "agent.deleteMember",
       memberId: member.id,
       selection
@@ -13618,7 +13536,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     editorState.schemaOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value || "none", value: option.value }, option.label))
   ), schemaErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaErrorState.text), editorState.hasOutputSchema ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("ul", { className: "schema-fields schema-fields--preview" }, editorState.schemaPreviewRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => setAgentSel(editorState.editSchemaSelection) }, editorState.editSchemaLabel)) : /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, editorState.emptySchemaHint)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement(SkillAccess, { studio, member, agentAccessView, applyAgentIntent }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.usageTitle), editorState.placedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.emptyUsageHint), editorState.usageRows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.id, className: "usage-row usage-row--ro" }, /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.cellLabel), /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.laneLabel))))))));
 }
-function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null, applyAgentReplacementIntent = null }) {
+function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null, applyAgentIntent = null }) {
   const [fieldAddResult, setFieldAddResult] = React.useState(null);
   const [schemaOperationError, setSchemaOperationError] = React.useState("");
   React.useEffect(() => setFieldAddResult(null), [schema?.id]);
@@ -13631,13 +13549,13 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult, schemaState.fieldAddFallbackError);
   const applySchemaIntent = async (intentRequest, selection = { kind: "schema", id: schema.id }) => {
     const fallback = schemaState.schemaOperationFallbackError;
-    if (!applyAgentReplacementIntent) {
+    if (!applyAgentIntent) {
       const result = { ok: false, error: schemaState.authoringOperationUnavailableError };
       setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       return result;
     }
     try {
-      const result = await applyAgentReplacementIntent({ ...intentRequest, selection });
+      const result = await applyAgentIntent({ ...intentRequest, selection });
       if (result?.ok === false) {
         setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       } else {
@@ -13663,12 +13581,12 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     applySchemaIntent({ intent: "schema.deleteField", schemaId: schema.id, fieldId });
   };
   const addField = () => {
-    if (!applyAgentReplacementIntent) {
+    if (!applyAgentIntent) {
       setFieldAddResult({ ok: false, error: schemaState.authoringOperationUnavailableError });
       return;
     }
     setFieldAddResult(null);
-    applyAgentReplacementIntent({
+    applyAgentIntent({
       intent: "schema.addField",
       schemaId: schema.id,
       selection: { kind: "schema", id: schema.id }
@@ -14693,7 +14611,7 @@ function App() {
     if (sig === graphProjectionSig.current) return;
     graphProjectionSig.current = sig;
     skipNextGraphProjection.current = true;
-    applyMobKitAuthoringReplacement({
+    applyMobKitAuthoringOperation({
       intent: "system.syncGraphToFlow",
       reason: "advanced_graph_changed"
     }).then((result) => {
@@ -14717,7 +14635,7 @@ function App() {
     const changed = result.flow !== flow || result.edges !== studio.edges || result.instances !== studio.instances || result.mobSettings !== mobSettings;
     previousMembersRef.current = studio.members;
     if (!changed) return;
-    applyMobKitAuthoringReplacement({
+    applyMobKitAuthoringOperation({
       intent: "system.reconcileMembers"
     });
   }, [studio.members, flow, studio.instances, studio.edges, mobSettings]);
@@ -14734,7 +14652,7 @@ function App() {
     const flowChanged = result.flow !== flow;
     const edgesChanged = result.edges !== studio.edges;
     if (!flowChanged && !edgesChanged) return;
-    applyMobKitAuthoringReplacement({
+    applyMobKitAuthoringOperation({
       intent: "system.reconcileConditionFields"
     });
   }, [flow, studio.edges, studio.instances, studio.members, studio.schemas]);
@@ -14755,7 +14673,7 @@ function App() {
       contractLoaded: !!catalogs.contractMeta.loaded
     });
     if (!result.changed) return;
-    applyMobKitAuthoringReplacement({
+    applyMobKitAuthoringOperation({
       intent: "system.reconcileContractRefs"
     });
   }, [
@@ -14941,32 +14859,27 @@ function App() {
     return buildDocument(overrides);
   };
   const currentDraftGuard = () => window.MobKitFlowController.flowRegistryDraftGuard(currentFlow, currentFlowId);
-  const graphRowsForProjection = (overrides = {}) => {
-    const nextStudio = overrides.studio || {};
-    return {
-      instances: Object.prototype.hasOwnProperty.call(nextStudio, "instances") ? nextStudio.instances : studio.instances,
-      edges: Object.prototype.hasOwnProperty.call(nextStudio, "edges") ? nextStudio.edges : studio.edges,
-      frames: Object.prototype.hasOwnProperty.call(nextStudio, "frames") ? nextStudio.frames : studio.frames
-    };
-  };
-  const graphDocumentFromProjection = (projection, overrides = {}) => ({
-    ...projection?.document || {},
-    ...graphRowsForProjection(overrides)
-  });
   const buildMobKitProjectedDocument = async (overrides = {}) => {
     const requestToken = currentAuthoringRevision();
     if (editorMode !== "advanced") {
       const document2 = currentMobKitDocument(overrides);
       return { document: document2, requestToken };
     }
-    const result = await applyMobKitAuthoringReplacement({
+    const result = await applyMobKitAuthoringOperation({
       intent: "system.syncGraphToFlow",
       reason: "build_projected_document"
     });
     if (!authoringRevisionIsCurrent(requestToken)) {
       return { document: null, requestToken, stale: true };
     }
-    return { document: result?.document || authoringDocumentRef.current || buildDocument(overrides), requestToken };
+    if (!result?.document) {
+      return {
+        document: null,
+        requestToken,
+        error: result?.error || catalogs.errorView.authoringOperationMissingDocumentError
+      };
+    }
+    return { document: result.document, requestToken };
   };
   const applyMobKitAuthoringOperation = async (operation) => {
     return enqueueMobKitAuthoringTask(async () => {
@@ -15086,25 +14999,6 @@ function App() {
       return applyMobKitAuthoringOperation({
         intent: "graph.deleteEdge",
         edgeId: id
-      });
-    },
-    addSchema: () => {
-      return applyMobKitAuthoringReplacement({ intent: "schema.add" });
-    },
-    updateSchema: (id, patch) => {
-      return applyMobKitAuthoringReplacement({
-        intent: "schema.update",
-        schemaId: id,
-        patch,
-        selection: { kind: "schema", id }
-      });
-    },
-    deleteSchema: (id) => {
-      const selection2 = { kind: null, id: null };
-      return applyMobKitAuthoringReplacement({
-        intent: "schema.delete",
-        schemaId: id,
-        selection: selection2
       });
     }
   };
@@ -15656,7 +15550,6 @@ function App() {
       modelCatalog: catalogs.models,
       agentDefinitions: catalogs.agentDefinitions,
       applyAgentIntent: applyMobKitAuthoringOperation,
-      applyAgentReplacementIntent: applyMobKitAuthoringReplacement,
       agentView: catalogs.agentView,
       agentDetailView: catalogs.agentDetailView,
       agentAccessView: catalogs.agentAccessView,
@@ -15716,7 +15609,7 @@ function App() {
       contract,
       deployCommandPreview,
       settingsView: catalogs.settingsView,
-      applyAuthoringReplacement: applyMobKitAuthoringReplacement,
+      applyAuthoringIntent: applyMobKitAuthoringOperation,
       onLoadFlow: (id) => {
         const selection2 = window.MobKitFlowController.flowRegistrySelectionState(flows, id);
         openFlowRegistrySelection(selection2);
@@ -15796,11 +15689,11 @@ function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlow
 function ModeToggle({ mode, onSelectMode, railState }) {
   return /* @__PURE__ */ React.createElement("div", { className: "modetoggle" }, /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "basic" ? " is-active" : ""), onClick: () => onSelectMode("basic"), title: railState.basicModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "2.2", width: "10", height: "2.2" }), /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "6.6", width: "10", height: "2.2" })), /* @__PURE__ */ React.createElement("span", null, railState.basicModeLabel)), /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "advanced" ? " is-active" : ""), onClick: () => onSelectMode("advanced"), title: railState.graphModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1", y: "4.5", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "1", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "8", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("path", { d: "M5 6.5h1.6M6.6 6.5V3h1.4M6.6 6.5V10h1.4" })), /* @__PURE__ */ React.createElement("span", null, railState.graphModeLabel)));
 }
-function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, applyAuthoringReplacement = null, onLoadFlow }) {
+function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, applyAuthoringIntent = null, onLoadFlow }) {
   const setDeployField = (field, value) => {
     const next = window.MobKitFlowController.deploySettingsFieldPatch(deploySettings, field, value, { contract, modelCatalog });
-    if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({
+    if (applyAuthoringIntent) {
+      applyAuthoringIntent({
         intent: "settings.updateDeploy",
         deploy: next
       });
@@ -15810,8 +15703,8 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
   };
   const setMobField = (field, value) => {
     const next = window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, field, value, { contract });
-    if (applyAuthoringReplacement) {
-      applyAuthoringReplacement({
+    if (applyAuthoringIntent) {
+      applyAuthoringIntent({
         intent: field === "roleWiring" ? "settings.updateRoleWiring" : "settings.updateMob",
         roleWiring: next.roleWiring || [],
         mobSettings: next

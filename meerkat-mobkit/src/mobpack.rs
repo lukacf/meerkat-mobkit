@@ -1234,7 +1234,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["member_id"],
             "mutates": ["document.members", "document.flow", "document.instances", "document.edges", "document.mob_settings"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "assign_member_schema",
@@ -1242,7 +1242,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["member_id", "schema_id"],
             "mutates": ["document.members", "document.flow", "document.edges"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "add_schema",
@@ -1250,7 +1250,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": [],
             "mutates": ["document.schemas"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "update_schema",
@@ -1258,7 +1258,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["schema_id", "patch"],
             "mutates": ["document.schemas"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "rename_schema",
@@ -1266,7 +1266,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["schema_id", "new_id"],
             "mutates": ["document.schemas", "document.members"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "delete_schema",
@@ -1274,7 +1274,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["schema_id"],
             "mutates": ["document.schemas", "document.members", "document.flow", "document.edges"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "add_schema_field",
@@ -1282,7 +1282,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["schema_id"],
             "mutates": ["document.schemas"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "update_schema_field",
@@ -1290,7 +1290,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["schema_id", "field_id", "patch"],
             "mutates": ["document.schemas", "document.flow", "document.edges"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "rename_schema_field",
@@ -1298,7 +1298,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["schema_id", "field_id", "new_name"],
             "mutates": ["document.schemas", "document.flow", "document.edges"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "delete_schema_field",
@@ -1306,7 +1306,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["schema_id", "field_id"],
             "mutates": ["document.schemas", "document.flow", "document.edges"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "update_deploy_settings",
@@ -1314,7 +1314,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["deploy"],
             "mutates": ["document.deploy"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "update_mob_settings",
@@ -1322,7 +1322,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["mob_settings"],
             "mutates": ["document.mob_settings"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "update_role_wiring",
@@ -1330,7 +1330,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["role_wiring"],
             "mutates": ["document.mob_settings.roleWiring"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "add_input_param",
@@ -4065,14 +4065,6 @@ fn apply_delete_member_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("member_id")
-            .or_else(|| operation.get("memberId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let member_id = operation_member_id(operation)?;
     let mut members = document
         .members
@@ -4093,14 +4085,6 @@ fn apply_assign_member_schema_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("member_id")
-            .or_else(|| operation.get("memberId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let member_id = operation_member_id(operation)?;
     let schema_id = operation
         .get("schema_id")
@@ -4264,12 +4248,6 @@ fn apply_add_schema_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation.get("schema").is_none()
-        && !operation.contains_key("type")
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let mut schemas = document
         .schemas
         .as_array()
@@ -4304,14 +4282,6 @@ fn apply_update_schema_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("schema_id")
-            .or_else(|| operation.get("schemaId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let schema_id = operation_schema_id(operation)?;
     let patch = operation
         .get("patch")
@@ -4341,14 +4311,6 @@ fn apply_rename_schema_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("schema_id")
-            .or_else(|| operation.get("schemaId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let schema_id = operation_schema_id(operation)?;
     let new_id = operation
         .get("new_id")
@@ -4378,14 +4340,6 @@ fn apply_delete_schema_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("schema_id")
-            .or_else(|| operation.get("schemaId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let schema_id = operation_schema_id(operation)?;
     let removed_fields = schema_field_names(&document.schemas, &schema_id);
     let mut schemas = document
@@ -4415,14 +4369,6 @@ fn apply_add_schema_field_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("schema_id")
-            .or_else(|| operation.get("schemaId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let schema_id = operation_schema_id(operation)?;
     let mut schemas = document
         .schemas
@@ -4468,14 +4414,6 @@ fn apply_update_schema_field_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("schema_id")
-            .or_else(|| operation.get("schemaId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let schema_id = operation_schema_id(operation)?;
     let field_id = operation_field_id(operation)?;
     let patch = operation
@@ -4489,14 +4427,6 @@ fn apply_rename_schema_field_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("schema_id")
-            .or_else(|| operation.get("schemaId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let schema_id = operation_schema_id(operation)?;
     let field_id = operation_field_id(operation)?;
     let new_name = operation
@@ -4515,14 +4445,6 @@ fn apply_delete_schema_field_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("schema_id")
-            .or_else(|| operation.get("schemaId"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let schema_id = operation_schema_id(operation)?;
     let field_id = operation_field_id(operation)?;
     let mut schemas = document
@@ -26259,6 +26181,17 @@ model = "gpt-5.5"
                     .iter()
                     .any(|operation| operation["type"] == operation_type),
                 "missing schema operation {operation_type}"
+            );
+        }
+        for operation in operations {
+            let operation_type = operation["type"].as_str().expect("schema operation type");
+            let projection_supported = operation["projection_document_supported"]
+                .as_bool()
+                .expect("projection_document_supported bool");
+            assert_eq!(
+                projection_supported,
+                operation_type == "replace_authoring_document",
+                "only explicit whole-document replacement may accept projected documents: {operation_type}"
             );
         }
         let capabilities = crate::rpc::mobpack_authoring_capabilities();

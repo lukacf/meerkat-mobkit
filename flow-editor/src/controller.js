@@ -148,14 +148,6 @@
     const selection = Object.prototype.hasOwnProperty.call(input, "selection") ? input.selection : undefined;
     const withSelection = (payload) => selection === undefined ? payload : { ...payload, selection };
     switch (intent) {
-      case "system.syncGraphToFlow":
-        return withSelection({ operationType: "sync_graph_to_flow", operation: { reason: input.reason || "sync_graph_to_flow" } });
-      case "system.reconcileMembers":
-        return withSelection({ operationType: "reconcile_members", operation: { reason: input.reason || "reconcile_members" } });
-      case "system.reconcileConditionFields":
-        return withSelection({ operationType: "reconcile_condition_fields", operation: { reason: input.reason || "reconcile_condition_fields" } });
-      case "system.reconcileContractRefs":
-        return withSelection({ operationType: "reconcile_contract_refs", operation: { reason: input.reason || "reconcile_contract_refs" } });
       case "system.replaceAuthoringDocument":
         return withSelection({
           operationType: "replace_authoring_document",
@@ -163,32 +155,6 @@
           studio: input.studio,
           useAuthoringProjection: true,
         });
-      case "schema.add":
-        return withSelection({ operationType: "add_schema", operation: {} });
-      case "schema.update":
-        return withSelection({ operationType: "update_schema", operation: { schema_id: input.schemaId, patch: input.patch || {} } });
-      case "schema.rename":
-        return withSelection({ operationType: "rename_schema", operation: { schema_id: input.schemaId, new_id: input.newId } });
-      case "schema.delete":
-        return withSelection({ operationType: "delete_schema", operation: { schema_id: input.schemaId } });
-      case "schema.addField":
-        return withSelection({ operationType: "add_schema_field", operation: { schema_id: input.schemaId } });
-      case "schema.updateField":
-        return withSelection({ operationType: "update_schema_field", operation: { schema_id: input.schemaId, field_id: input.fieldId, patch: input.patch || {} } });
-      case "schema.renameField":
-        return withSelection({ operationType: "rename_schema_field", operation: { schema_id: input.schemaId, field_id: input.fieldId, new_name: input.newName } });
-      case "schema.deleteField":
-        return withSelection({ operationType: "delete_schema_field", operation: { schema_id: input.schemaId, field_id: input.fieldId } });
-      case "agent.assignSchema":
-        return withSelection({ operationType: "assign_member_schema", operation: { member_id: input.memberId, schema_id: input.schemaId } });
-      case "agent.deleteMember":
-        return withSelection({ operationType: "delete_member", operation: { member_id: input.memberId } });
-      case "settings.updateDeploy":
-        return withSelection({ operationType: "update_deploy_settings", operation: { deploy: input.deploy } });
-      case "settings.updateMob":
-        return withSelection({ operationType: "update_mob_settings", operation: { mob_settings: input.mobSettings } });
-      case "settings.updateRoleWiring":
-        return withSelection({ operationType: "update_role_wiring", operation: { role_wiring: input.roleWiring || [] } });
       default:
         return input;
     }
@@ -199,6 +165,14 @@
     if (input.type) return input;
     const intent = String(input.intent || "").trim();
     switch (intent) {
+      case "system.syncGraphToFlow":
+        return { type: "sync_graph_to_flow", reason: input.reason || "sync_graph_to_flow", selection: input.selection || null };
+      case "system.reconcileMembers":
+        return { type: "reconcile_members", reason: input.reason || "reconcile_members", selection: input.selection || null };
+      case "system.reconcileConditionFields":
+        return { type: "reconcile_condition_fields", reason: input.reason || "reconcile_condition_fields", selection: input.selection || null };
+      case "system.reconcileContractRefs":
+        return { type: "reconcile_contract_refs", reason: input.reason || "reconcile_contract_refs", selection: input.selection || null };
       case "agent.addDefinition":
         return { type: "add_agent_definition", definition_id: input.definitionId };
       case "agent.updateMember":
@@ -213,6 +187,32 @@
         return { type: "remove_member_skill", member_id: input.memberId, skill_id: input.skillId };
       case "agent.createInlineSkill":
         return { type: "create_inline_skill", member_id: input.memberId, label: input.label, content: input.content };
+      case "agent.assignSchema":
+        return { type: "assign_member_schema", member_id: input.memberId, schema_id: input.schemaId };
+      case "agent.deleteMember":
+        return { type: "delete_member", member_id: input.memberId };
+      case "schema.add":
+        return { type: "add_schema" };
+      case "schema.update":
+        return { type: "update_schema", schema_id: input.schemaId, patch: input.patch || {} };
+      case "schema.rename":
+        return { type: "rename_schema", schema_id: input.schemaId, new_id: input.newId };
+      case "schema.delete":
+        return { type: "delete_schema", schema_id: input.schemaId };
+      case "schema.addField":
+        return { type: "add_schema_field", schema_id: input.schemaId };
+      case "schema.updateField":
+        return { type: "update_schema_field", schema_id: input.schemaId, field_id: input.fieldId, patch: input.patch || {} };
+      case "schema.renameField":
+        return { type: "rename_schema_field", schema_id: input.schemaId, field_id: input.fieldId, new_name: input.newName };
+      case "schema.deleteField":
+        return { type: "delete_schema_field", schema_id: input.schemaId, field_id: input.fieldId };
+      case "settings.updateDeploy":
+        return { type: "update_deploy_settings", deploy: input.deploy, selection: input.selection || null };
+      case "settings.updateMob":
+        return { type: "update_mob_settings", mob_settings: input.mobSettings, selection: input.selection || null };
+      case "settings.updateRoleWiring":
+        return { type: "update_role_wiring", role_wiring: input.roleWiring || [], selection: input.selection || null };
       case "basic.updateStep":
         return { type: "update_flow_step", step_id: input.stepId, patch: input.patch || {} };
       case "basic.editStep":
@@ -10962,85 +10962,6 @@
     return replaced ? next : [...list, row];
   }
 
-  function cloneDocument(document, options = {}) {
-    const next = JSON.parse(JSON.stringify(document || {}));
-    const name = String(options.name || next.name || next.flow?.name || next.mob_id || "mobkit_flow").trim();
-    if (name) {
-      next.name = name;
-      next.mob_id = slug(name, next.mob_id || "mobkit_flow");
-      if (next.flow && typeof next.flow === "object") next.flow.name = name;
-      delete next.mob_toml;
-    }
-    return next;
-  }
-
-  function createFlowDraftFromSpec({
-    id,
-    spec,
-    templates,
-    blankTemplate,
-    deploySettings,
-    mobSettings,
-    existingRows,
-  } = {}) {
-    const rowId = String(id || flowDraftIdFromSpec(spec, existingRows)).trim();
-    if (!rowId) return null;
-    const draftSpec = spec && typeof spec === "object" ? spec : {};
-    const template = draftSpec.template === "blank" && blankTemplate?.document
-      ? blankTemplate
-      : (Array.isArray(templates) ? templates : [])
-        .find((candidate) => candidate?.id === draftSpec.template);
-    const trigger = String(draftSpec.trigger || "");
-    let source = "";
-    let document;
-    if (template?.document) {
-      source = String(template.source || "");
-      document = cloneDocument(template.document, {
-        name: draftSpec.name || template.name,
-      });
-    } else {
-      return null;
-    }
-    const row = flowRegistryRowFromDocument({
-      id: rowId,
-      document,
-      stage: "draft",
-      trigger,
-      source,
-      validation: null,
-    });
-    return { id: rowId, document, row, template: template || null };
-  }
-
-  function flowRegistryCreateDraftProjection(rows, options = {}) {
-    const sourceRows = Array.isArray(rows) ? rows : [];
-    const draft = createFlowDraftFromSpec({
-      ...options,
-      existingRows: options.existingRows || sourceRows,
-    });
-    if (!draft?.document || !draft?.row) {
-      return {
-        ok: false,
-        draft: null,
-        rows: sourceRows,
-        hydration: null,
-      };
-    }
-    return {
-      ok: true,
-      draft,
-      rows: flowRegistryAppendRowPatch(sourceRows, draft.row),
-      hydration: {
-        result: { document: draft.document, validation: null },
-        options: {
-          id: draft.id,
-          flowRow: draft.row,
-          addToRegistry: false,
-        },
-      },
-    };
-  }
-
   function flowDraftIdFromSpec(spec, existingRows = []) {
     const draftSpec = spec && typeof spec === "object" ? spec : {};
     const base = slug(draftSpec.name || draftSpec.template || "mobkit_flow", "mobkit_flow");
@@ -11641,8 +11562,6 @@
     authoringFlowForDocument,
     authoringDocumentFromState,
     authoringProjectionApplyPlan,
-    createFlowDraftFromSpec,
-    flowRegistryCreateDraftProjection,
     flowDraftIdFromSpec,
     newFlowTemplateOptions,
     newFlowInitialState,
@@ -12013,7 +11932,6 @@
     mobRoleWiringAddPatch,
     advancedMobSettingsEditorState,
     advancedMobSettingsDraftPatch,
-    cloneDocument,
     agentDefinitionsFromCatalogs,
     agentDefinitionCatalogState,
     agentDeleteConfirmationState,

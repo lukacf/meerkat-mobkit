@@ -16,18 +16,18 @@
 //   { kind: "schema", id }  → SchemaEditor (visual, field-by-field)
 //   null                    → empty hint
 
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAgentIntent = null, applyAgentReplacementIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   return (
     <div className="agents-view">
-      <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} agentDefinitions={agentDefinitions} applyAgentIntent={applyAgentIntent} applyAgentReplacementIntent={applyAgentReplacementIntent} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} />
+      <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} agentDefinitions={agentDefinitions} applyAgentIntent={applyAgentIntent} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} />
       <div className="agents-view__main">
-        <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} applyAgentIntent={applyAgentIntent} applyAgentReplacementIntent={applyAgentReplacementIntent} agentView={agentView} agentDetailView={agentDetailView} agentAccessView={agentAccessView} schemaView={schemaView} />
+        <AgentsMain studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} applyAgentIntent={applyAgentIntent} agentView={agentView} agentDetailView={agentDetailView} agentAccessView={agentAccessView} schemaView={schemaView} />
       </div>
     </div>
   );
 }
 
-function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAgentIntent = null, applyAgentReplacementIntent = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
+function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAgentIntent = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const [schemaAddResult, setSchemaAddResult] = React.useState(null);
   const listState = window.MobKitFlowController.agentListState({
     members: studio.members,
@@ -88,12 +88,12 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
         <button
           className="agents-list__add"
           onClick={() => {
-            if (!applyAgentReplacementIntent) {
+            if (!applyAgentIntent) {
               setSchemaAddResult({ ok: false, error: listState.authoringOperationUnavailableError });
               return;
             }
             setSchemaAddResult(null);
-            applyAgentReplacementIntent({ intent: "schema.add" }).then((result) => {
+            applyAgentIntent({ intent: "schema.add" }).then((result) => {
               if (result?.ok === false) {
                 setSchemaAddResult(result);
                 return;
@@ -185,7 +185,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAgen
   );
 }
 
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent = null, applyAgentReplacementIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
     selection: agentSel,
     members: studio.members,
@@ -204,14 +204,14 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
   }
   if (selectionState.kind === "schema") {
     if (!selectionState.schema) return <div className="agents-empty">{selectionState.missingSchemaLabel}</div>;
-    return <SchemaEditor studio={studio} schema={selectionState.schema} setAgentSel={setAgentSel} contract={contract} flow={flow} setFlow={setFlow} schemaView={schemaView} applyAgentReplacementIntent={applyAgentReplacementIntent} />;
+    return <SchemaEditor studio={studio} schema={selectionState.schema} setAgentSel={setAgentSel} contract={contract} flow={flow} setFlow={setFlow} schemaView={schemaView} applyAgentIntent={applyAgentIntent} />;
   }
   if (!selectionState.member) return <div className="agents-empty">{selectionState.missingAgentLabel}</div>;
-  return <AgentEditor studio={studio} member={selectionState.member} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} applyAgentIntent={applyAgentIntent} applyAgentReplacementIntent={applyAgentReplacementIntent} agentView={agentView} agentDetailView={agentDetailView} agentAccessView={agentAccessView} />;
+  return <AgentEditor studio={studio} member={selectionState.member} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} flow={flow} setFlow={setFlow} mobSettings={mobSettings} setMobSettings={setMobSettings} toolCatalog={toolCatalog} modelCatalog={modelCatalog} applyAgentIntent={applyAgentIntent} agentView={agentView} agentDetailView={agentDetailView} agentAccessView={agentAccessView} />;
 }
 
 // ── Agent editor ────────────────────────────────────────────────────
-function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAgentIntent = null, applyAgentReplacementIntent = null, agentView = null, agentDetailView = null, agentAccessView = null }) {
+function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null }) {
   const [memberEditError, setMemberEditError] = React.useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
   React.useEffect(() => {
@@ -295,11 +295,11 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     }
   };
   const changeSchema = (rawSchema) => {
-    if (!applyAgentReplacementIntent) {
+    if (!applyAgentIntent) {
       setSchemaChangeResult({ ok: false, error: unavailableError });
       return;
     }
-    applyAgentReplacementIntent({
+    applyAgentIntent({
       intent: "agent.assignSchema",
       memberId: member.id,
       schemaId: rawSchema,
@@ -312,9 +312,9 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
   };
   const deleteConfirmState = window.MobKitFlowController.agentDeleteConfirmationState(editorState, deleteConfirmOpen);
   const deleteMember = () => {
-    if (!applyAgentReplacementIntent) return;
+    if (!applyAgentIntent) return;
     const selection = null;
-    applyAgentReplacementIntent({
+    applyAgentIntent({
       intent: "agent.deleteMember",
       memberId: member.id,
       selection,
@@ -585,7 +585,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
 }
 
 // ── Schema editor (visual, field-by-field) ──────────────────────────
-function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null, applyAgentReplacementIntent = null }) {
+function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null, applyAgentIntent = null }) {
   const [fieldAddResult, setFieldAddResult] = React.useState(null);
   const [schemaOperationError, setSchemaOperationError] = React.useState("");
   React.useEffect(() => setFieldAddResult(null), [schema?.id]);
@@ -598,13 +598,13 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult, schemaState.fieldAddFallbackError);
   const applySchemaIntent = async (intentRequest, selection = { kind: "schema", id: schema.id }) => {
     const fallback = schemaState.schemaOperationFallbackError;
-    if (!applyAgentReplacementIntent) {
+    if (!applyAgentIntent) {
       const result = { ok: false, error: schemaState.authoringOperationUnavailableError };
       setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       return result;
     }
     try {
-      const result = await applyAgentReplacementIntent({ ...intentRequest, selection });
+      const result = await applyAgentIntent({ ...intentRequest, selection });
       if (result?.ok === false) {
         setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       } else {
@@ -635,12 +635,12 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   };
 
   const addField = () => {
-    if (!applyAgentReplacementIntent) {
+    if (!applyAgentIntent) {
       setFieldAddResult({ ok: false, error: schemaState.authoringOperationUnavailableError });
       return;
     }
     setFieldAddResult(null);
-    applyAgentReplacementIntent({
+    applyAgentIntent({
       intent: "schema.addField",
       schemaId: schema.id,
       selection: { kind: "schema", id: schema.id },

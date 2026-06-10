@@ -1287,20 +1287,18 @@ async function validateBlankMobpackTemplate(dir, catalogs) {
   if (blankTemplate.validation?.ok !== true) {
     throw new Error(`blank mobpack template is not API-valid: ${JSON.stringify(blankTemplate.validation)}`);
   }
-  const draft = controller.createFlowDraftFromSpec({
+  const created = await rpc("mobkit/mobpacks/create", {
     id: "f_blank_live",
-    spec: {
-      name: "Blank Live Proof",
-      trigger: "label · blank-live-proof",
-      template: "blank",
-    },
-    templates: controller.sampleFlowsFromCatalogs(catalogs),
-    blankTemplate,
-    deploySettings: testDeploySettings(),
-    mobSettings: testMobSettings(),
+    name: "Blank Live Proof",
+    trigger: "label · blank-live-proof",
+    template: "blank",
   });
+  const draft = {
+    document: created?.row?.document,
+    row: created?.row,
+  };
   if (!draft?.document || draft.row?.source !== "mobkit/blank-mobpack") {
-    throw new Error(`blank draft did not clone the MobKit blank template: ${JSON.stringify(draft)}`);
+    throw new Error(`mobkit/mobpacks/create did not return a blank MobKit draft: ${JSON.stringify(created)}`);
   }
   const validation = await rpc("mobkit/mobpacks/validate", { document: draft.document });
   if (!validation.ok) {
