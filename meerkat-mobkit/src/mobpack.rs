@@ -1231,6 +1231,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "plane": "agent",
             "authority": "mobkit",
             "requires": ["member_id", "patch"],
+            "patch_fields": ["name", "systemPrompt", "profileBinding", "realmProfile", "runtimeMode", "model", "backend", "maxInlinePeerNotifications", "providerParams"],
             "mutates": ["document.members", "document.flow", "document.instances"],
             "projection_document_supported": false
         },
@@ -9630,15 +9631,132 @@ fn apply_update_member_operation(
     let member = members[index]
         .as_object_mut()
         .ok_or_else(|| format!("member is not an object: {member_id}"))?;
-    for (key, value) in patch {
-        if key == "id" {
-            return Err("update_member cannot change member id".to_string());
-        }
+    let normalized_patch = normalize_member_update_patch(patch)?;
+    for (key, value) in normalized_patch {
         member.insert(key.clone(), value.clone());
     }
     document.members = Value::Array(members);
     reconcile_document_after_member_change(document);
     Ok(json!({ "kind": "agent", "id": member_id }))
+}
+
+fn normalize_member_update_patch(
+    patch: &serde_json::Map<String, Value>,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let mut normalized = serde_json::Map::new();
+    for (key, value) in patch {
+        match key.as_str() {
+            "id" => return Err("update_member cannot change member id".to_string()),
+            "name" | "systemPrompt" => {
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| format!("update_member {key} must be a string"))?;
+                normalized.insert(key.clone(), Value::String(text.to_string()));
+            }
+            "profileBinding" | "profile_binding" => {
+                let binding = value
+                    .as_str()
+                    .ok_or_else(|| "update_member profileBinding must be a string".to_string())?
+                    .trim()
+                    .to_string();
+                if !matches!(binding.as_str(), "inline" | "realm_profile") {
+                    return Err(format!(
+                        "unsupported update_member profileBinding: {binding}"
+                    ));
+                }
+                normalized.insert("profileBinding".to_string(), Value::String(binding));
+            }
+            "realmProfile" | "realm_profile" => {
+                let realm_profile = value
+                    .as_str()
+                    .ok_or_else(|| "update_member realmProfile must be a string".to_string())?
+                    .trim()
+                    .to_string();
+                normalized.insert("realmProfile".to_string(), Value::String(realm_profile));
+            }
+            "runtimeMode" | "runtime_mode" => {
+                let runtime_mode = value
+                    .as_str()
+                    .ok_or_else(|| "update_member runtimeMode must be a string".to_string())?
+                    .trim()
+                    .to_string();
+                if !runtime_mode_values()
+                    .iter()
+                    .any(|mode| mode == &runtime_mode)
+                {
+                    return Err(format!(
+                        "unsupported update_member runtimeMode: {runtime_mode}"
+                    ));
+                }
+                normalized.insert("runtimeMode".to_string(), Value::String(runtime_mode));
+            }
+            "model" => {
+                let model = value
+                    .as_str()
+                    .ok_or_else(|| "update_member model must be a string".to_string())?
+                    .trim()
+                    .to_string();
+                if model.is_empty() || !available_model_ids().contains(&model) {
+                    return Err(format!("unsupported update_member model: {model}"));
+                }
+                normalized.insert("model".to_string(), Value::String(model));
+            }
+            "backend" => {
+                if value.is_null() {
+                    normalized.insert("backend".to_string(), Value::Null);
+                    continue;
+                }
+                let backend = value
+                    .as_str()
+                    .ok_or_else(|| "update_member backend must be a string or null".to_string())?
+                    .trim()
+                    .to_string();
+                if !backend.is_empty() && !matches!(backend.as_str(), "session" | "external") {
+                    return Err(format!("unsupported update_member backend: {backend}"));
+                }
+                normalized.insert("backend".to_string(), Value::String(backend));
+            }
+            "maxInlinePeerNotifications" | "max_inline_peer_notifications" => {
+                if value.is_null() {
+                    normalized.insert("maxInlinePeerNotifications".to_string(), Value::Null);
+                    continue;
+                }
+                let Some(value) = value.as_i64() else {
+                    return Err(
+                        "update_member maxInlinePeerNotifications must be an integer or null"
+                            .to_string(),
+                    );
+                };
+                if value < -1 || i32::try_from(value).is_err() {
+                    return Err(
+                        "update_member maxInlinePeerNotifications must be >= -1".to_string()
+                    );
+                }
+                normalized.insert("maxInlinePeerNotifications".to_string(), Value::from(value));
+            }
+            "providerParams" | "provider_params" => {
+                if value.is_null() {
+                    normalized.insert("providerParams".to_string(), Value::Null);
+                    continue;
+                }
+                if !value.is_object() {
+                    return Err(
+                        "update_member providerParams must be a JSON object or null".to_string()
+                    );
+                }
+                normalized.insert("providerParams".to_string(), value.clone());
+            }
+            "role" | "schema" | "tools" | "skills" => {
+                return Err(format!(
+                    "update_member cannot mutate {key}; use the dedicated MobKit operation"
+                ));
+            }
+            other => {
+                return Err(format!("unsupported update_member patch field: {other}"));
+            }
+        }
+    }
+    Ok(normalized)
 }
 
 fn apply_member_tool_operation(
@@ -26462,7 +26580,7 @@ model = "gpt-5.5"
     }
 
     #[test]
-    fn apply_operation_updates_member_tools_skills_and_replaces_document() {
+    fn apply_operation_updates_member_tools_skills_without_raw_member_patches() {
         let catalogs = mobpack_catalogs_response();
         let definition = catalogs["agent_definitions"]
             .as_array()
@@ -26537,6 +26655,49 @@ model = "gpt-5.5"
             rejected
                 .expect_err("renaming member id must fail")
                 .contains("cannot change member id")
+        );
+
+        let unsupported_field = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "update_member",
+                "member_id": member_id,
+                "patch": { "tools": ["shell"] }
+            }
+        }))
+        .expect_err("tool access must use dedicated operation");
+        assert!(
+            unsupported_field
+                .contains("update_member cannot mutate tools; use the dedicated MobKit operation"),
+            "{unsupported_field}"
+        );
+
+        let unknown_field = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "update_member",
+                "member_id": member_id,
+                "patch": { "unexpected": true }
+            }
+        }))
+        .expect_err("unknown member patch fields must fail");
+        assert!(
+            unknown_field.contains("unsupported update_member patch field: unexpected"),
+            "{unknown_field}"
+        );
+
+        let invalid_model = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "update_member",
+                "member_id": member_id,
+                "patch": { "model": "not-a-real-model" }
+            }
+        }))
+        .expect_err("unknown model must fail update_member");
+        assert!(
+            invalid_model.contains("unsupported update_member model: not-a-real-model"),
+            "{invalid_model}"
         );
 
         let removed_tool = apply_mobpack_authoring_operation(&json!({

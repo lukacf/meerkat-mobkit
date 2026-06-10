@@ -236,6 +236,8 @@ assert(!/studio(?:Add|Update|Delete)MemberPatch/.test(graph), "Graph state hook 
 assert.match(agentsMainBlock, /applyAgentIntent=\{applyAgentIntent\}/, "Agent main pane must pass MobKit authoring operation intents into Agent Editor");
 assert.match(agentEditorBlock, /applyAgentIntent\(\{[\s\S]*intent:\s*"agent\.updateMember"[\s\S]*memberId:\s*member\.id[\s\S]*patch/, "Agent Editor must update agents through controller-translated MobKit apply_operation");
 assert.match(mobpackRust, /"update_member"\s*=>\s*apply_update_member_operation/, "MobKit apply_operation must own member update mutations");
+assert.match(mobpackRust, /fn normalize_member_update_patch[\s\S]*update_member cannot mutate \{key\}; use the dedicated MobKit operation[\s\S]*unsupported update_member patch field/, "MobKit update_member must server-normalize and reject raw member patch escape hatches");
+assert.match(mobpackRust, /"patch_fields":\s*\[[^\]]*"profileBinding"[\s\S]*"providerParams"/, "MobKit update_member operation metadata must declare its supported patch fields");
 assert.match(applyAuthoringProjectionBlock, /setDeploySettings\(plan\.deploySettings\.value\)[\s\S]*setMobSettings\(plan\.mobSettings\.value\)/, "Agent update operation results must be applied through the app document projection");
 assert(!/const change = \(patch\) => studio\.updateMember\(member\.id, patch\)/.test(agentEditorBlock), "Agent Editor must not update member-only state directly for core agent edits");
 assert(!/MobKitFlowController\.memberDeleteCascadePatch/.test(agentEditorBlock), "Agent Editor must not compute member-delete cascade documents locally");
