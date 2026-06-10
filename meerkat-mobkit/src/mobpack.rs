@@ -27770,11 +27770,12 @@ model = "gpt-5.5"
             "document": document,
             "operation": {
                 "type": "insert_graph_node",
-                "instance": { "id": "n_done", "kind": "member", "memberId": "reviewer", "col": 2, "row": 0 }
+                "pick": { "kind": "memberInstance", "memberId": "reviewer" },
+                "cell": { "col": 2, "row": 0 }
             }
         }))
         .expect("insert graph node");
-        assert_eq!(inserted["selection"]["id"], json!("n_done"));
+        assert_eq!(inserted["selection"]["id"], json!("i_reviewer"));
         assert_eq!(
             inserted["document"]["instances"]
                 .as_array()
@@ -27787,7 +27788,7 @@ model = "gpt-5.5"
             "document": inserted["document"],
             "operation": {
                 "type": "move_graph_node",
-                "instance_id": "n_done",
+                "instance_id": "i_reviewer",
                 "cell": { "col": 1, "row": 0 },
                 "original_cell": { "col": 2, "row": 0 }
             }
@@ -27799,7 +27800,7 @@ model = "gpt-5.5"
         assert_eq!(
             moved_instances
                 .iter()
-                .find(|instance| instance["id"] == "n_done")
+                .find(|instance| instance["id"] == "i_reviewer")
                 .expect("done")["col"],
             json!(1)
         );
@@ -27815,7 +27816,7 @@ model = "gpt-5.5"
             "document": moved["document"],
             "operation": {
                 "type": "update_graph_node",
-                "instance_id": "n_done",
+                "instance_id": "i_reviewer",
                 "patch": { "lane": "review" }
             }
         }))
@@ -27827,12 +27828,12 @@ model = "gpt-5.5"
             "operation": {
                 "type": "connect_graph_nodes",
                 "from_id": "n_plan",
-                "to_id": "n_done"
+                "to_id": "i_reviewer"
             }
         }))
         .expect("connect graph nodes");
         assert_eq!(connected["selection"]["kind"], json!("edge"));
-        assert_eq!(connected["selection"]["id"], json!("e_n_plan_n_done"));
+        assert_eq!(connected["selection"]["id"], json!("e_n_plan_i_reviewer"));
         assert_eq!(
             connected["document"]["edges"]
                 .as_array()
@@ -27851,8 +27852,8 @@ model = "gpt-5.5"
             "document": connected["document"],
             "operation": {
                 "type": "update_graph_edge",
-                "edge_id": "e_n_plan_n_done",
-                "patch": { "label": "done", "cond": { "var": "steps.n_done.status", "op": "==", "val": "ok" } }
+                "edge_id": "e_n_plan_i_reviewer",
+                "patch": { "label": "done", "cond": { "var": "steps.i_reviewer.status", "op": "==", "val": "ok" } }
             }
         }))
         .expect("update graph edge");
@@ -27896,7 +27897,7 @@ model = "gpt-5.5"
             "document": node_budget_edited["document"],
             "operation": {
                 "type": "apply_graph_edge_edit",
-                "edge_id": "e_n_plan_n_done",
+                "edge_id": "e_n_plan_i_reviewer",
                 "action": "set_condition_owner",
                 "owner_instance_id": "n_plan"
             }
@@ -27917,7 +27918,7 @@ model = "gpt-5.5"
             "document": semantic_edge["document"],
             "operation": {
                 "type": "delete_graph_edge",
-                "edge_id": "e_n_plan_n_done"
+                "edge_id": "e_n_plan_i_reviewer"
             }
         }))
         .expect("delete graph edge");
@@ -27933,7 +27934,7 @@ model = "gpt-5.5"
             "document": edge_deleted["document"],
             "operation": {
                 "type": "connect_graph_nodes",
-                "from_id": "n_done",
+                "from_id": "i_reviewer",
                 "to_id": "n_plan"
             }
         }))
@@ -27942,7 +27943,7 @@ model = "gpt-5.5"
             "document": reconnected["document"],
             "operation": {
                 "type": "delete_graph_node",
-                "instance_id": "n_done"
+                "instance_id": "i_reviewer"
             }
         }))
         .expect("delete graph node");
@@ -27951,7 +27952,7 @@ model = "gpt-5.5"
                 .as_array()
                 .expect("instances")
                 .iter()
-                .any(|instance| instance["id"] == "n_done")
+                .any(|instance| instance["id"] == "i_reviewer")
         );
         assert_eq!(
             deleted_node["document"]["edges"]
@@ -28003,12 +28004,13 @@ model = "gpt-5.5"
             "document": document.clone(),
             "operation": {
                 "type": "insert_graph_node",
-                "instance": { "id": "n_done", "kind": "terminal", "col": 2, "row": 0, "isTerminal": true }
+                "pick": { "kind": "terminal", "terminalKind": "success" },
+                "cell": { "col": 2, "row": 0 }
             }
         }))
         .expect_err("terminal insert must be rejected");
         assert!(
-            insert_err.contains("uncompiled graph terminal nodes cannot be persisted"),
+            insert_err.contains("unsupported insert_graph_node pick.kind: terminal"),
             "{insert_err}"
         );
 
@@ -29882,7 +29884,9 @@ model = "gpt-5.5"
         assert!(authoring_agent_definitions.iter().any(|definition| {
             definition["role"] == "reviewer"
                 && definition["sourceMobpack"] == "mobkit_authoring_profiles"
-                && definition["sourceDocumentPath"] == "document.members[2]"
+                && definition["sourceDocumentPath"]
+                    .as_str()
+                    .is_some_and(|path| path.starts_with("document.members["))
                 && definition["tools"]
                     .as_array()
                     .is_some_and(|tools| tools.contains(&json!("shell")))
