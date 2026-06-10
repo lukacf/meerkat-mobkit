@@ -51,7 +51,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
               className={row.itemClass}
               onClick={() => setAgentSel(window.MobKitFlowController.agentListSelectionProjection("agent", row.id))}
             >
-              <span className="agents-list__bullet" data-role={row.bulletRole}>●</span>
+              <span className="agents-list__bullet" data-role={row.bulletRole} style={row.bulletStyle}>●</span>
               <div className="agents-list__col">
                 <span className="agents-list__name">{row.name}</span>
                 <span className="agents-list__sub">{row.subLabel}</span>
@@ -77,7 +77,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
               className={row.itemClass}
               onClick={() => setAgentSel(window.MobKitFlowController.agentListSelectionProjection("schema", row.id))}
             >
-              <span className="agents-list__bullet" data-role={row.bulletRole}>▢</span>
+              <span className="agents-list__bullet" data-role={row.bulletRole} style={row.bulletStyle}>▢</span>
               <div className="agents-list__col">
                 <span className="agents-list__name">{row.id}</span>
                 <span className="agents-list__sub">{row.subLabel}</span>

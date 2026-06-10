@@ -1506,7 +1506,7 @@ a.node {
   outline: 1px solid var(--accent);
 }
 .agents-list__bullet {
-  font-size: 10px; line-height: 1; color: var(--muted); text-align: center;
+  font-size: 10px; line-height: 1; color: var(--role-color, var(--muted)); text-align: center;
 }
 .agents-list__col { display: flex; flex-direction: column; min-width: 0; }
 .agents-list__name {
@@ -2253,7 +2253,7 @@ a.node {
   color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   max-width: 130px;
 }
-.add-menu__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink); flex-shrink: 0; }
+.add-menu__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--role-color, var(--ink)); flex-shrink: 0; }
 .add-menu__glyph {
   width: 14px; text-align: center; flex-shrink: 0;
   font-family: var(--font-mono); color: var(--accent); font-size: 13px;

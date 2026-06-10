@@ -79,6 +79,10 @@ function allowedCssDelta(sign, line) {
     /cursor: not-allowed/,
     /opacity: 1/,
     /\.(?:library__bullet|agents-list__bullet|add-menu__dot)\[data-role="(?:planner|coder|reviewer|critic|judge|publisher|illustrator|shell|schema)"\]/,
+    /--role-color/,
+    /agents-list__bullet/,
+    /font-size: 10px; line-height: 1; color: var\(--muted\); text-align: center;/,
+    /add-menu__dot \{ width: 8px; height: 8px; border-radius: 50%; background:/,
   ];
   if (shared.some((pattern) => pattern.test(text))) return true;
   if (sign === "+") {

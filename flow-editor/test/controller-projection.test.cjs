@@ -4774,6 +4774,7 @@ assert.deepEqual(controller.agentListState({
       selected: false,
       itemClass: "agents-list__item",
       bulletRole: "planner",
+      bulletStyle: { "--role-color": "var(--accent)" },
       subLabel: "planner · gpt-5.5",
       placedCount: 0,
       placedLabel: "unplaced",
@@ -4789,6 +4790,7 @@ assert.deepEqual(controller.agentListState({
       selected: false,
       itemClass: "agents-list__item",
       bulletRole: "reviewer",
+      bulletStyle: { "--role-color": "var(--warn, #c98810)" },
       subLabel: "reviewer · gpt-5.5",
       placedCount: 2,
       placedLabel: "×2",
@@ -4803,6 +4805,7 @@ assert.deepEqual(controller.agentListState({
       selected: false,
       itemClass: "agents-list__item",
       bulletRole: "schema",
+      bulletStyle: { "--role-color": "var(--subtle)" },
       fieldCount: 1,
       fieldLabel: "1 field",
       usedCount: 1,
@@ -4815,6 +4818,7 @@ assert.deepEqual(controller.agentListState({
       selected: true,
       itemClass: "agents-list__item is-selected",
       bulletRole: "schema",
+      bulletStyle: { "--role-color": "var(--subtle)" },
       fieldCount: 2,
       fieldLabel: "2 fields",
       usedCount: 1,
@@ -7814,6 +7818,19 @@ assert.equal(addNodeMenuState.hasMembers, false);
 assert.equal(addNodeMenuState.hasControls, true);
 assert.equal(addNodeMenuState.hasTerminals, false);
 assert.equal(addNodeMenuState.isEmpty, false);
+const memberAddNodeMenuState = controller.graphAddNodeMenuState({
+  members: [
+    { id: "m_planner", role: "planner", name: "Planner", model: "gpt-5.5" },
+  ],
+  contract: {
+    mob_definition: {
+      graph_gate_kinds: ["branch"],
+      graph_palette_gate_kinds: ["branch"],
+    },
+  },
+  graphView: hydratedCatalogs.graphView,
+});
+assert.deepEqual(memberAddNodeMenuState.memberRows[0].dotStyle, { "--role-color": "var(--accent)" });
 const noMemberAddNodeMenuState = controller.graphAddNodeMenuState({
   members: [],
   contract: {

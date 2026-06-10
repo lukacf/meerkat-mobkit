@@ -692,6 +692,34 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function roleAccentColor(role) {
+    switch (String(role || "").trim()) {
+      case "planner":
+        return "var(--accent)";
+      case "coder":
+        return "var(--ok, #2f7d4d)";
+      case "reviewer":
+        return "var(--warn, #c98810)";
+      case "critic":
+        return "var(--muted)";
+      case "judge":
+        return "#C99A2E";
+      case "publisher":
+        return "var(--ink)";
+      case "illustrator":
+        return "var(--accent)";
+      case "schema":
+        return "var(--subtle)";
+      default:
+        return "";
+    }
+  }
+
+  function roleAccentStyle(role) {
+    const color = roleAccentColor(role);
+    return color ? { "--role-color": color } : {};
+  }
+
   function agentListState({ members = [], instances = [], schemas = [], selection = null, agentView = null } = {}) {
     const sourceMembers = Array.isArray(members) ? members : [];
     const sourceInstances = Array.isArray(instances) ? instances : [];
@@ -713,6 +741,7 @@ window.MOBKIT_BOOT = {
         selected,
         itemClass: `agents-list__item${selected ? " is-selected" : ""}`,
         bulletRole: member.role,
+        bulletStyle: roleAccentStyle(member.role),
         subLabel: graphTemplateText(view.memberSubLabelTemplate, {
           role: member.role,
           model: member.model,
@@ -738,6 +767,7 @@ window.MOBKIT_BOOT = {
         selected,
         itemClass: `agents-list__item${selected ? " is-selected" : ""}`,
         bulletRole: "schema",
+        bulletStyle: roleAccentStyle("schema"),
         fieldCount,
         fieldLabel,
         usedCount,
@@ -9239,6 +9269,7 @@ window.MOBKIT_BOOT = {
         role: String(member.role || ""),
         name: String(member.name || ""),
         model: String(member.model || ""),
+        dotStyle: roleAccentStyle(member.role),
         pick: { kind: "memberInstance", memberId: member.id },
       }))
       .filter((row) => row.id);
@@ -12679,7 +12710,7 @@ function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose,
         if (e.key === "Escape") onClose();
       }
     }
-  ), /* @__PURE__ */ React.createElement("button", { className: "add-menu__x", onClick: onClose, title: menuState.closeTitle }, menuState.closeLabel)), /* @__PURE__ */ React.createElement("div", { className: "add-menu__scroll" }, menuState.hasMembers && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.agentsLabel), menuState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__dot", "data-role": row.role }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.model))), menuState.hasControls && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.controlsLabel), menuState.controlRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__glyph" }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.meta))), menuState.hasTerminals && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.terminalsLabel), menuState.terminalRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row is-disabled", disabled: true, title: row.disabledTitle }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__sq", "data-kind": row.id }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label))), menuState.isEmpty && /* @__PURE__ */ React.createElement("div", { className: "add-menu__empty" }, menuState.emptyLabel)), onJumpToAgents && /* @__PURE__ */ React.createElement("button", { className: "add-menu__foot", onClick: () => onJumpToAgents(null) }, menuState.jumpLabel));
+  ), /* @__PURE__ */ React.createElement("button", { className: "add-menu__x", onClick: onClose, title: menuState.closeTitle }, menuState.closeLabel)), /* @__PURE__ */ React.createElement("div", { className: "add-menu__scroll" }, menuState.hasMembers && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.agentsLabel), menuState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__dot", "data-role": row.role, style: row.dotStyle }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.model))), menuState.hasControls && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.controlsLabel), menuState.controlRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__glyph" }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.meta))), menuState.hasTerminals && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.terminalsLabel), menuState.terminalRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row is-disabled", disabled: true, title: row.disabledTitle }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__sq", "data-kind": row.id }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label))), menuState.isEmpty && /* @__PURE__ */ React.createElement("div", { className: "add-menu__empty" }, menuState.emptyLabel)), onJumpToAgents && /* @__PURE__ */ React.createElement("button", { className: "add-menu__foot", onClick: () => onJumpToAgents(null) }, menuState.jumpLabel));
 }
 window.Inspector = Inspector;
 window.AddNodeMenu = AddNodeMenu;
@@ -12800,7 +12831,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
         className: row.itemClass,
         onClick: () => setAgentSel(window.MobKitFlowController.agentListSelectionProjection("agent", row.id))
       },
-      /* @__PURE__ */ React.createElement("span", { className: "agents-list__bullet", "data-role": row.bulletRole }, "\u25CF"),
+      /* @__PURE__ */ React.createElement("span", { className: "agents-list__bullet", "data-role": row.bulletRole, style: row.bulletStyle }, "\u25CF"),
       /* @__PURE__ */ React.createElement("div", { className: "agents-list__col" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "agents-list__sub" }, row.subLabel)),
       /* @__PURE__ */ React.createElement("span", { className: row.placedClass }, row.placedLabel)
     );
@@ -12812,7 +12843,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
         className: row.itemClass,
         onClick: () => setAgentSel(window.MobKitFlowController.agentListSelectionProjection("schema", row.id))
       },
-      /* @__PURE__ */ React.createElement("span", { className: "agents-list__bullet", "data-role": row.bulletRole }, "\u25A2"),
+      /* @__PURE__ */ React.createElement("span", { className: "agents-list__bullet", "data-role": row.bulletRole, style: row.bulletStyle }, "\u25A2"),
       /* @__PURE__ */ React.createElement("div", { className: "agents-list__col" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__name" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "agents-list__sub" }, row.subLabel))
     );
   }), /* @__PURE__ */ React.createElement(

@@ -545,7 +545,7 @@ function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose,
         {menuState.hasMembers && <div className="add-menu__label">{menuState.agentsLabel}</div>}
         {menuState.memberRows.map(row => (
           <button key={row.id} className="add-menu__row" onClick={() => onPick(row.pick)}>
-            <span className="add-menu__dot" data-role={row.role} />
+            <span className="add-menu__dot" data-role={row.role} style={row.dotStyle} />
             <span className="add-menu__row-name">{row.name}</span>
             <span className="add-menu__row-meta">{row.model}</span>
           </button>

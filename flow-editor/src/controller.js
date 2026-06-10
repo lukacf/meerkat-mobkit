@@ -659,6 +659,34 @@
     };
   }
 
+  function roleAccentColor(role) {
+    switch (String(role || "").trim()) {
+      case "planner":
+        return "var(--accent)";
+      case "coder":
+        return "var(--ok, #2f7d4d)";
+      case "reviewer":
+        return "var(--warn, #c98810)";
+      case "critic":
+        return "var(--muted)";
+      case "judge":
+        return "#C99A2E";
+      case "publisher":
+        return "var(--ink)";
+      case "illustrator":
+        return "var(--accent)";
+      case "schema":
+        return "var(--subtle)";
+      default:
+        return "";
+    }
+  }
+
+  function roleAccentStyle(role) {
+    const color = roleAccentColor(role);
+    return color ? { "--role-color": color } : {};
+  }
+
   function agentListState({ members = [], instances = [], schemas = [], selection = null, agentView = null } = {}) {
     const sourceMembers = Array.isArray(members) ? members : [];
     const sourceInstances = Array.isArray(instances) ? instances : [];
@@ -680,6 +708,7 @@
         selected,
         itemClass: `agents-list__item${selected ? " is-selected" : ""}`,
         bulletRole: member.role,
+        bulletStyle: roleAccentStyle(member.role),
         subLabel: graphTemplateText(view.memberSubLabelTemplate, {
           role: member.role,
           model: member.model,
@@ -705,6 +734,7 @@
         selected,
         itemClass: `agents-list__item${selected ? " is-selected" : ""}`,
         bulletRole: "schema",
+        bulletStyle: roleAccentStyle("schema"),
         fieldCount,
         fieldLabel,
         usedCount,
@@ -9206,6 +9236,7 @@
         role: String(member.role || ""),
         name: String(member.name || ""),
         model: String(member.model || ""),
+        dotStyle: roleAccentStyle(member.role),
         pick: { kind: "memberInstance", memberId: member.id },
       }))
       .filter((row) => row.id);
