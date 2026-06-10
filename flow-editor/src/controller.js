@@ -1893,12 +1893,14 @@
       addNodeCloseTitle: String(view.add_node_close_title || "").trim(),
       addNodeAgentsLabel: String(view.add_node_agents_label || "").trim(),
       addNodeControlsLabel: String(view.add_node_controls_label || "").trim(),
+      addNodeTerminalsLabel: String(view.add_node_terminals_label || "").trim(),
       addNodeEmptyPrefix: String(view.add_node_empty_prefix || ""),
       addNodeEmptySuffix: String(view.add_node_empty_suffix || ""),
       addNodeJumpLabel: String(view.add_node_jump_label || "").trim(),
       authoringOperationUnavailableError: String(view.authoring_operation_unavailable_error || "").trim(),
       authoringOperationFallbackError: String(view.authoring_operation_fallback_error || "").trim(),
       gatePaletteRows: graphGatePaletteRowsFromSchema(view.gate_palette_rows),
+      terminalPaletteRows: graphTerminalPaletteRowsFromSchema(view.terminal_palette_rows),
       gateKindLabels: viewStringMapFromSchema(view.graph_gate_kind_labels),
       terminalKindLabels: viewStringMapFromSchema(view.graph_terminal_kind_labels),
       frameKindLabels: viewStringMapFromSchema(view.graph_frame_kind_labels),
@@ -1979,9 +1981,9 @@
     return out.zoomOutTitle && out.fitTitle && out.zoomInTitle && out.portDragTitle
       && out.addNodeSearchIcon && out.addNodeSearchPlaceholder && out.addNodeCloseLabel
       && out.addNodeCloseTitle && out.addNodeAgentsLabel && out.addNodeControlsLabel
-      && out.addNodeEmptyPrefix && out.addNodeEmptySuffix && out.addNodeJumpLabel
+      && out.addNodeTerminalsLabel && out.addNodeEmptyPrefix && out.addNodeEmptySuffix && out.addNodeJumpLabel
       && out.authoringOperationUnavailableError && out.authoringOperationFallbackError
-      && out.gatePaletteRows.length
+      && out.gatePaletteRows.length && out.terminalPaletteRows.length
       && Object.keys(out.gateKindLabels).length
       && Object.keys(out.terminalKindLabels).length
       && Object.keys(out.frameKindLabels).length
@@ -2036,6 +2038,21 @@
       .filter(Boolean);
   }
 
+  function graphTerminalPaletteRowsFromSchema(rows) {
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .map((row) => {
+        if (!row || typeof row !== "object") return null;
+        const id = String(row.id || "").trim();
+        const glyph = String(row.glyph || "").trim();
+        const label = String(row.label || "").trim();
+        const meta = String(row.meta || "").trim();
+        if (!id || !glyph || !label || !meta) return null;
+        return { id, glyph, label, meta };
+      })
+      .filter(Boolean);
+  }
+
   function graphCanvasViewState(graphView) {
     const view = graphView && typeof graphView === "object" ? graphView : null;
     return {
@@ -2049,12 +2066,14 @@
       addNodeCloseTitle: String(view?.addNodeCloseTitle || ""),
       addNodeAgentsLabel: String(view?.addNodeAgentsLabel || ""),
       addNodeControlsLabel: String(view?.addNodeControlsLabel || ""),
+      addNodeTerminalsLabel: String(view?.addNodeTerminalsLabel || ""),
       addNodeEmptyPrefix: String(view?.addNodeEmptyPrefix || ""),
       addNodeEmptySuffix: String(view?.addNodeEmptySuffix || ""),
       addNodeJumpLabel: String(view?.addNodeJumpLabel || ""),
       authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
       authoringOperationFallbackError: String(view?.authoringOperationFallbackError || ""),
       gatePaletteRows: Array.isArray(view?.gatePaletteRows) ? view.gatePaletteRows : [],
+      terminalPaletteRows: Array.isArray(view?.terminalPaletteRows) ? view.terminalPaletteRows : [],
       gateKindLabels: view?.gateKindLabels && typeof view.gateKindLabels === "object" ? view.gateKindLabels : {},
       terminalKindLabels: view?.terminalKindLabels && typeof view.terminalKindLabels === "object" ? view.terminalKindLabels : {},
       frameKindLabels: view?.frameKindLabels && typeof view.frameKindLabels === "object" ? view.frameKindLabels : {},
@@ -9116,9 +9135,7 @@
         pick: { kind: "memberInstance", memberId: member.id },
       }))
       .filter((row) => row.id);
-    const controls = (Array.isArray(members) && members.length)
-      ? graphControlNodes(contract, graphView)
-      : [];
+    const controls = graphControlNodes(contract, graphView);
     const controlRows = controls
       .filter((node) => {
         if (!ql) return true;
@@ -9137,6 +9154,26 @@
         pick: { kind: "gate", gateKind: node.gateKind },
       }))
       .filter((row) => row.id);
+    const terminalRows = (view.terminalPaletteRows || [])
+      .filter((node) => {
+        if (!ql) return true;
+        return [
+          node?.label,
+          node?.meta,
+          node?.id,
+        ].map((part) => String(part || "")).join(" ").toLowerCase().includes(ql);
+      })
+      .map((node) => ({
+        id: String(node.id || ""),
+        kind: String(node.id || ""),
+        glyph: String(node.glyph || ""),
+        label: String(node.label || ""),
+        meta: String(node.meta || view.terminalAuthoringLockedHint || ""),
+        disabled: true,
+        disabledTitle: view.terminalAuthoringLockedHint,
+        pick: { kind: "terminal", terminalKind: node.id },
+      }))
+      .filter((row) => row.id);
     return {
       searchIcon: view.addNodeSearchIcon,
       searchPlaceholder: view.addNodeSearchPlaceholder,
@@ -9144,13 +9181,16 @@
       closeTitle: view.addNodeCloseTitle,
       agentsLabel: view.addNodeAgentsLabel,
       controlsLabel: view.addNodeControlsLabel,
+      terminalsLabel: view.addNodeTerminalsLabel,
       emptyLabel: `${view.addNodeEmptyPrefix}${q}${view.addNodeEmptySuffix}`,
       jumpLabel: view.addNodeJumpLabel,
       memberRows,
       controlRows,
+      terminalRows,
       hasMembers: memberRows.length > 0,
       hasControls: controlRows.length > 0,
-      isEmpty: memberRows.length === 0 && controlRows.length === 0,
+      hasTerminals: terminalRows.length > 0,
+      isEmpty: memberRows.length === 0 && controlRows.length === 0 && terminalRows.length === 0,
     };
   }
 

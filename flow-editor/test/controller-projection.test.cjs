@@ -1466,6 +1466,7 @@ const hydratedContractAndCatalogFixture = {
       add_node_close_title: "Close",
       add_node_agents_label: "Agents",
       add_node_controls_label: "Flow controls",
+      add_node_terminals_label: "Terminals",
       add_node_empty_prefix: "No matches for “",
       add_node_empty_suffix: "”",
       add_node_jump_label: "+ New agent in Agents →",
@@ -1475,6 +1476,11 @@ const hydratedContractAndCatalogFixture = {
         { id: "branch", glyph: "⑂", label: "Branch gate", meta: "conditional split" },
         { id: "fork", glyph: "‖", label: "Parallel fork", meta: "fan_out lanes" },
         { id: "join", glyph: "⋈", label: "Join gate", meta: "fan_in barrier" },
+      ],
+      terminal_palette_rows: [
+        { id: "success", glyph: "■", label: "Success", meta: "visual-only; not deployable" },
+        { id: "failed", glyph: "■", label: "Failed", meta: "visual-only; not deployable" },
+        { id: "human", glyph: "□", label: "Needs human", meta: "visual-only; not deployable" },
       ],
       graph_gate_kind_labels: {
         branch: "branch — conditional split",
@@ -2112,6 +2118,7 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   addNodeCloseTitle: "Close",
   addNodeAgentsLabel: "Agents",
   addNodeControlsLabel: "Flow controls",
+  addNodeTerminalsLabel: "Terminals",
   addNodeEmptyPrefix: "No matches for “",
   addNodeEmptySuffix: "”",
   addNodeJumpLabel: "+ New agent in Agents →",
@@ -2121,6 +2128,11 @@ assert.deepEqual(hydratedCatalogs.graphView, {
     { id: "branch", glyph: "⑂", label: "Branch gate", meta: "conditional split" },
     { id: "fork", glyph: "‖", label: "Parallel fork", meta: "fan_out lanes" },
     { id: "join", glyph: "⋈", label: "Join gate", meta: "fan_in barrier" },
+  ],
+  terminalPaletteRows: [
+    { id: "success", glyph: "■", label: "Success", meta: "visual-only; not deployable" },
+    { id: "failed", glyph: "■", label: "Failed", meta: "visual-only; not deployable" },
+    { id: "human", glyph: "□", label: "Needs human", meta: "visual-only; not deployable" },
   ],
   gateKindLabels: {
     branch: "branch — conditional split",
@@ -2227,12 +2239,14 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   addNodeCloseTitle: "",
   addNodeAgentsLabel: "",
   addNodeControlsLabel: "",
+  addNodeTerminalsLabel: "",
   addNodeEmptyPrefix: "",
   addNodeEmptySuffix: "",
   addNodeJumpLabel: "",
   authoringOperationUnavailableError: "",
   authoringOperationFallbackError: "",
   gatePaletteRows: [],
+  terminalPaletteRows: [],
   gateKindLabels: {},
   terminalKindLabels: {},
   frameKindLabels: {},
@@ -7596,14 +7610,35 @@ assert.equal(addNodeMenuState.closeLabel, "✕");
 assert.equal(addNodeMenuState.closeTitle, "Close");
 assert.equal(addNodeMenuState.agentsLabel, "Agents");
 assert.equal(addNodeMenuState.controlsLabel, "Flow controls");
+assert.equal(addNodeMenuState.terminalsLabel, "Terminals");
 assert.equal(addNodeMenuState.jumpLabel, "+ New agent in Agents →");
 assert.deepEqual(addNodeMenuState.memberRows, []);
 assert.deepEqual(addNodeMenuState.controlRows.map((row) => [row.id, row.gateKind, row.label, row.pick.kind, row.pick.gateKind]), [
   ["fork", "fork", "Parallel fork", "gate", "fork"],
 ]);
+assert.deepEqual(addNodeMenuState.terminalRows, []);
 assert.equal(addNodeMenuState.hasMembers, false);
 assert.equal(addNodeMenuState.hasControls, true);
+assert.equal(addNodeMenuState.hasTerminals, false);
 assert.equal(addNodeMenuState.isEmpty, false);
+const noMemberAddNodeMenuState = controller.graphAddNodeMenuState({
+  members: [],
+  contract: {
+    mob_definition: {
+      graph_gate_kinds: ["branch", "fork", "join"],
+      graph_palette_gate_kinds: ["branch", "fork"],
+    },
+  },
+  graphView: hydratedCatalogs.graphView,
+});
+assert.deepEqual(noMemberAddNodeMenuState.controlRows.map((row) => row.id), ["branch", "fork"]);
+assert.deepEqual(noMemberAddNodeMenuState.terminalRows.map((row) => [row.id, row.kind, row.label, row.disabled, row.pick.kind]), [
+  ["success", "success", "Success", true, "terminal"],
+  ["failed", "failed", "Failed", true, "terminal"],
+  ["human", "human", "Needs human", true, "terminal"],
+]);
+assert.equal(noMemberAddNodeMenuState.hasControls, true);
+assert.equal(noMemberAddNodeMenuState.hasTerminals, true);
 const emptyAddNodeMenuState = controller.graphAddNodeMenuState({
   members: [{ id: "m_planner", role: "planner", name: "Planner", model: "gpt-5.5" }],
   contract: { mob_definition: { graph_gate_kinds: ["branch"], graph_palette_gate_kinds: ["branch"] } },

@@ -1550,6 +1550,7 @@ pub fn mobpack_schema_response() -> Value {
         "add_node_close_title": "Close",
         "add_node_agents_label": "Agents",
         "add_node_controls_label": "Flow controls",
+        "add_node_terminals_label": "Terminals",
         "add_node_empty_prefix": "No matches for “",
         "add_node_empty_suffix": "”",
         "add_node_jump_label": "+ New agent in Agents →",
@@ -1573,6 +1574,26 @@ pub fn mobpack_schema_response() -> Value {
                 "glyph": "⋈",
                 "label": "Join gate",
                 "meta": "fan_in barrier"
+            }
+        ],
+        "terminal_palette_rows": [
+            {
+                "id": "success",
+                "glyph": "■",
+                "label": "Success",
+                "meta": "visual-only; not deployable"
+            },
+            {
+                "id": "failed",
+                "glyph": "■",
+                "label": "Failed",
+                "meta": "visual-only; not deployable"
+            },
+            {
+                "id": "human",
+                "glyph": "□",
+                "label": "Needs human",
+                "meta": "visual-only; not deployable"
             }
         ]
     });
@@ -28992,6 +29013,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_graph_view"]["gate_palette_rows"][1]["id"],
             json!("fork")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["add_node_terminals_label"],
+            json!("Terminals")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["terminal_palette_rows"][0]["id"],
+            json!("success")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["terminal_palette_rows"][0]["meta"],
+            json!("visual-only; not deployable")
         );
         assert_eq!(
             mob_definition["editor_graph_view"]["graph_gate_kind_labels"]["join"],

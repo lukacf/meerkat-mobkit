@@ -143,6 +143,7 @@ assert.match(app, /<GraphEditor[\s\S]*toolCatalog=\{catalogs\.toolCatalog\}/, "a
 assert.match(controller, /mob_definition\?\.editor_graph_view/, "controller plane must hydrate Graph canvas chrome from MobKit schema");
 assert.match(app, /<AddNodeMenu[\s\S]*graphView=\{catalogs\.graphView\}/, "app shell must inject schema-backed Graph add-node menu view state");
 assert.match(controller, /gatePaletteRows:\s*graphGatePaletteRowsFromSchema\(view\.gate_palette_rows\)/, "controller plane must hydrate Graph gate palette rows from MobKit schema");
+assert.match(controller, /terminalPaletteRows:\s*graphTerminalPaletteRowsFromSchema\(view\.terminal_palette_rows\)/, "controller plane must hydrate Graph terminal palette rows from MobKit schema");
 assert.match(controller, /gateKindLabels:\s*viewStringMapFromSchema\(view\.graph_gate_kind_labels\)/, "controller plane must hydrate Graph option labels from MobKit schema");
 assert.match(controller, /inspectorDeleteLabel:\s*String\(view\.inspector_delete_label/, "controller plane must hydrate Graph inspector chrome from MobKit schema");
 assert.match(graphEditorBlock, /graphView(?:\s*=\s*null)?[\s\S]*MobKitFlowController\.graphCanvasViewState\(graphView\)/, "Graph editor must render canvas affordance titles through controller-projected view state");
@@ -358,8 +359,10 @@ assert.match(addNodeMenuBlock, /MobKitFlowController\.graphAddNodeMenuState/, "G
 assert.match(addNodeMenuBlock, /graphAddNodeMenuState\(\{[\s\S]*graphView/, "Graph add-node menu must pass schema-backed Graph view into controller projection");
 assert.match(addNodeMenuBlock, /menuState\.memberRows\.map/, "Graph add-node member rows must come from controller state");
 assert.match(addNodeMenuBlock, /menuState\.controlRows\.map/, "Graph add-node control rows must come from controller state");
+assert.match(addNodeMenuBlock, /menuState\.terminalRows\.map[\s\S]*disabled/, "Graph add-node terminal rows must render as controller-projected disabled visual-only affordances");
 assert.match(addNodeMenuBlock, /menuState\.emptyLabel/, "Graph add-node empty copy must come from controller state");
 assert.match(controller, /function graphAddNodeMenuState/, "controller plane must own Graph add-node search and palette projection");
+assert.match(controller, /const controls = graphControlNodes\(contract, graphView\)/, "Graph add-node flow controls must remain available even before any agents exist");
 assert(!/let\s+kind\s*=\s*["']next["'][\s\S]{0,500}label\s*=\s*["']rework["']/.test(graph), "Graph editor must not infer MobKit edge kind/label semantics locally");
 assert(!/fromI\.isGate[\s\S]{0,240}gateKind[\s\S]{0,240}fanout/.test(graph), "Graph editor must not hardcode fork fanout edge semantics locally");
 assert(!/toI\.col\s*===\s*fromI\.col[\s\S]{0,240}parallel/.test(graph), "Graph editor must not hardcode parallel edge semantics locally");

@@ -560,6 +560,15 @@ function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose,
           </button>
         ))}
 
+        {menuState.hasTerminals && <div className="add-menu__label">{menuState.terminalsLabel}</div>}
+        {menuState.terminalRows.map(row => (
+          <button key={row.id} className="add-menu__row is-disabled" disabled title={row.disabledTitle}>
+            <span className="add-menu__glyph">{row.glyph}</span>
+            <span className="add-menu__row-name">{row.label}</span>
+            <span className="add-menu__row-meta">{row.meta}</span>
+          </button>
+        ))}
+
         {menuState.isEmpty && (
           <div className="add-menu__empty">{menuState.emptyLabel}</div>
         )}
