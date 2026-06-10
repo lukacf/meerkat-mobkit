@@ -33,8 +33,11 @@ function diff(entry) {
 }
 
 if (!fs.existsSync(zipPath)) {
-  process.stdout.write(`handoff zip not found at ${zipPath}; visual contract skipped\n`);
-  process.exit(0);
+  if (process.env.MOBKIT_EDITOR_ALLOW_MISSING_HANDOFF === "1") {
+    process.stdout.write(`handoff zip not found at ${zipPath}; visual contract skipped by MOBKIT_EDITOR_ALLOW_MISSING_HANDOFF=1\n`);
+    process.exit(0);
+  }
+  throw new Error(`handoff zip not found at ${zipPath}; set MOBKIT_EDITOR_HANDOFF_ZIP or MOBKIT_EDITOR_ALLOW_MISSING_HANDOFF=1`);
 }
 
 assert.equal(local("tokens.css"), fromZip("tokens.css"), "design tokens must match the handoff exactly");
