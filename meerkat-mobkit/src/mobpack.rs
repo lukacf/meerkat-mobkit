@@ -3772,6 +3772,22 @@ pub fn delete_mobpack_draft(params: &Value) -> Result<Value, String> {
         .map_err(|_| "mobpack draft store lock poisoned".to_string())?;
     let path = mobpack_draft_store_path(params);
     let mut rows = read_mobpack_draft_store(&path)?;
+    let current_revision = mobpack_draft_revision_from_row(rows.get(&id));
+    if let Some(expected_revision) = mobpack_draft_expected_revision(params) {
+        if expected_revision != current_revision {
+            return Err(format!(
+                "mobkit/mobpacks/delete draft revision conflict for {id}: expected {expected_revision}, found {current_revision}"
+            ));
+        }
+    }
+    if let Some(expected_etag) = mobpack_draft_expected_etag(params) {
+        let current_etag = mobpack_draft_etag(&id, current_revision);
+        if expected_etag != current_etag {
+            return Err(format!(
+                "mobkit/mobpacks/delete draft etag conflict for {id}: expected {expected_etag}, found {current_etag}"
+            ));
+        }
+    }
     let deleted = rows.remove(&id).is_some();
     write_mobpack_draft_store(&path, &rows)?;
     Ok(json!({
@@ -25317,6 +25333,40 @@ model = "gpt-5.5"
         assert_eq!(fetched["row"]["revision"], json!(2));
         assert_eq!(fetched["row"]["draft_etag"], json!("revision_guard:2"));
         assert_eq!(fetched["row"]["document"]["name"], json!("Revision Two"));
+    }
+
+    #[test]
+    fn mobpack_draft_registry_rejects_stale_delete_revision() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("drafts.json");
+
+        let saved = save_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "delete_guard",
+            "document": valid_document(),
+        }))
+        .expect("save draft");
+        assert_eq!(saved["row"]["revision"], json!(1));
+
+        let stale = delete_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "delete_guard",
+            "expected_revision": 0,
+        }))
+        .expect_err("stale delete must fail");
+        assert!(
+            stale.contains("mobkit/mobpacks/delete draft revision conflict for delete_guard"),
+            "{stale}"
+        );
+
+        let deleted = delete_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": "delete_guard",
+            "expected_revision": 1,
+            "expected_etag": "delete_guard:1",
+        }))
+        .expect("guarded delete");
+        assert_eq!(deleted["deleted"], json!(true));
     }
 
     #[test]

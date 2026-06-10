@@ -1152,6 +1152,7 @@ assert.match(mobpackRust, /fn mobpack_draft_row_from_params[\s\S]*let validation
 assert(!/fn mobpack_draft_row_from_params[\s\S]{0,900}params\s*\.get\("validation"\)/.test(mobpackRust), "mobkit/mobpacks/save must not trust caller-supplied validation rows");
 assert.match(mobpackRust, /fn mobpack_draft_registry_recomputes_validation_on_save/, "MobKit tests must prove saved registry rows cannot fake validation or valid stage");
 assert.match(mobpackRust, /fn mobpack_draft_registry_rejects_stale_expected_revision/, "MobKit tests must prove saved registry rows reject stale editor revisions");
+assert.match(mobpackRust, /fn mobpack_draft_registry_rejects_stale_delete_revision[\s\S]*expected_revision[\s\S]*mobkit\/mobpacks\/delete draft revision conflict/, "MobKit tests must prove draft delete rejects stale editor revisions");
 assert.match(mobpackRust, /fn apply_operation_rejects_stale_draft_revision_when_guarded[\s\S]*expected_revision[\s\S]*mobkit\/mobpacks\/apply_operation draft revision conflict/, "MobKit tests must prove guarded apply_operation rejects stale draft revisions");
 assert.match(mobpackRust, /fn default_mobpack_draft_store_path\(\)[\s\S]*XDG_STATE_HOME[\s\S]*HOME[\s\S]*default_mobpack_draft_store_path_from_env/, "MobKit draft registry default must read durable state/home env before fallback");
 assert.match(mobpackRust, /fn default_mobpack_draft_store_path_from_env[\s\S]*\.local\/state[\s\S]*std::env::temp_dir/, "MobKit draft registry must prefer durable state storage before temp fallback");
