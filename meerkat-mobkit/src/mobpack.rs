@@ -598,10 +598,56 @@ fn meerkat_mob_registry_skill_dirs(registry_root: &Path) -> Vec<(String, String,
     out
 }
 
+fn tool_runtime_availability(field: &str, runtime: Option<&MobpackRuntimeCatalogState>) -> Value {
+    let Some(runtime) = runtime else {
+        return json!({
+            "available": true,
+            "state": "deferred",
+            "reason": "standalone authoring validates the ToolConfig flag; concrete host availability is evaluated by rkat mob deploy",
+            "required_methods": [],
+        });
+    };
+    let required_methods = match field {
+        "mob" => vec![
+            "mobkit/cross_mob/wire",
+            "mobkit/cross_mob/unwire",
+            "mobkit/cross_mob/send",
+        ],
+        _ => Vec::new(),
+    };
+    let available = required_methods.iter().all(|method| {
+        runtime
+            .runtime_methods
+            .iter()
+            .any(|candidate| candidate == method)
+    });
+    let reason = if required_methods.is_empty() {
+        "runtime-bound authoring provider accepts this ToolConfig flag".to_string()
+    } else if available {
+        "current UnifiedRuntime exposes the required MobKit control-plane methods".to_string()
+    } else {
+        "current UnifiedRuntime does not expose the required MobKit cross-mob control-plane methods"
+            .to_string()
+    };
+    json!({
+        "available": available,
+        "state": if available { "available" } else { "unavailable" },
+        "reason": reason,
+        "required_methods": required_methods,
+    })
+}
+
 fn tool_catalog_response() -> Vec<Value> {
+    tool_catalog_response_with_runtime_state(None)
+}
+
+fn tool_catalog_response_with_runtime_state(
+    runtime: Option<&MobpackRuntimeCatalogState>,
+) -> Vec<Value> {
     let mut tools = tool_config_bool_fields()
         .into_iter()
         .map(|field| {
+            let runtime_availability = tool_runtime_availability(&field, runtime);
             json!({
                 "id": field,
                 "label": field,
@@ -610,12 +656,20 @@ fn tool_catalog_response() -> Vec<Value> {
                 "source": "meerkat_mob::ToolConfig",
                 "desc": tool_config_field_desc(&field),
                 "tag_class": tool_config_field_tag_class(&field),
+                "runtime_availability": runtime_availability.clone(),
+                "runtimeAvailability": runtime_availability,
                 "deployability": catalog_deployability(true, "ToolConfig flag is deployable through mob.toml profile tool settings"),
                 "provenance": catalog_provenance("mobkit/tools/catalog", "meerkat_mob::ToolConfig", &format!("ToolConfig.{field}")),
             })
         })
         .collect::<Vec<_>>();
     for source in discover_mcp_sources() {
+        let runtime_availability = json!({
+            "available": true,
+            "state": "configured",
+            "reason": "MCP source is configured on the current authoring host",
+            "required_methods": [],
+        });
         tools.push(json!({
             "id": format!("mcp:{source}"),
             "label": format!("mcp:{source}"),
@@ -623,11 +677,19 @@ fn tool_catalog_response() -> Vec<Value> {
             "source": source,
             "desc": "Configured host MCP source allowlist entry",
             "tag_class": "is-write",
+            "runtime_availability": runtime_availability.clone(),
+            "runtimeAvailability": runtime_availability,
             "deployability": catalog_deployability(true, "MCP source is discovered from the current authoring host configuration"),
             "provenance": catalog_provenance("mobkit/tools/catalog", "host_mcp_config", &source),
         }));
     }
     for bundle in discover_rust_tool_bundles() {
+        let runtime_availability = json!({
+            "available": true,
+            "state": "configured",
+            "reason": "Rust tool bundle is configured on the current authoring host",
+            "required_methods": [],
+        });
         tools.push(json!({
             "id": format!("rust:{bundle}"),
             "label": format!("rust:{bundle}"),
@@ -635,6 +697,8 @@ fn tool_catalog_response() -> Vec<Value> {
             "source": bundle,
             "desc": "Host-registered Rust tool bundle name",
             "tag_class": "",
+            "runtime_availability": runtime_availability.clone(),
+            "runtimeAvailability": runtime_availability,
             "deployability": catalog_deployability(true, "Rust tool bundle is discovered from the current authoring host configuration"),
             "provenance": catalog_provenance("mobkit/tools/catalog", "host_rust_tool_bundles", &bundle),
         }));
@@ -972,7 +1036,7 @@ pub fn mobpack_tools_catalog_response_with_runtime(
             "source": "mobkit/tool-config",
             "authoring_provider": provider.clone(),
             "runtime_unavailable_reason": runtime_unavailable_reason(&provider),
-            "tool_catalog": tool_catalog_response(),
+            "tool_catalog": tool_catalog_response_with_runtime_state(runtime),
         }),
         "mobkit/tools/catalog",
         runtime_backed,
@@ -26206,6 +26270,20 @@ model = "gpt-5.5"
         };
         let runtime_catalogs = mobpack_catalogs_response_with_runtime(Some(&runtime));
         let standalone_catalogs = mobpack_catalogs_response();
+        let runtime_mob_tool = runtime_catalogs["tool_catalog"]
+            .as_array()
+            .expect("runtime tool catalog")
+            .iter()
+            .find(|tool| tool["id"] == "mob")
+            .expect("mob tool");
+        assert_eq!(
+            runtime_mob_tool["runtime_availability"]["available"],
+            json!(false)
+        );
+        assert_eq!(
+            runtime_mob_tool["runtimeAvailability"]["available"],
+            json!(false)
+        );
         let runtime_snapshot = runtime_catalogs["catalog_snapshot"]["id"]
             .as_str()
             .expect("runtime snapshot id");
@@ -26274,6 +26352,30 @@ model = "gpt-5.5"
         )
         .expect("runtime apply_operation accepts runtime tool catalog snapshot");
         assert_eq!(tool_added["operation"], json!("add_member_tool"));
+
+        let cross_mob_runtime = MobpackRuntimeCatalogState {
+            loaded_modules: vec!["editor-host".to_string()],
+            runtime_methods: vec![
+                "mobkit/mobpacks/apply_operation".to_string(),
+                "mobkit/cross_mob/wire".to_string(),
+                "mobkit/cross_mob/unwire".to_string(),
+                "mobkit/cross_mob/send".to_string(),
+            ],
+            has_contact_directory: true,
+            has_peer_mob_handles: true,
+            has_inproc_contacts: true,
+        };
+        let cross_mob_catalogs = mobpack_catalogs_response_with_runtime(Some(&cross_mob_runtime));
+        let cross_mob_tool = cross_mob_catalogs["tool_catalog"]
+            .as_array()
+            .expect("cross-mob tool catalog")
+            .iter()
+            .find(|tool| tool["id"] == "mob")
+            .expect("mob tool");
+        assert_eq!(
+            cross_mob_tool["runtime_availability"]["available"],
+            json!(true)
+        );
 
         let skill_toggled = apply_mobpack_authoring_operation_with_runtime(
             &json!({
@@ -28819,12 +28921,26 @@ model = "gpt-5.5"
         assert!(tool_catalog.iter().any(|tool| {
             tool["id"] == "mob" && tool["kind"] == "runtime" && tool["field"] == "mob"
         }));
+        let standalone_mob_tool = tool_catalog
+            .iter()
+            .find(|tool| tool["id"] == "mob")
+            .expect("mob runtime tool");
+        assert_eq!(
+            standalone_mob_tool["runtime_availability"]["state"],
+            json!("deferred")
+        );
+        assert_eq!(
+            standalone_mob_tool["runtimeAvailability"]["available"],
+            json!(true)
+        );
         assert!(tool_catalog.iter().all(|tool| {
             tool["desc"].as_str().is_some_and(|desc| !desc.is_empty())
                 && tool["label"]
                     .as_str()
                     .is_some_and(|label| !label.is_empty())
                 && tool.get("tag_class").is_some_and(Value::is_string)
+                && tool["runtime_availability"]["available"].is_boolean()
+                && tool["runtimeAvailability"]["available"].is_boolean()
                 && tool["deployability"]["deployable"].is_boolean()
                 && tool["provenance"]["catalog"].is_string()
         }));

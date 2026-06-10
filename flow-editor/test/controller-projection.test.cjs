@@ -2496,6 +2496,7 @@ assert.deepEqual(controller.memberToolAccessState(
       description: "Built-in runtime tools",
       unavailable: false,
       reason: "",
+      runtimeAvailability: null,
       meta: { id: "builtins", label: "Built-ins", desc: "Built-in runtime tools" },
       className: "tool-row",
       removeLabel: "×",
@@ -2503,9 +2504,10 @@ assert.deepEqual(controller.memberToolAccessState(
     {
       id: "missing",
       name: "missing",
-      description: "—",
+      description: "Use a MobKit-listed runtime tool or configured MCP/Rust source.",
       unavailable: true,
       reason: "Use a MobKit-listed runtime tool or configured MCP/Rust source.",
+      runtimeAvailability: null,
       meta: null,
       className: "tool-row tool-row--invalid",
       removeLabel: "×",
@@ -2517,6 +2519,7 @@ assert.deepEqual(controller.memberToolAccessState(
     label: "Shell",
     description: "Shell tool",
     optionLabel: "Shell — Shell tool",
+    disabled: false,
     meta: { id: "shell", label: "Shell", desc: "Shell tool" },
   }],
   addSelectValue: "",
@@ -2527,6 +2530,41 @@ assert.deepEqual(controller.memberToolAccessState(
   emptyToolError: "Choose a tool first.",
   authoringOperationUnavailableError: "MobKit authoring operation API is unavailable",
 });
+const runtimeUnavailableTools = [
+  { id: "builtins", label: "Built-ins", desc: "Built-in runtime tools" },
+  {
+    id: "mob",
+    label: "Mob",
+    desc: "Mob management tools",
+    runtimeAvailability: {
+      available: false,
+      state: "unavailable",
+      reason: "current UnifiedRuntime does not expose the required MobKit cross-mob control-plane methods",
+    },
+  },
+];
+assert.deepEqual(controller.memberToolAccessPatch(
+  { tools: [] },
+  "mob",
+  runtimeUnavailableTools,
+  hydratedCatalogs.agentAccessView,
+), {
+  ok: false,
+  id: "",
+  error: "Use a MobKit-listed runtime tool or configured MCP/Rust source.",
+  patch: null,
+});
+const runtimeUnavailableState = controller.memberToolAccessState(
+  { tools: ["mob"] },
+  runtimeUnavailableTools,
+  hydratedCatalogs.agentAccessView,
+);
+assert.equal(runtimeUnavailableState.rows[0].unavailable, true);
+assert.equal(
+  runtimeUnavailableState.rows[0].reason,
+  "current UnifiedRuntime does not expose the required MobKit cross-mob control-plane methods",
+);
+assert.equal(runtimeUnavailableState.addableRows.find(row => row.id === "builtins").disabled, false);
 assert.deepEqual(controller.memberToolRemovePatch(
   { tools: ["builtins", "shell", "shell"] },
   "shell",

@@ -516,7 +516,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
               >
                 <option value={toolAccessState.addSelectValue}>{toolAccessState.addSelectPlaceholder}</option>
                 {toolAccessState.addableRows.map(row => (
-                  <option key={row.id} value={row.value}>{row.optionLabel}</option>
+                  <option key={row.id} value={row.value} disabled={row.disabled}>{row.optionLabel}</option>
                 ))}
               </select>
               <div className="field" style={{ marginTop: 8 }}>

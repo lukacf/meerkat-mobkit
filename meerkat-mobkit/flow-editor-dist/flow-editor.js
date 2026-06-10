@@ -326,8 +326,19 @@ window.MOBKIT_BOOT = {
     const id = String(raw || "").trim();
     if (!id) return "";
     const entries = Array.isArray(catalog) ? catalog : [];
-    if ((entries || []).some((tool) => tool.id === id)) return id;
+    const entry = (entries || []).find((tool) => tool.id === id);
+    if (entry && toolCatalogEntryAvailable(entry)) return id;
     return "";
+  }
+
+  function toolCatalogEntryAvailability(tool) {
+    const availability = tool?.runtimeAvailability || tool?.runtime_availability || null;
+    return availability && typeof availability === "object" ? availability : null;
+  }
+
+  function toolCatalogEntryAvailable(tool) {
+    const availability = toolCatalogEntryAvailability(tool);
+    return availability?.available === false ? false : true;
   }
 
   function normalizeSkillId(raw) {
@@ -423,14 +434,20 @@ window.MOBKIT_BOOT = {
     const toolRow = (id) => {
       const meta = metaById.get(id) || null;
       const unavailable = !catalogSet.has(id);
+      const runtimeAvailability = toolCatalogEntryAvailability(meta);
+      const runtimeUnavailable = runtimeAvailability?.available === false;
+      const reason = unavailable
+        ? view.toolInvalidError
+        : (runtimeUnavailable ? (runtimeAvailability.reason || view.toolInvalidError) : "");
       return {
         id,
         name: id,
-        unavailable,
-        reason: unavailable ? view.toolInvalidError : "",
-        description: unavailable ? view.toolMissingDescription : (meta?.desc || view.toolMissingDescription),
+        unavailable: unavailable || runtimeUnavailable,
+        reason,
+        description: reason || meta?.desc || view.toolMissingDescription,
         meta,
-        className: `tool-row${unavailable ? " tool-row--invalid" : ""}`,
+        runtimeAvailability,
+        className: `tool-row${(unavailable || runtimeUnavailable) ? " tool-row--invalid" : ""}`,
         removeLabel: view.toolRemoveLabel,
       };
     };
@@ -444,6 +461,7 @@ window.MOBKIT_BOOT = {
         label,
         description: desc,
         optionLabel: `${label} — ${desc}`,
+        disabled: !toolCatalogEntryAvailable(tool),
         meta: tool,
       };
     };
@@ -13044,7 +13062,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       }
     },
     /* @__PURE__ */ React.createElement("option", { value: toolAccessState.addSelectValue }, toolAccessState.addSelectPlaceholder),
-    toolAccessState.addableRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.id, value: row.value }, row.optionLabel))
+    toolAccessState.addableRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.id, value: row.value, disabled: row.disabled }, row.optionLabel))
   ), /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, toolAccessState.sourceLabel), /* @__PURE__ */ React.createElement("div", { className: "row row--gap" }, /* @__PURE__ */ React.createElement(
     "input",
     {
