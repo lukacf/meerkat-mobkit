@@ -26147,7 +26147,8 @@ model = "gpt-5.5"
             .expect("agent definitions")
             .iter()
             .find(|definition| {
-                definition["id"] == "mobkit_authoring_profiles__01_implementer"
+                definition["role"] == "implementer"
+                    && definition["sourceOrigin"] == "mobkit/authoring-agent-definitions"
                     && definition["skills"].as_array().is_some_and(|skills| {
                         skills
                             .iter()
@@ -26260,6 +26261,15 @@ model = "gpt-5.5"
     #[test]
     fn apply_operation_rejects_stale_catalog_snapshot_for_catalog_backed_operations() {
         let catalogs = mobpack_catalogs_response();
+        let definition = catalogs["agent_definitions"]
+            .as_array()
+            .expect("agent definitions")
+            .iter()
+            .find(|definition| {
+                definition["role"] == "implementer"
+                    && definition["sourceOrigin"] == "mobkit/authoring-agent-definitions"
+            })
+            .expect("implementer definition");
         let document: MobpackDocument =
             serde_json::from_value(catalogs["blank_mobpack"]["document"].clone())
                 .expect("blank document");
@@ -26269,7 +26279,7 @@ model = "gpt-5.5"
             "expected_catalog_snapshot_id": "stale-catalog-snapshot",
             "operation": {
                 "type": "add_agent_definition",
-                "definition_id": "mobkit_authoring_profiles__01_implementer"
+                "definition_id": definition["id"].clone()
             }
         }))
         .expect_err("stale catalog snapshot must reject catalog-backed add");
@@ -26396,9 +26406,8 @@ model = "gpt-5.5"
             "document": draft_document,
             "operation": {
                 "type": "update_deploy_settings",
-                "deploy": {
-                    "prompt": "Guarded operation."
-                }
+                "field": "prompt",
+                "value": "Guarded operation."
             }
         }))
         .expect("guarded apply operation");
@@ -26414,9 +26423,8 @@ model = "gpt-5.5"
             "document": accepted["document"].clone(),
             "operation": {
                 "type": "update_deploy_settings",
-                "deploy": {
-                    "prompt": "Stale operation."
-                }
+                "field": "prompt",
+                "value": "Stale operation."
             }
         }))
         .expect_err("stale apply operation must fail");
@@ -26429,6 +26437,20 @@ model = "gpt-5.5"
     #[test]
     fn apply_operation_updates_member_tools_skills_and_replaces_document() {
         let catalogs = mobpack_catalogs_response();
+        let definition = catalogs["agent_definitions"]
+            .as_array()
+            .expect("agent definitions")
+            .iter()
+            .find(|definition| {
+                definition["role"] == "implementer"
+                    && definition["sourceOrigin"] == "mobkit/authoring-agent-definitions"
+                    && definition["skills"].as_array().is_some_and(|skills| {
+                        skills
+                            .iter()
+                            .any(|skill| skill == "mob.authoring.implement")
+                    })
+            })
+            .expect("implementer definition");
         let document: MobpackDocument =
             serde_json::from_value(catalogs["blank_mobpack"]["document"].clone())
                 .expect("blank document");
@@ -26437,7 +26459,7 @@ model = "gpt-5.5"
             "document": document,
             "operation": {
                 "type": "add_agent_definition",
-                "definition_id": "mobkit_authoring_profiles__01_implementer",
+                "definition_id": definition["id"].clone(),
             }
         }))
         .expect("add implementer");
