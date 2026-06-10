@@ -1496,8 +1496,28 @@ async function validateHostDeployRpc(document, dir) {
 
 async function validateNamedTypedOperations(catalogs) {
   let document = catalogs.blank_mobpack.document;
+  const catalogSnapshotId = catalogs.catalog_snapshot?.id;
+  if (!catalogSnapshotId) {
+    throw new Error(`named operation proof needs a MobKit catalog snapshot id: ${JSON.stringify(catalogs.catalog_snapshot)}`);
+  }
+  try {
+    await rpc("mobkit/mobpacks/apply_operation", {
+      document,
+      expected_catalog_snapshot_id: "stale-catalog-snapshot",
+      operation: {
+        type: "add_agent_definition",
+        definition_id: "mobkit_authoring_profiles__01_implementer",
+      },
+    });
+    throw new Error("stale catalog snapshot unexpectedly accepted add_agent_definition");
+  } catch (error) {
+    if (!String(error?.message || error).includes("catalog snapshot conflict")) {
+      throw error;
+    }
+  }
   const added = await rpc("mobkit/mobpacks/apply_operation", {
     document,
+    expected_catalog_snapshot_id: catalogSnapshotId,
     operation: {
       type: "add_agent_definition",
       definition_id: "mobkit_authoring_profiles__01_implementer",
@@ -1570,6 +1590,7 @@ async function validateNamedTypedOperations(catalogs) {
     mobFieldApplied: mobSettings.operation === "update_mob_settings",
     roleActionApplied: roleWiring.operation === "update_role_wiring",
     roleActionValidationSource: roleWiring.validation?.validation_source,
+    catalogSnapshotGuarded: true,
   };
 }
 

@@ -8331,8 +8331,29 @@
   }
 
   async function applyAuthoringOperationDocument(document, operation, options = {}) {
-    const { signal, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("applyOperation"), { document, operation, ...requestOptions }, { signal });
+    const {
+      signal,
+      catalogSnapshot,
+      catalog_snapshot,
+      expectedCatalogSnapshotId,
+      expected_catalog_snapshot_id,
+      ...requestOptions
+    } = options || {};
+    const expectedSnapshotId = String(
+      expectedCatalogSnapshotId
+      ?? expected_catalog_snapshot_id
+      ?? catalogSnapshot?.id
+      ?? catalog_snapshot?.id
+      ?? catalogSnapshot
+      ?? catalog_snapshot
+      ?? "",
+    ).trim();
+    return callRpc(rpcMethod("applyOperation"), {
+      document,
+      operation,
+      ...(expectedSnapshotId ? { expected_catalog_snapshot_id: expectedSnapshotId } : {}),
+      ...requestOptions,
+    }, { signal });
   }
 
   async function graphProjectionDocument(document, options = {}) {

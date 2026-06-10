@@ -8364,8 +8364,29 @@ window.MOBKIT_BOOT = {
   }
 
   async function applyAuthoringOperationDocument(document, operation, options = {}) {
-    const { signal, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("applyOperation"), { document, operation, ...requestOptions }, { signal });
+    const {
+      signal,
+      catalogSnapshot,
+      catalog_snapshot,
+      expectedCatalogSnapshotId,
+      expected_catalog_snapshot_id,
+      ...requestOptions
+    } = options || {};
+    const expectedSnapshotId = String(
+      expectedCatalogSnapshotId
+      ?? expected_catalog_snapshot_id
+      ?? catalogSnapshot?.id
+      ?? catalog_snapshot?.id
+      ?? catalogSnapshot
+      ?? catalog_snapshot
+      ?? "",
+    ).trim();
+    return callRpc(rpcMethod("applyOperation"), {
+      document,
+      operation,
+      ...(expectedSnapshotId ? { expected_catalog_snapshot_id: expectedSnapshotId } : {}),
+      ...requestOptions,
+    }, { signal });
   }
 
   async function graphProjectionDocument(document, options = {}) {
@@ -14278,7 +14299,10 @@ function App() {
       } catch (error) {
         return { ok: false, error: error?.message || String(error) };
       }
-      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, translatedOperation, currentDraftGuard());
+      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, translatedOperation, {
+        ...currentDraftGuard(),
+        catalogSnapshot: catalogs.catalogSnapshot
+      });
       if (!authoringRevisionIsCurrent(requestToken)) {
         return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
       }

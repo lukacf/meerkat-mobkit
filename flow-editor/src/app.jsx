@@ -553,7 +553,10 @@ function App() {
       } catch (error) {
         return { ok: false, error: error?.message || String(error) };
       }
-      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, translatedOperation, currentDraftGuard());
+      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, translatedOperation, {
+        ...currentDraftGuard(),
+        catalogSnapshot: catalogs.catalogSnapshot,
+      });
       if (!authoringRevisionIsCurrent(requestToken)) {
         return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
       }

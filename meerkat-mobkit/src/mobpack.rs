@@ -3927,6 +3927,7 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
             "{operation_type} does not accept operation.document; use replace_authoring_document for explicit document replacement"
         ));
     }
+    enforce_expected_catalog_snapshot(params, operation, operation_type)?;
     let selection = match operation_type {
         "sync_graph_to_flow" => apply_sync_graph_to_flow_operation(&mut document, operation)?,
         "reconcile_members" => apply_reconcile_members_operation(&mut document, operation)?,
@@ -4000,6 +4001,71 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
         "selection": selection,
         "validation": validation,
     }))
+}
+
+fn enforce_expected_catalog_snapshot(
+    params: &Value,
+    operation: &serde_json::Map<String, Value>,
+    operation_type: &str,
+) -> Result<(), String> {
+    if !operation_uses_authoring_catalog(operation_type) {
+        return Ok(());
+    }
+    let Some(expected) = expected_catalog_snapshot_id(params, operation) else {
+        return Ok(());
+    };
+    let current = current_authoring_catalog_snapshot_id()
+        .ok_or_else(|| "MobKit authoring catalog did not expose catalog_snapshot.id".to_string())?;
+    if expected == current {
+        return Ok(());
+    }
+    Err(format!(
+        "mobkit/mobpacks/apply_operation catalog snapshot conflict for {operation_type}: expected {expected}, found {current}"
+    ))
+}
+
+fn operation_uses_authoring_catalog(operation_type: &str) -> bool {
+    matches!(
+        operation_type,
+        "add_agent_definition" | "add_member_tool" | "toggle_member_skill"
+    )
+}
+
+fn expected_catalog_snapshot_id(
+    params: &Value,
+    operation: &serde_json::Map<String, Value>,
+) -> Option<String> {
+    value_catalog_snapshot_id(params)
+        .or_else(|| value_catalog_snapshot_id(&Value::Object(operation.clone())))
+}
+
+fn value_catalog_snapshot_id(value: &Value) -> Option<String> {
+    value
+        .get("expected_catalog_snapshot_id")
+        .or_else(|| value.get("expectedCatalogSnapshotId"))
+        .or_else(|| value.get("catalog_snapshot_id"))
+        .or_else(|| value.get("catalogSnapshotId"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            value
+                .get("catalog_snapshot")
+                .or_else(|| value.get("catalogSnapshot"))
+                .and_then(|snapshot| {
+                    snapshot
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .or_else(|| snapshot.as_str())
+                })
+        })
+        .map(str::trim)
+        .filter(|snapshot| !snapshot.is_empty())
+        .map(ToString::to_string)
+}
+
+fn current_authoring_catalog_snapshot_id() -> Option<String> {
+    mobpack_catalogs_response()["catalog_snapshot"]["id"]
+        .as_str()
+        .map(ToString::to_string)
 }
 
 fn apply_projected_authoring_document_operation(
@@ -26045,6 +26111,7 @@ model = "gpt-5.5"
 
         let result = apply_mobpack_authoring_operation(&json!({
             "document": document,
+            "expected_catalog_snapshot_id": catalogs["catalog_snapshot"]["id"],
             "operation": {
                 "type": "add_agent_definition",
                 "definition_id": definition["id"],
@@ -26086,6 +26153,28 @@ model = "gpt-5.5"
                             .as_str()
                             .is_some_and(|content| content.contains("MobKit-owned contracts"))
                 })
+        );
+    }
+
+    #[test]
+    fn apply_operation_rejects_stale_catalog_snapshot_for_catalog_backed_operations() {
+        let catalogs = mobpack_catalogs_response();
+        let document: MobpackDocument =
+            serde_json::from_value(catalogs["blank_mobpack"]["document"].clone())
+                .expect("blank document");
+
+        let stale = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "expected_catalog_snapshot_id": "stale-catalog-snapshot",
+            "operation": {
+                "type": "add_agent_definition",
+                "definition_id": "mobkit_authoring_profiles__01_implementer"
+            }
+        }))
+        .expect_err("stale catalog snapshot must reject catalog-backed add");
+        assert!(
+            stale.contains("catalog snapshot conflict for add_agent_definition"),
+            "{stale}"
         );
     }
 
