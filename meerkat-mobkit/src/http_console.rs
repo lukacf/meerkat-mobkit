@@ -1638,23 +1638,27 @@ fn handle_access_admin_rpc(
         return None;
     }
     let response_id = request.id.clone().unwrap_or(Value::Null);
-    if request.method == "mobkit/access/status" {
-        return Some(response_value(
-            response_id,
-            Some(access_status_result(access, view)),
-            None,
-        ));
-    }
-    let Some(controller) = access else {
-        return Some(access_unavailable_rpc_error(response_id));
+    let controller = match request.method.as_str() {
+        "mobkit/access/status" => {
+            return Some(response_value(
+                response_id,
+                Some(access_status_result(access, view)),
+                None,
+            ));
+        }
+        _ => {
+            let Some(controller) = access else {
+                return Some(access_unavailable_rpc_error(response_id));
+            };
+            if !view.is_some_and(AccessView::can_administer) {
+                return Some(access_denied_rpc_error(
+                    response_id,
+                    "access denied: access.admin",
+                ));
+            }
+            controller
+        }
     };
-    let can_administer = view.is_some_and(AccessView::can_administer);
-    if !can_administer {
-        return Some(access_denied_rpc_error(
-            response_id,
-            "access denied: access.admin",
-        ));
-    }
     let result = match request.method.as_str() {
         "mobkit/access/get" => {
             let (config, revision) = controller.snapshot();

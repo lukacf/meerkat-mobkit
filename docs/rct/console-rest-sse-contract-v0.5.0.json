@@ -640,6 +640,207 @@
               ]
             }
           ]
+        },
+        "mobkit/access/status": {
+          "success": {
+            "required_fields": [
+              "available",
+              "enabled",
+              "actions"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/access/get": {
+          "success": {
+            "required_fields": [
+              "config",
+              "revision"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32004,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/access/set": {
+          "request": {
+            "required_fields": [
+              "config"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "revision"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32004,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/access/enable": {
+          "request": {
+            "required_fields": [
+              "enabled"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "revision"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32004,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/access/rules/upsert": {
+          "request": {
+            "required_fields": [
+              "rule"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "revision"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32004,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/access/rules/delete": {
+          "request": {
+            "required_fields": [
+              "id"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "revision"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32004,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/access/groups/set": {
+          "request": {
+            "required_fields": [
+              "name",
+              "group"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "revision"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32004,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/access/groups/delete": {
+          "request": {
+            "required_fields": [
+              "name"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "revision"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32004,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/access/preview": {
+          "request": {
+            "required_fields": [
+              "subject",
+              "action"
+            ],
+            "optional_fields": [
+              "identity"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "allowed"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32004,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
         }
       }
     },

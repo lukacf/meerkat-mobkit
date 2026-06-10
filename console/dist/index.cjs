@@ -1921,7 +1921,16 @@ var CONSOLE_RPC_METHODS = {
   deliveryHistory: "mobkit/delivery/history",
   gatingPending: "mobkit/gating/pending",
   gatingAudit: "mobkit/gating/audit",
-  gatingDecide: "mobkit/gating/decide"
+  gatingDecide: "mobkit/gating/decide",
+  accessStatus: "mobkit/access/status",
+  accessGet: "mobkit/access/get",
+  accessSet: "mobkit/access/set",
+  accessEnable: "mobkit/access/enable",
+  accessRuleUpsert: "mobkit/access/rules/upsert",
+  accessRuleDelete: "mobkit/access/rules/delete",
+  accessGroupSet: "mobkit/access/groups/set",
+  accessGroupDelete: "mobkit/access/groups/delete",
+  accessPreview: "mobkit/access/preview"
 };
 
 // ../packages/console-core/src/headless.ts
@@ -1934,7 +1943,16 @@ var CONSOLE_COMMAND_NAMES = {
   listDeliveryHistory: "listDeliveryHistory",
   listGatingPending: "listGatingPending",
   listGatingAudit: "listGatingAudit",
-  decideGating: "decideGating"
+  decideGating: "decideGating",
+  accessStatus: "accessStatus",
+  getAccessConfig: "getAccessConfig",
+  setAccessConfig: "setAccessConfig",
+  enableAccess: "enableAccess",
+  upsertAccessRule: "upsertAccessRule",
+  deleteAccessRule: "deleteAccessRule",
+  setAccessGroup: "setAccessGroup",
+  deleteAccessGroup: "deleteAccessGroup",
+  previewAccess: "previewAccess"
 };
 var CONSOLE_COMMAND_SPECS = {
   [CONSOLE_COMMAND_NAMES.inspectIdentity]: {
@@ -1984,6 +2002,42 @@ var CONSOLE_COMMAND_SPECS = {
   [CONSOLE_COMMAND_NAMES.decideGating]: {
     method: CONSOLE_RPC_METHODS.gatingDecide,
     targetKinds: /* @__PURE__ */ new Set(["mobkit/gating"])
+  },
+  [CONSOLE_COMMAND_NAMES.accessStatus]: {
+    method: CONSOLE_RPC_METHODS.accessStatus,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.getAccessConfig]: {
+    method: CONSOLE_RPC_METHODS.accessGet,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.setAccessConfig]: {
+    method: CONSOLE_RPC_METHODS.accessSet,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.enableAccess]: {
+    method: CONSOLE_RPC_METHODS.accessEnable,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.upsertAccessRule]: {
+    method: CONSOLE_RPC_METHODS.accessRuleUpsert,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.deleteAccessRule]: {
+    method: CONSOLE_RPC_METHODS.accessRuleDelete,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.setAccessGroup]: {
+    method: CONSOLE_RPC_METHODS.accessGroupSet,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.deleteAccessGroup]: {
+    method: CONSOLE_RPC_METHODS.accessGroupDelete,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.previewAccess]: {
+    method: CONSOLE_RPC_METHODS.accessPreview,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
   }
 };
 var identityCommandMethods = /* @__PURE__ */ new Set([
@@ -2002,6 +2056,7 @@ var LEGACY_CONTROL_TARGETS = {
   routing: "mobkit/routing",
   gating: "mobkit/gating",
   gates: "mobkit/gating",
+  access: "mobkit/access",
   logs: "mobkit/logs"
 };
 function migrateConsoleWorkbenchTarget(input) {
@@ -5672,7 +5727,16 @@ var CONSOLE_RPC_METHODS2 = {
   deliveryHistory: "mobkit/delivery/history",
   gatingPending: "mobkit/gating/pending",
   gatingAudit: "mobkit/gating/audit",
-  gatingDecide: "mobkit/gating/decide"
+  gatingDecide: "mobkit/gating/decide",
+  accessStatus: "mobkit/access/status",
+  accessGet: "mobkit/access/get",
+  accessSet: "mobkit/access/set",
+  accessEnable: "mobkit/access/enable",
+  accessRuleUpsert: "mobkit/access/rules/upsert",
+  accessRuleDelete: "mobkit/access/rules/delete",
+  accessGroupSet: "mobkit/access/groups/set",
+  accessGroupDelete: "mobkit/access/groups/delete",
+  accessPreview: "mobkit/access/preview"
 };
 var CONSOLE_BLOB_PATH_PREFIX2 = "/blobs/";
 var CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE2 = -32013;
@@ -6330,7 +6394,16 @@ var CONSOLE_COMMAND_NAMES2 = {
   listDeliveryHistory: "listDeliveryHistory",
   listGatingPending: "listGatingPending",
   listGatingAudit: "listGatingAudit",
-  decideGating: "decideGating"
+  decideGating: "decideGating",
+  accessStatus: "accessStatus",
+  getAccessConfig: "getAccessConfig",
+  setAccessConfig: "setAccessConfig",
+  enableAccess: "enableAccess",
+  upsertAccessRule: "upsertAccessRule",
+  deleteAccessRule: "deleteAccessRule",
+  setAccessGroup: "setAccessGroup",
+  deleteAccessGroup: "deleteAccessGroup",
+  previewAccess: "previewAccess"
 };
 var LEGACY_INSPECT_IDENTITY_METHOD = "mobkit/inspect_identity";
 var MIN_TIMELINE_DEDUP_KEYS = 1e3;
@@ -6382,6 +6455,42 @@ var CONSOLE_COMMAND_SPECS2 = {
   [CONSOLE_COMMAND_NAMES2.decideGating]: {
     method: CONSOLE_RPC_METHODS2.gatingDecide,
     targetKinds: /* @__PURE__ */ new Set(["mobkit/gating"])
+  },
+  [CONSOLE_COMMAND_NAMES2.accessStatus]: {
+    method: CONSOLE_RPC_METHODS2.accessStatus,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.getAccessConfig]: {
+    method: CONSOLE_RPC_METHODS2.accessGet,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.setAccessConfig]: {
+    method: CONSOLE_RPC_METHODS2.accessSet,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.enableAccess]: {
+    method: CONSOLE_RPC_METHODS2.accessEnable,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.upsertAccessRule]: {
+    method: CONSOLE_RPC_METHODS2.accessRuleUpsert,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.deleteAccessRule]: {
+    method: CONSOLE_RPC_METHODS2.accessRuleDelete,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.setAccessGroup]: {
+    method: CONSOLE_RPC_METHODS2.accessGroupSet,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.deleteAccessGroup]: {
+    method: CONSOLE_RPC_METHODS2.accessGroupDelete,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.previewAccess]: {
+    method: CONSOLE_RPC_METHODS2.accessPreview,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
   }
 };
 function createHttpConsoleTransport2({
@@ -14398,18 +14507,17 @@ function ConsoleApp({ baseUrl }) {
     }
   }, [agents, dock.focusedTarget]);
   const refreshAccessData = import_react28.default.useCallback(async () => {
+    const accessTarget = controlWorkbenchTarget("access");
     try {
-      const status = await callConsoleRpc2(
-        baseUrl,
-        "mobkit/access/status",
-        {}
+      const status = await executeHeadlessCommand(
+        CONSOLE_COMMAND_NAMES2.accessStatus,
+        accessTarget
       ) || null;
       let config = null;
       if (status?.available && status?.can_administer) {
-        const result = await callConsoleRpc2(
-          baseUrl,
-          "mobkit/access/get",
-          {}
+        const result = await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES2.getAccessConfig,
+          accessTarget
         );
         config = result?.config || null;
       }
@@ -14419,9 +14527,9 @@ function ConsoleApp({ baseUrl }) {
     }
   }, [baseUrl]);
   const runAccessMutation = import_react28.default.useCallback(
-    async (method, params) => {
+    async (command, params) => {
       try {
-        await callConsoleRpc2(baseUrl, method, params);
+        await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
         setAccessData((current) => ({ ...current, error: null }));
       } catch (err) {
         setAccessData((current) => ({ ...current, error: errorMessage(err) }));
@@ -14430,6 +14538,7 @@ function ConsoleApp({ baseUrl }) {
       await loadExperience().catch(() => {
       });
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshAccessData, loadExperience]
   );
   const refreshPanelData = import_react28.default.useCallback(async () => {
@@ -15380,23 +15489,23 @@ function ConsoleApp({ baseUrl }) {
             label: agent.label
           })),
           onRefresh: () => void refreshAccessData(),
-          onSetEnabled: (enabled) => void runAccessMutation("mobkit/access/enable", { enabled }),
+          onSetEnabled: (enabled) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.enableAccess, { enabled }),
           onSaveAdmins: (admins) => {
             const config = {
               ...accessData.config || {},
               admins
             };
-            void runAccessMutation("mobkit/access/set", { config });
+            void runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessConfig, { config });
           },
-          onUpsertRule: (rule) => void runAccessMutation("mobkit/access/rules/upsert", { rule }),
-          onDeleteRule: (id) => void runAccessMutation("mobkit/access/rules/delete", { id }),
-          onSaveGroup: (name, group) => void runAccessMutation("mobkit/access/groups/set", { name, group }),
-          onDeleteGroup: (name) => void runAccessMutation("mobkit/access/groups/delete", { name }),
+          onUpsertRule: (rule) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.upsertAccessRule, { rule }),
+          onDeleteRule: (id) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessRule, { id }),
+          onSaveGroup: (name, group) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessGroup, { name, group }),
+          onDeleteGroup: (name) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessGroup, { name }),
           onPreview: async (subject, action, identity) => {
             try {
-              return await callConsoleRpc2(
-                baseUrl,
-                "mobkit/access/preview",
+              return await executeHeadlessCommand(
+                CONSOLE_COMMAND_NAMES2.previewAccess,
+                controlWorkbenchTarget("access"),
                 identity ? { subject, action, identity } : { subject, action }
               ) || null;
             } catch (err) {

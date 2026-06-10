@@ -46,7 +46,6 @@ import {
 import { errorMessage } from "./lib/errors";
 import {
   DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
-  callConsoleRpc,
 } from "./lib/network";
 import {
   CONSOLE_COMMAND_NAMES,
@@ -706,7 +705,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     });
   }
 
-  function controlWorkbenchTarget(kind: "routing" | "gating"): ConsoleWorkbenchTarget {
+  function controlWorkbenchTarget(kind: "routing" | "gating" | "access"): ConsoleWorkbenchTarget {
     return requireWorkbenchTarget(buildControlTarget(kind));
   }
 
@@ -1853,31 +1852,41 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // =========================================================================
 
   const refreshAccessData = React.useCallback(async () => {
+    const accessTarget = controlWorkbenchTarget("access");
     try {
-      const status = (await callConsoleRpc<ConsoleAccessStatus>(
-        baseUrl,
-        "mobkit/access/status",
-        {},
-      )) || null;
+      const status =
+        ((await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES.accessStatus,
+          accessTarget,
+        )) as ConsoleAccessStatus | null) || null;
       let config: ConsoleAccessConfig | null = null;
       if (status?.available && status?.can_administer) {
-        const result = await callConsoleRpc<{ config?: ConsoleAccessConfig }>(
-          baseUrl,
-          "mobkit/access/get",
-          {},
-        );
+        const result = (await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES.getAccessConfig,
+          accessTarget,
+        )) as { config?: ConsoleAccessConfig } | null;
         config = result?.config || null;
       }
       setAccessData({ status, config, error: null });
     } catch (err) {
       setAccessData((current) => ({ ...current, error: errorMessage(err) }));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl]);
 
   const runAccessMutation = React.useCallback(
-    async (method: string, params: Record<string, unknown>) => {
+    async (
+      command:
+        | typeof CONSOLE_COMMAND_NAMES.setAccessConfig
+        | typeof CONSOLE_COMMAND_NAMES.enableAccess
+        | typeof CONSOLE_COMMAND_NAMES.upsertAccessRule
+        | typeof CONSOLE_COMMAND_NAMES.deleteAccessRule
+        | typeof CONSOLE_COMMAND_NAMES.setAccessGroup
+        | typeof CONSOLE_COMMAND_NAMES.deleteAccessGroup,
+      params: Record<string, unknown>,
+    ) => {
       try {
-        await callConsoleRpc<unknown>(baseUrl, method, params);
+        await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
         setAccessData((current) => ({ ...current, error: null }));
       } catch (err) {
         setAccessData((current) => ({ ...current, error: errorMessage(err) }));
@@ -1886,6 +1895,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       // Enforcement may have changed what this caller can see.
       await loadExperience().catch(() => {});
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshAccessData, loadExperience],
   );
 
@@ -3190,35 +3200,35 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           }))}
           onRefresh={() => void refreshAccessData()}
           onSetEnabled={(enabled) =>
-            void runAccessMutation("mobkit/access/enable", { enabled })
+            void runAccessMutation(CONSOLE_COMMAND_NAMES.enableAccess, { enabled })
           }
           onSaveAdmins={(admins) => {
             const config = {
               ...(accessData.config || {}),
               admins,
             };
-            void runAccessMutation("mobkit/access/set", { config });
+            void runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessConfig, { config });
           }}
           onUpsertRule={(rule) =>
-            void runAccessMutation("mobkit/access/rules/upsert", { rule })
+            void runAccessMutation(CONSOLE_COMMAND_NAMES.upsertAccessRule, { rule })
           }
           onDeleteRule={(id) =>
-            void runAccessMutation("mobkit/access/rules/delete", { id })
+            void runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessRule, { id })
           }
           onSaveGroup={(name, group) =>
-            void runAccessMutation("mobkit/access/groups/set", { name, group })
+            void runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessGroup, { name, group })
           }
           onDeleteGroup={(name) =>
-            void runAccessMutation("mobkit/access/groups/delete", { name })
+            void runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessGroup, { name })
           }
           onPreview={async (subject, action, identity) => {
             try {
               return (
-                (await callConsoleRpc<AccessPreviewResult>(
-                  baseUrl,
-                  "mobkit/access/preview",
+                ((await executeHeadlessCommand(
+                  CONSOLE_COMMAND_NAMES.previewAccess,
+                  controlWorkbenchTarget("access"),
                   identity ? { subject, action, identity } : { subject, action },
-                )) || null
+                )) as AccessPreviewResult | null) || null
               );
             } catch (err) {
               setAccessData((current) => ({ ...current, error: errorMessage(err) }));
