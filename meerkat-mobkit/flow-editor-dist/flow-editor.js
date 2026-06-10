@@ -4795,23 +4795,6 @@ window.MOBKIT_BOOT = {
     return { ok: true, error: "" };
   }
 
-  function studioAddInstancePatch({ instances, members } = {}, instance) {
-    const list = Array.isArray(instances) ? instances : [];
-    const validation = graphInstanceValidation(instance, { instances: list, members });
-    if (!validation.ok) return { ok: false, error: validation.error, instances: list, instance: null };
-    return { ok: true, error: "", instances: [...list, instance], instance };
-  }
-
-  function studioAppendInstancesPatch({ instances, members } = {}, nextInstances = []) {
-    let list = Array.isArray(instances) ? instances : [];
-    for (const instance of Array.isArray(nextInstances) ? nextInstances : []) {
-      const validation = graphInstanceValidation(instance, { instances: list, members });
-      if (!validation.ok) continue;
-      list = [...list, instance];
-    }
-    return { instances: list };
-  }
-
   function studioUpdateInstancePatch({ instances, members } = {}, id, patch = {}) {
     const target = String(id || "");
     const list = Array.isArray(instances) ? instances : [];
@@ -4905,52 +4888,6 @@ window.MOBKIT_BOOT = {
     });
     if (duplicate) return { ok: false, error: "edge already exists" };
     return { ok: true, error: "" };
-  }
-
-  function studioAddEdgePatch({ edges, instances } = {}, edge) {
-    const list = Array.isArray(edges) ? edges : [];
-    const validation = graphEdgeValidation(edge, { instances, edges: list });
-    if (!validation.ok) return { ok: false, error: validation.error, edges: list, edge: null };
-    return { ok: true, error: "", edges: [...list, edge], edge };
-  }
-
-  function graphConnectionAddPatch({ fromId, toId, instances, edges, contract } = {}) {
-    const from = String(fromId || "").trim();
-    const to = String(toId || "").trim();
-    const sourceInstances = Array.isArray(instances) ? instances : [];
-    const sourceEdges = Array.isArray(edges) ? edges : [];
-    if (!from || !to || from === to) {
-      return { ok: false, error: "edge endpoints must be different graph nodes", edges: sourceEdges, edge: null, selectId: "" };
-    }
-    const fromInstance = sourceInstances.find((instance) => String(instance?.id || "") === from) || null;
-    const toInstance = sourceInstances.find((instance) => String(instance?.id || "") === to) || null;
-    if (!fromInstance || !toInstance) {
-      return { ok: false, error: "edge endpoints must reference existing graph nodes", edges: sourceEdges, edge: null, selectId: "" };
-    }
-    const draft = graphConnectionEdgeDraft({
-      from: fromInstance,
-      to: toInstance,
-      edges: sourceEdges,
-      contract,
-    });
-    if (!draft) return { ok: false, error: "edge draft unavailable", edges: sourceEdges, edge: null, selectId: "" };
-    const patch = studioAddEdgePatch({ edges: sourceEdges, instances: sourceInstances }, draft);
-    return {
-      ...patch,
-      selectId: patch.ok && patch.edge ? patch.edge.id : "",
-    };
-  }
-
-  function studioAppendEdgesPatch({ edges, instances } = {}, nextEdges = []) {
-    let list = Array.isArray(edges) ? edges : [];
-    for (const edge of Array.isArray(nextEdges) ? nextEdges : []) {
-      const validation = graphEdgeValidation(edge, { instances, edges: list });
-      if (!validation.ok) continue;
-      list = [...list, edge];
-    }
-    return {
-      edges: list,
-    };
   }
 
   function studioUpdateEdgePatch({ edges, instances } = {}, id, patch = {}) {
@@ -5878,45 +5815,6 @@ window.MOBKIT_BOOT = {
       contract: options.contract,
       conditionKind,
     });
-  }
-
-  function graphConnectionEdgeDraft({ from, to, edges, id, contract } = {}) {
-    if (!from || !to || !from.id || !to.id || from.id === to.id) return null;
-    if ((edges || []).some((edge) => edge.from === from.id && edge.to === to.id)) return null;
-
-    const draft = editorGraphDraftContract(contract);
-    const defaultKind = contractDefaultValue(contract, "graph_edge_kind");
-    const fanoutKind = contractDefaultValue(contract, "graph_fanout_edge_kind");
-    const conditionKind = contractDefaultValue(contract, "graph_condition_edge_kind");
-    if (!defaultKind || !draft) return null;
-    let kind = defaultKind;
-    let label = "";
-
-    if (to.isTerminal) {
-      kind = defaultKind;
-      label = draft.terminalEdgeLabelPrefix + String(to.label || "").toLowerCase();
-    } else if (from.isGate && from.gateKind === "fork") {
-      if (!fanoutKind) return null;
-      kind = fanoutKind;
-    } else if (to.isGate && to.gateKind === "join") {
-      kind = defaultKind;
-    } else if (to.col === from.col) {
-      if (!fanoutKind) return null;
-      kind = fanoutKind;
-      label = draft.parallelEdgeLabel;
-    } else if (to.col < from.col) {
-      if (!conditionKind) return null;
-      kind = conditionKind;
-      label = draft.reworkEdgeLabel;
-    }
-
-    return {
-      id: id || uniqueGraphEdgeId(from.id, to.id, edges),
-      from: from.id,
-      to: to.id,
-      kind,
-      label,
-    };
   }
 
   function graphSelectionState({ selection = {}, instances = [], edges = [] } = {}) {
@@ -9563,187 +9461,6 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function graphControlShape({ gateKind, at, members, instances, edges, flow, contract, graphView = null } = {}) {
-    const kind = String(gateKind || "").trim();
-    if (kind !== "branch" && kind !== "fork") return null;
-    const allowed = new Set(graphControlNodes(contract, graphView).map((node) => node.gateKind));
-    if (!allowed.has(kind)) return null;
-    const sourceMembers = Array.isArray(members) ? members : [];
-    if (!at || sourceMembers.length === 0) return null;
-
-    const launchKind = contractDefaultValue(contract, "launch_mode");
-    const nextEdgeKind = contractDefaultValue(contract, "graph_edge_kind");
-    const draft = editorGraphDraftContract(contract);
-    if (!launchKind || !nextEdgeKind || !draft) return null;
-
-    const sourceInstances = Array.isArray(instances) ? instances : [];
-    const sourceEdges = Array.isArray(edges) ? edges : [];
-    const cells = allocateGraphControlCells(sourceInstances, at);
-    const suffix = uniqueGraphControlSuffix(kind, sourceInstances, sourceEdges);
-    const memberA = sourceMembers[0];
-    const memberB = sourceMembers[1] || sourceMembers[0];
-    const isBranch = kind === "branch";
-    const gateId = isBranch ? `g_branch_${suffix}` : `g_parallel_${suffix}`;
-    const leftId = `${gateId}_a`;
-    const rightId = `${gateId}_b`;
-    const joinId = isBranch ? `j_branch_${suffix}` : `j_parallel_${suffix}`;
-    const collection = isBranch ? "any" : contractDefaultValue(contract, "collection_policy");
-    if (!collection) return null;
-    const dispatch = isBranch ? "" : contractDefaultValue(contract, "dispatch_mode");
-    if (!isBranch && !dispatch) return null;
-
-    const instancesOut = [
-      {
-        id: gateId,
-        isGate: true,
-        gateKind: kind,
-        label: isBranch ? draft.branchGateLabel : dispatch,
-        dispatch: isBranch ? undefined : dispatch,
-        col: cells.gate.col,
-        row: cells.gate.row,
-      },
-      {
-        id: leftId,
-        memberId: memberA.id,
-        col: cells.laneA.col,
-        row: cells.laneA.row,
-        lane: isBranch ? draft.branchConditionLaneLabel : draft.parallelLaneLabels[0],
-        launchMode: { kind: launchKind },
-      },
-      {
-        id: rightId,
-        memberId: memberB.id,
-        col: cells.laneB.col,
-        row: cells.laneB.row,
-        lane: isBranch ? draft.branchFallbackLaneLabel : draft.parallelLaneLabels[1],
-        launchMode: { kind: launchKind },
-      },
-      {
-        id: joinId,
-        isGate: true,
-        gateKind: "join",
-        label: isBranch ? draft.branchJoinLabel : `${draft.joinLabelPrefix}${collection}`,
-        collection,
-        controllerRole: isBranch ? memberA.id : "",
-        col: cells.join.col,
-        row: cells.join.row,
-      },
-    ];
-
-    let edgesOut;
-    if (isBranch) {
-      const condEdgeKind = contractDefaultValue(contract, "graph_condition_edge_kind");
-      if (!condEdgeKind) return null;
-      edgesOut = [
-        {
-          id: `e_${gateId}_${leftId}`,
-          from: gateId,
-          to: leftId,
-          kind: condEdgeKind,
-          label: "",
-          cond: null,
-        },
-        { id: `e_${gateId}_${rightId}`, from: gateId, to: rightId, kind: nextEdgeKind, label: draft.fallbackEdgeLabel },
-        { id: `e_${leftId}_${joinId}`, from: leftId, to: joinId, kind: nextEdgeKind, label: "" },
-        { id: `e_${rightId}_${joinId}`, from: rightId, to: joinId, kind: nextEdgeKind, label: "" },
-      ];
-    } else {
-      const fanoutEdgeKind = contractDefaultValue(contract, "graph_fanout_edge_kind");
-      if (!fanoutEdgeKind) return null;
-      edgesOut = [
-        { id: `e_${gateId}_${leftId}`, from: gateId, to: leftId, kind: fanoutEdgeKind, label: "" },
-        { id: `e_${gateId}_${rightId}`, from: gateId, to: rightId, kind: fanoutEdgeKind, label: "" },
-        { id: `e_${leftId}_${joinId}`, from: leftId, to: joinId, kind: nextEdgeKind, label: "" },
-        { id: `e_${rightId}_${joinId}`, from: rightId, to: joinId, kind: nextEdgeKind, label: "" },
-      ];
-    }
-
-    return {
-      selectId: gateId,
-      flow,
-      instances: instancesOut,
-      edges: edgesOut,
-    };
-  }
-
-  function graphMemberInstanceShape({ memberId, at, instances, contract } = {}) {
-    const id = String(memberId || "").trim();
-    if (!id || !at) return null;
-    const launchKind = contractDefaultValue(contract, "launch_mode");
-    if (!launchKind) return null;
-    return {
-      id: uniqueGraphInstanceId(`i_${slug(id, "member")}`, instances),
-      memberId: id,
-      col: at.col,
-      row: at.row,
-      launchMode: { kind: launchKind },
-      lane: "",
-    };
-  }
-
-  function graphQuickInsertResult(result = {}) {
-    return {
-      ok: false,
-      error: "",
-      flow: result.flow,
-      instances: Array.isArray(result.instances) ? result.instances : [],
-      edges: Array.isArray(result.edges) ? result.edges : [],
-      selectId: "",
-      snap: false,
-      addAt: null,
-      ...result,
-    };
-  }
-
-  function graphQuickInsertProjection({ pick, at, members, instances, edges, flow, contract, graphView = null } = {}) {
-    const sourceInstances = Array.isArray(instances) ? instances : [];
-    const sourceEdges = Array.isArray(edges) ? edges : [];
-    const sourceFlow = flow;
-    const kind = String(pick?.kind || "").trim();
-    if (!pick || !at) {
-      return graphQuickInsertResult({ flow: sourceFlow, instances: sourceInstances, edges: sourceEdges });
-    }
-    if (kind === "memberInstance") {
-      const instance = graphMemberInstanceShape({
-        memberId: pick.memberId,
-        at,
-        instances: sourceInstances,
-        contract,
-      });
-      const next = studioAddInstancePatch({ instances: sourceInstances, members }, instance);
-      if (!next.ok) {
-        return graphQuickInsertResult({ error: next.error, flow: sourceFlow, instances: sourceInstances, edges: sourceEdges });
-      }
-      return graphQuickInsertResult({ ok: true, flow: sourceFlow, instances: next.instances, edges: sourceEdges, selectId: next.instance?.id || "", snap: true });
-    }
-    if (kind === "gate") {
-      const inserted = graphControlShape({
-        gateKind: pick.gateKind,
-        at,
-        members,
-        instances: sourceInstances,
-        edges: sourceEdges,
-        flow: sourceFlow,
-        contract,
-        graphView,
-      });
-      if (!inserted) {
-        return graphQuickInsertResult({ flow: sourceFlow, instances: sourceInstances, edges: sourceEdges });
-      }
-      const instancesPatch = studioAppendInstancesPatch({ instances: sourceInstances, members }, inserted.instances);
-      const edgesPatch = studioAppendEdgesPatch({ edges: sourceEdges, instances: instancesPatch.instances }, inserted.edges);
-      return graphQuickInsertResult({
-        ok: true,
-        flow: inserted.flow || sourceFlow,
-        instances: instancesPatch.instances,
-        edges: edgesPatch.edges,
-        selectId: inserted.selectId || "",
-        snap: true,
-      });
-    }
-    return graphQuickInsertResult({ flow: sourceFlow, instances: sourceInstances, edges: sourceEdges });
-  }
-
   function agentNavigationProjection(memberId = null) {
     const id = String(memberId || "").trim();
     return {
@@ -9843,84 +9560,10 @@ window.MOBKIT_BOOT = {
     return out;
   }
 
-  function uniqueGraphControlSuffix(kind, instances = [], edges = []) {
-    const prefix = kind === "branch" ? "branch" : "parallel";
-    const instanceIds = graphInstanceIdSet(instances);
-    const edgeIds = graphEdgeIdSet(edges);
-    let index = 1;
-    while (true) {
-      const suffix = String(index);
-      const gateId = `g_${prefix}_${suffix}`;
-      const leftId = `${gateId}_a`;
-      const rightId = `${gateId}_b`;
-      const joinId = `j_${prefix}_${suffix}`;
-      const nodeIds = [gateId, leftId, rightId, joinId];
-      const proposedEdgeIds = [
-        `e_${gateId}_${leftId}`,
-        `e_${gateId}_${rightId}`,
-        `e_${leftId}_${joinId}`,
-        `e_${rightId}_${joinId}`,
-      ];
-      if (
-        nodeIds.every((id) => !instanceIds.has(id))
-        && proposedEdgeIds.every((id) => !edgeIds.has(id))
-      ) {
-        return suffix;
-      }
-      index += 1;
-    }
-  }
-
-  function uniqueGraphInstanceId(prefix, instances = []) {
-    const base = slug(prefix, "i_member");
-    const withPrefix = base.startsWith("i_") ? base : `i_${base}`;
-    const used = graphInstanceIdSet(instances);
-    if (!used.has(withPrefix)) return withPrefix;
-    let index = 2;
-    while (used.has(`${withPrefix}_${index}`)) index += 1;
-    return `${withPrefix}_${index}`;
-  }
-
   function graphInstanceIdSet(instances = []) {
     return new Set((Array.isArray(instances) ? instances : [])
       .map((instance) => String(instance?.id || "").trim())
       .filter(Boolean));
-  }
-
-  function graphEdgeIdSet(edges = []) {
-    return new Set((Array.isArray(edges) ? edges : [])
-      .map((edge) => String(edge?.id || "").trim())
-      .filter(Boolean));
-  }
-
-  function uniqueGraphEdgeId(fromId, toId, edges = []) {
-    const base = `e_${slug(fromId, "from")}_${slug(toId, "to")}`;
-    const used = graphEdgeIdSet(edges);
-    if (!used.has(base)) return base;
-    let index = 2;
-    while (used.has(`${base}_${index}`)) index += 1;
-    return `${base}_${index}`;
-  }
-
-  function allocateGraphControlCells(instances, at) {
-    const occupied = new Set((instances || []).map(inst => `${inst.col}:${inst.row}`));
-    for (let row = at.row; row < at.row + 24; row += 1) {
-      const candidate = {
-        gate: { col: at.col, row },
-        laneA: { col: at.col + 1, row },
-        laneB: { col: at.col + 1, row: row + 1 },
-        join: { col: at.col + 2, row },
-      };
-      if (Object.values(candidate).every(cell => !occupied.has(`${cell.col}:${cell.row}`))) {
-        return candidate;
-      }
-    }
-    return {
-      gate: { col: at.col, row: at.row },
-      laneA: { col: at.col + 1, row: at.row },
-      laneB: { col: at.col + 1, row: at.row + 1 },
-      join: { col: at.col + 2, row: at.row },
-    };
   }
 
   function outputFormatOptions(contract, currentFormat) {
@@ -11473,9 +11116,6 @@ window.MOBKIT_BOOT = {
     graphAddMenuOpenProjection,
     graphAddMenuCloseProjection,
     basicStepPickerState,
-    graphControlShape,
-    graphMemberInstanceShape,
-    graphQuickInsertProjection,
     agentNavigationProjection,
     flowStepTemplate,
     graphFirstConditionPatch,
@@ -11487,7 +11127,6 @@ window.MOBKIT_BOOT = {
     graphEdgeKindPatch,
     graphBranchConditionModePatch,
     graphEdgeFallbackPatch,
-    graphConnectionEdgeDraft,
     graphSelectionState,
     graphSelectionProjection,
     graphTemplateInspectorState,
@@ -11549,14 +11188,9 @@ window.MOBKIT_BOOT = {
     memberUpdateCascadePatch,
     studioDeleteMemberPatch,
     memberDeleteCascadePatch,
-    studioAddInstancePatch,
-    studioAppendInstancesPatch,
     studioUpdateInstancePatch,
     studioMoveInstancePatch,
     studioDeleteInstancePatch,
-    studioAddEdgePatch,
-    graphConnectionAddPatch,
-    studioAppendEdgesPatch,
     studioUpdateEdgePatch,
     studioDeleteEdgePatch,
     studioAddSchemaPatch,
