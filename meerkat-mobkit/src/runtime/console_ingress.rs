@@ -310,6 +310,12 @@ fn filter_snapshot_for_access(snapshot: &mut ConsoleLiveSnapshot, view: &AccessV
         let identity = agent.identity.as_deref().unwrap_or(agent.agent_id.as_str());
         view.allows_agent(crate::access::ACTION_AGENT_VIEW, identity)
     });
+    // Module IDs double as module-agent sidebar rows when no roster
+    // member survives filtering; gate them like any other agent so a
+    // fully-denied caller is not shown the module fallback.
+    snapshot
+        .loaded_modules
+        .retain(|module_id| view.allows_agent(crate::access::ACTION_AGENT_VIEW, module_id));
 }
 
 /// Intersect the projected experience with the caller's grants and append

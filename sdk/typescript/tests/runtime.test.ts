@@ -128,6 +128,18 @@ describe("MobKitRuntime", () => {
 
     assert.equal(params.runtime_options.console_read_only, true);
   });
+
+  it("builds access_config_path runtime option", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.accessConfigPath = "config/access.toml";
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal(
+      params.runtime_options.access_config_path,
+      "config/access.toml",
+    );
+  });
 });
 
 describe("MobHandle.status()", () => {

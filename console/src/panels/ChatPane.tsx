@@ -26,6 +26,7 @@ interface ChatPaneProps {
   draft: string;
   sending: boolean;
   readOnly?: boolean;
+  accessEnforcing?: boolean;
   staged: StagedAttachment[];
   onDraftChange: (value: string) => void;
   onStagedChange: React.Dispatch<React.SetStateAction<StagedAttachment[]>>;
@@ -483,6 +484,7 @@ export function ChatPane({
   draft,
   sending,
   readOnly = false,
+  accessEnforcing = false,
   staged,
   onDraftChange,
   onStagedChange,
@@ -566,6 +568,9 @@ export function ChatPane({
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
   const canAttachImages = !readOnly && agent?.model_capabilities?.image_input === true;
+  // Access control can grant view without send; `false` means the runtime
+  // explicitly withheld the send affordance. Unknown (absent) stays sendable.
+  const sendWithheld = accessEnforcing && agent?.affordances?.can_send_message === false;
   const [dragActive, setDragActive] = React.useState(false);
   const [attachmentError, setAttachmentError] = React.useState<string | null>(null);
   const resolvedDraftBlobRefs = React.useRef("");
@@ -663,7 +668,7 @@ export function ChatPane({
       setAttachmentError("model cannot see images");
       return;
     }
-    if (readOnly) {
+    if (readOnly || sendWithheld) {
       return;
     }
     if (!draft.trim() && staged.length === 0) {
@@ -832,11 +837,17 @@ export function ChatPane({
             </div>
           )}
           <textarea
-            placeholder={readOnly ? "View-only console" : `Message ${agentLabel}…`}
+            placeholder={
+              readOnly
+                ? "View-only console"
+                : sendWithheld
+                  ? `You can view ${agentLabel} but not message it`
+                  : `Message ${agentLabel}…`
+            }
             value={draft}
-            disabled={readOnly}
+            disabled={readOnly || sendWithheld}
             onChange={(e) => {
-              if (!readOnly) onDraftChange(e.target.value);
+              if (!readOnly && !sendWithheld) onDraftChange(e.target.value);
             }}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitComposer(); } }}
             rows={2}
@@ -850,6 +861,7 @@ export function ChatPane({
               disabled={
                 (!draft.trim() && staged.length === 0)
                 || readOnly
+                || sendWithheld
                 || (staged.length > 0 && !canAttachImages)
                 || (staged.length > 0 && sending)
               }
@@ -877,6 +889,7 @@ export function ChatPane({
           <span>{state}</span>
           {phase && <><span>·</span><span style={{ color: "var(--accent)" }}>{phase}</span></>}
           {readOnly && <><span>·</span><span>view only</span></>}
+          {!readOnly && sendWithheld && <><span>·</span><span>send not permitted</span></>}
           {!readOnly && !canAttachImages && <><span>·</span><span>model cannot see images</span></>}
           {attachmentError && <><span>·</span><span style={{ color: "var(--bad)" }}>{attachmentError}</span></>}
         </div>

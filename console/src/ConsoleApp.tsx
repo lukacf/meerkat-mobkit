@@ -543,6 +543,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     React.useState("");
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  // Recoverable per-action failures (e.g. an access-denied send). Rendered
+  // as a dismissible banner inside the shell — never the fatal error screen.
+  const [actionError, setActionError] = React.useState("");
   const [theme, setTheme] = React.useState<ConsoleTheme>(() => {
     try {
       return (
@@ -1742,10 +1745,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
   const frontendReadOnly = React.useMemo(() => resolveConsoleReadOnlyOverride(), []);
+  // When access control is enforcing, `can_send_messages` is intersected
+  // with the caller's per-agent send grants, so it can be false simply
+  // because they currently have no send-able agent. That must NOT flip the
+  // whole console to deployment read-only (which would also suppress retire/
+  // respawn affordances they may still hold) — per-agent affordances are the
+  // authoritative gate. Only the deployment policy and the frontend override
+  // make the console globally read-only under access control.
+  const accessEnforcing = experience?.access?.enabled === true;
   const consoleReadOnly =
     frontendReadOnly ||
     experience?.console_policy?.read_only === true ||
-    experience?.runtime_capabilities?.can_send_messages === false;
+    (!accessEnforcing &&
+      experience?.runtime_capabilities?.can_send_messages === false);
   const consoleReadOnlyRef = React.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
   const visibleControls = React.useMemo<NavKind[]>(() => {
@@ -2312,6 +2324,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           delete optimisticUserByPanelKeyRef.current[panelKey];
         }
       }
+      setActionError("");
       return true;
     } catch (submitError) {
       optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
@@ -2320,7 +2333,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       delete optimisticUserByPanelKeyRef.current[panelKey];
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
-      setError(errorMessage(submitError));
+      setActionError(errorMessage(submitError));
       forceRender();
       return false;
     } finally {
@@ -2906,6 +2919,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         draft={draft}
         sending={isSending}
         readOnly={consoleReadOnly}
+        accessEnforcing={accessEnforcing}
         staged={staged}
         onDraftChange={(v) => setDraftByKey((c) => ({ ...c, [panelKey]: v }))}
         onStagedChange={(action) =>
@@ -3248,6 +3262,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       data-testid="meerkat-console"
     >
       <SpriteSheet />
+      {actionError && (
+        <div className="mobkit-action-error" data-testid="console-action-error" role="alert">
+          <span>{actionError}</span>
+          <button
+            aria-label="Dismiss error"
+            data-testid="console-action-error-dismiss"
+            onClick={() => setActionError("")}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+      )}
       <Topbar
         mobName={mobName}
         brandLabel={brand?.label}

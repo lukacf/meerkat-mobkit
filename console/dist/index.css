@@ -8211,3 +8211,23 @@ svg[data-svg=fit],
   opacity: 1;
   outline: 1px solid var(--ok);
 }
+.mobkit-action-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--bg-elev-1);
+  color: var(--err, #d4564e);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.mobkit-action-error button {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+}

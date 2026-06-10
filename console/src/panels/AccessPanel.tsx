@@ -372,7 +372,11 @@ export function AccessPanel({
                       <button
                         className="reject"
                         data-testid={`access-group-delete:${name}`}
-                        onClick={() => onDeleteGroup(name)}
+                        onClick={() => {
+                          if (window.confirm(`Delete group "${name}"?`)) {
+                            onDeleteGroup(name);
+                          }
+                        }}
                       >
                         Delete
                       </button>
@@ -463,7 +467,11 @@ export function AccessPanel({
                       <button
                         className="reject"
                         data-testid={`access-rule-delete:${rule.id}`}
-                        onClick={() => onDeleteRule(rule.id)}
+                        onClick={() => {
+                          if (window.confirm(`Delete rule "${rule.id}"? Access it grants (or denies) stops immediately.`)) {
+                            onDeleteRule(rule.id);
+                          }
+                        }}
                       >
                         Delete
                       </button>

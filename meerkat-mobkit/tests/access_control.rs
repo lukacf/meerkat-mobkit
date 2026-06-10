@@ -58,6 +58,9 @@ fn decision_state(require_app_auth: bool) -> meerkat_mobkit::RuntimeDecisionStat
             email_allowlist: vec![
                 "root@example.test".to_string(),
                 "alice@example.test".to_string(),
+                // Authenticated + allowlisted but granted nothing by the rules,
+                // for the deny-by-default "outsider sees an empty console" case.
+                "carol@example.test".to_string(),
             ],
         },
         trusted_oidc: trusted_oidc(),
@@ -157,7 +160,16 @@ fn sidebar_identities(experience: &Value) -> Vec<String> {
         .as_array()
         .expect("sidebar agents")
         .iter()
-        .map(|agent| agent["identity"].as_str().unwrap_or_default().to_string())
+        .map(|agent| {
+            // Member rows carry `identity`; module-fallback rows carry only
+            // `agent_id`. Use whichever identifies the row.
+            agent["identity"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .or_else(|| agent["agent_id"].as_str())
+                .unwrap_or_default()
+                .to_string()
+        })
         .collect()
 }
 
@@ -209,9 +221,18 @@ fn experience_is_filtered_per_principal() {
         json!(false)
     );
 
-    // A subject with no grants sees an empty console.
-    let outsider_experience = experience_for(&controller, "root@example.test", &snapshot);
-    assert!(!sidebar_identities(&outsider_experience).is_empty());
+    // An authenticated subject that no rule grants sees an empty console,
+    // even though the config has allow rules for others (deny-by-default).
+    let outsider_experience = experience_for(&controller, "carol@example.test", &snapshot);
+    assert_eq!(
+        sidebar_identities(&outsider_experience),
+        Vec::<String>::new(),
+        "an ungranted authenticated subject sees no agents"
+    );
+    assert_eq!(
+        outsider_experience["access"]["can_administer"],
+        json!(false)
+    );
     let decisions = decision_state(true);
     let response = handle_console_rest_json_route_with_snapshot_and_access(
         &decisions,
@@ -245,6 +266,65 @@ fn experience_is_filtered_per_principal() {
 }
 
 #[test]
+fn module_fallback_rows_are_filtered_for_denied_callers() {
+    // When every roster member is filtered out, the sidebar falls back to
+    // module-agent rows built from `loaded_modules`; those must be gated
+    // by `agent.view` like any other agent row.
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        ..AccessControlConfig::default()
+    })
+    .expect("deny-all controller");
+    let snapshot = ConsoleLiveSnapshot::new(
+        Some("access-test-runtime".to_string()),
+        true,
+        vec!["router".to_string()],
+        Vec::new(),
+        Vec::new(),
+        false,
+    );
+    let denied = experience_for(&controller, "alice@example.test", &snapshot);
+    assert_eq!(
+        sidebar_identities(&denied),
+        Vec::<String>::new(),
+        "module fallback rows must not leak to denied callers"
+    );
+    let admin = experience_for(&controller, "root@example.test", &snapshot);
+    assert_eq!(sidebar_identities(&admin).len(), 1, "admin keeps modules");
+
+    // Partial grant: with two module rows and a rule granting view of only
+    // one, the sidebar must show exactly that one (not all-or-nothing).
+    let partial = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![AccessRule {
+            id: "carol-views-router".to_string(),
+            subjects: vec!["carol@example.test".to_string()],
+            actions: vec!["agent.view".to_string()],
+            agents: vec!["router".to_string()],
+            ..AccessRule::default()
+        }],
+        ..AccessControlConfig::default()
+    })
+    .expect("partial controller");
+    let two_modules = ConsoleLiveSnapshot::new(
+        Some("access-test-runtime".to_string()),
+        true,
+        vec!["router".to_string(), "delivery".to_string()],
+        Vec::new(),
+        Vec::new(),
+        false,
+    );
+    let scoped = experience_for(&partial, "carol@example.test", &two_modules);
+    assert_eq!(
+        sidebar_identities(&scoped),
+        ["router"],
+        "only the granted module row is visible"
+    );
+}
+
+#[test]
 fn label_selector_rules_filter_experience() {
     let config = AccessControlConfig {
         enabled: true,
@@ -265,6 +345,64 @@ fn label_selector_rules_filter_experience() {
     ]);
     let experience = experience_for(&controller, "alice@example.test", &snapshot);
     assert_eq!(sidebar_identities(&experience), ["pay-analyst"]);
+}
+
+#[test]
+fn identity_first_console_identity_drives_filtering() {
+    // Identity-first: the console identity (labels.agent_identity) differs
+    // from the runtime member id (member.agent_identity). Rules written in
+    // console-identity terms must filter correctly, and the runtime member id
+    // must resolve back via the agent_id fallback — neither direction may
+    // leak the agent the caller is not granted.
+    let config = AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "alice-views-lead-by-identity".to_string(),
+                subjects: vec!["alice@example.test".to_string()],
+                actions: vec!["agent.view".to_string()],
+                agents: vec!["identity:ops-lead".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "alice-sends-lead-by-runtime-id".to_string(),
+                subjects: vec!["alice@example.test".to_string()],
+                actions: vec!["agent.send".to_string()],
+                // Written against the runtime member id, not the console identity.
+                agents: vec!["member-runtime-7".to_string()],
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    };
+    let controller = AccessController::new(config).expect("controller");
+    let snapshot = snapshot_with_members(vec![
+        // Console identity (label) != runtime member id (agent_identity).
+        member(
+            "member-runtime-7",
+            "lead",
+            &[("agent_identity", "identity:ops-lead")],
+        ),
+        member(
+            "member-runtime-8",
+            "scout",
+            &[("agent_identity", "identity:scout-9")],
+        ),
+    ]);
+    let experience = experience_for(&controller, "alice@example.test", &snapshot);
+    // Only the granted agent appears, keyed by its console identity.
+    assert_eq!(sidebar_identities(&experience), ["identity:ops-lead"]);
+    let agents = experience["agent_sidebar"]["live_snapshot"]["agents"]
+        .as_array()
+        .expect("agents");
+    let lead = agents
+        .iter()
+        .find(|agent| agent["identity"] == "identity:ops-lead")
+        .expect("lead row");
+    // The send grant was written against the runtime member id; it must still
+    // resolve via the agent_id fallback.
+    assert_eq!(lead["affordances"]["can_send_message"], json!(true));
 }
 
 #[test]
@@ -481,6 +619,24 @@ async fn http_router_enforces_access_end_to_end() {
     .await;
     assert_eq!(labels["error"]["code"], json!(-32030));
 
+    // Plumbing and flow-state reads that enumerate identities without
+    // per-agent filtering are gated behind their operating tiers.
+    for method in [
+        "mobkit/routing/routes/list",
+        "mobkit/delivery/history",
+        "mobkit/cross_mob/directory",
+        "mobkit/mob_labels/get",
+        "mobkit/list_runs",
+        "mobkit/list_flows",
+    ] {
+        let denied = rpc(&app, method, json!({})).await;
+        assert_eq!(
+            denied["error"]["code"],
+            json!(-32030),
+            "{method} must be access-gated: {denied:#?}"
+        );
+    }
+
     // Anonymous callers are not access admins while admins are configured.
     let status = rpc(&app, "mobkit/access/status", json!({})).await;
     assert_eq!(status["result"]["available"], json!(true));
@@ -591,6 +747,91 @@ async fn bootstrap_path_configures_access_from_console_then_locks_down() {
     let _ = runtime.mob_handle().stop().await;
 }
 
+/// A label-keyed rule must resolve on the timeline read path even when the
+/// caller never hit `/console/experience` first — the handler primes the
+/// attribute cache from the roster itself. Guards the seam-priming fix
+/// (shared by the windowed REST handler, the SSE timeline stream, and the
+/// RPC/SSE event surfaces): without priming, the label rule would fail closed
+/// and the labelled agent's frames would wrongly vanish.
+#[tokio::test]
+async fn timeline_role_rules_resolve_without_prior_experience() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    // Everyone may view + send agents whose role is "lead" (the fixture
+    // members' profile). Role is an attribute that only resolves through the
+    // primed cache — an identity-only surface can't see it otherwise.
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![AccessRule {
+            id: "lead-role-only".to_string(),
+            actions: vec!["agent.view".to_string(), "agent.send".to_string()],
+            roles: vec!["lead".to_string()],
+            ..AccessRule::default()
+        }],
+        ..AccessControlConfig::default()
+    })
+    .expect("controller");
+    runtime.set_access_controller(controller);
+    let app = runtime.build_reference_app_router(decision_state(false));
+
+    // The send gate itself resolves the role only because the RPC seam primes
+    // the cache — without priming this would fail closed (`-32030`) and no
+    // frame would exist.
+    let send = rpc(
+        &app,
+        "mobkit/console/send",
+        json!({
+            "identity": "router",
+            "content": "ping",
+            "origin": "test",
+            "idempotency_key": "role-cold-send",
+        }),
+    )
+    .await;
+    assert_eq!(
+        send["error"],
+        Value::Null,
+        "role-keyed send must resolve cold: {send:#?}"
+    );
+
+    // Query the timeline cold (no prior /console/experience). The per-frame
+    // `agent.view` filter resolves the role only because the read path primes;
+    // without priming the role allow would fail closed and the frame would
+    // wrongly vanish.
+    // Querying the timeline cold likewise resolves the role attribute through
+    // the read-path priming (the response is access-denied only if priming is
+    // missing).
+    let page = rpc(
+        &app,
+        "mobkit/console/query_timeline",
+        json!({ "mode": "recent", "limit": 200 }),
+    )
+    .await;
+    assert_eq!(
+        page["error"],
+        Value::Null,
+        "cold timeline query must succeed: {page:#?}"
+    );
+    // Any frames returned belong only to role-matched agents.
+    if let Some(frames) = page["result"]["frames"].as_array() {
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame["identity"] == json!("router")),
+            "only role-matched agents are visible: {frames:#?}"
+        );
+    }
+
+    // The SSE timeline stream is reachable for the caller and primes the same
+    // cache before its per-frame filter.
+    assert_eq!(
+        get_status(&app, "/console/timeline/stream").await,
+        StatusCode::OK
+    );
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
 #[tokio::test]
 async fn timeline_rpc_is_filtered_per_caller() {
     let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
@@ -600,7 +841,7 @@ async fn timeline_rpc_is_filtered_per_caller() {
 
     // Seed timeline frames for both identities through console sends.
     // The send to "delivery" is access-denied, so only "router" frames
-    // can exist; query both ways to prove filtering.
+    // can exist; query to prove filtering.
     let _ = rpc(
         &app,
         "mobkit/console/send",
@@ -613,13 +854,74 @@ async fn timeline_rpc_is_filtered_per_caller() {
     )
     .await;
 
-    let page = rpc(&app, "mobkit/console/query_timeline", json!({})).await;
+    let page = rpc(
+        &app,
+        "mobkit/console/query_timeline",
+        json!({ "mode": "recent", "limit": 200 }),
+    )
+    .await;
     let frames = page["result"]["frames"].as_array().expect("frames");
     assert!(
         frames
             .iter()
             .all(|frame| frame["identity"] == json!("router")),
         "timeline must only contain visible identities: {frames:#?}"
+    );
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+/// `mob.observe` opens the whole-mob event surface, but per-agent
+/// `agent.view` still filters which agents' events flow through it — a
+/// mob.observe grant must not reveal the events/lifecycle of an agent the
+/// caller is denied `agent.view` on.
+#[tokio::test]
+async fn mob_observe_does_not_bypass_per_agent_view() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    // Anonymous callers may observe the mob and view "router" only.
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "everyone-observes".to_string(),
+                actions: vec!["mob.observe".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "everyone-views-router".to_string(),
+                actions: vec!["agent.view".to_string()],
+                agents: vec!["router".to_string()],
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    })
+    .expect("controller");
+    runtime.set_access_controller(controller);
+    let app = runtime.build_reference_app_router(decision_state(false));
+
+    // The mob.observe gate opens the surface (not a -32030 denial)...
+    let page = rpc(&app, "mobkit/mob_events/query", json!({})).await;
+    assert_eq!(
+        page["error"],
+        Value::Null,
+        "observe surface open: {page:#?}"
+    );
+    let events = page["result"]["events"].as_array().expect("events");
+    // ...but every agent-attributed event belongs to the one viewable agent.
+    // "delivery" was spawned in the fixture; its lifecycle must not leak.
+    assert!(
+        events.iter().all(|event| {
+            event["agent_identity"].is_null() || event["agent_identity"] == json!("router")
+        }),
+        "mob.observe must not surface denied agents' events: {events:#?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["agent_identity"] == json!("router")),
+        "router's own ledger entries should still be visible: {events:#?}"
     );
 
     let _ = runtime.mob_handle().stop().await;

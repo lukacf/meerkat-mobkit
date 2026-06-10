@@ -118,6 +118,10 @@ struct AgentSseState {
     subscribe_fn: AgentEventSubscribeFn,
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
+    /// Live primary-mob handle used to prime the access attribute cache at
+    /// connection time, so label/role rules resolve without a prior
+    /// `/console/experience` call. `None` keeps the route behaviour unchanged.
+    prime_handle: Option<MobHandle>,
 }
 
 pub fn agent_events_sse_router(
@@ -132,12 +136,22 @@ pub fn agent_events_sse_router_with_access(
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
 ) -> Router {
+    agent_events_sse_router_with_access_and_priming(subscribe_fn, decisions, access, None)
+}
+
+pub(crate) fn agent_events_sse_router_with_access_and_priming(
+    subscribe_fn: AgentEventSubscribeFn,
+    decisions: Option<RuntimeDecisionState>,
+    access: Option<AccessController>,
+    prime_handle: Option<MobHandle>,
+) -> Router {
     Router::new()
         .route("/agents/{agent_id}/events", get(agent_events_sse_handler))
         .with_state(AgentSseState {
             subscribe_fn,
             decisions,
             access,
+            prime_handle,
         })
 }
 
@@ -154,6 +168,7 @@ async fn agent_events_sse_handler(
         &uri,
     )
     .map_err(|()| sse_unauthorized("agent events stream requires a valid auth token"))?;
+    prime_sse_access_cache(state.prime_handle.as_ref(), state.access.as_ref()).await;
     if access_view
         .as_ref()
         .is_some_and(|view| view.enforced() && !view.allows_agent(ACTION_AGENT_VIEW, &agent_id))
@@ -209,6 +224,8 @@ struct MobSseState {
     subscribe_fn: MobEventSubscribeFn,
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
+    /// See [`AgentSseState::prime_handle`].
+    prime_handle: Option<MobHandle>,
 }
 
 pub fn mob_events_sse_router(
@@ -223,13 +240,38 @@ pub fn mob_events_sse_router_with_access(
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
 ) -> Router {
+    mob_events_sse_router_with_access_and_priming(subscribe_fn, decisions, access, None)
+}
+
+pub(crate) fn mob_events_sse_router_with_access_and_priming(
+    subscribe_fn: MobEventSubscribeFn,
+    decisions: Option<RuntimeDecisionState>,
+    access: Option<AccessController>,
+    prime_handle: Option<MobHandle>,
+) -> Router {
     Router::new()
         .route("/mob/events", get(mob_events_sse_handler))
         .with_state(MobSseState {
             subscribe_fn,
             decisions,
             access,
+            prime_handle,
         })
+}
+
+/// Refresh the access attribute cache from the live roster before an SSE
+/// stream applies any per-agent filter, so label/role rules resolve without
+/// depending on a prior `/console/experience` call.
+async fn prime_sse_access_cache(
+    prime_handle: Option<&MobHandle>,
+    access: Option<&AccessController>,
+) {
+    if let (Some(handle), Some(controller)) = (
+        prime_handle,
+        access.filter(|controller| controller.enabled()),
+    ) {
+        crate::http_console::prime_access_cache_from_handle(handle, controller).await;
+    }
 }
 
 async fn mob_events_sse_handler(
@@ -244,21 +286,33 @@ async fn mob_events_sse_handler(
         &uri,
     )
     .map_err(|()| sse_unauthorized("mob events stream requires a valid auth token"))?;
-    // The merged mob stream carries every agent's events; it requires the
-    // whole-mob observation grant rather than per-agent filtering.
+    prime_sse_access_cache(state.prime_handle.as_ref(), state.access.as_ref()).await;
+    // `mob.observe` gates access to the merged stream surface. The events
+    // flowing through it carry the same rich per-agent payload as
+    // `/agents/{id}/events`, so each one is still filtered by `agent.view`
+    // on its source — otherwise a `mob.observe` grant would silently defeat
+    // a per-agent view denial. "Observe everything" is expressed by also
+    // granting `agent.view` on `*`.
     if access_view
         .as_ref()
         .is_some_and(|view| view.enforced() && !view.allows(ACTION_MOB_OBSERVE))
     {
         return Err(sse_access_denied(ACTION_MOB_OBSERVE));
     }
+    let stream_view = access_view.filter(AccessView::enforced);
     let mut router_handle = (state.subscribe_fn)().await;
 
     let stream = stream! {
         let mut seq = 0_u64;
         while let Some(attributed) = router_handle.event_rx.recv().await {
-            let event_name = agent_event_type(&attributed.envelope.payload).to_string();
             let source = attributed.source.to_string();
+            if stream_view
+                .as_ref()
+                .is_some_and(|view| !view.can_view_agent(&source))
+            {
+                continue;
+            }
+            let event_name = agent_event_type(&attributed.envelope.payload).to_string();
             let data = json!({
                 "member_id": &source,
                 "source": &source,
@@ -473,14 +527,20 @@ async fn mob_structural_events_sse_handler(
         &uri,
     )
     .map_err(|()| sse_unauthorized("mob_events stream requires a valid auth token"))?;
+    prime_sse_access_cache(Some(&state.handle), state.access.as_ref()).await;
     // Structural events span the whole mob: require the mob-wide
-    // observation grant, mirroring `mobkit/mob_events/query`.
+    // observation grant, mirroring `mobkit/mob_events/query`. Envelopes
+    // attributed to a specific agent are additionally filtered by
+    // `agent.view` on that agent (below), so `mob.observe` cannot surface
+    // the lifecycle of an agent the caller is denied. Mob-level envelopes
+    // with no agent attribution flow under `mob.observe` alone.
     if access_view
         .as_ref()
         .is_some_and(|view| view.enforced() && !view.allows(ACTION_MOB_OBSERVE))
     {
         return Err(sse_access_denied(ACTION_MOB_OBSERVE));
     }
+    let stream_view = access_view.filter(AccessView::enforced);
     let query = params.into_event_query();
     let events_view = state.handle.events();
 
@@ -526,6 +586,16 @@ async fn mob_structural_events_sse_handler(
         while let Some(event) = subscription.event_rx.recv().await {
             let envelope = store.project_event_for_query(&event).await;
             if !crate::unified_runtime::mob_events::envelope_matches(&envelope, &query) {
+                continue;
+            }
+            // Agent-attributed structural events are gated by `agent.view`
+            // on their agent; mob-level events (no attribution) pass on the
+            // `mob.observe` grant alone.
+            if let Some(identity) = envelope.agent_identity.as_deref()
+                && stream_view
+                    .as_ref()
+                    .is_some_and(|view| !view.can_view_agent(identity))
+            {
                 continue;
             }
             let payload = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());

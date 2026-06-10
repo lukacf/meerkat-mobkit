@@ -89,15 +89,18 @@ fn subject_matches(rule: &AccessRule, principal: &AccessPrincipal) -> bool {
     if rule.subjects.is_empty() && rule.groups.is_empty() {
         return true;
     }
+    // `subjects: ["*"]` matches any *authenticated* subject. It does NOT
+    // match the anonymous principal: an anonymous caller only matches rules
+    // with no subject/group constraints at all (see `AccessPrincipal.subject`
+    // and the resource selectors, where `"*"` likewise never matches an
+    // absent attribute). This keeps `subjects:["*"]` from silently granting
+    // unauthenticated callers on an open console.
     if let Some(subject) = principal.subject.as_deref()
         && rule
             .subjects
             .iter()
             .any(|candidate| candidate == "*" || candidate == subject)
     {
-        return true;
-    }
-    if principal.subject.is_none() && rule.subjects.iter().any(|candidate| candidate == "*") {
         return true;
     }
     rule.groups
@@ -128,9 +131,11 @@ fn resource_matches(rule: &AccessRule, resource: &AccessResource<'_>) -> bool {
         }
     }
     if !rule.roles.is_empty() {
-        let role_listed = resource
-            .role
-            .is_some_and(|role| rule.roles.iter().any(|candidate| candidate == role));
+        let role_listed = resource.role.is_some_and(|role| {
+            rule.roles
+                .iter()
+                .any(|candidate| candidate == "*" || candidate == role)
+        });
         if !role_listed {
             return false;
         }
@@ -205,6 +210,30 @@ pub fn evaluate_access(
             reason: format!("no rule allows {action}"),
         }
     }
+}
+
+/// True when the principal could perform `action` against at least one
+/// resource — i.e. some allow rule matches the principal (by subject/group)
+/// and names the action. Ignores resource selectors and deny rules, so it is
+/// a coarse "is this affordance available at all" signal for capability
+/// advertisement; per-resource checks (including deny-overrides) still apply
+/// at call time. Always true when enforcement is disabled.
+pub(crate) fn principal_may_perform(
+    config: &AccessControlConfig,
+    principal: &AccessPrincipal,
+    action: &str,
+) -> bool {
+    if !config.enabled {
+        return true;
+    }
+    config.rules.iter().any(|rule| {
+        matches!(rule.effect, AccessEffect::Allow)
+            && rule
+                .actions
+                .iter()
+                .any(|pattern| action_matches(pattern, action))
+            && subject_matches(rule, principal)
+    })
 }
 
 /// Resolve the configured group memberships for a subject.
@@ -355,6 +384,45 @@ mod tests {
     }
 
     #[test]
+    fn agent_and_role_selectors_support_wildcard() {
+        let mut agents_wildcard = allow_rule("view-any-agent");
+        agents_wildcard.actions = vec!["agent.view".to_string()];
+        agents_wildcard.agents = vec!["*".to_string()];
+        let mut roles_wildcard = allow_rule("send-any-role");
+        roles_wildcard.actions = vec!["agent.send".to_string()];
+        roles_wildcard.roles = vec!["*".to_string()];
+        let config = config_with_rules(vec![agents_wildcard, roles_wildcard]);
+        let bob = principal("bob@example.test", &[]);
+
+        assert!(
+            evaluate_access(
+                &config,
+                &bob,
+                "agent.view",
+                &AccessResource::for_identity("identity:anyone"),
+            )
+            .is_allow()
+        );
+        // roles: ["*"] matches any known role...
+        let with_role = AccessResource {
+            identity: Some("identity:anyone"),
+            role: Some("scout"),
+            ..AccessResource::default()
+        };
+        assert!(evaluate_access(&config, &bob, "agent.send", &with_role).is_allow());
+        // ...but stays closed when the role attribute is unknown.
+        assert!(
+            !evaluate_access(
+                &config,
+                &bob,
+                "agent.send",
+                &AccessResource::for_identity("identity:anyone"),
+            )
+            .is_allow()
+        );
+    }
+
+    #[test]
     fn label_selectors_require_known_labels() {
         let mut rule = allow_rule("payments-only");
         rule.actions = vec!["agent.view".to_string()];
@@ -417,6 +485,35 @@ mod tests {
                 &config,
                 &anonymous,
                 "agent.send",
+                &AccessResource::for_identity("identity:scout-1"),
+            )
+            .is_allow()
+        );
+    }
+
+    #[test]
+    fn wildcard_subject_matches_authenticated_but_not_anonymous() {
+        let mut star = allow_rule("any-authenticated");
+        star.subjects = vec!["*".to_string()];
+        star.actions = vec!["agent.view".to_string()];
+        let config = config_with_rules(vec![star]);
+
+        // Any authenticated subject matches subjects:["*"].
+        assert!(
+            evaluate_access(
+                &config,
+                &principal("carol@example.test", &[]),
+                "agent.view",
+                &AccessResource::for_identity("identity:scout-1"),
+            )
+            .is_allow()
+        );
+        // The anonymous principal does NOT — it only matches unconstrained rules.
+        assert!(
+            !evaluate_access(
+                &config,
+                &AccessPrincipal::anonymous(),
+                "agent.view",
                 &AccessResource::for_identity("identity:scout-1"),
             )
             .is_allow()

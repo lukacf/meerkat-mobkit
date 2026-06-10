@@ -91,6 +91,15 @@ const mobkit = await MobKit.builder()
   .start();
 ```
 
+```python
+mobkit = await (
+    MobKit.builder()
+    .mob("config/mob.toml")
+    .access_control("config/access.toml")  # auto-discovered if the file exists
+    .build()
+)
+```
+
 ## Live administration from the console
 
 Administrators get an **Access** entry in the console workbench (it never appears for anyone else). It edits the live configuration through the `mobkit/access/*` RPC methods — group membership, rules, admins, and the enforcement toggle all apply on the next request, no restart, and persist back to `access.toml`:
@@ -110,13 +119,21 @@ All write methods require `access.admin` (or admin standing) and return the new 
 
 ## What gets enforced
 
-- `/console/experience` — agents the caller can't view vanish from the sidebar, roster, topology, identity status; per-agent affordances (`can_send_message`, `can_retire`, `can_respawn`) and runtime capabilities are intersected with the caller's grants, so the stock console UI degrades invisibly (a view-only user simply lands in a read-only console).
+- `/console/experience` — agents the caller can't view vanish from the sidebar, roster, topology, identity status; per-agent affordances (`can_send_message`, `can_retire`, `can_respawn`) and runtime capabilities are intersected with the caller's grants, so the stock console UI degrades invisibly. Affordances are resolved per agent: a caller who can view and retire an agent but not message it gets a disabled composer on that agent while keeping the retire action — having no send grant anywhere does not flip the whole console to deployment read-only.
 - `/console/timeline`, timeline streams, and `mobkit/console/query_timeline` — frames for hidden identities are filtered out.
 - `mobkit/console/send` and `/console/send` — require `agent.send` on the target.
 - Lifecycle and runtime RPCs — mapped to `agent.retire` / `agent.respawn` / `agent.reset` / `agent.spawn` / `runtime.admin` per method.
-- `/agents/{id}/events` — requires `agent.view` on that agent; `/mob/events` and `/mobkit/mob_events/stream` require `mob.observe`.
+- `/agents/{id}/events` — requires `agent.view` on that agent. `/mob/events` and `/mobkit/mob_events/stream` require `mob.observe` to open and additionally filter each event by `agent.view` on its source (see below).
 
 Label- and role-based rules resolve against an attribute cache the runtime refreshes from every roster projection, so selectors keep working on surfaces that only carry an identity string.
+
+### `mob.observe` and per-agent filtering
+
+`mob.observe` gates *access to the whole-mob event surfaces* — `/mob/events`, `/mobkit/mob_events/stream`, and `mobkit/mob_events/query` / `subscribe`. It does **not** override per-agent `agent.view`: events flowing through those surfaces are still filtered per agent, so a caller with `mob.observe` but not `agent.view` on agent X sees neither X's live events nor X's lifecycle entries. (Mob-level structural events with no agent attribution flow on the `mob.observe` grant alone.) To observe the entire mob, grant `mob.observe` together with `agent.view` on `*`.
+
+### `/blobs/{id}` is a capability surface
+
+`/blobs/{id}` serves content-addressed (`sha256:…`) blobs. Blobs are deduplicated by content hash and have no single owning agent, so they are gated by console authentication plus hash unguessability rather than per-agent ACL. A 256-bit content hash is only learnable through a surface the caller is already allowed to see (e.g. a visible agent's timeline frame), so a denied caller cannot enumerate another agent's images. Do not treat blob URLs as a per-agent confidentiality boundary; treat them as capability URLs.
 
 ## Relationship to authentication
 

@@ -37,7 +37,7 @@ use crate::access::{
     ACCESS_ACTIONS, ACTION_AGENT_RESET, ACTION_AGENT_RESPAWN, ACTION_AGENT_RETIRE,
     ACTION_AGENT_SEND, ACTION_AGENT_SPAWN, ACTION_AGENT_VIEW, ACTION_GATING_DECIDE,
     ACTION_GATING_VIEW, ACTION_MOB_OBSERVE, ACTION_RUNTIME_ADMIN, AccessController, AccessGroup,
-    AccessResource, AccessRule, AccessView,
+    AccessResource, AccessRule, AccessView, AgentResourceAttributes,
 };
 use crate::blob_store::{BinaryBlobPayload, BinaryBlobStore, is_valid_blob_id_value};
 use crate::console_aggregator::{
@@ -656,6 +656,14 @@ async fn console_timeline_handler(
             "console aggregator unavailable",
         );
     };
+    // Prime the attribute cache from the live roster so label/role rules
+    // resolve when filtering frames by `agent.view` — the timeline REST
+    // surface must not depend on a prior `/console/experience` call.
+    if let Some(runtime) = &state.runtime
+        && let Some(controller) = state.access.as_ref().filter(|c| c.enabled())
+    {
+        prime_access_cache_from_handle(&runtime.handle(), controller).await;
+    }
     let timeline_query = timeline_query_from_http(query, None);
     match Box::pin(aggregator.query_timeline_windowed(timeline_query)).await {
         Ok(mut page) => {
@@ -1062,6 +1070,21 @@ async fn console_timeline_stream_handler(
         );
     };
     let access_view = auth_context.access_view.filter(AccessView::enforced);
+    // Prime the attribute cache from the live roster before any per-frame
+    // `agent.view` filter so label/role rules resolve here exactly as on the
+    // windowed timeline handler and the RPC/SSE seams — the stream must not
+    // depend on a prior `/console/experience` call. Primed once at open; an
+    // agent spawned mid-stream is filtered against the open-time roster, which
+    // matches the windowed handler's contract.
+    if access_view.is_some()
+        && let Some(runtime) = &state.runtime
+        && let Some(controller) = state
+            .access
+            .as_ref()
+            .filter(|controller| controller.enabled())
+    {
+        prime_access_cache_from_handle(&runtime.handle(), controller).await;
+    }
     let Some(aggregator) = &state.console_aggregator else {
         return console_json_error(
             StatusCode::NOT_FOUND,
@@ -1521,6 +1544,11 @@ fn console_rpc_access_requirement<'a>(
         | "mobkit/run_flow"
         | "mobkit/cancel_flow"
         | "mobkit/collect_completed" => Some((ACTION_AGENT_SPAWN, target)),
+        // Flow state reads expose run records (including spawned member
+        // identities), so they sit in the same tier as running flows.
+        "mobkit/flow_status" | "mobkit/list_flows" | "mobkit/list_runs" => {
+            Some((ACTION_AGENT_SPAWN, None))
+        }
         "mobkit/gating/decide" => Some((ACTION_GATING_DECIDE, None)),
         "mobkit/gating/pending" | "mobkit/gating/audit" => Some((ACTION_GATING_VIEW, None)),
         "mobkit/mob_events/query" | "mobkit/mob_events/subscribe" => {
@@ -1532,7 +1560,17 @@ fn console_rpc_access_requirement<'a>(
         | "mobkit/mob_labels/set"
         | "mobkit/mob_labels/delete"
         | "mobkit/run_labels/set"
-        | "mobkit/run_labels/delete" => Some((ACTION_RUNTIME_ADMIN, None)),
+        | "mobkit/run_labels/delete"
+        // Plumbing reads: routing tables, delivery records, cross-mob
+        // contacts, and label tables enumerate agent identities without
+        // passing through per-agent visibility filtering, so they require
+        // the same grant as the mutations that shape them.
+        | "mobkit/routing/routes/list"
+        | "mobkit/delivery/history"
+        | "mobkit/cross_mob/directory"
+        | "mobkit/cross_mob/peer_info"
+        | "mobkit/mob_labels/get"
+        | "mobkit/run_labels/get" => Some((ACTION_RUNTIME_ADMIN, None)),
         "mobkit/get_member"
         | "mobkit/member_status"
         | "mobkit/inspect_identity"
@@ -3918,6 +3956,14 @@ async fn handle_console_runtime_rpc_with_visibility(
     if is_console_mutating_rpc_method(request.method.as_str()) && !can_mutate {
         return console_read_only_rpc_error(response_id);
     }
+    // Refresh the attribute cache from the live roster before any per-agent
+    // access decision (the gate below and per-row result filtering) so
+    // label/role rules resolve here exactly as they do on
+    // `/console/experience`. RPC callers must not depend on having polled the
+    // experience endpoint first.
+    if let Some(controller) = access.filter(|controller| controller.enabled()) {
+        prime_access_cache_from_handle(&runtime.handle(), controller).await;
+    }
     if let Some(response) = handle_access_admin_rpc(access, access_view, &request) {
         return response;
     }
@@ -4021,6 +4067,30 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }
                 }
             }
+            // Intersect the advertised methods with the caller's grants, the
+            // same way `/console/experience` does, so a non-admin doesn't get
+            // a method list its panels act on only to hit `-32030`. A probe
+            // identity reveals which mapped requirements are resource-less
+            // (target `None` regardless of params): those are filtered by the
+            // action grant; agent-scoped methods stay advertised and are
+            // enforced per call.
+            if let Some(view) = access_view.filter(|view| view.enforced()) {
+                let probe = serde_json::json!({ "identity": "\u{0}cap-probe" });
+                methods.retain(
+                    |method| match console_rpc_access_requirement(method, &probe) {
+                        Some((action, None)) => view.allows(action),
+                        _ => true,
+                    },
+                );
+            }
+            // Coarse capability flags, intersected with the caller's grants so
+            // they agree with the per-agent affordances in `/console/experience`.
+            let cap = |action: &str| -> bool {
+                can_mutate
+                    && access_view
+                        .filter(|view| view.enforced())
+                        .is_none_or(|view| view.may_perform_anywhere(action))
+            };
             response_value(
                 response_id,
                 Some(serde_json::json!({
@@ -4031,9 +4101,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     // access to the module runtime, so loaded_modules is always [].
                     "loaded_modules": serde_json::json!([]),
                     "runtime_capabilities": {
-                        "can_send_messages": can_mutate,
-                        "can_retire_members": can_mutate,
-                        "can_spawn_members": can_mutate,
+                        "can_send_messages": cap(ACTION_AGENT_SEND),
+                        "can_retire_members": cap(ACTION_AGENT_RETIRE),
+                        "can_spawn_members": cap(ACTION_AGENT_SPAWN),
                     }
                 })),
                 None,
@@ -5603,7 +5673,20 @@ async fn handle_console_runtime_rpc_with_visibility(
             )
             .await;
             match result {
-                Ok(events) => {
+                Ok(mut events) => {
+                    // `mob.observe` gates the surface; agent-attributed
+                    // ledger entries are still filtered by `agent.view` so a
+                    // mob.observe grant cannot reveal the lifecycle of an
+                    // agent the caller is denied. Mob-level entries (no
+                    // attribution) pass on the mob.observe grant alone.
+                    if let Some(view) = access_view.filter(|view| view.enforced()) {
+                        events.retain(|event| {
+                            event
+                                .agent_identity
+                                .as_deref()
+                                .is_none_or(|identity| view.can_view_agent(identity))
+                        });
+                    }
                     let last_cursor = events.last().map(|event| event.cursor);
                     let body = if request.method == "mobkit/mob_events/subscribe" {
                         let subscribe_url = crate::unified_runtime::mob_events::build_subscribe_url(
@@ -5683,11 +5766,20 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(ready) => {
                     let entries: Vec<Value> = ready
                         .into_iter()
-                        .map(|(identity, snapshot)| {
-                            serde_json::json!({
-                                "agent_identity": identity.to_string(),
-                                "snapshot": serde_json::to_value(&snapshot)
-                                    .unwrap_or(Value::Null),
+                        // Per-agent visibility: a caller only sees readiness
+                        // for agents they may `agent.view`. The cache was
+                        // primed from the roster at dispatch.
+                        .filter_map(|(identity, snapshot)| {
+                            let identity = identity.to_string();
+                            let visible = access_view
+                                .filter(|view| view.enforced())
+                                .is_none_or(|view| view.can_view_agent(&identity));
+                            visible.then(|| {
+                                serde_json::json!({
+                                    "agent_identity": identity,
+                                    "snapshot": serde_json::to_value(&snapshot)
+                                        .unwrap_or(Value::Null),
+                                })
                             })
                         })
                         .collect();
@@ -5721,10 +5813,18 @@ async fn handle_console_runtime_rpc_with_visibility(
             let completed = runtime.handle().collect_completed().await;
             let entries: Vec<Value> = completed
                 .into_iter()
-                .map(|(mid, snapshot)| {
-                    serde_json::json!({
-                        "member_id": mid.to_string(),
-                        "snapshot": serde_json::to_value(&snapshot).unwrap_or(Value::Null),
+                // Per-agent visibility: even an `agent.spawn`-gated caller only
+                // collects completions for agents they may `agent.view`.
+                .filter_map(|(mid, snapshot)| {
+                    let mid = mid.to_string();
+                    let visible = access_view
+                        .filter(|view| view.enforced())
+                        .is_none_or(|view| view.can_view_agent(&mid));
+                    visible.then(|| {
+                        serde_json::json!({
+                            "member_id": mid,
+                            "snapshot": serde_json::to_value(&snapshot).unwrap_or(Value::Null),
+                        })
                     })
                 })
                 .collect();
@@ -7358,6 +7458,37 @@ fn baseline_spec_visible_to_console(
         labels: record.labels.clone(),
     };
     visibility_policy.member_visible(&member) && visibility_policy.identity_visible(&record)
+}
+
+/// Prime the access-control attribute cache from the live primary-mob roster
+/// so label/role rules resolve on surfaces that carry only an identity string
+/// (SSE event streams, timeline frames, `mob_events`). Without this, those
+/// surfaces evaluate role/label rules with attributes unknown and can fail
+/// open for "broad allow + label-keyed deny" policies — the cache must not be
+/// gated on a prior `/console/experience` call. Additive (it does not evict),
+/// so it never clears delegate-member attributes primed by the experience
+/// projection; the experience path owns wholesale rebuild + eviction.
+pub(crate) async fn prime_access_cache_from_handle(handle: &MobHandle, access: &AccessController) {
+    if !access.enabled() {
+        return;
+    }
+    for entry in handle.list_all_members().await {
+        let member_identity = entry.agent_identity.to_string();
+        // Console identity may be overridden by a label, mirroring
+        // `console_member_console_identity`.
+        let console_identity = entry
+            .labels
+            .get("agent_identity")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map_or_else(|| member_identity.clone(), ToString::to_string);
+        access.record_agent_attributes(AgentResourceAttributes {
+            identity: console_identity,
+            agent_id: Some(member_identity),
+            role: Some(entry.role.to_string()),
+            labels: entry.labels.clone(),
+        });
+    }
 }
 
 async fn project_console_members_from_handle(

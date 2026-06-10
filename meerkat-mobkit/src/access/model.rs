@@ -96,8 +96,9 @@ pub enum AccessEffect {
 ///   `"prefix.*"` wildcards, or `"*"`.
 /// - `agents` / `roles` / `match_labels`: resource selectors. Each
 ///   specified selector must match (logical AND across dimensions); within
-///   `agents` and `roles` any listed value matches (logical OR). Empty
-///   selectors leave that dimension unconstrained. A rule with all three
+///   `agents` and `roles` any listed value matches (logical OR), and
+///   `"*"` matches every value. Empty selectors leave that dimension
+///   unconstrained. A rule with all three
 ///   empty matches every resource, including action checks that have no
 ///   resource at all (e.g. `gating.decide`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

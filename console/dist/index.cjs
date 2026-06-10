@@ -9011,7 +9011,11 @@ function AccessPanel({
                 {
                   className: "reject",
                   "data-testid": `access-group-delete:${name}`,
-                  onClick: () => onDeleteGroup(name),
+                  onClick: () => {
+                    if (window.confirm(`Delete group "${name}"?`)) {
+                      onDeleteGroup(name);
+                    }
+                  },
                   children: "Delete"
                 }
               )
@@ -9098,7 +9102,11 @@ function AccessPanel({
                     {
                       className: "reject",
                       "data-testid": `access-rule-delete:${rule.id}`,
-                      onClick: () => onDeleteRule(rule.id),
+                      onClick: () => {
+                        if (window.confirm(`Delete rule "${rule.id}"? Access it grants (or denies) stops immediately.`)) {
+                          onDeleteRule(rule.id);
+                        }
+                      },
                       children: "Delete"
                     }
                   )
@@ -12216,6 +12224,7 @@ function ChatPane({
   draft,
   sending,
   readOnly = false,
+  accessEnforcing = false,
   staged,
   onDraftChange,
   onStagedChange,
@@ -12292,6 +12301,7 @@ function ChatPane({
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
   const canAttachImages = !readOnly && agent?.model_capabilities?.image_input === true;
+  const sendWithheld = accessEnforcing && agent?.affordances?.can_send_message === false;
   const [dragActive, setDragActive] = import_react25.default.useState(false);
   const [attachmentError, setAttachmentError] = import_react25.default.useState(null);
   const resolvedDraftBlobRefs = import_react25.default.useRef("");
@@ -12383,7 +12393,7 @@ function ChatPane({
       setAttachmentError("model cannot see images");
       return;
     }
-    if (readOnly) {
+    if (readOnly || sendWithheld) {
       return;
     }
     if (!draft.trim() && staged.length === 0) {
@@ -12548,11 +12558,11 @@ function ChatPane({
             /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
               "textarea",
               {
-                placeholder: readOnly ? "View-only console" : `Message ${agentLabel}\u2026`,
+                placeholder: readOnly ? "View-only console" : sendWithheld ? `You can view ${agentLabel} but not message it` : `Message ${agentLabel}\u2026`,
                 value: draft,
-                disabled: readOnly,
+                disabled: readOnly || sendWithheld,
                 onChange: (e) => {
-                  if (!readOnly) onDraftChange(e.target.value);
+                  if (!readOnly && !sendWithheld) onDraftChange(e.target.value);
                 },
                 onKeyDown: (e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
@@ -12571,7 +12581,7 @@ function ChatPane({
                 "button",
                 {
                   className: "composer__send",
-                  disabled: !draft.trim() && staged.length === 0 || readOnly || staged.length > 0 && !canAttachImages || staged.length > 0 && sending,
+                  disabled: !draft.trim() && staged.length === 0 || readOnly || sendWithheld || staged.length > 0 && !canAttachImages || staged.length > 0 && sending,
                   onClick: submitComposer,
                   "data-testid": `chat-send:${identity}`,
                   children: [
@@ -12607,6 +12617,10 @@ function ChatPane({
         readOnly && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
           /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "\xB7" }),
           /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "view only" })
+        ] }),
+        !readOnly && sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "send not permitted" })
         ] }),
         !readOnly && !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
           /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "\xB7" }),
@@ -13580,6 +13594,7 @@ function ConsoleApp({ baseUrl }) {
   const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react28.default.useState("");
   const [loading, setLoading] = import_react28.default.useState(true);
   const [error, setError] = import_react28.default.useState("");
+  const [actionError, setActionError] = import_react28.default.useState("");
   const [theme, setTheme] = import_react28.default.useState(() => {
     try {
       return localStorage.getItem("mobkit-console-theme") || "light";
@@ -14424,7 +14439,8 @@ function ConsoleApp({ baseUrl }) {
   }, [experience?.console_config?.rail?.collapsed]);
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
   const frontendReadOnly = import_react28.default.useMemo(() => resolveConsoleReadOnlyOverride(), []);
-  const consoleReadOnly = frontendReadOnly || experience?.console_policy?.read_only === true || experience?.runtime_capabilities?.can_send_messages === false;
+  const accessEnforcing = experience?.access?.enabled === true;
+  const consoleReadOnly = frontendReadOnly || experience?.console_policy?.read_only === true || !accessEnforcing && experience?.runtime_capabilities?.can_send_messages === false;
   const consoleReadOnlyRef = import_react28.default.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
   const visibleControls = import_react28.default.useMemo(() => {
@@ -14825,6 +14841,7 @@ function ConsoleApp({ baseUrl }) {
           delete optimisticUserByPanelKeyRef.current[panelKey];
         }
       }
+      setActionError("");
       return true;
     } catch (submitError) {
       optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
@@ -14833,7 +14850,7 @@ function ConsoleApp({ baseUrl }) {
       delete optimisticUserByPanelKeyRef.current[panelKey];
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
-      setError(errorMessage(submitError));
+      setActionError(errorMessage(submitError));
       forceRender();
       return false;
     } finally {
@@ -15275,6 +15292,7 @@ function ConsoleApp({ baseUrl }) {
         draft,
         sending: isSending,
         readOnly: consoleReadOnly,
+        accessEnforcing,
         staged,
         onDraftChange: (v) => setDraftByKey((c) => ({ ...c, [panelKey]: v })),
         onStagedChange: (action) => setStagedAttachmentsForIdentity(identity, action),
@@ -15526,6 +15544,19 @@ function ConsoleApp({ baseUrl }) {
       "data-testid": "meerkat-console",
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(SpriteSheet, {}),
+        actionError && /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { className: "mobkit-action-error", "data-testid": "console-action-error", role: "alert", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { children: actionError }),
+          /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+            "button",
+            {
+              "aria-label": "Dismiss error",
+              "data-testid": "console-action-error-dismiss",
+              onClick: () => setActionError(""),
+              type: "button",
+              children: "\xD7"
+            }
+          )
+        ] }),
         /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
           Topbar,
           {

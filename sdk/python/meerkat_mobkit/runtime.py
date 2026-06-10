@@ -271,6 +271,8 @@ class MobKitRuntime:
         runtime_options: dict[str, Any] = {}
         if self._config.gating_config_path:
             runtime_options["gating_config_path"] = self._config.gating_config_path
+        if self._config.access_config_path:
+            runtime_options["access_config_path"] = self._config.access_config_path
         if self._config.routing_config_path:
             runtime_options["routing_config_path"] = self._config.routing_config_path
         if self._config.scheduling_files:

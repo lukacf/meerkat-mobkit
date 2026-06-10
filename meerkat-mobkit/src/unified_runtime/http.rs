@@ -13,7 +13,7 @@ use crate::http_console::{
     console_frontend_router, console_json_router_with_runtime_events_and_policy,
 };
 use crate::http_sse::{
-    agent_events_sse_router_with_access, mob_events_sse_router_with_access,
+    agent_events_sse_router_with_access_and_priming, mob_events_sse_router_with_access_and_priming,
     mob_structural_events_sse_router_with_access,
 };
 use crate::runtime::RuntimeDecisionState;
@@ -91,7 +91,7 @@ impl UnifiedRuntime {
             .route("/healthz", get(|| async { "ok" }))
             .merge(self.build_console_frontend_router())
             .merge(self.build_console_json_router_with_policy(decisions, visibility_policy))
-            .merge(agent_events_sse_router_with_access(
+            .merge(agent_events_sse_router_with_access_and_priming(
                 Arc::new(move |agent_id| {
                     let runtime = agent_runtime.clone();
                     Box::pin(async move {
@@ -104,14 +104,16 @@ impl UnifiedRuntime {
                 }),
                 Some(sse_decisions_a),
                 access.clone(),
+                access.as_ref().map(|_| self.mob_runtime.handle()),
             ))
-            .merge(mob_events_sse_router_with_access(
+            .merge(mob_events_sse_router_with_access_and_priming(
                 Arc::new(move || {
                     let mob_runtime = mob_runtime.clone();
                     Box::pin(async move { mob_runtime.handle().subscribe_mob_events().await })
                 }),
                 Some(sse_decisions_b),
                 access.clone(),
+                access.as_ref().map(|_| self.mob_runtime.handle()),
             ))
             .merge(mob_structural_events_sse_router_with_access(
                 self.mob_runtime.handle(),
