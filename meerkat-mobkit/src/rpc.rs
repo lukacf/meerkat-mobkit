@@ -100,6 +100,10 @@ async fn mobpack_runtime_catalog_state(
     let runtime_flow_rows = crate::mobpack::runtime_flow_registry_rows_from_definition(
         runtime.mob_handle().definition(),
     );
+    let runtime_agent_definition_sources =
+        crate::mobpack::runtime_agent_definition_sources_from_definition(
+            runtime.mob_handle().definition(),
+        );
     let mut runtime_methods = vec![
         "mobkit/capabilities".to_string(),
         "mobkit/models/catalog".to_string(),
@@ -132,6 +136,7 @@ async fn mobpack_runtime_catalog_state(
         has_peer_mob_handles: runtime.has_peer_mob_handles().await,
         has_inproc_contacts: runtime.has_inproc_contacts(),
         runtime_flow_rows,
+        runtime_agent_definition_sources,
     }
 }
 
@@ -4486,6 +4491,26 @@ comms = true
                 },
                 "validation": { "ok": true }
             })],
+            runtime_agent_definition_sources: vec![json!({
+                "id": "runtime_profiles_rpc",
+                "name": "Runtime RPC profiles",
+                "source": "mobkit/runtime/agent-definitions",
+                "document": {
+                    "mob_id": "runtime_rpc",
+                    "members": [{
+                        "id": "m_runtime_reviewer",
+                        "name": "Runtime reviewer",
+                        "role": "runtime_reviewer",
+                        "profileBinding": "inline",
+                        "model": "gpt-5.5",
+                        "runtimeMode": "turn_driven",
+                        "tools": ["builtins"],
+                        "skills": [],
+                        "schema": ""
+                    }],
+                    "schemas": []
+                }
+            })],
         };
 
         let catalogs = super::handle_mobpack_authoring_rpc_with_runtime(
@@ -4527,10 +4552,31 @@ comms = true
         assert_eq!(fetched["result"]["runtime_backed"], json!(true));
         assert_eq!(fetched["result"]["row"]["id"], json!("runtime_rpc_main"));
 
+        let definitions = super::handle_mobpack_authoring_rpc_with_runtime(
+            "mobkit/agent_definitions/list",
+            &json!({}),
+            json!(4),
+            Some(&runtime),
+        )
+        .expect("agent definitions method");
+        let definitions: Value = serde_json::to_value(definitions)?;
+        let runtime_definition = definitions["result"]["agent_definitions"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row["sourceOrigin"] == "mobkit/runtime/agent-definitions")
+            })
+            .expect("runtime profile definition");
+        assert_eq!(runtime_definition["role"], json!("runtime_reviewer"));
+        assert_eq!(
+            runtime_definition["toolDefinitions"][0]["id"],
+            json!("builtins")
+        );
+
         let tools = super::handle_mobpack_authoring_rpc_with_runtime(
             "mobkit/tools/catalog",
             &json!({}),
-            json!(4),
+            json!(5),
             Some(&runtime),
         )
         .expect("tools catalog method");

@@ -57,6 +57,7 @@ pub struct MobpackRuntimeCatalogState {
     pub has_peer_mob_handles: bool,
     pub has_inproc_contacts: bool,
     pub runtime_flow_rows: Vec<Value>,
+    pub runtime_agent_definition_sources: Vec<Value>,
 }
 
 fn editor_input_step_default_task() -> &'static str {
@@ -1079,12 +1080,18 @@ pub fn mobpack_agent_definitions_response_with_runtime(
     let tool_catalog = tool_catalog_response_with_runtime_state(runtime);
     let skill_realms = authoring_skill_realms_response();
     let authoring_sources = authoring_agent_definition_mobpack_sources();
-    let agent_definitions = agent_definition_catalog(
-        &authoring_sources,
-        &tool_catalog,
-        &skill_realms,
-        "authoring",
-    );
+    let source_mobpacks = runtime
+        .filter(|state| !state.runtime_agent_definition_sources.is_empty())
+        .map(|state| {
+            let mut sources = state.runtime_agent_definition_sources.clone();
+            if let Some(fallback_sources) = authoring_sources.as_array() {
+                sources.extend(fallback_sources.iter().cloned());
+            }
+            Value::Array(sources)
+        })
+        .unwrap_or_else(|| authoring_sources.clone());
+    let agent_definitions =
+        agent_definition_catalog(&source_mobpacks, &tool_catalog, &skill_realms, "authoring");
     with_catalog_snapshot(
         json!({
             "schema_version": MOBPACK_SCHEMA_VERSION,
@@ -2805,6 +2812,46 @@ fn authoring_agent_definition_mobpack_sources() -> Value {
         "source": "mobkit/authoring-agent-definitions",
         "document": document,
     })])
+}
+
+pub fn runtime_agent_definition_sources_from_definition(definition: &MobDefinition) -> Vec<Value> {
+    runtime_agent_definition_source_from_definition(definition)
+        .ok()
+        .into_iter()
+        .collect()
+}
+
+fn runtime_agent_definition_source_from_definition(
+    definition: &MobDefinition,
+) -> Result<Value, String> {
+    let mob_id = definition.id.to_string();
+    let name = format!("{mob_id} runtime profiles");
+    let mut document =
+        project_definition_to_editor_document(definition, "", Some(&name), Value::Null)?;
+    document.mob_toml = None;
+    let validation = validate_document(&document);
+    Ok(json!({
+        "id": format!("runtime_profiles_{}", sanitize_identifier(&mob_id)),
+        "name": name,
+        "version": MOBPACK_SCHEMA_VERSION,
+        "stage": if validation.ok { "valid" } else { "draft" },
+        "trigger": "runtime · profiles",
+        "source": "mobkit/runtime/agent-definitions",
+        "document_kind": "runtime_projection",
+        "runtime_projection": true,
+        "runtime_mob_id": mob_id,
+        "deployability": catalog_deployability(
+            validation.ok,
+            "runtime profile definitions are projected from the live MobKit mob definition"
+        ),
+        "provenance": catalog_provenance(
+            "mobkit/agent_definitions/list",
+            "UnifiedRuntime.MobDefinition",
+            &format!("{mob_id}:profiles")
+        ),
+        "document": document,
+        "validation": validation,
+    }))
 }
 
 fn authoring_agent_definitions_toml() -> &'static str {
@@ -26949,6 +26996,7 @@ model = "gpt-5.5"
             has_peer_mob_handles: false,
             has_inproc_contacts: false,
             runtime_flow_rows: Vec::new(),
+            runtime_agent_definition_sources: Vec::new(),
         };
         let runtime_catalogs = mobpack_catalogs_response_with_runtime(Some(&runtime));
         let standalone_catalogs = mobpack_catalogs_response();
@@ -27100,6 +27148,7 @@ model = "gpt-5.5"
             has_peer_mob_handles: true,
             has_inproc_contacts: true,
             runtime_flow_rows: Vec::new(),
+            runtime_agent_definition_sources: Vec::new(),
         };
         let cross_mob_catalogs = mobpack_catalogs_response_with_runtime(Some(&cross_mob_runtime));
         let cross_mob_tool = cross_mob_catalogs["tool_catalog"]
@@ -27210,12 +27259,113 @@ depends_on_mode = "all"
             has_peer_mob_handles: false,
             has_inproc_contacts: false,
             runtime_flow_rows: rows.clone(),
+            runtime_agent_definition_sources: Vec::new(),
         };
         let catalogs = mobpack_catalogs_response_with_runtime(Some(&runtime));
         assert_eq!(catalogs["runtime_flows"], json!(rows));
         assert_eq!(
             catalogs["runtime_flows"][0]["provenance"]["catalog"],
             json!("mobkit/runtime/flow_projection")
+        );
+    }
+
+    #[test]
+    fn runtime_agent_definition_sources_project_loaded_runtime_profiles() {
+        let definition = MobDefinition::from_toml(
+            r#"
+[mob]
+id = "runtime-agent-proof"
+
+[profiles.reviewer]
+model = "gpt-5.5"
+skills = ["mob.runtime.review"]
+peer_description = "Review live runtime work."
+runtime_mode = "turn_driven"
+
+[profiles.reviewer.tools]
+builtins = true
+shell = true
+mob = true
+
+[skills."mob.runtime.review"]
+source = "inline"
+content = "Review the loaded runtime profile."
+
+[flows.main]
+description = "Runtime agent definition proof."
+
+[flows.main.steps.review]
+role = "reviewer"
+message = "Review."
+
+[flows.main.root.nodes.node_review]
+kind = "step"
+step_id = "review"
+depends_on = []
+depends_on_mode = "all"
+"#,
+        )
+        .expect("runtime definition");
+
+        let sources = runtime_agent_definition_sources_from_definition(&definition);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(
+            sources[0]["source"],
+            json!("mobkit/runtime/agent-definitions")
+        );
+        assert_eq!(sources[0]["runtime_projection"], json!(true));
+        assert_eq!(sources[0]["runtime_mob_id"], json!("runtime-agent-proof"));
+        assert_eq!(
+            sources[0]["document"]["members"][0]["role"],
+            json!("reviewer")
+        );
+
+        let runtime = MobpackRuntimeCatalogState {
+            loaded_modules: vec!["runtime-agent-proof".to_string()],
+            runtime_methods: vec!["mobkit/mobpacks/apply_operation".to_string()],
+            has_contact_directory: false,
+            has_peer_mob_handles: false,
+            has_inproc_contacts: false,
+            runtime_flow_rows: Vec::new(),
+            runtime_agent_definition_sources: sources,
+        };
+        let catalogs = mobpack_catalogs_response_with_runtime(Some(&runtime));
+        let runtime_definition = catalogs["agent_definitions"]
+            .as_array()
+            .expect("agent definitions")
+            .iter()
+            .find(|definition| {
+                definition["role"] == "reviewer"
+                    && definition["sourceOrigin"] == "mobkit/runtime/agent-definitions"
+            })
+            .expect("runtime reviewer definition");
+        assert_eq!(
+            runtime_definition["sourceMobpack"],
+            json!("runtime_profiles_runtime_agent_proof")
+        );
+        assert_eq!(
+            runtime_definition["provenance"]["source"],
+            json!("mobkit/runtime/agent-definitions")
+        );
+        let shell_tool = runtime_definition["toolDefinitions"]
+            .as_array()
+            .expect("tool definitions")
+            .iter()
+            .find(|tool| tool["id"] == "shell")
+            .expect("shell tool");
+        assert_eq!(
+            shell_tool["runtime_availability"]["state"],
+            json!("available")
+        );
+        let mob_tool = runtime_definition["toolDefinitions"]
+            .as_array()
+            .expect("tool definitions")
+            .iter()
+            .find(|tool| tool["id"] == "mob")
+            .expect("mob tool");
+        assert_eq!(
+            mob_tool["runtime_availability"]["state"],
+            json!("unavailable")
         );
     }
 

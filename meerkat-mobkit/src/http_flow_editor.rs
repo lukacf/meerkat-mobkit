@@ -554,6 +554,7 @@ mod tests {
                 has_peer_mob_handles: false,
                 has_inproc_contacts: false,
                 runtime_flow_rows: Vec::new(),
+                runtime_agent_definition_sources: Vec::new(),
             }),
         );
 

@@ -392,6 +392,10 @@ impl UnifiedRuntime {
             runtime_flow_rows: crate::mobpack::runtime_flow_registry_rows_from_definition(
                 self.mob_handle().definition(),
             ),
+            runtime_agent_definition_sources:
+                crate::mobpack::runtime_agent_definition_sources_from_definition(
+                    self.mob_handle().definition(),
+                ),
         }
     }
 
