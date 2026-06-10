@@ -4069,10 +4069,10 @@ pub fn apply_mobpack_authoring_operation_with_runtime(
             apply_member_tool_operation(&mut document, operation, false, runtime)?
         }
         "toggle_member_skill" => {
-            apply_member_skill_operation(&mut document, operation, SkillOperation::Toggle)?
+            apply_member_skill_operation(&mut document, operation, SkillOperation::Toggle, runtime)?
         }
         "remove_member_skill" => {
-            apply_member_skill_operation(&mut document, operation, SkillOperation::Remove)?
+            apply_member_skill_operation(&mut document, operation, SkillOperation::Remove, runtime)?
         }
         "create_inline_skill" => apply_create_inline_skill_operation(&mut document, operation)?,
         "delete_member" => apply_delete_member_operation(&mut document, operation)?,
@@ -10196,6 +10196,7 @@ fn apply_member_skill_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
     mode: SkillOperation,
+    runtime: Option<&MobpackRuntimeCatalogState>,
 ) -> Result<Value, String> {
     let member_id = operation_member_id(operation)?;
     let skill_id = operation_string(operation, "skill_id", "skillId")?;
@@ -10212,7 +10213,7 @@ fn apply_member_skill_operation(
     match mode {
         SkillOperation::Toggle if selected => skills.retain(|skill| skill != &skill_id),
         SkillOperation::Toggle => {
-            ensure_skill_definition_in_document(document, &skill_id)?;
+            ensure_skill_definition_in_document(document, &skill_id, runtime)?;
             skills.push(skill_id);
         }
         SkillOperation::Remove => skills.retain(|skill| skill != &skill_id),
@@ -10255,11 +10256,12 @@ fn apply_create_inline_skill_operation(
 fn ensure_skill_definition_in_document(
     document: &mut MobpackDocument,
     skill_id: &str,
+    runtime: Option<&MobpackRuntimeCatalogState>,
 ) -> Result<(), String> {
     if skill_ids_from_realms(&document.skill_realms).contains(skill_id) {
         return Ok(());
     }
-    let catalogs = mobpack_catalogs_response();
+    let catalogs = mobpack_catalogs_response_with_runtime(runtime);
     let skills = skill_catalog_by_id(&catalogs["skill_realms"]);
     let skill = skills
         .get(skill_id)
@@ -26948,6 +26950,21 @@ model = "gpt-5.5"
         )
         .expect("runtime apply_operation accepts runtime skill catalog snapshot");
         assert_eq!(skill_toggled["operation"], json!("toggle_member_skill"));
+        let copied_skill = skill_toggled["document"]["skill_realms"]
+            .as_array()
+            .expect("skill realms")
+            .iter()
+            .flat_map(|realm| realm["skills"].as_array().into_iter().flatten())
+            .find(|skill| skill["id"] == "mob.authoring.review")
+            .expect("runtime catalog skill copied into document");
+        assert_eq!(
+            copied_skill["provenance"]["catalog"],
+            json!("mobkit/skills/catalog")
+        );
+        assert_eq!(
+            copied_skill["sourceMobpack"],
+            json!("mobkit_authoring_profiles")
+        );
     }
 
     #[test]
