@@ -75,6 +75,9 @@ function allowedCssDelta(sign, line) {
     /deploy-plan/,
     /max-width: 980px/,
     /grid-template-columns: auto auto minmax/,
+    /\.bld-opt:disabled/,
+    /cursor: not-allowed/,
+    /opacity: 1/,
     /\.(?:library__bullet|agents-list__bullet|add-menu__dot)\[data-role="(?:planner|coder|reviewer|critic|judge|publisher|illustrator|shell|schema)"\]/,
   ];
   if (shared.some((pattern) => pattern.test(text))) return true;
@@ -92,8 +95,6 @@ function allowedCssDelta(sign, line) {
       /source-file-list/,
       /source-file-row/,
       /bld-toml--graph/,
-      /agent-def-catalog/,
-      /agent-def-card/,
       /agent-editor__confirm/,
       /actions-menu/,
       /grid-template-columns/,
@@ -122,7 +123,7 @@ const unexpected = styleDiff.filter((line) => {
     if (line.includes("}")) allowedAddedBlock = false;
     return false;
   }
-  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|button\.node|a\.node|\.node--source-file|\.source-file__|\.source-file-list|\.source-file-row|\.bld-toml--graph|\.agent-def-catalog|\.agent-def-card|\.agent-editor__confirm|\.actions-menu|\.mob-status|\.toprail)/.test(line)) {
+  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|button\.node|a\.node|\.node--source-file|\.source-file__|\.source-file-list|\.source-file-row|\.bld-toml--graph|\.agent-editor__confirm|\.actions-menu|\.mob-status|\.toprail)/.test(line)) {
     if (!line.includes("}")) allowedAddedBlock = true;
     return false;
   }

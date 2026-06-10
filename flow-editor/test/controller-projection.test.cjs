@@ -1495,7 +1495,7 @@ const hydratedContractAndCatalogFixture = {
       add_node_close_label: "✕",
       add_node_close_title: "Close",
       add_node_agents_label: "Agents",
-      add_node_controls_label: "Flow controls",
+      add_node_controls_label: "Control flow",
       add_node_terminals_label: "Terminals",
       add_node_empty_prefix: "No matches for “",
       add_node_empty_suffix: "”",
@@ -2184,7 +2184,7 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   addNodeCloseLabel: "✕",
   addNodeCloseTitle: "Close",
   addNodeAgentsLabel: "Agents",
-  addNodeControlsLabel: "Flow controls",
+  addNodeControlsLabel: "Control flow",
   addNodeTerminalsLabel: "Terminals",
   addNodeEmptyPrefix: "No matches for “",
   addNodeEmptySuffix: "”",
@@ -7717,7 +7717,7 @@ assert.equal(addNodeMenuState.searchPlaceholder, "Add a node…");
 assert.equal(addNodeMenuState.closeLabel, "✕");
 assert.equal(addNodeMenuState.closeTitle, "Close");
 assert.equal(addNodeMenuState.agentsLabel, "Agents");
-assert.equal(addNodeMenuState.controlsLabel, "Flow controls");
+assert.equal(addNodeMenuState.controlsLabel, "Control flow");
 assert.equal(addNodeMenuState.terminalsLabel, "Terminals");
 assert.equal(addNodeMenuState.jumpLabel, "+ New agent in Agents →");
 assert.deepEqual(addNodeMenuState.memberRows, []);

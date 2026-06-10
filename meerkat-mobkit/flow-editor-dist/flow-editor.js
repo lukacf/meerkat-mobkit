@@ -12634,7 +12634,7 @@ function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose,
         if (e.key === "Escape") onClose();
       }
     }
-  ), /* @__PURE__ */ React.createElement("button", { className: "add-menu__x", onClick: onClose, title: menuState.closeTitle }, menuState.closeLabel)), /* @__PURE__ */ React.createElement("div", { className: "add-menu__scroll" }, menuState.hasMembers && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.agentsLabel), menuState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__dot", "data-role": row.role }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.model))), menuState.hasControls && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.controlsLabel), menuState.controlRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__glyph" }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.meta))), menuState.hasTerminals && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.terminalsLabel), menuState.terminalRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row is-disabled", disabled: true, title: row.disabledTitle }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__glyph" }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.meta))), menuState.isEmpty && /* @__PURE__ */ React.createElement("div", { className: "add-menu__empty" }, menuState.emptyLabel)), onJumpToAgents && /* @__PURE__ */ React.createElement("button", { className: "add-menu__foot", onClick: () => onJumpToAgents(null) }, menuState.jumpLabel));
+  ), /* @__PURE__ */ React.createElement("button", { className: "add-menu__x", onClick: onClose, title: menuState.closeTitle }, menuState.closeLabel)), /* @__PURE__ */ React.createElement("div", { className: "add-menu__scroll" }, menuState.hasMembers && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.agentsLabel), menuState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__dot", "data-role": row.role }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.model))), menuState.hasControls && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.controlsLabel), menuState.controlRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__glyph" }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.meta))), menuState.hasTerminals && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.terminalsLabel), menuState.terminalRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row is-disabled", disabled: true, title: row.disabledTitle }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__sq", "data-kind": row.id }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label))), menuState.isEmpty && /* @__PURE__ */ React.createElement("div", { className: "add-menu__empty" }, menuState.emptyLabel)), onJumpToAgents && /* @__PURE__ */ React.createElement("button", { className: "add-menu__foot", onClick: () => onJumpToAgents(null) }, menuState.jumpLabel));
 }
 window.Inspector = Inspector;
 window.AddNodeMenu = AddNodeMenu;
@@ -12802,7 +12802,6 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
 function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAgentIntent = null, contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const [lastAddResult, setLastAddResult] = React.useState(null);
   const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
-  const catalogState = window.MobKitFlowController.agentDefinitionCatalogState(agentDefinitions, agentView);
   const definitionErrorState = window.MobKitFlowController.agentDefinitionAddErrorState(lastAddResult, agentView);
   const createFromDefinition = async (definitionId) => {
     if (!applyAgentIntent) {
@@ -12841,20 +12840,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAgen
     },
     /* @__PURE__ */ React.createElement("option", { value: definitionState.placeholderOption.value }, definitionState.placeholderOption.label),
     definitionState.optionRows.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))
-  ), /* @__PURE__ */ React.createElement("div", { className: "agent-def-catalog" }, /* @__PURE__ */ React.createElement("div", { className: "agent-def-catalog__title" }, catalogState.title), catalogState.hasRows ? catalogState.rows.map((row) => /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      key: row.id,
-      className: "agent-def-card",
-      type: "button",
-      onClick: () => createFromDefinition(row.id)
-    },
-    /* @__PURE__ */ React.createElement("span", { className: "agent-def-card__name" }, row.title),
-    row.role && /* @__PURE__ */ React.createElement("span", { className: "agent-def-card__role" }, row.role),
-    row.source && /* @__PURE__ */ React.createElement("span", { className: "agent-def-card__meta" }, /* @__PURE__ */ React.createElement("strong", null, row.sourceLabel), row.source),
-    row.tools && /* @__PURE__ */ React.createElement("span", { className: "agent-def-card__meta" }, /* @__PURE__ */ React.createElement("strong", null, row.toolsLabel), row.tools),
-    row.skills && /* @__PURE__ */ React.createElement("span", { className: "agent-def-card__meta" }, /* @__PURE__ */ React.createElement("strong", null, row.skillsLabel), row.skills)
-  )) : /* @__PURE__ */ React.createElement("div", { className: "agent-def-catalog__empty" }, catalogState.empty)), definitionErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, definitionErrorState.text));
+  ), definitionErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, definitionErrorState.text));
 }
 function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({

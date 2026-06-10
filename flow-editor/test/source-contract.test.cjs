@@ -131,7 +131,6 @@ assert.match(flowEditorHttpRust, /protected_flow_editor_router_with_runtime_cata
 assert.match(unifiedRuntimeHttpRust, /mobpack_runtime_catalog_state_snapshot\(\)[\s\S]*protected_flow_editor_router_with_runtime_catalog/, "Unified runtime reference app must bind the Flow Editor catalog plane to live MobKit runtime state");
 assert.match(mobpackRust, /fn canonicalize_deployable_authoring_document[\s\S]*document\.mob_toml = Some\(authoring_mob_toml\(document\)\?\)/, "MobKit source/export/save must stamp the canonical rendered mob.toml into editor projections before artifacts are persisted");
 assert.match(mobpackRust, /fn member_from_agent_definition[\s\S]*sourceMobpack[\s\S]*sourceOrigin/, "MobKit apply_operation must reject profile-member definitions without MobKit source provenance");
-assert.match(agents, /MobKitFlowController\.agentDefinitionCatalogState\(agentDefinitions,\s*agentView\)/, "Agent definition catalog rows must be projected by the controller plane");
 assert.match(controller, /function agentDefinitionCatalogState[\s\S]*toolDefinitions[\s\S]*skillDefinitions[\s\S]*definitionCatalogSourceLabel/, "Agent definition catalog must preserve MobKit tool, skill, and source provenance");
 assert(!/sourceMobpackName|sourceOrigin|toolDefinitions|skillDefinitions/.test((agents.match(/function AddAgentControl[\s\S]*?function AgentsMain/) || [""])[0]), "Agent add UI must not locally compose MobKit definition provenance");
 assert.match(agents, /editorState\.eyebrow/, "Agent editor header must render the controller-projected MobKit label");
@@ -360,6 +359,7 @@ assert.match(addNodeMenuBlock, /graphAddNodeMenuState\(\{[\s\S]*graphView/, "Gra
 assert.match(addNodeMenuBlock, /menuState\.memberRows\.map/, "Graph add-node member rows must come from controller state");
 assert.match(addNodeMenuBlock, /menuState\.controlRows\.map/, "Graph add-node control rows must come from controller state");
 assert.match(addNodeMenuBlock, /menuState\.terminalRows\.map[\s\S]*disabled/, "Graph add-node terminal rows must render as controller-projected disabled visual-only affordances");
+assert.match(addNodeMenuBlock, /menuState\.terminalRows\.map[\s\S]*add-menu__sq[\s\S]*data-kind=\{row\.id\}/, "Graph add-node terminal rows must keep the handoff square marker treatment");
 assert.match(addNodeMenuBlock, /menuState\.emptyLabel/, "Graph add-node empty copy must come from controller state");
 assert.match(controller, /function graphAddNodeMenuState/, "controller plane must own Graph add-node search and palette projection");
 assert.match(controller, /const controls = graphControlNodes\(contract, graphView\)/, "Graph add-node flow controls must remain available even before any agents exist");
@@ -1567,6 +1567,7 @@ assert(!/agents-list__item\" \+|agents-list__placed\" \+|row\.role\} · \{row\.m
 assert(!/used in \{editorState\.placedAt\.length\}|editorState\.placedAt\.length === 1|Delete agent \"|those nodes will be removed|USED IN · \{editorState\.placedAt\.length\}|Not yet placed in any cell/.test(agentEditorBlock), "Agent detail JSX must not compose usage or delete confirmation copy locally");
 assert(!/agentDefinitions\.find/.test(addAgentControlBlock), "Agent creation control must not resolve agent definitions locally");
 assert(!/agentDefinitions\.map|definition\.label\s*\|\|\s*definition\.role/.test(addAgentControlBlock), "Agent creation control must not assemble API-backed definition option rows locally");
+assert(!/agent-def-catalog|agent-def-card/.test(addAgentControlBlock), "Agent add-control must stay compact in the handoff sidebar rail");
 assert(!/studio\.(?:schemas|members)\.find/.test(agentsMainBlock), "Agent main pane must not resolve selected agent/schema objects locally");
 assert(!/AGENT LIBRARY|Select an agent or schema on the left|Agents are reusable across topologies|Schema not found\.|Agent not found\./.test(agentsMainBlock), "Agent main pane must not compose empty or missing-state copy locally");
 assert(!/studio\.instances\.filter\(i => i\.memberId|studio\.schemas\.find|studio\.schemas\.map|profileBindingOptions\(|runtimeModeOptions\(|profileBackendOptions\(|modelCatalog\.some/.test(agentEditorBlock), "Agent detail pane must not assemble profile/runtime/backend/schema/usage projections locally");

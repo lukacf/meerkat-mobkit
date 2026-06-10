@@ -1549,7 +1549,7 @@ pub fn mobpack_schema_response() -> Value {
         "add_node_close_label": "✕",
         "add_node_close_title": "Close",
         "add_node_agents_label": "Agents",
-        "add_node_controls_label": "Flow controls",
+        "add_node_controls_label": "Control flow",
         "add_node_terminals_label": "Terminals",
         "add_node_empty_prefix": "No matches for “",
         "add_node_empty_suffix": "”",

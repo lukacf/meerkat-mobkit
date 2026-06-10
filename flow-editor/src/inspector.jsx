@@ -6,7 +6,7 @@
 //   { kind: "instance", id }    → InstanceInspector  (template-only fields + member summary)
 //   { kind: "edge",     id }    → EdgeInspector
 //
-// AddNodeMenu lets the user place existing real members. Flow controls are
+// AddNodeMenu lets the user place existing real members. Control-flow rows are
 // projected from the Basic Editor's deployable flow model.
 
 function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
@@ -563,9 +563,8 @@ function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose,
         {menuState.hasTerminals && <div className="add-menu__label">{menuState.terminalsLabel}</div>}
         {menuState.terminalRows.map(row => (
           <button key={row.id} className="add-menu__row is-disabled" disabled title={row.disabledTitle}>
-            <span className="add-menu__glyph">{row.glyph}</span>
+            <span className="add-menu__sq" data-kind={row.id} />
             <span className="add-menu__row-name">{row.label}</span>
-            <span className="add-menu__row-meta">{row.meta}</span>
           </button>
         ))}
 
