@@ -7956,13 +7956,9 @@ const noMemberAddNodeMenuState = controller.graphAddNodeMenuState({
   graphView: hydratedCatalogs.graphView,
 });
 assert.deepEqual(noMemberAddNodeMenuState.controlRows.map((row) => row.id), ["branch", "fork"]);
-assert.deepEqual(noMemberAddNodeMenuState.terminalRows.map((row) => [row.id, row.kind, row.label, row.disabled, row.pick.kind]), [
-  ["success", "success", "Success", true, "terminal"],
-  ["failed", "failed", "Failed", true, "terminal"],
-  ["human", "human", "Needs human", true, "terminal"],
-]);
+assert.deepEqual(noMemberAddNodeMenuState.terminalRows, []);
 assert.equal(noMemberAddNodeMenuState.hasControls, true);
-assert.equal(noMemberAddNodeMenuState.hasTerminals, true);
+assert.equal(noMemberAddNodeMenuState.hasTerminals, false);
 const emptyAddNodeMenuState = controller.graphAddNodeMenuState({
   members: [{ id: "m_planner", role: "planner", name: "Planner", model: "gpt-5.5" }],
   contract: { mob_definition: { graph_gate_kinds: ["branch"], graph_palette_gate_kinds: ["branch"] } },
@@ -8022,13 +8018,9 @@ assert.equal(emptyBasicPickerState.hasConfiguredMembers, false);
 assert.deepEqual(emptyBasicPickerState.memberRows, []);
 assert.deepEqual(emptyBasicPickerState.primitiveRows.map((row) => [row.id, row.glyph, row.tint]), [
   ["branch", "⑂", "member"],
-  ["subagent", "⬡", "link"],
-  ["wait", "▮▮", "link"],
 ]);
 assert.deepEqual(emptyBasicPickerState.primitiveRows.map((row) => [row.id, row.disabled, row.pick]), [
   ["branch", false, { kind: "branch" }],
-  ["subagent", true, null],
-  ["wait", true, null],
 ]);
 
 const graphShapeContract = {

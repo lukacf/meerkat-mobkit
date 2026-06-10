@@ -9294,10 +9294,7 @@
     const supportedRows = stepTypes
       .filter((type) => metadata[type])
       .map((type) => metadata[type]);
-    const supported = new Set(stepTypes);
-    const disabledRows = (view.flowPrimitiveRows || [])
-      .filter((row) => row?.disabled && !supported.has(row.id));
-    return [...supportedRows, ...disabledRows];
+    return supportedRows;
   }
 
   function graphControlNodes(contract, graphView = null) {
@@ -9358,26 +9355,7 @@
         pick: { kind: "gate", gateKind: node.gateKind },
       }))
       .filter((row) => row.id);
-    const terminalRows = (view.terminalPaletteRows || [])
-      .filter((node) => {
-        if (!ql) return true;
-        return [
-          node?.label,
-          node?.meta,
-          node?.id,
-        ].map((part) => String(part || "")).join(" ").toLowerCase().includes(ql);
-      })
-      .map((node) => ({
-        id: String(node.id || ""),
-        kind: String(node.id || ""),
-        glyph: String(node.glyph || ""),
-        label: String(node.label || ""),
-        meta: String(node.meta || view.terminalAuthoringLockedHint || ""),
-        disabled: true,
-        disabledTitle: view.terminalAuthoringLockedHint,
-        pick: { kind: "terminal", terminalKind: node.id },
-      }))
-      .filter((row) => row.id);
+    const terminalRows = [];
     return {
       searchIcon: view.addNodeSearchIcon,
       searchPlaceholder: view.addNodeSearchPlaceholder,

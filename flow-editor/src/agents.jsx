@@ -384,36 +384,6 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
               </div>
             )}
 
-            {!editorState.isRealmProfile && (
-              <div className="section">
-                <div className="section__title">{editorState.budgetSection.title}</div>
-                <select
-                  className="field__select"
-                  value={editorState.budgetSection.value}
-                  disabled={editorState.budgetSection.disabled}
-                  title={editorState.budgetSection.disabledReason}
-                  onChange={() => {}}
-                >
-                  {editorState.budgetSection.options.map(option => (
-                    <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
-                  ))}
-                </select>
-                <div className="hint__line" style={{ marginTop: 8 }}>{editorState.budgetSection.disabledReason}</div>
-                {editorState.budgetSection.showWeight && (
-                  <div className="field" style={{ marginTop: 8 }}>
-                    <label className="field__label">{editorState.budgetSection.weightLabel}</label>
-                    <input className="field__input" type="number" value={editorState.budgetSection.weightValue} disabled readOnly />
-                  </div>
-                )}
-                {editorState.budgetSection.showTokenCap && (
-                  <div className="field" style={{ marginTop: 8 }}>
-                    <label className="field__label">{editorState.budgetSection.tokenCapLabel}</label>
-                    <input className="field__input" type="number" value={editorState.budgetSection.tokenCapValue} disabled readOnly />
-                  </div>
-                )}
-              </div>
-            )}
-
             <details className="section agent-runtime">
               <summary className="section__title agent-runtime__summary">
                 <span>{editorState.runtimeSectionTitle}</span>

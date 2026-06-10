@@ -370,12 +370,12 @@ assert.match(builderStepPickerBlock, /pickerState\.memberRows\.map/, "Basic add-
 assert.match(builderStepPickerBlock, /pickerState\.primitiveRows\.map/, "Basic add-step primitive rows must come from controller state");
 assert.match(builderStepPickerBlock, /pickerState\.kickoffHint/, "Basic add-step kickoff copy must come from controller state");
 assert.match(controller, /function basicStepPickerState/, "controller plane must own Basic add-step search and palette projection");
+assert(!/disabledRows\s*=\s*\(view\.flowPrimitiveRows/.test(controller), "Basic add-step palette must hide unsupported prototype primitives instead of showing disabled mock choices");
 assert.match(addNodeMenuBlock, /MobKitFlowController\.graphAddNodeMenuState/, "Graph add-node menu must render controller-projected palette rows");
 assert.match(addNodeMenuBlock, /graphAddNodeMenuState\(\{[\s\S]*graphView/, "Graph add-node menu must pass schema-backed Graph view into controller projection");
 assert.match(addNodeMenuBlock, /menuState\.memberRows\.map/, "Graph add-node member rows must come from controller state");
 assert.match(addNodeMenuBlock, /menuState\.controlRows\.map/, "Graph add-node control rows must come from controller state");
-assert.match(addNodeMenuBlock, /menuState\.terminalRows\.map[\s\S]*disabled/, "Graph add-node terminal rows must render as controller-projected disabled visual-only affordances");
-assert.match(addNodeMenuBlock, /menuState\.terminalRows\.map[\s\S]*add-menu__sq[\s\S]*data-kind=\{row\.id\}/, "Graph add-node terminal rows must keep the handoff square marker treatment");
+assert(!/menuState\.terminalRows\.map/.test(addNodeMenuBlock), "Graph add-node menu must not offer visual-only terminal nodes that do not deploy");
 assert.match(addNodeMenuBlock, /menuState\.emptyLabel/, "Graph add-node empty copy must come from controller state");
 assert.match(controller, /function graphAddNodeMenuState/, "controller plane must own Graph add-node search and palette projection");
 assert.match(controller, /const controls = graphControlNodes\(contract, graphView\)/, "Graph add-node flow controls must remain available even before any agents exist");
@@ -1656,7 +1656,7 @@ assert.match(providerParamsBlock, /MobKitFlowController\.memberProviderParamsEdi
 assert.match(providerParamsBlock, /paramsState\.label/, "Agent Editor provider params label must render through controller state");
 assert.match(agentEditorBlock, /editorState\.sourceProvenance\.title[\s\S]*editorState\.sourceProvenance\.rows\.map/, "Agent Editor source provenance must render through controller-projected state");
 assert(!/SOURCE|Definition|Mobpack|Origin|Member path|Schema path|Tool refs|Skill refs/.test(agentEditorBlock), "Agent Editor must not compose source provenance labels locally");
-assert.match(agentEditorBlock, /editorState\.budgetSection\.title[\s\S]*editorState\.budgetSection\.options\.map[\s\S]*editorState\.budgetSection\.disabledReason/, "Agent Editor budget affordance must render through controller-projected state");
+assert(!/editorState\.budgetSection|budgetSection\.options|budgetSection\.disabledReason/.test(agentEditorBlock), "Agent Editor must not render dead profile-member budget controls; deployable budgets live on flow launch modes");
 assert(!/change\(\{\s*budget:|Equal — split among siblings|Proportional — weighted|Fixed — hard cap|Token cap|>BUDGET</.test(agentEditorBlock), "Agent Editor must not compose or mutate non-deployable member budget locally");
 assert.match(agents, /MobKitFlowController\.memberProviderParamsPatch/, "Agent Editor must parse provider params through the controller plane");
 assert.match(controller, /function memberProfileBindingPatch/, "controller plane must own profile binding patch semantics");
