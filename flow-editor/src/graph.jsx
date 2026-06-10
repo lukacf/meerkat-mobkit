@@ -428,7 +428,7 @@ function SourceFileAdornmentView({ g, adornment, adornmentState }) {
   const b = window.MobKitFlowController.graphNodeBox(g, adornment);
   return (
     <a href={adornmentState.sourceActivationHash} data-source-id={adornment.id}
-      className="node node--term node--source-file"
+      className="source-file-adornment node--source-file"
       data-kind={adornmentState.dataKind}
       role={adornmentState.role}
       tabIndex={adornmentState.tabIndex}

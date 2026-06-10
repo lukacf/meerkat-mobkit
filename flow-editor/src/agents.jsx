@@ -345,19 +345,6 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
 
             <div className="section">
               <div className="section__title">{editorState.identityTitle}</div>
-              <div className="field">
-                <label className="field__label">{editorState.profileBindingLabel}</label>
-                <select
-                  className="field__select"
-                  value={editorState.profileBinding}
-                  onChange={e => change(window.MobKitFlowController.memberProfileBindingPatch(member, e.target.value, contract))}
-                >
-                  {editorState.bindingOptions.map(option => (
-                    <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
-                  ))}
-                </select>
-                {editorState.selectedBinding?.reason && <div className="hint__line" style={{ color: "var(--warn)" }}>{editorState.selectedBinding.reason}</div>}
-              </div>
               {editorState.isRealmProfile ? (
                 <div className="field">
                   <label className="field__label">{editorState.realmProfileLabel}</label>
@@ -377,39 +364,6 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
                   {editorState.modelOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </div>
-              <div className="field">
-                <label className="field__label">{editorState.runtimeModeLabel}</label>
-                <select className="field__select" value={editorState.runtimeMode} onChange={e => change(window.MobKitFlowController.memberRuntimeModePatch(e.target.value, contract, deploySettings))}>
-                  {editorState.runtimeOptions.map(option => (
-                    <option key={option.value} value={option.value} disabled={option.disabled}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                {editorState.selectedRuntime?.reason && <div className="hint__line" style={{ color: "var(--warn)" }}>{editorState.selectedRuntime.reason}</div>}
-              </div>
-              <div className="field">
-                <label className="field__label">{editorState.backendLabel}</label>
-                <select className="field__select" value={editorState.backendValue} onChange={e => change(window.MobKitFlowController.memberBackendPatch(e.target.value, contract))}>
-                  {editorState.backendOptions.map(option => (
-                    <option key={option.value || "default"} value={option.value} disabled={option.disabled}>{option.label}</option>
-                  ))}
-                </select>
-                {editorState.selectedBackend?.reason && <div className="hint__line" style={{ color: "var(--warn)" }}>{editorState.selectedBackend.reason}</div>}
-              </div>
-              <div className="field">
-                <label className="field__label">{editorState.inlinePeerNotificationsLabel}</label>
-                <input
-                  className="field__input"
-                  type="number"
-                  min="-1"
-                  step="1"
-                  value={member.maxInlinePeerNotifications ?? ""}
-                  placeholder={editorState.inlinePeerNotificationsPlaceholder}
-                  onChange={e => change(window.MobKitFlowController.memberMaxInlinePeerNotificationsPatch(e.target.value))}
-                />
-              </div>
-              <ProviderParamsEditor member={member} change={change} agentDetailView={agentDetailView} />
                 </>
               )}
             </div>
@@ -459,6 +413,64 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
                 )}
               </div>
             )}
+
+            <details className="section agent-runtime">
+              <summary className="section__title agent-runtime__summary">
+                <span>{editorState.runtimeSectionTitle}</span>
+              </summary>
+              <div className="agent-runtime__body">
+                <div className="field">
+                  <label className="field__label">{editorState.profileBindingLabel}</label>
+                  <select
+                    className="field__select"
+                    value={editorState.profileBinding}
+                    onChange={e => change(window.MobKitFlowController.memberProfileBindingPatch(member, e.target.value, contract))}
+                  >
+                    {editorState.bindingOptions.map(option => (
+                      <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
+                    ))}
+                  </select>
+                  {editorState.selectedBinding?.reason && <div className="hint__line" style={{ color: "var(--warn)" }}>{editorState.selectedBinding.reason}</div>}
+                </div>
+                {!editorState.isRealmProfile && (
+                  <>
+                    <div className="field">
+                      <label className="field__label">{editorState.runtimeModeLabel}</label>
+                      <select className="field__select" value={editorState.runtimeMode} onChange={e => change(window.MobKitFlowController.memberRuntimeModePatch(e.target.value, contract, deploySettings))}>
+                        {editorState.runtimeOptions.map(option => (
+                          <option key={option.value} value={option.value} disabled={option.disabled}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      {editorState.selectedRuntime?.reason && <div className="hint__line" style={{ color: "var(--warn)" }}>{editorState.selectedRuntime.reason}</div>}
+                    </div>
+                    <div className="field">
+                      <label className="field__label">{editorState.backendLabel}</label>
+                      <select className="field__select" value={editorState.backendValue} onChange={e => change(window.MobKitFlowController.memberBackendPatch(e.target.value, contract))}>
+                        {editorState.backendOptions.map(option => (
+                          <option key={option.value || "default"} value={option.value} disabled={option.disabled}>{option.label}</option>
+                        ))}
+                      </select>
+                      {editorState.selectedBackend?.reason && <div className="hint__line" style={{ color: "var(--warn)" }}>{editorState.selectedBackend.reason}</div>}
+                    </div>
+                    <div className="field">
+                      <label className="field__label">{editorState.inlinePeerNotificationsLabel}</label>
+                      <input
+                        className="field__input"
+                        type="number"
+                        min="-1"
+                        step="1"
+                        value={member.maxInlinePeerNotifications ?? ""}
+                        placeholder={editorState.inlinePeerNotificationsPlaceholder}
+                        onChange={e => change(window.MobKitFlowController.memberMaxInlinePeerNotificationsPatch(e.target.value))}
+                      />
+                    </div>
+                    <ProviderParamsEditor member={member} change={change} agentDetailView={agentDetailView} />
+                  </>
+                )}
+              </div>
+            </details>
 
             <div className="section">
               <div className="section__title">{editorState.sourceProvenance.title}</div>

@@ -1229,6 +1229,7 @@ const hydratedContractAndCatalogFixture = {
       realm_profile_reference_hint_after_fallback: "from a target realm. Convert it to an inline profile before validating or exporting a deployable mobpack.",
       model_label: "Model",
       runtime_mode_label: "Runtime mode",
+      runtime_section_title: "RUNTIME",
       missing_runtime_mode_label: "missing runtime mode",
       backend_label: "Backend",
       backend_definition_default_label: "definition default",
@@ -1768,6 +1769,7 @@ assert.deepEqual(hydratedCatalogs.agentDetailView, {
   realmProfileReferenceHintAfterFallback: "from a target realm. Convert it to an inline profile before validating or exporting a deployable mobpack.",
   modelLabel: "Model",
   runtimeModeLabel: "Runtime mode",
+  runtimeSectionTitle: "RUNTIME",
   missingRuntimeModeLabel: "missing runtime mode",
   backendLabel: "Backend",
   backendDefinitionDefaultLabel: "definition default",
@@ -5033,6 +5035,7 @@ const agentEditorState = controller.agentEditorControlState({
     realmProfileReferenceHintAfterFallback: "requires inline conversion.",
     modelLabel: "Model id",
     runtimeModeLabel: "Runtime",
+    runtimeSectionTitle: "ADVANCED RUNTIME",
     missingRuntimeModeLabel: "missing runtime",
     backendLabel: "Profile backend",
     backendDefinitionDefaultLabel: "use definition backend",
@@ -5132,6 +5135,7 @@ assert.equal(agentEditorState.realmProfileReferenceHintBefore, "Imported profile
 assert.equal(agentEditorState.realmProfileReferenceHintAfter, "from a target realm. rkat mob validate rejects mobpack profiles that use realm_profile references; export deployable packs with inline profiles.");
 assert.equal(agentEditorState.modelLabel, "Model id");
 assert.equal(agentEditorState.runtimeModeLabel, "Runtime");
+assert.equal(agentEditorState.runtimeSectionTitle, "ADVANCED RUNTIME");
 assert.equal(agentEditorState.backendLabel, "Profile backend");
 assert.equal(agentEditorState.inlinePeerNotificationsLabel, "Inline notifications");
 assert.equal(agentEditorState.inlinePeerNotificationsPlaceholder, "default");

@@ -95,7 +95,9 @@ function allowedCssDelta(sign, line) {
       /button\.node/,
       /a\.node/,
       /node--source-file/,
+      /source-file-adornment/,
       /source-file__/,
+      /agent-runtime/,
       /source-file-list/,
       /source-file-row/,
       /bld-toml--graph/,
@@ -127,7 +129,7 @@ const unexpected = styleDiff.filter((line) => {
     if (line.includes("}")) allowedAddedBlock = false;
     return false;
   }
-  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|button\.node|a\.node|\.node--source-file|\.source-file__|\.source-file-list|\.source-file-row|\.bld-toml--graph|\.agent-editor__confirm|\.actions-menu|\.mob-status|\.toprail)/.test(line)) {
+  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|button\.node|a\.node|\.source-file-adornment|\.node--source-file|\.source-file__|\.source-file-list|\.source-file-row|\.bld-toml--graph|\.agent-editor__confirm|\.agent-runtime|\.actions-menu|\.mob-status|\.toprail)/.test(line)) {
     if (!line.includes("}")) allowedAddedBlock = true;
     return false;
   }

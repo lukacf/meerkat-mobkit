@@ -1073,6 +1073,7 @@ window.MOBKIT_BOOT = {
       realmProfileReferenceHintAfterFallback: String(view.realm_profile_reference_hint_after_fallback || "").trim(),
       modelLabel: String(view.model_label || "").trim(),
       runtimeModeLabel: String(view.runtime_mode_label || "").trim(),
+      runtimeSectionTitle: String(view.runtime_section_title || "").trim(),
       missingRuntimeModeLabel: String(view.missing_runtime_mode_label || "").trim(),
       backendLabel: String(view.backend_label || "").trim(),
       backendDefinitionDefaultLabel: String(view.backend_definition_default_label || "").trim(),
@@ -1114,7 +1115,7 @@ window.MOBKIT_BOOT = {
       && out.emptyUsageHint && out.agentEyebrowPrefix && out.identityTitle && out.profileBindingLabel && out.missingProfileBindingLabel
       && out.realmProfileLabel && out.realmProfilePlaceholder && out.realmProfileImportHintFallback
       && out.realmProfileTitle && out.realmProfileReferenceHintBefore && out.realmProfileReferenceHintAfterFallback
-      && out.modelLabel && out.runtimeModeLabel && out.missingRuntimeModeLabel && out.backendLabel
+      && out.modelLabel && out.runtimeModeLabel && out.runtimeSectionTitle && out.missingRuntimeModeLabel && out.backendLabel
       && out.backendDefinitionDefaultLabel
       && out.inlinePeerNotificationsLabel && out.inlinePeerNotificationsPlaceholder
       && out.providerParamsLabel && out.providerParamsPlaceholder && Number.isFinite(out.providerParamsRows) && out.providerParamsRows > 0
@@ -1157,6 +1158,7 @@ window.MOBKIT_BOOT = {
       realmProfileReferenceHintAfterFallback: String(view?.realmProfileReferenceHintAfterFallback || ""),
       modelLabel: String(view?.modelLabel || ""),
       runtimeModeLabel: String(view?.runtimeModeLabel || ""),
+      runtimeSectionTitle: String(view?.runtimeSectionTitle || ""),
       missingRuntimeModeLabel: String(view?.missingRuntimeModeLabel || ""),
       backendLabel: String(view?.backendLabel || ""),
       backendDefinitionDefaultLabel: String(view?.backendDefinitionDefaultLabel || ""),
@@ -2424,6 +2426,7 @@ window.MOBKIT_BOOT = {
         : view.realmProfileReferenceHintAfterFallback,
       modelLabel: view.modelLabel,
       runtimeModeLabel: view.runtimeModeLabel,
+      runtimeSectionTitle: view.runtimeSectionTitle,
       backendLabel: view.backendLabel,
       inlinePeerNotificationsLabel: view.inlinePeerNotificationsLabel,
       inlinePeerNotificationsPlaceholder: view.inlinePeerNotificationsPlaceholder,
@@ -12577,7 +12580,7 @@ function SourceFileAdornmentView({ g, adornment, adornmentState }) {
     {
       href: adornmentState.sourceActivationHash,
       "data-source-id": adornment.id,
-      className: "node node--term node--source-file",
+      className: "source-file-adornment node--source-file",
       "data-kind": adornmentState.dataKind,
       role: adornmentState.role,
       tabIndex: adornmentState.tabIndex,
@@ -13160,15 +13163,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       return;
     }
     deleteMember();
-  } }, editorState.deleteLabel)), deleteConfirmState.open && /* @__PURE__ */ React.createElement("div", { className: "agent-editor__confirm" }, /* @__PURE__ */ React.createElement("span", null, deleteConfirmState.message), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setDeleteConfirmOpen(false) }, deleteConfirmState.cancelLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: deleteMember }, deleteConfirmState.confirmLabel))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__body" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__cols" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__col" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.identityTitle), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.profileBindingLabel), /* @__PURE__ */ React.createElement(
-    "select",
-    {
-      className: "field__select",
-      value: editorState.profileBinding,
-      onChange: (e) => change(window.MobKitFlowController.memberProfileBindingPatch(member, e.target.value, contract))
-    },
-    editorState.bindingOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
-  ), editorState.selectedBinding?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, editorState.selectedBinding.reason)), editorState.isRealmProfile ? /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.realmProfileLabel), /* @__PURE__ */ React.createElement(
+  } }, editorState.deleteLabel)), deleteConfirmState.open && /* @__PURE__ */ React.createElement("div", { className: "agent-editor__confirm" }, /* @__PURE__ */ React.createElement("span", null, deleteConfirmState.message), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setDeleteConfirmOpen(false) }, deleteConfirmState.cancelLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: deleteMember }, deleteConfirmState.confirmLabel))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__body" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__cols" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__col" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.identityTitle), editorState.isRealmProfile ? /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.realmProfileLabel), /* @__PURE__ */ React.createElement(
     "input",
     {
       className: "field__input field__input--mono",
@@ -13176,18 +13171,7 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       placeholder: editorState.realmProfilePlaceholder,
       onChange: (e) => change(window.MobKitFlowController.memberRealmProfilePatch(e.target.value))
     }
-  ), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.realmProfileImportHint)) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.modelLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: member.model, onChange: (e) => change(window.MobKitFlowController.memberModelPatch(e.target.value, modelCatalog)) }, editorState.modelOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.runtimeModeLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: editorState.runtimeMode, onChange: (e) => change(window.MobKitFlowController.memberRuntimeModePatch(e.target.value, contract, deploySettings)) }, editorState.runtimeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), editorState.selectedRuntime?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, editorState.selectedRuntime.reason)), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.backendLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: editorState.backendValue, onChange: (e) => change(window.MobKitFlowController.memberBackendPatch(e.target.value, contract)) }, editorState.backendOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value || "default", value: option.value, disabled: option.disabled }, option.label))), editorState.selectedBackend?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, editorState.selectedBackend.reason)), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.inlinePeerNotificationsLabel), /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "field__input",
-      type: "number",
-      min: "-1",
-      step: "1",
-      value: member.maxInlinePeerNotifications ?? "",
-      placeholder: editorState.inlinePeerNotificationsPlaceholder,
-      onChange: (e) => change(window.MobKitFlowController.memberMaxInlinePeerNotificationsPatch(e.target.value))
-    }
-  )), /* @__PURE__ */ React.createElement(ProviderParamsEditor, { member, change, agentDetailView }))), !editorState.isRealmProfile && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title section__title--row" }, /* @__PURE__ */ React.createElement("span", null, editorState.systemPromptTitle), /* @__PURE__ */ React.createElement("button", { className: "ghost-btn", onClick: () => change(window.MobKitFlowController.memberSystemPromptPatch(window.MobKitFlowController.memberPromptSkeleton(member))), title: editorState.applySkeletonTitle }, editorState.applySkeletonLabel)), /* @__PURE__ */ React.createElement(
+  ), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.realmProfileImportHint)) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.modelLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: member.model, onChange: (e) => change(window.MobKitFlowController.memberModelPatch(e.target.value, modelCatalog)) }, editorState.modelOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))))), !editorState.isRealmProfile && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title section__title--row" }, /* @__PURE__ */ React.createElement("span", null, editorState.systemPromptTitle), /* @__PURE__ */ React.createElement("button", { className: "ghost-btn", onClick: () => change(window.MobKitFlowController.memberSystemPromptPatch(window.MobKitFlowController.memberPromptSkeleton(member))), title: editorState.applySkeletonTitle }, editorState.applySkeletonLabel)), /* @__PURE__ */ React.createElement(
     "textarea",
     {
       className: "field__textarea",
@@ -13207,7 +13191,26 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       }
     },
     editorState.budgetSection.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
-  ), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 8 } }, editorState.budgetSection.disabledReason), editorState.budgetSection.showWeight && /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.budgetSection.weightLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", value: editorState.budgetSection.weightValue, disabled: true, readOnly: true })), editorState.budgetSection.showTokenCap && /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.budgetSection.tokenCapLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", value: editorState.budgetSection.tokenCapValue, disabled: true, readOnly: true }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.sourceProvenance.title), editorState.sourceProvenance.hasRows ? /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, editorState.sourceProvenance.rows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.label }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))) : /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.sourceProvenance.emptyHint))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__col" }, editorState.isRealmProfile ? /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.realmProfileTitle), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.realmProfileReferenceHintBefore, " ", /* @__PURE__ */ React.createElement("code", null, editorState.realmProfileReferenceLabel), " ", editorState.realmProfileReferenceHintAfter)) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, toolAccessState.title), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginBottom: 8 } }, toolAccessState.hint), toolAccessState.rows.map((row) => {
+  ), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 8 } }, editorState.budgetSection.disabledReason), editorState.budgetSection.showWeight && /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.budgetSection.weightLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", value: editorState.budgetSection.weightValue, disabled: true, readOnly: true })), editorState.budgetSection.showTokenCap && /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.budgetSection.tokenCapLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", value: editorState.budgetSection.tokenCapValue, disabled: true, readOnly: true }))), /* @__PURE__ */ React.createElement("details", { className: "section agent-runtime" }, /* @__PURE__ */ React.createElement("summary", { className: "section__title agent-runtime__summary" }, /* @__PURE__ */ React.createElement("span", null, editorState.runtimeSectionTitle)), /* @__PURE__ */ React.createElement("div", { className: "agent-runtime__body" }, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.profileBindingLabel), /* @__PURE__ */ React.createElement(
+    "select",
+    {
+      className: "field__select",
+      value: editorState.profileBinding,
+      onChange: (e) => change(window.MobKitFlowController.memberProfileBindingPatch(member, e.target.value, contract))
+    },
+    editorState.bindingOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
+  ), editorState.selectedBinding?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, editorState.selectedBinding.reason)), !editorState.isRealmProfile && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.runtimeModeLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: editorState.runtimeMode, onChange: (e) => change(window.MobKitFlowController.memberRuntimeModePatch(e.target.value, contract, deploySettings)) }, editorState.runtimeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), editorState.selectedRuntime?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, editorState.selectedRuntime.reason)), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.backendLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: editorState.backendValue, onChange: (e) => change(window.MobKitFlowController.memberBackendPatch(e.target.value, contract)) }, editorState.backendOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value || "default", value: option.value, disabled: option.disabled }, option.label))), editorState.selectedBackend?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, editorState.selectedBackend.reason)), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.inlinePeerNotificationsLabel), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "field__input",
+      type: "number",
+      min: "-1",
+      step: "1",
+      value: member.maxInlinePeerNotifications ?? "",
+      placeholder: editorState.inlinePeerNotificationsPlaceholder,
+      onChange: (e) => change(window.MobKitFlowController.memberMaxInlinePeerNotificationsPatch(e.target.value))
+    }
+  )), /* @__PURE__ */ React.createElement(ProviderParamsEditor, { member, change, agentDetailView })))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.sourceProvenance.title), editorState.sourceProvenance.hasRows ? /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, editorState.sourceProvenance.rows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.label }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))) : /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.sourceProvenance.emptyHint))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__col" }, editorState.isRealmProfile ? /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.realmProfileTitle), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.realmProfileReferenceHintBefore, " ", /* @__PURE__ */ React.createElement("code", null, editorState.realmProfileReferenceLabel), " ", editorState.realmProfileReferenceHintAfter)) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, toolAccessState.title), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginBottom: 8 } }, toolAccessState.hint), toolAccessState.rows.map((row) => {
     return /* @__PURE__ */ React.createElement("div", { key: row.id, className: row.className }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "name" }, row.name), /* @__PURE__ */ React.createElement("div", { className: "auth" }, row.description)), /* @__PURE__ */ React.createElement("button", { onClick: () => removeToolAccess(row.id) }, row.removeLabel));
   }), /* @__PURE__ */ React.createElement(
     "select",

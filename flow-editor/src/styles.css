@@ -606,6 +606,13 @@ a.node {
 .node--term[data-kind="success"] .node__role { color: var(--ok, #2f7d4d); }
 .node--term[data-kind="failed"]  .node__role { color: var(--crit, #c2410c); }
 .node--term[data-kind="human"]   .node__role { color: var(--accent); }
+.source-file-adornment {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  text-decoration: none;
+  z-index: 5;
+}
 .node--source-file {
   width: 210px;
   height: 58px;
@@ -615,8 +622,11 @@ a.node {
   gap: 14px;
   padding: 0 28px;
   background: var(--surface);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-sm);
   border-color: var(--hair);
   cursor: pointer;
+  box-shadow: none;
 }
 .node--source-file:focus-visible {
   outline: 2px solid var(--accent);
@@ -633,6 +643,37 @@ a.node {
   font-size: 20px;
   line-height: 1;
   color: var(--ink);
+}
+
+.agent-runtime {
+  padding: 0;
+}
+.agent-runtime__summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 12px 18px;
+  margin-bottom: 0;
+}
+.agent-runtime__summary::-webkit-details-marker {
+  display: none;
+}
+.agent-runtime__summary::after {
+  content: "+";
+  color: var(--subtle);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.agent-runtime[open] .agent-runtime__summary {
+  border-bottom: 1px solid var(--hair);
+}
+.agent-runtime[open] .agent-runtime__summary::after {
+  content: "-";
+}
+.agent-runtime__body {
+  padding: 12px 18px;
+}
+details.agent-runtime:not([open]) > .agent-runtime__body {
+  display: none;
 }
 
 /* ── Edges (svg) ────────────────────────────────────────────── */

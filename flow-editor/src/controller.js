@@ -1040,6 +1040,7 @@
       realmProfileReferenceHintAfterFallback: String(view.realm_profile_reference_hint_after_fallback || "").trim(),
       modelLabel: String(view.model_label || "").trim(),
       runtimeModeLabel: String(view.runtime_mode_label || "").trim(),
+      runtimeSectionTitle: String(view.runtime_section_title || "").trim(),
       missingRuntimeModeLabel: String(view.missing_runtime_mode_label || "").trim(),
       backendLabel: String(view.backend_label || "").trim(),
       backendDefinitionDefaultLabel: String(view.backend_definition_default_label || "").trim(),
@@ -1081,7 +1082,7 @@
       && out.emptyUsageHint && out.agentEyebrowPrefix && out.identityTitle && out.profileBindingLabel && out.missingProfileBindingLabel
       && out.realmProfileLabel && out.realmProfilePlaceholder && out.realmProfileImportHintFallback
       && out.realmProfileTitle && out.realmProfileReferenceHintBefore && out.realmProfileReferenceHintAfterFallback
-      && out.modelLabel && out.runtimeModeLabel && out.missingRuntimeModeLabel && out.backendLabel
+      && out.modelLabel && out.runtimeModeLabel && out.runtimeSectionTitle && out.missingRuntimeModeLabel && out.backendLabel
       && out.backendDefinitionDefaultLabel
       && out.inlinePeerNotificationsLabel && out.inlinePeerNotificationsPlaceholder
       && out.providerParamsLabel && out.providerParamsPlaceholder && Number.isFinite(out.providerParamsRows) && out.providerParamsRows > 0
@@ -1124,6 +1125,7 @@
       realmProfileReferenceHintAfterFallback: String(view?.realmProfileReferenceHintAfterFallback || ""),
       modelLabel: String(view?.modelLabel || ""),
       runtimeModeLabel: String(view?.runtimeModeLabel || ""),
+      runtimeSectionTitle: String(view?.runtimeSectionTitle || ""),
       missingRuntimeModeLabel: String(view?.missingRuntimeModeLabel || ""),
       backendLabel: String(view?.backendLabel || ""),
       backendDefinitionDefaultLabel: String(view?.backendDefinitionDefaultLabel || ""),
@@ -2391,6 +2393,7 @@
         : view.realmProfileReferenceHintAfterFallback,
       modelLabel: view.modelLabel,
       runtimeModeLabel: view.runtimeModeLabel,
+      runtimeSectionTitle: view.runtimeSectionTitle,
       backendLabel: view.backendLabel,
       inlinePeerNotificationsLabel: view.inlinePeerNotificationsLabel,
       inlinePeerNotificationsPlaceholder: view.inlinePeerNotificationsPlaceholder,

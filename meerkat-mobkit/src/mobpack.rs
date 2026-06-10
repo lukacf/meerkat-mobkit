@@ -1885,6 +1885,7 @@ pub fn mobpack_schema_response() -> Value {
         "empty_schema_hint": "No structured output. Agent returns free-form text."
     });
     editor_agent_detail_view["agent_eyebrow_prefix"] = json!("AGENT");
+    editor_agent_detail_view["runtime_section_title"] = json!("RUNTIME");
     editor_agent_detail_view["delete_cancel_label"] = json!("CANCEL");
     editor_agent_detail_view["source_title"] = json!("SOURCE");
     editor_agent_detail_view["source_empty_hint"] = json!("Created in this editor.");
