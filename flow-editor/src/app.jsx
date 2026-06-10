@@ -466,6 +466,7 @@ function App() {
   const handlePick = (pick) => {
     if (!addAt) return;
     const nextMenu = window.MobKitFlowController.graphAddMenuCloseProjection();
+    setAddAt(nextMenu.addAt);
     applyMobKitAuthoringOperation({
       intent: "graph.insertNode",
       pick,
@@ -477,7 +478,6 @@ function App() {
       }
       const id = result?.selection?.id;
       if (id) selectInstance(id);
-      setAddAt(nextMenu.addAt);
     }).catch((error) => showAuthoringFailure(error, authoringFailureHead("graph_node_insert")));
   };
 

@@ -128,6 +128,27 @@ async function main() {
       throw new Error(`Graph drag did not move through MobKit graph projection: before=${JSON.stringify(beforeMove)} after=${JSON.stringify(afterMove)}`);
     }
 
+    const edgeCountBefore = await page.locator(".edge").count();
+    const sourceNode = page.locator("[data-inst-id]").first();
+    const targetNode = page.locator("[data-inst-id]").last();
+    const sourcePort = sourceNode.locator(".port-out");
+    const sourcePortBox = await sourcePort.boundingBox();
+    const targetNodeBox = await targetNode.boundingBox();
+    if (!sourcePortBox || !targetNodeBox) throw new Error("Graph connection test could not measure source port/target node bounds");
+    await page.mouse.move(sourcePortBox.x + sourcePortBox.width / 2, sourcePortBox.y + sourcePortBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(targetNodeBox.x + Math.min(12, targetNodeBox.width / 4), targetNodeBox.y + targetNodeBox.height / 2, { steps: 24 });
+    await page.mouse.up();
+    await page.waitForFunction(
+      (count) => document.querySelectorAll(".edge").length > count,
+      edgeCountBefore,
+      { timeout: 10_000 },
+    );
+    const edgeCountAfter = await page.locator(".edge").count();
+    if (edgeCountAfter <= edgeCountBefore) {
+      throw new Error(`Graph port drag did not create a MobKit edge: before=${edgeCountBefore} after=${edgeCountAfter}`);
+    }
+
     await page.locator("button.viewtab", { hasText: "AGENTS" }).click();
     await page.locator(".agents-view").waitFor({ state: "visible", timeout: 10_000 });
     const agentCountBefore = await page.locator(".agents-list__name").count();

@@ -283,6 +283,7 @@ assert.match(agentEditorBlock, /const selection = null;[\s\S]*setAgentSel\(selec
 assert(!/studio(?:Add|Update|Move|Delete)InstancePatch/.test(graph), "Graph state hook must not carry graph-node mutation authority; MobKit apply_operation owns node edits");
 assert(!/MobKitFlowController\.graphQuickInsertProjection/.test(app), "App quick graph insertion must not project graph rows locally before MobKit");
 assert.match(app, /intent:\s*"graph\.insertNode"[\s\S]*pick,[\s\S]*cell:\s*addAt/, "Graph quick insert must send semantic pick and cell intent payloads through the controller plane");
+assert.match(app, /const nextMenu = window\.MobKitFlowController\.graphAddMenuCloseProjection\(\);\s*setAddAt\(nextMenu\.addAt\);[\s\S]*intent:\s*"graph\.insertNode"/, "Graph quick insert must close the picker before async MobKit insertion resolves so the canvas remains interactive");
 assert(!/instances:\s*inserted\.instances|edges:\s*inserted\.edges|flow:\s*inserted\.flow/.test(app), "Graph quick insert must not send browser-projected graph rows");
 assert(!/intent:\s*"graph\.insertNode"[\s\S]{0,260}instance,|intent:\s*"graph\.insertNode"[\s\S]{0,260}instance:/.test(app), "Graph instance adds must not send raw instance payloads through normal authoring");
 assert(!/addInstance:\s*\(instance\)/.test(app), "app shell must not expose legacy graph instance helpers through the view-state studio object");
@@ -297,7 +298,7 @@ assert(!/studio(?:Add|Update|Delete)EdgePatch/.test(graph), "Graph state hook mu
 assert(!/intent:\s*"graph\.connectNodes"[\s\S]{0,260}operation,|intent:\s*"graph\.connectNodes"[\s\S]{0,260}edge:/.test(app), "Graph edge adds must not send raw edge payloads through normal authoring");
 assert(!/addEdge:\s*\(edge\)/.test(app), "app shell must not expose legacy graph edge helpers through the view-state studio object");
 assert(!/intent:\s*"graph\.connectNodes"[\s\S]{0,700}studio:\s*\{\s*edges:/.test(app), "Graph edge adds must not send browser-projected edge rows as authority");
-assert.match(graph, /intent:\s*"graph\.connectNodes"[\s\S]*fromId:\s*conn\.fromId,[\s\S]*toId:\s*closest\.dataset\.instId/, "Graph port connections must send semantic endpoint payloads through the controller plane");
+assert.match(graph, /const targetId = connectionTargetIdAt\(e\.clientX,\s*e\.clientY,\s*conn\.fromId\);[\s\S]*intent:\s*"graph\.connectNodes"[\s\S]*fromId:\s*conn\.fromId,[\s\S]*toId:\s*targetId/, "Graph port connections must resolve a target node and send semantic endpoint payloads through the controller plane");
 assert(!/graphConnectionAddPatch\(\{[\s\S]*fromId:\s*conn\.fromId|operation:\s*\{\s*edge:\s*result\.edge\s*\}/.test(graph), "Graph port connections must not draft edge objects locally");
 assert.match(app, /const editGraphEdge = React\.useCallback\(\(id,\s*action,\s*payload = \{\}\) =>[\s\S]*intent:\s*"graph\.editEdge"[\s\S]*edgeId:\s*id,[\s\S]*action,[\s\S]*payload/, "Graph edge edits must send edgeId and semantic action through an explicit controller-plane callback");
 assert.match(app, /intent:\s*"graph\.deleteEdge"[\s\S]*edgeId:\s*id/, "Graph edge deletes must send edgeId through the controller plane");

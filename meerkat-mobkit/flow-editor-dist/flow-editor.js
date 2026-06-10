@@ -12365,9 +12365,22 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     setDrag({ instId: inst.id, dx: w.x - b.x, dy: w.y - b.y, origCol: inst.col, origRow: inst.row });
   };
   const onPortDown = (e, inst) => {
+    e.preventDefault();
     e.stopPropagation();
     const p = window.MobKitFlowController.graphPortOut(g, inst);
     setConn({ from: p, fromId: inst.id, to: p });
+  };
+  const connectionTargetIdAt = (clientX, clientY, fromId) => {
+    const hit = document.elementFromPoint(clientX, clientY);
+    const direct = hit?.closest?.("[data-inst-id]");
+    if (direct && direct.dataset.instId !== fromId) return direct.dataset.instId;
+    const nodes = Array.from(hostRef.current?.querySelectorAll?.("[data-inst-id]") || []);
+    const target = nodes.find((node) => {
+      if (node.dataset.instId === fromId) return false;
+      const rect = node.getBoundingClientRect();
+      return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+    });
+    return target?.dataset.instId || "";
   };
   const onHostMouseDown = (e) => {
     if (e.button !== 0 && e.button !== 1) return;
@@ -12429,9 +12442,8 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
       if (conn) {
         const w = screenToWorld(e.clientX, e.clientY);
         setConn((c) => ({ ...c, to: { x: w.x, y: w.y } }));
-        const t = document.elementFromPoint(e.clientX, e.clientY);
-        const closest = t?.closest?.("[data-inst-id]");
-        if (closest && closest.dataset.instId !== conn.fromId) setHoverInId(closest.dataset.instId);
+        const targetId = connectionTargetIdAt(e.clientX, e.clientY, conn.fromId);
+        if (targetId) setHoverInId(targetId);
         else setHoverInId(null);
       }
     };
@@ -12451,13 +12463,12 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         setHoverCell(null);
       }
       if (conn) {
-        const t = document.elementFromPoint(e.clientX, e.clientY);
-        const closest = t?.closest?.("[data-inst-id]");
-        if (closest && closest.dataset.instId !== conn.fromId) {
+        const targetId = connectionTargetIdAt(e.clientX, e.clientY, conn.fromId);
+        if (targetId) {
           applyGraphIntent({
             intent: "graph.connectNodes",
             fromId: conn.fromId,
-            toId: closest.dataset.instId
+            toId: targetId
           }, "MobKit graph connection failed").then((result) => {
             if (result?.ok === false) return;
             const id = result?.selection?.id;
@@ -14519,6 +14530,7 @@ function App() {
   const handlePick = (pick) => {
     if (!addAt) return;
     const nextMenu = window.MobKitFlowController.graphAddMenuCloseProjection();
+    setAddAt(nextMenu.addAt);
     applyMobKitAuthoringOperation({
       intent: "graph.insertNode",
       pick,
@@ -14530,7 +14542,6 @@ function App() {
       }
       const id = result?.selection?.id;
       if (id) selectInstance(id);
-      setAddAt(nextMenu.addAt);
     }).catch((error) => showAuthoringFailure(error, authoringFailureHead("graph_node_insert")));
   };
   const handleAgentNavigation = (id) => {
