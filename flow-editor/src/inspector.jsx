@@ -9,7 +9,7 @@
 // AddNodeMenu lets the user place existing real members. Control-flow rows are
 // projected from the Basic Editor's deployable flow model.
 
-function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
+function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, deleteGraphNode = null, deleteGraphEdge = null, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
   const selectionState = window.MobKitFlowController.graphSelectionState({
     selection,
     instances: studio.instances,
@@ -17,16 +17,17 @@ function Inspector({ studio, selection, selectMember, selectInstance, clearSelec
   });
   if (selectionState.kind === "instance") {
     if (!selectionState.instance) return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
-    return <InstanceInspector studio={studio} flow={flow} inst={selectionState.instance} selectMember={selectMember} clearSelection={clearSelection} contract={contract} launchView={launchView} graphView={graphView} conditionView={conditionView} />;
+    return <InstanceInspector studio={studio} flow={flow} inst={selectionState.instance} selectMember={selectMember} clearSelection={clearSelection} deleteGraphNode={deleteGraphNode} contract={contract} launchView={launchView} graphView={graphView} conditionView={conditionView} />;
   }
   if (selectionState.kind === "edge") {
     if (!selectionState.edge) return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
-    return <EdgeInspector studio={studio} flow={flow} edge={selectionState.edge} clearSelection={clearSelection} contract={contract} graphView={graphView} conditionView={conditionView} />;
+    return <EdgeInspector studio={studio} flow={flow} edge={selectionState.edge} clearSelection={clearSelection} deleteGraphEdge={deleteGraphEdge} contract={contract} graphView={graphView} conditionView={conditionView} />;
   }
   return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
 }
 
 function clearSelectionAfterOperation(result, clearSelection) {
+  if (!result) return;
   Promise.resolve(result).then((operationResult) => {
     if (operationResult?.ok === false) return;
     clearSelection(operationResult?.selection);
@@ -82,7 +83,7 @@ function TemplateInspector({ studio, template, templateSeed, templateView }) {
 }
 
 // ── Gate (fork / join / branch) ───────────────────────────────────
-function GateInspector({ studio, flow, inst, clearSelection, contract, graphView = null, conditionView = null }) {
+function GateInspector({ studio, flow, inst, clearSelection, deleteGraphNode = null, contract, graphView = null, conditionView = null }) {
   const change = (action, payload = {}) => studio.editInstance(inst.id, action, payload);
   const kind = inst.gateKind;
   const gateState = window.MobKitFlowController.graphGateControlState(inst, {
@@ -113,7 +114,7 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
             <div className="inspector__title">{gateState.title}</div>
             <div className="inspector__id">{gateState.idLine}</div>
           </div>
-          <button className="btn btn--ghost btn--sm" onClick={() => clearSelectionAfterOperation(studio.deleteInstance(inst.id), clearSelection)}>{gateState.deleteLabel}</button>
+          <button className="btn btn--ghost btn--sm" onClick={() => clearSelectionAfterOperation(deleteGraphNode?.(inst.id), clearSelection)}>{gateState.deleteLabel}</button>
         </div>
       </div>
       <div className="inspector__body">
@@ -228,7 +229,7 @@ function GateInspector({ studio, flow, inst, clearSelection, contract, graphView
 }
 
 // ── Instance (graph node) — TEMPLATE-ONLY fields + member summary ──
-function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, contract, launchView = null, graphView = null, conditionView = null }) {
+function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, deleteGraphNode = null, contract, launchView = null, graphView = null, conditionView = null }) {
   const instanceState = window.MobKitFlowController.graphInstanceControlState({
     inst,
     instances: studio.instances,
@@ -239,7 +240,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
   const member = instanceState.member;
 
   if (inst.isGate) {
-    return <GateInspector studio={studio} flow={flow} inst={inst} clearSelection={clearSelection} contract={contract} graphView={graphView} conditionView={conditionView} />;
+    return <GateInspector studio={studio} flow={flow} inst={inst} clearSelection={clearSelection} deleteGraphNode={deleteGraphNode} contract={contract} graphView={graphView} conditionView={conditionView} />;
   }
 
   if (inst.isTerminal) {
@@ -253,7 +254,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
               <div className="inspector__title">{terminalState.title}</div>
               <div className="inspector__id">{terminalState.idLine}</div>
             </div>
-            <button className="btn btn--ghost btn--sm" onClick={() => clearSelectionAfterOperation(studio.deleteInstance(inst.id), clearSelection)}>{terminalState.deleteLabel}</button>
+            <button className="btn btn--ghost btn--sm" onClick={() => clearSelectionAfterOperation(deleteGraphNode?.(inst.id), clearSelection)}>{terminalState.deleteLabel}</button>
           </div>
         </div>
         <div className="inspector__body">
@@ -290,7 +291,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, c
             <div className="inspector__title">{instanceState.title}</div>
             <div className="inspector__id">{instanceState.idLine}</div>
           </div>
-          <button className="btn btn--ghost btn--sm" onClick={() => clearSelectionAfterOperation(studio.deleteInstance(inst.id), clearSelection)}>{instanceState.deleteLabel}</button>
+          <button className="btn btn--ghost btn--sm" onClick={() => clearSelectionAfterOperation(deleteGraphNode?.(inst.id), clearSelection)}>{instanceState.deleteLabel}</button>
         </div>
       </div>
 
@@ -432,7 +433,7 @@ function GraphCondValue({ field, value, onChange, conditionView = null }) {
 }
 
 // ── Edge ─────────────────────────────────────────────────────────
-function EdgeInspector({ studio, flow, edge, clearSelection, contract, graphView = null, conditionView = null }) {
+function EdgeInspector({ studio, flow, edge, clearSelection, deleteGraphEdge = null, contract, graphView = null, conditionView = null }) {
   const edgeState = window.MobKitFlowController.graphEdgeInspectorState({
     edge,
     instances: studio.instances,
@@ -455,7 +456,7 @@ function EdgeInspector({ studio, flow, edge, clearSelection, contract, graphView
             <div className="inspector__title">{edgeState.title}</div>
             <div className="inspector__id">{edgeState.idLine}</div>
           </div>
-          <button className="btn btn--ghost btn--sm" onClick={() => clearSelectionAfterOperation(studio.deleteEdge(edge.id), clearSelection)}>{edgeState.deleteLabel}</button>
+          <button className="btn btn--ghost btn--sm" onClick={() => clearSelectionAfterOperation(deleteGraphEdge?.(edge.id), clearSelection)}>{edgeState.deleteLabel}</button>
         </div>
       </div>
       <div className="inspector__body">

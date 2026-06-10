@@ -1185,6 +1185,14 @@ function App() {
               selectMember={handleAgentNavigation}
               selectInstance={selectInstance}
               clearSelection={clearSelection}
+              deleteGraphNode={(id) => applyMobKitAuthoringOperation({
+                intent: "graph.deleteNode",
+                instanceId: id,
+              })}
+              deleteGraphEdge={(id) => applyMobKitAuthoringOperation({
+                intent: "graph.deleteEdge",
+                edgeId: id,
+              })}
             />
           </aside>
         </div>

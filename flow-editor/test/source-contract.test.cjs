@@ -179,6 +179,8 @@ assert(!/title=["'](?:Zoom out|Fit to view|Zoom in|Drag to a member to connect)[
 assert.match(app, /<Inspector[\s\S]*templateSeed=\{catalogs\.template\}/, "app shell must inject MobKit summary seed into Inspector");
 assert.match(app, /<Inspector[\s\S]*graphView=\{catalogs\.graphView\}/, "app shell must inject schema-backed Graph view into Inspector");
 assert.match(app, /<Inspector[\s\S]*conditionView=\{catalogs\.conditionView\}/, "app shell must inject schema-backed shared condition view into Graph Inspector");
+assert.match(app, /<Inspector[\s\S]*deleteGraphNode=\{\(id\) => applyMobKitAuthoringOperation\(\{[\s\S]*intent:\s*"graph\.deleteNode"[\s\S]*instanceId:\s*id/, "Graph Inspector node deletes must be explicit MobKit intent callbacks from the app shell");
+assert.match(app, /<Inspector[\s\S]*deleteGraphEdge=\{\(id\) => applyMobKitAuthoringOperation\(\{[\s\S]*intent:\s*"graph\.deleteEdge"[\s\S]*edgeId:\s*id/, "Graph Inspector edge deletes must be explicit MobKit intent callbacks from the app shell");
 assert.match(controller, /template:\s*graphTemplateSeedFromBlankMobpack\(blankMobpack\)/, "Graph template inspector seed must hydrate from the MobKit blank mobpack template");
 assert.match(app, /<Tweaks[\s\S]*modelCatalog=\{catalogs\.models\}/, "deploy settings UI must receive MobKit model catalog via props");
 assert.match(app, /setDeploySettings\(nextCatalogs\.deployDefaults\)/, "app shell must hydrate deploy defaults from MobKit schema");
@@ -310,10 +312,11 @@ assert.match(app, /const clearSelection = \(nextSelection = \{\s*kind:\s*null,\s
 assert.match(app, /intent:\s*"graph\.deleteNode"[\s\S]*instanceId:\s*selection\.id/, "keyboard graph node deletes must submit only instanceId intent data");
 assert.match(app, /intent:\s*"graph\.deleteEdge"[\s\S]*edgeId:\s*selection\.id/, "keyboard graph edge deletes must submit only edgeId intent data");
 assert.match(inspector, /function clearSelectionAfterOperation\(result,\s*clearSelection\)[\s\S]*Promise\.resolve\(result\)[\s\S]*operationResult\?\.ok === false[\s\S]*clearSelection\(operationResult\?\.selection\)/, "Graph inspector deletes must wait for MobKit operation results before clearing selection");
-assert.match(inspectorGateBlock, /clearSelectionAfterOperation\(studio\.deleteInstance\(inst\.id\),\s*clearSelection\)/, "Gate inspector deletes must clear selection from the accepted MobKit result");
-assert.match(inspectorTerminalBlock, /clearSelectionAfterOperation\(studio\.deleteInstance\(inst\.id\),\s*clearSelection\)/, "Terminal inspector deletes must clear selection from the accepted MobKit result");
-assert.match(inspectorInstanceBlock, /clearSelectionAfterOperation\(studio\.deleteInstance\(inst\.id\),\s*clearSelection\)/, "Instance inspector deletes must clear selection from the accepted MobKit result");
-assert.match(inspectorEdgeBlock, /clearSelectionAfterOperation\(studio\.deleteEdge\(edge\.id\),\s*clearSelection\)/, "Edge inspector deletes must clear selection from the accepted MobKit result");
+assert.match(inspectorGateBlock, /clearSelectionAfterOperation\(deleteGraphNode\?\.\(inst\.id\),\s*clearSelection\)/, "Gate inspector deletes must clear selection from the accepted MobKit node-delete result");
+assert.match(inspectorTerminalBlock, /clearSelectionAfterOperation\(deleteGraphNode\?\.\(inst\.id\),\s*clearSelection\)/, "Terminal inspector deletes must clear selection from the accepted MobKit node-delete result");
+assert.match(inspectorInstanceBlock, /clearSelectionAfterOperation\(deleteGraphNode\?\.\(inst\.id\),\s*clearSelection\)/, "Instance inspector deletes must clear selection from the accepted MobKit node-delete result");
+assert.match(inspectorEdgeBlock, /clearSelectionAfterOperation\(deleteGraphEdge\?\.\(edge\.id\),\s*clearSelection\)/, "Edge inspector deletes must clear selection from the accepted MobKit edge-delete result");
+assert(!/studio\.delete(?:Instance|Edge)\(/.test(inspector), "Graph inspector must not expose generic studio delete mutation methods");
 assert(!/studio\.delete(?:Instance|Edge)\([^)]*\);\s*clearSelection\(\)/.test(app + inspector), "Graph deletes must not clear selection locally after controller-owned delete transitions");
 assert(!/studio(?:Add|Update|Delete)SchemaPatch/.test(graph), "Graph state hook must not carry schema mutation authority; Agent Editor typed MobKit operations own schema edits");
 assert.match(app, /useStudioState\(\{[\s\S]*skillRealms:\s*\[\],[\s\S]*\}, markDraft, \{[\s\S]*flow,[\s\S]*setFlow:\s*setAuthoringFlow,[\s\S]*contract,[\s\S]*\}\)/, "app shell must wire the shared studio hook to the Basic authoring flow and MobKit schema contract");
