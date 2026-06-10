@@ -8478,6 +8478,52 @@
     }, { signal });
   }
 
+  function createAuthoringOperationRunner(options = {}) {
+    const hooks = options && typeof options === "object" ? options : {};
+    let queue = Promise.resolve();
+    const runOperation = async (operation) => {
+      const translatedOperation = authoringOperationFromIntent(operation);
+      const availability = authoringOperationAvailability(
+        hooks.getAuthoringOperations?.() || hooks.authoringOperations || {},
+        translatedOperation?.type,
+      );
+      if (!availability.supported) return { ok: false, error: availability.error };
+      const requestToken = hooks.getCurrentRevision?.();
+      let document;
+      try {
+        document = hooks.getCurrentDocument?.();
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) };
+      }
+      const result = await applyAuthoringOperationDocument(document, translatedOperation, {
+        ...(hooks.getDraftGuard?.() || {}),
+        catalogSnapshot: hooks.getCatalogSnapshot?.(),
+      });
+      if (hooks.isRevisionCurrent && !hooks.isRevisionCurrent(requestToken)) {
+        return {
+          ok: false,
+          error: hooks.getStaleError?.() || "MobKit authoring operation result is stale",
+        };
+      }
+      const projection = authoringProjectionFromOperationResult(result, hooks.getProjectionDefaults?.() || {});
+      if (!projection) {
+        return {
+          ok: false,
+          error: hooks.getMissingDocumentError?.() || "MobKit authoring operation did not return a document",
+        };
+      }
+      hooks.beginProjectionSync?.();
+      hooks.applyProjection?.(projection);
+      hooks.markDraft?.();
+      return result;
+    };
+    return (operation) => {
+      const run = queue.catch(() => null).then(() => runOperation(operation));
+      queue = run.catch(() => null);
+      return run;
+    };
+  }
+
   async function graphProjectionDocument(document, options = {}) {
     const { signal, ...requestOptions } = options || {};
     return callRpc(rpcMethod("graphProjection"), { document, ...requestOptions }, { signal });
@@ -11457,6 +11503,7 @@
     saveDocument,
     deleteDocument,
     applyAuthoringOperationDocument,
+    createAuthoringOperationRunner,
     graphProjectionDocument,
     graphToFlowDocument,
     importParamsFromDecodedFile,

@@ -10715,4 +10715,124 @@ assert.deepEqual(redoPatch.history[0].members, [{ id: "m1" }]);
 assert.equal(redoPatch.future.length, 0);
 assert.equal(controller.studioRedoPatch({ history: [], future: [], state: studioStateA }), null);
 
-console.log("controller projection metadata ok");
+async function exerciseAuthoringOperationRunner() {
+  const originalFetch = global.fetch;
+  const rpcCalls = [];
+  const projections = [];
+  let markedDrafts = 0;
+  let projectionSyncs = 0;
+  let inFlight = 0;
+  let maxInFlight = 0;
+
+  global.fetch = async (url, options) => {
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await Promise.resolve();
+    const request = JSON.parse(options.body);
+    rpcCalls.push({ url, request });
+    const operation = request.params.operation;
+    const document = {
+      ...storedGraphDocument,
+      deploy: {
+        ...(storedGraphDocument.deploy || {}),
+        prompt: operation.value,
+      },
+    };
+    inFlight -= 1;
+    return {
+      ok: true,
+      json: async () => ({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          source: "mobkit/mobpacks/apply_operation",
+          operation: operation.type,
+          document,
+          selection: operation.selection || null,
+          validation: { ok: true },
+        },
+      }),
+    };
+  };
+
+  try {
+    controller.configure({ rpcUrl: "/runner-rpc" });
+    const runner = controller.createAuthoringOperationRunner({
+      getAuthoringOperations: () => ({
+        update_deploy_settings: { type: "update_deploy_settings" },
+      }),
+      getCurrentDocument: () => storedGraphDocument,
+      getDraftGuard: () => ({ expected_revision: 7, expected_etag: "draft-etag" }),
+      getCatalogSnapshot: () => ({ id: "catalog-snapshot-1" }),
+      getCurrentRevision: () => 42,
+      isRevisionCurrent: (revision) => revision === 42,
+      getProjectionDefaults: () => ({
+        deployDefaults: testDeploySettings(),
+        mobDefaults: controller.mobDefaultsFromSchema(TEST_SCHEMA),
+      }),
+      beginProjectionSync: () => {
+        projectionSyncs += 1;
+      },
+      applyProjection: (projection) => {
+        projections.push(projection);
+      },
+      markDraft: () => {
+        markedDrafts += 1;
+      },
+    });
+
+    const [firstResult, secondResult] = await Promise.all([
+      runner({ intent: "settings.updateDeployField", field: "prompt", value: "first prompt" }),
+      runner({ intent: "settings.updateDeployField", field: "prompt", value: "second prompt" }),
+    ]);
+
+    assert.equal(firstResult.operation, "update_deploy_settings");
+    assert.equal(secondResult.document.deploy.prompt, "second prompt");
+    assert.equal(maxInFlight, 1);
+    assert.equal(rpcCalls.length, 2);
+    assert.equal(rpcCalls[0].url, "/runner-rpc");
+    assert.equal(rpcCalls[0].request.method, "mobkit/mobpacks/apply_operation");
+    assert.equal(rpcCalls[0].request.params.operation.type, "update_deploy_settings");
+    assert.equal(rpcCalls[0].request.params.operation.field, "prompt");
+    assert.equal(rpcCalls[0].request.params.expected_catalog_snapshot_id, "catalog-snapshot-1");
+    assert.equal(rpcCalls[0].request.params.expected_revision, 7);
+    assert.equal(rpcCalls[0].request.params.expected_etag, "draft-etag");
+    assert.equal(projections.length, 2);
+    assert.equal(projections[1].deploySettings.prompt, "second prompt");
+    assert.equal(projectionSyncs, 2);
+    assert.equal(markedDrafts, 2);
+
+    const staleRunner = controller.createAuthoringOperationRunner({
+      getAuthoringOperations: () => ({
+        update_deploy_settings: { type: "update_deploy_settings" },
+      }),
+      getCurrentDocument: () => storedGraphDocument,
+      getCatalogSnapshot: () => "catalog-snapshot-1",
+      getCurrentRevision: () => 100,
+      isRevisionCurrent: () => false,
+      getStaleError: () => "stale authoring revision",
+      applyProjection: (projection) => {
+        projections.push(projection);
+      },
+      markDraft: () => {
+        markedDrafts += 1;
+      },
+    });
+    const staleResult = await staleRunner({ intent: "settings.updateDeployField", field: "prompt", value: "stale prompt" });
+    assert.deepEqual(staleResult, { ok: false, error: "stale authoring revision" });
+    assert.equal(projections.length, 2);
+    assert.equal(markedDrafts, 2);
+  } finally {
+    global.fetch = originalFetch;
+    controller.configure({ rpcUrl: "/flow-editor/rpc" });
+  }
+}
+
+exerciseAuthoringOperationRunner()
+  .then(() => {
+    console.log("controller projection metadata ok");
+  })
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

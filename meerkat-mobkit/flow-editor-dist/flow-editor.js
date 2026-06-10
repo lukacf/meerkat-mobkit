@@ -8511,6 +8511,52 @@ window.MOBKIT_BOOT = {
     }, { signal });
   }
 
+  function createAuthoringOperationRunner(options = {}) {
+    const hooks = options && typeof options === "object" ? options : {};
+    let queue = Promise.resolve();
+    const runOperation = async (operation) => {
+      const translatedOperation = authoringOperationFromIntent(operation);
+      const availability = authoringOperationAvailability(
+        hooks.getAuthoringOperations?.() || hooks.authoringOperations || {},
+        translatedOperation?.type,
+      );
+      if (!availability.supported) return { ok: false, error: availability.error };
+      const requestToken = hooks.getCurrentRevision?.();
+      let document;
+      try {
+        document = hooks.getCurrentDocument?.();
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) };
+      }
+      const result = await applyAuthoringOperationDocument(document, translatedOperation, {
+        ...(hooks.getDraftGuard?.() || {}),
+        catalogSnapshot: hooks.getCatalogSnapshot?.(),
+      });
+      if (hooks.isRevisionCurrent && !hooks.isRevisionCurrent(requestToken)) {
+        return {
+          ok: false,
+          error: hooks.getStaleError?.() || "MobKit authoring operation result is stale",
+        };
+      }
+      const projection = authoringProjectionFromOperationResult(result, hooks.getProjectionDefaults?.() || {});
+      if (!projection) {
+        return {
+          ok: false,
+          error: hooks.getMissingDocumentError?.() || "MobKit authoring operation did not return a document",
+        };
+      }
+      hooks.beginProjectionSync?.();
+      hooks.applyProjection?.(projection);
+      hooks.markDraft?.();
+      return result;
+    };
+    return (operation) => {
+      const run = queue.catch(() => null).then(() => runOperation(operation));
+      queue = run.catch(() => null);
+      return run;
+    };
+  }
+
   async function graphProjectionDocument(document, options = {}) {
     const { signal, ...requestOptions } = options || {};
     return callRpc(rpcMethod("graphProjection"), { document, ...requestOptions }, { signal });
@@ -11490,6 +11536,7 @@ window.MOBKIT_BOOT = {
     saveDocument,
     deleteDocument,
     applyAuthoringOperationDocument,
+    createAuthoringOperationRunner,
     graphProjectionDocument,
     graphToFlowDocument,
     importParamsFromDecodedFile,
@@ -14017,9 +14064,29 @@ function App() {
   const [deploySettings, setDeploySettings] = React.useState(() => window.MobKitFlowController.deployDefaultsFromSchema(null));
   const [deployCommandPreview, setDeployCommandPreview] = React.useState("");
   const [mobSettings, setMobSettings] = React.useState(() => window.MobKitFlowController.mobDefaultsFromSchema(null));
+  const authoringRunnerContext = React.useRef({});
+  const authoringOperationRunner = React.useRef(null);
   const projectionSyncInFlight = React.useRef(false);
   const projectionSyncReset = React.useRef(0);
-  const authoringOperationQueue = React.useRef(Promise.resolve());
+  if (!authoringOperationRunner.current) {
+    authoringOperationRunner.current = window.MobKitFlowController.createAuthoringOperationRunner({
+      getAuthoringOperations: () => authoringRunnerContext.current.catalogs?.authoringOperations,
+      getCurrentDocument: () => authoringRunnerContext.current.currentMobKitDocument(),
+      getDraftGuard: () => authoringRunnerContext.current.currentDraftGuard(),
+      getCatalogSnapshot: () => authoringRunnerContext.current.catalogs?.catalogSnapshot,
+      getCurrentRevision: () => authoringRunnerContext.current.currentAuthoringRevision(),
+      isRevisionCurrent: (requestToken) => authoringRunnerContext.current.authoringRevisionIsCurrent(requestToken),
+      getProjectionDefaults: () => ({
+        deployDefaults: authoringRunnerContext.current.catalogs?.deployDefaults,
+        mobDefaults: authoringRunnerContext.current.catalogs?.mobDefaults
+      }),
+      getStaleError: () => authoringRunnerContext.current.catalogs?.errorView?.authoringOperationStaleError,
+      getMissingDocumentError: () => authoringRunnerContext.current.catalogs?.errorView?.authoringOperationMissingDocumentError,
+      beginProjectionSync: () => authoringRunnerContext.current.beginProjectionSync(),
+      applyProjection: (projection) => authoringRunnerContext.current.applyAuthoringDocumentProjection(projection),
+      markDraft: () => authoringRunnerContext.current.markDraft()
+    });
+  }
   const beginProjectionSync = React.useCallback(() => {
     projectionSyncInFlight.current = true;
     if (projectionSyncReset.current) window.cancelAnimationFrame(projectionSyncReset.current);
@@ -14037,11 +14104,6 @@ function App() {
   const sourceProjectionIsCurrent = React.useCallback((requestToken) => requestToken === sourceProjectionVersion.current, []);
   const currentAuthoringRevision = React.useCallback(() => authoringRevision.current, []);
   const authoringRevisionIsCurrent = React.useCallback((requestToken) => requestToken === authoringRevision.current, []);
-  const enqueueMobKitAuthoringTask = React.useCallback((task) => {
-    const run = authoringOperationQueue.current.catch(() => null).then(task);
-    authoringOperationQueue.current = run.catch(() => null);
-    return run;
-  }, []);
   const setCurrentAuthoringDocument = React.useCallback((document2) => {
     const next = document2 && typeof document2 === "object" ? document2 : null;
     authoringDocumentRef.current = next;
@@ -14483,36 +14545,17 @@ function App() {
     }
     return { document: result.document, requestToken };
   };
-  const applyMobKitAuthoringOperation = async (operation) => {
-    return enqueueMobKitAuthoringTask(async () => {
-      const translatedOperation = window.MobKitFlowController.authoringOperationFromIntent(operation);
-      const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, translatedOperation?.type);
-      if (!availability.supported) return { ok: false, error: availability.error };
-      const requestToken = currentAuthoringRevision();
-      let document2;
-      try {
-        document2 = currentMobKitDocument();
-      } catch (error) {
-        return { ok: false, error: error?.message || String(error) };
-      }
-      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, translatedOperation, {
-        ...currentDraftGuard(),
-        catalogSnapshot: catalogs.catalogSnapshot
-      });
-      if (!authoringRevisionIsCurrent(requestToken)) {
-        return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
-      }
-      const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
-        deployDefaults: catalogs.deployDefaults,
-        mobDefaults: catalogs.mobDefaults
-      });
-      if (!projection) return { ok: false, error: catalogs.errorView.authoringOperationMissingDocumentError };
-      beginProjectionSync();
-      applyAuthoringDocumentProjection(projection);
-      markDraft();
-      return result;
-    });
+  authoringRunnerContext.current = {
+    catalogs,
+    currentMobKitDocument,
+    currentDraftGuard,
+    currentAuthoringRevision,
+    authoringRevisionIsCurrent,
+    beginProjectionSync,
+    applyAuthoringDocumentProjection,
+    markDraft
   };
+  const applyMobKitAuthoringOperation = React.useCallback((operation) => authoringOperationRunner.current(operation), []);
   const mobKitStudio = {
     ...studio,
     addInstance: (instance) => {

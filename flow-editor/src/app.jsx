@@ -57,9 +57,29 @@ function App() {
   const [deploySettings, setDeploySettings] = React.useState(() => window.MobKitFlowController.deployDefaultsFromSchema(null));
   const [deployCommandPreview, setDeployCommandPreview] = React.useState("");
   const [mobSettings, setMobSettings] = React.useState(() => window.MobKitFlowController.mobDefaultsFromSchema(null));
+  const authoringRunnerContext = React.useRef({});
+  const authoringOperationRunner = React.useRef(null);
   const projectionSyncInFlight = React.useRef(false);
   const projectionSyncReset = React.useRef(0);
-  const authoringOperationQueue = React.useRef(Promise.resolve());
+  if (!authoringOperationRunner.current) {
+    authoringOperationRunner.current = window.MobKitFlowController.createAuthoringOperationRunner({
+      getAuthoringOperations: () => authoringRunnerContext.current.catalogs?.authoringOperations,
+      getCurrentDocument: () => authoringRunnerContext.current.currentMobKitDocument(),
+      getDraftGuard: () => authoringRunnerContext.current.currentDraftGuard(),
+      getCatalogSnapshot: () => authoringRunnerContext.current.catalogs?.catalogSnapshot,
+      getCurrentRevision: () => authoringRunnerContext.current.currentAuthoringRevision(),
+      isRevisionCurrent: (requestToken) => authoringRunnerContext.current.authoringRevisionIsCurrent(requestToken),
+      getProjectionDefaults: () => ({
+        deployDefaults: authoringRunnerContext.current.catalogs?.deployDefaults,
+        mobDefaults: authoringRunnerContext.current.catalogs?.mobDefaults,
+      }),
+      getStaleError: () => authoringRunnerContext.current.catalogs?.errorView?.authoringOperationStaleError,
+      getMissingDocumentError: () => authoringRunnerContext.current.catalogs?.errorView?.authoringOperationMissingDocumentError,
+      beginProjectionSync: () => authoringRunnerContext.current.beginProjectionSync(),
+      applyProjection: (projection) => authoringRunnerContext.current.applyAuthoringDocumentProjection(projection),
+      markDraft: () => authoringRunnerContext.current.markDraft(),
+    });
+  }
   const beginProjectionSync = React.useCallback(() => {
     projectionSyncInFlight.current = true;
     if (projectionSyncReset.current) window.cancelAnimationFrame(projectionSyncReset.current);
@@ -79,11 +99,6 @@ function App() {
   const currentAuthoringRevision = React.useCallback(() => authoringRevision.current, []);
   const authoringRevisionIsCurrent = React.useCallback((requestToken) =>
     requestToken === authoringRevision.current, []);
-  const enqueueMobKitAuthoringTask = React.useCallback((task) => {
-    const run = authoringOperationQueue.current.catch(() => null).then(task);
-    authoringOperationQueue.current = run.catch(() => null);
-    return run;
-  }, []);
   const setCurrentAuthoringDocument = React.useCallback((document) => {
     const next = document && typeof document === "object" ? document : null;
     authoringDocumentRef.current = next;
@@ -550,36 +565,18 @@ function App() {
     }
     return { document: result.document, requestToken };
   };
-  const applyMobKitAuthoringOperation = async (operation) => {
-    return enqueueMobKitAuthoringTask(async () => {
-      const translatedOperation = window.MobKitFlowController.authoringOperationFromIntent(operation);
-      const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, translatedOperation?.type);
-      if (!availability.supported) return { ok: false, error: availability.error };
-      const requestToken = currentAuthoringRevision();
-      let document;
-      try {
-        document = currentMobKitDocument();
-      } catch (error) {
-        return { ok: false, error: error?.message || String(error) };
-      }
-      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, translatedOperation, {
-        ...currentDraftGuard(),
-        catalogSnapshot: catalogs.catalogSnapshot,
-      });
-      if (!authoringRevisionIsCurrent(requestToken)) {
-        return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
-      }
-      const projection = window.MobKitFlowController.authoringProjectionFromOperationResult(result, {
-        deployDefaults: catalogs.deployDefaults,
-        mobDefaults: catalogs.mobDefaults,
-      });
-      if (!projection) return { ok: false, error: catalogs.errorView.authoringOperationMissingDocumentError };
-      beginProjectionSync();
-      applyAuthoringDocumentProjection(projection);
-      markDraft();
-      return result;
-    });
+  authoringRunnerContext.current = {
+    catalogs,
+    currentMobKitDocument,
+    currentDraftGuard,
+    currentAuthoringRevision,
+    authoringRevisionIsCurrent,
+    beginProjectionSync,
+    applyAuthoringDocumentProjection,
+    markDraft,
   };
+  const applyMobKitAuthoringOperation = React.useCallback((operation) =>
+    authoringOperationRunner.current(operation), []);
   const mobKitStudio = {
     ...studio,
     addInstance: (instance) => {
