@@ -486,7 +486,13 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
       <div className="bld-opts__group">{pickerState.flowLabel}</div>
       <div className="bld-opts">
         {pickerState.primitiveRows.map(row => (
-          <button key={row.id} className="bld-opt" onClick={() => onPick(row.pick)}>
+          <button
+            key={row.id}
+            className="bld-opt"
+            disabled={row.disabled}
+            title={row.disabledReason || undefined}
+            onClick={() => !row.disabled && row.pick && onPick(row.pick)}
+          >
             <span className={"bld-opt__icon tint--" + row.tint}>{row.glyph}</span>
             <span className="bld-opt__text">
               <span className="bld-opt__label">{row.label}{row.isNew && <span className="bld-opt__new">{pickerState.newBadgeLabel}</span>}</span>

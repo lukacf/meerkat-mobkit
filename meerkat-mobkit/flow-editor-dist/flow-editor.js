@@ -1636,7 +1636,17 @@ window.MOBKIT_BOOT = {
         const label = String(row.label || "").trim();
         const sub = String(row.sub || "").trim();
         if (!id || !glyph || !tint || !label || !sub) return null;
-        return { id, glyph, tint, label, sub, isNew: Boolean(row.is_new) };
+        const disabledReason = String(row.disabled_reason || "").trim();
+        return {
+          id,
+          glyph,
+          tint,
+          label,
+          sub,
+          isNew: Boolean(row.is_new),
+          disabled: Boolean(row.disabled),
+          disabledReason,
+        };
       })
       .filter(Boolean);
   }
@@ -9125,9 +9135,13 @@ window.MOBKIT_BOOT = {
       ? contract.mob_definition.editor_flow_step_types.map(String)
       : [];
     const metadata = Object.fromEntries((view.flowPrimitiveRows || []).map((row) => [row.id, row]));
-    return stepTypes
+    const supportedRows = stepTypes
       .filter((type) => metadata[type])
       .map((type) => metadata[type]);
+    const supported = new Set(stepTypes);
+    const disabledRows = (view.flowPrimitiveRows || [])
+      .filter((row) => row?.disabled && !supported.has(row.id));
+    return [...supportedRows, ...disabledRows];
   }
 
   function graphControlNodes(contract, graphView = null) {
@@ -9294,7 +9308,9 @@ window.MOBKIT_BOOT = {
         label: String(primitive.label || ""),
         sub: String(primitive.sub || ""),
         isNew: Boolean(primitive.isNew),
-        pick: { kind: primitive.id },
+        disabled: Boolean(primitive.disabled),
+        disabledReason: String(primitive.disabledReason || ""),
+        pick: primitive.disabled ? null : { kind: primitive.id },
       }))
       .filter((row) => row.id);
     return {
@@ -13629,7 +13645,18 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
   if (pickerState.mode === "kickoff") {
     return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, pickerState.kickoffHint));
   }
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-search" }, /* @__PURE__ */ React.createElement("span", { className: "bld-search__icon" }, pickerState.searchIcon), /* @__PURE__ */ React.createElement("input", { className: "bld-search__input", placeholder: pickerState.searchPlaceholder, value: q, onChange: (e) => setQ(e.target.value), autoFocus: true })), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.membersLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.iconTint }, row.icon), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub)))), !pickerState.hasConfiguredMembers && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { padding: "4px 8px" } }, pickerState.emptyMembersHint)), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.flowLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.primitiveRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.tint }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.label, row.isNew && /* @__PURE__ */ React.createElement("span", { className: "bld-opt__new" }, pickerState.newBadgeLabel)), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub))))));
+  return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-search" }, /* @__PURE__ */ React.createElement("span", { className: "bld-search__icon" }, pickerState.searchIcon), /* @__PURE__ */ React.createElement("input", { className: "bld-search__input", placeholder: pickerState.searchPlaceholder, value: q, onChange: (e) => setQ(e.target.value), autoFocus: true })), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.membersLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.iconTint }, row.icon), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub)))), !pickerState.hasConfiguredMembers && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { padding: "4px 8px" } }, pickerState.emptyMembersHint)), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.flowLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.primitiveRows.map((row) => /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      key: row.id,
+      className: "bld-opt",
+      disabled: row.disabled,
+      title: row.disabledReason || void 0,
+      onClick: () => !row.disabled && row.pick && onPick(row.pick)
+    },
+    /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.tint }, row.glyph),
+    /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.label, row.isNew && /* @__PURE__ */ React.createElement("span", { className: "bld-opt__new" }, pickerState.newBadgeLabel)), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub))
+  ))));
 }
 function StepInspector({ studio, members, flow, setFlow, step, update, editStep, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null }) {
   const [paramAddResult, setParamAddResult] = React.useState(null);

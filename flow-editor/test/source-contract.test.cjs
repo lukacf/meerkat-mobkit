@@ -657,6 +657,9 @@ assert.match(controller, /repeatPanelTitle:\s*String\(view\.repeat_panel_title/,
 assert.match(controller, /repeatCanvasLoopBackPrefix:\s*String\(view\.repeat_canvas_loop_back_prefix/, "controller plane must hydrate Basic repeat canvas labels from MobKit schema");
 assert.match(controller, /pickerSearchPlaceholder:\s*String\(view\.picker_search_placeholder/, "controller plane must hydrate Basic picker labels from MobKit schema");
 assert.match(controller, /flowPrimitiveRows:\s*basicFlowPrimitiveRowsFromSchema\(view\.flow_primitive_rows\)/, "controller plane must hydrate Basic primitive palette rows from MobKit schema");
+assert.match(controller, /const disabledReason = String\(row\.disabled_reason \|\| ""\)\.trim\(\)[\s\S]*disabled:\s*Boolean\(row\.disabled\)[\s\S]*disabledReason/, "controller plane must preserve MobKit-backed disabled primitive reasons");
+assert.match(controller, /pick:\s*primitive\.disabled\s*\?\s*null\s*:\s*\{\s*kind:\s*primitive\.id\s*\}/, "unsupported Basic primitive rows must render without authoring picks");
+assert.match(builderStepPickerBlock, /disabled=\{row\.disabled\}[\s\S]*title=\{row\.disabledReason \|\| undefined\}[\s\S]*!row\.disabled && row\.pick && onPick\(row\.pick\)/, "Basic picker must render schema-backed unsupported primitives as disabled affordances");
 assert.match(builderMemberStepControlBlock, /basicMemberStepControlState\(\{[\s\S]*basicView/, "Basic member-step controls must pass schema-backed Basic view into controller projection");
 assert.match(builder, /stepToolScopeState\(\{[\s\S]*basicView/, "Basic tool-scope controls must pass schema-backed Basic view into controller projection");
 assert(!/>START<|>LOOP<|>Tips<|Build your mob flow|Pick a node to configure|member turn or flow primitive/.test(builder), "Basic editor chrome copy must not be composed locally");

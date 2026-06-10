@@ -1603,7 +1603,17 @@
         const label = String(row.label || "").trim();
         const sub = String(row.sub || "").trim();
         if (!id || !glyph || !tint || !label || !sub) return null;
-        return { id, glyph, tint, label, sub, isNew: Boolean(row.is_new) };
+        const disabledReason = String(row.disabled_reason || "").trim();
+        return {
+          id,
+          glyph,
+          tint,
+          label,
+          sub,
+          isNew: Boolean(row.is_new),
+          disabled: Boolean(row.disabled),
+          disabledReason,
+        };
       })
       .filter(Boolean);
   }
@@ -9092,9 +9102,13 @@
       ? contract.mob_definition.editor_flow_step_types.map(String)
       : [];
     const metadata = Object.fromEntries((view.flowPrimitiveRows || []).map((row) => [row.id, row]));
-    return stepTypes
+    const supportedRows = stepTypes
       .filter((type) => metadata[type])
       .map((type) => metadata[type]);
+    const supported = new Set(stepTypes);
+    const disabledRows = (view.flowPrimitiveRows || [])
+      .filter((row) => row?.disabled && !supported.has(row.id));
+    return [...supportedRows, ...disabledRows];
   }
 
   function graphControlNodes(contract, graphView = null) {
@@ -9261,7 +9275,9 @@
         label: String(primitive.label || ""),
         sub: String(primitive.sub || ""),
         isNew: Boolean(primitive.isNew),
-        pick: { kind: primitive.id },
+        disabled: Boolean(primitive.disabled),
+        disabledReason: String(primitive.disabledReason || ""),
+        pick: primitive.disabled ? null : { kind: primitive.id },
       }))
       .filter((row) => row.id);
     return {

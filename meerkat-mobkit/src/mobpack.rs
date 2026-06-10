@@ -2258,6 +2258,25 @@ pub fn mobpack_schema_response() -> Value {
             "tint": "member",
             "label": "Parallel",
             "sub": "fan_out to several members, then fan_in with a collection policy"
+        },
+        {
+            "id": "subagent",
+            "glyph": "⬡",
+            "tint": "link",
+            "label": "Sub-mob",
+            "sub": "delegate to a nested mob, tested and packed on its own",
+            "is_new": true,
+            "disabled": true,
+            "disabled_reason": "Current MobKit mob.toml flow semantics do not yet define deployable sub-mob nodes"
+        },
+        {
+            "id": "wait",
+            "glyph": "▮▮",
+            "tint": "link",
+            "label": "Wait for input",
+            "sub": "Pause the flow for required input before continuing",
+            "disabled": true,
+            "disabled_reason": "Current MobKit mob.toml flow semantics do not yet define deployable wait-for-input nodes"
         }
     ]);
     let editor_graph_template_view = json!({
@@ -29579,6 +29598,22 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_basic_view"]["flow_primitive_rows"][2]["id"],
             json!("parallel")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["flow_primitive_rows"][3]["id"],
+            json!("subagent")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["flow_primitive_rows"][3]["disabled"],
+            json!(true)
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["flow_primitive_rows"][4]["id"],
+            json!("wait")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["flow_primitive_rows"][4]["disabled"],
+            json!(true)
         );
         assert_eq!(
             mob_definition["editor_graph_template_view"]["template_eyebrow"],

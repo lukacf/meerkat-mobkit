@@ -1453,6 +1453,25 @@ const hydratedContractAndCatalogFixture = {
           label: "Parallel",
           sub: "fan_out to several members, then fan_in with a collection policy",
         },
+        {
+          id: "subagent",
+          glyph: "⬡",
+          tint: "link",
+          label: "Sub-mob",
+          sub: "delegate to a nested mob, tested and packed on its own",
+          is_new: true,
+          disabled: true,
+          disabled_reason: "Current MobKit mob.toml flow semantics do not yet define deployable sub-mob nodes",
+        },
+        {
+          id: "wait",
+          glyph: "▮▮",
+          tint: "link",
+          label: "Wait for input",
+          sub: "Pause the flow for required input before continuing",
+          disabled: true,
+          disabled_reason: "Current MobKit mob.toml flow semantics do not yet define deployable wait-for-input nodes",
+        },
       ],
     },
     editor_graph_view: {
@@ -1947,6 +1966,8 @@ assert.deepEqual(hydratedCatalogs.basicView, {
       label: "Repeat until",
       sub: "Loop a body of steps until a condition holds (max_iterations)",
       isNew: false,
+      disabled: false,
+      disabledReason: "",
     },
     {
       id: "branch",
@@ -1955,6 +1976,8 @@ assert.deepEqual(hydratedCatalogs.basicView, {
       label: "Branch",
       sub: "Pick one downstream path by condition (first match wins)",
       isNew: false,
+      disabled: false,
+      disabledReason: "",
     },
     {
       id: "parallel",
@@ -1963,6 +1986,28 @@ assert.deepEqual(hydratedCatalogs.basicView, {
       label: "Parallel",
       sub: "fan_out to several members, then fan_in with a collection policy",
       isNew: false,
+      disabled: false,
+      disabledReason: "",
+    },
+    {
+      id: "subagent",
+      glyph: "⬡",
+      tint: "link",
+      label: "Sub-mob",
+      sub: "delegate to a nested mob, tested and packed on its own",
+      isNew: true,
+      disabled: true,
+      disabledReason: "Current MobKit mob.toml flow semantics do not yet define deployable sub-mob nodes",
+    },
+    {
+      id: "wait",
+      glyph: "▮▮",
+      tint: "link",
+      label: "Wait for input",
+      sub: "Pause the flow for required input before continuing",
+      isNew: false,
+      disabled: true,
+      disabledReason: "Current MobKit mob.toml flow semantics do not yet define deployable wait-for-input nodes",
     },
   ],
 });
@@ -7698,6 +7743,13 @@ assert.equal(emptyBasicPickerState.hasConfiguredMembers, false);
 assert.deepEqual(emptyBasicPickerState.memberRows, []);
 assert.deepEqual(emptyBasicPickerState.primitiveRows.map((row) => [row.id, row.glyph, row.tint]), [
   ["branch", "⑂", "member"],
+  ["subagent", "⬡", "link"],
+  ["wait", "▮▮", "link"],
+]);
+assert.deepEqual(emptyBasicPickerState.primitiveRows.map((row) => [row.id, row.disabled, row.pick]), [
+  ["branch", false, { kind: "branch" }],
+  ["subagent", true, null],
+  ["wait", true, null],
 ]);
 
 const graphShapeContract = {
