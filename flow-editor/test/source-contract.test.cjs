@@ -247,7 +247,7 @@ assert(!/instances:\s*inserted\.instances|edges:\s*inserted\.edges|flow:\s*inser
 assert(!/intent:\s*"graph\.insertNode"[\s\S]{0,260}instance,|intent:\s*"graph\.insertNode"[\s\S]{0,260}instance:/.test(app), "Graph instance adds must not send raw instance payloads through normal authoring");
 assert.match(app, /addInstance:\s*\(instance\)[\s\S]*pick:\s*\{\s*kind:\s*"memberInstance",\s*memberId\s*\}[\s\S]*cell:\s*\{\s*col,\s*row\s*\}/, "Legacy graph instance helpers must translate memberId and cell into semantic MobKit graph insert payloads");
 assert(!/intent:\s*"graph\.insertNode"[\s\S]{0,600}studio:\s*\{\s*instances:/.test(app), "Graph instance adds must not send browser-projected graph rows as authority");
-assert.match(app, /intent:\s*"graph\.updateNode"[\s\S]*instanceId:\s*id,[\s\S]*patch/, "Graph instance updates must send instanceId and patch through the controller plane");
+assert.match(app, /editInstance:\s*\(id,\s*action,\s*payload = \{\}\)[\s\S]*intent:\s*"graph\.editNode"[\s\S]*instanceId:\s*id,[\s\S]*action,[\s\S]*payload/, "Graph instance edits must send instanceId and semantic action through the controller plane");
 assert.match(graph, /intent:\s*"graph\.moveNode"[\s\S]*instanceId:\s*drag\.instId[\s\S]*cell[\s\S]*originalCell:/, "Graph drag moves must send instanceId, cell, and originalCell through the controller plane");
 assert(!/intent:\s*"graph\.moveNode"[\s\S]{0,700}studio:\s*\{\s*instances:/.test(graph), "Graph drag moves must not send browser-computed moved instance rows as authority");
 assert.match(app, /intent:\s*"graph\.deleteNode"[\s\S]*instanceId:\s*id/, "Graph instance deletes must send instanceId through the controller plane");
@@ -259,7 +259,7 @@ assert.match(app, /addEdge:\s*\(edge\)[\s\S]*fromId[\s\S]*toId[\s\S]*intent:\s*"
 assert(!/intent:\s*"graph\.connectNodes"[\s\S]{0,700}studio:\s*\{\s*edges:/.test(app), "Graph edge adds must not send browser-projected edge rows as authority");
 assert.match(graph, /intent:\s*"graph\.connectNodes"[\s\S]*fromId:\s*conn\.fromId,[\s\S]*toId:\s*closest\.dataset\.instId/, "Graph port connections must send semantic endpoint payloads through the controller plane");
 assert(!/graphConnectionAddPatch\(\{[\s\S]*fromId:\s*conn\.fromId|operation:\s*\{\s*edge:\s*result\.edge\s*\}/.test(graph), "Graph port connections must not draft edge objects locally");
-assert.match(app, /intent:\s*"graph\.updateEdge"[\s\S]*edgeId:\s*id,[\s\S]*patch/, "Graph edge updates must send edgeId and patch through the controller plane");
+assert.match(app, /editEdge:\s*\(id,\s*action,\s*payload = \{\}\)[\s\S]*intent:\s*"graph\.editEdge"[\s\S]*edgeId:\s*id,[\s\S]*action,[\s\S]*payload/, "Graph edge edits must send edgeId and semantic action through the controller plane");
 assert.match(app, /intent:\s*"graph\.deleteEdge"[\s\S]*edgeId:\s*id/, "Graph edge deletes must send edgeId through the controller plane");
 assert.match(mobpackRust, /"type":\s*"insert_graph_node"[\s\S]*"authority":\s*"mobkit"[\s\S]*"requires":\s*\["pick",\s*"cell"\]/, "MobKit operation catalog must advertise graph node insert as semantic MobKit-owned operation");
 assert.match(mobpackRust, /fn graph_quick_insert_from_pick[\s\S]*memberInstance[\s\S]*gateKind[\s\S]*editor_graph_draft/, "MobKit apply_operation must own Graph quick-insert member and control-shape draft creation");
@@ -468,6 +468,7 @@ assert.match(inspectorGateBlock, /graphBranchConditionRows\(\{[\s\S]*graphView/,
 assert.match(controller, /function graphBranchConditionRows/, "controller plane must own Graph branch condition row projection");
 assert.match(mobpackRust, /"type":\s*"apply_graph_node_edit"[\s\S]*"authority":\s*"mobkit"/, "MobKit operation catalog must expose semantic graph node edits");
 assert.match(mobpackRust, /"apply_graph_node_edit"\s*=>\s*apply_graph_node_edit_operation/, "MobKit apply_operation must own semantic graph node edits");
+assert(!/"type":\s*"update_graph_node"[\s\S]{0,160}"plane":\s*"graph"|"update_graph_node"\s*=>|graph\.updateNode/.test(mobpackRust + "\n" + controller + "\n" + app), "Graph node authoring must not expose raw patch updates; use apply_graph_node_edit");
 assert.match(inspectorGateBlock, /const change = \(action, payload = \{\}\) => studio\.editInstance\(inst\.id, action, payload\)/, "Graph gate inspector must route node edits through MobKit semantic graph node edits");
 assert.match(inspectorGateBlock, /change\("set_gate_kind"/, "Graph Inspector gate-kind edits must use semantic MobKit graph node edits");
 assert.match(inspectorGateBlock, /change\("set_join_collection"/, "Graph Inspector join collection edits must use semantic MobKit graph node edits");
@@ -892,6 +893,7 @@ assert.match(controller, /function graphConditionOptions/, "controller plane mus
 assert(!/function (?:parseGraphConditionVar|flowInputParams|graphConditionOptions)\(/.test(inspector), "Graph inspector must not own graph condition parsing or option helpers");
 assert.match(mobpackRust, /"type":\s*"apply_graph_edge_edit"[\s\S]*"authority":\s*"mobkit"/, "MobKit operation catalog must expose semantic graph edge edits");
 assert.match(mobpackRust, /"apply_graph_edge_edit"\s*=>\s*apply_graph_edge_edit_operation/, "MobKit apply_operation must own semantic graph edge edits");
+assert(!/"type":\s*"update_graph_edge"[\s\S]{0,160}"plane":\s*"graph"|"update_graph_edge"\s*=>|graph\.updateEdge/.test(mobpackRust + "\n" + controller + "\n" + app), "Graph edge authoring must not expose raw patch updates; use apply_graph_edge_edit");
 assert.match(inspectorGateBlock + "\n" + inspectorEdgeBlock, /"set_condition_operator"/, "Graph inspector condition operator edits must use semantic MobKit graph edge edits");
 assert.match(inspectorGateBlock + "\n" + inspectorEdgeBlock, /"set_condition_value"/, "Graph inspector condition value edits must use semantic MobKit graph edge edits");
 assert.match(inspectorGateBlock + "\n" + inspectorEdgeBlock, /"set_condition_owner"/, "Graph inspector condition owner edits must use semantic MobKit graph edge edits");

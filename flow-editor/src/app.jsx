@@ -595,13 +595,6 @@ function App() {
         cell: { col, row },
       });
     },
-    updateInstance: (id, patch) => {
-      return applyMobKitAuthoringOperation({
-        intent: "graph.updateNode",
-        instanceId: id,
-        patch,
-      });
-    },
     editInstance: (id, action, payload = {}) => {
       return applyMobKitAuthoringOperation({
         intent: "graph.editNode",
@@ -626,13 +619,6 @@ function App() {
         intent: "graph.connectNodes",
         fromId,
         toId,
-      });
-    },
-    updateEdge: (id, patch) => {
-      return applyMobKitAuthoringOperation({
-        intent: "graph.updateEdge",
-        edgeId: id,
-        patch,
       });
     },
     editEdge: (id, action, payload = {}) => {

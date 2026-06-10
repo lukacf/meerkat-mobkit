@@ -251,8 +251,6 @@ window.MOBKIT_BOOT = {
         return { type: "delete_input_param", step_id: input.stepId, param_id: input.paramId };
       case "graph.insertNode":
         return { type: "insert_graph_node", ...(input.operation || { pick: input.pick, cell: input.cell }) };
-      case "graph.updateNode":
-        return { type: "update_graph_node", instance_id: input.instanceId, patch: input.patch || {} };
       case "graph.editNode":
         return { type: "apply_graph_node_edit", instance_id: input.instanceId, action: input.action, ...(input.payload || {}) };
       case "graph.moveNode":
@@ -261,8 +259,6 @@ window.MOBKIT_BOOT = {
         return { type: "delete_graph_node", instance_id: input.instanceId };
       case "graph.connectNodes":
         return { type: "connect_graph_nodes", ...(input.operation || { from_id: input.fromId, to_id: input.toId }) };
-      case "graph.updateEdge":
-        return { type: "update_graph_edge", edge_id: input.edgeId, patch: input.patch || {} };
       case "graph.editEdge":
         return { type: "apply_graph_edge_edit", edge_id: input.edgeId, action: input.action, ...(input.payload || {}) };
       case "graph.deleteEdge":
@@ -14452,13 +14448,6 @@ function App() {
         cell: { col, row }
       });
     },
-    updateInstance: (id, patch) => {
-      return applyMobKitAuthoringOperation({
-        intent: "graph.updateNode",
-        instanceId: id,
-        patch
-      });
-    },
     editInstance: (id, action, payload = {}) => {
       return applyMobKitAuthoringOperation({
         intent: "graph.editNode",
@@ -14483,13 +14472,6 @@ function App() {
         intent: "graph.connectNodes",
         fromId,
         toId
-      });
-    },
-    updateEdge: (id, patch) => {
-      return applyMobKitAuthoringOperation({
-        intent: "graph.updateEdge",
-        edgeId: id,
-        patch
       });
     },
     editEdge: (id, action, payload = {}) => {

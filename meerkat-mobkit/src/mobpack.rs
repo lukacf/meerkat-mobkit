@@ -1387,14 +1387,6 @@ pub fn mobpack_authoring_operations() -> Value {
             "projection_document_supported": false
         },
         {
-            "type": "update_graph_node",
-            "plane": "graph",
-            "authority": "mobkit",
-            "requires": ["instance_id", "patch"],
-            "mutates": ["document.instances", "document.edges", "document.frames", "document.flow"],
-            "projection_document_supported": false
-        },
-        {
             "type": "apply_graph_node_edit",
             "plane": "graph",
             "authority": "mobkit",
@@ -1423,14 +1415,6 @@ pub fn mobpack_authoring_operations() -> Value {
             "plane": "graph",
             "authority": "mobkit",
             "requires": ["from_id", "to_id"],
-            "mutates": ["document.edges", "document.flow"],
-            "projection_document_supported": false
-        },
-        {
-            "type": "update_graph_edge",
-            "plane": "graph",
-            "authority": "mobkit",
-            "requires": ["edge_id", "patch"],
             "mutates": ["document.edges", "document.flow"],
             "projection_document_supported": false
         },
@@ -4024,12 +4008,10 @@ pub fn apply_mobpack_authoring_operation_with_runtime(
         "apply_flow_step_edit" => apply_flow_step_edit_operation(&mut document, operation)?,
         "delete_flow_step" => apply_delete_flow_step_operation(&mut document, operation)?,
         "insert_graph_node" => apply_insert_graph_node_operation(&mut document, operation)?,
-        "update_graph_node" => apply_update_graph_node_operation(&mut document, operation)?,
         "apply_graph_node_edit" => apply_graph_node_edit_operation(&mut document, operation)?,
         "move_graph_node" => apply_move_graph_node_operation(&mut document, operation)?,
         "delete_graph_node" => apply_delete_graph_node_operation(&mut document, operation)?,
         "connect_graph_nodes" => apply_connect_graph_nodes_operation(&mut document, operation)?,
-        "update_graph_edge" => apply_update_graph_edge_operation(&mut document, operation)?,
         "apply_graph_edge_edit" => apply_graph_edge_edit_operation(&mut document, operation)?,
         "delete_graph_edge" => apply_delete_graph_edge_operation(&mut document, operation)?,
         other => {
@@ -7903,7 +7885,7 @@ fn validate_graph_instance(
         .to_string();
     if let Some(current_id) = current_id {
         if id != current_id {
-            return Err("update_graph_node cannot change instance id".to_string());
+            return Err("graph node id cannot change".to_string());
         }
     }
     let duplicate = instances.iter().any(|candidate| {
@@ -7971,7 +7953,7 @@ fn validate_graph_edge(
         .to_string();
     if let Some(current_id) = current_id {
         if id != current_id {
-            return Err("update_graph_edge cannot change edge id".to_string());
+            return Err("graph edge id cannot change".to_string());
         }
     }
     let from = edge
@@ -8530,45 +8512,6 @@ fn apply_insert_graph_node_operation(
     Ok(json!({ "kind": "instance", "id": selected_id, "inserted_ids": inserted_ids }))
 }
 
-fn apply_update_graph_node_operation(
-    document: &mut MobpackDocument,
-    operation: &serde_json::Map<String, Value>,
-) -> Result<Value, String> {
-    let instance_id = operation_instance_id(operation)?;
-    let patch = operation
-        .get("patch")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "update_graph_node requires patch object".to_string())?;
-    let mut instances = document
-        .instances
-        .as_array()
-        .cloned()
-        .unwrap_or_else(Vec::new);
-    let index = graph_instance_index(&instances, &instance_id)
-        .ok_or_else(|| format!("graph node not found: {instance_id}"))?;
-    let mut next_instance = instances[index].clone();
-    let object = next_instance
-        .as_object_mut()
-        .ok_or_else(|| format!("graph node is not an object: {instance_id}"))?;
-    for (key, value) in patch {
-        if key == "id" {
-            return Err("update_graph_node cannot change instance id".to_string());
-        }
-        object.insert(key.clone(), value.clone());
-    }
-    validate_graph_instance(
-        &next_instance,
-        &instances,
-        &document.members,
-        Some(&instance_id),
-    )?;
-    instances[index] = next_instance;
-    document.instances = Value::Array(instances);
-    reject_raw_graph_operation_sections(operation, &["frames"])?;
-    document.flow = graph_to_flow_from_document(document);
-    Ok(json!({ "kind": "instance", "id": instance_id }))
-}
-
 fn operation_action(operation: &serde_json::Map<String, Value>) -> Result<String, String> {
     operation
         .get("action")
@@ -8703,6 +8646,7 @@ fn apply_graph_node_edit_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
+    reject_raw_graph_operation_sections(operation, &["frames"])?;
     let instance_id = operation_instance_id(operation)?;
     let action = operation_action(operation)?;
     let mut instances = document
@@ -9179,41 +9123,6 @@ fn apply_connect_graph_nodes_operation(
     Ok(json!({ "kind": "edge", "id": id }))
 }
 
-fn apply_update_graph_edge_operation(
-    document: &mut MobpackDocument,
-    operation: &serde_json::Map<String, Value>,
-) -> Result<Value, String> {
-    let edge_id = operation_edge_id(operation)?;
-    let patch = operation
-        .get("patch")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "update_graph_edge requires patch object".to_string())?;
-    let instances = document
-        .instances
-        .as_array()
-        .cloned()
-        .unwrap_or_else(Vec::new);
-    let mut edges = document.edges.as_array().cloned().unwrap_or_else(Vec::new);
-    let index = graph_edge_index(&edges, &edge_id)
-        .ok_or_else(|| format!("graph edge not found: {edge_id}"))?;
-    let mut next_edge = edges[index].clone();
-    let object = next_edge
-        .as_object_mut()
-        .ok_or_else(|| format!("graph edge is not an object: {edge_id}"))?;
-    for (key, value) in patch {
-        if key == "id" {
-            return Err("update_graph_edge cannot change edge id".to_string());
-        }
-        object.insert(key.clone(), value.clone());
-    }
-    validate_graph_edge(&next_edge, &edges, &instances, Some(&edge_id))?;
-    edges[index] = next_edge;
-    document.edges = Value::Array(edges);
-    reject_raw_graph_operation_sections(operation, &["frames"])?;
-    document.flow = graph_to_flow_from_document(document);
-    Ok(json!({ "kind": "edge", "id": edge_id }))
-}
-
 fn graph_edge_condition_path(edge: &Value) -> String {
     graph_to_flow_normalized_edge_condition(edge)
         .map(|(path, _, _)| path)
@@ -9382,6 +9291,7 @@ fn apply_graph_edge_edit_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
+    reject_raw_graph_operation_sections(operation, &["frames"])?;
     let edge_id = operation_edge_id(operation)?;
     let action = operation_action(operation)?;
     let instances = document
@@ -26901,19 +26811,16 @@ model = "gpt-5.5"
         let updated = apply_narrow_graph_operation(
             inserted["document"].clone(),
             json!({
-                "type": "update_graph_node",
+                "type": "apply_graph_node_edit",
                 "instance_id": "i_reviewer",
-                "patch": { "lane": "review", "label": "Done" }
+                "action": "set_label",
+                "label": "Done"
             }),
         );
-        assert_eq!(updated["operation"], json!("update_graph_node"));
+        assert_eq!(updated["operation"], json!("apply_graph_node_edit"));
         assert_eq!(
             updated["selection"],
             json!({ "kind": "instance", "id": "i_reviewer" })
-        );
-        assert_eq!(
-            graph_instance(&updated["document"], "i_reviewer")["lane"],
-            json!("review")
         );
         assert_eq!(
             graph_instance(&updated["document"], "i_reviewer")["label"],
@@ -27015,9 +26922,10 @@ model = "gpt-5.5"
                 "frames": [{ "id": "ui_frame", "kind": "Branch" }]
             }),
             json!({
-                "type": "update_graph_node",
+                "type": "apply_graph_node_edit",
                 "instance_id": "n_review",
-                "patch": { "label": "Review" },
+                "action": "set_label",
+                "label": "Review",
                 "frames": [{ "id": "ui_frame", "kind": "Branch" }]
             }),
             json!({
@@ -27061,12 +26969,13 @@ model = "gpt-5.5"
         let edge_updated = apply_narrow_graph_operation(
             connected["document"].clone(),
             json!({
-                "type": "update_graph_edge",
+                "type": "apply_graph_edge_edit",
                 "edge_id": "e_n_plan_n_review",
-                "patch": { "label": "ready", "kind": "next" }
+                "action": "set_label",
+                "label": "ready"
             }),
         );
-        assert_eq!(edge_updated["operation"], json!("update_graph_edge"));
+        assert_eq!(edge_updated["operation"], json!("apply_graph_edge_edit"));
         assert_eq!(
             edge_updated["selection"],
             json!({ "kind": "edge", "id": "e_n_plan_n_review" })
@@ -27842,13 +27751,17 @@ model = "gpt-5.5"
         let updated = apply_mobpack_authoring_operation(&json!({
             "document": moved["document"],
             "operation": {
-                "type": "update_graph_node",
+                "type": "apply_graph_node_edit",
                 "instance_id": "i_reviewer",
-                "patch": { "lane": "review" }
+                "action": "set_label",
+                "label": "Review"
             }
         }))
-        .expect("update graph node");
-        assert_eq!(updated["document"]["instances"][2]["lane"], json!("review"));
+        .expect("semantic graph node label edit");
+        assert_eq!(
+            updated["document"]["instances"][2]["label"],
+            json!("Review")
+        );
 
         let connected = apply_mobpack_authoring_operation(&json!({
             "document": updated["document"],
@@ -27878,12 +27791,13 @@ model = "gpt-5.5"
         let edge_updated = apply_mobpack_authoring_operation(&json!({
             "document": connected["document"],
             "operation": {
-                "type": "update_graph_edge",
+                "type": "apply_graph_edge_edit",
                 "edge_id": "e_n_plan_i_reviewer",
-                "patch": { "label": "done", "cond": { "var": "steps.i_reviewer.status", "op": "==", "val": "ok" } }
+                "action": "set_label",
+                "label": "done"
             }
         }))
-        .expect("update graph edge");
+        .expect("semantic graph edge label edit");
         assert_eq!(edge_updated["document"]["edges"][0]["label"], json!("done"));
 
         let node_edited = apply_mobpack_authoring_operation(&json!({
@@ -28049,9 +27963,9 @@ model = "gpt-5.5"
                 "patch": { "kind": "terminal", "isTerminal": true }
             }
         }))
-        .expect_err("terminal update must be rejected");
+        .expect_err("raw graph node update must be rejected");
         assert!(
-            update_err.contains("uncompiled graph terminal nodes cannot be persisted"),
+            update_err.contains("unsupported operation.type: update_graph_node"),
             "{update_err}"
         );
 
@@ -28085,10 +27999,9 @@ model = "gpt-5.5"
                 "patch": { "to": "n_done" }
             }
         }))
-        .expect_err("terminal endpoint reconnect must be rejected");
+        .expect_err("raw graph edge update must be rejected");
         assert!(
-            reconnect_err
-                .contains("edge endpoints cannot reference uncompiled graph terminal nodes"),
+            reconnect_err.contains("unsupported operation.type: update_graph_edge"),
             "{reconnect_err}"
         );
     }

@@ -117,11 +117,11 @@ async function assertAuthoringCapabilities() {
     "update_flow_step",
     "delete_flow_step",
     "insert_graph_node",
-    "update_graph_node",
+    "apply_graph_node_edit",
     "move_graph_node",
     "delete_graph_node",
     "connect_graph_nodes",
-    "update_graph_edge",
+    "apply_graph_edge_edit",
     "delete_graph_edge",
     "update_deploy_settings",
   ]) {
@@ -1847,23 +1847,24 @@ async function validateGraphOperations(catalogs) {
   const updated = await rpc("mobkit/mobpacks/apply_operation", {
     document: moved.document,
     operation: {
-      type: "update_graph_node",
+      type: "apply_graph_node_edit",
       instance_id: insertedId,
-      patch: { lane: "review" },
+      action: "set_label",
+      label: "Review lane",
     },
   });
   try {
     await rpc("mobkit/mobpacks/apply_operation", {
       document: updated.document,
       operation: {
-      type: "update_graph_node",
-      instance_id: insertedId,
-      patch: { kind: "terminal", isTerminal: true },
-    },
+        type: "insert_graph_node",
+        pick: { kind: "terminal", terminalKind: "success" },
+        cell: { col: 3, row: 0 },
+      },
     });
-    throw new Error("terminal graph node update was accepted");
+    throw new Error("terminal graph node insert was accepted");
   } catch (error) {
-    if (!String(error?.message || "").includes("uncompiled graph terminal nodes cannot be persisted")) {
+    if (!String(error?.message || "").includes("unsupported insert_graph_node pick.kind: terminal")) {
       throw error;
     }
   }
@@ -1905,13 +1906,14 @@ async function validateGraphOperations(catalogs) {
   const edgeUpdated = await rpc("mobkit/mobpacks/apply_operation", {
     document: connected.document,
     operation: {
-      type: "update_graph_edge",
+      type: "apply_graph_edge_edit",
       edge_id: expectedEdgeId,
-      patch: { label: "done" },
+      action: "set_label",
+      label: "done",
     },
   });
   if (edgeUpdated.document.edges[0]?.label !== "done") {
-    throw new Error(`graph edge update operation did not apply patch: ${JSON.stringify(edgeUpdated.document.edges)}`);
+    throw new Error(`semantic graph edge edit did not apply label: ${JSON.stringify(edgeUpdated.document.edges)}`);
   }
   const edgeDeleted = await rpc("mobkit/mobpacks/apply_operation", {
     document: edgeUpdated.document,
@@ -1946,7 +1948,7 @@ async function validateGraphOperations(catalogs) {
     semanticMember: semanticMember.selection.id,
     semanticBranch: semanticBranch.selection.id,
     moved: { done: doneAfterMove.col, reviewer: reviewerAfterMove.col },
-    updatedLane: updated.document.instances.find((instance) => instance.id === "n_done")?.lane,
+    nodeLabel: updated.document.instances.find((instance) => instance.id === insertedId)?.label,
     edgeLabel: edgeUpdated.document.edges[0]?.label,
     remainingInstances: deleted.document.instances.map((instance) => instance.id),
     operations: [
