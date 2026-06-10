@@ -37,7 +37,7 @@ module.exports = __toCommonJS(index_exports);
 var import_client = require("react-dom/client");
 
 // src/ConsoleApp.tsx
-var import_react27 = __toESM(require("react"));
+var import_react28 = __toESM(require("react"));
 
 // node_modules/clsx/dist/clsx.mjs
 function r(e) {
@@ -1921,7 +1921,16 @@ var CONSOLE_RPC_METHODS = {
   deliveryHistory: "mobkit/delivery/history",
   gatingPending: "mobkit/gating/pending",
   gatingAudit: "mobkit/gating/audit",
-  gatingDecide: "mobkit/gating/decide"
+  gatingDecide: "mobkit/gating/decide",
+  accessStatus: "mobkit/access/status",
+  accessGet: "mobkit/access/get",
+  accessSet: "mobkit/access/set",
+  accessEnable: "mobkit/access/enable",
+  accessRuleUpsert: "mobkit/access/rules/upsert",
+  accessRuleDelete: "mobkit/access/rules/delete",
+  accessGroupSet: "mobkit/access/groups/set",
+  accessGroupDelete: "mobkit/access/groups/delete",
+  accessPreview: "mobkit/access/preview"
 };
 
 // ../packages/console-core/src/headless.ts
@@ -1934,7 +1943,16 @@ var CONSOLE_COMMAND_NAMES = {
   listDeliveryHistory: "listDeliveryHistory",
   listGatingPending: "listGatingPending",
   listGatingAudit: "listGatingAudit",
-  decideGating: "decideGating"
+  decideGating: "decideGating",
+  accessStatus: "accessStatus",
+  getAccessConfig: "getAccessConfig",
+  setAccessConfig: "setAccessConfig",
+  enableAccess: "enableAccess",
+  upsertAccessRule: "upsertAccessRule",
+  deleteAccessRule: "deleteAccessRule",
+  setAccessGroup: "setAccessGroup",
+  deleteAccessGroup: "deleteAccessGroup",
+  previewAccess: "previewAccess"
 };
 var CONSOLE_COMMAND_SPECS = {
   [CONSOLE_COMMAND_NAMES.inspectIdentity]: {
@@ -1984,6 +2002,42 @@ var CONSOLE_COMMAND_SPECS = {
   [CONSOLE_COMMAND_NAMES.decideGating]: {
     method: CONSOLE_RPC_METHODS.gatingDecide,
     targetKinds: /* @__PURE__ */ new Set(["mobkit/gating"])
+  },
+  [CONSOLE_COMMAND_NAMES.accessStatus]: {
+    method: CONSOLE_RPC_METHODS.accessStatus,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.getAccessConfig]: {
+    method: CONSOLE_RPC_METHODS.accessGet,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.setAccessConfig]: {
+    method: CONSOLE_RPC_METHODS.accessSet,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.enableAccess]: {
+    method: CONSOLE_RPC_METHODS.accessEnable,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.upsertAccessRule]: {
+    method: CONSOLE_RPC_METHODS.accessRuleUpsert,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.deleteAccessRule]: {
+    method: CONSOLE_RPC_METHODS.accessRuleDelete,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.setAccessGroup]: {
+    method: CONSOLE_RPC_METHODS.accessGroupSet,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.deleteAccessGroup]: {
+    method: CONSOLE_RPC_METHODS.accessGroupDelete,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES.previewAccess]: {
+    method: CONSOLE_RPC_METHODS.accessPreview,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
   }
 };
 var identityCommandMethods = /* @__PURE__ */ new Set([
@@ -2002,6 +2056,7 @@ var LEGACY_CONTROL_TARGETS = {
   routing: "mobkit/routing",
   gating: "mobkit/gating",
   gates: "mobkit/gating",
+  access: "mobkit/access",
   logs: "mobkit/logs"
 };
 function migrateConsoleWorkbenchTarget(input) {
@@ -2987,6 +3042,8 @@ function buildControlTarget2(kind) {
       return { id: "gating", kind: "gating", title: "Approvals", subtitle: "Pending approvals, audit, and policies", iconName: "i-bolt" };
     case "logs":
       return { id: "logs", kind, title: "Logs", subtitle: "Event stream", iconName: "i-terminal" };
+    case "access":
+      return { id: "access", kind, title: "Access", subtitle: "Who can see and do what", iconName: "i-gear" };
     default:
       return { id: "health", kind: "health", title: "Health" };
   }
@@ -5670,7 +5727,16 @@ var CONSOLE_RPC_METHODS2 = {
   deliveryHistory: "mobkit/delivery/history",
   gatingPending: "mobkit/gating/pending",
   gatingAudit: "mobkit/gating/audit",
-  gatingDecide: "mobkit/gating/decide"
+  gatingDecide: "mobkit/gating/decide",
+  accessStatus: "mobkit/access/status",
+  accessGet: "mobkit/access/get",
+  accessSet: "mobkit/access/set",
+  accessEnable: "mobkit/access/enable",
+  accessRuleUpsert: "mobkit/access/rules/upsert",
+  accessRuleDelete: "mobkit/access/rules/delete",
+  accessGroupSet: "mobkit/access/groups/set",
+  accessGroupDelete: "mobkit/access/groups/delete",
+  accessPreview: "mobkit/access/preview"
 };
 var CONSOLE_BLOB_PATH_PREFIX2 = "/blobs/";
 var CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE2 = -32013;
@@ -6328,7 +6394,16 @@ var CONSOLE_COMMAND_NAMES2 = {
   listDeliveryHistory: "listDeliveryHistory",
   listGatingPending: "listGatingPending",
   listGatingAudit: "listGatingAudit",
-  decideGating: "decideGating"
+  decideGating: "decideGating",
+  accessStatus: "accessStatus",
+  getAccessConfig: "getAccessConfig",
+  setAccessConfig: "setAccessConfig",
+  enableAccess: "enableAccess",
+  upsertAccessRule: "upsertAccessRule",
+  deleteAccessRule: "deleteAccessRule",
+  setAccessGroup: "setAccessGroup",
+  deleteAccessGroup: "deleteAccessGroup",
+  previewAccess: "previewAccess"
 };
 var LEGACY_INSPECT_IDENTITY_METHOD = "mobkit/inspect_identity";
 var MIN_TIMELINE_DEDUP_KEYS = 1e3;
@@ -6380,6 +6455,42 @@ var CONSOLE_COMMAND_SPECS2 = {
   [CONSOLE_COMMAND_NAMES2.decideGating]: {
     method: CONSOLE_RPC_METHODS2.gatingDecide,
     targetKinds: /* @__PURE__ */ new Set(["mobkit/gating"])
+  },
+  [CONSOLE_COMMAND_NAMES2.accessStatus]: {
+    method: CONSOLE_RPC_METHODS2.accessStatus,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.getAccessConfig]: {
+    method: CONSOLE_RPC_METHODS2.accessGet,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.setAccessConfig]: {
+    method: CONSOLE_RPC_METHODS2.accessSet,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.enableAccess]: {
+    method: CONSOLE_RPC_METHODS2.accessEnable,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.upsertAccessRule]: {
+    method: CONSOLE_RPC_METHODS2.accessRuleUpsert,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.deleteAccessRule]: {
+    method: CONSOLE_RPC_METHODS2.accessRuleDelete,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.setAccessGroup]: {
+    method: CONSOLE_RPC_METHODS2.accessGroupSet,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.deleteAccessGroup]: {
+    method: CONSOLE_RPC_METHODS2.accessGroupDelete,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
+  },
+  [CONSOLE_COMMAND_NAMES2.previewAccess]: {
+    method: CONSOLE_RPC_METHODS2.accessPreview,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/access"])
   }
 };
 function createHttpConsoleTransport2({
@@ -8633,9 +8744,582 @@ function GatingInboxPanel({
   ] });
 }
 
-// src/panels/RosterPanel.tsx
+// src/panels/AccessPanel.tsx
 var import_react18 = __toESM(require("react"));
 var import_jsx_runtime27 = require("react/jsx-runtime");
+var DEFAULT_ACTIONS = [
+  "agent.view",
+  "agent.send",
+  "agent.spawn",
+  "agent.respawn",
+  "agent.retire",
+  "agent.reset",
+  "gating.view",
+  "gating.decide",
+  "mob.observe",
+  "runtime.admin",
+  "access.admin"
+];
+function parseListInput(raw) {
+  return raw.split(/[,\n]/).map((token) => token.trim()).filter((token) => token.length > 0);
+}
+function formatListInput(values) {
+  return (values || []).join(", ");
+}
+function parseLabelSelectorInput(raw) {
+  const labels = {};
+  for (const token of parseListInput(raw)) {
+    const eq = token.indexOf("=");
+    if (eq <= 0) continue;
+    const key = token.slice(0, eq).trim();
+    const value = token.slice(eq + 1).trim();
+    if (key) labels[key] = value;
+  }
+  return labels;
+}
+function formatLabelSelectorInput(labels) {
+  return Object.entries(labels || {}).map(([key, value]) => `${key}=${value}`).join(", ");
+}
+function summarizeRuleSubjects(rule) {
+  const parts = [];
+  if (rule.groups?.length) parts.push(`groups: ${rule.groups.join(", ")}`);
+  if (rule.subjects?.length) parts.push(rule.subjects.join(", "));
+  return parts.length > 0 ? parts.join(" \xB7 ") : "everyone";
+}
+function summarizeRuleResources(rule) {
+  const parts = [];
+  if (rule.agents?.length) parts.push(`agents: ${rule.agents.join(", ")}`);
+  if (rule.roles?.length) parts.push(`roles: ${rule.roles.join(", ")}`);
+  const labels = formatLabelSelectorInput(rule.match_labels);
+  if (labels) parts.push(`labels: ${labels}`);
+  return parts.length > 0 ? parts.join(" \xB7 ") : "all agents";
+}
+function emptyRuleDraft() {
+  return {
+    id: "",
+    description: "",
+    effect: "allow",
+    subjects: "",
+    groups: "",
+    actions: ["agent.view"],
+    agents: "",
+    roles: "",
+    matchLabels: ""
+  };
+}
+function draftFromRule(rule) {
+  return {
+    id: rule.id,
+    description: rule.description || "",
+    effect: rule.effect === "deny" ? "deny" : "allow",
+    subjects: formatListInput(rule.subjects),
+    groups: formatListInput(rule.groups),
+    actions: [...rule.actions],
+    agents: formatListInput(rule.agents),
+    roles: formatListInput(rule.roles),
+    matchLabels: formatLabelSelectorInput(rule.match_labels)
+  };
+}
+function ruleFromDraft(draft) {
+  const rule = {
+    id: draft.id.trim(),
+    effect: draft.effect,
+    actions: draft.actions
+  };
+  const description = draft.description.trim();
+  if (description) rule.description = description;
+  const subjects = parseListInput(draft.subjects);
+  if (subjects.length) rule.subjects = subjects;
+  const groups = parseListInput(draft.groups);
+  if (groups.length) rule.groups = groups;
+  const agents = parseListInput(draft.agents);
+  if (agents.length) rule.agents = agents;
+  const roles = parseListInput(draft.roles);
+  if (roles.length) rule.roles = roles;
+  const labels = parseLabelSelectorInput(draft.matchLabels);
+  if (Object.keys(labels).length) rule.match_labels = labels;
+  return rule;
+}
+function AccessPanel({
+  status,
+  config,
+  error,
+  readOnly = false,
+  agents,
+  onRefresh,
+  onSetEnabled,
+  onSaveAdmins,
+  onUpsertRule,
+  onDeleteRule,
+  onSaveGroup,
+  onDeleteGroup,
+  onPreview
+}) {
+  const [tab, setTab] = import_react18.default.useState("overview");
+  const [ruleDraft, setRuleDraft] = import_react18.default.useState(null);
+  const [adminsDraft, setAdminsDraft] = import_react18.default.useState(null);
+  const [groupNameDraft, setGroupNameDraft] = import_react18.default.useState("");
+  const [groupMembersDraft, setGroupMembersDraft] = import_react18.default.useState("");
+  const [editingGroup, setEditingGroup] = import_react18.default.useState(null);
+  const [previewSubject, setPreviewSubject] = import_react18.default.useState("");
+  const [previewAction, setPreviewAction] = import_react18.default.useState("agent.view");
+  const [previewIdentity, setPreviewIdentity] = import_react18.default.useState("");
+  const [previewResult, setPreviewResult] = import_react18.default.useState(null);
+  const actions = status?.actions?.length ? status.actions : DEFAULT_ACTIONS;
+  const rules = config?.rules || [];
+  const groups = Object.entries(config?.groups || {});
+  const enabled = config?.enabled === true;
+  const canEdit = !readOnly && Boolean(config);
+  function startGroupEdit(name, members) {
+    setEditingGroup(name);
+    setGroupNameDraft(name);
+    setGroupMembersDraft(formatListInput(members));
+  }
+  function submitGroup() {
+    const name = groupNameDraft.trim();
+    if (!name) return;
+    onSaveGroup(name, { members: parseListInput(groupMembersDraft) });
+    setEditingGroup(null);
+    setGroupNameDraft("");
+    setGroupMembersDraft("");
+  }
+  async function runPreview() {
+    const subject = previewSubject.trim();
+    if (!subject || !previewAction) return;
+    const result = await onPreview(
+      subject,
+      previewAction,
+      previewIdentity.trim() || void 0
+    );
+    setPreviewResult(result);
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gating access-panel", "data-testid": "access-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gating__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("h2", { children: "Access" }),
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("p", { children: [
+        "\xB7 ",
+        enabled ? "enforcing" : "not enforced",
+        " \xB7 ",
+        rules.length,
+        " rules \xB7",
+        " ",
+        groups.length,
+        " groups",
+        status?.subject ? /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(import_jsx_runtime27.Fragment, { children: [
+          " \xB7 you are ",
+          status.subject
+        ] }) : null
+      ] })
+    ] }),
+    error ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gating__empty", "data-testid": "access-error", children: error }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gating__tabs", children: [
+      ["overview", "groups", "rules", "preview"].map((candidate) => /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
+        "button",
+        {
+          className: `gating__tab ${tab === candidate ? "is-active" : ""}`,
+          onClick: () => setTab(candidate),
+          "data-testid": `access-tab:${candidate}`,
+          children: [
+            candidate === "overview" ? "Overview" : candidate === "groups" ? `Groups` : candidate === "rules" ? `Rules` : "Preview",
+            candidate === "groups" ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "n", children: groups.length }) : null,
+            candidate === "rules" ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "n", children: rules.length }) : null
+          ]
+        },
+        candidate
+      )),
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("button", { className: "gating__tab", onClick: onRefresh, "data-testid": "access-refresh", children: "Refresh" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gating__list access-panel__body", children: [
+      tab === "overview" ? /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gating__policies", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gpolicy", "data-state": enabled ? "active" : "paused", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gpolicy__head", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "gpolicy__action", children: "Enforcement" }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: `gpolicy__state gpolicy__state--${enabled ? "active" : "paused"}`, children: enabled ? "enabled" : "disabled" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__rule", children: enabled ? "Deny by default: every console caller only sees and operates what a rule (or admin standing) grants." : "Access control is configured but not enforced. Enabling requires at least one admin subject." }),
+          canEdit ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__stats", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+            "button",
+            {
+              "data-testid": "access-toggle-enabled",
+              onClick: () => onSetEnabled(!enabled),
+              children: enabled ? "Disable enforcement" : "Enable enforcement"
+            }
+          ) }) : null
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gpolicy", "data-state": "active", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "gpolicy__action", children: "Admins" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__rule", children: "Admin subjects bypass every rule and manage this configuration." }),
+          adminsDraft === null ? /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(import_jsx_runtime27.Fragment, { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__approvers", children: (config?.admins || []).length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "chip", children: "no admins configured" }) : (config?.admins || []).map((admin) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "chip", children: admin }, admin)) }),
+            canEdit ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__stats", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+              "button",
+              {
+                "data-testid": "access-edit-admins",
+                onClick: () => setAdminsDraft(formatListInput(config?.admins)),
+                children: "Edit admins"
+              }
+            ) }) : null
+          ] }) : /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "access-panel__form", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+              "Admin subjects (comma separated)",
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "input",
+                {
+                  "data-testid": "access-admins-input",
+                  value: adminsDraft,
+                  onChange: (event) => setAdminsDraft(event.target.value),
+                  placeholder: "root@example.com, ops-lead@example.com"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "access-panel__form-actions", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "button",
+                {
+                  className: "approve",
+                  "data-testid": "access-save-admins",
+                  onClick: () => {
+                    onSaveAdmins(parseListInput(adminsDraft));
+                    setAdminsDraft(null);
+                  },
+                  children: "Save"
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("button", { onClick: () => setAdminsDraft(null), children: "Cancel" })
+            ] })
+          ] })
+        ] })
+      ] }) : null,
+      tab === "groups" ? /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gating__policies", children: [
+        groups.length === 0 && editingGroup === null ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gating__empty", children: "No groups yet. Groups assign people to rules \u2014 create one, then reference it from a rule." }) : null,
+        groups.map(
+          ([name, group]) => editingGroup === name ? null : /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gpolicy", "data-state": "active", "data-testid": `access-group:${name}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "gpolicy__action", children: name }) }),
+            group.description ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__rule", children: group.description }) : null,
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__approvers", children: (group.members || []).length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "chip", children: "no members" }) : (group.members || []).map((member) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "chip", children: member }, member)) }),
+            canEdit ? /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gpolicy__stats", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "button",
+                {
+                  "data-testid": `access-group-edit:${name}`,
+                  onClick: () => startGroupEdit(name, group.members),
+                  children: "Edit members"
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "button",
+                {
+                  className: "reject",
+                  "data-testid": `access-group-delete:${name}`,
+                  onClick: () => {
+                    if (window.confirm(`Delete group "${name}"?`)) {
+                      onDeleteGroup(name);
+                    }
+                  },
+                  children: "Delete"
+                }
+              )
+            ] }) : null
+          ] }, name)
+        ),
+        canEdit ? /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gpolicy", "data-state": "active", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "gpolicy__action", children: editingGroup ? `Edit ${editingGroup}` : "New group" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "access-panel__form", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+              "Group name",
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "input",
+                {
+                  "data-testid": "access-group-name",
+                  value: groupNameDraft,
+                  onChange: (event) => setGroupNameDraft(event.target.value),
+                  placeholder: "ops",
+                  disabled: editingGroup !== null
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+              "Members (comma separated subjects)",
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "input",
+                {
+                  "data-testid": "access-group-members",
+                  value: groupMembersDraft,
+                  onChange: (event) => setGroupMembersDraft(event.target.value),
+                  placeholder: "alice@example.com, bob@example.com"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "access-panel__form-actions", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("button", { className: "approve", "data-testid": "access-group-save", onClick: submitGroup, children: editingGroup ? "Save members" : "Create group" }),
+              editingGroup ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("button", { onClick: () => {
+                setEditingGroup(null);
+                setGroupNameDraft("");
+                setGroupMembersDraft("");
+              }, children: "Cancel" }) : null
+            ] })
+          ] })
+        ] }) : null
+      ] }) : null,
+      tab === "rules" ? /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gating__policies", children: [
+        rules.length === 0 && !ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gating__empty", children: "No rules. While enforcement is on, only admins can see or do anything until rules grant access." }) : null,
+        rules.map(
+          (rule) => ruleDraft && ruleDraft.id === rule.id ? null : /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
+            "div",
+            {
+              className: "gpolicy",
+              "data-state": rule.effect === "deny" ? "paused" : "active",
+              "data-testid": `access-rule:${rule.id}`,
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gpolicy__head", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "gpolicy__action", children: rule.id }),
+                  /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: `gpolicy__state gpolicy__state--${rule.effect === "deny" ? "paused" : "active"}`, children: rule.effect === "deny" ? "deny" : "allow" })
+                ] }),
+                rule.description ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__rule", children: rule.description }) : null,
+                /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gpolicy__meta", children: [
+                  "who: ",
+                  summarizeRuleSubjects(rule)
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gpolicy__meta", children: [
+                  "what: ",
+                  rule.actions.join(", ")
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gpolicy__meta", children: [
+                  "on: ",
+                  summarizeRuleResources(rule)
+                ] }),
+                canEdit ? /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gpolicy__stats", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                    "button",
+                    {
+                      "data-testid": `access-rule-edit:${rule.id}`,
+                      onClick: () => setRuleDraft(draftFromRule(rule)),
+                      children: "Edit"
+                    }
+                  ),
+                  /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                    "button",
+                    {
+                      className: "reject",
+                      "data-testid": `access-rule-delete:${rule.id}`,
+                      onClick: () => {
+                        if (window.confirm(`Delete rule "${rule.id}"? Access it grants (or denies) stops immediately.`)) {
+                          onDeleteRule(rule.id);
+                        }
+                      },
+                      children: "Delete"
+                    }
+                  )
+                ] }) : null
+              ]
+            },
+            rule.id
+          )
+        ),
+        canEdit && !ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__stats", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("button", { "data-testid": "access-rule-new", onClick: () => setRuleDraft(emptyRuleDraft()), children: "New rule" }) }) : null,
+        canEdit && ruleDraft ? /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gpolicy", "data-state": "active", "data-testid": "access-rule-editor", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "gpolicy__action", children: rules.some((rule) => rule.id === ruleDraft.id) ? `Edit ${ruleDraft.id}` : "New rule" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "access-panel__form", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+              "Rule id",
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "input",
+                {
+                  "data-testid": "access-rule-id",
+                  value: ruleDraft.id,
+                  onChange: (event) => setRuleDraft({ ...ruleDraft, id: event.target.value }),
+                  placeholder: "ops-view-all"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+              "Description",
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "input",
+                {
+                  value: ruleDraft.description,
+                  onChange: (event) => setRuleDraft({ ...ruleDraft, description: event.target.value }),
+                  placeholder: "Ops can see every agent"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+              "Effect",
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
+                "select",
+                {
+                  "data-testid": "access-rule-effect",
+                  value: ruleDraft.effect,
+                  onChange: (event) => setRuleDraft({ ...ruleDraft, effect: event.target.value === "deny" ? "deny" : "allow" }),
+                  children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("option", { value: "allow", children: "allow" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("option", { value: "deny", children: "deny" })
+                  ]
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+              "Groups (comma separated; empty + empty subjects = everyone)",
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "input",
+                {
+                  "data-testid": "access-rule-groups",
+                  value: ruleDraft.groups,
+                  onChange: (event) => setRuleDraft({ ...ruleDraft, groups: event.target.value }),
+                  placeholder: "ops"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+              "Subjects (comma separated emails)",
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "input",
+                {
+                  value: ruleDraft.subjects,
+                  onChange: (event) => setRuleDraft({ ...ruleDraft, subjects: event.target.value }),
+                  placeholder: "alice@example.com"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+              "Actions",
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "access-panel__chips", children: actions.map((action) => {
+                const selected = ruleDraft.actions.includes(action);
+                return /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                  "button",
+                  {
+                    className: `chip ${selected ? "is-active" : ""}`,
+                    "data-selected": selected ? "true" : "false",
+                    "data-testid": `access-rule-action:${action}`,
+                    onClick: () => setRuleDraft({
+                      ...ruleDraft,
+                      actions: selected ? ruleDraft.actions.filter((candidate) => candidate !== action) : [...ruleDraft.actions, action]
+                    }),
+                    children: action
+                  },
+                  action
+                );
+              }) })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+              "Agents (comma separated identities; empty = all)",
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "input",
+                {
+                  "data-testid": "access-rule-agents",
+                  value: ruleDraft.agents,
+                  onChange: (event) => setRuleDraft({ ...ruleDraft, agents: event.target.value }),
+                  placeholder: agents.slice(0, 2).map((agent) => agent.identity).join(", ") || "identity:ops-lead"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+              "Roles (comma separated; empty = all)",
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "input",
+                {
+                  value: ruleDraft.roles,
+                  onChange: (event) => setRuleDraft({ ...ruleDraft, roles: event.target.value }),
+                  placeholder: "analyst"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+              "Label selector (key=value, comma separated; empty = all)",
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "input",
+                {
+                  value: ruleDraft.matchLabels,
+                  onChange: (event) => setRuleDraft({ ...ruleDraft, matchLabels: event.target.value }),
+                  placeholder: "org=payments"
+                }
+              )
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "access-panel__form-actions", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+                "button",
+                {
+                  className: "approve",
+                  "data-testid": "access-rule-save",
+                  disabled: !ruleDraft.id.trim() || ruleDraft.actions.length === 0,
+                  onClick: () => {
+                    onUpsertRule(ruleFromDraft(ruleDraft));
+                    setRuleDraft(null);
+                  },
+                  children: "Save rule"
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("button", { onClick: () => setRuleDraft(null), children: "Cancel" })
+            ] })
+          ] })
+        ] }) : null
+      ] }) : null,
+      tab === "preview" ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gating__policies", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "gpolicy", "data-state": "active", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "gpolicy__head", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "gpolicy__action", children: "Check access as someone else" }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "access-panel__form", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+            "Subject",
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+              "input",
+              {
+                "data-testid": "access-preview-subject",
+                value: previewSubject,
+                onChange: (event) => setPreviewSubject(event.target.value),
+                placeholder: "alice@example.com"
+              }
+            )
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+            "Action",
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+              "select",
+              {
+                "data-testid": "access-preview-action",
+                value: previewAction,
+                onChange: (event) => setPreviewAction(event.target.value),
+                children: actions.map((action) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("option", { value: action, children: action }, action))
+              }
+            )
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { children: [
+            "Agent (optional)",
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
+              "select",
+              {
+                "data-testid": "access-preview-agent",
+                value: previewIdentity,
+                onChange: (event) => setPreviewIdentity(event.target.value),
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("option", { value: "", children: "\u2014" }),
+                  agents.map((agent) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("option", { value: agent.identity, children: agent.label || agent.identity }, agent.identity))
+                ]
+              }
+            )
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "access-panel__form-actions", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("button", { className: "approve", "data-testid": "access-preview-run", onClick: () => void runPreview(), children: "Evaluate" }) }),
+          previewResult ? /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
+            "div",
+            {
+              className: "gpolicy__rule",
+              "data-testid": "access-preview-result",
+              "data-allowed": previewResult.allowed ? "true" : "false",
+              children: [
+                previewResult.allowed ? "ALLOWED" : "DENIED",
+                previewResult.reason ? ` \u2014 ${previewResult.reason}` : "",
+                previewResult.is_admin ? " (admin)" : "",
+                previewResult.groups?.length ? ` \xB7 groups: ${previewResult.groups.join(", ")}` : ""
+              ]
+            }
+          ) : null
+        ] })
+      ] }) }) : null
+    ] })
+  ] });
+}
+
+// src/panels/RosterPanel.tsx
+var import_react19 = __toESM(require("react"));
+var import_jsx_runtime28 = require("react/jsx-runtime");
 var ROLE_BUCKETS = ["all", "personal", "coordinator", "domain", "internal"];
 function roleOf(a) {
   const p = (a.role || a.kind || "").toLowerCase();
@@ -8668,13 +9352,13 @@ function RosterPanel({
   actionLabels,
   actionVisibility
 }) {
-  const [q, setQ] = import_react18.default.useState("");
-  const [role, setRole] = import_react18.default.useState("all");
-  const [sel, setSel] = import_react18.default.useState(agents[0]?.member_id || "");
-  import_react18.default.useEffect(() => {
+  const [q, setQ] = import_react19.default.useState("");
+  const [role, setRole] = import_react19.default.useState("all");
+  const [sel, setSel] = import_react19.default.useState(agents[0]?.member_id || "");
+  import_react19.default.useEffect(() => {
     if (selectedMemberId) setSel(selectedMemberId);
   }, [selectedMemberId]);
-  const rows = import_react18.default.useMemo(() => {
+  const rows = import_react19.default.useMemo(() => {
     return agents.filter((a) => {
       if (role !== "all" && roleOf(a) !== role) return false;
       if (!q) return true;
@@ -8685,17 +9369,17 @@ function RosterPanel({
   const active = rows.find((r2) => r2.member_id === sel) || rows[0];
   const activeIdentity = active?.identity || active?.member_id || "";
   const activePeers = (active?.wired_to || []).map(displayPeer).filter(Boolean);
-  return /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "view roster", "data-testid": "roster-panel", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "view__head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("h2", { children: "Roster" }),
-      /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("span", { className: "view__sub", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "view roster", "data-testid": "roster-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "view__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("h2", { children: "Roster" }),
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "view__sub", children: [
         rows.length,
         " of ",
         agents.length,
         " agents"
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "view__spacer" }),
-      /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "view__spacer" }),
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
         "input",
         {
           className: "view__search",
@@ -8704,22 +9388,22 @@ function RosterPanel({
           onChange: (e) => setQ(e.target.value)
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "view__segs", children: ROLE_BUCKETS.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("button", { className: role === r2 ? "is-active" : "", onClick: () => setRole(r2), children: r2 }, r2)) })
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "view__segs", children: ROLE_BUCKETS.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("button", { className: role === r2 ? "is-active" : "", onClick: () => setRole(r2), children: r2 }, r2)) })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "roster__body", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "roster__table", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "roster__row roster__row--head", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: "Name" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: "Role" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: "State" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: "Profile" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: "Gen" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: "Chk" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: "Lease" })
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "roster__body", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "roster__table", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "roster__row roster__row--head", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "Name" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "Role" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "State" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "Profile" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "Gen" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "Chk" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "Lease" })
         ] }),
         rows.map((r2) => {
           const isSel = active && r2.member_id === active.member_id;
-          return /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
+          return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
             "div",
             {
               className: `roster__row ${isSel ? "is-selected" : ""}`,
@@ -8730,61 +9414,61 @@ function RosterPanel({
               },
               "data-testid": `roster-row:${r2.member_id}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("span", { className: "roster__name", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "roster__dot" }),
-                  /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("span", { children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { children: r2.label }),
-                    /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "roster__id", children: r2.identity || r2.member_id })
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "roster__name", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "roster__dot" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { children: r2.label }),
+                    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "roster__id", children: r2.identity || r2.member_id })
                   ] })
                 ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: roleOf(r2) }),
-                /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "roster__state", children: stateLabel(r2.state) }),
-                /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "mono dim", children: r2.role || "\u2014" }),
-                /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "mono", children: r2.generation ?? "\u2014" }),
-                /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "mono", children: r2.checkpoint_version ?? "\u2014" }),
-                /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "mono dim", children: r2.lease_healthy === false ? "unhealthy" : "ok" })
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: roleOf(r2) }),
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "roster__state", children: stateLabel(r2.state) }),
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "mono dim", children: r2.role || "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "mono", children: r2.generation ?? "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "mono", children: r2.checkpoint_version ?? "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "mono dim", children: r2.lease_healthy === false ? "unhealthy" : "ok" })
               ]
             },
             r2.member_id
           );
         })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("aside", { className: "roster__detail", children: active && /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(import_jsx_runtime27.Fragment, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "rd__head", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "rd__title", children: active.label }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "rd__id", children: active.identity || active.member_id }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "rd__tags", children: [active.role, active.kind, roleOf(active)].filter(Boolean).map((t) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "chip", children: String(t) }, String(t))) })
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("aside", { className: "roster__detail", children: active && /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(import_jsx_runtime28.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "rd__head", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "rd__title", children: active.label }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "rd__id", children: active.identity || active.member_id }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "rd__tags", children: [active.role, active.kind, roleOf(active)].filter(Boolean).map((t) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "chip", children: String(t) }, String(t))) })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("dl", { className: "rd__grid", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dt", { children: "Profile" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dd", { children: active.role || "\u2014" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dt", { children: "Kind" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dd", { children: active.kind || "\u2014" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dt", { children: "Role" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dd", { children: roleOf(active) }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dt", { children: "State" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "roster__state", children: stateLabel(active.state) }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dt", { children: "Member" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dd", { className: "mono", children: active.member_id }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dt", { children: "Identity" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dd", { className: "mono", children: active.identity || "\u2014" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dt", { children: "Session" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dd", { className: "mono", children: active.session_id || "\u2014" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dt", { children: "Generation" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dd", { className: "mono", children: active.generation ?? "\u2014" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dt", { children: "Checkpoint" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dd", { className: "mono", children: active.checkpoint_version ?? "\u2014" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dt", { children: "Lease" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dd", { className: "mono", children: active.lease_healthy === false ? "unhealthy" : "ok" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dt", { children: "Wired" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("dd", { children: activePeers.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "rd__peers", children: activePeers.map((peer) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "chip", children: peer }, peer)) }) : /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "mono dim", children: "none" }) })
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("dl", { className: "rd__grid", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "Profile" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { children: active.role || "\u2014" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "Kind" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { children: active.kind || "\u2014" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "Role" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { children: roleOf(active) }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "State" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "roster__state", children: stateLabel(active.state) }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "Member" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { className: "mono", children: active.member_id }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "Identity" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { className: "mono", children: active.identity || "\u2014" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "Session" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { className: "mono", children: active.session_id || "\u2014" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "Generation" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { className: "mono", children: active.generation ?? "\u2014" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "Checkpoint" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { className: "mono", children: active.checkpoint_version ?? "\u2014" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "Lease" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { className: "mono", children: active.lease_healthy === false ? "unhealthy" : "ok" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "Wired" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { children: activePeers.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "rd__peers", children: activePeers.map((peer) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "chip", children: peer }, peer)) }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "mono dim", children: "none" }) })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "rd__actions", children: [
-          actionVisibility?.inspect !== false ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("button", { onClick: () => onDetails(active), children: actionLabels?.inspect || "Details" }) : null,
-          actionVisibility?.chat !== false ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("button", { onClick: () => onChat(active), children: actionLabels?.chat || "Open chat" }) : null,
-          actionVisibility?.respawn !== false && active.affordances?.can_respawn ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/respawn"), children: actionLabels?.respawn || "Respawn" }) : null,
-          actionVisibility?.reset !== false && canResetLifecycle ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/reset"), children: actionLabels?.reset || "Reset" }) : null,
-          actionVisibility?.retire !== false && active.affordances?.can_retire ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("button", { className: "danger", onClick: () => onLifecycle(activeIdentity, "mobkit/retire"), children: actionLabels?.retire || "Retire" }) : null
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "rd__actions", children: [
+          actionVisibility?.inspect !== false ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("button", { onClick: () => onDetails(active), children: actionLabels?.inspect || "Details" }) : null,
+          actionVisibility?.chat !== false ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("button", { onClick: () => onChat(active), children: actionLabels?.chat || "Open chat" }) : null,
+          actionVisibility?.respawn !== false && active.affordances?.can_respawn ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/respawn"), children: actionLabels?.respawn || "Respawn" }) : null,
+          actionVisibility?.reset !== false && canResetLifecycle ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/reset"), children: actionLabels?.reset || "Reset" }) : null,
+          actionVisibility?.retire !== false && active.affordances?.can_retire ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("button", { className: "danger", onClick: () => onLifecycle(activeIdentity, "mobkit/retire"), children: actionLabels?.retire || "Retire" }) : null
         ] })
       ] }) })
     ] })
@@ -8792,14 +9476,14 @@ function RosterPanel({
 }
 
 // src/panels/RoutingPanel.tsx
-var import_react19 = __toESM(require("react"));
-var import_jsx_runtime28 = require("react/jsx-runtime");
+var import_react20 = __toESM(require("react"));
+var import_jsx_runtime29 = require("react/jsx-runtime");
 function RoutingPanel({ data }) {
   const routes = data.routes || [];
   const deliveries = data.deliveries || [];
-  const [q, setQ] = import_react19.default.useState("");
-  const [sel, setSel] = import_react19.default.useState(routes[0]?.route_key || "");
-  const rows = import_react19.default.useMemo(() => {
+  const [q, setQ] = import_react20.default.useState("");
+  const [sel, setSel] = import_react20.default.useState(routes[0]?.route_key || "");
+  const rows = import_react20.default.useMemo(() => {
     if (!q) return routes;
     const needle = q.toLowerCase();
     return routes.filter(
@@ -8809,17 +9493,17 @@ function RoutingPanel({ data }) {
   const active = rows.find((r2) => r2.route_key === sel) || rows[0];
   const recentDeliveries = deliveries.slice(0, 40);
   const trafficForRoute = (routeKey) => deliveries.filter((d) => d.route_id === routeKey).length;
-  return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "view routing", "data-testid": "routing-panel", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "view__head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("h2", { children: "Routing" }),
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "view__sub", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "view routing", "data-testid": "routing-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "view__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("h2", { children: "Routing" }),
+      /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("span", { className: "view__sub", children: [
         rows.length,
         " routes \xB7 ",
         deliveries.length,
         " deliveries (recent)"
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "view__spacer" }),
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "view__spacer" }),
+      /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
         "input",
         {
           className: "view__search",
@@ -8829,89 +9513,89 @@ function RoutingPanel({ data }) {
         }
       )
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "routing__body", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "routing__table", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "routing__row routing__row--head", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "Route" }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "Channel" }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "Recipient" }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "Sink" }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "Module" }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "24h" })
+    /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "routing__body", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "routing__table", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "routing__row routing__row--head", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { children: "Route" }),
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { children: "Channel" }),
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { children: "Recipient" }),
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { children: "Sink" }),
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { children: "Module" }),
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { children: "24h" })
         ] }),
         rows.map((r2) => {
           const isSel = active && r2.route_key === active.route_key;
-          return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+          return /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)(
             "div",
             {
               className: `routing__row ${isSel ? "is-selected" : ""}`,
               onClick: () => setSel(r2.route_key),
               "data-testid": `routing-route:${r2.route_key}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "routing__intent mono", children: r2.route_key }),
-                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "mono dim", children: r2.channel || "\u2014" }),
-                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "mono", children: r2.recipient }),
-                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "dim", children: r2.sink }),
-                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "mono dim", children: r2.target_module }),
-                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "mono", children: trafficForRoute(r2.route_key) })
+                /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "routing__intent mono", children: r2.route_key }),
+                /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "mono dim", children: r2.channel || "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "mono", children: r2.recipient }),
+                /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "dim", children: r2.sink }),
+                /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "mono dim", children: r2.target_module }),
+                /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "mono", children: trafficForRoute(r2.route_key) })
               ]
             },
             r2.route_key
           );
         }),
-        rows.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { style: { padding: 24, color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12 }, children: "No routes configured." })
+        rows.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { style: { padding: 24, color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12 }, children: "No routes configured." })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("aside", { className: "routing__flow", children: active && /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(import_jsx_runtime28.Fragment, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "rf__title", children: "Flow" }),
-        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "rf__diagram", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "rf__node rf__node--intent", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "rf__lbl", children: "Route" }),
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "rf__val mono", children: active.route_key })
+      /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("aside", { className: "routing__flow", children: active && /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)(import_jsx_runtime29.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "rf__title", children: "Flow" }),
+        /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "rf__diagram", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "rf__node rf__node--intent", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "rf__lbl", children: "Route" }),
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "rf__val mono", children: active.route_key })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("svg", { className: "rf__arrow", viewBox: "0 0 40 12", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "M0 6 H 34 M 28 2 L 34 6 L 28 10", stroke: "currentColor", fill: "none", strokeWidth: "1" }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "rf__node rf__node--handler", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "rf__lbl", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("svg", { className: "rf__arrow", viewBox: "0 0 40 12", children: /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("path", { d: "M0 6 H 34 M 28 2 L 34 6 L 28 10", stroke: "currentColor", fill: "none", strokeWidth: "1" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "rf__node rf__node--handler", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "rf__lbl", children: [
               "via ",
               active.sink
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "rf__val mono", children: active.recipient })
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "rf__val mono", children: active.recipient })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("svg", { className: "rf__arrow rf__arrow--drop", viewBox: "0 0 12 40", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("path", { d: "M6 0 V 34 M 2 28 L 6 34 L 10 28", stroke: "currentColor", fill: "none", strokeWidth: "1" }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "rf__node rf__node--gate", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "rf__lbl", children: "Module" }),
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "rf__val mono", children: active.target_module })
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("svg", { className: "rf__arrow rf__arrow--drop", viewBox: "0 0 12 40", children: /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("path", { d: "M6 0 V 34 M 2 28 L 6 34 L 10 28", stroke: "currentColor", fill: "none", strokeWidth: "1" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "rf__node rf__node--gate", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "rf__lbl", children: "Module" }),
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "rf__val mono", children: active.target_module })
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "rf__stats", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "Retry max" }),
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { children: active.retry_max ?? "\u2014" })
+        /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "rf__stats", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("dt", { children: "Retry max" }),
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("dd", { children: active.retry_max ?? "\u2014" })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "Backoff" }),
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { children: active.backoff_ms ? `${active.backoff_ms} ms` : "\u2014" })
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("dt", { children: "Backoff" }),
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("dd", { children: active.backoff_ms ? `${active.backoff_ms} ms` : "\u2014" })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dt", { children: "Rate limit" }),
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("dd", { children: active.rate_limit_per_minute ? `${active.rate_limit_per_minute}/m` : "\u2014" })
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("dt", { children: "Rate limit" }),
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("dd", { children: active.rate_limit_per_minute ? `${active.rate_limit_per_minute}/m` : "\u2014" })
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "rf__title", style: { marginTop: 12 }, children: "Recent deliveries" }),
-        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { style: { display: "flex", flexDirection: "column", gap: 4, fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink-muted)" }, children: [
-          recentDeliveries.filter((d) => d.route_id === active.route_key).slice(0, 8).map((d) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { "data-testid": `routing-delivery:${d.delivery_id}`, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { style: { color: d.status === "delivered" ? "var(--ok)" : d.status === "failed" ? "var(--crit)" : "var(--warn)" }, children: d.status }),
+        /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "rf__title", style: { marginTop: 12 }, children: "Recent deliveries" }),
+        /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { style: { display: "flex", flexDirection: "column", gap: 4, fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink-muted)" }, children: [
+          recentDeliveries.filter((d) => d.route_id === active.route_key).slice(0, 8).map((d) => /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { "data-testid": `routing-delivery:${d.delivery_id}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { style: { color: d.status === "delivered" ? "var(--ok)" : d.status === "failed" ? "var(--crit)" : "var(--warn)" }, children: d.status }),
             " ",
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "dim", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("span", { className: "dim", children: [
               "\xB7 ",
               d.delivery_id.slice(0, 8)
             ] }),
             " ",
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("span", { children: [
               "\u2192 ",
               d.recipient
             ] })
           ] }, d.delivery_id)),
-          recentDeliveries.filter((d) => d.route_id === active.route_key).length === 0 && /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "dim", children: "No recent deliveries." })
+          recentDeliveries.filter((d) => d.route_id === active.route_key).length === 0 && /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "dim", children: "No recent deliveries." })
         ] })
       ] }) })
     ] })
@@ -8919,8 +9603,8 @@ function RoutingPanel({ data }) {
 }
 
 // src/panels/LogsPanel.tsx
-var import_react20 = __toESM(require("react"));
-var import_jsx_runtime29 = require("react/jsx-runtime");
+var import_react21 = __toESM(require("react"));
+var import_jsx_runtime30 = require("react/jsx-runtime");
 var INTERNAL_LOG_EVENTS = /* @__PURE__ */ new Set([
   "keep-alive",
   "snapshot_complete",
@@ -9056,16 +9740,16 @@ function hasStructuredOutput(frame) {
   return d.structured_output != null;
 }
 function LogsPanel({ frames }) {
-  const [q, setQ] = import_react20.default.useState("");
-  const [lvl, setLvl] = import_react20.default.useState("all");
-  const [expanded, setExpanded] = import_react20.default.useState(/* @__PURE__ */ new Set());
+  const [q, setQ] = import_react21.default.useState("");
+  const [lvl, setLvl] = import_react21.default.useState("all");
+  const [expanded, setExpanded] = import_react21.default.useState(/* @__PURE__ */ new Set());
   const toggle = (key) => setExpanded((prev) => {
     const next = new Set(prev);
     if (next.has(key)) next.delete(key);
     else next.add(key);
     return next;
   });
-  const rows = import_react20.default.useMemo(() => {
+  const rows = import_react21.default.useMemo(() => {
     return frames.filter(isLogFrameVisible).map((f) => ({ f, level: levelFor(f) })).filter(({ f, level }) => {
       if (lvl !== "all" && level !== lvl) return false;
       if (!q) return true;
@@ -9073,7 +9757,7 @@ function LogsPanel({ frames }) {
       return f.event.toLowerCase().includes(needle) || (f.identity || "").toLowerCase().includes(needle);
     });
   }, [frames, q, lvl]);
-  const counts = import_react20.default.useMemo(() => {
+  const counts = import_react21.default.useMemo(() => {
     const c = { info: 0, warn: 0, error: 0 };
     frames.filter(isLogFrameVisible).forEach((f) => {
       c[levelFor(f)]++;
@@ -9081,17 +9765,17 @@ function LogsPanel({ frames }) {
     return c;
   }, [frames]);
   const visibleTotal = counts.info + counts.warn + counts.error;
-  return /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "view logs", "data-testid": "logs-panel", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "view__head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("h2", { children: "Logs" }),
-      /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("span", { className: "view__sub", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "view logs", "data-testid": "logs-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "view__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("h2", { children: "Logs" }),
+      /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "view__sub", children: [
         rows.length,
         " of ",
         visibleTotal,
         " events \xB7 live"
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "view__spacer" }),
-      /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "view__spacer" }),
+      /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
         "input",
         {
           className: "view__search",
@@ -9100,37 +9784,37 @@ function LogsPanel({ frames }) {
           onChange: (e) => setQ(e.target.value)
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "view__segs", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("button", { className: lvl === "all" ? "is-active" : "", onClick: () => setLvl("all"), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "view__segs", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("button", { className: lvl === "all" ? "is-active" : "", onClick: () => setLvl("all"), children: [
           "all ",
-          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "n", children: visibleTotal })
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "n", children: visibleTotal })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("button", { className: lvl === "info" ? "is-active" : "", onClick: () => setLvl("info"), children: [
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("button", { className: lvl === "info" ? "is-active" : "", onClick: () => setLvl("info"), children: [
           "info ",
-          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "n", children: counts.info })
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "n", children: counts.info })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("button", { className: `warn ${lvl === "warn" ? "is-active" : ""}`, onClick: () => setLvl("warn"), children: [
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("button", { className: `warn ${lvl === "warn" ? "is-active" : ""}`, onClick: () => setLvl("warn"), children: [
           "warn ",
-          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "n", children: counts.warn })
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "n", children: counts.warn })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("button", { className: `bad ${lvl === "error" ? "is-active" : ""}`, onClick: () => setLvl("error"), children: [
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("button", { className: `bad ${lvl === "error" ? "is-active" : ""}`, onClick: () => setLvl("error"), children: [
           "err ",
-          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "n", children: counts.error })
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "n", children: counts.error })
         ] })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "logs__body", children: /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "logs__stream", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "logs__body", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "logs__stream", children: [
       rows.map(({ f, level }, i) => {
         const key = f.id || `${f.event}:${f.timestampMs}:${i}`;
         const isOpen = expanded.has(key);
         const hasStructured = hasStructuredOutput(f);
-        return /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)(
+        return /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(
           "div",
           {
             className: `logline logline--${level}${isOpen ? " is-open" : ""}`,
             "data-testid": `log-line:${f.id || i}`,
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)(
+              /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(
                 "button",
                 {
                   type: "button",
@@ -9139,46 +9823,46 @@ function LogsPanel({ frames }) {
                   "aria-expanded": isOpen,
                   "data-testid": `log-line:${f.id || i}:toggle`,
                   children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "logline__chevron", children: isOpen ? "\u25BE" : "\u25B8" }),
-                    /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "logline__t", children: formatTime2(f.timestampMs) }),
-                    /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: `logline__lvl logline__lvl--${level}`, children: level.toUpperCase() }),
-                    /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "logline__src", children: f.identity || "_system" }),
-                    /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "logline__evt", children: f.event }),
-                    /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "logline__ctx dim", children: f.interactionId ? `int=${f.interactionId.slice(0, 8)}` : "" }),
-                    /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "logline__msg", children: summarizeLogFrame(f) }),
-                    hasStructured && /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "logline__badge", title: "Carries structured_output", children: "\u21B3 struct" })
+                    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "logline__chevron", children: isOpen ? "\u25BE" : "\u25B8" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "logline__t", children: formatTime2(f.timestampMs) }),
+                    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: `logline__lvl logline__lvl--${level}`, children: level.toUpperCase() }),
+                    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "logline__src", children: f.identity || "_system" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "logline__evt", children: f.event }),
+                    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "logline__ctx dim", children: f.interactionId ? `int=${f.interactionId.slice(0, 8)}` : "" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "logline__msg", children: summarizeLogFrame(f) }),
+                    hasStructured && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "logline__badge", title: "Carries structured_output", children: "\u21B3 struct" })
                   ]
                 }
               ),
-              isOpen && /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("pre", { className: "logline__detail", "data-testid": `log-line:${f.id || i}:detail`, children: formatFrameData(f) })
+              isOpen && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("pre", { className: "logline__detail", "data-testid": `log-line:${f.id || i}:detail`, children: formatFrameData(f) })
             ]
           },
           key
         );
       }),
-      rows.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { style: { padding: 24, color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12 }, children: "No matching events." })
+      rows.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { style: { padding: 24, color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12 }, children: "No matching events." })
     ] }) })
   ] });
 }
 
 // src/panels/Topbar.tsx
-var import_jsx_runtime30 = require("react/jsx-runtime");
+var import_jsx_runtime31 = require("react/jsx-runtime");
 function PanelGlyph({ side, open }) {
   const dividerLeft = side === "left";
   const cx = dividerLeft ? 16.5 : 7.5;
   const point = open ? dividerLeft ? 1 : -1 : dividerLeft ? -1 : 1;
   const x1 = cx + point * 1.6;
   const x2 = cx - point * 1.6;
-  return /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)(
     "svg",
     {
       viewBox: "0 0 24 24",
       "aria-hidden": "true",
       focusable: "false",
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("rect", { x: "3", y: "5", width: "18", height: "14", rx: "1.5" }),
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("path", { d: dividerLeft ? "M9 5 L9 19" : "M15 5 L15 19" }),
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("path", { d: `M${x1} 9.5 L${x2} 12 L${x1} 14.5` })
+        /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("rect", { x: "3", y: "5", width: "18", height: "14", rx: "1.5" }),
+        /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("path", { d: dividerLeft ? "M9 5 L9 19" : "M15 5 L15 19" }),
+        /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("path", { d: `M${x1} 9.5 L${x2} 12 L${x1} 14.5` })
       ]
     }
   );
@@ -9198,8 +9882,8 @@ function Topbar({
   onToggleSidebar,
   onToggleRail
 }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "mobkit-topbar", "data-testid": "mobkit-topbar", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("div", { className: "mobkit-topbar", "data-testid": "mobkit-topbar", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
       "button",
       {
         type: "button",
@@ -9209,27 +9893,27 @@ function Topbar({
         "aria-label": sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
         title: sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
         "data-testid": "sidebar-collapse-toggle",
-        children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(PanelGlyph, { side: "left", open: !sidebarCollapsed })
+        children: /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(PanelGlyph, { side: "left", open: !sidebarCollapsed })
       }
     ),
-    /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "mobkit-topbar__brand", children: [
-      brandLogoUrl ? /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("img", { className: "mobkit-topbar__brand-logo", src: brandLogoUrl, alt: brandLogoAlt || brandLabel }) : /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "mobkit-topbar__brand-mark" }),
-      /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { children: brandLabel })
+    /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("div", { className: "mobkit-topbar__brand", children: [
+      brandLogoUrl ? /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("img", { className: "mobkit-topbar__brand-logo", src: brandLogoUrl, alt: brandLogoAlt || brandLabel }) : /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "mobkit-topbar__brand-mark" }),
+      /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { children: brandLabel })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "mobkit-topbar__mob", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "mobkit-topbar__mob-status", title: mobStatus }),
-      /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { children: mobName }),
-      /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "dim", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("div", { className: "mobkit-topbar__mob", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "mobkit-topbar__mob-status", title: mobStatus }),
+      /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { children: mobName }),
+      /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("span", { className: "dim", children: [
         "\xB7 ",
         mobStatus
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "mobkit-topbar__mob", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { children: "env:" }),
-      /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { children: environment })
+    /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("div", { className: "mobkit-topbar__mob", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { children: "env:" }),
+      /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { children: environment })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "mobkit-topbar__spacer" }),
-    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "mobkit-topbar__util", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("div", { className: "mobkit-topbar__spacer" }),
+    /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("div", { className: "mobkit-topbar__util", children: /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
       "button",
       {
         type: "button",
@@ -9239,7 +9923,7 @@ function Topbar({
         children: theme === "dark" ? "\u263E dark" : "\u2600 light"
       }
     ) }),
-    railVisible ? /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+    railVisible ? /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
       "button",
       {
         type: "button",
@@ -9249,17 +9933,17 @@ function Topbar({
         "aria-label": railCollapsed ? "Expand signals rail" : "Collapse signals rail",
         title: railCollapsed ? "Expand signals rail" : "Collapse signals rail",
         "data-testid": "signals-rail-collapse-toggle",
-        children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(PanelGlyph, { side: "right", open: !railCollapsed })
+        children: /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(PanelGlyph, { side: "right", open: !railCollapsed })
       }
     ) : null
   ] });
 }
 
 // src/panels/Tweaks.tsx
-var import_react21 = __toESM(require("react"));
+var import_react22 = __toESM(require("react"));
 var VARIANT_STORAGE = "mobkit-console-variant";
 function useConsoleVariant() {
-  const [v, setV] = import_react21.default.useState(() => {
+  const [v, setV] = import_react22.default.useState(() => {
     try {
       const stored = localStorage.getItem(VARIANT_STORAGE);
       if (stored === "rams" || stored === "terminal" || stored === "graphite") return stored;
@@ -9267,7 +9951,7 @@ function useConsoleVariant() {
     }
     return "rams";
   });
-  const set = import_react21.default.useCallback((next) => {
+  const set = import_react22.default.useCallback((next) => {
     setV(next);
     try {
       localStorage.setItem(VARIANT_STORAGE, next);
@@ -9278,9 +9962,9 @@ function useConsoleVariant() {
 }
 
 // src/panels/Sidebar.tsx
-var import_react22 = __toESM(require("react"));
-var import_jsx_runtime31 = require("react/jsx-runtime");
-var ALL_NAV = ["topology", "timeline", "gating", "roster", "routing", "logs", "health"];
+var import_react23 = __toESM(require("react"));
+var import_jsx_runtime32 = require("react/jsx-runtime");
+var ALL_NAV = ["topology", "timeline", "gating", "roster", "routing", "logs", "health", "access"];
 var NAV_LABEL = {
   topology: "Topology",
   timeline: "Today",
@@ -9288,7 +9972,8 @@ var NAV_LABEL = {
   roster: "Roster",
   routing: "Routing",
   logs: "Logs",
-  health: "Health"
+  health: "Health",
+  access: "Access"
 };
 function normalizeNavKind(value) {
   return typeof value === "string" && ALL_NAV.includes(value) ? value : null;
@@ -10017,40 +10702,40 @@ function sidebarDragPreviewRows(rows, item) {
 function renderSidebarDragPreviewRows(rows) {
   return rows.map((row) => {
     if (row.kind === "section") {
-      return /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)(
+      return /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)(
         "div",
         {
           className: "sidebar__drag-preview-section",
           "data-pinned": row.pinned ? "true" : void 0,
           children: [
-            /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "sidebar__sec-label", children: row.bucket }),
-            /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "sidebar__sec-spacer" }),
-            /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "sidebar__sec-count", children: row.count })
+            /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "sidebar__sec-label", children: row.bucket }),
+            /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "sidebar__sec-spacer" }),
+            /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "sidebar__sec-count", children: row.count })
           ]
         },
         `preview:${row.key}`
       );
     }
     if (row.kind === "subgroup") {
-      return /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("div", { className: "sidebar__drag-preview-subgroup", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { children: row.label }),
-        /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "sidebar__sec-spacer" }),
-        /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "sidebar__sec-count", children: row.count })
+      return /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "sidebar__drag-preview-subgroup", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { children: row.label }),
+        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "sidebar__sec-spacer" }),
+        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "sidebar__sec-count", children: row.count })
       ] }, `preview:${row.key}`);
     }
     if (row.kind === "empty") {
-      return /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("div", { className: "sidebar__drag-preview-empty", children: row.sectionConfig?.empty_title || row.sectionConfig?.empty_text || "No agents" }, `preview:${row.key}`);
+      return /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "sidebar__drag-preview-empty", children: row.sectionConfig?.empty_title || row.sectionConfig?.empty_text || "No agents" }, `preview:${row.key}`);
     }
-    return /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)(
       "div",
       {
         className: `sidebar__drag-preview-agent ${row.row.childOfHost ? "sidebar__drag-preview-agent--child" : ""}`,
         "data-depth": row.row.childOfHost ? String(Math.min(row.row.depth, 3)) : void 0,
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "agent__dot" }),
-          /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("span", { className: "sidebar__drag-preview-agent-body", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "agent__name", children: row.row.agent.label }),
-            /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "agent__id", children: row.row.agent.identity || row.row.agent.member_id })
+          /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "agent__dot" }),
+          /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("span", { className: "sidebar__drag-preview-agent-body", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "agent__name", children: row.row.agent.label }),
+            /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "agent__id", children: row.row.agent.identity || row.row.agent.member_id })
           ] })
         ]
       },
@@ -10098,9 +10783,9 @@ function pendingOrderFocusMatchesElement(pending, element) {
   return true;
 }
 function useMeasuredHeight() {
-  const ref = import_react22.default.useRef(null);
-  const [height, setHeight] = import_react22.default.useState(0);
-  import_react22.default.useLayoutEffect(() => {
+  const ref = import_react23.default.useRef(null);
+  const [height, setHeight] = import_react23.default.useState(0);
+  import_react23.default.useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return void 0;
     const update = () => setHeight(element.clientHeight);
@@ -10125,7 +10810,7 @@ function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedA
   const inbox = inboxCount(agent);
   const badges = configuredAgentBadges(agent, grouping);
   const pinned = isAgentPinned2(agent, pinnedAgentIds);
-  return /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)(
     "div",
     {
       className: `agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`,
@@ -10143,25 +10828,25 @@ function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedA
       role: "button",
       tabIndex: 0,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "agent__dot" }),
-        /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("span", { className: "agent__body", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "agent__name", children: agent.label }),
-          /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "agent__id", children: agent.identity || agent.member_id }),
-          badges.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "agent__badges", children: badges.map((badge) => /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "agent__dot" }),
+        /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("span", { className: "agent__body", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "agent__name", children: agent.label }),
+          /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "agent__id", children: agent.identity || agent.member_id }),
+          badges.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "agent__badges", children: badges.map((badge) => /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)(
             "span",
             {
               className: "agent__badge",
               "data-tone": badge.tone || "neutral",
               title: `${badge.label}: ${badge.value}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { children: badge.label }),
-                /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("strong", { children: badge.value })
+                /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { children: badge.label }),
+                /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("strong", { children: badge.value })
               ]
             },
             badge.id
           )) }) : null
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "agent__actions", children: onTogglePinnedAgent ? /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "agent__actions", children: onTogglePinnedAgent ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
           "button",
           {
             type: "button",
@@ -10176,12 +10861,12 @@ function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedA
               event.stopPropagation();
               onTogglePinnedAgent(agent, familyPinIds);
             },
-            children: /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(Icon, { name: "i-pin", className: "agent__pin-icon" })
+            children: /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(Icon, { name: "i-pin", className: "agent__pin-icon" })
           }
         ) : null }),
-        /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("span", { className: "agent__meta", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "agent__pulse", children: pulse.map((v, i) => /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { style: { height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` } }, i)) }),
-          inbox > 0 && /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "agent__inbox", children: inbox })
+        /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("span", { className: "agent__meta", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "agent__pulse", children: pulse.map((v, i) => /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { style: { height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` } }, i)) }),
+          inbox > 0 && /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "agent__inbox", children: inbox })
         ] })
       ]
     }
@@ -10205,85 +10890,85 @@ function Sidebar({
   onTogglePinnedAgent,
   onOpenControl
 }) {
-  const [q, setQ] = import_react22.default.useState("");
-  const [draggingOrder, setDraggingOrder] = import_react22.default.useState(null);
-  const [dragOverOrder, setDragOverOrder] = import_react22.default.useState(null);
-  const [dragPreview, setDragPreview] = import_react22.default.useState(null);
-  const [orderAnnouncement, setOrderAnnouncement] = import_react22.default.useState("");
-  const pendingOrderFocusRef = import_react22.default.useRef(null);
-  const draggingOrderRef = import_react22.default.useRef(null);
-  const pointerDragRef = import_react22.default.useRef(null);
-  const suppressOrderClickRef = import_react22.default.useRef(false);
-  import_react22.default.useEffect(() => {
+  const [q, setQ] = import_react23.default.useState("");
+  const [draggingOrder, setDraggingOrder] = import_react23.default.useState(null);
+  const [dragOverOrder, setDragOverOrder] = import_react23.default.useState(null);
+  const [dragPreview, setDragPreview] = import_react23.default.useState(null);
+  const [orderAnnouncement, setOrderAnnouncement] = import_react23.default.useState("");
+  const pendingOrderFocusRef = import_react23.default.useRef(null);
+  const draggingOrderRef = import_react23.default.useRef(null);
+  const pointerDragRef = import_react23.default.useRef(null);
+  const suppressOrderClickRef = import_react23.default.useRef(false);
+  import_react23.default.useEffect(() => {
     draggingOrderRef.current = draggingOrder;
   }, [draggingOrder]);
-  const navKinds = import_react22.default.useMemo(() => {
+  const navKinds = import_react23.default.useMemo(() => {
     const configured = visibleNavKinds();
     if (!visibleControls) return configured;
     const allowed = new Set(visibleControls);
     return configured.filter((kind) => allowed.has(kind));
   }, [visibleControls]);
-  const filtered = import_react22.default.useMemo(() => {
+  const filtered = import_react23.default.useMemo(() => {
     if (!q) return agents;
     const needle = q.toLowerCase();
     return agents.filter(
       (a) => a.label.toLowerCase().includes(needle) || (a.identity || "").toLowerCase().includes(needle) || (a.member_id || "").toLowerCase().includes(needle) || (a.role || "").toLowerCase().includes(needle)
     );
   }, [agents, q]);
-  const grouped = import_react22.default.useMemo(() => {
+  const grouped = import_react23.default.useMemo(() => {
     return groupSidebarAgents(filtered, grouping);
   }, [filtered, grouping]);
-  const familyPinIdsByMemberId = import_react22.default.useMemo(() => sidebarFamilyPinIdsByMemberId(grouped), [grouped]);
-  const sectionNames = import_react22.default.useMemo(() => orderedSectionNames(grouped, grouping), [grouped, grouping]);
-  const defaultCollapsedKey = import_react22.default.useMemo(
+  const familyPinIdsByMemberId = import_react23.default.useMemo(() => sidebarFamilyPinIdsByMemberId(grouped), [grouped]);
+  const sectionNames = import_react23.default.useMemo(() => orderedSectionNames(grouped, grouping), [grouped, grouping]);
+  const defaultCollapsedKey = import_react23.default.useMemo(
     () => JSON.stringify((grouping?.sections || []).map((section) => [section.name, section.collapsed === true])),
     [grouping?.sections]
   );
-  const sectionCollapseStorageKey = import_react22.default.useMemo(
+  const sectionCollapseStorageKey = import_react23.default.useMemo(
     () => sidebarStorageKey(SECTION_COLLAPSE_STORAGE_PREFIX, storageNamespace),
     [storageNamespace]
   );
-  const subgroupCollapseStorageKey = import_react22.default.useMemo(
+  const subgroupCollapseStorageKey = import_react23.default.useMemo(
     () => sidebarStorageKey(SUBGROUP_COLLAPSE_STORAGE_PREFIX, storageNamespace),
     [storageNamespace]
   );
-  const sectionOrderStorageKey = import_react22.default.useMemo(
+  const sectionOrderStorageKey = import_react23.default.useMemo(
     () => sidebarStorageKey(SIDEBAR_SECTION_ORDER_STORAGE_PREFIX, storageNamespace),
     [storageNamespace]
   );
-  const subgroupOrderStorageKey = import_react22.default.useMemo(
+  const subgroupOrderStorageKey = import_react23.default.useMemo(
     () => sidebarStorageKey(SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX, storageNamespace),
     [storageNamespace]
   );
-  const [collapsedSections, setCollapsedSections] = import_react22.default.useState(() => {
+  const [collapsedSections, setCollapsedSections] = import_react23.default.useState(() => {
     return collapsedSectionsForStorage(grouping, sectionCollapseStorageKey);
   });
-  import_react22.default.useEffect(() => {
+  import_react23.default.useEffect(() => {
     setCollapsedSections(collapsedSectionsForStorage(grouping, sectionCollapseStorageKey));
   }, [defaultCollapsedKey, grouping, sectionCollapseStorageKey]);
-  const [collapsedSubgroups, setCollapsedSubgroups] = import_react22.default.useState(() => {
+  const [collapsedSubgroups, setCollapsedSubgroups] = import_react23.default.useState(() => {
     return collapsedSubgroupsForStorage(subgroupCollapseStorageKey);
   });
-  import_react22.default.useEffect(() => {
+  import_react23.default.useEffect(() => {
     setCollapsedSubgroups(collapsedSubgroupsForStorage(subgroupCollapseStorageKey));
   }, [subgroupCollapseStorageKey]);
-  const [sectionOrder, setSectionOrder] = import_react22.default.useState(() => {
+  const [sectionOrder, setSectionOrder] = import_react23.default.useState(() => {
     return readSidebarStringList(localSidebarStorage(), sectionOrderStorageKey) || [];
   });
-  import_react22.default.useEffect(() => {
+  import_react23.default.useEffect(() => {
     setSectionOrder(readSidebarStringList(localSidebarStorage(), sectionOrderStorageKey) || []);
   }, [sectionOrderStorageKey]);
-  const [subgroupOrder, setSubgroupOrder] = import_react22.default.useState(() => {
+  const [subgroupOrder, setSubgroupOrder] = import_react23.default.useState(() => {
     return readSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey) || [];
   });
-  import_react22.default.useEffect(() => {
+  import_react23.default.useEffect(() => {
     setSubgroupOrder(readSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey) || []);
   }, [subgroupOrderStorageKey]);
-  const customSidebarButtons = import_react22.default.useMemo(
+  const customSidebarButtons = import_react23.default.useMemo(
     () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
     [customButtons]
   );
-  const completeSectionDrop = import_react22.default.useCallback((target, where, draggedId = draggingOrderRef.current?.id, inputSource = "pointer") => {
+  const completeSectionDrop = import_react23.default.useCallback((target, where, draggedId = draggingOrderRef.current?.id, inputSource = "pointer") => {
     if (!draggedId || draggedId === target) return;
     if (inputSource === "keyboard") {
       pendingOrderFocusRef.current = { kind: "section", id: draggedId };
@@ -10296,12 +10981,12 @@ function Sidebar({
     });
     setOrderAnnouncement(`Moved section ${draggedId} ${where} ${target}.`);
   }, [sectionNames, sectionOrderStorageKey]);
-  const subgroupIdsForBucket = import_react22.default.useCallback((bucket) => {
+  const subgroupIdsForBucket = import_react23.default.useCallback((bucket) => {
     const list = grouped.get(bucket) || [];
     const ids = list.map((row) => row.subgroup).filter((value) => Boolean(value)).map((subgroup) => sidebarSubgroupStorageId(bucket, subgroup));
     return Array.from(new Set(ids));
   }, [grouped]);
-  const completeSubgroupDrop = import_react22.default.useCallback((target, bucket, where, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket, inputSource = "pointer") => {
+  const completeSubgroupDrop = import_react23.default.useCallback((target, bucket, where, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket, inputSource = "pointer") => {
     if (!draggedId || draggedBucket !== bucket || draggedId === target) return;
     if (inputSource === "keyboard") {
       pendingOrderFocusRef.current = { kind: "subgroup", id: draggedId, bucket };
@@ -10319,7 +11004,7 @@ function Sidebar({
     });
     setOrderAnnouncement(`Moved subgroup ${sidebarSubgroupStorageLabel(draggedId)} ${where} ${sidebarSubgroupStorageLabel(target)}.`);
   }, [subgroupIdsForBucket, subgroupOrderStorageKey]);
-  const handleSectionOrderKeyDown = import_react22.default.useCallback((event, bucket) => {
+  const handleSectionOrderKeyDown = import_react23.default.useCallback((event, bucket) => {
     if (!event.altKey || event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
     const ordered = applyConsoleSidebarOrder(sectionNames, sectionOrder);
     const index = ordered.indexOf(bucket);
@@ -10328,7 +11013,7 @@ function Sidebar({
     event.preventDefault();
     completeSectionDrop(target, event.key === "ArrowUp" ? "before" : "after", bucket, "keyboard");
   }, [completeSectionDrop, sectionNames, sectionOrder]);
-  const handleSubgroupOrderKeyDown = import_react22.default.useCallback((event, storageKey, bucket) => {
+  const handleSubgroupOrderKeyDown = import_react23.default.useCallback((event, storageKey, bucket) => {
     if (!event.altKey || event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
     const ordered = applyConsoleSidebarOrder(subgroupIdsForBucket(bucket), subgroupOrder);
     const index = ordered.indexOf(storageKey);
@@ -10337,7 +11022,7 @@ function Sidebar({
     event.preventDefault();
     completeSubgroupDrop(target, bucket, event.key === "ArrowUp" ? "before" : "after", storageKey, bucket, "keyboard");
   }, [completeSubgroupDrop, subgroupIdsForBucket, subgroupOrder]);
-  const beginPointerOrderDrag = import_react22.default.useCallback((event, item) => {
+  const beginPointerOrderDrag = import_react23.default.useCallback((event, item) => {
     if (event.button !== 0) return;
     event.preventDefault();
     pointerDragRef.current = {
@@ -10351,7 +11036,7 @@ function Sidebar({
     setDraggingOrder(item);
     draggingOrderRef.current = item;
   }, []);
-  const movePointerOrderDrag = import_react22.default.useCallback((event) => {
+  const movePointerOrderDrag = import_react23.default.useCallback((event) => {
     const drag = pointerDragRef.current;
     if (!drag) return;
     if (!drag.moved && Math.max(Math.abs(event.clientX - drag.startX), Math.abs(event.clientY - drag.startY)) < 4) return;
@@ -10381,7 +11066,7 @@ function Sidebar({
     drag.over = { id, bucket, where };
     setDragOverOrder({ kind, id, where });
   }, []);
-  const finishPointerOrderDrag = import_react22.default.useCallback(() => {
+  const finishPointerOrderDrag = import_react23.default.useCallback(() => {
     const drag = pointerDragRef.current;
     if (!drag) return;
     pointerDragRef.current = null;
@@ -10401,7 +11086,7 @@ function Sidebar({
     setDragOverOrder(null);
     setDragPreview(null);
   }, [completeSectionDrop, completeSubgroupDrop]);
-  import_react22.default.useEffect(() => {
+  import_react23.default.useEffect(() => {
     if (!draggingOrder) return void 0;
     const onMove = (event) => movePointerOrderDrag(event);
     const onDone = () => finishPointerOrderDrag();
@@ -10414,7 +11099,7 @@ function Sidebar({
       window.removeEventListener("pointercancel", onDone);
     };
   }, [draggingOrder, finishPointerOrderDrag, movePointerOrderDrag]);
-  const sidebarNavigationModel = import_react22.default.useMemo(() => {
+  const sidebarNavigationModel = import_react23.default.useMemo(() => {
     return buildStockSidebarNavigationModel({
       sectionNames,
       grouped,
@@ -10427,29 +11112,29 @@ function Sidebar({
       searchActive: Boolean(q)
     });
   }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q]);
-  const virtualRows = import_react22.default.useMemo(
+  const virtualRows = import_react23.default.useMemo(
     () => sidebarNavigationRows(sidebarNavigationModel),
     [sidebarNavigationModel]
   );
-  const virtualOffsets = import_react22.default.useMemo(() => sidebarVirtualOffsets(virtualRows), [virtualRows]);
+  const virtualOffsets = import_react23.default.useMemo(() => sidebarVirtualOffsets(virtualRows), [virtualRows]);
   const [listRef, listHeight] = useMeasuredHeight();
-  const [scrollTop, setScrollTop] = import_react22.default.useState(0);
-  import_react22.default.useEffect(() => {
+  const [scrollTop, setScrollTop] = import_react23.default.useState(0);
+  import_react23.default.useEffect(() => {
     setScrollTop(0);
     if (listRef.current) listRef.current.scrollTop = 0;
   }, [q, grouping, listRef]);
-  const visibleRange = import_react22.default.useMemo(() => sidebarVisibleRange({
+  const visibleRange = import_react23.default.useMemo(() => sidebarVisibleRange({
     rowCount: virtualRows.length,
     offsets: virtualOffsets.offsets,
     total: virtualOffsets.total,
     scrollTop,
     listHeight
   }), [listHeight, scrollTop, virtualOffsets, virtualRows.length]);
-  const visibleRows = import_react22.default.useMemo(
+  const visibleRows = import_react23.default.useMemo(
     () => virtualRows.slice(visibleRange.start, visibleRange.end),
     [virtualRows, visibleRange]
   );
-  import_react22.default.useLayoutEffect(() => {
+  import_react23.default.useLayoutEffect(() => {
     const pending = pendingOrderFocusRef.current;
     const list = listRef.current;
     if (!pending || !list) return;
@@ -10481,23 +11166,23 @@ function Sidebar({
       window.setTimeout(restoreFocus, 0);
     }
   }, [listHeight, listRef, scrollTop, virtualOffsets, virtualRows]);
-  const dragPreviewRows = import_react22.default.useMemo(
+  const dragPreviewRows = import_react23.default.useMemo(
     () => sidebarDragPreviewRows(virtualRows, draggingOrder),
     [virtualRows, draggingOrder]
   );
   if (collapsed) {
-    return /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
+    return /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
       "aside",
       {
         className: "sidebar sidebar--collapsed",
         "data-collapsed": "true",
         "data-testid": "sidebar-root",
-        children: /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("i", { className: "sidebar__grip", "aria-hidden": "true" })
+        children: /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("i", { className: "sidebar__grip", "aria-hidden": "true" })
       }
     );
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("aside", { className: "sidebar", "data-testid": "sidebar-root", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("aside", { className: "sidebar", "data-testid": "sidebar-root", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
       "div",
       {
         "aria-live": "polite",
@@ -10516,14 +11201,14 @@ function Sidebar({
         children: orderAnnouncement
       }
     ),
-    /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("div", { className: "sidebar__mast", children: /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("div", { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("div", { className: "sidebar__mast-title", children: "Roster" }),
-      /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("div", { className: "sidebar__mast-sub", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "sidebar__mast", children: /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "sidebar__mast-title", children: "Roster" }),
+      /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "sidebar__mast-sub", children: [
         agents.length,
         " agents"
       ] })
     ] }) }),
-    /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("div", { className: "sidebar__search", children: /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "sidebar__search", children: /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
       "input",
       {
         placeholder: "Search roster...",
@@ -10532,10 +11217,10 @@ function Sidebar({
         "data-testid": "sidebar-search"
       }
     ) }),
-    (navKinds.length > 0 || customSidebarButtons.length > 0) && /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("div", { className: "sidebar__section sidebar__section--nav", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("div", { className: "sidebar__sec-head", children: /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "sidebar__sec-label", children: "Workbench" }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("div", { className: "sidebar__navgrid", children: [
-        navKinds.map((kind) => /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
+    (navKinds.length > 0 || customSidebarButtons.length > 0) && /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "sidebar__section sidebar__section--nav", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "sidebar__sec-head", children: /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "sidebar__sec-label", children: "Workbench" }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "sidebar__navgrid", children: [
+        navKinds.map((kind) => /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
           "button",
           {
             className: "sidebar__navitem",
@@ -10548,7 +11233,7 @@ function Sidebar({
         customSidebarButtons.map((button) => {
           const control = normalizeNavKind(button.control);
           if (control) {
-            return /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
+            return /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
               "button",
               {
                 className: "sidebar__navitem",
@@ -10567,7 +11252,7 @@ function Sidebar({
             }
             const target = button.target || void 0;
             const rel = target === "_blank" ? "noopener noreferrer" : void 0;
-            return /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
+            return /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
               "a",
               {
                 className: "sidebar__navitem",
@@ -10585,30 +11270,30 @@ function Sidebar({
         })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
       "div",
       {
         className: "sidebar__virtual-list",
         ref: listRef,
         onScroll: (event) => setScrollTop(event.currentTarget.scrollTop),
         "data-testid": "sidebar-agent-list",
-        children: /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("div", { className: "sidebar__virtual-space", style: { height: `${virtualOffsets.total}px` }, children: visibleRows.map((row, index) => {
+        children: /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "sidebar__virtual-space", style: { height: `${virtualOffsets.total}px` }, children: visibleRows.map((row, index) => {
           const rowIndex = visibleRange.start + index;
           const top = virtualOffsets.offsets[rowIndex] || 0;
           const height = virtualRowHeight(row);
-          return /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
+          return /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
             "div",
             {
               className: `sidebar__virtual-row sidebar__virtual-row--${row.kind}`,
               style: { transform: `translateY(${top}px)`, height: `${height}px` },
-              children: row.kind === "section" ? /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
+              children: row.kind === "section" ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
                 "div",
                 {
                   className: "sidebar__section",
                   "data-collapsed": row.collapsed ? "true" : void 0,
                   "data-pinned": row.pinned ? "true" : void 0,
                   "data-drag-over": dragOverOrder?.kind === "section" && dragOverOrder.id === row.bucket ? dragOverOrder.where : void 0,
-                  children: /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)(
+                  children: /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)(
                     "button",
                     {
                       type: "button",
@@ -10631,17 +11316,17 @@ function Sidebar({
                       },
                       "data-testid": `sidebar-section-toggle:${row.bucket}`,
                       children: [
-                        /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "sidebar__sec-label", children: row.bucket }),
-                        /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "sidebar__sec-spacer" }),
-                        /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "sidebar__sec-count", children: row.count })
+                        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "sidebar__sec-label", children: row.bucket }),
+                        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "sidebar__sec-spacer" }),
+                        /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "sidebar__sec-count", children: row.count })
                       ]
                     }
                   )
                 }
-              ) : row.kind === "empty" ? /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("div", { className: "sidebar__empty", "data-testid": `sidebar-section-empty:${row.bucket}`, children: [
-                row.sectionConfig?.empty_title ? /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "sidebar__empty-title", children: row.sectionConfig.empty_title }) : null,
-                /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { children: row.sectionConfig?.empty_text || "No agents in this section." })
-              ] }) : row.kind === "subgroup" ? /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)(
+              ) : row.kind === "empty" ? /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "sidebar__empty", "data-testid": `sidebar-section-empty:${row.bucket}`, children: [
+                row.sectionConfig?.empty_title ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "sidebar__empty-title", children: row.sectionConfig.empty_title }) : null,
+                /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { children: row.sectionConfig?.empty_text || "No agents in this section." })
+              ] }) : row.kind === "subgroup" ? /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)(
                 "button",
                 {
                   type: "button",
@@ -10667,9 +11352,9 @@ function Sidebar({
                     });
                   },
                   children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { children: row.label }),
-                    /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "sidebar__sec-spacer" }),
-                    /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("span", { className: "sidebar__sec-count", children: row.count })
+                    /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { children: row.label }),
+                    /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "sidebar__sec-spacer" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "sidebar__sec-count", children: row.count })
                   ]
                 }
               ) : renderAgentRow(
@@ -10688,7 +11373,7 @@ function Sidebar({
         }) })
       }
     ),
-    dragPreview && dragPreviewRows.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime31.jsx)(
+    dragPreview && dragPreviewRows.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
       "div",
       {
         className: "sidebar__drag-preview",
@@ -10705,8 +11390,8 @@ function Sidebar({
 }
 
 // src/panels/SignalsRail.tsx
-var import_react23 = __toESM(require("react"));
-var import_jsx_runtime32 = require("react/jsx-runtime");
+var import_react24 = __toESM(require("react"));
+var import_jsx_runtime33 = require("react/jsx-runtime");
 var DEFAULT_FILTER_PRESETS = [
   { id: "all", label: "All" },
   { id: "warning", label: "Attn", alertLevels: ["warning", "critical"] },
@@ -11021,18 +11706,18 @@ function SignalsRail({
   onPresetChange,
   onSelect
 }) {
-  const presets = import_react23.default.useMemo(() => {
+  const presets = import_react24.default.useMemo(() => {
     const configured = (filterPresets || []).filter((preset) => preset.id && preset.label);
     return configured.length > 0 ? configured : DEFAULT_FILTER_PRESETS;
   }, [filterPresets]);
-  const [filter, setFilter] = import_react23.default.useState(activePresetId || presets[0]?.id || "all");
-  const [expandedGroups, setExpandedGroups] = import_react23.default.useState(() => /* @__PURE__ */ new Set());
-  import_react23.default.useEffect(() => {
+  const [filter, setFilter] = import_react24.default.useState(activePresetId || presets[0]?.id || "all");
+  const [expandedGroups, setExpandedGroups] = import_react24.default.useState(() => /* @__PURE__ */ new Set());
+  import_react24.default.useEffect(() => {
     if (activePresetId && presets.some((preset) => preset.id === activePresetId)) {
       setFilter(activePresetId);
     }
   }, [activePresetId, presets]);
-  const groups = import_react23.default.useMemo(() => {
+  const groups = import_react24.default.useMemo(() => {
     return buildSignalGroupsForTest(frames);
   }, [frames]);
   function groupMatchesPreset(group, preset) {
@@ -11049,7 +11734,7 @@ function SignalsRail({
     return true;
   }
   const activePreset = presets.find((preset) => preset.id === filter) || presets[0] || DEFAULT_FILTER_PRESETS[0];
-  const counts = import_react23.default.useMemo(() => {
+  const counts = import_react24.default.useMemo(() => {
     return new Map(presets.map((preset) => [
       preset.id,
       groups.filter((group) => groupMatchesPreset(group, preset)).length
@@ -11070,25 +11755,25 @@ function SignalsRail({
     });
   }
   if (collapsed) {
-    return /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
+    return /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
       "aside",
       {
         className: "rail rail--collapsed",
         "data-collapsed": "true",
         "data-testid": "signals-rail",
-        children: /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("i", { className: "rail__grip", "aria-hidden": "true" })
+        children: /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("i", { className: "rail__grip", "aria-hidden": "true" })
       }
     );
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("aside", { className: "rail", "data-testid": "signals-rail", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "rail__head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "rail__title", children: "Signals" }),
-      /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("span", { className: "rail__sub", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("aside", { className: "rail", "data-testid": "signals-rail", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "rail__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "rail__title", children: "Signals" }),
+      /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("span", { className: "rail__sub", children: [
         recent15m,
         " in 15m"
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "rail__filters", children: presets.map((preset) => /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)(
+    /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "rail__filters", children: presets.map((preset) => /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(
       "button",
       {
         className: `rail__filter ${filter === preset.id ? "is-active" : ""}`,
@@ -11100,16 +11785,16 @@ function SignalsRail({
         children: [
           preset.label,
           " ",
-          /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "rail__filter-count", children: counts.get(preset.id) || 0 })
+          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "rail__filter-count", children: counts.get(preset.id) || 0 })
         ]
       },
       preset.id
     )) }),
-    /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "rail__list", children: [
-      shown.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "rail__empty", children: emptyText || "No meaningful signals yet." }),
+    /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "rail__list", children: [
+      shown.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "rail__empty", children: emptyText || "No meaningful signals yet." }),
       shown.map((s) => {
         const expanded = expandedGroups.has(s.id);
-        return /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)(
+        return /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(
           "div",
           {
             className: "signal",
@@ -11120,16 +11805,16 @@ function SignalsRail({
             role: "button",
             tabIndex: 0,
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "signal__bar" }),
-              /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("span", { className: "signal__body", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("span", { className: "signal__label", children: [
-                  s.items.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "signal__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
+              /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "signal__bar" }),
+              /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("span", { className: "signal__body", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("span", { className: "signal__label", children: [
+                  s.items.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "signal__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
                   s.title,
-                  s.items.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "signal__count", children: s.items.length })
+                  s.items.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "signal__count", children: s.items.length })
                 ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "signal__detail", children: s.detail }),
-                /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "signal__agent", children: s.agent }),
-                s.items.length > 1 && expanded && /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "signal__events", children: s.items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)(
+                /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "signal__detail", children: s.detail }),
+                /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "signal__agent", children: s.agent }),
+                s.items.length > 1 && expanded && /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "signal__events", children: s.items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(
                   "button",
                   {
                     className: "signal__event",
@@ -11139,14 +11824,14 @@ function SignalsRail({
                       onSelect?.(item.raw);
                     },
                     children: [
-                      /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "signal__event-label", children: item.label }),
-                      /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "signal__event-detail", children: item.detail })
+                      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "signal__event-label", children: item.label }),
+                      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "signal__event-detail", children: item.detail })
                     ]
                   },
                   item.id
                 )) })
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "signal__meta", children: /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "signal__time", children: s.at }) })
+              /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "signal__meta", children: /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "signal__time", children: s.at }) })
             ]
           },
           s.id
@@ -11157,7 +11842,7 @@ function SignalsRail({
 }
 
 // src/panels/ChatPane.tsx
-var import_react24 = __toESM(require("react"));
+var import_react25 = __toESM(require("react"));
 
 // src/lib/composer-attachment-text.ts
 function composerImageFileKey(file) {
@@ -11229,7 +11914,7 @@ function stripConsoleBlobReferencesFromText(value, references = consoleBlobRefer
 }
 
 // src/panels/ChatPane.tsx
-var import_jsx_runtime33 = require("react/jsx-runtime");
+var import_jsx_runtime34 = require("react/jsx-runtime");
 var ALLOWED_IMAGE_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 var MAX_ATTACHMENTS = 4;
 var MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -11502,7 +12187,7 @@ function CopyInlineButton({
   label,
   className = ""
 }) {
-  const [copied, setCopied] = import_react24.default.useState(false);
+  const [copied, setCopied] = import_react25.default.useState(false);
   const disabled = !text.trim();
   async function copy() {
     if (disabled) return;
@@ -11513,7 +12198,7 @@ function CopyInlineButton({
     } catch {
     }
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
     "button",
     {
       "aria-label": copied ? "Copied" : label,
@@ -11539,6 +12224,7 @@ function ChatPane({
   draft,
   sending,
   readOnly = false,
+  accessEnforcing = false,
   staged,
   onDraftChange,
   onStagedChange,
@@ -11555,14 +12241,14 @@ function ChatPane({
   onLoadOlder,
   stackSlot
 }) {
-  const bodyRef = import_react24.default.useRef(null);
-  const preserveOlderHistoryScrollRef = import_react24.default.useRef(false);
-  const olderHistoryScrollHeightRef = import_react24.default.useRef(0);
-  const olderHistoryScrollTopRef = import_react24.default.useRef(0);
-  const messages = import_react24.default.useMemo(() => {
+  const bodyRef = import_react25.default.useRef(null);
+  const preserveOlderHistoryScrollRef = import_react25.default.useRef(false);
+  const olderHistoryScrollHeightRef = import_react25.default.useRef(0);
+  const olderHistoryScrollTopRef = import_react25.default.useRef(0);
+  const messages = import_react25.default.useMemo(() => {
     return buildChatMessages(entries);
   }, [entries]);
-  const scrollSignature = import_react24.default.useMemo(() => {
+  const scrollSignature = import_react25.default.useMemo(() => {
     const last = messages[messages.length - 1];
     const lastTextLength = last?.text?.length ?? 0;
     const lastBlockLength = last?.blocks ? JSON.stringify(last.blocks).length : 0;
@@ -11575,7 +12261,7 @@ function ChatPane({
       phase ?? ""
     ].join(":");
   }, [identity, messages, phase]);
-  import_react24.default.useLayoutEffect(() => {
+  import_react25.default.useLayoutEffect(() => {
     if (preserveOlderHistoryScrollRef.current && bodyRef.current) {
       const node = bodyRef.current;
       const addedHeight = node.scrollHeight - olderHistoryScrollHeightRef.current;
@@ -11598,7 +12284,7 @@ function ChatPane({
       window.cancelAnimationFrame(secondFrame);
     };
   }, [scrollSignature]);
-  import_react24.default.useEffect(() => {
+  import_react25.default.useEffect(() => {
     if (!loadingOlderHistory && preserveOlderHistoryScrollRef.current) {
       preserveOlderHistoryScrollRef.current = false;
     }
@@ -11611,13 +12297,14 @@ function ChatPane({
     }
     onLoadOlder?.();
   }
-  const transcriptText = import_react24.default.useMemo(() => transcriptCopyText(messages), [messages]);
+  const transcriptText = import_react25.default.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
   const canAttachImages = !readOnly && agent?.model_capabilities?.image_input === true;
-  const [dragActive, setDragActive] = import_react24.default.useState(false);
-  const [attachmentError, setAttachmentError] = import_react24.default.useState(null);
-  const resolvedDraftBlobRefs = import_react24.default.useRef("");
+  const sendWithheld = accessEnforcing && agent?.affordances?.can_send_message === false;
+  const [dragActive, setDragActive] = import_react25.default.useState(false);
+  const [attachmentError, setAttachmentError] = import_react25.default.useState(null);
+  const resolvedDraftBlobRefs = import_react25.default.useRef("");
   function addFiles(fileList) {
     if (readOnly || !canAttachImages) return;
     const files = dedupeComposerImageFiles(Array.from(fileList));
@@ -11666,7 +12353,7 @@ function ChatPane({
       return current.filter((item) => item.id !== id);
     });
   }
-  import_react24.default.useEffect(() => {
+  import_react25.default.useEffect(() => {
     if (!canAttachImages) return;
     const refs = consoleBlobReferencesFromText(draft);
     if (refs.length === 0) {
@@ -11706,7 +12393,7 @@ function ChatPane({
       setAttachmentError("model cannot see images");
       return;
     }
-    if (readOnly) {
+    if (readOnly || sendWithheld) {
       return;
     }
     if (!draft.trim() && staged.length === 0) {
@@ -11724,23 +12411,23 @@ function ChatPane({
       setAttachmentError("send failed; images retained");
     }
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "conv__head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "conv__avatar", children: initial }),
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { style: { minWidth: 0 }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "conv__title", children: agentLabel }),
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "conv__identity", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "conv__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "conv__avatar", children: initial }),
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { style: { minWidth: 0 }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "conv__title", children: agentLabel }),
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "conv__identity", children: [
           identity,
           agent?.role ? ` \xB7 ${agent.role}` : ""
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "conv__actions", children: [
-        onInspect ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { className: "conv__action", onClick: onInspect, "data-testid": "conv-action:details", children: inspectLabel }) : null,
-        agent?.affordances?.can_respawn && onRespawn ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { className: "conv__action", onClick: onRespawn, "data-testid": "conv-action:respawn", children: respawnLabel }) : null,
-        agent?.affordances?.can_retire && onRetire ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", children: retireLabel }) : null
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "conv__actions", children: [
+        onInspect ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("button", { className: "conv__action", onClick: onInspect, "data-testid": "conv-action:details", children: inspectLabel }) : null,
+        agent?.affordances?.can_respawn && onRespawn ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("button", { className: "conv__action", onClick: onRespawn, "data-testid": "conv-action:respawn", children: respawnLabel }) : null,
+        agent?.affordances?.can_retire && onRetire ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", children: retireLabel }) : null
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(
+    /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
       "div",
       {
         className: "conv__body",
@@ -11754,7 +12441,7 @@ function ChatPane({
         },
         ref: bodyRef,
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
             CopyInlineButton,
             {
               className: "msg__copy--transcript",
@@ -11762,7 +12449,7 @@ function ChatPane({
               text: transcriptText
             }
           ),
-          hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+          hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
             "button",
             {
               className: "conv__history",
@@ -11772,25 +12459,25 @@ function ChatPane({
               children: loadingOlderHistory ? "Loading history" : "Load older history"
             }
           ),
-          messages.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "msg msg--origin", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "msg__time" }),
-            /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("span", { className: "msg__text", children: [
+          messages.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "msg msg--origin", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "msg__time" }),
+            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("span", { className: "msg__text", children: [
               "No messages yet. Say hello to ",
               agentLabel,
               "."
             ] }) })
           ] }),
-          messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "msg__time", children: m.time }),
-            /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "msg__bubble", children: [
-              (m.kind === "user" || m.kind === "agent") && /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(CopyInlineButton, { label: `Copy ${m.kind === "user" ? "message" : "turn"}`, text: msgCopyText(m) }),
-              m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(ConversationRichContent, { blocks: m.blocks }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "msg__text", children: m.text }),
-              m.workedFor && /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "msg__worked", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("span", { children: [
+          messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "msg__time", children: m.time }),
+            /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "msg__bubble", children: [
+              (m.kind === "user" || m.kind === "agent") && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(CopyInlineButton, { label: `Copy ${m.kind === "user" ? "message" : "turn"}`, text: msgCopyText(m) }),
+              m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(ConversationRichContent, { blocks: m.blocks }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "msg__text", children: m.text }),
+              m.workedFor && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "msg__worked", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("span", { children: [
                   "Worked for ",
                   m.workedFor
                 ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+                /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
                   CopyInlineButton,
                   {
                     className: "msg__copy--inline",
@@ -11801,7 +12488,7 @@ function ChatPane({
               ] })
             ] })
           ] }, m.id)),
-          phase && /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(
+          phase && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
             "div",
             {
               className: "msg msg--typing",
@@ -11809,14 +12496,14 @@ function ChatPane({
               "aria-live": "polite",
               "aria-label": `${agentLabel} is ${phaseLabel(phase)}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "msg__time" }),
-                /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("span", { className: "msg__typing", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", {}),
-                    /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", {})
+                /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "msg__time" }),
+                /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("span", { className: "msg__typing", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", {})
                   ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
+                  /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
                 ] }) })
               ]
             }
@@ -11825,8 +12512,8 @@ function ChatPane({
       }
     ),
     stackSlot,
-    /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "composer", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(
+    /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "composer", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
         "div",
         {
           className: `composer__shell${dragActive && canAttachImages ? " is-drag-active" : ""}`,
@@ -11864,18 +12551,18 @@ function ChatPane({
             }
           },
           children: [
-            staged.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "composer__attachments", children: staged.map((item) => /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "composer__attachment", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("img", { alt: "", src: item.previewUrl }),
-              /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { "aria-label": "Remove attachment", onClick: () => removeAttachment(item.id), type: "button", children: "\xD7" })
+            staged.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "composer__attachments", children: staged.map((item) => /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "composer__attachment", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("img", { alt: "", src: item.previewUrl }),
+              /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("button", { "aria-label": "Remove attachment", onClick: () => removeAttachment(item.id), type: "button", children: "\xD7" })
             ] }, item.id)) }),
-            /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
               "textarea",
               {
-                placeholder: readOnly ? "View-only console" : `Message ${agentLabel}\u2026`,
+                placeholder: readOnly ? "View-only console" : sendWithheld ? `You can view ${agentLabel} but not message it` : `Message ${agentLabel}\u2026`,
                 value: draft,
-                disabled: readOnly,
+                disabled: readOnly || sendWithheld,
                 onChange: (e) => {
-                  if (!readOnly) onDraftChange(e.target.value);
+                  if (!readOnly && !sendWithheld) onDraftChange(e.target.value);
                 },
                 onKeyDown: (e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
@@ -11887,14 +12574,14 @@ function ChatPane({
                 "data-testid": `chat-composer:${identity}`
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "composer__row", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
-              /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "composer__spacer" }),
-              /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(
+            /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "composer__row", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
+              /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "composer__spacer" }),
+              /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
                 "button",
                 {
                   className: "composer__send",
-                  disabled: !draft.trim() && staged.length === 0 || readOnly || staged.length > 0 && !canAttachImages || staged.length > 0 && sending,
+                  disabled: !draft.trim() && staged.length === 0 || readOnly || sendWithheld || staged.length > 0 && !canAttachImages || staged.length > 0 && sending,
                   onClick: submitComposer,
                   "data-testid": `chat-send:${identity}`,
                   children: [
@@ -11907,37 +12594,41 @@ function ChatPane({
           ]
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "composer__footer", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("span", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "composer__footer", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("span", { children: [
           "To: ",
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("b", { style: { color: "var(--ink-muted)" }, children: agentLabel })
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("b", { style: { color: "var(--ink-muted)" }, children: agentLabel })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "\xB7" }),
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "mono", children: identity }),
-        agent?.role && /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(import_jsx_runtime33.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: agent.role })
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "\xB7" }),
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "mono", children: identity }),
+        agent?.role && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: agent.role })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "\xB7" }),
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "dot", style: {
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "\xB7" }),
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "dot", style: {
           background: state === "active" || state === "running" ? "var(--ok)" : state.includes("degrade") ? "var(--warn)" : state === "retired" ? "var(--ink-faint)" : "var(--ink-dim)"
         } }),
-        /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: state }),
-        phase && /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(import_jsx_runtime33.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { style: { color: "var(--accent)" }, children: phase })
+        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: state }),
+        phase && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { style: { color: "var(--accent)" }, children: phase })
         ] }),
-        readOnly && /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(import_jsx_runtime33.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "view only" })
+        readOnly && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "view only" })
         ] }),
-        !readOnly && !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(import_jsx_runtime33.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "model cannot see images" })
+        !readOnly && sendWithheld && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "send not permitted" })
         ] }),
-        attachmentError && /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(import_jsx_runtime33.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { style: { color: "var(--bad)" }, children: attachmentError })
+        !readOnly && !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "model cannot see images" })
+        ] }),
+        attachmentError && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { style: { color: "var(--bad)" }, children: attachmentError })
         ] })
       ] })
     ] })
@@ -11945,8 +12636,8 @@ function ChatPane({
 }
 
 // src/panels/MobKitDock.tsx
-var import_react25 = __toESM(require("react"));
-var import_jsx_runtime34 = require("react/jsx-runtime");
+var import_react26 = __toESM(require("react"));
+var import_jsx_runtime35 = require("react/jsx-runtime");
 function tabPanelCount(node) {
   if (!node) return 0;
   if (node.kind === "panel") return 1;
@@ -11967,7 +12658,7 @@ function MobKitDock({
   onOpenTargetInPanel
 }) {
   const activeTab = viewState.tabs.find((t) => t.id === viewState.activeTabId) || viewState.tabs[0];
-  import_react25.default.useEffect(() => {
+  import_react26.default.useEffect(() => {
     function onKey(e) {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
@@ -12002,22 +12693,22 @@ function MobKitDock({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [viewState, onSplitPanel, onClosePanel, onCreateTab, onSelectTab]);
-  return /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "mkdock", "data-testid": "mkdock", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "wstabs", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "mkdock", "data-testid": "mkdock", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "wstabs", children: [
       viewState.tabs.map((t) => {
         const isActive = t.id === activeTab?.id;
         const count = tabPanelCount(t.layout);
-        return /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
+        return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
           "div",
           {
             className: `wstab ${isActive ? "is-active" : ""}`,
             onClick: () => onSelectTab(t.id),
             "data-testid": `wstab:${t.id}`,
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "wstab__mark" }),
-              /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "wstab__name", children: t.title || "untitled" }),
-              count > 1 && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "wstab__count", children: count }),
-              viewState.tabs.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "wstab__mark" }),
+              /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "wstab__name", children: t.title || "untitled" }),
+              count > 1 && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "wstab__count", children: count }),
+              viewState.tabs.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
                 "button",
                 {
                   className: "wstab__close",
@@ -12035,7 +12726,7 @@ function MobKitDock({
           t.id
         );
       }),
-      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
         "button",
         {
           className: "wstab__add",
@@ -12047,7 +12738,7 @@ function MobKitDock({
         }
       )
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "dock", children: activeTab && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "dock", children: activeTab && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
       DockLayout,
       {
         node: activeTab.layout,
@@ -12067,9 +12758,9 @@ function MobKitDock({
 function DockLayout(props) {
   const { node } = props;
   if (node.kind === "panel") {
-    return /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(PaneView, { panelId: node.panelId, ...props });
+    return /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(PaneView, { panelId: node.panelId, ...props });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(SplitView, { node, ...props });
+  return /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(SplitView, { node, ...props });
 }
 function SplitView(props) {
   const { node } = props;
@@ -12077,7 +12768,7 @@ function SplitView(props) {
   const ratio = typeof node.ratio === "number" ? Math.max(0.1, Math.min(0.9, node.ratio)) : 0.5;
   const direction = node.direction;
   const style = direction === "horizontal" ? { gridTemplateColumns: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` } : { gridTemplateRows: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` };
-  const hostRef = import_react25.default.useRef(null);
+  const hostRef = import_react26.default.useRef(null);
   function startDrag(e) {
     e.preventDefault();
     const host = hostRef.current;
@@ -12097,15 +12788,15 @@ function SplitView(props) {
     window.addEventListener("pointerup", end);
     window.addEventListener("pointercancel", end);
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
     "div",
     {
       ref: hostRef,
       className: `split split--${direction === "horizontal" ? "h" : "v"}`,
       style,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(DockLayout, { ...props, node: node.first }),
-        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(DockLayout, { ...props, node: node.first }),
+        /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
           "div",
           {
             className: `split__handle split__handle--${direction === "horizontal" ? "h" : "v"}`,
@@ -12113,7 +12804,7 @@ function SplitView(props) {
             "data-testid": `split-handle:${node.id}`
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(DockLayout, { ...props, node: node.second })
+        /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(DockLayout, { ...props, node: node.second })
       ]
     }
   );
@@ -12135,16 +12826,16 @@ function PaneView({
   const title = panel.title || panel.target?.title || "untitled";
   const target = panel.target;
   const subId = target?.kind === "agent-chat" ? target.identity || target.memberId : target?.kind === "identity-inspect" ? target.identity : void 0;
-  const [menuOpen, setMenuOpen] = import_react25.default.useState(false);
-  return /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
+  const [menuOpen, setMenuOpen] = import_react26.default.useState(false);
+  return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
     "div",
     {
       className: `pane ${isFocused ? "is-focused" : ""}`,
       onMouseDown: () => onFocusPanel(panelId),
       "data-testid": `pane:${panelId}`,
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "pane__bar", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "pane__bar", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
             "button",
             {
               className: "pane__title",
@@ -12156,14 +12847,14 @@ function PaneView({
               "data-testid": `pane-title:${panelId}`,
               title: "Retarget pane",
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "pane__title-text", children: title }),
-                /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "pane__caret", children: "\u25BE" })
+                /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "pane__title-text", children: title }),
+                /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "pane__caret", children: "\u25BE" })
               ]
             }
           ),
-          subId && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "pane__id", children: subId }),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "pane__spacer" }),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+          subId && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "pane__id", children: subId }),
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "pane__spacer" }),
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
             "button",
             {
               className: "pane__btn",
@@ -12176,7 +12867,7 @@ function PaneView({
               children: "\u25E8"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
             "button",
             {
               className: "pane__btn",
@@ -12189,7 +12880,7 @@ function PaneView({
               children: "\u2B13"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
             "button",
             {
               className: "pane__btn pane__close",
@@ -12202,7 +12893,7 @@ function PaneView({
               children: "\xD7"
             }
           ),
-          menuOpen && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+          menuOpen && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
             PaneMenu,
             {
               agents,
@@ -12215,7 +12906,7 @@ function PaneView({
             }
           )
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "pane__body", children: renderPanelBody({ id: panelId, target }) })
+        /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "pane__body", children: renderPanelBody({ id: panelId, target }) })
       ]
     }
   );
@@ -12230,27 +12921,27 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
     ["logs", "Logs"],
     ["health", "Health"]
   ].filter(([kind]) => !visibleControls || visibleControls.includes(kind));
-  return /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(import_jsx_runtime34.Fragment, { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "pane-menu__scrim", onMouseDown: onClose }),
-    /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "pane-menu", onMouseDown: (e) => e.stopPropagation(), children: [
-      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "pane-menu__label", children: "Views" }),
-      controls.map(([kind, label]) => /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(import_jsx_runtime35.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "pane-menu__scrim", onMouseDown: onClose }),
+    /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "pane-menu", onMouseDown: (e) => e.stopPropagation(), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "pane-menu__label", children: "Views" }),
+      controls.map(([kind, label]) => /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
         "button",
         {
           className: "pane-menu__item",
           onClick: () => onPick(buildControlTarget2(kind)),
           "data-testid": `pane-menu-view:${kind}`,
           children: [
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: label }),
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "pane-menu__id", children: "view" })
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { children: label }),
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "pane-menu__id", children: "view" })
           ]
         },
         kind
       )),
-      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "pane-menu__sep" }),
-      /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "pane-menu__label", children: "Agents" }),
-      agents.slice(0, 14).map((a) => /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
+      /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "pane-menu__sep" }),
+      /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "pane-menu__label", children: "Agents" }),
+      agents.slice(0, 14).map((a) => /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
         "button",
         {
           className: "pane-menu__item",
@@ -12258,9 +12949,9 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
           onClick: () => onPick(buildDockTarget2(a)),
           "data-testid": `pane-menu-agent:${a.member_id}`,
           children: [
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "agent__dot" }),
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { children: a.label }),
-            /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "pane-menu__id", children: a.identity || a.member_id })
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "agent__dot" }),
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { children: a.label }),
+            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "pane-menu__id", children: a.identity || a.member_id })
           ]
         },
         a.member_id
@@ -12270,8 +12961,8 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
 }
 
 // src/panels/PendingStack.tsx
-var import_react26 = __toESM(require("react"));
-var import_jsx_runtime35 = require("react/jsx-runtime");
+var import_react27 = __toESM(require("react"));
+var import_jsx_runtime36 = require("react/jsx-runtime");
 function StackHead({
   count,
   agentBusy,
@@ -12279,8 +12970,8 @@ function StackHead({
   onToggleCollapsed,
   onClear
 }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "stack__head", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "stack__head", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
       "button",
       {
         type: "button",
@@ -12289,18 +12980,18 @@ function StackHead({
         "aria-expanded": !collapsed,
         "aria-label": collapsed ? "Expand pending queue" : "Collapse pending queue",
         title: collapsed ? "Expand queue" : "Collapse queue",
-        children: /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stack__head-chev", children: collapsed ? "\u25B8" : "\u25BE" })
+        children: /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stack__head-chev", children: collapsed ? "\u25B8" : "\u25BE" })
       }
     ),
-    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { children: "Queue" }),
-    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stack__head-count", children: String(count).padStart(2, "0") }),
-    !collapsed && count > 1 && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stack__head-hint", children: "\xB7 drains top \u2192 bottom" }),
-    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stack__head-spacer" }),
-    /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("span", { className: `stack__head-phase ${agentBusy ? "" : "is-idle"}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("b", {}),
+    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { children: "Queue" }),
+    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stack__head-count", children: String(count).padStart(2, "0") }),
+    !collapsed && count > 1 && /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stack__head-hint", children: "\xB7 drains top \u2192 bottom" }),
+    /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stack__head-spacer" }),
+    /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("span", { className: `stack__head-phase ${agentBusy ? "" : "is-idle"}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("b", {}),
       agentBusy ? "Agent busy" : "Agent idle \xB7 draining"
     ] }),
-    count > 0 && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+    count > 0 && /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
       "button",
       {
         type: "button",
@@ -12338,9 +13029,9 @@ function StackItem({
   onDrop,
   onDragEnd
 }) {
-  const taRef = import_react26.default.useRef(null);
-  const [draft, setDraft] = import_react26.default.useState(item.text);
-  import_react26.default.useEffect(() => {
+  const taRef = import_react27.default.useRef(null);
+  const [draft, setDraft] = import_react27.default.useState(item.text);
+  import_react27.default.useEffect(() => {
     if (item.editing && taRef.current) {
       taRef.current.focus();
       const len = taRef.current.value.length;
@@ -12349,7 +13040,7 @@ function StackItem({
       taRef.current.style.height = taRef.current.scrollHeight + "px";
     }
   }, [item.editing]);
-  import_react26.default.useEffect(() => {
+  import_react27.default.useEffect(() => {
     setDraft(item.text);
   }, [item.text, item.editing]);
   const handleEditKey = (e) => {
@@ -12374,7 +13065,7 @@ function StackItem({
     dropHint === "below" ? "drop-target drop-below" : ""
   ].filter(Boolean).join(" ");
   const longText = item.text.length > 90 || /\n/.test(item.text);
-  return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)(
     "li",
     {
       className: cls,
@@ -12396,19 +13087,19 @@ function StackItem({
         }
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "stk-item__lead", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("span", { className: "stk-item__grip", "aria-label": "Drag to reorder", title: "Drag to reorder", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", {}),
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", {})
+        /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "stk-item__lead", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("span", { className: "stk-item__grip", "aria-label": "Drag to reorder", title: "Drag to reorder", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", {})
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stk-item__queue-glyph", "aria-hidden": "true", children: "\u2935" })
+          /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stk-item__queue-glyph", "aria-hidden": "true", children: "\u2935" })
         ] }),
-        item.editing ? /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "stk-item__edit", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+        item.editing ? /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "stk-item__edit", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
             "textarea",
             {
               ref: taRef,
@@ -12424,19 +13115,19 @@ function StackItem({
               "data-testid": `pending-item-edit:${item.id}`
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "stk-item__edit-row", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("span", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stk-kbd", children: "Esc" }),
+          /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "stk-item__edit-row", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("span", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stk-kbd", children: "Esc" }),
               " cancel"
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("span", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stk-kbd", children: "\u21B5" }),
+            /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("span", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stk-kbd", children: "\u21B5" }),
               " save \xB7 ",
-              /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stk-kbd", children: "\u21E7\u21B5" }),
+              /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stk-kbd", children: "\u21E7\u21B5" }),
               " newline"
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stk-item__edit-spacer" }),
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stk-item__edit-spacer" }),
+            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
               "button",
               {
                 type: "button",
@@ -12445,7 +13136,7 @@ function StackItem({
                 children: "Cancel"
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
               "button",
               {
                 type: "button",
@@ -12455,8 +13146,8 @@ function StackItem({
               }
             )
           ] })
-        ] }) : /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "stk-item__body", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "stk-item__body", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
             "div",
             {
               className: `stk-item__text ${item.expanded ? "stk-item__text--expanded" : ""}`,
@@ -12466,14 +13157,14 @@ function StackItem({
               children: item.text
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "stk-item__meta", children: [
-            isHead && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stk-item__head-tag", children: "Next" }),
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { children: timeAgo(item.addedAt) }),
-            item.status === "promoting" && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stk-item__sending", children: "SENDING\u2026" })
+          /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "stk-item__meta", children: [
+            isHead && /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stk-item__head-tag", children: "Next" }),
+            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { children: timeAgo(item.addedAt) }),
+            item.status === "promoting" && /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stk-item__sending", children: "SENDING\u2026" })
           ] })
         ] }),
-        !item.editing && /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "stk-item__actions", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
+        !item.editing && /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "stk-item__actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)(
             "button",
             {
               type: "button",
@@ -12484,12 +13175,12 @@ function StackItem({
               title: "Send now and interrupt at the next cooperative pause",
               "data-testid": `pending-steer:${item.id}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stk-btn__glyph", children: "\u21AA" }),
+                /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stk-btn__glyph", children: "\u21AA" }),
                 " Steer"
               ]
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
             "button",
             {
               type: "button",
@@ -12498,10 +13189,10 @@ function StackItem({
               "aria-label": "Edit message",
               title: "Edit message",
               "data-testid": `pending-edit:${item.id}`,
-              children: /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stk-btn__glyph", children: "\u270E" })
+              children: /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stk-btn__glyph", children: "\u270E" })
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
             "button",
             {
               type: "button",
@@ -12510,7 +13201,7 @@ function StackItem({
               "aria-label": "Remove from queue",
               title: "Remove from queue",
               "data-testid": `pending-trash:${item.id}`,
-              children: /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "stk-btn__glyph", children: "\xD7" })
+              children: /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("span", { className: "stk-btn__glyph", children: "\xD7" })
             }
           )
         ] })
@@ -12531,16 +13222,16 @@ function PendingStack2({
   onClearAll,
   onToggleExpand
 }) {
-  const [, setTick] = import_react26.default.useState(0);
-  import_react26.default.useEffect(() => {
+  const [, setTick] = import_react27.default.useState(0);
+  import_react27.default.useEffect(() => {
     const t = window.setInterval(() => setTick((n) => n + 1), 1e4);
     return () => window.clearInterval(t);
   }, []);
-  const [dragId, setDragId] = import_react26.default.useState(null);
-  const [dropTarget, setDropTarget] = import_react26.default.useState({ id: null, where: null });
-  const [collapsed, setCollapsed] = import_react26.default.useState(false);
-  const lastCount = import_react26.default.useRef(0);
-  import_react26.default.useEffect(() => {
+  const [dragId, setDragId] = import_react27.default.useState(null);
+  const [dropTarget, setDropTarget] = import_react27.default.useState({ id: null, where: null });
+  const [collapsed, setCollapsed] = import_react27.default.useState(false);
+  const lastCount = import_react27.default.useRef(0);
+  import_react27.default.useEffect(() => {
     if (items.length > lastCount.current) setCollapsed(false);
     lastCount.current = items.length;
   }, [items.length]);
@@ -12580,14 +13271,14 @@ function PendingStack2({
     setDragId(null);
     setDropTarget({ id: null, where: null });
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)(
     "section",
     {
       className: `stack ${collapsed ? "is-collapsed" : ""} ${reducedMotion ? "reduced-motion" : ""}`,
       "aria-label": "Pending message queue",
       "data-testid": "pending-stack",
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
           StackHead,
           {
             count: items.length,
@@ -12597,7 +13288,7 @@ function PendingStack2({
             onClear: onClearAll
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("ol", { className: "stack__list", role: "list", children: items.map((item, i) => /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("ol", { className: "stack__list", role: "list", children: items.map((item, i) => /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
           StackItem,
           {
             item,
@@ -12624,7 +13315,7 @@ function PendingStack2({
 }
 
 // src/ConsoleApp.tsx
-var import_jsx_runtime36 = require("react/jsx-runtime");
+var import_jsx_runtime37 = require("react/jsx-runtime");
 function normalizeConsoleTheme(value) {
   return value === "dark" || value === "light" ? value : null;
 }
@@ -12859,46 +13550,52 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "server_tool_content"
 ]);
 function ConsoleApp({ baseUrl }) {
-  const consoleFetchTimeoutMsRef = import_react27.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2);
-  const consoleTransport = import_react27.default.useMemo(
+  const consoleFetchTimeoutMsRef = import_react28.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2);
+  const consoleTransport = import_react28.default.useMemo(
     () => createHttpConsoleTransport2({
       baseUrl,
       fetchTimeoutMs: () => consoleFetchTimeoutMsRef.current
     }),
     [baseUrl]
   );
-  const consoleController = import_react27.default.useMemo(
+  const consoleController = import_react28.default.useMemo(
     () => createMobKitConsoleController2({ transport: consoleTransport }),
     [consoleTransport]
   );
-  const [experience, setExperience] = import_react27.default.useState(
+  const [experience, setExperience] = import_react28.default.useState(
     null
   );
-  const [agents, setAgents] = import_react27.default.useState([]);
-  const [draftByKey, setDraftByKey] = import_react27.default.useState(
+  const [agents, setAgents] = import_react28.default.useState([]);
+  const [draftByKey, setDraftByKey] = import_react28.default.useState(
     {}
   );
-  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] = import_react27.default.useState({});
-  const [sendingPanels, setSendingPanels] = import_react27.default.useState(
+  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] = import_react28.default.useState({});
+  const [sendingPanels, setSendingPanels] = import_react28.default.useState(
     /* @__PURE__ */ new Set()
   );
-  const [pinnedAgentIds, setPinnedAgentIds] = import_react27.default.useState(
+  const [pinnedAgentIds, setPinnedAgentIds] = import_react28.default.useState(
     /* @__PURE__ */ new Set()
   );
-  const [inspectByIdentity, setInspectByIdentity] = import_react27.default.useState({});
-  const [routingData, setRoutingData] = import_react27.default.useState({
+  const [inspectByIdentity, setInspectByIdentity] = import_react28.default.useState({});
+  const [routingData, setRoutingData] = import_react28.default.useState({
     routes: [],
     deliveries: []
   });
-  const [gatingData, setGatingData] = import_react27.default.useState({
+  const [gatingData, setGatingData] = import_react28.default.useState({
     pending: [],
     audit: []
   });
-  const [activeActivityPresetId, setActiveActivityPresetId] = import_react27.default.useState("");
-  const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react27.default.useState("");
-  const [loading, setLoading] = import_react27.default.useState(true);
-  const [error, setError] = import_react27.default.useState("");
-  const [theme, setTheme] = import_react27.default.useState(() => {
+  const [accessData, setAccessData] = import_react28.default.useState({
+    status: null,
+    config: null,
+    error: null
+  });
+  const [activeActivityPresetId, setActiveActivityPresetId] = import_react28.default.useState("");
+  const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react28.default.useState("");
+  const [loading, setLoading] = import_react28.default.useState(true);
+  const [error, setError] = import_react28.default.useState("");
+  const [actionError, setActionError] = import_react28.default.useState("");
+  const [theme, setTheme] = import_react28.default.useState(() => {
     try {
       return localStorage.getItem("mobkit-console-theme") || "light";
     } catch {
@@ -12906,22 +13603,22 @@ function ConsoleApp({ baseUrl }) {
     }
   });
   const [variant, setVariant] = useConsoleVariant();
-  const sidebarStorageScope = import_react27.default.useMemo(
+  const sidebarStorageScope = import_react28.default.useMemo(
     () => sidebarPreferencesScope(baseUrl, experience),
     [baseUrl, experience]
   );
-  const sidebarStorageNamespace = import_react27.default.useMemo(
+  const sidebarStorageNamespace = import_react28.default.useMemo(
     () => sidebarPreferencesNamespace(baseUrl, experience),
     [baseUrl, experience]
   );
-  const sidebarPinsStorageKey = import_react27.default.useMemo(
+  const sidebarPinsStorageKey = import_react28.default.useMemo(
     () => sidebarStorageKey(SIDEBAR_PINS_STORAGE_PREFIX, sidebarStorageNamespace),
     [sidebarStorageNamespace]
   );
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     pruneStaleSidebarStorage(browserLocalStorage(), sidebarStorageScope, sidebarStorageNamespace);
   }, [sidebarStorageScope, sidebarStorageNamespace]);
-  const [sidebarCollapsed, setSidebarCollapsed] = import_react27.default.useState(
+  const [sidebarCollapsed, setSidebarCollapsed] = import_react28.default.useState(
     () => {
       try {
         return localStorage.getItem("mobkit-console-sidebar-collapsed") === "1";
@@ -12930,7 +13627,7 @@ function ConsoleApp({ baseUrl }) {
       }
     }
   );
-  const toggleSidebarCollapsed = import_react27.default.useCallback(() => {
+  const toggleSidebarCollapsed = import_react28.default.useCallback(() => {
     setSidebarCollapsed((c) => {
       const next = !c;
       try {
@@ -12943,14 +13640,14 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, []);
-  const [railCollapsed, setRailCollapsed] = import_react27.default.useState(() => {
+  const [railCollapsed, setRailCollapsed] = import_react28.default.useState(() => {
     try {
       return localStorage.getItem("mobkit-console-rail-collapsed") === "1";
     } catch {
       return false;
     }
   });
-  const toggleRailCollapsed = import_react27.default.useCallback(() => {
+  const toggleRailCollapsed = import_react28.default.useCallback(() => {
     setRailCollapsed((c) => {
       const next = !c;
       try {
@@ -12960,11 +13657,11 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, []);
-  const defaultPinnedAgentIdsKey = import_react27.default.useMemo(
+  const defaultPinnedAgentIdsKey = import_react28.default.useMemo(
     () => JSON.stringify(experience?.console_config?.agent_list?.default_pinned_agent_ids || []),
     [experience?.console_config?.agent_list?.default_pinned_agent_ids]
   );
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     const defaults = new Set(experience?.console_config?.agent_list?.default_pinned_agent_ids || []);
     const stored = readSidebarStringSet(
       browserLocalStorage(),
@@ -12972,7 +13669,7 @@ function ConsoleApp({ baseUrl }) {
     );
     setPinnedAgentIds(stored ?? defaults);
   }, [defaultPinnedAgentIdsKey, experience?.console_config?.agent_list, sidebarPinsStorageKey]);
-  const togglePinnedAgent = import_react27.default.useCallback((agent, renderedFamilyPinIds) => {
+  const togglePinnedAgent = import_react28.default.useCallback((agent, renderedFamilyPinIds) => {
     const pinId = sidebarAgentPinId2(agent);
     setPinnedAgentIds((current) => {
       const next = new Set(current);
@@ -12991,13 +13688,13 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, [agents, sidebarPinsStorageKey]);
-  const [, setRenderTick] = import_react27.default.useState(0);
-  const forceRender = import_react27.default.useCallback(() => setRenderTick((n) => n + 1), []);
-  const stagedAttachmentsRef = import_react27.default.useRef(stagedAttachmentsByIdentity);
-  import_react27.default.useEffect(() => {
+  const [, setRenderTick] = import_react28.default.useState(0);
+  const forceRender = import_react28.default.useCallback(() => setRenderTick((n) => n + 1), []);
+  const stagedAttachmentsRef = import_react28.default.useRef(stagedAttachmentsByIdentity);
+  import_react28.default.useEffect(() => {
     stagedAttachmentsRef.current = stagedAttachmentsByIdentity;
   }, [stagedAttachmentsByIdentity]);
-  import_react27.default.useEffect(
+  import_react28.default.useEffect(
     () => () => {
       for (const items of Object.values(stagedAttachmentsRef.current)) {
         items.forEach((item) => URL.revokeObjectURL(item.previewUrl));
@@ -13046,11 +13743,11 @@ function ConsoleApp({ baseUrl }) {
       params
     })).result;
   }
-  const identityLogRef = import_react27.default.useRef({});
-  const timelineFetchInFlightRef = import_react27.default.useRef(
+  const identityLogRef = import_react28.default.useRef({});
+  const timelineFetchInFlightRef = import_react28.default.useRef(
     {}
   );
-  const optimisticUserByPanelKeyRef = import_react27.default.useRef({});
+  const optimisticUserByPanelKeyRef = import_react28.default.useRef({});
   function getOrCreateLog(identity) {
     let log = identityLogRef.current[identity];
     if (!log) {
@@ -13356,14 +14053,14 @@ function ConsoleApp({ baseUrl }) {
     void panelId;
     return frames;
   }
-  const activityRef = import_react27.default.useRef([]);
-  const liveFramesRef = import_react27.default.useRef([]);
-  const [liveFrames, setLiveFrames] = import_react27.default.useState([]);
+  const activityRef = import_react28.default.useRef([]);
+  const liveFramesRef = import_react28.default.useRef([]);
+  const [liveFrames, setLiveFrames] = import_react28.default.useState([]);
   function commitLiveFrames(frames) {
     liveFramesRef.current = frames;
     setLiveFrames(frames);
   }
-  const pendingStackRef = import_react27.default.useRef({});
+  const pendingStackRef = import_react28.default.useRef({});
   const PENDING_STACK_KEY_PREFIX = "mobkit-pending-stack:";
   const PENDING_DRAIN_CLAIM_TTL_MS = 15e3;
   const stackKeyFor = (identity) => `${PENDING_STACK_KEY_PREFIX}${identity}`;
@@ -13430,7 +14127,7 @@ function ConsoleApp({ baseUrl }) {
     persistPendingStack(identity, next);
     forceRender();
   }
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     const onStorage = (e) => {
       if (!e.key || !e.key.startsWith(PENDING_STACK_KEY_PREFIX)) return;
       const identity = e.key.slice(PENDING_STACK_KEY_PREFIX.length);
@@ -13442,25 +14139,25 @@ function ConsoleApp({ baseUrl }) {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
-  const identityBusyRef = import_react27.default.useRef({});
+  const identityBusyRef = import_react28.default.useRef({});
   const isIdentityBusy = (identity) => identityBusyRef.current[identity] === true;
-  const phaseRef = import_react27.default.useRef({});
-  const phaseValueByKey = import_react27.default.useRef({});
-  const phaseSinceByKey = import_react27.default.useRef({});
-  const phaseTimerByKey = import_react27.default.useRef({});
-  const refreshTimersRef = import_react27.default.useRef({});
-  const experienceTimerRef = import_react27.default.useRef(null);
-  const experienceLoadInFlightRef = import_react27.default.useRef(
+  const phaseRef = import_react28.default.useRef({});
+  const phaseValueByKey = import_react28.default.useRef({});
+  const phaseSinceByKey = import_react28.default.useRef({});
+  const phaseTimerByKey = import_react28.default.useRef({});
+  const refreshTimersRef = import_react28.default.useRef({});
+  const experienceTimerRef = import_react28.default.useRef(null);
+  const experienceLoadInFlightRef = import_react28.default.useRef(
     null
   );
-  const agentsRef = import_react27.default.useRef([]);
-  import_react27.default.useEffect(() => {
+  const agentsRef = import_react28.default.useRef([]);
+  import_react28.default.useEffect(() => {
     agentsRef.current = agents;
   }, [agents]);
-  const initialTargetOpened = import_react27.default.useRef(false);
-  const dockLayoutHydrated = import_react27.default.useRef(false);
-  const dockLayoutRestored = import_react27.default.useRef(false);
-  const dockLayoutRestoring = import_react27.default.useRef(false);
+  const initialTargetOpened = import_react28.default.useRef(false);
+  const dockLayoutHydrated = import_react28.default.useRef(false);
+  const dockLayoutRestored = import_react28.default.useRef(false);
+  const dockLayoutRestoring = import_react28.default.useRef(false);
   const dock = useConsoleDockController({
     createPanelState: ({ target }) => ({
       id: createConsoleId("panel"),
@@ -13468,11 +14165,11 @@ function ConsoleApp({ baseUrl }) {
       mode: "console"
     })
   });
-  const currentDockLayoutStorageKey = import_react27.default.useMemo(
+  const currentDockLayoutStorageKey = import_react28.default.useMemo(
     () => dockLayoutStorageKey(baseUrl, experience),
     [baseUrl, experience?.runtime_id, experience?.console_config?.title]
   );
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     if (!experience || dockLayoutHydrated.current) return;
     dockLayoutHydrated.current = true;
     try {
@@ -13487,7 +14184,7 @@ function ConsoleApp({ baseUrl }) {
     } catch {
     }
   }, [currentDockLayoutStorageKey, experience]);
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     if (!experience || !dockLayoutHydrated.current) return;
     if (dockLayoutRestoring.current) {
       dockLayoutRestoring.current = false;
@@ -13591,7 +14288,7 @@ function ConsoleApp({ baseUrl }) {
         return false;
     }
   }
-  const dockRef = import_react27.default.useRef(dock);
+  const dockRef = import_react28.default.useRef(dock);
   dockRef.current = dock;
   function updatePhaseForIdentity(identity, frame) {
     let changed = false;
@@ -13646,7 +14343,7 @@ function ConsoleApp({ baseUrl }) {
     }
     return changed;
   }
-  const loadExperience = import_react27.default.useCallback(() => {
+  const loadExperience = import_react28.default.useCallback(() => {
     if (experienceLoadInFlightRef.current) {
       return experienceLoadInFlightRef.current;
     }
@@ -13676,7 +14373,7 @@ function ConsoleApp({ baseUrl }) {
     experienceLoadInFlightRef.current = request;
     return request;
   }, [consoleTransport]);
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     let mounted = true;
     setLoading(true);
     setError("");
@@ -13689,14 +14386,14 @@ function ConsoleApp({ baseUrl }) {
       mounted = false;
     };
   }, [loadExperience]);
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     const timer = window.setInterval(() => {
       void loadExperience().catch(() => {
       });
     }, 15e3);
     return () => window.clearInterval(timer);
   }, [loadExperience]);
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     const appearance = experience?.console_config?.appearance;
     if (!appearance) return;
     const configuredTheme = normalizeConsoleTheme(appearance.default_theme);
@@ -13720,7 +14417,7 @@ function ConsoleApp({ baseUrl }) {
       }
     }
   }, [experience?.console_config?.appearance, setVariant]);
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     const configured = experience?.console_config?.layout?.sidebar_collapsed;
     if (typeof configured !== "boolean") return;
     try {
@@ -13730,7 +14427,7 @@ function ConsoleApp({ baseUrl }) {
     }
     setSidebarCollapsed(configured);
   }, [experience?.console_config?.layout?.sidebar_collapsed]);
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     const configured = experience?.console_config?.rail?.collapsed;
     if (typeof configured !== "boolean") return;
     try {
@@ -13741,11 +14438,12 @@ function ConsoleApp({ baseUrl }) {
     setRailCollapsed(configured);
   }, [experience?.console_config?.rail?.collapsed]);
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
-  const frontendReadOnly = import_react27.default.useMemo(() => resolveConsoleReadOnlyOverride(), []);
-  const consoleReadOnly = frontendReadOnly || experience?.console_policy?.read_only === true || experience?.runtime_capabilities?.can_send_messages === false;
-  const consoleReadOnlyRef = import_react27.default.useRef(false);
+  const frontendReadOnly = import_react28.default.useMemo(() => resolveConsoleReadOnlyOverride(), []);
+  const accessEnforcing = experience?.access?.enabled === true;
+  const consoleReadOnly = frontendReadOnly || experience?.console_policy?.read_only === true || !accessEnforcing && experience?.runtime_capabilities?.can_send_messages === false;
+  const consoleReadOnlyRef = import_react28.default.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
-  const visibleControls = import_react27.default.useMemo(() => {
+  const visibleControls = import_react28.default.useMemo(() => {
     const runtimeControls = hasMobControlSurface ? [
       "topology",
       "timeline",
@@ -13760,13 +14458,20 @@ function ConsoleApp({ baseUrl }) {
     const configuredVisible = (sidebarConfig?.visible_controls || []).map(normalizeNavKind).filter(
       (kind) => Boolean(kind) && allowedByRuntime.has(kind)
     );
-    if (configuredVisible.length > 0) return configuredVisible;
+    if (configuredVisible.length > 0) {
+      if (experience?.access?.can_administer === true) {
+        return [...configuredVisible, "access"];
+      }
+      return configuredVisible;
+    }
     const hidden = new Set(
       (sidebarConfig?.hidden_controls || []).map(normalizeNavKind).filter((kind) => Boolean(kind))
     );
-    return runtimeControls.filter((kind) => !hidden.has(kind));
-  }, [experience?.console_config?.sidebar, hasMobControlSurface]);
-  import_react27.default.useEffect(() => {
+    const controls = runtimeControls.filter((kind) => !hidden.has(kind));
+    if (experience?.access?.can_administer === true) controls.push("access");
+    return controls;
+  }, [experience?.console_config?.sidebar, experience?.access?.can_administer, hasMobControlSurface]);
+  import_react28.default.useEffect(() => {
     if (initialTargetOpened.current || dock.focusedTarget || !experience)
       return;
     if (!dockLayoutHydrated.current) return;
@@ -13800,7 +14505,7 @@ function ConsoleApp({ baseUrl }) {
     if (preset) dock.applyPreset(preset);
     dock.openTarget(target, "replace_focused");
   }, [agents, dock, experience, visibleControls]);
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     const target = dock.focusedTarget;
     if (!target || target.kind !== "agent-chat" || agents.length === 0) return;
     const identity = target.identity || target.memberId;
@@ -13817,7 +14522,42 @@ function ConsoleApp({ baseUrl }) {
       dock.openTarget(buildControlTarget2("roster"), "replace_focused");
     }
   }, [agents, dock.focusedTarget]);
-  const refreshPanelData = import_react27.default.useCallback(async () => {
+  const refreshAccessData = import_react28.default.useCallback(async () => {
+    const accessTarget = controlWorkbenchTarget("access");
+    try {
+      const status = await executeHeadlessCommand(
+        CONSOLE_COMMAND_NAMES2.accessStatus,
+        accessTarget
+      ) || null;
+      let config = null;
+      if (status?.available && status?.can_administer) {
+        const result = await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES2.getAccessConfig,
+          accessTarget
+        );
+        config = result?.config || null;
+      }
+      setAccessData({ status, config, error: null });
+    } catch (err) {
+      setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+    }
+  }, [baseUrl]);
+  const runAccessMutation = import_react28.default.useCallback(
+    async (command, params) => {
+      try {
+        await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
+        setAccessData((current) => ({ ...current, error: null }));
+      } catch (err) {
+        setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+      }
+      await refreshAccessData();
+      await loadExperience().catch(() => {
+      });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl, refreshAccessData, loadExperience]
+  );
+  const refreshPanelData = import_react28.default.useCallback(async () => {
     const openPanels = dock.viewState.panels.map((p) => p.target).filter(Boolean);
     const inspects = openPanels.filter(
       (t) => t.kind === "identity-inspect"
@@ -13844,6 +14584,9 @@ function ConsoleApp({ baseUrl }) {
         })
       );
     }
+    if (openPanels.some((t) => t.kind === "access")) {
+      await refreshAccessData();
+    }
     if (hasMobControlSurface && openPanels.some((t) => t.kind === "gating" || t.kind === "gates")) {
       const gatingTarget = controlWorkbenchTarget("gating");
       const [p, a] = await Promise.all([
@@ -13857,12 +14600,12 @@ function ConsoleApp({ baseUrl }) {
         audit: Array.isArray(audit.entries) ? audit.entries : []
       });
     }
-  }, [baseUrl, dock.viewState.panels, hasMobControlSurface]);
-  import_react27.default.useEffect(() => {
+  }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData]);
+  import_react28.default.useEffect(() => {
     void refreshPanelData().catch(() => {
     });
   }, [dock.viewState.panels, refreshPanelData]);
-  const scheduleExperienceRefresh = import_react27.default.useCallback(() => {
+  const scheduleExperienceRefresh = import_react28.default.useCallback(() => {
     if (experienceTimerRef.current !== null) return;
     experienceTimerRef.current = window.setTimeout(async () => {
       experienceTimerRef.current = null;
@@ -13872,7 +14615,7 @@ function ConsoleApp({ baseUrl }) {
       });
     }, 150);
   }, [loadExperience, refreshPanelData]);
-  const scheduleHistoryRefresh = import_react27.default.useCallback(
+  const scheduleHistoryRefresh = import_react28.default.useCallback(
     (identity) => {
       clearTimeout(refreshTimersRef.current[identity]);
       refreshTimersRef.current[identity] = window.setTimeout(async () => {
@@ -13890,7 +14633,7 @@ function ConsoleApp({ baseUrl }) {
     },
     [baseUrl, forceRender]
   );
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     for (const panel of dock.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
@@ -13901,7 +14644,7 @@ function ConsoleApp({ baseUrl }) {
       });
     }
   }, [baseUrl, dock.viewState.panels, forceRender]);
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     const refreshOpenChatPanels = async () => {
       const identities = /* @__PURE__ */ new Set();
       for (const panel of dock.viewState.panels) {
@@ -13952,11 +14695,11 @@ function ConsoleApp({ baseUrl }) {
     void refreshOpenChatPanels();
     return () => window.clearInterval(timer);
   }, [baseUrl, dock.viewState.panels, forceRender]);
-  const scheduleHistoryRefreshRef = import_react27.default.useRef(scheduleHistoryRefresh);
+  const scheduleHistoryRefreshRef = import_react28.default.useRef(scheduleHistoryRefresh);
   scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
-  const scheduleExperienceRefreshRef = import_react27.default.useRef(scheduleExperienceRefresh);
+  const scheduleExperienceRefreshRef = import_react28.default.useRef(scheduleExperienceRefresh);
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     const handleLiveFrame = (incomingFrame) => {
       const canonicalIdentity = canonicalConsoleIdentity(
         incomingFrame.identity,
@@ -14001,7 +14744,7 @@ function ConsoleApp({ baseUrl }) {
       unsubscribe?.();
     };
   }, [consoleController, consoleTransport]);
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     return () => {
       for (const timer of Object.values(phaseTimerByKey.current))
         window.clearTimeout(timer);
@@ -14098,6 +14841,7 @@ function ConsoleApp({ baseUrl }) {
           delete optimisticUserByPanelKeyRef.current[panelKey];
         }
       }
+      setActionError("");
       return true;
     } catch (submitError) {
       optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
@@ -14106,7 +14850,7 @@ function ConsoleApp({ baseUrl }) {
       delete optimisticUserByPanelKeyRef.current[panelKey];
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
-      setError(errorMessage(submitError));
+      setActionError(errorMessage(submitError));
       forceRender();
       return false;
     } finally {
@@ -14181,7 +14925,7 @@ function ConsoleApp({ baseUrl }) {
   }
   const reducedMotion = typeof window !== "undefined" ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false : false;
   const animMs = (ms) => reducedMotion ? 0 : ms;
-  const pendingDrainOwnerRef = import_react27.default.useRef(
+  const pendingDrainOwnerRef = import_react28.default.useRef(
     `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   );
   function findChatTargetFor(identity) {
@@ -14438,8 +15182,8 @@ function ConsoleApp({ baseUrl }) {
     window.addEventListener("pointercancel", cleanup);
   }
   if (loading)
-    return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("div", { "data-testid": "console-loading", children: "Loading console..." });
-  if (error) return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("div", { "data-testid": "console-error", children: error });
+    return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { "data-testid": "console-loading", children: "Loading console..." });
+  if (error) return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { "data-testid": "console-error", children: error });
   const focusedMemberId = dock.focusedTarget?.kind === "agent-chat" ? dock.focusedTarget.memberId : selectedRosterMemberId;
   const sidebarVS = buildSidebarViewState2({
     agents,
@@ -14521,7 +15265,7 @@ function ConsoleApp({ baseUrl }) {
     const canRetire = !consoleReadOnly && configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
     const stackItems = getPendingStack(identity);
     const agentBusy = isIdentityBusy(identity);
-    const stackSlot = stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+    const stackSlot = stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
       PendingStack2,
       {
         items: stackItems,
@@ -14537,7 +15281,7 @@ function ConsoleApp({ baseUrl }) {
         onToggleExpand: (itemId) => onStackToggleExpand(identity, itemId)
       }
     ) : null;
-    return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+    return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
       ChatPane,
       {
         agent,
@@ -14548,6 +15292,7 @@ function ConsoleApp({ baseUrl }) {
         draft,
         sending: isSending,
         readOnly: consoleReadOnly,
+        accessEnforcing,
         staged,
         onDraftChange: (v) => setDraftByKey((c) => ({ ...c, [panelKey]: v })),
         onStagedChange: (action) => setStagedAttachmentsForIdentity(identity, action),
@@ -14576,16 +15321,16 @@ function ConsoleApp({ baseUrl }) {
     const canRespawn = !consoleReadOnly && configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
     const canRetire = !consoleReadOnly && configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
     const canReset = !consoleReadOnly && configuredActionVisibility.reset && experience?.runtime_capabilities?.can_retire_members === true;
-    return /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(
       "div",
       {
         className: "console-panel",
         "data-testid": `inspect-panel:${target.identity}`,
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "console-panel__header", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("h3", { children: target.identity }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("div", { className: "console-panel__actions", children: [
-              canRespawn ? /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { className: "console-panel__header", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("h3", { children: target.identity }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { className: "console-panel__actions", children: [
+              canRespawn ? /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
                 "button",
                 {
                   "data-testid": `inspect-action:${target.identity}:respawn`,
@@ -14594,7 +15339,7 @@ function ConsoleApp({ baseUrl }) {
                   children: configuredActionLabels.respawn
                 }
               ) : null,
-              canReset ? /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+              canReset ? /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
                 "button",
                 {
                   "data-testid": `inspect-action:${target.identity}:reset`,
@@ -14603,7 +15348,7 @@ function ConsoleApp({ baseUrl }) {
                   children: configuredActionLabels.reset
                 }
               ) : null,
-              canRetire ? /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+              canRetire ? /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
                 "button",
                 {
                   "data-testid": `inspect-action:${target.identity}:retire`,
@@ -14614,35 +15359,35 @@ function ConsoleApp({ baseUrl }) {
               ) : null
             ] })
           ] }),
-          !inspect ? /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("dl", { className: "console-panel__grid", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dt", { children: "State" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dd", { children: inspect.state }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dt", { children: "Role" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dd", { children: inspect.role || "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dt", { children: "Addressability" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dd", { children: inspect.addressability }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dt", { children: "Generation" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dd", { children: inspect.continuity?.generation ?? "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dt", { children: "Checkpoint" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dd", { children: inspect.continuity?.checkpoint_version ?? "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dt", { children: "Session" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dd", { children: inspect.continuity?.session_id || "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dt", { children: "Runtime" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dd", { children: inspect.continuity?.agent_runtime_id || "n/a" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dt", { children: "Lease Healthy" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dd", { children: String(inspect.lease_healthy ?? inspect.lease?.healthy ?? false) }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dt", { children: "Peers" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dd", { children: inspect.topology_peers?.join(", ") || "none" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dt", { children: "Output Preview" }),
-            /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("dd", { children: inspect.output_preview || "n/a" })
+          !inspect ? /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("dl", { className: "console-panel__grid", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dt", { children: "State" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dd", { children: inspect.state }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dt", { children: "Role" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dd", { children: inspect.role || "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dt", { children: "Addressability" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dd", { children: inspect.addressability }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dt", { children: "Generation" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dd", { children: inspect.continuity?.generation ?? "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dt", { children: "Checkpoint" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dd", { children: inspect.continuity?.checkpoint_version ?? "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dt", { children: "Session" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dd", { children: inspect.continuity?.session_id || "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dt", { children: "Runtime" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dd", { children: inspect.continuity?.agent_runtime_id || "n/a" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dt", { children: "Lease Healthy" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dd", { children: String(inspect.lease_healthy ?? inspect.lease?.healthy ?? false) }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dt", { children: "Peers" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dd", { children: inspect.topology_peers?.join(", ") || "none" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dt", { children: "Output Preview" }),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("dd", { children: inspect.output_preview || "n/a" })
           ] })
         ]
       }
     );
   }
   function renderHealthPanel(identities) {
-    return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("strong", { children: r2.display_name || r2.identity }),
+    return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("strong", { children: r2.display_name || r2.identity }),
       " \xB7 ",
       r2.state,
       " \xB7",
@@ -14683,17 +15428,17 @@ function ConsoleApp({ baseUrl }) {
   }
   function renderPanelBody(panel) {
     const target = panel.target;
-    if (!target) return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("div", { className: "console-panel", children: "No panel target" });
+    if (!target) return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { className: "console-panel", children: "No panel target" });
     if (target.kind === "agent-chat") return renderChatPanel(panel);
     if (target.kind === "identity-inspect") {
       return renderInspectPanel(target);
     }
     if ((target.kind === "routing" || target.kind === "gating" || target.kind === "gates") && !hasMobControlSurface) {
-      return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("div", { className: "console-panel", children: "This view requires a mob runtime control surface." });
+      return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { className: "console-panel", children: "This view requires a mob runtime control surface." });
     }
-    if (target.kind === "routing") return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(RoutingPanel, { data: routingData });
+    if (target.kind === "routing") return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(RoutingPanel, { data: routingData });
     if (target.kind === "gating")
-      return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
         GatingInboxPanel,
         {
           pending: gatingData.pending,
@@ -14703,7 +15448,7 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "topology")
-      return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
         TopologyPanel2,
         {
           nodes: experience?.topology?.live_snapshot?.nodes || [],
@@ -14716,9 +15461,9 @@ function ConsoleApp({ baseUrl }) {
         experience?.health_overview?.live_snapshot?.identities || []
       );
     if (target.kind === "timeline")
-      return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(TimelinePanel, { frames: activityRef.current });
+      return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(TimelinePanel, { frames: activityRef.current });
     if (target.kind === "roster")
-      return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
         RosterPanel,
         {
           agents,
@@ -14738,7 +15483,7 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "gates")
-      return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+      return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
         GatingInboxPanel,
         {
           pending: gatingData.pending,
@@ -14748,10 +15493,49 @@ function ConsoleApp({ baseUrl }) {
         }
       );
     if (target.kind === "logs")
-      return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(LogsPanel, { frames: activityRef.current });
-    return /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
+      return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(LogsPanel, { frames: activityRef.current });
+    if (target.kind === "access")
+      return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+        AccessPanel,
+        {
+          status: accessData.status,
+          config: accessData.config,
+          error: accessData.error,
+          readOnly: frontendReadOnly || experience?.console_policy?.read_only === true,
+          agents: agents.map((agent) => ({
+            identity: agent.identity || agent.member_id,
+            label: agent.label
+          })),
+          onRefresh: () => void refreshAccessData(),
+          onSetEnabled: (enabled) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.enableAccess, { enabled }),
+          onSaveAdmins: (admins) => {
+            const config = {
+              ...accessData.config || {},
+              admins
+            };
+            void runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessConfig, { config });
+          },
+          onUpsertRule: (rule) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.upsertAccessRule, { rule }),
+          onDeleteRule: (id) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessRule, { id }),
+          onSaveGroup: (name, group) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.setAccessGroup, { name, group }),
+          onDeleteGroup: (name) => void runAccessMutation(CONSOLE_COMMAND_NAMES2.deleteAccessGroup, { name }),
+          onPreview: async (subject, action, identity) => {
+            try {
+              return await executeHeadlessCommand(
+                CONSOLE_COMMAND_NAMES2.previewAccess,
+                controlWorkbenchTarget("access"),
+                identity ? { subject, action, identity } : { subject, action }
+              ) || null;
+            } catch (err) {
+              setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+              return null;
+            }
+          }
+        }
+      );
+    return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(
     "div",
     {
       className: "cc-theme-scope mobkit-shell",
@@ -14759,8 +15543,21 @@ function ConsoleApp({ baseUrl }) {
       "data-cc-variant": variant,
       "data-testid": "meerkat-console",
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(SpriteSheet, {}),
-        /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(SpriteSheet, {}),
+        actionError && /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("div", { className: "mobkit-action-error", "data-testid": "console-action-error", role: "alert", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { children: actionError }),
+          /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
+            "button",
+            {
+              "aria-label": "Dismiss error",
+              "data-testid": "console-action-error-dismiss",
+              onClick: () => setActionError(""),
+              type: "button",
+              children: "\xD7"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
           Topbar,
           {
             mobName,
@@ -14778,7 +15575,7 @@ function ConsoleApp({ baseUrl }) {
             onToggleRail: toggleRailCollapsed
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(
           "div",
           {
             className: "shell",
@@ -14786,7 +15583,7 @@ function ConsoleApp({ baseUrl }) {
             "data-sidebar-collapsed": sidebarCollapsed ? "true" : "false",
             "data-rail-collapsed": railCollapsed ? "true" : "false",
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
                 Sidebar,
                 {
                   agents,
@@ -14805,7 +15602,7 @@ function ConsoleApp({ baseUrl }) {
                   }
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
                 "div",
                 {
                   className: "pane-resizer",
@@ -14814,7 +15611,7 @@ function ConsoleApp({ baseUrl }) {
                   onPointerDown: handleSidebarResize
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime36.jsx)("div", { className: "main", children: /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { className: "main", children: /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
                 MobKitDock,
                 {
                   viewState: dock.viewState,
@@ -14834,8 +15631,8 @@ function ConsoleApp({ baseUrl }) {
                   }
                 }
               ) }),
-              railVisible ? /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)(import_jsx_runtime36.Fragment, { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+              railVisible ? /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(import_jsx_runtime37.Fragment, { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
                   "div",
                   {
                     className: "pane-resizer pane-resizer--activity",
@@ -14844,7 +15641,7 @@ function ConsoleApp({ baseUrl }) {
                     onPointerDown: handleActivityResize
                   }
                 ),
-                /* @__PURE__ */ (0, import_jsx_runtime36.jsx)(
+                /* @__PURE__ */ (0, import_jsx_runtime37.jsx)(
                   SignalsRail,
                   {
                     frames: activityRef.current,
@@ -14866,14 +15663,14 @@ function ConsoleApp({ baseUrl }) {
 }
 
 // src/index.tsx
-var import_jsx_runtime37 = require("react/jsx-runtime");
+var import_jsx_runtime38 = require("react/jsx-runtime");
 function createConsoleApp(target, options = {}) {
   if (!target) {
     throw new Error("target element is required");
   }
   const baseUrl = options.baseUrl || "";
   const root = (0, import_client.createRoot)(target);
-  root.render(/* @__PURE__ */ (0, import_jsx_runtime37.jsx)(ConsoleApp, { baseUrl }));
+  root.render(/* @__PURE__ */ (0, import_jsx_runtime38.jsx)(ConsoleApp, { baseUrl }));
   return {
     unmount() {
       root.unmount();

@@ -57,6 +57,9 @@ import { findPaneResizeRoot } from "./lib/pane-resize";
 import { resolveConsoleReadOnlyOverride } from "./lib/read-only-override";
 import { Icon, SpriteSheet } from "./icon";
 import type {
+  ConsoleAccessConfig,
+  ConsoleAccessRule,
+  ConsoleAccessStatus,
   ConsoleActionsUiConfig,
   ConsoleAgent,
   ConsoleExperience,
@@ -69,6 +72,7 @@ import type {
 import { TopologyPanel } from "./panels/TopologyPanel";
 import { TimelinePanel } from "./panels/TimelinePanel";
 import { GatingInboxPanel } from "./panels/GatingInboxPanel";
+import { AccessPanel, type AccessPreviewResult } from "./panels/AccessPanel";
 import { RosterPanel } from "./panels/RosterPanel";
 import { RoutingPanel } from "./panels/RoutingPanel";
 import { LogsPanel } from "./panels/LogsPanel";
@@ -97,6 +101,11 @@ interface ConsoleAppProps {
 
 type RoutingPanelData = ReturnType<typeof buildRoutingSectionView>;
 type GatingPanelData = { pending: unknown[]; audit: unknown[] };
+type AccessPanelData = {
+  status: ConsoleAccessStatus | null;
+  config: ConsoleAccessConfig | null;
+  error: string | null;
+};
 type DockPresetId = "single" | "two_columns" | "two_rows" | "grid";
 
 interface IdentityLog {
@@ -523,12 +532,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     pending: [],
     audit: [],
   });
+  const [accessData, setAccessData] = React.useState<AccessPanelData>({
+    status: null,
+    config: null,
+    error: null,
+  });
   const [activeActivityPresetId, setActiveActivityPresetId] =
     React.useState("");
   const [selectedRosterMemberId, setSelectedRosterMemberId] =
     React.useState("");
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  // Recoverable per-action failures (e.g. an access-denied send). Rendered
+  // as a dismissible banner inside the shell — never the fatal error screen.
+  const [actionError, setActionError] = React.useState("");
   const [theme, setTheme] = React.useState<ConsoleTheme>(() => {
     try {
       return (
@@ -691,7 +708,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     });
   }
 
-  function controlWorkbenchTarget(kind: "routing" | "gating"): ConsoleWorkbenchTarget {
+  function controlWorkbenchTarget(kind: "routing" | "gating" | "access"): ConsoleWorkbenchTarget {
     return requireWorkbenchTarget(buildControlTarget(kind));
   }
 
@@ -1728,10 +1745,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
   const frontendReadOnly = React.useMemo(() => resolveConsoleReadOnlyOverride(), []);
+  // When access control is enforcing, `can_send_messages` is intersected
+  // with the caller's per-agent send grants, so it can be false simply
+  // because they currently have no send-able agent. That must NOT flip the
+  // whole console to deployment read-only (which would also suppress retire/
+  // respawn affordances they may still hold) — per-agent affordances are the
+  // authoritative gate. Only the deployment policy and the frontend override
+  // make the console globally read-only under access control.
+  const accessEnforcing = experience?.access?.enabled === true;
   const consoleReadOnly =
     frontendReadOnly ||
     experience?.console_policy?.read_only === true ||
-    experience?.runtime_capabilities?.can_send_messages === false;
+    (!accessEnforcing &&
+      experience?.runtime_capabilities?.can_send_messages === false);
   const consoleReadOnlyRef = React.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
   const visibleControls = React.useMemo<NavKind[]>(() => {
@@ -1753,14 +1779,23 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       .filter(
         (kind): kind is NavKind => Boolean(kind) && allowedByRuntime.has(kind),
       );
-    if (configuredVisible.length > 0) return configuredVisible;
+    if (configuredVisible.length > 0) {
+      if (experience?.access?.can_administer === true) {
+        return [...configuredVisible, "access"];
+      }
+      return configuredVisible;
+    }
     const hidden = new Set(
       (sidebarConfig?.hidden_controls || [])
         .map(normalizeNavKind)
         .filter((kind): kind is NavKind => Boolean(kind)),
     );
-    return runtimeControls.filter((kind) => !hidden.has(kind));
-  }, [experience?.console_config?.sidebar, hasMobControlSurface]);
+    const controls = runtimeControls.filter((kind) => !hidden.has(kind));
+    // The Access admin surface is gated server-side per principal, never by
+    // view config: administrators always get it, nobody else ever does.
+    if (experience?.access?.can_administer === true) controls.push("access");
+    return controls;
+  }, [experience?.console_config?.sidebar, experience?.access?.can_administer, hasMobControlSurface]);
 
   // =========================================================================
   // OPEN INITIAL TARGET
@@ -1828,6 +1863,54 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // REFRESH PANEL DATA (inspect, routing, gating)
   // =========================================================================
 
+  const refreshAccessData = React.useCallback(async () => {
+    const accessTarget = controlWorkbenchTarget("access");
+    try {
+      const status =
+        ((await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES.accessStatus,
+          accessTarget,
+        )) as ConsoleAccessStatus | null) || null;
+      let config: ConsoleAccessConfig | null = null;
+      if (status?.available && status?.can_administer) {
+        const result = (await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES.getAccessConfig,
+          accessTarget,
+        )) as { config?: ConsoleAccessConfig } | null;
+        config = result?.config || null;
+      }
+      setAccessData({ status, config, error: null });
+    } catch (err) {
+      setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseUrl]);
+
+  const runAccessMutation = React.useCallback(
+    async (
+      command:
+        | typeof CONSOLE_COMMAND_NAMES.setAccessConfig
+        | typeof CONSOLE_COMMAND_NAMES.enableAccess
+        | typeof CONSOLE_COMMAND_NAMES.upsertAccessRule
+        | typeof CONSOLE_COMMAND_NAMES.deleteAccessRule
+        | typeof CONSOLE_COMMAND_NAMES.setAccessGroup
+        | typeof CONSOLE_COMMAND_NAMES.deleteAccessGroup,
+      params: Record<string, unknown>,
+    ) => {
+      try {
+        await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
+        setAccessData((current) => ({ ...current, error: null }));
+      } catch (err) {
+        setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+      }
+      await refreshAccessData();
+      // Enforcement may have changed what this caller can see.
+      await loadExperience().catch(() => {});
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl, refreshAccessData, loadExperience],
+  );
+
   const refreshPanelData = React.useCallback(async () => {
     const openPanels = dock.viewState.panels
       .map((p) => p.target)
@@ -1858,6 +1941,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         }),
       );
     }
+    if (openPanels.some((t) => t.kind === "access")) {
+      await refreshAccessData();
+    }
     if (
       hasMobControlSurface &&
       openPanels.some((t) => t.kind === "gating" || t.kind === "gates")
@@ -1874,7 +1960,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         audit: Array.isArray(audit.entries) ? audit.entries : [],
       });
     }
-  }, [baseUrl, dock.viewState.panels, hasMobControlSurface]);
+  }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData]);
 
   React.useEffect(() => {
     void refreshPanelData().catch(() => {});
@@ -2238,6 +2324,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           delete optimisticUserByPanelKeyRef.current[panelKey];
         }
       }
+      setActionError("");
       return true;
     } catch (submitError) {
       optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
@@ -2246,7 +2333,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       delete optimisticUserByPanelKeyRef.current[panelKey];
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
-      setError(errorMessage(submitError));
+      setActionError(errorMessage(submitError));
       forceRender();
       return false;
     } finally {
@@ -2832,6 +2919,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         draft={draft}
         sending={isSending}
         readOnly={consoleReadOnly}
+        accessEnforcing={accessEnforcing}
         staged={staged}
         onDraftChange={(v) => setDraftByKey((c) => ({ ...c, [panelKey]: v }))}
         onStagedChange={(action) =>
@@ -3113,6 +3201,56 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       );
     if (target.kind === "logs")
       return <LogsPanel frames={activityRef.current} />;
+    if (target.kind === "access")
+      return (
+        <AccessPanel
+          status={accessData.status}
+          config={accessData.config}
+          error={accessData.error}
+          readOnly={frontendReadOnly || experience?.console_policy?.read_only === true}
+          agents={agents.map((agent) => ({
+            identity: agent.identity || agent.member_id,
+            label: agent.label,
+          }))}
+          onRefresh={() => void refreshAccessData()}
+          onSetEnabled={(enabled) =>
+            void runAccessMutation(CONSOLE_COMMAND_NAMES.enableAccess, { enabled })
+          }
+          onSaveAdmins={(admins) => {
+            const config = {
+              ...(accessData.config || {}),
+              admins,
+            };
+            void runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessConfig, { config });
+          }}
+          onUpsertRule={(rule) =>
+            void runAccessMutation(CONSOLE_COMMAND_NAMES.upsertAccessRule, { rule })
+          }
+          onDeleteRule={(id) =>
+            void runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessRule, { id })
+          }
+          onSaveGroup={(name, group) =>
+            void runAccessMutation(CONSOLE_COMMAND_NAMES.setAccessGroup, { name, group })
+          }
+          onDeleteGroup={(name) =>
+            void runAccessMutation(CONSOLE_COMMAND_NAMES.deleteAccessGroup, { name })
+          }
+          onPreview={async (subject, action, identity) => {
+            try {
+              return (
+                ((await executeHeadlessCommand(
+                  CONSOLE_COMMAND_NAMES.previewAccess,
+                  controlWorkbenchTarget("access"),
+                  identity ? { subject, action, identity } : { subject, action },
+                )) as AccessPreviewResult | null) || null
+              );
+            } catch (err) {
+              setAccessData((current) => ({ ...current, error: errorMessage(err) }));
+              return null;
+            }
+          }}
+        />
+      );
     return <div className="console-panel">Unsupported panel</div>;
   }
 
@@ -3124,6 +3262,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       data-testid="meerkat-console"
     >
       <SpriteSheet />
+      {actionError && (
+        <div className="mobkit-action-error" data-testid="console-action-error" role="alert">
+          <span>{actionError}</span>
+          <button
+            aria-label="Dismiss error"
+            data-testid="console-action-error-dismiss"
+            onClick={() => setActionError("")}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+      )}
       <Topbar
         mobName={mobName}
         brandLabel={brand?.label}

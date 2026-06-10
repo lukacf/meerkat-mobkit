@@ -96,6 +96,13 @@ describe("MobKitBuilder chainable methods", () => {
     assert.equal(builder._config.consoleConfigPath, "config/console.toml");
   });
 
+  it("accessControl() sets accessConfigPath and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.accessControl("config/access.toml");
+    assert.equal(result, builder);
+    assert.equal(builder._config.accessConfigPath, "config/access.toml");
+  });
+
   it("consoleAuthRequired() sets consoleRequireAppAuth and returns this", () => {
     const builder = MobKit.builder();
     const result = builder.consoleAuthRequired(false);
@@ -288,6 +295,17 @@ describe("MobKitBuilder convention defaults", () => {
   it("does not set scheduling files if none exist", () => {
     const builder = MobKit.builder();
     assert.deepEqual(builder._config.schedulingFiles, []);
+  });
+
+  it("explicit accessControl overrides convention auto-discovery", () => {
+    // Convention defaults look for config/access.toml; an explicit
+    // accessControl() value must survive _applyConventionDefaults()
+    // regardless of whether the conventional file exists.
+    const builder = MobKit.builder()
+      .mob("config/mob.toml")
+      .accessControl("custom/access.toml");
+    (builder as any)._applyConventionDefaults();
+    assert.equal(builder._config.accessConfigPath, "custom/access.toml");
   });
 });
 

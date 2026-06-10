@@ -58,7 +58,7 @@ pub use console_ingress::{
     ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember, ConsoleModelCapabilities,
     ConsoleRestJsonRequest, ConsoleRestJsonResponse, extract_bearer_token_from_header,
     handle_console_rest_json_route, handle_console_rest_json_route_with_snapshot,
-    validate_console_token,
+    handle_console_rest_json_route_with_snapshot_and_access, validate_console_token,
 };
 pub use event_transport::normalize_event_line;
 pub use metadata::{

@@ -13,7 +13,8 @@ use crate::http_console::{
     console_frontend_router, console_json_router_with_runtime_events_and_policy,
 };
 use crate::http_sse::{
-    agent_events_sse_router, mob_events_sse_router, mob_structural_events_sse_router,
+    agent_events_sse_router_with_access_and_priming, mob_events_sse_router_with_access_and_priming,
+    mob_structural_events_sse_router_with_access,
 };
 use crate::runtime::RuntimeDecisionState;
 use tower::limit::ConcurrencyLimitLayer;
@@ -55,6 +56,7 @@ impl UnifiedRuntime {
             Some(Arc::clone(self.metadata_table())),
             self.identity_runtime().cloned(),
             visibility_policy,
+            self.access_controller().cloned(),
         )
     }
 
@@ -84,11 +86,12 @@ impl UnifiedRuntime {
         let sse_decisions_a = decisions.clone();
         let sse_decisions_b = decisions.clone();
         let sse_decisions_c = decisions.clone();
+        let access = self.access_controller().cloned();
         Router::new()
             .route("/healthz", get(|| async { "ok" }))
             .merge(self.build_console_frontend_router())
             .merge(self.build_console_json_router_with_policy(decisions, visibility_policy))
-            .merge(agent_events_sse_router(
+            .merge(agent_events_sse_router_with_access_and_priming(
                 Arc::new(move |agent_id| {
                     let runtime = agent_runtime.clone();
                     Box::pin(async move {
@@ -100,18 +103,23 @@ impl UnifiedRuntime {
                     })
                 }),
                 Some(sse_decisions_a),
+                access.clone(),
+                access.as_ref().map(|_| self.mob_runtime.handle()),
             ))
-            .merge(mob_events_sse_router(
+            .merge(mob_events_sse_router_with_access_and_priming(
                 Arc::new(move || {
                     let mob_runtime = mob_runtime.clone();
                     Box::pin(async move { mob_runtime.handle().subscribe_mob_events().await })
                 }),
                 Some(sse_decisions_b),
+                access.clone(),
+                access.as_ref().map(|_| self.mob_runtime.handle()),
             ))
-            .merge(mob_structural_events_sse_router(
+            .merge(mob_structural_events_sse_router_with_access(
                 self.mob_runtime.handle(),
                 self.mob_events_store(),
                 Some(sse_decisions_c),
+                access,
             ))
             .layer(ConcurrencyLimitLayer::new(
                 DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS,

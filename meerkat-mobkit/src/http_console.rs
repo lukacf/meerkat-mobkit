@@ -33,13 +33,19 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::access::{
+    ACCESS_ACTIONS, ACTION_AGENT_RESET, ACTION_AGENT_RESPAWN, ACTION_AGENT_RETIRE,
+    ACTION_AGENT_SEND, ACTION_AGENT_SPAWN, ACTION_AGENT_VIEW, ACTION_GATING_DECIDE,
+    ACTION_GATING_VIEW, ACTION_MOB_OBSERVE, ACTION_RUNTIME_ADMIN, AccessController, AccessGroup,
+    AccessResource, AccessRule, AccessView, AgentResourceAttributes,
+};
 use crate::blob_store::{BinaryBlobPayload, BinaryBlobStore, is_valid_blob_id_value};
 use crate::console_aggregator::{
     ConsoleCursor, ConsoleFrame, ConsoleIdentityRecord, ConsoleLogError, ConsoleLogResult,
     ConsoleLogStore, ConsoleReplayUnavailable, ConsoleSendError, ConsoleSendRequest,
-    ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelineQuery, ConsoleTimelineWindowQuery,
-    ConsoleVisibility, ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
-    MobKitConsoleAggregator,
+    ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelineQuery, ConsoleTimelineWindowPage,
+    ConsoleTimelineWindowQuery, ConsoleVisibility, ConsoleVisibilityPolicy,
+    HideImplicitDelegateMembersConsoleVisibilityPolicy, MobKitConsoleAggregator,
 };
 use crate::contact_directory::ContactDirectory;
 use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
@@ -50,7 +56,8 @@ use crate::runtime::{
     ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember, ConsoleModelCapabilities,
     ConsoleRestJsonRequest, DeliveryHistoryRequest, GatingDecideRequest, GatingDecision,
     RuntimeDecisionState, extract_bearer_token_from_header,
-    handle_console_rest_json_route_with_snapshot, resolve_authorized_console_auth_from_token,
+    handle_console_rest_json_route_with_snapshot_and_access,
+    resolve_authorized_console_auth_from_token,
 };
 use crate::runtime::{MetadataScope, RuntimeMetadataTable, labels_to_json_value};
 use crate::types::{EventEnvelope, UnifiedEvent};
@@ -76,11 +83,16 @@ pub struct ConsoleJsonState {
     pub(crate) metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
     pub(crate) visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
     pub(crate) snapshot_read_model: ConsoleSnapshotReadModel,
+    /// Optional ABAC enforcement. `None` (or a disabled config) keeps every
+    /// console surface byte-for-byte compatible with the pre-access world.
+    pub(crate) access: Option<AccessController>,
 }
 
 #[derive(Debug, Clone)]
 struct ConsoleHttpAuthContext {
     principal: Option<String>,
+    /// Per-request access snapshot when an [`AccessController`] is wired.
+    access_view: Option<AccessView>,
 }
 
 #[derive(Clone, Default)]
@@ -215,12 +227,21 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         metadata_table: None,
         visibility_policy: Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy),
         snapshot_read_model: ConsoleSnapshotReadModel::default(),
+        access: None,
     })
 }
 
 pub fn console_json_router_with_aggregator(
     decisions: RuntimeDecisionState,
     console_aggregator: MobKitConsoleAggregator,
+) -> Router {
+    console_json_router_with_aggregator_and_access(decisions, console_aggregator, None)
+}
+
+pub fn console_json_router_with_aggregator_and_access(
+    decisions: RuntimeDecisionState,
+    console_aggregator: MobKitConsoleAggregator,
+    access: Option<AccessController>,
 ) -> Router {
     console_json_router_with_state(ConsoleJsonState {
         decisions,
@@ -236,6 +257,7 @@ pub fn console_json_router_with_aggregator(
         metadata_table: None,
         visibility_policy: Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy),
         snapshot_read_model: ConsoleSnapshotReadModel::default(),
+        access,
     })
 }
 
@@ -287,6 +309,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         metadata_table,
         identity_runtime,
         Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy),
+        None,
     )
 }
 
@@ -304,6 +327,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
     metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
     identity_runtime: Option<Arc<crate::identity_first::IdentityRuntime>>,
     visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
+    access: Option<AccessController>,
 ) -> Router {
     let console_aggregator = console_events.clone().map(|events| {
         if let Some(store) = console_log_store {
@@ -346,6 +370,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
         metadata_table,
         visibility_policy,
         snapshot_read_model,
+        access,
     })
 }
 
@@ -458,7 +483,7 @@ pub async fn console_json_handler(
         snapshot
     });
 
-    let response = handle_console_rest_json_route_with_snapshot(
+    let response = handle_console_rest_json_route_with_snapshot_and_access(
         &state.decisions,
         &ConsoleRestJsonRequest {
             method: "GET".to_string(),
@@ -466,6 +491,7 @@ pub async fn console_json_handler(
             auth: None,
         },
         live_snapshot.as_ref(),
+        state.access.as_ref(),
     );
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, Json::<Value>(response.body))
@@ -525,6 +551,8 @@ pub async fn console_rpc_handler(
             parsed_request,
             is_authenticated,
             read_only,
+            state.access.as_ref(),
+            auth_context.access_view.as_ref(),
         ))
         .await;
         return (StatusCode::OK, Json::<Value>(response_value));
@@ -545,6 +573,8 @@ pub async fn console_rpc_handler(
         is_authenticated,
         read_only,
         auth_context.principal.as_deref(),
+        state.access.as_ref(),
+        auth_context.access_view.as_ref(),
     ))
     .await;
     (StatusCode::OK, Json::<Value>(response_value))
@@ -571,13 +601,13 @@ async fn console_identities_handler(
     headers: HeaderMap,
     uri: Uri,
 ) -> impl IntoResponse {
-    if !console_request_authorized(&state, &headers, &uri) {
+    let Some(auth_context) = console_request_auth_context(&state, &headers, &uri) else {
         return console_json_error(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "console identities require a valid auth token",
         );
-    }
+    };
     let Some(aggregator) = &state.console_aggregator else {
         return console_json_error(
             StatusCode::NOT_FOUND,
@@ -587,11 +617,14 @@ async fn console_identities_handler(
     };
     let aggregator = aggregator.clone();
     match aggregator.list_identities().await {
-        Ok(identities) => (
-            StatusCode::OK,
-            Json::<Value>(json!({ "identities": identities })),
-        )
-            .into_response(),
+        Ok(mut identities) => {
+            retain_visible_identity_records(&mut identities, auth_context.access_view.as_ref());
+            (
+                StatusCode::OK,
+                Json::<Value>(json!({ "identities": identities })),
+            )
+                .into_response()
+        }
         Err(err) => {
             tracing::warn!(target: "mobkit::console", error = %err, "console identities request failed");
             console_json_error(
@@ -609,13 +642,13 @@ async fn console_timeline_handler(
     uri: Uri,
     Query(query): Query<ConsoleTimelineHttpQuery>,
 ) -> impl IntoResponse {
-    if !console_request_authorized(&state, &headers, &uri) {
+    let Some(auth_context) = console_request_auth_context(&state, &headers, &uri) else {
         return console_json_error(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "console timeline requires a valid auth token",
         );
-    }
+    };
     let Some(aggregator) = &state.console_aggregator else {
         return console_json_error(
             StatusCode::NOT_FOUND,
@@ -623,13 +656,29 @@ async fn console_timeline_handler(
             "console aggregator unavailable",
         );
     };
+    // Prime the attribute cache from the live roster so label/role rules
+    // resolve when filtering frames by `agent.view` — the timeline REST
+    // surface must not depend on a prior `/console/experience` call.
+    if let Some(runtime) = &state.runtime
+        && let Some(controller) = state.access.as_ref().filter(|c| c.enabled())
+    {
+        prime_access_cache_from_handle(&runtime.handle(), controller).await;
+    }
     let timeline_query = timeline_query_from_http(query, None);
     match Box::pin(aggregator.query_timeline_windowed(timeline_query)).await {
-        Ok(page) => (
-            StatusCode::OK,
-            Json::<Value>(serde_json::to_value(page).unwrap_or_else(|_| json!({ "frames": [] }))),
-        )
-            .into_response(),
+        Ok(mut page) => {
+            if let Some(view) = auth_context.access_view.as_ref() {
+                page.frames
+                    .retain(|frame| view.can_view_agent(frame.identity.as_str()));
+            }
+            (
+                StatusCode::OK,
+                Json::<Value>(
+                    serde_json::to_value(page).unwrap_or_else(|_| json!({ "frames": [] })),
+                ),
+            )
+                .into_response()
+        }
         Err(err) => {
             console_json_error(StatusCode::CONFLICT, "replay_unavailable", &err.to_string())
         }
@@ -642,15 +691,25 @@ async fn console_send_handler(
     uri: Uri,
     Json(request): Json<ConsoleSendRequest>,
 ) -> impl IntoResponse {
-    if !console_request_authorized(&state, &headers, &uri) {
+    let Some(auth_context) = console_request_auth_context(&state, &headers, &uri) else {
         return console_json_error(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "console send requires a valid auth token",
         );
-    }
+    };
     if state.decisions.console.read_only {
         return console_json_error(StatusCode::FORBIDDEN, "read_only", "console is read-only");
+    }
+    if let Some(view) = auth_context.access_view.as_ref()
+        && view.enforced()
+        && !view.allows_agent(ACTION_AGENT_SEND, request.identity.as_str())
+    {
+        return console_json_error(
+            StatusCode::FORBIDDEN,
+            "access_denied",
+            "you are not allowed to send to this agent",
+        );
     }
     let Some(aggregator) = &state.console_aggregator else {
         return console_json_error(
@@ -1003,12 +1062,28 @@ async fn console_timeline_stream_handler(
     uri: Uri,
     Query(query): Query<ConsoleTimelineHttpQuery>,
 ) -> impl IntoResponse {
-    if !console_request_authorized(&state, &headers, &uri) {
+    let Some(auth_context) = console_request_auth_context(&state, &headers, &uri) else {
         return console_json_error(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "console timeline stream requires a valid auth token",
         );
+    };
+    let access_view = auth_context.access_view.filter(AccessView::enforced);
+    // Prime the attribute cache from the live roster before any per-frame
+    // `agent.view` filter so label/role rules resolve here exactly as on the
+    // windowed timeline handler and the RPC/SSE seams — the stream must not
+    // depend on a prior `/console/experience` call. Primed once at open; an
+    // agent spawned mid-stream is filtered against the open-time roster, which
+    // matches the windowed handler's contract.
+    if access_view.is_some()
+        && let Some(runtime) = &state.runtime
+        && let Some(controller) = state
+            .access
+            .as_ref()
+            .filter(|controller| controller.enabled())
+    {
+        prime_access_cache_from_handle(&runtime.handle(), controller).await;
     }
     let Some(aggregator) = &state.console_aggregator else {
         return console_json_error(
@@ -1060,6 +1135,9 @@ async fn console_timeline_stream_handler(
         let mut latest_cursor = snapshot_cursor;
         for frame in snapshot_frames {
             latest_cursor = Some(frame.cursor.clone());
+            if access_view.as_ref().is_some_and(|view| !view.can_view_agent(frame.identity.as_str())) {
+                continue;
+            }
             if let Some(event) = sse_event_from_timeline_event(&ConsoleTimelineEvent::ConsoleFrame { frame }) {
                 yield Ok::<Event, Infallible>(event);
             }
@@ -1071,6 +1149,12 @@ async fn console_timeline_stream_handler(
             match rx.recv().await {
                 Ok(event) if timeline_event_matches(&event, identity.as_deref(), conversation_id.as_deref()) => {
                     if !aggregator.timeline_event_visible(&event).await {
+                        continue;
+                    }
+                    if let Some(view) = access_view.as_ref()
+                        && let Some(frame_identity) = timeline_event_identity(&event)
+                        && !view.can_view_agent(frame_identity)
+                    {
                         continue;
                     }
                     if let Some(event_cursor) = timeline_event_cursor(&event)
@@ -1239,6 +1323,12 @@ fn is_console_mutating_rpc_method(method: &str) -> bool {
             | "mobkit/mob_labels/delete"
             | "mobkit/run_labels/set"
             | "mobkit/run_labels/delete"
+            | "mobkit/access/set"
+            | "mobkit/access/enable"
+            | "mobkit/access/rules/upsert"
+            | "mobkit/access/rules/delete"
+            | "mobkit/access/groups/set"
+            | "mobkit/access/groups/delete"
     )
 }
 
@@ -1341,6 +1431,385 @@ fn timeline_event_cursor(event: &ConsoleTimelineEvent) -> Option<&ConsoleCursor>
         | ConsoleTimelineEvent::SnapshotComplete { .. }
         | ConsoleTimelineEvent::ReplayUnavailable { .. } => None,
     }
+}
+
+fn timeline_event_identity(event: &ConsoleTimelineEvent) -> Option<&str> {
+    match event {
+        ConsoleTimelineEvent::ConsoleFrame { frame }
+        | ConsoleTimelineEvent::FrameUpdated { frame } => Some(frame.identity.as_str()),
+        ConsoleTimelineEvent::SnapshotStarted { .. }
+        | ConsoleTimelineEvent::SnapshotComplete { .. }
+        | ConsoleTimelineEvent::ReplayUnavailable { .. } => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ABAC enforcement for console surfaces
+// ---------------------------------------------------------------------------
+
+const ACCESS_DENIED_RPC_CODE: i64 = -32030;
+
+fn retain_visible_timeline_frames(page: &mut ConsoleTimelineWindowPage, view: Option<&AccessView>) {
+    let Some(view) = view.filter(|view| view.enforced()) else {
+        return;
+    };
+    page.frames
+        .retain(|frame| view.can_view_agent(frame.identity.as_str()));
+}
+
+/// Filter serialized member rows (`mobkit/list_members`, `find_members`)
+/// down to the agents the caller may view. Field names cover both the
+/// meerkat roster entry shape and the console projection shape.
+fn retain_visible_member_rows(rows: &mut Vec<Value>, view: Option<&AccessView>) {
+    let Some(view) = view.filter(|view| view.enforced()) else {
+        return;
+    };
+    rows.retain(|row| {
+        let labels: Option<std::collections::BTreeMap<String, String>> = row
+            .get("labels")
+            .and_then(|value| serde_json::from_value(value.clone()).ok());
+        let agent_id = row
+            .get("agent_identity")
+            .or_else(|| row.get("member_id"))
+            .or_else(|| row.get("agent_id"))
+            .and_then(Value::as_str);
+        let identity = labels
+            .as_ref()
+            .and_then(|labels| labels.get("agent_identity"))
+            .map(String::as_str)
+            .or_else(|| row.get("identity").and_then(Value::as_str))
+            .or(agent_id);
+        let role = row
+            .get("role")
+            .or_else(|| row.get("profile"))
+            .and_then(Value::as_str);
+        view.decide(
+            ACTION_AGENT_VIEW,
+            &AccessResource {
+                identity,
+                agent_id,
+                role,
+                labels: labels.as_ref(),
+            },
+        )
+        .is_allow()
+    });
+}
+
+fn retain_visible_identity_records(
+    identities: &mut Vec<ConsoleIdentityRecord>,
+    view: Option<&AccessView>,
+) {
+    let Some(view) = view.filter(|view| view.enforced()) else {
+        return;
+    };
+    identities.retain(|record| {
+        view.decide(
+            ACTION_AGENT_VIEW,
+            &AccessResource {
+                identity: Some(record.identity.as_str()),
+                agent_id: Some(record.runtime_member_id.as_str()),
+                role: None,
+                labels: Some(&record.labels),
+            },
+        )
+        .is_allow()
+    });
+}
+
+/// Maps a console RPC method to the access action it requires plus the
+/// targeted agent (when the method is agent-scoped). Methods not listed are
+/// either pure read surfaces whose *results* are filtered per caller, or
+/// non-sensitive metadata.
+fn console_rpc_access_requirement<'a>(
+    method: &str,
+    params: &'a Value,
+) -> Option<(&'static str, Option<&'a str>)> {
+    let identity = params.get("identity").and_then(Value::as_str);
+    let target = identity
+        .or_else(|| params.get("member_id").and_then(Value::as_str))
+        .or_else(|| params.get("agent_id").and_then(Value::as_str));
+    match method {
+        "mobkit/console/send" => Some((ACTION_AGENT_SEND, identity)),
+        "mobkit/retire"
+        | "mobkit/retire_member"
+        | "mobkit/force_cancel_member"
+        | "mobkit/delete_identity" => Some((ACTION_AGENT_RETIRE, target)),
+        "mobkit/respawn" | "mobkit/respawn_member" => Some((ACTION_AGENT_RESPAWN, target)),
+        "mobkit/reset" | "mobkit/reset_all" => Some((ACTION_AGENT_RESET, target)),
+        "mobkit/ensure_member"
+        | "mobkit/spawn_helper"
+        | "mobkit/fork_helper"
+        | "mobkit/attach_existing_session"
+        | "mobkit/run_flow"
+        | "mobkit/cancel_flow"
+        | "mobkit/collect_completed" => Some((ACTION_AGENT_SPAWN, target)),
+        // Flow state reads expose run records (including spawned member
+        // identities), so they sit in the same tier as running flows.
+        "mobkit/flow_status" | "mobkit/list_flows" | "mobkit/list_runs" => {
+            Some((ACTION_AGENT_SPAWN, None))
+        }
+        "mobkit/gating/decide" => Some((ACTION_GATING_DECIDE, None)),
+        "mobkit/gating/pending" | "mobkit/gating/audit" => Some((ACTION_GATING_VIEW, None)),
+        "mobkit/mob_events/query" | "mobkit/mob_events/subscribe" => {
+            Some((ACTION_MOB_OBSERVE, None))
+        }
+        "mobkit/reconcile_edges"
+        | "mobkit/cross_mob/wire_local"
+        | "mobkit/cross_mob/unwire_local"
+        | "mobkit/mob_labels/set"
+        | "mobkit/mob_labels/delete"
+        | "mobkit/run_labels/set"
+        | "mobkit/run_labels/delete"
+        // Plumbing reads: routing tables, delivery records, cross-mob
+        // contacts, and label tables enumerate agent identities without
+        // passing through per-agent visibility filtering, so they require
+        // the same grant as the mutations that shape them.
+        | "mobkit/routing/routes/list"
+        | "mobkit/delivery/history"
+        | "mobkit/cross_mob/directory"
+        | "mobkit/cross_mob/peer_info"
+        | "mobkit/mob_labels/get"
+        | "mobkit/run_labels/get" => Some((ACTION_RUNTIME_ADMIN, None)),
+        "mobkit/get_member"
+        | "mobkit/member_status"
+        | "mobkit/inspect_identity"
+        | "mobkit/status_identity"
+        | "mobkit/console/inspect_identity" => Some((ACTION_AGENT_VIEW, target)),
+        _ => None,
+    }
+}
+
+/// Returns the denial error when the caller's view forbids the method.
+fn console_rpc_access_violation(
+    view: Option<&AccessView>,
+    method: &str,
+    params: &Value,
+) -> Option<JsonRpcError> {
+    let view = view.filter(|view| view.enforced())?;
+    let (action, target) = console_rpc_access_requirement(method, params)?;
+    let allowed = match target {
+        Some(identity) => view.allows_agent(action, identity),
+        None => view.allows(action),
+    };
+    if allowed {
+        return None;
+    }
+    Some(JsonRpcError {
+        code: ACCESS_DENIED_RPC_CODE,
+        message: format!("access denied: {action}"),
+        data: Some(json!({
+            "kind": "access_denied",
+            "action": action,
+            "resource": target,
+        })),
+    })
+}
+
+fn access_denied_rpc_error(response_id: Value, message: impl Into<String>) -> Value {
+    response_value(
+        response_id,
+        None,
+        Some(JsonRpcError {
+            code: ACCESS_DENIED_RPC_CODE,
+            message: message.into(),
+            data: Some(json!({ "kind": "access_denied" })),
+        }),
+    )
+}
+
+fn access_unavailable_rpc_error(response_id: Value) -> Value {
+    response_value(
+        response_id,
+        None,
+        Some(JsonRpcError {
+            code: -32004,
+            message: "access control is not configured on this runtime".to_string(),
+            data: Some(json!({ "kind": "access_unavailable" })),
+        }),
+    )
+}
+
+fn access_config_rpc_error(response_id: Value, err: crate::access::AccessConfigError) -> Value {
+    response_value(
+        response_id,
+        None,
+        Some(JsonRpcError {
+            code: -32602,
+            message: err.to_string(),
+            data: Some(json!({ "kind": "invalid_access_config" })),
+        }),
+    )
+}
+
+fn access_status_result(access: Option<&AccessController>, view: Option<&AccessView>) -> Value {
+    match (access, view) {
+        (Some(controller), Some(view)) => {
+            let (_, revision) = controller.snapshot();
+            json!({
+                "available": true,
+                "enabled": view.enforced(),
+                "revision": revision,
+                "subject": view.subject(),
+                "groups": view.groups().iter().collect::<Vec<_>>(),
+                "is_admin": view.is_admin(),
+                "can_administer": view.can_administer(),
+                "actions": ACCESS_ACTIONS,
+            })
+        }
+        _ => json!({
+            "available": false,
+            "enabled": false,
+            "actions": ACCESS_ACTIONS,
+        }),
+    }
+}
+
+/// Handles every `mobkit/access/*` method. Returns `None` when the method
+/// belongs to another namespace.
+fn handle_access_admin_rpc(
+    access: Option<&AccessController>,
+    view: Option<&AccessView>,
+    request: &JsonRpcRequest,
+) -> Option<Value> {
+    if !request.method.starts_with("mobkit/access/") {
+        return None;
+    }
+    let response_id = request.id.clone().unwrap_or(Value::Null);
+    let controller = match request.method.as_str() {
+        "mobkit/access/status" => {
+            return Some(response_value(
+                response_id,
+                Some(access_status_result(access, view)),
+                None,
+            ));
+        }
+        _ => {
+            let Some(controller) = access else {
+                return Some(access_unavailable_rpc_error(response_id));
+            };
+            if !view.is_some_and(AccessView::can_administer) {
+                return Some(access_denied_rpc_error(
+                    response_id,
+                    "access denied: access.admin",
+                ));
+            }
+            controller
+        }
+    };
+    let result = match request.method.as_str() {
+        "mobkit/access/get" => {
+            let (config, revision) = controller.snapshot();
+            Ok(json!({ "config": &*config, "revision": revision }))
+        }
+        "mobkit/access/set" => {
+            match serde_json::from_value(request.params.get("config").cloned().unwrap_or_default())
+            {
+                Ok(config) => controller
+                    .replace_config(config)
+                    .map(|revision| json!({ "revision": revision })),
+                Err(err) => {
+                    return Some(invalid_params(
+                        response_id,
+                        format!("invalid access config: {err}"),
+                    ));
+                }
+            }
+        }
+        "mobkit/access/rules/upsert" => {
+            match serde_json::from_value::<AccessRule>(
+                request.params.get("rule").cloned().unwrap_or_default(),
+            ) {
+                Ok(rule) => controller
+                    .upsert_rule(rule)
+                    .map(|revision| json!({ "revision": revision })),
+                Err(err) => {
+                    return Some(invalid_params(
+                        response_id,
+                        format!("invalid access rule: {err}"),
+                    ));
+                }
+            }
+        }
+        "mobkit/access/rules/delete" => {
+            let Some(rule_id) = request.params.get("id").and_then(Value::as_str) else {
+                return Some(invalid_params(response_id, "id required"));
+            };
+            controller
+                .delete_rule(rule_id)
+                .map(|revision| json!({ "revision": revision }))
+        }
+        "mobkit/access/groups/set" => {
+            let Some(name) = request.params.get("name").and_then(Value::as_str) else {
+                return Some(invalid_params(response_id, "name required"));
+            };
+            match serde_json::from_value::<AccessGroup>(
+                request.params.get("group").cloned().unwrap_or_default(),
+            ) {
+                Ok(group) => controller
+                    .set_group(name, group)
+                    .map(|revision| json!({ "revision": revision })),
+                Err(err) => {
+                    return Some(invalid_params(
+                        response_id,
+                        format!("invalid access group: {err}"),
+                    ));
+                }
+            }
+        }
+        "mobkit/access/groups/delete" => {
+            let Some(name) = request.params.get("name").and_then(Value::as_str) else {
+                return Some(invalid_params(response_id, "name required"));
+            };
+            controller
+                .delete_group(name)
+                .map(|revision| json!({ "revision": revision }))
+        }
+        "mobkit/access/enable" => {
+            let Some(enabled) = request.params.get("enabled").and_then(Value::as_bool) else {
+                return Some(invalid_params(response_id, "enabled (bool) required"));
+            };
+            controller
+                .set_enabled(enabled)
+                .map(|revision| json!({ "revision": revision }))
+        }
+        "mobkit/access/preview" => {
+            let subject = request.params.get("subject").and_then(Value::as_str);
+            let Some(action) = request.params.get("action").and_then(Value::as_str) else {
+                return Some(invalid_params(response_id, "action required"));
+            };
+            let identity = request.params.get("identity").and_then(Value::as_str);
+            let preview_view = controller.view_for_subject(subject);
+            let decision = match identity {
+                Some(identity) => preview_view.decide_agent(action, identity),
+                None => preview_view.decide(action, &AccessResource::none()),
+            };
+            Ok(json!({
+                "subject": subject,
+                "action": action,
+                "identity": identity,
+                "allowed": decision.is_allow(),
+                "reason": decision.reason(),
+                "groups": preview_view.groups().iter().collect::<Vec<_>>(),
+                "is_admin": preview_view.is_admin(),
+            }))
+        }
+        _ => {
+            return Some(response_value(
+                response_id,
+                None,
+                Some(JsonRpcError {
+                    code: -32601,
+                    message: "Method not found".to_string(),
+                    data: None,
+                }),
+            ));
+        }
+    };
+    Some(match result {
+        Ok(value) => response_value(response_id, Some(value), None),
+        Err(err) => access_config_rpc_error(response_id, err),
+    })
 }
 
 fn cursor_is_after(candidate: &ConsoleCursor, current: &ConsoleCursor) -> bool {
@@ -1676,6 +2145,8 @@ pub async fn console_rpc_multipart_handler(
                 parsed_request,
                 true,
                 state.decisions.console.read_only,
+                state.access.as_ref(),
+                auth_context.access_view.as_ref(),
             ))
             .await
         } else {
@@ -1704,6 +2175,8 @@ pub async fn console_rpc_multipart_handler(
                 true,
                 state.decisions.console.read_only,
                 auth_context.principal.as_deref(),
+                state.access.as_ref(),
+                auth_context.access_view.as_ref(),
             ))
             .await
         };
@@ -1792,11 +2265,28 @@ fn console_request_auth_context(
     uri: &Uri,
 ) -> Option<ConsoleHttpAuthContext> {
     if !state.decisions.console.require_app_auth {
-        return Some(ConsoleHttpAuthContext { principal: None });
+        // Open console: identify callers that volunteered a valid token so
+        // per-user ABAC grants still apply; everyone else is anonymous.
+        let principal = state.access.as_ref().and_then(|_| {
+            let token = console_request_token(headers, uri)?;
+            resolve_authorized_console_auth_from_token(&state.decisions, &token)
+                .map(|auth| auth.email)
+        });
+        return Some(ConsoleHttpAuthContext {
+            access_view: state
+                .access
+                .as_ref()
+                .map(|controller| controller.view_for_subject(principal.as_deref())),
+            principal,
+        });
     }
     let token = console_request_token(headers, uri)?;
     let auth = resolve_authorized_console_auth_from_token(&state.decisions, &token)?;
     Some(ConsoleHttpAuthContext {
+        access_view: state
+            .access
+            .as_ref()
+            .map(|controller| controller.view_for_subject(Some(auth.email.as_str()))),
         principal: Some(auth.email),
     })
 }
@@ -3169,11 +3659,21 @@ async fn handle_console_aggregator_rpc(
     request: JsonRpcRequest,
     is_authenticated: bool,
     read_only: bool,
+    access: Option<&AccessController>,
+    access_view: Option<&AccessView>,
 ) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
     let can_mutate = is_authenticated && !read_only;
     if is_console_mutating_rpc_method(request.method.as_str()) && !can_mutate {
         return console_read_only_rpc_error(response_id);
+    }
+    if let Some(response) = handle_access_admin_rpc(access, access_view, &request) {
+        return response;
+    }
+    if let Some(error) =
+        console_rpc_access_violation(access_view, request.method.as_str(), &request.params)
+    {
+        return response_value(response_id, None, Some(error));
     }
     match request.method.as_str() {
         "mobkit/capabilities" => {
@@ -3185,6 +3685,22 @@ async fn handle_console_aggregator_rpc(
             ];
             if can_mutate {
                 methods.extend_from_slice(&["mobkit/retire", "mobkit/console/send"]);
+            }
+            if access.is_some() {
+                methods.push("mobkit/access/status");
+                if access_view.is_some_and(AccessView::can_administer) {
+                    methods.extend_from_slice(&["mobkit/access/get", "mobkit/access/preview"]);
+                    if can_mutate {
+                        methods.extend_from_slice(&[
+                            "mobkit/access/set",
+                            "mobkit/access/enable",
+                            "mobkit/access/rules/upsert",
+                            "mobkit/access/rules/delete",
+                            "mobkit/access/groups/set",
+                            "mobkit/access/groups/delete",
+                        ]);
+                    }
+                }
             }
             response_value(
                 response_id,
@@ -3210,7 +3726,8 @@ async fn handle_console_aggregator_rpc(
                 return console_aggregator_unavailable(response_id);
             };
             match aggregator.list_identities().await {
-                Ok(identities) => {
+                Ok(mut identities) => {
+                    retain_visible_identity_records(&mut identities, access_view);
                     response_value(response_id, Some(json!({ "identities": identities })), None)
                 }
                 Err(err) => internal_error(response_id, format!("list_identities failed: {err}")),
@@ -3253,11 +3770,14 @@ async fn handle_console_aggregator_rpc(
                 return console_aggregator_unavailable(response_id);
             };
             match Box::pin(aggregator.query_timeline_windowed(query.clone())).await {
-                Ok(page) => response_value(
-                    response_id,
-                    Some(serde_json::to_value(page).unwrap_or(Value::Null)),
-                    None,
-                ),
+                Ok(mut page) => {
+                    retain_visible_timeline_frames(&mut page, access_view);
+                    response_value(
+                        response_id,
+                        Some(serde_json::to_value(page).unwrap_or(Value::Null)),
+                        None,
+                    )
+                }
                 Err(err) => {
                     let latest_cursor = aggregator.latest_cursor().await.ok().flatten();
                     console_timeline_replay_unavailable_response(
@@ -3406,6 +3926,8 @@ async fn handle_console_runtime_rpc(
         is_authenticated,
         false,
         None,
+        None,
+        None,
     )
     .await
 }
@@ -3426,11 +3948,29 @@ async fn handle_console_runtime_rpc_with_visibility(
     is_authenticated: bool,
     read_only: bool,
     authenticated_principal: Option<&str>,
+    access: Option<&AccessController>,
+    access_view: Option<&AccessView>,
 ) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
     let can_mutate = is_authenticated && !read_only;
     if is_console_mutating_rpc_method(request.method.as_str()) && !can_mutate {
         return console_read_only_rpc_error(response_id);
+    }
+    // Refresh the attribute cache from the live roster before any per-agent
+    // access decision (the gate below and per-row result filtering) so
+    // label/role rules resolve here exactly as they do on
+    // `/console/experience`. RPC callers must not depend on having polled the
+    // experience endpoint first.
+    if let Some(controller) = access.filter(|controller| controller.enabled()) {
+        prime_access_cache_from_handle(&runtime.handle(), controller).await;
+    }
+    if let Some(response) = handle_access_admin_rpc(access, access_view, &request) {
+        return response;
+    }
+    if let Some(error) =
+        console_rpc_access_violation(access_view, request.method.as_str(), &request.params)
+    {
+        return response_value(response_id, None, Some(error));
     }
 
     match request.method.as_str() {
@@ -3511,6 +4051,46 @@ async fn handle_console_runtime_rpc_with_visibility(
                     ]);
                 }
             }
+            if access.is_some() {
+                methods.push("mobkit/access/status");
+                if access_view.is_some_and(AccessView::can_administer) {
+                    methods.extend_from_slice(&["mobkit/access/get", "mobkit/access/preview"]);
+                    if can_mutate {
+                        methods.extend_from_slice(&[
+                            "mobkit/access/set",
+                            "mobkit/access/enable",
+                            "mobkit/access/rules/upsert",
+                            "mobkit/access/rules/delete",
+                            "mobkit/access/groups/set",
+                            "mobkit/access/groups/delete",
+                        ]);
+                    }
+                }
+            }
+            // Intersect the advertised methods with the caller's grants, the
+            // same way `/console/experience` does, so a non-admin doesn't get
+            // a method list its panels act on only to hit `-32030`. A probe
+            // identity reveals which mapped requirements are resource-less
+            // (target `None` regardless of params): those are filtered by the
+            // action grant; agent-scoped methods stay advertised and are
+            // enforced per call.
+            if let Some(view) = access_view.filter(|view| view.enforced()) {
+                let probe = serde_json::json!({ "identity": "\u{0}cap-probe" });
+                methods.retain(
+                    |method| match console_rpc_access_requirement(method, &probe) {
+                        Some((action, None)) => view.allows(action),
+                        _ => true,
+                    },
+                );
+            }
+            // Coarse capability flags, intersected with the caller's grants so
+            // they agree with the per-agent affordances in `/console/experience`.
+            let cap = |action: &str| -> bool {
+                can_mutate
+                    && access_view
+                        .filter(|view| view.enforced())
+                        .is_none_or(|view| view.may_perform_anywhere(action))
+            };
             response_value(
                 response_id,
                 Some(serde_json::json!({
@@ -3521,9 +4101,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     // access to the module runtime, so loaded_modules is always [].
                     "loaded_modules": serde_json::json!([]),
                     "runtime_capabilities": {
-                        "can_send_messages": can_mutate,
-                        "can_retire_members": can_mutate,
-                        "can_spawn_members": can_mutate,
+                        "can_send_messages": cap(ACTION_AGENT_SEND),
+                        "can_retire_members": cap(ACTION_AGENT_RETIRE),
+                        "can_spawn_members": cap(ACTION_AGENT_SPAWN),
                     }
                 })),
                 None,
@@ -3556,7 +4136,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                 );
             };
             match aggregator.list_identities().await {
-                Ok(identities) => {
+                Ok(mut identities) => {
+                    retain_visible_identity_records(&mut identities, access_view);
                     response_value(response_id, Some(json!({ "identities": identities })), None)
                 }
                 Err(err) => internal_error(response_id, format!("list_identities failed: {err}")),
@@ -3615,11 +4196,14 @@ async fn handle_console_runtime_rpc_with_visibility(
                 );
             };
             match Box::pin(aggregator.query_timeline_windowed(query.clone())).await {
-                Ok(page) => response_value(
-                    response_id,
-                    Some(serde_json::to_value(page).unwrap_or(Value::Null)),
-                    None,
-                ),
+                Ok(mut page) => {
+                    retain_visible_timeline_frames(&mut page, access_view);
+                    response_value(
+                        response_id,
+                        Some(serde_json::to_value(page).unwrap_or(Value::Null)),
+                        None,
+                    )
+                }
                 Err(err) => {
                     let latest_cursor = aggregator.latest_cursor().await.ok().flatten();
                     console_timeline_replay_unavailable_response(
@@ -3726,6 +4310,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             for entry in &entries {
                 members.push(member_entry_to_console_json(runtime, entry).await);
             }
+            retain_visible_member_rows(&mut members, access_view);
             response_value(response_id, Some(Value::Array(members)), None)
         }
         "mobkit/get_member" => {
@@ -3766,6 +4351,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             for entry in &entries {
                 matches.push(member_entry_to_console_json(runtime, entry).await);
             }
+            retain_visible_member_rows(&mut matches, access_view);
             response_value(response_id, Some(Value::Array(matches)), None)
         }
         "mobkit/status_identity" => {
@@ -5087,7 +5673,20 @@ async fn handle_console_runtime_rpc_with_visibility(
             )
             .await;
             match result {
-                Ok(events) => {
+                Ok(mut events) => {
+                    // `mob.observe` gates the surface; agent-attributed
+                    // ledger entries are still filtered by `agent.view` so a
+                    // mob.observe grant cannot reveal the lifecycle of an
+                    // agent the caller is denied. Mob-level entries (no
+                    // attribution) pass on the mob.observe grant alone.
+                    if let Some(view) = access_view.filter(|view| view.enforced()) {
+                        events.retain(|event| {
+                            event
+                                .agent_identity
+                                .as_deref()
+                                .is_none_or(|identity| view.can_view_agent(identity))
+                        });
+                    }
                     let last_cursor = events.last().map(|event| event.cursor);
                     let body = if request.method == "mobkit/mob_events/subscribe" {
                         let subscribe_url = crate::unified_runtime::mob_events::build_subscribe_url(
@@ -5167,11 +5766,20 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(ready) => {
                     let entries: Vec<Value> = ready
                         .into_iter()
-                        .map(|(identity, snapshot)| {
-                            serde_json::json!({
-                                "agent_identity": identity.to_string(),
-                                "snapshot": serde_json::to_value(&snapshot)
-                                    .unwrap_or(Value::Null),
+                        // Per-agent visibility: a caller only sees readiness
+                        // for agents they may `agent.view`. The cache was
+                        // primed from the roster at dispatch.
+                        .filter_map(|(identity, snapshot)| {
+                            let identity = identity.to_string();
+                            let visible = access_view
+                                .filter(|view| view.enforced())
+                                .is_none_or(|view| view.can_view_agent(&identity));
+                            visible.then(|| {
+                                serde_json::json!({
+                                    "agent_identity": identity,
+                                    "snapshot": serde_json::to_value(&snapshot)
+                                        .unwrap_or(Value::Null),
+                                })
                             })
                         })
                         .collect();
@@ -5205,10 +5813,18 @@ async fn handle_console_runtime_rpc_with_visibility(
             let completed = runtime.handle().collect_completed().await;
             let entries: Vec<Value> = completed
                 .into_iter()
-                .map(|(mid, snapshot)| {
-                    serde_json::json!({
-                        "member_id": mid.to_string(),
-                        "snapshot": serde_json::to_value(&snapshot).unwrap_or(Value::Null),
+                // Per-agent visibility: even an `agent.spawn`-gated caller only
+                // collects completions for agents they may `agent.view`.
+                .filter_map(|(mid, snapshot)| {
+                    let mid = mid.to_string();
+                    let visible = access_view
+                        .filter(|view| view.enforced())
+                        .is_none_or(|view| view.can_view_agent(&mid));
+                    visible.then(|| {
+                        serde_json::json!({
+                            "member_id": mid,
+                            "snapshot": serde_json::to_value(&snapshot).unwrap_or(Value::Null),
+                        })
                     })
                 })
                 .collect();
@@ -6844,6 +7460,37 @@ fn baseline_spec_visible_to_console(
     visibility_policy.member_visible(&member) && visibility_policy.identity_visible(&record)
 }
 
+/// Prime the access-control attribute cache from the live primary-mob roster
+/// so label/role rules resolve on surfaces that carry only an identity string
+/// (SSE event streams, timeline frames, `mob_events`). Without this, those
+/// surfaces evaluate role/label rules with attributes unknown and can fail
+/// open for "broad allow + label-keyed deny" policies — the cache must not be
+/// gated on a prior `/console/experience` call. Additive (it does not evict),
+/// so it never clears delegate-member attributes primed by the experience
+/// projection; the experience path owns wholesale rebuild + eviction.
+pub(crate) async fn prime_access_cache_from_handle(handle: &MobHandle, access: &AccessController) {
+    if !access.enabled() {
+        return;
+    }
+    for entry in handle.list_all_members().await {
+        let member_identity = entry.agent_identity.to_string();
+        // Console identity may be overridden by a label, mirroring
+        // `console_member_console_identity`.
+        let console_identity = entry
+            .labels
+            .get("agent_identity")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map_or_else(|| member_identity.clone(), ToString::to_string);
+        access.record_agent_attributes(AgentResourceAttributes {
+            identity: console_identity,
+            agent_id: Some(member_identity),
+            role: Some(entry.role.to_string()),
+            labels: entry.labels.clone(),
+        });
+    }
+}
+
 async fn project_console_members_from_handle(
     handle: &MobHandle,
     host_identity: Option<&str>,
@@ -7228,9 +7875,15 @@ comms = true
 
     #[tokio::test]
     async fn read_only_aggregator_capabilities_omit_mutating_methods() {
-        let response =
-            handle_console_aggregator_rpc(None, rpc_request("mobkit/capabilities"), true, true)
-                .await;
+        let response = handle_console_aggregator_rpc(
+            None,
+            rpc_request("mobkit/capabilities"),
+            true,
+            true,
+            None,
+            None,
+        )
+        .await;
 
         let methods = response["result"]["methods"]
             .as_array()
@@ -7261,6 +7914,8 @@ comms = true
             ),
             true,
             true,
+            None,
+            None,
         )
         .await;
 
@@ -7950,6 +8605,8 @@ comms = true
                 true,
                 false,
                 None,
+                None,
+                None,
             ))
             .await;
             assert_ne!(
@@ -8054,6 +8711,8 @@ comms = true
                     true,
                     false,
                     None,
+                    None,
+                    None,
                 ))
                 .await;
                 assert_eq!(
@@ -8122,6 +8781,8 @@ comms = true
                 rpc_request_with_params(method, json!({ "identity": "review:singleton" })),
                 true,
                 false,
+                None,
+                None,
                 None,
             ))
             .await;
@@ -8372,6 +9033,8 @@ comms = true
             true,
             false,
             None,
+            None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -8463,6 +9126,8 @@ comms = true
             rpc_request("mobkit/reset_all"),
             true,
             false,
+            None,
+            None,
             None,
         ))
         .await;
@@ -8577,6 +9242,8 @@ comms = true
             rpc_request_with_params("mobkit/retire", json!({ "identity": "review:singleton" })),
             true,
             false,
+            None,
+            None,
             None,
         ))
         .await;
@@ -9473,6 +10140,8 @@ comms = true
             rpc_request("mobkit/reset_all"),
             true,
             false,
+            None,
+            None,
         ))
         .await;
 

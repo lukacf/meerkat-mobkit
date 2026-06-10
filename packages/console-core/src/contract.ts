@@ -30,6 +30,15 @@ export const CONSOLE_RPC_METHODS = {
   gatingPending: "mobkit/gating/pending",
   gatingAudit: "mobkit/gating/audit",
   gatingDecide: "mobkit/gating/decide",
+  accessStatus: "mobkit/access/status",
+  accessGet: "mobkit/access/get",
+  accessSet: "mobkit/access/set",
+  accessEnable: "mobkit/access/enable",
+  accessRuleUpsert: "mobkit/access/rules/upsert",
+  accessRuleDelete: "mobkit/access/rules/delete",
+  accessGroupSet: "mobkit/access/groups/set",
+  accessGroupDelete: "mobkit/access/groups/delete",
+  accessPreview: "mobkit/access/preview",
 } as const;
 
 export const CONSOLE_BLOB_PATH_PREFIX = "/blobs/";

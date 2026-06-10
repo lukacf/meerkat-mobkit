@@ -7,6 +7,7 @@
 //!   mob.toml                    # mob definition (profiles, wiring, skills)
 //!   console.toml                # console UI view configuration (optional)
 //!   gating.toml                 # gating rules (optional)
+//!   access.toml                 # ABAC access control (optional, opt-in)
 //!   defaults/
 //!     schedules.toml            # default schedule definitions (optional)
 //! deployment/
@@ -42,6 +43,10 @@ pub struct ConventionalPaths {
     pub gating_toml: Option<PathBuf>,
     /// Console UI config (e.g. `config/console.toml`).
     pub console_toml: Option<PathBuf>,
+    /// Access-control config (e.g. `config/access.toml`). Presence of the
+    /// file opts the deployment into ABAC enforcement plumbing; console
+    /// admin edits persist back to it.
+    pub access_toml: Option<PathBuf>,
     /// Routing config (e.g. `deployment/routing.toml`).
     pub routing_toml: Option<PathBuf>,
     /// Contact directory TOML (e.g. `config/contacts.toml`).
@@ -64,6 +69,7 @@ impl ConventionalPaths {
         let mob_toml = check_file(config.join("mob.toml"));
         let gating_toml = check_file(config.join("gating.toml"));
         let console_toml = check_file(config.join("console.toml"));
+        let access_toml = check_file(config.join("access.toml"));
         let routing_toml = check_file(deployment.join("routing.toml"));
         let contacts_toml = check_file(config.join("contacts.toml"));
 
@@ -79,6 +85,7 @@ impl ConventionalPaths {
             mob_toml,
             gating_toml,
             console_toml,
+            access_toml,
             routing_toml,
             contacts_toml,
             schedule_files,
@@ -115,6 +122,7 @@ mod tests {
         fs::write(config.join("mob.toml"), "[mob]\nid = \"test\"").unwrap();
         fs::write(config.join("gating.toml"), "[[rules]]").unwrap();
         fs::write(config.join("console.toml"), "[sidebar]").unwrap();
+        fs::write(config.join("access.toml"), "enabled = false").unwrap();
         fs::write(
             config.join("defaults").join("schedules.toml"),
             "[[schedules]]",
@@ -127,6 +135,7 @@ mod tests {
         assert!(paths.mob_toml.is_some());
         assert!(paths.gating_toml.is_some());
         assert!(paths.console_toml.is_some());
+        assert!(paths.access_toml.is_some());
         assert!(paths.routing_toml.is_some());
         assert_eq!(paths.schedule_files.len(), 2);
     }
@@ -146,6 +155,7 @@ mod tests {
         assert!(paths.mob_toml.is_some());
         assert!(paths.gating_toml.is_none());
         assert!(paths.console_toml.is_none());
+        assert!(paths.access_toml.is_none());
         assert!(paths.routing_toml.is_none());
         assert!(paths.schedule_files.is_empty());
     }

@@ -1,6 +1,7 @@
 //! Console ingress types and JSON request/response structures.
 
 use super::*;
+use crate::access::{AccessController, AccessResource, AccessView, AgentResourceAttributes};
 use crate::rpc::MOBKIT_CONTRACT_VERSION;
 
 /// Console-facing view of a single mob member.
@@ -146,6 +147,22 @@ pub fn handle_console_rest_json_route_with_snapshot(
     request: &ConsoleRestJsonRequest,
     live_snapshot: Option<&ConsoleLiveSnapshot>,
 ) -> ConsoleRestJsonResponse {
+    handle_console_rest_json_route_with_snapshot_and_access(decisions, request, live_snapshot, None)
+}
+
+/// Access-aware variant of [`handle_console_rest_json_route_with_snapshot`].
+///
+/// When an [`AccessController`] is supplied and enabled, the experience
+/// projection is filtered per authenticated principal: agents the caller
+/// may not view disappear from every section, per-agent affordances are
+/// intersected with the caller's grants, and an `access` section describing
+/// the caller's standing is appended for the console UI.
+pub fn handle_console_rest_json_route_with_snapshot_and_access(
+    decisions: &RuntimeDecisionState,
+    request: &ConsoleRestJsonRequest,
+    live_snapshot: Option<&ConsoleLiveSnapshot>,
+    access: Option<&AccessController>,
+) -> ConsoleRestJsonResponse {
     let (base_path, query_params) = split_path_and_query(&request.path);
     if request.method != "GET"
         || (base_path != CONSOLE_MODULES_ROUTE && base_path != CONSOLE_EXPERIENCE_ROUTE)
@@ -170,10 +187,10 @@ pub fn handle_console_rest_json_route_with_snapshot(
         }
     };
 
-    match resolved_auth {
+    match &resolved_auth {
         Some(auth) => {
             if let Err(error) =
-                enforce_console_route_access(&decisions.auth, &decisions.console, &auth)
+                enforce_console_route_access(&decisions.auth, &decisions.console, auth)
             {
                 return ConsoleRestJsonResponse {
                     status: 401,
@@ -196,15 +213,37 @@ pub fn handle_console_rest_json_route_with_snapshot(
         None => {}
     }
 
+    // Subject for ABAC. When app auth is not required the auth resolver
+    // returns None without looking at credentials; still identify callers
+    // that *did* present a valid token so per-user grants apply on
+    // auth-optional consoles. Invalid tokens fall back to anonymous.
+    let mut access_subject = resolved_auth.as_ref().map(|auth| auth.email.clone());
+    if access_subject.is_none()
+        && access.is_some()
+        && !decisions.console.require_app_auth
+        && let Some(token) = query_params.get("auth_token")
+    {
+        access_subject =
+            resolve_authorized_console_auth_from_token(decisions, token).map(|auth| auth.email);
+    }
+    let access_view =
+        access.map(|controller| controller.view_for_subject(access_subject.as_deref()));
+
     let modules: Vec<String> = decisions
         .modules
         .iter()
         .map(|module| module.id.clone())
         .collect();
-    let live_snapshot = live_snapshot
+    let mut live_snapshot = live_snapshot
         .cloned()
         .unwrap_or_else(|| default_console_live_snapshot(decisions));
-    let body = if base_path == CONSOLE_EXPERIENCE_ROUTE {
+    if let Some(controller) = access {
+        prime_access_attributes(controller, &live_snapshot);
+    }
+    if let Some(view) = &access_view {
+        filter_snapshot_for_access(&mut live_snapshot, view);
+    }
+    let mut body = if base_path == CONSOLE_EXPERIENCE_ROUTE {
         build_console_experience_contract(&modules, &live_snapshot, &decisions.console)
     } else {
         serde_json::json!({
@@ -212,7 +251,152 @@ pub fn handle_console_rest_json_route_with_snapshot(
             "modules": modules
         })
     };
+    if base_path == CONSOLE_EXPERIENCE_ROUTE
+        && let Some(view) = &access_view
+    {
+        apply_access_to_experience(&mut body, view);
+    }
     ConsoleRestJsonResponse { status: 200, body }
+}
+
+/// Feed the controller's attribute cache from a roster snapshot so
+/// label/role selectors resolve on surfaces that only carry an identity
+/// string (timeline frames, send requests, SSE streams).
+fn prime_access_attributes(controller: &AccessController, snapshot: &ConsoleLiveSnapshot) {
+    for agent in &snapshot.agents {
+        let identity = agent
+            .identity
+            .clone()
+            .unwrap_or_else(|| agent.agent_id.clone());
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity,
+            agent_id: Some(agent.agent_id.clone()),
+            role: agent.role.clone(),
+            labels: std::collections::BTreeMap::new(),
+        });
+    }
+    // Members carry the richer attribute set; record them last so they win.
+    for member in &snapshot.members {
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity: console_member_console_identity(member).to_string(),
+            agent_id: Some(member.agent_identity.clone()),
+            role: Some(member.role.clone()),
+            labels: member.labels.clone(),
+        });
+    }
+}
+
+fn member_access_resource(member: &ConsoleMember) -> AccessResource<'_> {
+    AccessResource {
+        identity: Some(console_member_console_identity(member)),
+        agent_id: Some(member.agent_identity.as_str()),
+        role: Some(member.role.as_str()),
+        labels: Some(&member.labels),
+    }
+}
+
+fn filter_snapshot_for_access(snapshot: &mut ConsoleLiveSnapshot, view: &AccessView) {
+    if !view.enforced() {
+        return;
+    }
+    snapshot.members.retain(|member| {
+        view.decide(
+            crate::access::ACTION_AGENT_VIEW,
+            &member_access_resource(member),
+        )
+        .is_allow()
+    });
+    snapshot.agents.retain(|agent| {
+        let identity = agent.identity.as_deref().unwrap_or(agent.agent_id.as_str());
+        view.allows_agent(crate::access::ACTION_AGENT_VIEW, identity)
+    });
+    // Module IDs double as module-agent sidebar rows when no roster
+    // member survives filtering; gate them like any other agent so a
+    // fully-denied caller is not shown the module fallback.
+    snapshot
+        .loaded_modules
+        .retain(|module_id| view.allows_agent(crate::access::ACTION_AGENT_VIEW, module_id));
+}
+
+/// Intersect the projected experience with the caller's grants and append
+/// the `access` section the console UI consumes.
+fn apply_access_to_experience(body: &mut Value, view: &AccessView) {
+    if view.enforced() {
+        let mut any_can_send = false;
+        let mut any_can_retire = false;
+        if let Some(agents) = body
+            .pointer_mut("/agent_sidebar/live_snapshot/agents")
+            .and_then(Value::as_array_mut)
+        {
+            for agent in agents {
+                let identity = agent
+                    .get("identity")
+                    .or_else(|| agent.get("member_id"))
+                    .or_else(|| agent.get("agent_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let can_send =
+                    view.allows_agent(crate::access::ACTION_AGENT_SEND, identity.as_str());
+                let can_retire =
+                    view.allows_agent(crate::access::ACTION_AGENT_RETIRE, identity.as_str());
+                let can_respawn =
+                    view.allows_agent(crate::access::ACTION_AGENT_RESPAWN, identity.as_str());
+                if let Some(affordances) =
+                    agent.get_mut("affordances").and_then(Value::as_object_mut)
+                {
+                    intersect_bool(affordances, "can_send_message", can_send);
+                    intersect_bool(affordances, "can_retire", can_retire);
+                    intersect_bool(affordances, "can_respawn", can_respawn);
+                    any_can_send |= affordances
+                        .get("can_send_message")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    any_can_retire |= affordances
+                        .get("can_retire")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                } else {
+                    any_can_send |= can_send;
+                    any_can_retire |= can_retire;
+                }
+            }
+        }
+        if let Some(capabilities) = body
+            .get_mut("runtime_capabilities")
+            .and_then(Value::as_object_mut)
+        {
+            intersect_bool(capabilities, "can_send_messages", any_can_send);
+            intersect_bool(capabilities, "can_retire_members", any_can_retire);
+            intersect_bool(
+                capabilities,
+                "can_spawn_members",
+                view.allows(crate::access::ACTION_AGENT_SPAWN),
+            );
+            intersect_bool(
+                capabilities,
+                "can_wire_members",
+                view.allows(crate::access::ACTION_RUNTIME_ADMIN),
+            );
+        }
+    }
+    if let Some(object) = body.as_object_mut() {
+        object.insert(
+            "access".to_string(),
+            serde_json::json!({
+                "available": true,
+                "enabled": view.enforced(),
+                "subject": view.subject(),
+                "groups": view.groups().iter().collect::<Vec<_>>(),
+                "can_administer": view.can_administer(),
+            }),
+        );
+    }
+}
+
+fn intersect_bool(object: &mut serde_json::Map<String, Value>, key: &str, allowed: bool) {
+    let current = object.get(key).and_then(Value::as_bool).unwrap_or(false);
+    object.insert(key.to_string(), Value::Bool(current && allowed));
 }
 
 fn default_console_live_snapshot(decisions: &RuntimeDecisionState) -> ConsoleLiveSnapshot {

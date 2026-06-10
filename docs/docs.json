@@ -33,6 +33,7 @@
               "concepts/events",
               "concepts/roster",
               "concepts/gating",
+              "concepts/access-control",
               "concepts/delivery",
               "concepts/scheduling",
               "concepts/memory",

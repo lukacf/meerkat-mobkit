@@ -38,6 +38,7 @@ export interface MobKitBuilderConfig {
   errorCallback: ErrorCallback | null;
   eventLog: Record<string, unknown> | null;
   consoleConfigPath: string | null;
+  accessConfigPath: string | null;
   consoleRequireAppAuth: boolean | null;
   consoleReadOnly: boolean | null;
   consoleFetchTimeoutMs: number | null;
@@ -71,6 +72,7 @@ function defaultConfig(): MobKitBuilderConfig {
     errorCallback: null,
     eventLog: null,
     consoleConfigPath: null,
+    accessConfigPath: null,
     consoleRequireAppAuth: null,
     consoleReadOnly: null,
     consoleFetchTimeoutMs: null,
@@ -140,6 +142,17 @@ export class MobKitBuilder {
 
   consoleConfig(configPath: string): this {
     this._config.consoleConfigPath = configPath;
+    return this;
+  }
+
+  /**
+   * Enable ABAC access control backed by a TOML file (conventionally
+   * `config/access.toml`). A missing file starts disabled; console admin
+   * edits persist back to the same path. Without this (and without a
+   * conventional `config/access.toml`) access control is off entirely.
+   */
+  accessControl(configPath: string): this {
+    this._config.accessConfigPath = configPath;
     return this;
   }
 
@@ -331,6 +344,13 @@ export class MobKitBuilder {
       const candidate = "config/console.toml";
       if (existsSync(candidate)) {
         this._config.consoleConfigPath = candidate;
+      }
+    }
+
+    if (this._config.accessConfigPath === null) {
+      const candidate = "config/access.toml";
+      if (existsSync(candidate)) {
+        this._config.accessConfigPath = candidate;
       }
     }
 

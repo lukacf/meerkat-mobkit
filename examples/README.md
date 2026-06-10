@@ -16,6 +16,7 @@ Numbered packs are intentionally browser-first and can include:
 - `002-foresight-studio-pack`
 - `003-swarm-stress-pack`
 - `004-mdm-console-pack`
+- `005-access-control-pack`
 
 Run the first pack with:
 
@@ -50,4 +51,12 @@ npm run mdm:smoke
 npm run mdm:auth-smoke
 npm run mdm:browser-smoke
 npm run mdm:docker-smoke
+```
+
+Run the access control pack's deterministic ABAC smoke (no API key), or serve
+it for per-persona browser exploration:
+
+```bash
+./005-access-control-pack/examples.sh
+./005-access-control-pack/examples.sh --serve
 ```

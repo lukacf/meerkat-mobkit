@@ -152,6 +152,9 @@ pub struct UnifiedRuntime {
     session_bridge: Option<Arc<dyn crate::identity_first::bridge::SessionBridge>>,
     identity_first_context: Option<Arc<crate::identity_first::IdentityFirstRuntimeContext>>,
 
+    // Optional ABAC enforcement shared by the console/SSE surfaces.
+    access_controller: Option<crate::access::AccessController>,
+
     // Mobkit-side label sidecar for mob- and run-scoped metadata
     metadata_table: Arc<RuntimeMetadataTable>,
 
@@ -220,6 +223,7 @@ impl UnifiedRuntime {
             gateway_peer_keys: None,
             session_bridge: None,
             identity_first_context: None,
+            access_controller: None,
             metadata_table,
             persistent_metadata,
         }
@@ -400,6 +404,17 @@ impl UnifiedRuntime {
     /// branch, customer, deployment, environment) to a mob or a flow run.
     pub fn metadata_table(&self) -> &Arc<RuntimeMetadataTable> {
         &self.metadata_table
+    }
+
+    /// Install the shared access controller. Console routers built after
+    /// this call enforce (and live-serve) the ABAC configuration.
+    pub fn set_access_controller(&mut self, controller: crate::access::AccessController) {
+        self.access_controller = Some(controller);
+    }
+
+    /// Borrow the shared access controller if one was installed.
+    pub fn access_controller(&self) -> Option<&crate::access::AccessController> {
+        self.access_controller.as_ref()
     }
 
     /// Return the persistent metadata adapter — used by the

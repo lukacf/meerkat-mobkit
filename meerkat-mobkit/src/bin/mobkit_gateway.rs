@@ -723,6 +723,15 @@ async fn run() -> anyhow::Result<()> {
         runtime.set_contact_directory(directory);
     }
 
+    // Opt-in ABAC: a `config/access.toml` wires the access controller into
+    // every console and SSE surface. Console admin edits persist back to
+    // the same file, so the deployment's access policy survives restarts.
+    if let Some(ref access_path) = paths.access_toml {
+        let controller = meerkat_mobkit::AccessController::load_or_default(access_path)
+            .map_err(|error| anyhow!("failed to load {}: {error}", access_path.display()))?;
+        runtime.set_access_controller(controller);
+    }
+
     // Load (or mint and persist) the gateway's Ed25519 signing keypair.
     // Stored under the same state directory the registry lives in, which
     // already survives across runs. Cross-process peers fetch the
