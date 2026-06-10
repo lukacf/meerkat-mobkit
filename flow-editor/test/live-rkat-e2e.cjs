@@ -1778,9 +1778,9 @@ async function validateGraphOperations(catalogs) {
         instance: { id: "n_terminal", kind: "terminal", isTerminal: true, col: 2, row: 0 },
       },
     });
-    throw new Error("terminal graph node insert was accepted");
+    throw new Error("raw graph node insert was accepted");
   } catch (error) {
-    if (!String(error?.message || "").includes("uncompiled graph terminal nodes cannot be persisted")) {
+    if (!String(error?.message || "").includes("insert_graph_node does not accept raw instance")) {
       throw error;
     }
   }
@@ -1788,19 +1788,24 @@ async function validateGraphOperations(catalogs) {
     document,
     operation: {
       type: "insert_graph_node",
-      instance: { id: "n_done", kind: "member", memberId: "reviewer", col: 2, row: 0 },
+      pick: { kind: "memberInstance", memberId: "reviewer" },
+      cell: { col: 2, row: 0 },
     },
   });
+  const insertedId = inserted.selection?.id;
+  if (!insertedId) {
+    throw new Error(`semantic graph insert did not return a selected instance: ${JSON.stringify(inserted)}`);
+  }
   const moved = await rpc("mobkit/mobpacks/apply_operation", {
     document: inserted.document,
     operation: {
       type: "move_graph_node",
-      instance_id: "n_done",
+      instance_id: insertedId,
       cell: { col: 1, row: 0 },
       original_cell: { col: 2, row: 0 },
     },
   });
-  const doneAfterMove = moved.document.instances.find((instance) => instance.id === "n_done");
+  const doneAfterMove = moved.document.instances.find((instance) => instance.id === insertedId);
   const reviewerAfterMove = moved.document.instances.find((instance) => instance.id === "n_review");
   if (doneAfterMove?.col !== 1 || reviewerAfterMove?.col !== 2) {
     throw new Error(`graph move operation did not swap cells: ${JSON.stringify(moved.document.instances)}`);
@@ -1809,7 +1814,7 @@ async function validateGraphOperations(catalogs) {
     document: moved.document,
     operation: {
       type: "update_graph_node",
-      instance_id: "n_done",
+      instance_id: insertedId,
       patch: { lane: "review" },
     },
   });
@@ -1817,10 +1822,10 @@ async function validateGraphOperations(catalogs) {
     await rpc("mobkit/mobpacks/apply_operation", {
       document: updated.document,
       operation: {
-        type: "update_graph_node",
-        instance_id: "n_done",
-        patch: { kind: "terminal", isTerminal: true },
-      },
+      type: "update_graph_node",
+      instance_id: insertedId,
+      patch: { kind: "terminal", isTerminal: true },
+    },
     });
     throw new Error("terminal graph node update was accepted");
   } catch (error) {
@@ -1856,17 +1861,18 @@ async function validateGraphOperations(catalogs) {
     operation: {
       type: "connect_graph_nodes",
       from_id: "n_plan",
-      to_id: "n_done",
+      to_id: insertedId,
     },
   });
-  if (connected.selection?.id !== "e_n_plan_n_done" || connected.document.edges[0]?.kind !== "next") {
+  const expectedEdgeId = `e_n_plan_${insertedId}`;
+  if (connected.selection?.id !== expectedEdgeId || connected.document.edges[0]?.kind !== "next") {
     throw new Error(`semantic graph connect operation did not draft expected edge: ${JSON.stringify(connected.document.edges)}`);
   }
   const edgeUpdated = await rpc("mobkit/mobpacks/apply_operation", {
     document: connected.document,
     operation: {
       type: "update_graph_edge",
-      edge_id: "e_n_plan_n_done",
+      edge_id: expectedEdgeId,
       patch: { label: "done" },
     },
   });
@@ -1877,7 +1883,7 @@ async function validateGraphOperations(catalogs) {
     document: edgeUpdated.document,
     operation: {
       type: "delete_graph_edge",
-      edge_id: "e_n_plan_n_done",
+      edge_id: expectedEdgeId,
     },
   });
   if (edgeDeleted.document.edges.length !== 0) {
@@ -1887,7 +1893,7 @@ async function validateGraphOperations(catalogs) {
     document: edgeDeleted.document,
     operation: {
       type: "connect_graph_nodes",
-      from_id: "n_done",
+      from_id: insertedId,
       to_id: "n_plan",
     },
   });
@@ -1895,14 +1901,14 @@ async function validateGraphOperations(catalogs) {
     document: reconnected.document,
     operation: {
       type: "delete_graph_node",
-      instance_id: "n_done",
+      instance_id: insertedId,
     },
   });
-  if (deleted.document.instances.some((instance) => instance.id === "n_done") || deleted.document.edges.length !== 0) {
+  if (deleted.document.instances.some((instance) => instance.id === insertedId) || deleted.document.edges.length !== 0) {
     throw new Error(`graph node delete operation did not prune node/edges: ${JSON.stringify(deleted.document)}`);
   }
   return {
-    inserted: inserted.selection.id,
+    inserted: insertedId,
     semanticMember: semanticMember.selection.id,
     semanticBranch: semanticBranch.selection.id,
     moved: { done: doneAfterMove.col, reviewer: reviewerAfterMove.col },

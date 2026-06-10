@@ -174,25 +174,6 @@ window.MOBKIT_BOOT = {
     };
   }
 
-  function authoringReplacementFromIntent(request = {}) {
-    const input = request && typeof request === "object" ? request : {};
-    if (input.operationType) return input;
-    const intent = String(input.intent || "").trim();
-    const selection = Object.prototype.hasOwnProperty.call(input, "selection") ? input.selection : undefined;
-    const withSelection = (payload) => selection === undefined ? payload : { ...payload, selection };
-    switch (intent) {
-      case "system.replaceAuthoringDocument":
-        return withSelection({
-          operationType: "replace_authoring_document",
-          operation: { reason: input.reason || "replace_authoring_document" },
-          studio: input.studio,
-          useAuthoringProjection: true,
-        });
-      default:
-        return input;
-    }
-  }
-
   function authoringOperationFromIntent(request = {}) {
     const input = request && typeof request === "object" ? request : {};
     if (input.type) return input;
@@ -241,15 +222,15 @@ window.MOBKIT_BOOT = {
       case "schema.deleteField":
         return { type: "delete_schema_field", schema_id: input.schemaId, field_id: input.fieldId };
       case "settings.updateDeploy":
-        return { type: "update_deploy_settings", deploy: input.deploy, selection: input.selection || null };
+        return { type: "unsupported_settings_replace", selection: input.selection || null };
       case "settings.updateDeployField":
         return { type: "update_deploy_settings", field: input.field, value: input.value, selection: input.selection || null };
       case "settings.updateMob":
-        return { type: "update_mob_settings", mob_settings: input.mobSettings, selection: input.selection || null };
+        return { type: "unsupported_settings_replace", selection: input.selection || null };
       case "settings.updateMobField":
         return { type: "update_mob_settings", field: input.field, value: input.value, selection: input.selection || null };
       case "settings.updateRoleWiring":
-        return { type: "update_role_wiring", role_wiring: input.roleWiring || [], selection: input.selection || null };
+        return { type: "unsupported_settings_replace", selection: input.selection || null };
       case "settings.editRoleWiring":
         return { type: "update_role_wiring", action: input.action, index: input.index, field: input.field, value: input.value, selection: input.selection || null };
       case "basic.updateStep":
@@ -269,7 +250,7 @@ window.MOBKIT_BOOT = {
       case "basic.deleteInputParam":
         return { type: "delete_input_param", step_id: input.stepId, param_id: input.paramId };
       case "graph.insertNode":
-        return { type: "insert_graph_node", ...(input.operation || { pick: input.pick, cell: input.cell, instance: input.instance }) };
+        return { type: "insert_graph_node", ...(input.operation || { pick: input.pick, cell: input.cell }) };
       case "graph.updateNode":
         return { type: "update_graph_node", instance_id: input.instanceId, patch: input.patch || {} };
       case "graph.editNode":
@@ -279,7 +260,7 @@ window.MOBKIT_BOOT = {
       case "graph.deleteNode":
         return { type: "delete_graph_node", instance_id: input.instanceId };
       case "graph.connectNodes":
-        return { type: "connect_graph_nodes", ...(input.operation || { from_id: input.fromId, to_id: input.toId, edge: input.edge }) };
+        return { type: "connect_graph_nodes", ...(input.operation || { from_id: input.fromId, to_id: input.toId }) };
       case "graph.updateEdge":
         return { type: "update_graph_edge", edge_id: input.edgeId, patch: input.patch || {} };
       case "graph.editEdge":
@@ -11296,7 +11277,6 @@ window.MOBKIT_BOOT = {
     loadCatalogs,
     authoringRpcMethodsFromSchema,
     configureAuthoringMethodsFromSchema,
-    authoringReplacementFromIntent,
     authoringOperationFromIntent,
     inlineSkillRealmIdFromOperationResult,
     validateDocument,
@@ -13960,10 +13940,19 @@ function App() {
       window.MobKitFlowController.configureAuthoringMethodsFromSchema(schema);
       const capabilityPayload = await window.MobKitFlowController.loadCapabilities(rpcOptions);
       const catalogPayload = await window.MobKitFlowController.loadCatalogs(rpcOptions);
-      const registryPayload = await window.MobKitFlowController.listDocuments({}, rpcOptions).catch((error) => {
+      let registryPayload = await window.MobKitFlowController.listDocuments({}, rpcOptions).catch((error) => {
         if (abort.signal.aborted) throw error;
         return { rows: [] };
       });
+      if (!Array.isArray(registryPayload?.rows) || registryPayload.rows.length === 0) {
+        registryPayload = await window.MobKitFlowController.createDocument({
+          template: "blank",
+          trigger: "MobKit editor startup draft"
+        }, rpcOptions).catch((error) => {
+          if (abort.signal.aborted) throw error;
+          return registryPayload;
+        });
+      }
       if (cancelled) return;
       setCapabilities(capabilityPayload);
       const nextCatalogs = window.MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
@@ -14320,11 +14309,16 @@ function App() {
   const mobKitStudio = {
     ...studio,
     addInstance: (instance) => {
-      const id = String(instance?.id || "").trim();
+      const memberId = String(instance?.memberId || instance?.member_id || "").trim();
+      const col = Number(instance?.col);
+      const row = Number(instance?.row);
+      if (!memberId || !Number.isFinite(col) || !Number.isFinite(row)) {
+        return { ok: false, error: "Graph instance adds require a semantic member pick and cell" };
+      }
       return applyMobKitAuthoringOperation({
         intent: "graph.insertNode",
-        instance,
-        ...id ? { selection: { kind: "instance", id } } : {}
+        pick: { kind: "memberInstance", memberId },
+        cell: { col, row }
       });
     },
     updateInstance: (id, patch) => {
@@ -14351,12 +14345,13 @@ function App() {
     addEdge: (edge) => {
       const fromId = String(edge?.from || "").trim();
       const toId = String(edge?.to || "").trim();
-      const id = String(edge?.id || "").trim();
-      const operation = fromId && toId ? { from_id: fromId, to_id: toId } : { edge };
+      if (!fromId || !toId) {
+        return { ok: false, error: "Graph edge adds require semantic from/to endpoints" };
+      }
       return applyMobKitAuthoringOperation({
         intent: "graph.connectNodes",
-        operation,
-        ...id ? { selection: { kind: "edge", id } } : {}
+        fromId,
+        toId
       });
     },
     updateEdge: (id, patch) => {

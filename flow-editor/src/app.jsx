@@ -196,10 +196,19 @@ function App() {
         window.MobKitFlowController.configureAuthoringMethodsFromSchema(schema);
         const capabilityPayload = await window.MobKitFlowController.loadCapabilities(rpcOptions);
         const catalogPayload = await window.MobKitFlowController.loadCatalogs(rpcOptions);
-        const registryPayload = await window.MobKitFlowController.listDocuments({}, rpcOptions).catch((error) => {
+        let registryPayload = await window.MobKitFlowController.listDocuments({}, rpcOptions).catch((error) => {
           if (abort.signal.aborted) throw error;
           return { rows: [] };
         });
+        if (!Array.isArray(registryPayload?.rows) || registryPayload.rows.length === 0) {
+          registryPayload = await window.MobKitFlowController.createDocument({
+            template: "blank",
+            trigger: "MobKit editor startup draft",
+          }, rpcOptions).catch((error) => {
+            if (abort.signal.aborted) throw error;
+            return registryPayload;
+          });
+        }
         if (cancelled) return;
         setCapabilities(capabilityPayload);
         const nextCatalogs = window.MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
@@ -574,11 +583,16 @@ function App() {
   const mobKitStudio = {
     ...studio,
     addInstance: (instance) => {
-      const id = String(instance?.id || "").trim();
+      const memberId = String(instance?.memberId || instance?.member_id || "").trim();
+      const col = Number(instance?.col);
+      const row = Number(instance?.row);
+      if (!memberId || !Number.isFinite(col) || !Number.isFinite(row)) {
+        return { ok: false, error: "Graph instance adds require a semantic member pick and cell" };
+      }
       return applyMobKitAuthoringOperation({
         intent: "graph.insertNode",
-        instance,
-        ...(id ? { selection: { kind: "instance", id } } : {}),
+        pick: { kind: "memberInstance", memberId },
+        cell: { col, row },
       });
     },
     updateInstance: (id, patch) => {
@@ -605,14 +619,13 @@ function App() {
     addEdge: (edge) => {
       const fromId = String(edge?.from || "").trim();
       const toId = String(edge?.to || "").trim();
-      const id = String(edge?.id || "").trim();
-      const operation = fromId && toId
-        ? { from_id: fromId, to_id: toId }
-        : { edge };
+      if (!fromId || !toId) {
+        return { ok: false, error: "Graph edge adds require semantic from/to endpoints" };
+      }
       return applyMobKitAuthoringOperation({
         intent: "graph.connectNodes",
-        operation,
-        ...(id ? { selection: { kind: "edge", id } } : {}),
+        fromId,
+        toId,
       });
     },
     updateEdge: (id, patch) => {

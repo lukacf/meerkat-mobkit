@@ -1123,24 +1123,6 @@ pub fn mobpack_catalogs_response_with_runtime(
 pub fn mobpack_authoring_operations() -> Value {
     json!([
         {
-            "type": "replace_authoring_document",
-            "plane": "document",
-            "authority": "mobkit",
-            "requires": ["document"],
-            "mutates": [
-                "document.flow",
-                "document.members",
-                "document.schemas",
-                "document.skill_realms",
-                "document.instances",
-                "document.edges",
-                "document.frames",
-                "document.deploy",
-                "document.mob_settings"
-            ],
-            "projection_document_supported": true
-        },
-        {
             "type": "sync_graph_to_flow",
             "plane": "graph",
             "authority": "mobkit",
@@ -1312,7 +1294,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "update_deploy_settings",
             "plane": "deploy",
             "authority": "mobkit",
-            "requires": ["deploy_or_field"],
+            "requires": ["field"],
             "mutates": ["document.deploy"],
             "projection_document_supported": false
         },
@@ -1320,7 +1302,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "update_mob_settings",
             "plane": "deploy",
             "authority": "mobkit",
-            "requires": ["mob_settings_or_field"],
+            "requires": ["field"],
             "mutates": ["document.mob_settings"],
             "projection_document_supported": false
         },
@@ -1328,7 +1310,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "update_role_wiring",
             "plane": "deploy",
             "authority": "mobkit",
-            "requires": ["role_wiring_or_action"],
+            "requires": ["action"],
             "mutates": ["document.mob_settings.roleWiring"],
             "projection_document_supported": false
         },
@@ -1400,7 +1382,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "insert_graph_node",
             "plane": "graph",
             "authority": "mobkit",
-            "requires": ["pick_or_instance"],
+            "requires": ["pick", "cell"],
             "mutates": ["document.instances", "document.edges", "document.frames", "document.flow"],
             "projection_document_supported": false
         },
@@ -1440,7 +1422,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "type": "connect_graph_nodes",
             "plane": "graph",
             "authority": "mobkit",
-            "requires": ["edge_or_endpoints"],
+            "requires": ["from_id", "to_id"],
             "mutates": ["document.edges", "document.flow"],
             "projection_document_supported": false
         },
@@ -3922,9 +3904,9 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "mobkit/mobpacks/apply_operation requires operation.type".to_string())?;
-    if operation_type != "replace_authoring_document" && operation.get("document").is_some() {
+    if operation.get("document").is_some() {
         return Err(format!(
-            "{operation_type} does not accept operation.document; use replace_authoring_document for explicit document replacement"
+            "{operation_type} does not accept operation.document; use mobkit/mobpacks/import or create/save for document replacement"
         ));
     }
     enforce_expected_catalog_snapshot(params, operation, operation_type)?;
@@ -3980,9 +3962,6 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
         "update_graph_edge" => apply_update_graph_edge_operation(&mut document, operation)?,
         "apply_graph_edge_edit" => apply_graph_edge_edit_operation(&mut document, operation)?,
         "delete_graph_edge" => apply_delete_graph_edge_operation(&mut document, operation)?,
-        "replace_authoring_document" => {
-            apply_projected_authoring_document_operation(&mut document, operation)?
-        }
         other => {
             return Err(format!(
                 "mobkit/mobpacks/apply_operation unsupported operation.type: {other}"
@@ -4068,19 +4047,15 @@ fn current_authoring_catalog_snapshot_id() -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn apply_projected_authoring_document_operation(
-    document: &mut MobpackDocument,
-    operation: &serde_json::Map<String, Value>,
-) -> Result<Value, String> {
-    let next_document = operation
-        .get("document")
-        .ok_or_else(|| "replace_authoring_document requires document object".to_string())?;
-    *document = serde_json::from_value(next_document.clone())
-        .map_err(|error| format!("operation.document is not a valid mobpack document: {error}"))?;
-    Ok(operation
-        .get("selection")
-        .cloned()
-        .unwrap_or_else(|| json!({ "kind": null, "id": null })))
+fn value_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 fn operation_selection_or_clear(operation: &serde_json::Map<String, Value>) -> Value {
@@ -4547,15 +4522,17 @@ fn apply_update_deploy_settings_operation(
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
     if let Some(deploy) = operation.get("deploy") {
-        document.deploy = deploy.clone();
-        return Ok(operation_selection_or_clear(operation));
+        return Err(format!(
+            "update_deploy_settings does not accept full deploy object; use field/value updates (received {})",
+            value_kind(deploy)
+        ));
     }
     let field = operation
         .get("field")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "update_deploy_settings requires deploy object or field".to_string())?;
+        .ok_or_else(|| "update_deploy_settings requires field".to_string())?;
     let value = operation.get("value").cloned().unwrap_or(Value::Null);
     let key = deploy_settings_field_key(field)
         .ok_or_else(|| format!("unsupported deploy settings field: {field}"))?;
@@ -4577,15 +4554,17 @@ fn apply_update_mob_settings_operation(
         .get("mob_settings")
         .or_else(|| operation.get("mobSettings"))
     {
-        document.mob_settings = settings.clone();
-        return Ok(operation_selection_or_clear(operation));
+        return Err(format!(
+            "update_mob_settings does not accept full mob_settings object; use field/value updates (received {})",
+            value_kind(settings)
+        ));
     }
     let field = operation
         .get("field")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "update_mob_settings requires mob_settings object or field".to_string())?;
+        .ok_or_else(|| "update_mob_settings requires field".to_string())?;
     let value = operation.get("value").cloned().unwrap_or(Value::Null);
     let key = mob_settings_field_key(field)
         .ok_or_else(|| format!("unsupported mob settings field: {field}"))?;
@@ -4607,12 +4586,18 @@ fn apply_update_role_wiring_operation(
         .get("mob_settings")
         .or_else(|| operation.get("mobSettings"))
     {
-        document.mob_settings = settings.clone();
+        return Err(format!(
+            "update_role_wiring does not accept full mob_settings object; use action updates (received {})",
+            value_kind(settings)
+        ));
     } else if let Some(role_wiring) = operation
         .get("role_wiring")
         .or_else(|| operation.get("roleWiring"))
     {
-        set_document_role_wiring(document, role_wiring.clone());
+        return Err(format!(
+            "update_role_wiring does not accept full role_wiring array; use action updates (received {})",
+            value_kind(role_wiring)
+        ));
     } else if let Some(action) = operation
         .get("action")
         .and_then(Value::as_str)
@@ -4621,7 +4606,7 @@ fn apply_update_role_wiring_operation(
     {
         apply_role_wiring_action(document, operation, action)?;
     } else {
-        return Err("update_role_wiring requires role_wiring, mob_settings, or action".to_string());
+        return Err("update_role_wiring requires action".to_string());
     }
     Ok(operation_selection_or_clear(operation))
 }
@@ -8416,6 +8401,18 @@ fn apply_insert_graph_node_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
+    if operation.get("instance").is_some() {
+        return Err(
+            "insert_graph_node does not accept raw instance; use semantic pick and cell"
+                .to_string(),
+        );
+    }
+    if operation.get("instances").is_some() {
+        return Err(
+            "insert_graph_node does not accept raw instances array; use semantic pick and cell"
+                .to_string(),
+        );
+    }
     let mut incoming_instances = Vec::new();
     let mut incoming_edges = Vec::new();
     let mut semantic_selection = None;
@@ -8425,30 +8422,8 @@ fn apply_insert_graph_node_operation(
         incoming_edges.extend(edges);
         semantic_selection = Some(selection);
     }
-    if let Some(instance) = operation.get("instance") {
-        incoming_instances.push(instance.clone());
-    }
-    if let Some(instances) = operation.get("instances").and_then(Value::as_array) {
-        let existing_ids = graph_instance_ids(
-            document
-                .instances
-                .as_array()
-                .map(Vec::as_slice)
-                .unwrap_or(&[]),
-        );
-        for instance in instances {
-            let id = instance
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .unwrap_or_default();
-            if !id.is_empty() && !existing_ids.contains(id) {
-                incoming_instances.push(instance.clone());
-            }
-        }
-    }
     if incoming_instances.is_empty() {
-        return Err("insert_graph_node requires instance object or instances array".to_string());
+        return Err("insert_graph_node requires semantic pick and cell".to_string());
     }
     let mut instances = document
         .instances
@@ -9115,16 +9090,18 @@ fn apply_connect_graph_nodes_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
+    if operation.get("edge").is_some() {
+        return Err(
+            "connect_graph_nodes does not accept raw edge; use from_id and to_id".to_string(),
+        );
+    }
     let instances = document
         .instances
         .as_array()
         .cloned()
         .unwrap_or_else(Vec::new);
     let mut edges = document.edges.as_array().cloned().unwrap_or_else(Vec::new);
-    let edge =
-        operation.get("edge").cloned().map(Ok).unwrap_or_else(|| {
-            graph_connection_edge_from_endpoints(operation, &instances, &edges)
-        })?;
+    let edge = graph_connection_edge_from_endpoints(operation, &instances, &edges)?;
     let id = validate_graph_edge(&edge, &edges, &instances, None)?;
     edges.push(edge);
     document.edges = Value::Array(edges);
@@ -26402,52 +26379,36 @@ model = "gpt-5.5"
                 .contains("does not accept operation.document")
         );
 
-        let replaced = apply_mobpack_authoring_operation(&json!({
-            "document": current_document,
+        let rejected_replacement = apply_mobpack_authoring_operation(&json!({
+            "document": current_document.clone(),
             "operation": {
                 "type": "replace_authoring_document",
                 "document": projected_document,
                 "selection": { "kind": "schema", "id": "PlanArtifact" }
             }
-        }))
-        .expect("apply explicit projected operation document");
-        assert_eq!(
-            replaced["document"]["name"],
-            json!("Projected operation payload accepted")
-        );
-        assert_eq!(
-            replaced["selection"],
-            json!({ "kind": "schema", "id": "PlanArtifact" })
-        );
+        }));
         assert!(
-            apply_mobpack_authoring_operation(&json!({
-                "document": replaced["document"],
-                "operation": {
-                    "type": "replace_authoring_document",
-                    "flow": { "name": "fragment fallback must not apply" }
-                }
-            }))
-            .expect_err("replace operation requires a full document")
-            .contains("replace_authoring_document requires document object")
+            rejected_replacement
+                .expect_err("whole-document replacement must use import/create/save")
+                .contains("does not accept operation.document")
         );
 
-        let mut deploy = replaced["document"]["deploy"].clone();
+        let mut deploy = current_document["deploy"].clone();
         deploy["prompt"] = json!("Payload section prompt.");
-        let settings = apply_mobpack_authoring_operation(&json!({
-            "document": replaced["document"],
-            "operation": {
-                "type": "update_deploy_settings",
-                "deploy": deploy,
-                "selection": { "kind": null, "id": null }
-            }
-        }))
-        .expect("apply projected deploy settings");
-        assert_eq!(
-            settings["document"]["deploy"]["prompt"],
-            json!("Payload section prompt.")
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": current_document,
+                "operation": {
+                    "type": "update_deploy_settings",
+                    "deploy": deploy,
+                    "selection": { "kind": null, "id": null }
+                }
+            }))
+            .expect_err("full deploy settings replacement must fail")
+            .contains("does not accept full deploy object")
         );
         let field_settings = apply_mobpack_authoring_operation(&json!({
-            "document": settings["document"],
+            "document": document,
             "operation": {
                 "type": "update_deploy_settings",
                 "field": "prompt",
@@ -26521,7 +26482,7 @@ model = "gpt-5.5"
                 }
             }))
             .expect_err("deploy settings require typed payload")
-            .contains("update_deploy_settings requires deploy object or field")
+            .contains("update_deploy_settings requires field")
         );
         assert!(
             apply_mobpack_authoring_operation(&json!({
@@ -26532,7 +26493,18 @@ model = "gpt-5.5"
                 }
             }))
             .expect_err("mob settings require typed payload")
-            .contains("update_mob_settings requires mob_settings object or field")
+            .contains("update_mob_settings requires field")
+        );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": role_wiring_target["document"],
+                "operation": {
+                    "type": "update_mob_settings",
+                    "mob_settings": {}
+                }
+            }))
+            .expect_err("full mob settings replacement rejected")
+            .contains("update_mob_settings does not accept full mob_settings object")
         );
         assert!(
             apply_mobpack_authoring_operation(&json!({
@@ -26543,7 +26515,7 @@ model = "gpt-5.5"
                 }
             }))
             .expect_err("role wiring requires typed payload")
-            .contains("update_role_wiring requires role_wiring, mob_settings, or action")
+            .contains("update_role_wiring requires action")
         );
     }
 
@@ -26572,9 +26544,12 @@ model = "gpt-5.5"
                 .as_bool()
                 .expect("projection_document_supported bool");
             assert_eq!(
-                projection_supported,
-                operation_type == "replace_authoring_document",
-                "only explicit whole-document replacement may accept projected documents: {operation_type}"
+                projection_supported, false,
+                "normal authoring operations must not accept projected documents: {operation_type}"
+            );
+            assert_ne!(
+                operation_type, "replace_authoring_document",
+                "whole-document replacement belongs to import/create/save, not apply_operation"
             );
         }
         let capabilities = crate::rpc::mobpack_authoring_capabilities();
@@ -26672,14 +26647,15 @@ model = "gpt-5.5"
             graph_apply_operation_document(),
             json!({
                 "type": "insert_graph_node",
-                "instance": { "id": "n_done", "kind": "member", "memberId": "reviewer", "col": 2, "row": 0 }
+                "pick": { "kind": "memberInstance", "memberId": "reviewer" },
+                "cell": { "col": 2, "row": 0 }
             }),
         );
         assert_eq!(inserted["operation"], json!("insert_graph_node"));
         assert_eq!(inserted["selection"]["kind"], json!("instance"));
-        assert_eq!(inserted["selection"]["id"], json!("n_done"));
+        assert_eq!(inserted["selection"]["id"], json!("i_reviewer"));
         assert_eq!(
-            graph_instance(&inserted["document"], "n_done")["col"],
+            graph_instance(&inserted["document"], "i_reviewer")["col"],
             json!(2)
         );
         assert_graph_flow_projection_synced(&inserted);
@@ -26688,21 +26664,21 @@ model = "gpt-5.5"
             inserted["document"].clone(),
             json!({
                 "type": "update_graph_node",
-                "instance_id": "n_done",
+                "instance_id": "i_reviewer",
                 "patch": { "lane": "review", "label": "Done" }
             }),
         );
         assert_eq!(updated["operation"], json!("update_graph_node"));
         assert_eq!(
             updated["selection"],
-            json!({ "kind": "instance", "id": "n_done" })
+            json!({ "kind": "instance", "id": "i_reviewer" })
         );
         assert_eq!(
-            graph_instance(&updated["document"], "n_done")["lane"],
+            graph_instance(&updated["document"], "i_reviewer")["lane"],
             json!("review")
         );
         assert_eq!(
-            graph_instance(&updated["document"], "n_done")["label"],
+            graph_instance(&updated["document"], "i_reviewer")["label"],
             json!("Done")
         );
         assert_graph_flow_projection_synced(&updated);
@@ -26711,7 +26687,7 @@ model = "gpt-5.5"
             updated["document"].clone(),
             json!({
                 "type": "move_graph_node",
-                "instance_id": "n_done",
+                "instance_id": "i_reviewer",
                 "cell": { "col": 1, "row": 0 },
                 "original_cell": { "col": 2, "row": 0 }
             }),
@@ -26719,10 +26695,10 @@ model = "gpt-5.5"
         assert_eq!(moved["operation"], json!("move_graph_node"));
         assert_eq!(
             moved["selection"],
-            json!({ "kind": "instance", "id": "n_done" })
+            json!({ "kind": "instance", "id": "i_reviewer" })
         );
         assert_eq!(
-            graph_instance(&moved["document"], "n_done")["col"],
+            graph_instance(&moved["document"], "i_reviewer")["col"],
             json!(1)
         );
         assert_eq!(
@@ -26735,7 +26711,7 @@ model = "gpt-5.5"
             moved["document"].clone(),
             json!({
                 "type": "delete_graph_node",
-                "instance_id": "n_done"
+                "instance_id": "i_reviewer"
             }),
         );
         assert_eq!(deleted["operation"], json!("delete_graph_node"));
@@ -26745,9 +26721,53 @@ model = "gpt-5.5"
                 .as_array()
                 .expect("instances")
                 .iter()
-                .any(|instance| instance["id"] == "n_done")
+                .any(|instance| instance["id"] == "i_reviewer")
         );
         assert_graph_flow_projection_synced(&deleted);
+    }
+
+    #[test]
+    fn apply_operation_rejects_raw_graph_insert_and_connect_payloads() {
+        let raw_instance = apply_mobpack_authoring_operation(&json!({
+            "document": graph_apply_operation_document(),
+            "operation": {
+                "type": "insert_graph_node",
+                "instance": { "id": "n_done", "kind": "member", "memberId": "reviewer", "col": 2, "row": 0 }
+            }
+        }))
+        .expect_err("raw graph instance insert must fail");
+        assert!(
+            raw_instance.contains("insert_graph_node does not accept raw instance"),
+            "{raw_instance}"
+        );
+
+        let raw_instances = apply_mobpack_authoring_operation(&json!({
+            "document": graph_apply_operation_document(),
+            "operation": {
+                "type": "insert_graph_node",
+                "instances": [
+                    { "id": "n_done", "kind": "member", "memberId": "reviewer", "col": 2, "row": 0 }
+                ]
+            }
+        }))
+        .expect_err("raw graph instances array must fail");
+        assert!(
+            raw_instances.contains("insert_graph_node does not accept raw instances array"),
+            "{raw_instances}"
+        );
+
+        let raw_edge = apply_mobpack_authoring_operation(&json!({
+            "document": graph_apply_operation_document(),
+            "operation": {
+                "type": "connect_graph_nodes",
+                "edge": { "id": "e_raw", "from": "n_plan", "to": "n_review" }
+            }
+        }))
+        .expect_err("raw graph edge connect must fail");
+        assert!(
+            raw_edge.contains("connect_graph_nodes does not accept raw edge"),
+            "{raw_edge}"
+        );
     }
 
     #[test]

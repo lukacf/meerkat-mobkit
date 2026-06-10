@@ -141,25 +141,6 @@
     };
   }
 
-  function authoringReplacementFromIntent(request = {}) {
-    const input = request && typeof request === "object" ? request : {};
-    if (input.operationType) return input;
-    const intent = String(input.intent || "").trim();
-    const selection = Object.prototype.hasOwnProperty.call(input, "selection") ? input.selection : undefined;
-    const withSelection = (payload) => selection === undefined ? payload : { ...payload, selection };
-    switch (intent) {
-      case "system.replaceAuthoringDocument":
-        return withSelection({
-          operationType: "replace_authoring_document",
-          operation: { reason: input.reason || "replace_authoring_document" },
-          studio: input.studio,
-          useAuthoringProjection: true,
-        });
-      default:
-        return input;
-    }
-  }
-
   function authoringOperationFromIntent(request = {}) {
     const input = request && typeof request === "object" ? request : {};
     if (input.type) return input;
@@ -208,15 +189,15 @@
       case "schema.deleteField":
         return { type: "delete_schema_field", schema_id: input.schemaId, field_id: input.fieldId };
       case "settings.updateDeploy":
-        return { type: "update_deploy_settings", deploy: input.deploy, selection: input.selection || null };
+        return { type: "unsupported_settings_replace", selection: input.selection || null };
       case "settings.updateDeployField":
         return { type: "update_deploy_settings", field: input.field, value: input.value, selection: input.selection || null };
       case "settings.updateMob":
-        return { type: "update_mob_settings", mob_settings: input.mobSettings, selection: input.selection || null };
+        return { type: "unsupported_settings_replace", selection: input.selection || null };
       case "settings.updateMobField":
         return { type: "update_mob_settings", field: input.field, value: input.value, selection: input.selection || null };
       case "settings.updateRoleWiring":
-        return { type: "update_role_wiring", role_wiring: input.roleWiring || [], selection: input.selection || null };
+        return { type: "unsupported_settings_replace", selection: input.selection || null };
       case "settings.editRoleWiring":
         return { type: "update_role_wiring", action: input.action, index: input.index, field: input.field, value: input.value, selection: input.selection || null };
       case "basic.updateStep":
@@ -236,7 +217,7 @@
       case "basic.deleteInputParam":
         return { type: "delete_input_param", step_id: input.stepId, param_id: input.paramId };
       case "graph.insertNode":
-        return { type: "insert_graph_node", ...(input.operation || { pick: input.pick, cell: input.cell, instance: input.instance }) };
+        return { type: "insert_graph_node", ...(input.operation || { pick: input.pick, cell: input.cell }) };
       case "graph.updateNode":
         return { type: "update_graph_node", instance_id: input.instanceId, patch: input.patch || {} };
       case "graph.editNode":
@@ -246,7 +227,7 @@
       case "graph.deleteNode":
         return { type: "delete_graph_node", instance_id: input.instanceId };
       case "graph.connectNodes":
-        return { type: "connect_graph_nodes", ...(input.operation || { from_id: input.fromId, to_id: input.toId, edge: input.edge }) };
+        return { type: "connect_graph_nodes", ...(input.operation || { from_id: input.fromId, to_id: input.toId }) };
       case "graph.updateEdge":
         return { type: "update_graph_edge", edge_id: input.edgeId, patch: input.patch || {} };
       case "graph.editEdge":
@@ -11263,7 +11244,6 @@
     loadCatalogs,
     authoringRpcMethodsFromSchema,
     configureAuthoringMethodsFromSchema,
-    authoringReplacementFromIntent,
     authoringOperationFromIntent,
     inlineSkillRealmIdFromOperationResult,
     validateDocument,
