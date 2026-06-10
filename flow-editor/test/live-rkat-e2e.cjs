@@ -16,6 +16,7 @@ require("../src/controller.js");
 const rpcUrl = process.env.MOBKIT_FLOW_EDITOR_RPC_URL || "http://127.0.0.1:4191/flow-editor/rpc";
 const sampleId = process.env.MOBKIT_FLOW_EDITOR_SAMPLE_ID || "sample_docs_only";
 const runDeploy = process.argv.includes("--deploy") || process.env.MOBKIT_FLOW_EDITOR_RUN_DEPLOY === "1";
+const expectHostDeploy = process.env.MOBKIT_FLOW_EDITOR_EXPECT_HOST_DEPLOY === "1";
 const controller = global.window.MobKitFlowController;
 let contractSchema = null;
 const testDeploySettings = () => controller.deployDefaultsFromSchema(contractSchema);
@@ -79,10 +80,12 @@ async function assertAuthoringCapabilities() {
   if (authoring.host_mutation_methods?.["mobkit/mobpacks/deploy"] !== "when execute=true, writes a mobpack archive and runs rkat mob deploy on the host") {
     throw new Error(`flow editor capabilities must disclose deploy host mutation: ${JSON.stringify(authoring)}`);
   }
-  if (authoring.host_mutation_allowed !== false || authoring.deploy_execute_allowed !== false) {
-    throw new Error(`standalone flow editor must not allow host deploy execution: ${JSON.stringify(authoring)}`);
+  if (authoring.host_mutation_allowed !== expectHostDeploy || authoring.deploy_execute_allowed !== expectHostDeploy) {
+    const mode = expectHostDeploy ? "host deploy opt-in" : "safe standalone";
+    throw new Error(`${mode} flow editor exposed wrong host deploy capability: ${JSON.stringify(authoring)}`);
   }
-  if (capabilities.authenticated !== false || capabilities.auth?.mode !== "none") {
+  const expectedAuthMode = expectHostDeploy ? "standalone_host_deploy" : "none";
+  if (capabilities.authenticated !== false || capabilities.auth?.mode !== expectedAuthMode) {
     throw new Error(`standalone flow editor must not claim authenticated runtime access: ${JSON.stringify(capabilities)}`);
   }
   if (authoring.deploy_command !== "rkat mob deploy") {
@@ -207,7 +210,7 @@ function assertDeployPlanTrace(result, label) {
     }
   }
   const firstBody = String(trace[0]?.body || "");
-  if (!firstBody.includes("source: mobkit/mob.toml") || !firstBody.includes("command: rkat mob deploy")) {
+  if (!firstBody.includes("source: mobkit/mob.toml") || !/command: .*rkat mob deploy/.test(firstBody)) {
     throw new Error(`${label} deploy plan_trace did not describe the MobKit deploy source/command: ${JSON.stringify(trace[0])}`);
   }
   if (!trace.some((row) => String(row?.body || "").includes("skills:") && String(row?.body || "").includes("tools:"))) {
