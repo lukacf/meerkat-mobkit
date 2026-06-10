@@ -1019,7 +1019,9 @@ assert.match(controller, /function sourceFileRows/, "controller plane must own s
 assert.match(controller, /function highlightSourceFile/, "controller plane must own source archive file highlighting selection");
 assert.match(controller, /function highlightTomlSource/, "controller plane must own source editor TOML highlighting projection");
 assert.match(controller, /function escapeHtml/, "controller plane must own source editor HTML escaping");
-assert.match(sourceEditorBlock, /sourceHtml:\s*selectedFile\s*\?\s*highlightSourceFile\(selectedFile\)\s*:\s*highlightTomlSource\(source\)/, "source editor state must expose controller-projected highlighted source HTML");
+assert.match(sourceEditorBlock, /const source = selectedFile \? sourceFileContent\(selectedFile\) : ""/, "source editor state must render only MobKit-returned source file content");
+assert.match(sourceEditorBlock, /sourceHtml:\s*selectedFile\s*\?\s*highlightSourceFile\(selectedFile\)\s*:\s*""/, "source editor state must fail closed instead of highlighting stale fallback source");
+assert(!/sourceDocument\?\.mob_toml/.test(sourceEditorBlock), "source editor state must not render stale mob_toml fallback content");
 assert.match(sourceEditorBlock, /selectedPath:\s*sourcePath[\s\S]*fileRows:\s*sourceFileRows\(sourceDocument,\s*sourcePath\)/, "source editor state must expose controller-projected archive file rows");
 assert.match(controller, /mob_definition\?\.editor_source_view/, "controller plane must hydrate source editor labels from MobKit schema");
 assert.match(controller, /primarySourcePath:\s*String\(view\.primary_source_path/, "controller plane must hydrate the primary source archive path from MobKit schema");
@@ -1402,6 +1404,7 @@ assert.match(addAgentControlBlock, /setAgentSel\(result\.selection\)/, "Agent ad
 assert(!/unknown agent definition|unavailable tool|unavailable skill|unsupported runtime mode|Agent definition unavailable/.test(addAgentControlBlock), "Agent add-control JSX must not compose rejected definition error copy locally");
 assert.match(agents, /<AgentsList[\s\S]*deploySettings=\{deploySettings\}[\s\S]*toolCatalog=\{toolCatalog\}[\s\S]*modelCatalog=\{modelCatalog\}/, "Agent sidebar must receive live MobKit deploy, tool, and model catalog context");
 assert.match(agents, /<AddAgentControl[\s\S]*toolCatalog=\{toolCatalog\}/, "Agent add-control must receive the live MobKit tool catalog");
+assert(!/display_rows/.test(agents), "Agent Editor JSX must not inspect MobKit validation display rows directly");
 assert.match(controller, /function createAuthoringOperationRunner[\s\S]*document = hooks\.getCurrentDocument\?\.\(\)[\s\S]*applyAuthoringOperationDocument\(document,\s*translatedOperation,\s*\{[\s\S]*\.\.\.\(hooks\.getDraftGuard\?\.\(\) \|\| \{\}\),[\s\S]*catalogSnapshot:\s*hooks\.getCatalogSnapshot\?\.\(\)/, "Agent add-control operations must send only the current MobKit-returned deployable document into MobKit validation with draft revision and catalog snapshot guards");
 assert.match(liveRkatE2eTest, /mobkit\/mobpacks\/apply_operation[\s\S]*type:\s*"add_agent_definition"[\s\S]*definition_id:\s*coderDefinition\.id[\s\S]*mobkit\/mobpacks\/apply_operation[\s\S]*definition_id:\s*reviewerDefinition\.id/, "live rkat unified projection proof must add agents through MobKit apply_operation");
 assert.match(liveRkatE2eTest, /expected_catalog_snapshot_id:\s*"stale-catalog-snapshot"[\s\S]*catalog snapshot conflict[\s\S]*expected_catalog_snapshot_id:\s*catalogSnapshotId/, "live rkat proof must reject stale catalog-backed operations and accept the loaded MobKit catalog snapshot");
@@ -1748,12 +1751,11 @@ assert.match(controller, /function flowRegistryAppendRowPatch/, "controller plan
 assert.match(controller, /function flowRegistryUpsertRowPatch/, "controller plane must own flow registry upsert semantics");
 assert(!/setFlows\(\s*\(?\w+\)?\s*=>\s*\w+\.map\([^)]*=>[\s\S]{0,220}stage:\s*["']draft["']|setFlows\(\s*\(?\w+\)?\s*=>\s*\w+\.some\([^)]*\)\s*\?\s*\w+\.map|setFlows\(\s*\(?\w+\)?\s*=>\s*\[\.\.\.\w+,\s*row\]/.test(app), "app shell must not locally map/upsert/append flow registry rows");
 assert(!/flows\.find/.test(app), "app shell must not search flow registry rows locally");
-assert.match(tweaksBlock, /MobKitFlowController\.deploySettingsFieldPatch/, "Tweaks deploy controls must patch deploy settings through the controller plane");
-assert.match(tweaksBlock, /MobKitFlowController\.mobSettingsFieldPatch/, "Tweaks mob controls must patch mob settings through the controller plane");
-assert.match(tweaksBlock, /deploySettingsFieldPatch\(deploySettings,\s*field,\s*value,\s*\{\s*contract,\s*modelCatalog\s*\}\)/, "Tweaks deploy settings writes must pass MobKit contract and model catalog into controller validation");
-assert.match(tweaksBlock, /mobSettingsFieldPatch\(mobSettings,\s*field,\s*value,\s*\{\s*contract\s*\}\)/, "Tweaks mob settings writes must pass MobKit contract into controller validation");
 assert.match(app, /<Tweaks[\s\S]*applyAuthoringIntent=\{applyMobKitAuthoringOperation\}/, "Tweaks must receive the direct MobKit authoring operation callback from the app shell");
+assert.match(tweaksBlock, /const setDeployField = \(field, value\) => \{[\s\S]*if \(!applyAuthoringIntent\) return;[\s\S]*intent:\s*"settings\.updateDeployField"/, "Tweaks deploy settings writes must require MobKit authoring intents");
+assert.match(tweaksBlock, /const setMobField = \(field, value\) => \{[\s\S]*if \(!applyAuthoringIntent\) return;[\s\S]*intent:\s*"settings\.updateMobField"/, "Tweaks mob settings writes must require MobKit authoring intents");
 assert.match(tweaksBlock, /intent:\s*"settings\.updateDeployField"[\s\S]*field,[\s\S]*value,/, "Tweaks deploy settings mutations must round-trip through MobKit field operation intents");
+assert(!/setDeploySettings\(next\)|setMobSettings\(next\)|mobRoleWiring(?:Add|Delete|Source|Target)Patch/.test(tweaksBlock), "Tweaks must not keep local deploy or mob settings mutation fallbacks outside MobKit authoring operations");
 assert(!/intent:\s*"settings\.updateDeploy"[\s\S]{0,260}deploy:\s*next|intent:\s*"settings\.updateDeploy"[\s\S]{0,260}deploySettings:\s*next/.test(tweaksBlock), "Tweaks deploy settings must not submit browser-projected settings payloads");
 assert.match(mobpackRust, /"type":\s*"update_deploy_settings"[\s\S]*"authority":\s*"mobkit"[\s\S]*"requires":\s*\["field"\][\s\S]*"projection_document_supported":\s*false/, "MobKit operation catalog must advertise deploy settings as semantic MobKit-owned");
 assert.match(mobpackRust, /update_deploy_settings does not accept full deploy object[\s\S]*update_deploy_settings requires field/, "MobKit deploy settings operation must reject full projected settings and require field intents");
@@ -1787,12 +1789,6 @@ assert.match(controller, /advancedObjectRequiredError:\s*String\(view\.advanced_
 assert(!/const loadableFlows|const profileOptions|const profileChoices|modelCatalog\s*\|\|\s*\[\]|profileName\(member\)|flows\.filter\(\(flow\) => flow\.document\)/.test(tweaksBlock), "Tweaks controls must not assemble MobKit authoring option state locally");
 assert(!/<TweaksPanel title=["']Tweaks["']|aria-label=["']Close tweaks["']|<TweakSection title=["'](?:Load mob|Canvas|Theme|Mob|Deploy|Inspector)["']|label=["'](?:Mobpack|Edges|Density|Mode|Orchestrator|Auto wire|Default backend|External base|Surface|Trust|Model|Duration|Tool calls|Tokens|Realm|Realm ID|Backend|Prompt|Layout)["']|placeholder=["'](?:http:\/\/127\.0\.0\.1:9000|30s|realm id|Deploy prompt)["']|options=\{\[\{value: ["'](?:text|compact|light|no|isolated|right)["']|min=\{0\}|max=\{(?:999|200000)\}|deployCommandPreview \|\| ["']--["']/.test(tweaksBlock), "Tweaks controls must not compose panel labels, local option sets, placeholders, numeric bounds, or command fallback locally");
 assert.match(tweaksBlock, /settingsView=\{settingsView\}/, "Tweaks must pass MobKit settings view into nested settings editors");
-assert.match(tweaksBlock, /MobKitFlowController\.mobRoleWiringSourcePatch/, "role wiring fallback source edits must update through the controller plane");
-assert.match(tweaksBlock, /mobRoleWiringSourcePatch\(current,\s*operation\.index,\s*operation\.value,\s*controlState\.profileChoices\)/, "role wiring fallback source updates must pass real profile options into controller validation");
-assert.match(tweaksBlock, /MobKitFlowController\.mobRoleWiringTargetPatch/, "role wiring fallback target edits must update through the controller plane");
-assert.match(tweaksBlock, /mobRoleWiringTargetPatch\(current,\s*operation\.index,\s*operation\.value,\s*controlState\.profileChoices\)/, "role wiring fallback target updates must pass real profile options into controller validation");
-assert.match(tweaksBlock, /MobKitFlowController\.mobRoleWiringDeletePatch/, "role wiring fallback must delete rules through the controller plane");
-assert.match(tweaksBlock, /MobKitFlowController\.mobRoleWiringAddPatch/, "role wiring fallback must add rules through the controller plane");
 assert.match(roleWiringBlock, /onAction && onAction\(\{ action:\s*"set_source",\s*index,\s*value \}\)/, "role wiring source edits must emit typed MobKit action intents");
 assert.match(roleWiringBlock, /onAction && onAction\(\{ action:\s*"set_target",\s*index,\s*value \}\)/, "role wiring target edits must emit typed MobKit action intents");
 assert.match(roleWiringBlock, /onAction && onAction\(\{ action:\s*"delete",\s*index \}\)/, "role wiring deletes must emit typed MobKit action intents");

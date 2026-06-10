@@ -6605,12 +6605,36 @@ assert.deepEqual(controller.sourceFileSelectionTransition(sourceProjection.sourc
   sourcePath: "mobkit/mob.toml",
 });
 const escapedSourceEditorState = controller.sourceEditorState({
-  mob_toml: "# <unsafe & comment>\n[mob]\nid = \"safe\"\n",
+  sourcePath: "mobkit/mob.toml",
+  sourceFiles: [{
+    path: "mobkit/mob.toml",
+    media_type: "text/toml",
+    text: "# <unsafe & comment>\n[mob]\nid = \"safe\"\n",
+    size_bytes: 39,
+  }],
 }, { sourceView: hydratedCatalogs.sourceView });
 assert.equal(
   escapedSourceEditorState.sourceHtml,
   '<span class="toml-comment"># &lt;unsafe &amp; comment&gt;</span>\n<span class="toml-table">[mob]</span>\n<span class="toml-key">id</span> = "safe"\n',
 );
+assert.deepEqual(controller.sourceEditorState({
+  mob_toml: "# stale fallback must stay hidden\n",
+}, { sourceView: hydratedCatalogs.sourceView }), {
+  source: "",
+  sourceHtml: "",
+  drawerEyebrow: "SOURCE · mob.toml",
+  inlineTitle: "mob.toml",
+  sourceLabel: "",
+  validationSource: "",
+  bodyClass: "source-drawer__body",
+  selectedPath: "",
+  fileRows: [],
+  showLoading: false,
+  loadingText: "rendering mob.toml from mobkit/mobpacks/source...",
+  copyLabel: "copy",
+  closeLabel: "×",
+  copyDisabled: true,
+});
 assert.deepEqual(controller.sourceEditorState(null, { busy: true, compact: true, sourceView: hydratedCatalogs.sourceView }), {
   source: "",
   sourceHtml: "",

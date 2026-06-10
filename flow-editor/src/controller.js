@@ -10411,7 +10411,7 @@
 
   function sourceEditorState(sourceDocument, options = {}) {
     const selectedFile = sourceFileForPath(sourceDocument, options.sourcePath);
-    const source = selectedFile ? sourceFileContent(selectedFile) : String(sourceDocument?.mob_toml || "");
+    const source = selectedFile ? sourceFileContent(selectedFile) : "";
     const view = sourceViewForState(sourceDocument, options.sourceView);
     const sourcePath = String(selectedFile?.path || sourceDocument?.sourcePath || "").trim();
     const sourceLabel = [
@@ -10424,7 +10424,7 @@
     const bodyClass = options.compact ? "bld-toml__body" : "source-drawer__body";
     return {
       source,
-      sourceHtml: selectedFile ? highlightSourceFile(selectedFile) : highlightTomlSource(source),
+      sourceHtml: selectedFile ? highlightSourceFile(selectedFile) : "",
       drawerEyebrow: view.drawerEyebrow,
       inlineTitle: view.inlineTitle,
       sourceLabel,

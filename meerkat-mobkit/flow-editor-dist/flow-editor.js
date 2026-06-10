@@ -10444,7 +10444,7 @@ window.MOBKIT_BOOT = {
 
   function sourceEditorState(sourceDocument, options = {}) {
     const selectedFile = sourceFileForPath(sourceDocument, options.sourcePath);
-    const source = selectedFile ? sourceFileContent(selectedFile) : String(sourceDocument?.mob_toml || "");
+    const source = selectedFile ? sourceFileContent(selectedFile) : "";
     const view = sourceViewForState(sourceDocument, options.sourceView);
     const sourcePath = String(selectedFile?.path || sourceDocument?.sourcePath || "").trim();
     const sourceLabel = [
@@ -10457,7 +10457,7 @@ window.MOBKIT_BOOT = {
     const bodyClass = options.compact ? "bld-toml__body" : "source-drawer__body";
     return {
       source,
-      sourceHtml: selectedFile ? highlightSourceFile(selectedFile) : highlightTomlSource(source),
+      sourceHtml: selectedFile ? highlightSourceFile(selectedFile) : "",
       drawerEyebrow: view.drawerEyebrow,
       inlineTitle: view.inlineTitle,
       sourceLabel,
@@ -13474,8 +13474,7 @@ function SkillAccess({ studio, member, agentAccessView = null, applyAgentIntent 
       if (studio.snap) studio.snap();
       const result = await applyAgentIntent({ memberId: member.id, ...intentRequest });
       if (!result?.ok) {
-        const validationError = result?.validation?.display_rows?.length ? result.validation.display_rows[0].head : "";
-        setInlineError(validationError || result?.error || fallback);
+        setInlineError(window.MobKitFlowController.operationErrorText(result, fallback));
         return null;
       }
       setInlineError("");
@@ -15321,49 +15320,27 @@ function ModeToggle({ mode, onSelectMode, railState }) {
 }
 function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, applyAuthoringIntent = null, onLoadFlow }) {
   const setDeployField = (field, value) => {
-    const next = window.MobKitFlowController.deploySettingsFieldPatch(deploySettings, field, value, { contract, modelCatalog });
-    if (applyAuthoringIntent) {
-      applyAuthoringIntent({
-        intent: "settings.updateDeployField",
-        field,
-        value
-      });
-    } else {
-      setDeploySettings(next);
-    }
+    if (!applyAuthoringIntent) return;
+    applyAuthoringIntent({
+      intent: "settings.updateDeployField",
+      field,
+      value
+    });
   };
   const setMobField = (field, value) => {
-    const next = window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, field, value, { contract });
-    if (applyAuthoringIntent) {
-      applyAuthoringIntent({
-        intent: "settings.updateMobField",
-        field,
-        value
-      });
-    } else {
-      setMobSettings(next);
-    }
+    if (!applyAuthoringIntent) return;
+    applyAuthoringIntent({
+      intent: "settings.updateMobField",
+      field,
+      value
+    });
   };
   const editRoleWiring = (operation) => {
-    if (applyAuthoringIntent) {
-      applyAuthoringIntent({
-        intent: "settings.editRoleWiring",
-        ...operation
-      });
-      return;
-    }
-    const current = mobSettings.roleWiring || [];
-    let next = current;
-    if (operation.action === "add") {
-      next = window.MobKitFlowController.mobRoleWiringAddPatch(current, controlState.profileChoices);
-    } else if (operation.action === "delete") {
-      next = window.MobKitFlowController.mobRoleWiringDeletePatch(current, operation.index);
-    } else if (operation.action === "set_source") {
-      next = window.MobKitFlowController.mobRoleWiringSourcePatch(current, operation.index, operation.value, controlState.profileChoices);
-    } else if (operation.action === "set_target") {
-      next = window.MobKitFlowController.mobRoleWiringTargetPatch(current, operation.index, operation.value, controlState.profileChoices);
-    }
-    setMobSettings(window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, "roleWiring", next, { contract }));
+    if (!applyAuthoringIntent) return;
+    applyAuthoringIntent({
+      intent: "settings.editRoleWiring",
+      ...operation
+    });
   };
   const controlState = window.MobKitFlowController.tweaksControlState({
     flows,

@@ -929,8 +929,7 @@ function SkillAccess({ studio, member, agentAccessView = null, applyAgentIntent 
       if (studio.snap) studio.snap();
       const result = await applyAgentIntent({ memberId: member.id, ...intentRequest });
       if (!result?.ok) {
-        const validationError = result?.validation?.display_rows?.length ? result.validation.display_rows[0].head : "";
-        setInlineError(validationError || result?.error || fallback);
+        setInlineError(window.MobKitFlowController.operationErrorText(result, fallback));
         return null;
       }
       setInlineError("");
