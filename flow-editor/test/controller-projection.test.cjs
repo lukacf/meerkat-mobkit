@@ -6531,11 +6531,22 @@ assert.deepEqual(controller.validationSheetState([
   deployLabel: "DEPLOY",
   closeLabel: "×",
   actionsDisabled: true,
+  publishDisabled: true,
+  deployPlanDisabled: true,
+  deployRunDisabled: true,
 });
 assert.equal(controller.validationSheetState([{ kind: "ok" }, { kind: "warn" }], { deployView: TEST_DEPLOY_VIEW }).actionsDisabled, false);
 assert.equal(controller.validationSheetState([{ kind: "ok" }], { stage: "draft", deployView: TEST_DEPLOY_VIEW }).actionsDisabled, true);
 assert.equal(controller.validationSheetState([{ kind: "ok" }], { stage: "valid", deployView: TEST_DEPLOY_VIEW }).actionsDisabled, false);
 assert.equal(controller.validationSheetState([{ kind: "crit" }], { stage: "valid", deployView: TEST_DEPLOY_VIEW }).actionsDisabled, true);
+const validationSheetHostDeployBlocked = controller.validationSheetState([{ kind: "ok" }], {
+  stage: "valid",
+  deployView: TEST_DEPLOY_VIEW,
+  capabilities: { authoring_capabilities: { deploy_execute_allowed: false } },
+});
+assert.equal(validationSheetHostDeployBlocked.publishDisabled, false);
+assert.equal(validationSheetHostDeployBlocked.deployPlanDisabled, false);
+assert.equal(validationSheetHostDeployBlocked.deployRunDisabled, true);
 
 assert.deepEqual(controller.sourceErrorOutcome(new Error("missing toml"), { errorView: hydratedCatalogs.errorView }).validationRows[0], {
   kind: "crit",

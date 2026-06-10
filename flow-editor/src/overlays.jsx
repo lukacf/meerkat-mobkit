@@ -64,9 +64,9 @@ function DeployPlanTrace({ open, onClose, onActiveStep, runKey, document, plan, 
   );
 }
 
-function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, results, stage, deployView = null }) {
+function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, results, stage, deployView = null, capabilities = null }) {
   if (!open) return null;
-  const sheetState = window.MobKitFlowController.validationSheetState(results, { stage, deployView });
+  const sheetState = window.MobKitFlowController.validationSheetState(results, { stage, deployView, capabilities });
   return (
     <div className="validate">
       <div className="validate__head">
@@ -75,9 +75,9 @@ function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, re
           <div className="inspector__title">{sheetState.title}</div>
         </div>
         <div className="row">
-          <button className="btn btn--primary btn--sm" onClick={onPublish} disabled={sheetState.actionsDisabled}>{sheetState.publishLabel}</button>
-          <button className="btn btn--ghost btn--sm" onClick={onDeployPlan} disabled={sheetState.actionsDisabled}>{sheetState.deployPlanLabel}</button>
-          <button className="btn btn--primary btn--sm" onClick={onDeployRun} disabled={sheetState.actionsDisabled}>{sheetState.deployLabel}</button>
+          <button className="btn btn--primary btn--sm" onClick={onPublish} disabled={sheetState.publishDisabled}>{sheetState.publishLabel}</button>
+          <button className="btn btn--ghost btn--sm" onClick={onDeployPlan} disabled={sheetState.deployPlanDisabled}>{sheetState.deployPlanLabel}</button>
+          <button className="btn btn--primary btn--sm" onClick={onDeployRun} disabled={sheetState.deployRunDisabled}>{sheetState.deployLabel}</button>
           <button className="btn btn--ghost btn--sm" onClick={onClose}>{sheetState.closeLabel}</button>
         </div>
       </div>

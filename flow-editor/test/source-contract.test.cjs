@@ -27,6 +27,8 @@ const flowEditorBinRust = fs.readFileSync(path.join(root, "..", "meerkat-mobkit"
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const controllerProjectionTest = testSrc("controller-projection.test.cjs");
 const liveRkatE2eTest = testSrc("live-rkat-e2e.cjs");
+const browserInteractionsSmoke = testSrc("browser-interactions-smoke.cjs");
+const browserSourceSmoke = testSrc("browser-source-smoke.cjs");
 const builderCondValueBlock = (builder.match(/function CondValue[\s\S]*?function InputParamField/) || [""])[0];
 const builderEnumValueChipBlock = (builder.match(/function InputEnumValueChip[\s\S]*?function InputParamField/) || [""])[0];
 const memberBlockStart = builder.lastIndexOf("// member step");
@@ -92,6 +94,9 @@ assert.equal(packageJson.scripts?.["test:visual-contract"], "node test/handoff-v
 assert.equal(packageJson.scripts?.["test:browser-interactions"], "node test/browser-interactions-smoke.cjs", "package scripts must expose rendered Graph and Agent interaction coverage");
 assert.match(makefile, /test-flow-editor:[\s\S]*mobkit_flow_editor[\s\S]*test:browser-source[\s\S]*test:browser-interactions/, "make test-flow-editor must build the embedded host and run rendered browser coverage");
 assert.match(ciWorkflow, /test:browser-source --silent[\s\S]*test:browser-interactions --silent/, "Flow Editor CI must run both source and interaction browser smokes");
+assert.match(browserInteractionsSmoke, /\.port-out[\s\S]*document\.querySelectorAll\("\.edge"\)\.length > count/, "browser interaction smoke must cover rendered graph port-to-edge creation");
+assert.match(browserSourceSmoke, /definition\.json[\s\S]*browser_source_agent[\s\S]*image_generation[\s\S]*mob\.browser\.source/, "browser source smoke must prove edited real agent/tool/skill data reaches definition.json source");
+assert.match(browserSourceSmoke, /mobkit\/mob\.toml[\s\S]*image_generation[\s\S]*mob\.browser\.source[\s\S]*Use this skill to prove edited agent source rendering\./, "browser source smoke must prove edited real tool and inline skill data reaches rendered MobKit mob.toml source");
 
 assert(!/\bconst\s+PRESETS\b/.test(builder), "builder must not expose local preset flows");
 assert(!/window\.PRESETS\b/.test(builder), "builder must not export local preset flows");
@@ -1171,13 +1176,14 @@ assert.match(controller, /function deployOutcome[\s\S]*result\?\.executed === tr
 assert.match(controller, /function deployErrorOutcome/, "controller plane must own deploy error diagnostic rows");
 assert.match(controller, /function sourceErrorOutcome/, "controller plane must own source export error diagnostic rows");
 assert.match(controller, /function validationSheetState/, "controller plane must own validation sheet severity counts and action enablement");
-assert.match(app, /<ValidateSheet[\s\S]*results=\{validationResults\}[\s\S]*stage=\{stage\}/, "validation sheet deploy actions must be gated by the authoritative authoring stage");
-assert.match(src("overlays.jsx"), /MobKitFlowController\.validationSheetState\(results, \{ stage, deployView \}\)/, "validation sheet must render controller-projected MobKit display row, stage, and view state");
-assert.match(controller, /function validationSheetState\(results, options = \{\}\)[\s\S]*stage !== "valid"[\s\S]*actionsDisabled: counts\.crit > 0 \|\| stageBlocksActions/, "controller plane must disable publish/deploy sheet actions unless validation stage is valid");
+assert.match(app, /<ValidateSheet[\s\S]*results=\{validationResults\}[\s\S]*stage=\{stage\}[\s\S]*capabilities=\{capabilities\}/, "validation sheet deploy actions must be gated by the authoritative authoring stage and MobKit host capabilities");
+assert.match(src("overlays.jsx"), /MobKitFlowController\.validationSheetState\(results, \{ stage, deployView, capabilities \}\)/, "validation sheet must render controller-projected MobKit display row, stage, view, and capability state");
+assert.match(controller, /function validationSheetState\(results, options = \{\}\)[\s\S]*stage !== "valid"[\s\S]*deployExecuteAllowed = options\.capabilities\?\.authoring_capabilities\?\.deploy_execute_allowed !== false[\s\S]*deployRunDisabled: actionsDisabled \|\| !deployExecuteAllowed/, "controller plane must disable publish/deploy sheet actions unless validation stage is valid and must separately gate host deploy execution through capabilities");
 assert.match(src("overlays.jsx"), /sheetState\.eyebrow/, "validation sheet header must render through controller state");
 assert.match(src("overlays.jsx"), /sheetState\.publishLabel/, "validation sheet publish action label must render through controller state");
 assert.match(src("overlays.jsx"), /sheetState\.deployPlanLabel/, "validation sheet deploy-plan action label must render through controller state");
 assert.match(src("overlays.jsx"), /sheetState\.deployLabel/, "validation sheet deploy action label must render through controller state");
+assert.match(src("overlays.jsx"), /disabled=\{sheetState\.deployRunDisabled\}/, "validation sheet deploy-run button must use controller-projected host execution gating");
 assert(!/results\.filter\(r => r\.kind ===|critCount > 0|okCount|warnCount|critCount/.test(src("overlays.jsx")), "validation sheet must not count MobKit validation severities in JSX");
 assert(!/>DEPLOY PLAN<|>VALIDATE · MobKit<|>PUBLISH<|>DEPLOY<|>SOURCE · mob\.toml<|>mob\.toml<|>copy<|>first<|>×<|>‹<|>›<|step \{idx \+ 1\}/.test(src("overlays.jsx")), "overlay headers, action labels, and progress labels must not be composed locally");
 assert.match(controller, /function validationErrorOutcome/, "controller plane must own validation API error diagnostic rows");

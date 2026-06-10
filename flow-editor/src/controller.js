@@ -9982,6 +9982,8 @@
     }, { ok: 0, warn: 0, crit: 0 });
     const stage = String(options.stage || "").trim();
     const stageBlocksActions = !!stage && stage !== "valid";
+    const actionsDisabled = counts.crit > 0 || stageBlocksActions;
+    const deployExecuteAllowed = options.capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
     return {
       rows,
       counts,
@@ -9991,7 +9993,10 @@
       deployPlanLabel: view.deployPlanLabel,
       deployLabel: view.deployLabel,
       closeLabel: view.closeLabel,
-      actionsDisabled: counts.crit > 0 || stageBlocksActions,
+      actionsDisabled,
+      publishDisabled: actionsDisabled,
+      deployPlanDisabled: actionsDisabled,
+      deployRunDisabled: actionsDisabled || !deployExecuteAllowed,
     };
   }
 

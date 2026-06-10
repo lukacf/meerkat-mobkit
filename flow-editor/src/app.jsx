@@ -1253,7 +1253,7 @@ function App() {
       )}
 
       <DeployPlanTrace open={deployPlanOpen} onClose={() => applyApiOverlayPatch(window.MobKitFlowController.deployPlanTraceCloseTransition())} onActiveStep={setActiveStepId} runKey={deployPlanKey} document={deployPlanDocument} plan={deployPlanResult} deployView={catalogs.deployView} />
-      <ValidateSheet open={validate} onClose={() => applyApiOverlayPatch(window.MobKitFlowController.validationSheetCloseTransition())} onPublish={handlePublish} onDeployPlan={handleDeployPlan} onDeployRun={handleDeployRun} results={validationResults} stage={stage} deployView={catalogs.deployView} />
+      <ValidateSheet open={validate} onClose={() => applyApiOverlayPatch(window.MobKitFlowController.validationSheetCloseTransition())} onPublish={handlePublish} onDeployPlan={handleDeployPlan} onDeployRun={handleDeployRun} results={validationResults} stage={stage} deployView={catalogs.deployView} capabilities={capabilities} />
       <SourceDrawer open={sourceOpen} onClose={clearSourceProjection} state={sourceDocument} sourceView={catalogs.sourceView} />
       <Tweaks
         t={t}

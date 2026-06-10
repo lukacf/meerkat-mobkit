@@ -10015,6 +10015,8 @@ window.MOBKIT_BOOT = {
     }, { ok: 0, warn: 0, crit: 0 });
     const stage = String(options.stage || "").trim();
     const stageBlocksActions = !!stage && stage !== "valid";
+    const actionsDisabled = counts.crit > 0 || stageBlocksActions;
+    const deployExecuteAllowed = options.capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
     return {
       rows,
       counts,
@@ -10024,7 +10026,10 @@ window.MOBKIT_BOOT = {
       deployPlanLabel: view.deployPlanLabel,
       deployLabel: view.deployLabel,
       closeLabel: view.closeLabel,
-      actionsDisabled: counts.crit > 0 || stageBlocksActions,
+      actionsDisabled,
+      publishDisabled: actionsDisabled,
+      deployPlanDisabled: actionsDisabled,
+      deployRunDisabled: actionsDisabled || !deployExecuteAllowed,
     };
   }
 
@@ -12895,10 +12900,10 @@ function DeployPlanTrace({ open, onClose, onActiveStep, runKey, document, plan, 
     /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "head" }, s.head), /* @__PURE__ */ React.createElement("div", { className: "body" }, s.body))
   ))), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__foot" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { width: "100%" } }, /* @__PURE__ */ React.createElement("span", { className: "muted" }, traceState.packLabel ? `${traceState.packLabel} \xB7 ` : "", traceState.stepLabel, " ", idx + 1, " / ", traceState.steps.length), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.max(0, i - 1)) }, traceState.previousLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.min(traceState.steps.length - 1, i + 1)) }, traceState.nextLabel)))));
 }
-function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, results, stage, deployView = null }) {
+function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, results, stage, deployView = null, capabilities = null }) {
   if (!open) return null;
-  const sheetState = window.MobKitFlowController.validationSheetState(results, { stage, deployView });
-  return /* @__PURE__ */ React.createElement("div", { className: "validate" }, /* @__PURE__ */ React.createElement("div", { className: "validate__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, sheetState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, sheetState.title)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onPublish, disabled: sheetState.actionsDisabled }, sheetState.publishLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onDeployPlan, disabled: sheetState.actionsDisabled }, sheetState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onDeployRun, disabled: sheetState.actionsDisabled }, sheetState.deployLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, sheetState.closeLabel))), /* @__PURE__ */ React.createElement("div", { className: "validate__body" }, sheetState.rows.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "validate__row is-" + r.kind }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }, r.glyph), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "head" }, r.head), /* @__PURE__ */ React.createElement("div", { className: "sub" }, r.sub)), /* @__PURE__ */ React.createElement("span", { className: "meta" }, r.meta)))));
+  const sheetState = window.MobKitFlowController.validationSheetState(results, { stage, deployView, capabilities });
+  return /* @__PURE__ */ React.createElement("div", { className: "validate" }, /* @__PURE__ */ React.createElement("div", { className: "validate__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, sheetState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, sheetState.title)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onPublish, disabled: sheetState.publishDisabled }, sheetState.publishLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onDeployPlan, disabled: sheetState.deployPlanDisabled }, sheetState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onDeployRun, disabled: sheetState.deployRunDisabled }, sheetState.deployLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, sheetState.closeLabel))), /* @__PURE__ */ React.createElement("div", { className: "validate__body" }, sheetState.rows.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "validate__row is-" + r.kind }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }, r.glyph), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "head" }, r.head), /* @__PURE__ */ React.createElement("div", { className: "sub" }, r.sub)), /* @__PURE__ */ React.createElement("span", { className: "meta" }, r.meta)))));
 }
 function SourceCodePanel({ state, busy = false, compact = false, sourceView = null, sourcePath = "" }) {
   const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact, sourceView, sourcePath });
@@ -15284,7 +15289,7 @@ function App() {
         }
       }
     }
-  ), /* @__PURE__ */ React.createElement(DeployPlanTrace, { open: deployPlanOpen, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.deployPlanTraceCloseTransition()), onActiveStep: setActiveStepId, runKey: deployPlanKey, document: deployPlanDocument, plan: deployPlanResult, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(ValidateSheet, { open: validate, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.validationSheetCloseTransition()), onPublish: handlePublish, onDeployPlan: handleDeployPlan, onDeployRun: handleDeployRun, results: validationResults, stage, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(SourceDrawer, { open: sourceOpen, onClose: clearSourceProjection, state: sourceDocument, sourceView: catalogs.sourceView }), /* @__PURE__ */ React.createElement(
+  ), /* @__PURE__ */ React.createElement(DeployPlanTrace, { open: deployPlanOpen, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.deployPlanTraceCloseTransition()), onActiveStep: setActiveStepId, runKey: deployPlanKey, document: deployPlanDocument, plan: deployPlanResult, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(ValidateSheet, { open: validate, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.validationSheetCloseTransition()), onPublish: handlePublish, onDeployPlan: handleDeployPlan, onDeployRun: handleDeployRun, results: validationResults, stage, deployView: catalogs.deployView, capabilities }), /* @__PURE__ */ React.createElement(SourceDrawer, { open: sourceOpen, onClose: clearSourceProjection, state: sourceDocument, sourceView: catalogs.sourceView }), /* @__PURE__ */ React.createElement(
     Tweaks,
     {
       t,

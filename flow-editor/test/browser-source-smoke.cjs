@@ -45,6 +45,16 @@ function waitForReady(url, child) {
   });
 }
 
+async function chooseFirstRealAgentDefinition(page) {
+  const addDefinition = page.locator(".agents-list__scroll select").first();
+  const value = await addDefinition.locator("option").evaluateAll((options) => {
+    const option = options.find((candidate) => candidate.value && !candidate.disabled);
+    return option?.value || "";
+  });
+  if (!value) throw new Error("Agent Editor did not expose any real MobKit agent definitions");
+  await addDefinition.selectOption(value);
+}
+
 async function main() {
   let server = null;
   let draftDir = null;
@@ -137,6 +147,71 @@ async function main() {
     }
     await graphInlineEditor.locator(".bld-toml__head .btn--ghost").click();
     await graphInlineEditor.waitFor({ state: "hidden", timeout: 10_000 });
+
+    await page.locator("button.viewtab", { hasText: "AGENTS" }).click();
+    await page.locator(".agents-view").waitFor({ state: "visible", timeout: 10_000 });
+    const agentCountBefore = await page.locator(".agents-list__name").count();
+    await chooseFirstRealAgentDefinition(page);
+    await page.waitForFunction(
+      (count) => document.querySelectorAll(".agents-list__name").length > count,
+      agentCountBefore,
+      { timeout: 10_000 },
+    );
+    await page.locator(".agents-list__scroll").first().locator(".agents-list__item").last().click();
+    const titleInput = page.locator(".agent-editor__title-input");
+    await titleInput.fill("Browser Source Agent");
+    await page.waitForTimeout(1_000);
+    const toolSelect = page.locator("select").filter({ has: page.locator('option[value="image_generation"]') }).first();
+    await toolSelect.selectOption("image_generation");
+    await page.waitForFunction(() => {
+      return Array.from(document.querySelectorAll(".tool-row .name")).some((row) => row.textContent.trim() === "image_generation");
+    }, null, { timeout: 10_000 });
+    await page.getByRole("button", { name: /INLINE/i }).click();
+    await page.locator(".inline-skill input").fill("browser source");
+    await page.locator(".inline-skill textarea").fill("Use this skill to prove edited agent source rendering.");
+    await page.locator(".inline-skill .btn", { hasText: "ADD" }).click();
+    await page.waitForFunction(() => {
+      return Array.from(document.querySelectorAll(".skill-row__name")).some((row) => row.textContent.trim() === "mob.browser.source");
+    }, null, { timeout: 10_000 });
+
+    await page.locator("button.viewtab", { hasText: "FLOWS" }).click();
+    await page.locator("button.modetoggle__opt", { hasText: "Basic" }).click();
+    await page.locator(".bld-toml-toggle").click();
+    const editedSource = page.locator(".bld-toml:visible");
+    await editedSource.waitFor({ state: "visible", timeout: 10_000 });
+    const editedSourceBox = editedSource.locator('[role="textbox"][aria-readonly="true"]');
+    await editedSourceBox.waitFor({ timeout: 10_000 });
+    await editedSource.locator(".source-file-row", { hasText: "definition.json" }).waitFor({ state: "visible", timeout: 10_000 });
+    await editedSource.locator(".source-file-row", { hasText: "definition.json" }).click();
+    await page.waitForFunction(() => {
+      const visiblePanel = Array.from(document.querySelectorAll(".bld-toml")).find((panel) => getComputedStyle(panel).display !== "none");
+      const source = visiblePanel?.querySelector('[role="textbox"][aria-readonly="true"]');
+      return source?.innerText.includes("browser_source_agent")
+        && source?.innerText.includes("image_generation")
+        && source?.innerText.includes("mob.browser.source");
+    }, null, { timeout: 10_000 });
+    const editedDefinitionJson = await editedSourceBox.innerText();
+    for (const required of ["browser_source_agent", "image_generation", "mob.browser.source"]) {
+      if (!editedDefinitionJson.includes(required)) {
+        throw new Error(`edited definition.json source did not include ${required}: ${editedDefinitionJson.slice(0, 600)}`);
+      }
+    }
+    await editedSource.locator(".source-file-row", { hasText: "mobkit/mob.toml" }).click();
+    await page.waitForFunction(() => {
+      const visiblePanel = Array.from(document.querySelectorAll(".bld-toml")).find((panel) => getComputedStyle(panel).display !== "none");
+      const source = visiblePanel?.querySelector('[role="textbox"][aria-readonly="true"]');
+      return source?.innerText.includes("image_generation")
+        && source?.innerText.includes("mob.browser.source")
+        && source?.innerText.includes("Use this skill to prove edited agent source rendering.");
+    }, null, { timeout: 10_000 });
+    const editedMobToml = await editedSourceBox.innerText();
+    for (const required of ["image_generation", "mob.browser.source", "Use this skill to prove edited agent source rendering."]) {
+      if (!editedMobToml.includes(required)) {
+        throw new Error(`edited mob.toml source did not include ${required}: ${editedMobToml.slice(0, 600)}`);
+      }
+    }
+    await editedSource.locator(".bld-toml__head .btn--ghost").click();
+    await editedSource.waitFor({ state: "hidden", timeout: 10_000 });
 
     await page.locator("button.modetoggle__opt", { hasText: "Basic" }).click();
     await page.setViewportSize({ width: 390, height: 820 });
