@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 
-global.window = {};
+global.window = { __MOBKIT_FLOW_CONTROLLER_TEST__: true };
 
 require("../src/controller.js");
 

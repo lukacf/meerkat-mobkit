@@ -11270,16 +11270,13 @@
     return JSON.parse(JSON.stringify(value));
   }
 
-  window.MobKitFlowController = {
+  const MobKitFlowController = {
     SCHEMA_VERSION,
     RPC_METHODS,
     configure,
     authoringOperationsFromSchema,
     authoringOperationAvailability,
     operationErrorText,
-    buildDocument,
-    authoringFlowForDocument,
-    authoringDocumentFromState,
     authoringProjectionApplyPlan,
     flowDraftIdFromSpec,
     newFlowTemplateOptions,
@@ -11651,4 +11648,14 @@
     agentDeleteConfirmationState,
     memberBudgetAffordanceState,
   };
+
+  if (window.__MOBKIT_FLOW_CONTROLLER_TEST__) {
+    Object.assign(MobKitFlowController, {
+      buildDocument,
+      authoringFlowForDocument,
+      authoringDocumentFromState,
+    });
+  }
+
+  window.MobKitFlowController = MobKitFlowController;
 })();

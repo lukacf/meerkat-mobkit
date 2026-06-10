@@ -6,7 +6,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
-global.window = {};
+global.window = { __MOBKIT_FLOW_CONTROLLER_TEST__: true };
 global.document = { querySelector: () => null };
 global.Blob = class Blob {};
 global.URL.createObjectURL = global.URL.createObjectURL || (() => "blob:mobkit-live-test");
