@@ -16,7 +16,12 @@ require("../src/controller.js");
 const rpcUrl = process.env.MOBKIT_FLOW_EDITOR_RPC_URL || "http://127.0.0.1:4191/flow-editor/rpc";
 const sampleId = process.env.MOBKIT_FLOW_EDITOR_SAMPLE_ID || "sample_docs_only";
 const runDeploy = process.argv.includes("--deploy") || process.env.MOBKIT_FLOW_EDITOR_RUN_DEPLOY === "1";
-const expectHostDeploy = process.env.MOBKIT_FLOW_EDITOR_EXPECT_HOST_DEPLOY === "1";
+const hostDeployExpectation = process.env.MOBKIT_FLOW_EDITOR_EXPECT_HOST_DEPLOY;
+if (hostDeployExpectation && !["0", "1"].includes(hostDeployExpectation)) {
+  throw new Error("MOBKIT_FLOW_EDITOR_EXPECT_HOST_DEPLOY must be 0 or 1 when set");
+}
+const hasExplicitHostDeployExpectation = hostDeployExpectation === "0" || hostDeployExpectation === "1";
+const expectHostDeploy = hostDeployExpectation === "1";
 const controller = global.window.MobKitFlowController;
 let contractSchema = null;
 const testDeploySettings = () => controller.deployDefaultsFromSchema(contractSchema);
@@ -80,11 +85,15 @@ async function assertAuthoringCapabilities() {
   if (authoring.host_mutation_methods?.["mobkit/mobpacks/deploy"] !== "when execute=true, writes a mobpack archive and runs rkat mob deploy on the host") {
     throw new Error(`flow editor capabilities must disclose deploy host mutation: ${JSON.stringify(authoring)}`);
   }
-  if (authoring.host_mutation_allowed !== expectHostDeploy || authoring.deploy_execute_allowed !== expectHostDeploy) {
+  if (authoring.host_mutation_allowed !== authoring.deploy_execute_allowed) {
+    throw new Error(`flow editor host deploy capability flags disagree: ${JSON.stringify(authoring)}`);
+  }
+  const hostDeployAvailable = authoring.host_mutation_allowed === true;
+  if (hasExplicitHostDeployExpectation && hostDeployAvailable !== expectHostDeploy) {
     const mode = expectHostDeploy ? "host deploy opt-in" : "safe standalone";
     throw new Error(`${mode} flow editor exposed wrong host deploy capability: ${JSON.stringify(authoring)}`);
   }
-  const expectedAuthMode = expectHostDeploy ? "standalone_host_deploy" : "none";
+  const expectedAuthMode = hostDeployAvailable ? "standalone_host_deploy" : "none";
   if (capabilities.authenticated !== false || capabilities.auth?.mode !== expectedAuthMode) {
     throw new Error(`standalone flow editor must not claim authenticated runtime access: ${JSON.stringify(capabilities)}`);
   }
@@ -141,6 +150,7 @@ async function assertAuthoringCapabilities() {
   return {
     domain: authoring.domain,
     deployCommand: authoring.deploy_command,
+    hostDeployAvailable,
     methods: authoring.methods,
     operations: operations.map((operation) => operation.type).filter(Boolean),
   };
@@ -2322,7 +2332,7 @@ async function validateFlowStepOperations(catalogs) {
   };
 
   if (runDeploy) {
-    if (expectHostDeploy) {
+    if (authoringCapabilities.hostDeployAvailable) {
       result.hostDeployRpc = await validateHostDeployRpc(sample.document, dir);
     }
     result.deploy = run("rkat", [
