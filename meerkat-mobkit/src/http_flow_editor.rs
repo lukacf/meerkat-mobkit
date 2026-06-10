@@ -49,6 +49,7 @@ where
     S: Clone + Send + Sync + 'static,
 {
     Router::new()
+        .route("/favicon.ico", get(|| async { StatusCode::NO_CONTENT }))
         .route("/flow-editor", get(flow_editor_frontend_index_handler))
         .route("/flow-editor/", get(flow_editor_frontend_index_handler))
         .route(
@@ -414,9 +415,26 @@ fn response_value(id: Value, result: Option<Value>, error: Option<JsonRpcError>)
 
 #[cfg(test)]
 mod tests {
+    use axum::{body::Body, http::Request};
     use serde_json::{Value, json};
+    use tower::ServiceExt;
 
     use crate::rpc::JsonRpcRequest;
+
+    #[tokio::test]
+    async fn flow_editor_frontend_serves_empty_favicon_response() {
+        let response = super::flow_editor_frontend_router::<()>()
+            .oneshot(
+                Request::builder()
+                    .uri("/favicon.ico")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("favicon response");
+
+        assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
+    }
 
     #[test]
     fn flow_editor_rpc_exposes_only_mobpack_authoring_methods() {
