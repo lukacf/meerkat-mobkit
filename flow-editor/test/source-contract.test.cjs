@@ -17,6 +17,8 @@ const controller = src("controller.js");
 const topRailBlock = (app.match(/function TopRail[\s\S]*?\/\/ ── Flows registry view/) || [""])[0];
 const tweaksPanel = src("tweaks-panel.jsx");
 const devServer = fs.readFileSync(path.join(root, "dev-server.cjs"), "utf8");
+const makefile = fs.readFileSync(path.join(root, "..", "Makefile"), "utf8");
+const ciWorkflow = fs.readFileSync(path.join(root, "..", ".github", "workflows", "ci.yml"), "utf8");
 const mobpackRust = fs.readFileSync(path.join(root, "..", "meerkat-mobkit", "src", "mobpack.rs"), "utf8");
 const flowEditorHttpRust = fs.readFileSync(path.join(root, "..", "meerkat-mobkit", "src", "http_flow_editor.rs"), "utf8");
 const rpcRust = fs.readFileSync(path.join(root, "..", "meerkat-mobkit", "src", "rpc.rs"), "utf8");
@@ -87,6 +89,9 @@ assert(!/TEMPLATE_META|template:\s*TEMPLATE_META|untitled-mob|mob\.toml/.test(da
 assert.match(app, /MobKitFlowController\.flowCatalogBootstrapState\(catalogPayload,/, "flow registry must hydrate saved MobKit rows and sample templates through the controller bootstrap projection");
 assert(!/STARTER_FLOWS/.test(app), "flow registry must not keep local seed-flow state");
 assert.equal(packageJson.scripts?.["test:visual-contract"], "node test/handoff-visual-contract.test.cjs", "package scripts must expose the handoff visual fidelity contract directly");
+assert.equal(packageJson.scripts?.["test:browser-interactions"], "node test/browser-interactions-smoke.cjs", "package scripts must expose rendered Graph and Agent interaction coverage");
+assert.match(makefile, /test-flow-editor:[\s\S]*mobkit_flow_editor[\s\S]*test:browser-source[\s\S]*test:browser-interactions/, "make test-flow-editor must build the embedded host and run rendered browser coverage");
+assert.match(ciWorkflow, /test:browser-source --silent[\s\S]*test:browser-interactions --silent/, "Flow Editor CI must run both source and interaction browser smokes");
 
 assert(!/\bconst\s+PRESETS\b/.test(builder), "builder must not expose local preset flows");
 assert(!/window\.PRESETS\b/.test(builder), "builder must not export local preset flows");

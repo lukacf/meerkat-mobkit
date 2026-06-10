@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 const http = require("node:http");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { chromium } = require("playwright");
@@ -45,9 +47,15 @@ function waitForReady(url, child) {
 
 async function main() {
   let server = null;
+  let draftDir = null;
   if (shouldSpawn) {
+    draftDir = fs.mkdtempSync(path.join(os.tmpdir(), "mobkit-flow-editor-source."));
     server = spawn(binary, ["--listen", addr], {
       cwd: repoRoot,
+      env: {
+        ...process.env,
+        MOBKIT_FLOW_EDITOR_DRAFT_STORE: path.join(draftDir, "drafts.json"),
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
     server.stdout.on("data", (chunk) => process.stdout.write(chunk));
@@ -65,7 +73,7 @@ async function main() {
   try {
     await waitForReady(`${baseUrl}/flow-editor`, server);
     await page.goto(`${baseUrl}/flow-editor?cache_bust=browser-source-smoke`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await page.getByText("api ready").waitFor({ timeout: 10_000 });
 

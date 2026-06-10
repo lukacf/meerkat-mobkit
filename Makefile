@@ -43,10 +43,13 @@ test-python: ## Run Python SDK tests
 	PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -q
 	@echo "$(GREEN)Python SDK tests passed.$(NC)"
 
-test-flow-editor: ## Run Flow Editor source, projection, visual, and embedded freshness contracts
+test-flow-editor: ## Run Flow Editor source, projection, visual, browser, and embedded freshness contracts
 	@echo "$(YELLOW)Running Flow Editor tests…$(NC)"
+	CARGO_INCREMENTAL=0 $(CARGO) build -p meerkat-mobkit --bin mobkit_flow_editor
 	npm --prefix flow-editor run test:controller --silent
 	npm --prefix flow-editor run test:visual-contract --silent
+	npm --prefix flow-editor run test:browser-source --silent
+	npm --prefix flow-editor run test:browser-interactions --silent
 	@echo "$(GREEN)Flow Editor tests passed.$(NC)"
 
 test-flow-editor-rkat: ## Run live Flow Editor export/import checks against rkat mob inspect/validate

@@ -91,6 +91,7 @@ jobs:
       - run: npm --prefix flow-editor run test:controller --silent
       - run: npm --prefix flow-editor run test:visual-contract --silent
       - run: npm --prefix flow-editor run test:browser-source --silent
+      - run: npm --prefix flow-editor run test:browser-interactions --silent
 
   audit:
     name: audit

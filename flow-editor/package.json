@@ -10,6 +10,7 @@
     "test:handoff-contract": "node test/handoff-visual-contract.test.cjs",
     "test:visual-contract": "node test/handoff-visual-contract.test.cjs",
     "test:browser-source": "node test/browser-source-smoke.cjs",
+    "test:browser-interactions": "node test/browser-interactions-smoke.cjs",
     "test:rkat-e2e": "node test/live-rkat-e2e.cjs",
     "test:rkat-deploy-e2e": "node test/live-rkat-e2e.cjs --deploy",
     "dev": "node dev-server.cjs"
