@@ -74,10 +74,36 @@ function allowedCssDelta(sign, line) {
     /deploy-plan-in/,
     /deploy-plan/,
     /max-width: 980px/,
+    /max-width: 760px/,
     /grid-template-columns: auto auto minmax/,
+    /grid-template-columns: auto auto minmax\(0, 1fr\) auto/,
+    /grid-template-rows: minmax\(320px, 1fr\) minmax\(260px, 42vh\)/,
     /\.bld-opt:disabled/,
     /cursor: not-allowed/,
     /opacity: 1/,
+    /padding: 0 8px/,
+    /font-size: 0/,
+    /gap: 0/,
+    /max-width: 52px/,
+    /left: 12px/,
+    /right: 12px/,
+    /bottom: 12px/,
+    /top: 56px/,
+    /width: auto/,
+    /width: min\(100%, calc\(100vw - 24px\)\)/,
+    /max-height: calc\(100vh - 72px\)/,
+    /transform: none/,
+    /align-items: flex-start/,
+    /padding: 12px 14px/,
+    /flex-wrap: wrap/,
+    /justify-content: flex-end/,
+    /padding: 8px 14px 14px/,
+    /grid-template-columns: 16px minmax\(0, 1fr\)/,
+    /grid-column: 2/,
+    /overflow-wrap: anywhere/,
+    /min-height: 320px/,
+    /border-left: 0/,
+    /border-top: 1px solid var\(--hair\)/,
     /\.(?:library__bullet|agents-list__bullet|add-menu__dot)\[data-role="(?:planner|coder|reviewer|critic|judge|publisher|illustrator|shell|schema)"\]/,
     /--role-color/,
     /agents-list__bullet/,
@@ -129,7 +155,7 @@ const unexpected = styleDiff.filter((line) => {
     if (line.includes("}")) allowedAddedBlock = false;
     return false;
   }
-  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|button\.node|a\.node|\.source-file-adornment|\.node--source-file|\.source-file__|\.source-file-list|\.source-file-row|\.bld-toml--graph|\.agent-editor__confirm|\.agent-runtime|\.actions-menu|\.mob-status|\.toprail)/.test(line)) {
+  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|button\.node|a\.node|\.source-file-adornment|\.node--source-file|\.source-file__|\.source-file-list|\.source-file-row|\.bld-toml--graph|\.agent-editor__confirm|\.agent-runtime|\.actions-menu|\.mob-status|\.toprail|\.brand|\.viewtabs|\.actions|\.stage|\.btn--sm|\.theme-toggle|\.deploy-plan|\.source-drawer|\.validate|\.builder|\.bld-stage|\.bld-panel)/.test(line)) {
     if (!line.includes("}")) allowedAddedBlock = true;
     return false;
   }

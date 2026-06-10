@@ -130,6 +130,66 @@ async function main() {
     await graphInlineEditor.locator(".bld-toml__head .btn--ghost").click();
     await graphInlineEditor.waitFor({ state: "hidden", timeout: 10_000 });
 
+    await page.locator("button.modetoggle__opt", { hasText: "Basic" }).click();
+    await page.setViewportSize({ width: 390, height: 820 });
+    await page.waitForTimeout(100);
+    const mobileLayout = await page.evaluate(() => {
+      const rectInfo = (selector) => {
+        const el = document.querySelector(selector);
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+          width: rect.width,
+          height: rect.height,
+          scrollWidth: el.scrollWidth,
+          clientWidth: el.clientWidth,
+        };
+      };
+      return {
+        windowWidth: window.innerWidth,
+        documentWidth: document.documentElement.scrollWidth,
+        toprail: rectInfo(".toprail"),
+        actions: rectInfo(".actions"),
+        stage: rectInfo(".bld-stage"),
+      };
+    });
+    if (mobileLayout.documentWidth > mobileLayout.windowWidth) {
+      throw new Error(`mobile page must not overflow horizontally: ${JSON.stringify(mobileLayout)}`);
+    }
+    if (mobileLayout.toprail.scrollWidth > mobileLayout.windowWidth) {
+      throw new Error(`mobile toprail must fit viewport: ${JSON.stringify(mobileLayout)}`);
+    }
+    if (!mobileLayout.stage || mobileLayout.stage.width < 240) {
+      throw new Error(`mobile Basic editor stage collapsed: ${JSON.stringify(mobileLayout)}`);
+    }
+
+    await page.locator(".toprail .btn", { hasText: "VALIDATE" }).click();
+    await page.locator(".validate").waitFor({ state: "visible", timeout: 10_000 });
+    const validateRect = await page.locator(".validate").evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width };
+    });
+    if (validateRect.left < -0.5 || validateRect.right > 390.5 || validateRect.width <= 0) {
+      throw new Error(`mobile validate sheet must stay inside viewport: ${JSON.stringify(validateRect)}`);
+    }
+    await page.locator(".validate__head .btn").last().click();
+    await page.locator(".validate").waitFor({ state: "hidden", timeout: 10_000 });
+
+    await page.locator(".actions-menu__summary").click();
+    await page.locator(".actions-menu__item", { hasText: "PLAN TRACE" }).click();
+    await page.locator(".deploy-plan").waitFor({ state: "visible", timeout: 10_000 });
+    const deployPlanRect = await page.locator(".deploy-plan").evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width };
+    });
+    if (deployPlanRect.left < -0.5 || deployPlanRect.right > 390.5 || deployPlanRect.width <= 0) {
+      throw new Error(`mobile deploy plan must stay inside viewport: ${JSON.stringify(deployPlanRect)}`);
+    }
+
     await page.locator("button.viewtab", { hasText: "AGENTS" }).click();
     const runtimeDetails = page.locator("details.agent-runtime").first();
     await runtimeDetails.waitFor({ state: "visible", timeout: 10_000 });
