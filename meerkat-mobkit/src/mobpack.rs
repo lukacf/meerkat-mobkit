@@ -1534,7 +1534,71 @@ pub fn mobpack_authoring_operations() -> Value {
     ])
 }
 
+fn deploy_target_string_array(provider: &Value, key: &str, fallback: &[&str]) -> Vec<String> {
+    provider
+        .get("deploy_target")
+        .and_then(|target| target.get(key))
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::trim))
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
+        .unwrap_or_else(|| fallback.iter().map(|value| value.to_string()).collect())
+}
+
+fn deploy_settings_schema_for_provider(provider: &Value) -> Value {
+    let command = provider
+        .get("deploy_target")
+        .and_then(|target| target.get("command"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("rkat mob deploy");
+    let surfaces = deploy_target_string_array(provider, "surface", &["cli", "rpc"]);
+    let realm_backends =
+        deploy_target_string_array(provider, "realm_backend", &["jsonl", "sqlite"]);
+    let runtime_backed = authoring_provider_is_runtime_backed(provider);
+    json!({
+        "command": command,
+        "defaults": {
+            "surface": surfaces.first().cloned().unwrap_or_else(|| "cli".to_string()),
+            "trust_policy": "permissive",
+            "model": "",
+            "max_duration": "30s",
+            "max_tool_calls": 0,
+            "max_total_tokens": 64,
+            "isolated": true,
+            "realm": "",
+            "instance": "",
+            "realm_backend": realm_backends.first().cloned().unwrap_or_else(|| "jsonl".to_string()),
+            "context_root": "",
+            "state_root": "",
+            "user_config_root": "",
+            "prompt": "Reply with exactly OK."
+        },
+        "surfaces": surfaces,
+        "trust_policies": ["permissive", "strict"],
+        "realm_backends": realm_backends,
+        "runtime_backed": runtime_backed,
+        "provenance": catalog_provenance(
+            "mobkit/mobpacks/schema",
+            if runtime_backed { "UnifiedRuntime.authoring_provider.deploy_target" } else { "mobkit/standalone_authoring_defaults" },
+            "deploy_settings"
+        ),
+    })
+}
+
 pub fn mobpack_schema_response() -> Value {
+    mobpack_schema_response_with_runtime(None)
+}
+
+pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatalogState>) -> Value {
+    let provider = authoring_provider("mobkit/mobpacks/schema", runtime);
     let mob_settings_defaults = json!({
         "orchestrator": "",
         "autoWireOrchestrator": false,
@@ -1549,28 +1613,38 @@ pub fn mobpack_schema_response() -> Value {
             "eventRouter": null
         }
     });
+    let base_deploy_settings = deploy_settings_schema_for_provider(&provider);
+    let deploy_command = base_deploy_settings
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or("rkat mob deploy");
+    let deploy_cli = format!("{deploy_command} <pack.mobpack> <prompt>");
+    let deploy_cli_value = Value::String(deploy_cli);
     let deploy_settings = json!({
-        "command": "rkat mob deploy",
+        "command": deploy_command,
         "defaults": {
-            "command": "rkat mob deploy",
-            "surface": "cli",
-            "trust_policy": "permissive",
-            "model": "",
-            "max_duration": "30s",
-            "max_tool_calls": 0,
-            "max_total_tokens": 64,
-            "isolated": true,
-            "realm": "",
-            "instance": "",
-            "realm_backend": "jsonl",
-            "context_root": "",
-            "state_root": "",
-            "user_config_root": "",
-            "prompt": "Reply with exactly OK."
+            "command": deploy_command,
+            "surface": base_deploy_settings["defaults"]["surface"].clone(),
+            "trust_policy": base_deploy_settings["defaults"]["trust_policy"].clone(),
+            "model": base_deploy_settings["defaults"]["model"].clone(),
+            "max_duration": base_deploy_settings["defaults"]["max_duration"].clone(),
+            "max_tool_calls": base_deploy_settings["defaults"]["max_tool_calls"].clone(),
+            "max_total_tokens": base_deploy_settings["defaults"]["max_total_tokens"].clone(),
+            "isolated": base_deploy_settings["defaults"]["isolated"].clone(),
+            "realm": base_deploy_settings["defaults"]["realm"].clone(),
+            "instance": base_deploy_settings["defaults"]["instance"].clone(),
+            "realm_backend": base_deploy_settings["defaults"]["realm_backend"].clone(),
+            "context_root": base_deploy_settings["defaults"]["context_root"].clone(),
+            "state_root": base_deploy_settings["defaults"]["state_root"].clone(),
+            "user_config_root": base_deploy_settings["defaults"]["user_config_root"].clone(),
+            "prompt": base_deploy_settings["defaults"]["prompt"].clone()
         },
-        "surfaces": ["cli", "rpc"],
-        "trust_policies": ["permissive", "strict"],
-        "realm_backends": ["jsonl", "sqlite"],
+        "surfaces": base_deploy_settings["surfaces"].clone(),
+        "trust_policies": base_deploy_settings["trust_policies"].clone(),
+        "realm_backends": base_deploy_settings["realm_backends"].clone(),
+        "runtime_backed": base_deploy_settings["runtime_backed"].clone(),
+        "authoring_provider": provider.clone(),
+        "provenance": base_deploy_settings["provenance"].clone(),
         "options": [
             "model",
             "max_total_tokens",
@@ -2594,7 +2668,7 @@ pub fn mobpack_schema_response() -> Value {
             "graph_to_flow": "mobkit/mobpacks/graph_to_flow",
             "deploy_command": "mobkit/mobpacks/deploy_command",
             "deploy_rpc": "mobkit/mobpacks/deploy",
-            "deploy_cli": "rkat mob deploy <pack.mobpack> <prompt>"
+            "deploy_cli": deploy_cli_value
         },
         "deploy_settings": deploy_settings,
         "operations": mobpack_authoring_operations(),
@@ -29990,6 +30064,11 @@ depends_on_mode = "all"
         assert_eq!(deploy["defaults"]["realm_backend"], "jsonl");
         assert_eq!(deploy["defaults"]["isolated"], true);
         assert_eq!(deploy["defaults"]["prompt"], "Reply with exactly OK.");
+        assert_eq!(deploy["runtime_backed"], json!(false));
+        assert_eq!(
+            deploy["provenance"]["source"],
+            json!("mobkit/standalone_authoring_defaults")
+        );
         assert!(
             !deploy["options"]
                 .as_array()
@@ -30002,6 +30081,38 @@ depends_on_mode = "all"
         assert_eq!(mob_defaults["autoWireOrchestrator"], false);
         assert_eq!(mob_defaults["roleWiring"], json!([]));
         assert_eq!(mob_defaults["advanced"]["topology"], Value::Null);
+    }
+
+    #[test]
+    fn runtime_schema_response_derives_deploy_settings_from_authoring_provider() {
+        let runtime = MobpackRuntimeCatalogState {
+            loaded_modules: vec!["editor-host".to_string()],
+            runtime_methods: vec!["mobkit/mobpacks/deploy".to_string()],
+            has_contact_directory: true,
+            has_peer_mob_handles: false,
+            has_inproc_contacts: false,
+            runtime_flow_rows: Vec::new(),
+            runtime_agent_definition_sources: Vec::new(),
+            runtime_skill_realms: Vec::new(),
+        };
+        let schema = mobpack_schema_response_with_runtime(Some(&runtime));
+        let deploy = &schema["deploy_settings"];
+
+        assert_eq!(deploy["runtime_backed"], json!(true));
+        assert_eq!(
+            deploy["authoring_provider"]["runtime_binding"],
+            json!("bound")
+        );
+        assert_eq!(deploy["command"], json!("rkat mob deploy"));
+        assert_eq!(deploy["defaults"]["command"], json!("rkat mob deploy"));
+        assert_eq!(deploy["surfaces"], json!(["cli", "rpc"]));
+        assert_eq!(deploy["defaults"]["surface"], json!("cli"));
+        assert_eq!(deploy["realm_backends"], json!(["jsonl", "sqlite"]));
+        assert_eq!(deploy["defaults"]["realm_backend"], json!("jsonl"));
+        assert_eq!(
+            deploy["provenance"]["source"],
+            json!("UnifiedRuntime.authoring_provider.deploy_target")
+        );
     }
 
     #[test]

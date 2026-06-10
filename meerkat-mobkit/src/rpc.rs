@@ -150,7 +150,8 @@ async fn handle_unified_mobpack_authoring_rpc(
     response_id: Value,
 ) -> JsonRpcResponse {
     let runtime_catalog_state = match method {
-        "mobkit/mobpacks/catalogs"
+        "mobkit/mobpacks/schema"
+        | "mobkit/mobpacks/catalogs"
         | "mobkit/tools/catalog"
         | "mobkit/skills/catalog"
         | "mobkit/agent_definitions/list"
@@ -225,7 +226,9 @@ pub(crate) fn handle_mobpack_authoring_rpc_with_runtime(
     runtime: Option<&crate::mobpack::MobpackRuntimeCatalogState>,
 ) -> Option<JsonRpcResponse> {
     let result = match method {
-        "mobkit/mobpacks/schema" => Ok(crate::mobpack::mobpack_schema_response()),
+        "mobkit/mobpacks/schema" => Ok(crate::mobpack::mobpack_schema_response_with_runtime(
+            runtime,
+        )),
         "mobkit/mobpacks/catalogs" => Ok(crate::mobpack::mobpack_catalogs_response_with_runtime(
             runtime,
         )),
@@ -4412,6 +4415,18 @@ comms = true
         assert_eq!(
             response["result"]["commands"]["deploy_rpc"],
             json!("mobkit/mobpacks/deploy")
+        );
+        assert_eq!(
+            response["result"]["deploy_settings"]["runtime_backed"],
+            json!(true)
+        );
+        assert_eq!(
+            response["result"]["deploy_settings"]["authoring_provider"]["runtime_binding"],
+            json!("bound")
+        );
+        assert_eq!(
+            response["result"]["deploy_settings"]["provenance"]["source"],
+            json!("UnifiedRuntime.authoring_provider.deploy_target")
         );
         assert!(response["result"]["sample_mobpacks"].is_null());
         assert!(response["result"]["agent_definitions"].is_null());
