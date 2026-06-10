@@ -822,11 +822,21 @@ function App() {
 
   const handleInlineSource = async (surface = "basic", sourceRequest = null) => {
     let requestToken = null;
+    const toggle = window.MobKitFlowController.inlineSourceToggleTransition({
+      open: inlineSourceOpen,
+      currentSurface: inlineSourceSurface,
+      targetSurface: surface,
+    });
+    if (!toggle.shouldOpen) {
+      sourceProjectionVersion.current += 1;
+      applySourceProjectionPatch(toggle.patch);
+      return;
+    }
     const requestedSourcePath = window.MobKitFlowController.inlineSourceRequestPath(sourceRequest, {
       sourceView: catalogs.sourceView,
       graphView: catalogs.graphView,
     });
-    applySourceProjectionPatch(window.MobKitFlowController.inlineSourcePendingTransition(surface));
+    applySourceProjectionPatch(toggle.patch);
     setApiBusy(true);
     try {
       const projected = await buildMobKitProjectedDocument();
@@ -953,6 +963,13 @@ function App() {
   };
   const handleDeployPlan = () => handleDeploy({ execute: false });
   const handleDeployRun = () => handleDeploy({ execute: true });
+  const basicSourceToggle = window.MobKitFlowController.inlineSourceToggleButtonState({
+    open: inlineSourceOpen,
+    currentSurface: inlineSourceSurface,
+    targetSurface: "basic",
+    basicView: catalogs.basicView,
+    sourceView: catalogs.sourceView,
+  });
 
   const hydrateMobpackDocument = (result, options = {}) => {
     const activeContract = options.contract || contract;
@@ -1182,6 +1199,7 @@ function App() {
           sourceOpen={inlineSourceOpen && inlineSourceSurface === "basic"}
           sourceDocument={inlineSourceDocument}
           sourceBusy={inlineSourceBusy}
+          sourceToggleLabel={basicSourceToggle.label}
           onCloseSource={clearSourceProjection}
           contract={contract}
           toolCatalog={catalogs.toolCatalog}

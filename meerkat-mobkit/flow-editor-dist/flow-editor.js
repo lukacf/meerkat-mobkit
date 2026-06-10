@@ -10266,6 +10266,35 @@ window.MOBKIT_BOOT = {
     return { inlineSourceBusy: !!busy };
   }
 
+  function inlineSourceToggleTransition({
+    open = false,
+    currentSurface = "",
+    targetSurface = "basic",
+  } = {}) {
+    const target = String(targetSurface || "basic");
+    const active = !!open && String(currentSurface || "") === target;
+    return active
+      ? { shouldOpen: false, patch: sourceProjectionClearTransition() }
+      : { shouldOpen: true, patch: inlineSourcePendingTransition(target) };
+  }
+
+  function inlineSourceToggleButtonState({
+    open = false,
+    currentSurface = "",
+    targetSurface = "basic",
+    basicView = null,
+    sourceView = null,
+  } = {}) {
+    const target = String(targetSurface || "basic");
+    const active = !!open && String(currentSurface || "") === target;
+    const basic = basicEditorViewState(basicView);
+    const source = sourceViewForState(null, sourceView);
+    return {
+      active,
+      label: active ? (source.closeLabel || basic.sourceToggleLabel) : basic.sourceToggleLabel,
+    };
+  }
+
   function inlineSourceRequestPath(request = null, options = {}) {
     const explicitPath = String(request?.sourcePath || request?.path || "").trim();
     if (explicitPath) return explicitPath;
@@ -11473,6 +11502,8 @@ window.MOBKIT_BOOT = {
     inlineSourcePendingTransition,
     inlineSourceReadyTransition,
     inlineSourceBusyTransition,
+    inlineSourceToggleTransition,
+    inlineSourceToggleButtonState,
     inlineSourceRequestPath,
     sourceEditorState,
     sourceFileSelectionTransition,
@@ -13515,7 +13546,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
   });
   return /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card" }, /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card__head" }, conditionState.rowTitle), !conditionState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, conditionState.emptyHint) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bld-cond" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.stepId || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionSourcePatch(options, e.target.value, { includeNamespace: true })) }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.sourcePlaceholder), conditionState.sourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.field || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, conditionState.fieldOptions)), disabled: !conditionState.fields.length }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.fieldPlaceholder), conditionState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: conditionState.operatorValue, onChange: (e) => onChange(window.MobKitFlowController.basicConditionOperatorPatch(e.target.value, contract)) }, conditionState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(CondValue, { field: conditionState.field, value: conditionState.cond.val, conditionView, onChange: (v) => onChange(window.MobKitFlowController.basicConditionValuePatch(v)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-cond__preview" }, conditionState.previewPrefix, " ", /* @__PURE__ */ React.createElement("code", null, conditionState.previewLabel))));
 }
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringIntent = null }) {
+function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, sourceToggleLabel = "", onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringIntent = null }) {
   const members = studio?.members || [];
   const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [selLocal, setSelLocal] = React.useState(null);
@@ -13634,7 +13665,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       setSel: (id) => applyBasicInteraction(window.MobKitFlowController.basicStepSelectionTransition(id)),
       openPicker
     }
-  )), /* @__PURE__ */ React.createElement("button", { className: "bld-toml-toggle", onMouseDown: (e) => e.stopPropagation(), onClick: () => onShowSource && onShowSource() }, viewState.sourceToggleLabel), /* @__PURE__ */ React.createElement(
+  )), /* @__PURE__ */ React.createElement("button", { className: "bld-toml-toggle", onMouseDown: (e) => e.stopPropagation(), onClick: () => onShowSource && onShowSource() }, sourceToggleLabel || viewState.sourceToggleLabel), /* @__PURE__ */ React.createElement(
     InlineSourceEditor,
     {
       open: sourceOpen,
@@ -14682,11 +14713,21 @@ function App() {
   }, [view, editorMode, clearSourceProjection]);
   const handleInlineSource = async (surface = "basic", sourceRequest = null) => {
     let requestToken = null;
+    const toggle = window.MobKitFlowController.inlineSourceToggleTransition({
+      open: inlineSourceOpen,
+      currentSurface: inlineSourceSurface,
+      targetSurface: surface
+    });
+    if (!toggle.shouldOpen) {
+      sourceProjectionVersion.current += 1;
+      applySourceProjectionPatch(toggle.patch);
+      return;
+    }
     const requestedSourcePath = window.MobKitFlowController.inlineSourceRequestPath(sourceRequest, {
       sourceView: catalogs.sourceView,
       graphView: catalogs.graphView
     });
-    applySourceProjectionPatch(window.MobKitFlowController.inlineSourcePendingTransition(surface));
+    applySourceProjectionPatch(toggle.patch);
     setApiBusy(true);
     try {
       const projected = await buildMobKitProjectedDocument();
@@ -14809,6 +14850,13 @@ function App() {
   };
   const handleDeployPlan = () => handleDeploy({ execute: false });
   const handleDeployRun = () => handleDeploy({ execute: true });
+  const basicSourceToggle = window.MobKitFlowController.inlineSourceToggleButtonState({
+    open: inlineSourceOpen,
+    currentSurface: inlineSourceSurface,
+    targetSurface: "basic",
+    basicView: catalogs.basicView,
+    sourceView: catalogs.sourceView
+  });
   const hydrateMobpackDocument = (result, options = {}) => {
     const activeContract = options.contract || contract;
     const hydration = window.MobKitFlowController.hydrateMobpackDocumentState(result, {
@@ -15030,6 +15078,7 @@ function App() {
       sourceOpen: inlineSourceOpen && inlineSourceSurface === "basic",
       sourceDocument: inlineSourceDocument,
       sourceBusy: inlineSourceBusy,
+      sourceToggleLabel: basicSourceToggle.label,
       onCloseSource: clearSourceProjection,
       contract,
       toolCatalog: catalogs.toolCatalog,

@@ -10233,6 +10233,35 @@
     return { inlineSourceBusy: !!busy };
   }
 
+  function inlineSourceToggleTransition({
+    open = false,
+    currentSurface = "",
+    targetSurface = "basic",
+  } = {}) {
+    const target = String(targetSurface || "basic");
+    const active = !!open && String(currentSurface || "") === target;
+    return active
+      ? { shouldOpen: false, patch: sourceProjectionClearTransition() }
+      : { shouldOpen: true, patch: inlineSourcePendingTransition(target) };
+  }
+
+  function inlineSourceToggleButtonState({
+    open = false,
+    currentSurface = "",
+    targetSurface = "basic",
+    basicView = null,
+    sourceView = null,
+  } = {}) {
+    const target = String(targetSurface || "basic");
+    const active = !!open && String(currentSurface || "") === target;
+    const basic = basicEditorViewState(basicView);
+    const source = sourceViewForState(null, sourceView);
+    return {
+      active,
+      label: active ? (source.closeLabel || basic.sourceToggleLabel) : basic.sourceToggleLabel,
+    };
+  }
+
   function inlineSourceRequestPath(request = null, options = {}) {
     const explicitPath = String(request?.sourcePath || request?.path || "").trim();
     if (explicitPath) return explicitPath;
@@ -11440,6 +11469,8 @@
     inlineSourcePendingTransition,
     inlineSourceReadyTransition,
     inlineSourceBusyTransition,
+    inlineSourceToggleTransition,
+    inlineSourceToggleButtonState,
     inlineSourceRequestPath,
     sourceEditorState,
     sourceFileSelectionTransition,

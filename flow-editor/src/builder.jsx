@@ -159,7 +159,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
   );
 }
 
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringIntent = null }) {
+function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, sourceToggleLabel = "", onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringIntent = null }) {
   const members = studio?.members || [];
   const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [selLocal, setSelLocal] = React.useState(null);
@@ -280,7 +280,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
         </div>
 
         <button className="bld-toml-toggle" onMouseDown={e => e.stopPropagation()} onClick={() => onShowSource && onShowSource()}>
-          {viewState.sourceToggleLabel}
+          {sourceToggleLabel || viewState.sourceToggleLabel}
         </button>
         <InlineSourceEditor
           open={sourceOpen}

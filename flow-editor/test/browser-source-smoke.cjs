@@ -100,6 +100,11 @@ async function main() {
       throw new Error(`inline source editor must be read-only, got aria-readonly=${readonly}`);
     }
 
+    await page.locator(".bld-toml-toggle").click();
+    await inlineEditor.waitFor({ state: "hidden", timeout: 10_000 });
+
+    await page.locator(".bld-toml-toggle").click();
+    await inlineEditor.waitFor({ timeout: 10_000 });
     await inlineEditor.locator(".bld-toml__head .btn--ghost").click();
     await inlineEditor.waitFor({ state: "hidden", timeout: 10_000 });
 

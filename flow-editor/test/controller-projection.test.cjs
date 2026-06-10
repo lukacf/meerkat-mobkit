@@ -6410,6 +6410,53 @@ assert.deepEqual(controller.inlineSourcePendingTransition("graph"), {
   inlineSourceSurface: "graph",
   inlineSourceBusy: true,
 });
+assert.deepEqual(controller.inlineSourceToggleTransition({
+  open: false,
+  currentSurface: "",
+  targetSurface: "basic",
+}), {
+  shouldOpen: true,
+  patch: {
+    inlineSourceOpen: true,
+    inlineSourceSurface: "basic",
+    inlineSourceBusy: true,
+  },
+});
+assert.deepEqual(controller.inlineSourceToggleTransition({
+  open: true,
+  currentSurface: "basic",
+  targetSurface: "basic",
+}), {
+  shouldOpen: false,
+  patch: {
+    sourceOpen: false,
+    sourceDocument: null,
+    inlineSourceOpen: false,
+    inlineSourceSurface: null,
+    inlineSourceDocument: null,
+    inlineSourceBusy: false,
+  },
+});
+assert.deepEqual(controller.inlineSourceToggleButtonState({
+  open: false,
+  currentSurface: "",
+  targetSurface: "basic",
+  basicView: hydratedCatalogs.basicView,
+  sourceView: hydratedCatalogs.sourceView,
+}), {
+  active: false,
+  label: "{ } mob.toml",
+});
+assert.deepEqual(controller.inlineSourceToggleButtonState({
+  open: true,
+  currentSurface: "basic",
+  targetSurface: "basic",
+  basicView: hydratedCatalogs.basicView,
+  sourceView: hydratedCatalogs.sourceView,
+}), {
+  active: true,
+  label: "×",
+});
 assert.deepEqual(controller.inlineSourceReadyTransition(readySourceDocument), {
   inlineSourceDocument: readySourceDocument,
   inlineSourceBusy: false,
