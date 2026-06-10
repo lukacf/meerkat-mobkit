@@ -325,6 +325,14 @@ fn persist_config(path: &Path, config: &AccessControlConfig) -> Result<(), Acces
     std::fs::rename(&tmp, path).map_err(|err| AccessConfigError::Io(err.to_string()))
 }
 
+/// One link in an agent's spawn lineage: the agent itself first, then its
+/// spawn ancestors. Ancestors may be uncached (identity known only from a
+/// child's `spawned_by` label).
+struct LineageLink {
+    identity: String,
+    attributes: Option<Arc<AgentResourceAttributes>>,
+}
+
 /// An immutable per-request snapshot of one principal's access.
 ///
 /// Holds the config `Arc` taken at request start so a single request
@@ -384,33 +392,89 @@ impl AccessView {
     /// cached attributes (role/labels) when available. The argument may
     /// also be a runtime agent/member id; the cache resolves it back to
     /// the identity it belongs to.
+    ///
+    /// Agents carry their spawn lineage as a `spawned_by` label (recorded by
+    /// the agent-tool spawn path). A spawned member inherits its spawning
+    /// parent's permissions: rules that match the parent — or any ancestor —
+    /// also match the member, with deny-overrides preserved across the chain.
     pub fn decide_agent(&self, action: &str, identity: &str) -> AccessDecision {
         if !self.config.enabled {
             return AccessDecision::Allow;
         }
-        let cached = {
-            let cache = self
-                .inner
-                .attributes
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cache.get(identity).cloned().or_else(|| {
+        let lineage = self.lineage_for(identity);
+        if lineage.is_empty() {
+            return self.decide(action, &AccessResource::for_identity(identity));
+        }
+        let resources = lineage
+            .iter()
+            .enumerate()
+            .map(|(index, link)| match link.attributes.as_deref() {
+                Some(attributes) => AccessResource {
+                    identity: Some(attributes.identity.as_str()),
+                    agent_id: attributes
+                        .agent_id
+                        .as_deref()
+                        .or((index == 0).then_some(identity)),
+                    role: attributes.role.as_deref(),
+                    labels: Some(&attributes.labels),
+                },
+                None => AccessResource::for_identity(link.identity.as_str()),
+            })
+            .collect::<Vec<_>>();
+        super::engine::evaluate_access_lineage(&self.config, &self.principal, action, &resources)
+    }
+
+    /// Resolve the agent's cached attributes followed by its spawn ancestors
+    /// (`spawned_by` chain). Bounded and cycle-safe. An ancestor without
+    /// cached attributes still contributes an identity-only resource so
+    /// identity-selector rules naming the parent apply to its descendants.
+    fn lineage_for(&self, identity: &str) -> Vec<LineageLink> {
+        const MAX_LINEAGE_DEPTH: usize = 8;
+        let cache = self
+            .inner
+            .attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let resolve = |key: &str| {
+            cache.get(key).cloned().or_else(|| {
                 cache
                     .values()
-                    .find(|attributes| attributes.agent_id.as_deref() == Some(identity))
+                    .find(|attributes| attributes.agent_id.as_deref() == Some(key))
                     .cloned()
             })
         };
-        let resource = match cached.as_deref() {
-            Some(attributes) => AccessResource {
-                identity: Some(attributes.identity.as_str()),
-                agent_id: attributes.agent_id.as_deref().or(Some(identity)),
-                role: attributes.role.as_deref(),
-                labels: Some(&attributes.labels),
-            },
-            None => AccessResource::for_identity(identity),
+        let Some(own) = resolve(identity) else {
+            return Vec::new();
         };
-        self.decide(action, &resource)
+        let mut visited = BTreeSet::from([own.identity.clone()]);
+        let mut lineage = vec![LineageLink {
+            identity: own.identity.clone(),
+            attributes: Some(own),
+        }];
+        while lineage.len() < MAX_LINEAGE_DEPTH {
+            let Some(parent) = lineage
+                .last()
+                .and_then(|link| link.attributes.as_deref())
+                .and_then(|attributes| attributes.labels.get("spawned_by"))
+                .map(|parent| parent.trim().to_string())
+                .filter(|parent| !parent.is_empty())
+            else {
+                break;
+            };
+            let attributes = resolve(&parent);
+            let parent_identity = attributes
+                .as_deref()
+                .map(|attributes| attributes.identity.clone())
+                .unwrap_or(parent);
+            if !visited.insert(parent_identity.clone()) {
+                break;
+            }
+            lineage.push(LineageLink {
+                identity: parent_identity,
+                attributes,
+            });
+        }
+        lineage
     }
 
     /// Convenience: can this principal see the given agent at all?
@@ -628,6 +692,124 @@ mod tests {
                 "rule-{i} missing"
             );
         }
+    }
+
+    #[test]
+    fn spawn_lineage_inherits_parent_permissions() {
+        let mut config = enabled_config();
+        config.rules.push(AccessRule {
+            id: "bob-ops-lead".to_string(),
+            subjects: vec!["bob@example.test".to_string()],
+            actions: vec!["agent.view".to_string(), "agent.send".to_string()],
+            agents: vec!["ops-lead".to_string()],
+            ..AccessRule::default()
+        });
+        let controller = AccessController::new(config).expect("controller");
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity: "ops-lead".to_string(),
+            agent_id: Some("ops-lead".to_string()),
+            role: Some("orchestrator".to_string()),
+            labels: BTreeMap::new(),
+        });
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity: "worker-3".to_string(),
+            agent_id: Some("worker-3".to_string()),
+            role: Some("person-worker".to_string()),
+            labels: BTreeMap::from([("spawned_by".to_string(), "ops-lead".to_string())]),
+        });
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity: "worker-3-sub".to_string(),
+            agent_id: Some("worker-3-sub".to_string()),
+            role: Some("helper".to_string()),
+            labels: BTreeMap::from([("spawned_by".to_string(), "worker-3".to_string())]),
+        });
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity: "scout-1".to_string(),
+            agent_id: Some("scout-1".to_string()),
+            role: Some("scout".to_string()),
+            labels: BTreeMap::new(),
+        });
+
+        let bob = controller.view_for_subject(Some("bob@example.test"));
+        assert!(bob.can_view_agent("ops-lead"));
+        assert!(
+            bob.can_view_agent("worker-3"),
+            "a member spawned by ops-lead inherits ops-lead's visibility"
+        );
+        assert!(
+            bob.allows_agent("agent.send", "worker-3"),
+            "permission inheritance covers every agent action, not just view"
+        );
+        assert!(
+            bob.can_view_agent("worker-3-sub"),
+            "spawn lineage inheritance is transitive"
+        );
+        assert!(
+            !bob.can_view_agent("scout-1"),
+            "agents outside the spawn lineage stay denied"
+        );
+    }
+
+    #[test]
+    fn spawn_lineage_deny_on_parent_overrides_descendants() {
+        let mut config = enabled_config();
+        config.rules.push(AccessRule {
+            id: "bob-view-all".to_string(),
+            subjects: vec!["bob@example.test".to_string()],
+            actions: vec!["agent.view".to_string()],
+            agents: vec!["*".to_string()],
+            ..AccessRule::default()
+        });
+        config.rules.push(AccessRule {
+            id: "hide-secret-lead".to_string(),
+            effect: AccessEffect::Deny,
+            actions: vec!["agent.*".to_string()],
+            agents: vec!["secret-lead".to_string()],
+            ..AccessRule::default()
+        });
+        let controller = AccessController::new(config).expect("controller");
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity: "secret-lead".to_string(),
+            agent_id: Some("secret-lead".to_string()),
+            role: None,
+            labels: BTreeMap::new(),
+        });
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity: "covert-worker".to_string(),
+            agent_id: Some("covert-worker".to_string()),
+            role: None,
+            labels: BTreeMap::from([("spawned_by".to_string(), "secret-lead".to_string())]),
+        });
+
+        let bob = controller.view_for_subject(Some("bob@example.test"));
+        assert!(!bob.can_view_agent("secret-lead"));
+        assert!(
+            !bob.can_view_agent("covert-worker"),
+            "a deny on the spawning parent must propagate to its descendants"
+        );
+    }
+
+    #[test]
+    fn spawn_lineage_cycles_terminate_and_fail_closed() {
+        let controller = AccessController::new(enabled_config()).expect("controller");
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity: "loop-a".to_string(),
+            agent_id: Some("loop-a".to_string()),
+            role: None,
+            labels: BTreeMap::from([("spawned_by".to_string(), "loop-b".to_string())]),
+        });
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity: "loop-b".to_string(),
+            agent_id: Some("loop-b".to_string()),
+            role: None,
+            labels: BTreeMap::from([("spawned_by".to_string(), "loop-a".to_string())]),
+        });
+
+        let bob = controller.view_for_subject(Some("bob@example.test"));
+        assert!(
+            !bob.can_view_agent("loop-a"),
+            "lineage cycles must terminate and deny by default"
+        );
     }
 
     #[test]

@@ -4170,15 +4170,20 @@ async fn identity_record_for_member(
         .resolve_bridge_session_id_observation(&member.agent_identity)
         .await
         .map(|sid| sid.to_string());
-    let display_name = member
-        .labels
-        .get("display_name")
-        .cloned()
-        .unwrap_or_else(|| runtime_member_id.clone());
     let mut labels = member.labels.clone();
     labels
         .entry("role".to_string())
         .or_insert_with(|| member.role.to_string());
+    // Spawn-time console metadata (group/display labels, spawned_by lineage)
+    // registered by the agent-tool spawn path fills gaps the roster does not
+    // carry; roster labels win on conflict.
+    if let Some(registered) = entry.console_events.identity_labels(durable_identity).await {
+        crate::console_spawn::merge_registered_labels(&mut labels, &registered);
+    }
+    let display_name = labels
+        .get("display_name")
+        .cloned()
+        .unwrap_or_else(|| runtime_member_id.clone());
     Some(ConsoleIdentityRecord {
         identity,
         display_name,
@@ -9171,5 +9176,215 @@ comms = true
         .expect("user history frame");
 
         assert_eq!(frame.timestamp_ms, 1_778_562_006_564);
+    }
+
+    async fn wait_for_kickoff_frames(
+        aggregator: &MobKitConsoleAggregator,
+        identity: &str,
+        timeout: Duration,
+    ) -> Vec<ConsoleFrame> {
+        let deadline = Instant::now() + timeout;
+        let mut observed = Vec::new();
+        while Instant::now() < deadline {
+            let page = aggregator
+                .query_timeline(ConsoleTimelineQuery {
+                    identity: Some(identity.to_string()),
+                    limit: 50,
+                    ..ConsoleTimelineQuery::default()
+                })
+                .await
+                .expect("query timeline");
+            observed = page.frames;
+            if observed.iter().any(|frame| frame.kind == "user_input") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        observed
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawn_registry_primes_access_lineage() {
+        let runtime = build_empty_runtime("spawn-access-lineage-test").await;
+        let sink = runtime
+            .mob_runtime()
+            .console_spawn_sink()
+            .expect("unified runtime installs the console spawn sink at bootstrap");
+
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "worker-3".to_string(),
+                None,
+                None,
+                None,
+            ))
+            .await
+            .expect("member spawns");
+        sink.project_spawned_member(&crate::console_spawn::ConsoleSpawnSeed {
+            mob_id: Some("spawn-access-lineage-test".to_string()),
+            member_id: "worker-3".to_string(),
+            identity: "worker-3".to_string(),
+            initial_message: None,
+            labels: BTreeMap::new(),
+            spawned_by: Some("ops-lead".to_string()),
+            via_tool: "mob_spawn_member".to_string(),
+        })
+        .await;
+
+        let controller = crate::access::AccessController::new(crate::access::AccessControlConfig {
+            enabled: true,
+            admins: vec!["root@example.test".to_string()],
+            groups: BTreeMap::new(),
+            rules: vec![crate::access::AccessRule {
+                id: "bob-ops-lead".to_string(),
+                subjects: vec!["bob@example.test".to_string()],
+                actions: vec!["agent.view".to_string()],
+                agents: vec!["ops-lead".to_string()],
+                ..crate::access::AccessRule::default()
+            }],
+        })
+        .expect("controller");
+
+        crate::http_console::prime_access_cache_from_runtime(runtime.mob_runtime(), &controller)
+            .await;
+
+        let bob = controller.view_for_subject(Some("bob@example.test"));
+        assert!(
+            bob.can_view_agent("worker-3"),
+            "spawn registry lineage must let bob see the member ops-lead spawned"
+        );
+        assert!(
+            !bob.can_view_agent("unrelated-agent"),
+            "agents outside the granted lineage stay denied"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn agent_spawned_member_kickoff_and_live_events_share_one_chat() {
+        let runtime = build_empty_runtime("agent-spawn-console-test").await;
+
+        // The unified runtime must hand the agent-tool spawn path a console
+        // sink at bootstrap — without it, agent-spawned members stay
+        // invisible until their first runtime activity.
+        let sink = runtime
+            .mob_runtime()
+            .console_spawn_sink()
+            .expect("unified runtime installs the console spawn sink at bootstrap");
+
+        // The member exists in the roster exactly as an agent-tool spawn
+        // would leave it; the server-side spawn carries no initial message
+        // so the projected kickoff below is the only chat seed.
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "worker-3".to_string(),
+                None,
+                None,
+                None,
+            ))
+            .await
+            .expect("member spawns");
+
+        let seed = crate::console_spawn::ConsoleSpawnSeed {
+            mob_id: Some("agent-spawn-console-test".to_string()),
+            member_id: "worker-3".to_string(),
+            identity: "worker-3".to_string(),
+            initial_message: Some(json!("Kick off the person hunt")),
+            labels: BTreeMap::from([("group".to_string(), "workers".to_string())]),
+            spawned_by: Some("ops-lead".to_string()),
+            via_tool: "mob_spawn_member".to_string(),
+        };
+        sink.project_spawned_member(&seed).await;
+        // Spawn retries must not fork or duplicate the chat.
+        sink.project_spawned_member(&seed).await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "test",
+            runtime.mob_runtime().clone(),
+            None,
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+
+        let frames =
+            wait_for_kickoff_frames(&aggregator, "test/worker-3", Duration::from_secs(5)).await;
+        let kickoffs = frames
+            .iter()
+            .filter(|frame| frame.kind == "user_input")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kickoffs.len(),
+            1,
+            "member timeline must contain exactly one kickoff frame; got {frames:#?}"
+        );
+        assert_eq!(
+            kickoffs[0].payload["content"][0]["text"],
+            "Kick off the person hunt"
+        );
+
+        // A live runtime event for the member must aggregate into the same
+        // identity/chat as the kickoff, not fork into a second conversation.
+        runtime
+            .project_console_event_from_unified(&crate::types::EventEnvelope {
+                event_id: "evt-live-worker-3".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: current_time_ms(),
+                event: crate::types::UnifiedEvent::Agent {
+                    agent_id: "worker-3:0".to_string(),
+                    event_type: "text_delta".to_string(),
+                    payload: Some(json!({ "delta": "on it" })),
+                },
+            })
+            .await;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut live_frame = None;
+        while Instant::now() < deadline && live_frame.is_none() {
+            let page = aggregator
+                .query_timeline(ConsoleTimelineQuery {
+                    identity: Some("test/worker-3".to_string()),
+                    limit: 50,
+                    ..ConsoleTimelineQuery::default()
+                })
+                .await
+                .expect("query timeline");
+            live_frame = page
+                .frames
+                .into_iter()
+                .find(|frame| frame.source_event_id.as_deref() == Some("evt-live-worker-3"));
+            if live_frame.is_none() {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+        let live_frame = live_frame.expect("live runtime event lands in the member chat");
+        assert_eq!(live_frame.identity, "test/worker-3");
+
+        // The identity list must carry the registered spawn labels so the
+        // sidebar can group the member and ABAC can see its lineage.
+        let identities = aggregator
+            .list_identities_fresh()
+            .await
+            .expect("list identities");
+        let record = identities
+            .iter()
+            .find(|record| record.identity == "test/worker-3")
+            .unwrap_or_else(|| {
+                panic!("spawned member missing from identity list: {identities:#?}")
+            });
+        assert_eq!(
+            record.labels.get("group").map(String::as_str),
+            Some("workers")
+        );
+        assert_eq!(
+            record.labels.get("spawned_by").map(String::as_str),
+            Some("ops-lead")
+        );
+
+        let _ = runtime.mob_handle().stop().await;
     }
 }

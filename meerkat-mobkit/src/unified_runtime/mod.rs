@@ -198,6 +198,13 @@ impl UnifiedRuntime {
             mob_events_store.clone(),
             persistent_metadata.clone(),
         );
+        let console_events = ConsoleEventStore::new();
+        // Agent-tool spawns (mob_spawn_member/delegate) project their members
+        // into this runtime's console event store so spawned workers are
+        // visible in the console without embedder-side workarounds.
+        mob_runtime.install_console_spawn_sink(crate::console_spawn::ConsoleSpawnSink::new(
+            console_events.clone(),
+        ));
         Self {
             mob_runtime,
             post_spawn_hook: None,
@@ -213,7 +220,7 @@ impl UnifiedRuntime {
             bootstrap_edges_report: tokio::sync::RwLock::new(None),
             event_log: None,
             console_log_store: Arc::new(InMemoryConsoleLogStore::new()),
-            console_events: ConsoleEventStore::new(),
+            console_events,
             mob_events: mob_events_store,
             mob_events_subscriber_task: tokio::sync::Mutex::new(mob_events_task),
             implicit_delegate_retirement_task: tokio::sync::Mutex::new(None),

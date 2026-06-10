@@ -39,6 +39,11 @@ struct ConsoleEventReplayState {
     active_interaction_by_identity: BTreeMap<String, String>,
     runtime_to_identity: BTreeMap<String, String>,
     response_phase_by_identity: BTreeMap<String, Option<String>>,
+    /// Console identity metadata registered by spawn paths (spawn labels,
+    /// `spawned_by` lineage, `via_tool`). Merged into identity projections
+    /// and access-control attribute priming; member/roster labels win on
+    /// conflict.
+    labels_by_identity: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +103,7 @@ impl ConsoleEventStore {
                 active_interaction_by_identity: BTreeMap::new(),
                 runtime_to_identity: BTreeMap::new(),
                 response_phase_by_identity: BTreeMap::new(),
+                labels_by_identity: BTreeMap::new(),
             })),
             event_tx,
         }
@@ -168,6 +174,42 @@ impl ConsoleEventStore {
         state
             .runtime_to_identity
             .insert(runtime_member_id, identity);
+    }
+
+    /// Register console identity metadata (spawn labels, lineage). Merges
+    /// per key; the latest registration wins so a respawn can update labels.
+    pub(crate) async fn register_identity_labels(
+        &self,
+        identity: impl Into<String>,
+        labels: BTreeMap<String, String>,
+    ) {
+        let identity = identity.into();
+        if identity.trim().is_empty() || labels.is_empty() {
+            return;
+        }
+        let mut state = self.state.write().await;
+        state
+            .labels_by_identity
+            .entry(identity)
+            .or_default()
+            .extend(labels);
+    }
+
+    /// Registered console metadata for one identity, if any.
+    pub(crate) async fn identity_labels(&self, identity: &str) -> Option<BTreeMap<String, String>> {
+        self.state
+            .read()
+            .await
+            .labels_by_identity
+            .get(identity)
+            .cloned()
+    }
+
+    /// Snapshot of all registered console identity metadata.
+    pub(crate) async fn identity_labels_snapshot(
+        &self,
+    ) -> BTreeMap<String, BTreeMap<String, String>> {
+        self.state.read().await.labels_by_identity.clone()
     }
 
     pub(crate) async fn replay_all(

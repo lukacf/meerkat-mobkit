@@ -26,7 +26,7 @@ use crate::runtime::{RuntimeDecisionState, extract_bearer_token_from_header};
 use crate::unified_runtime::EventQuery;
 use crate::unified_runtime::mob_events::{MOB_EVENTS_STREAM_PATH, MobEventsStore};
 
-use crate::mob_handle_runtime::MobRuntimeError;
+use crate::mob_handle_runtime::{MobRuntime, MobRuntimeError};
 use meerkat_core::comms::SendError;
 use meerkat_core::service::SessionError;
 use meerkat_mob::MobError;
@@ -118,10 +118,11 @@ struct AgentSseState {
     subscribe_fn: AgentEventSubscribeFn,
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
-    /// Live primary-mob handle used to prime the access attribute cache at
-    /// connection time, so label/role rules resolve without a prior
+    /// Live mob runtime used to prime the access attribute cache at
+    /// connection time (roster plus spawn-registered console metadata), so
+    /// label/role/lineage rules resolve without a prior
     /// `/console/experience` call. `None` keeps the route behaviour unchanged.
-    prime_handle: Option<MobHandle>,
+    prime_runtime: Option<MobRuntime>,
 }
 
 pub fn agent_events_sse_router(
@@ -143,7 +144,7 @@ pub(crate) fn agent_events_sse_router_with_access_and_priming(
     subscribe_fn: AgentEventSubscribeFn,
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
-    prime_handle: Option<MobHandle>,
+    prime_runtime: Option<MobRuntime>,
 ) -> Router {
     Router::new()
         .route("/agents/{agent_id}/events", get(agent_events_sse_handler))
@@ -151,7 +152,7 @@ pub(crate) fn agent_events_sse_router_with_access_and_priming(
             subscribe_fn,
             decisions,
             access,
-            prime_handle,
+            prime_runtime,
         })
 }
 
@@ -168,7 +169,7 @@ async fn agent_events_sse_handler(
         &uri,
     )
     .map_err(|()| sse_unauthorized("agent events stream requires a valid auth token"))?;
-    prime_sse_access_cache(state.prime_handle.as_ref(), state.access.as_ref()).await;
+    prime_sse_access_cache(state.prime_runtime.as_ref(), state.access.as_ref()).await;
     if access_view
         .as_ref()
         .is_some_and(|view| view.enforced() && !view.allows_agent(ACTION_AGENT_VIEW, &agent_id))
@@ -224,8 +225,8 @@ struct MobSseState {
     subscribe_fn: MobEventSubscribeFn,
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
-    /// See [`AgentSseState::prime_handle`].
-    prime_handle: Option<MobHandle>,
+    /// See [`AgentSseState::prime_runtime`].
+    prime_runtime: Option<MobRuntime>,
 }
 
 pub fn mob_events_sse_router(
@@ -247,7 +248,7 @@ pub(crate) fn mob_events_sse_router_with_access_and_priming(
     subscribe_fn: MobEventSubscribeFn,
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
-    prime_handle: Option<MobHandle>,
+    prime_runtime: Option<MobRuntime>,
 ) -> Router {
     Router::new()
         .route("/mob/events", get(mob_events_sse_handler))
@@ -255,22 +256,23 @@ pub(crate) fn mob_events_sse_router_with_access_and_priming(
             subscribe_fn,
             decisions,
             access,
-            prime_handle,
+            prime_runtime,
         })
 }
 
-/// Refresh the access attribute cache from the live roster before an SSE
-/// stream applies any per-agent filter, so label/role rules resolve without
-/// depending on a prior `/console/experience` call.
+/// Refresh the access attribute cache from the live roster and the spawn
+/// registry before an SSE stream applies any per-agent filter, so
+/// label/role/lineage rules resolve without depending on a prior
+/// `/console/experience` call.
 async fn prime_sse_access_cache(
-    prime_handle: Option<&MobHandle>,
+    prime_runtime: Option<&MobRuntime>,
     access: Option<&AccessController>,
 ) {
-    if let (Some(handle), Some(controller)) = (
-        prime_handle,
+    if let (Some(runtime), Some(controller)) = (
+        prime_runtime,
         access.filter(|controller| controller.enabled()),
     ) {
-        crate::http_console::prime_access_cache_from_handle(handle, controller).await;
+        crate::http_console::prime_access_cache_from_runtime(runtime, controller).await;
     }
 }
 
@@ -286,7 +288,7 @@ async fn mob_events_sse_handler(
         &uri,
     )
     .map_err(|()| sse_unauthorized("mob events stream requires a valid auth token"))?;
-    prime_sse_access_cache(state.prime_handle.as_ref(), state.access.as_ref()).await;
+    prime_sse_access_cache(state.prime_runtime.as_ref(), state.access.as_ref()).await;
     // `mob.observe` gates access to the merged stream surface. The events
     // flowing through it carry the same rich per-agent payload as
     // `/agents/{id}/events`, so each one is still filtered by `agent.view`
@@ -395,6 +397,9 @@ impl MobStructuralStreamQuery {
 struct MobStructuralSseState {
     handle: MobHandle,
     store: MobEventsStore,
+    /// See [`AgentSseState::prime_runtime`]. `None` falls back to a
+    /// roster-only prime from `handle`.
+    prime_runtime: Option<MobRuntime>,
     /// Optional auth context. When `Some`, requests are gated by the
     /// same `require_app_auth` toggle the console RPC route uses; when
     /// `None`, the route is unauthenticated (in-process or trusted
@@ -431,6 +436,16 @@ pub fn mob_structural_events_sse_router_with_access(
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
 ) -> Router {
+    mob_structural_events_sse_router_with_access_and_priming(handle, store, decisions, access, None)
+}
+
+pub(crate) fn mob_structural_events_sse_router_with_access_and_priming(
+    handle: MobHandle,
+    store: MobEventsStore,
+    decisions: Option<RuntimeDecisionState>,
+    access: Option<AccessController>,
+    prime_runtime: Option<MobRuntime>,
+) -> Router {
     Router::new()
         .route(
             MOB_EVENTS_STREAM_PATH,
@@ -439,6 +454,7 @@ pub fn mob_structural_events_sse_router_with_access(
         .with_state(MobStructuralSseState {
             handle,
             store,
+            prime_runtime,
             decisions,
             access,
         })
@@ -527,7 +543,15 @@ async fn mob_structural_events_sse_handler(
         &uri,
     )
     .map_err(|()| sse_unauthorized("mob_events stream requires a valid auth token"))?;
-    prime_sse_access_cache(Some(&state.handle), state.access.as_ref()).await;
+    if state.prime_runtime.is_some() {
+        prime_sse_access_cache(state.prime_runtime.as_ref(), state.access.as_ref()).await;
+    } else if let Some(controller) = state
+        .access
+        .as_ref()
+        .filter(|controller| controller.enabled())
+    {
+        crate::http_console::prime_access_cache_from_handle(&state.handle, controller).await;
+    }
     // Structural events span the whole mob: require the mob-wide
     // observation grant, mirroring `mobkit/mob_events/query`. Envelopes
     // attributed to a specific agent are additionally filtered by

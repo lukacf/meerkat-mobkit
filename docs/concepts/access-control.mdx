@@ -31,6 +31,12 @@ There are no roles. Every check evaluates the caller's attributes (subject, grou
 
 Evaluation is **deny-by-default with deny-overrides**: a matching `deny` rule always wins, then a matching `allow` rule allows, otherwise the check denies. Subjects listed in `admins` bypass rules entirely. A disabled config allows everything.
 
+### Spawn-lineage inheritance
+
+Members spawned **by an agent** (via `mob_spawn_member`, `delegate`, and the other agent-facing spawn tools) inherit their spawning parent's permissions. The spawn path records a `spawned_by` label as console metadata, and agent checks evaluate the member **and its spawn ancestors**: a rule that matches the parent — by identity, role, or labels — also matches the members it spawned, transitively. Deny-overrides is preserved across the chain, so a `deny` on the parent also denies its descendants, and a member-specific `deny` beats any inherited `allow`.
+
+This is what makes agent-fanned-out workers governable without per-worker rules: granting `agent.view` on a coordinator lets the operator watch everything that coordinator spawns, and hiding a sensitive lead also hides its helpers. Lineage resolution is bounded (depth 8) and cycle-safe, and members can always carry their own labels or rules to override the inherited outcome (subject to deny-overrides).
+
 ## Configuration
 
 Drop a `config/access.toml` next to your other config files — its presence opts the deployment in:
