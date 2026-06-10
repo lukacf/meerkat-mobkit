@@ -10072,6 +10072,7 @@ fn merge_agent_definition_skills(document: &mut MobpackDocument, definition: &Va
 }
 
 pub fn graph_projection_mobpack(params: &Value) -> Result<Value, String> {
+    enforce_mobpack_draft_expected_revision(params, "mobkit/mobpacks/graph_projection")?;
     let mut document = document_from_params(params)?;
     let steps = document
         .flow
@@ -10094,6 +10095,7 @@ pub fn graph_projection_mobpack(params: &Value) -> Result<Value, String> {
 }
 
 pub fn graph_to_flow_mobpack(params: &Value) -> Result<Value, String> {
+    enforce_mobpack_draft_expected_revision(params, "mobkit/mobpacks/graph_to_flow")?;
     let mut document = document_from_params(params)?;
     let flow = graph_to_flow_from_document(&document);
     document.flow = flow;
@@ -25226,6 +25228,23 @@ model = "gpt-5.5"
             "{source}"
         );
 
+        let graph_projection =
+            graph_projection_mobpack(&stale_params).expect_err("stale graph projection must fail");
+        assert!(
+            graph_projection.contains(
+                "mobkit/mobpacks/graph_projection draft revision conflict for action_guard"
+            ),
+            "{graph_projection}"
+        );
+
+        let graph_to_flow =
+            graph_to_flow_mobpack(&stale_params).expect_err("stale graph-to-flow must fail");
+        assert!(
+            graph_to_flow
+                .contains("mobkit/mobpacks/graph_to_flow draft revision conflict for action_guard"),
+            "{graph_to_flow}"
+        );
+
         let exported = export_mobpack(&stale_params).expect_err("stale export must fail");
         assert!(
             exported.contains("mobkit/mobpacks/export draft revision conflict for action_guard"),
@@ -25264,6 +25283,17 @@ model = "gpt-5.5"
                 .source_files
                 .iter()
                 .any(|file| file.path.ends_with("mob.toml"))
+        );
+        assert!(
+            graph_projection_mobpack(&fresh_params).expect("fresh graph projection")["validation"]
+                ["ok"]
+                .as_bool()
+                .unwrap_or(false)
+        );
+        assert!(
+            graph_to_flow_mobpack(&fresh_params).expect("fresh graph-to-flow")["ok"]
+                .as_bool()
+                .unwrap_or(false)
         );
         assert!(
             export_mobpack(&fresh_params)

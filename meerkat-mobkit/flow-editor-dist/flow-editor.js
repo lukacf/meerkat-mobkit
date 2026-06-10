@@ -14506,6 +14506,8 @@ function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const canCreateAuthoring = !!catalogs.contractMeta.loaded && !contract?.error;
   const deployContractLoaded = !!catalogs.contractMeta.loaded;
+  const currentFlowSelection = window.MobKitFlowController.flowRegistrySelectionState(flows, currentFlowId);
+  const currentFlow = currentFlowSelection.row;
   React.useEffect(() => {
     document.documentElement.dataset.ccVariant = "rams";
     document.documentElement.dataset.ccTheme = t.theme || "light";
@@ -14583,7 +14585,7 @@ function App() {
       instances: [],
       edges: [],
       frames: []
-    }, { signal: abort.signal }).then((projectionResult) => {
+    }, { ...window.MobKitFlowController.flowRegistryDraftGuard(currentFlow, currentFlowId), signal: abort.signal }).then((projectionResult) => {
       if (cancelled) return;
       const projection = window.MobKitFlowController.graphProjectionFromMobKitResult(projectionResult);
       if (!projection) return;
@@ -14600,7 +14602,7 @@ function App() {
       cancelled = true;
       abort.abort();
     };
-  }, [flow, editorMode, contract, studio.members]);
+  }, [flow, editorMode, contract, studio.members, currentFlow, currentFlowId]);
   React.useEffect(() => {
     if (editorMode !== "advanced") return;
     const sig = window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges, { members: studio.members, contract });
@@ -14823,8 +14825,6 @@ function App() {
     if (plan.deploySettings.changed) setDeploySettings(plan.deploySettings.value);
     if (plan.mobSettings.changed) setMobSettings(plan.mobSettings.value);
   };
-  const currentFlowSelection = window.MobKitFlowController.flowRegistrySelectionState(flows, currentFlowId);
-  const currentFlow = currentFlowSelection.row;
   const buildAuthoringProjection = (overrides = {}) => {
     const nextStudio = {
       members: studio.members,
