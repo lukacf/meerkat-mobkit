@@ -396,6 +396,9 @@ impl UnifiedRuntime {
                 crate::mobpack::runtime_agent_definition_sources_from_definition(
                     self.mob_handle().definition(),
                 ),
+            runtime_skill_realms: crate::mobpack::runtime_skill_realms_from_definition(
+                self.mob_handle().definition(),
+            ),
         }
     }
 

@@ -555,6 +555,7 @@ mod tests {
                 has_inproc_contacts: false,
                 runtime_flow_rows: Vec::new(),
                 runtime_agent_definition_sources: Vec::new(),
+                runtime_skill_realms: Vec::new(),
             }),
         );
 

@@ -104,6 +104,8 @@ async fn mobpack_runtime_catalog_state(
         crate::mobpack::runtime_agent_definition_sources_from_definition(
             runtime.mob_handle().definition(),
         );
+    let runtime_skill_realms =
+        crate::mobpack::runtime_skill_realms_from_definition(runtime.mob_handle().definition());
     let mut runtime_methods = vec![
         "mobkit/capabilities".to_string(),
         "mobkit/models/catalog".to_string(),
@@ -137,6 +139,7 @@ async fn mobpack_runtime_catalog_state(
         has_inproc_contacts: runtime.has_inproc_contacts(),
         runtime_flow_rows,
         runtime_agent_definition_sources,
+        runtime_skill_realms,
     }
 }
 
@@ -4505,11 +4508,22 @@ comms = true
                         "model": "gpt-5.5",
                         "runtimeMode": "turn_driven",
                         "tools": ["builtins"],
-                        "skills": [],
+                        "skills": ["mob.runtime.review"],
                         "schema": ""
                     }],
                     "schemas": []
                 }
+            })],
+            runtime_skill_realms: vec![json!({
+                "id": "runtime_rpc",
+                "label": "Runtime RPC",
+                "source": "mobkit/runtime/skills",
+                "skills": [{
+                    "id": "mob.runtime.review",
+                    "label": "Runtime review",
+                    "source": "inline",
+                    "content": "Review runtime work."
+                }]
             })],
         };
 
@@ -4571,6 +4585,14 @@ comms = true
         assert_eq!(
             runtime_definition["toolDefinitions"][0]["id"],
             json!("builtins")
+        );
+        assert_eq!(
+            runtime_definition["skillDefinitions"][0]["id"],
+            json!("mob.runtime.review")
+        );
+        assert_eq!(
+            definitions["result"]["catalog_snapshot"]["runtime_backed"],
+            json!(true)
         );
 
         let tools = super::handle_mobpack_authoring_rpc_with_runtime(

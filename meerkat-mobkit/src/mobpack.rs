@@ -58,6 +58,7 @@ pub struct MobpackRuntimeCatalogState {
     pub has_inproc_contacts: bool,
     pub runtime_flow_rows: Vec<Value>,
     pub runtime_agent_definition_sources: Vec<Value>,
+    pub runtime_skill_realms: Vec<Value>,
 }
 
 fn editor_input_step_default_task() -> &'static str {
@@ -1022,6 +1023,23 @@ fn authoring_skill_realms_response() -> Value {
     discover_skill_realms(&authoring_sources)
 }
 
+fn skill_realms_response_with_runtime_state(runtime: Option<&MobpackRuntimeCatalogState>) -> Value {
+    let mut realms = runtime
+        .map(|state| state.runtime_skill_realms.clone())
+        .unwrap_or_default();
+    let runtime_ids = realms
+        .iter()
+        .filter_map(|realm| realm.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    if let Some(authoring_realms) = authoring_skill_realms_response().as_array() {
+        realms.extend(authoring_realms.iter().filter_map(|realm| {
+            let id = realm.get("id").and_then(Value::as_str).unwrap_or_default();
+            (!runtime_ids.contains(id)).then(|| realm.clone())
+        }));
+    }
+    Value::Array(realms)
+}
+
 pub fn mobpack_tools_catalog_response() -> Value {
     mobpack_tools_catalog_response_with_runtime(None)
 }
@@ -1061,7 +1079,7 @@ pub fn mobpack_skills_catalog_response_with_runtime(
             "source": "mobkit/authoring-skill-realms",
             "authoring_provider": provider.clone(),
             "runtime_unavailable_reason": runtime_unavailable_reason(&provider),
-            "skill_realms": authoring_skill_realms_response(),
+            "skill_realms": skill_realms_response_with_runtime_state(runtime),
         }),
         "mobkit/skills/catalog",
         runtime_backed,
@@ -1078,7 +1096,7 @@ pub fn mobpack_agent_definitions_response_with_runtime(
     let provider = authoring_provider("mobkit/agent_definitions/list", runtime);
     let runtime_backed = authoring_provider_is_runtime_backed(&provider);
     let tool_catalog = tool_catalog_response_with_runtime_state(runtime);
-    let skill_realms = authoring_skill_realms_response();
+    let skill_realms = skill_realms_response_with_runtime_state(runtime);
     let authoring_sources = authoring_agent_definition_mobpack_sources();
     let source_mobpacks = runtime
         .filter(|state| !state.runtime_agent_definition_sources.is_empty())
@@ -2818,6 +2836,30 @@ pub fn runtime_agent_definition_sources_from_definition(definition: &MobDefiniti
     runtime_agent_definition_source_from_definition(definition)
         .ok()
         .into_iter()
+        .collect()
+}
+
+pub fn runtime_skill_realms_from_definition(definition: &MobDefinition) -> Vec<Value> {
+    skill_realms_from_definition(definition)
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut realm| {
+            if let Some(object) = realm.as_object_mut() {
+                object
+                    .entry("source".to_string())
+                    .or_insert_with(|| json!("mobkit/runtime/skills"));
+                object.entry("provenance".to_string()).or_insert_with(|| {
+                    catalog_provenance(
+                        "mobkit/skills/catalog",
+                        "UnifiedRuntime.MobDefinition",
+                        &format!("{}:skills", definition.id),
+                    )
+                });
+            }
+            realm
+        })
         .collect()
 }
 
@@ -26997,6 +27039,7 @@ model = "gpt-5.5"
             has_inproc_contacts: false,
             runtime_flow_rows: Vec::new(),
             runtime_agent_definition_sources: Vec::new(),
+            runtime_skill_realms: Vec::new(),
         };
         let runtime_catalogs = mobpack_catalogs_response_with_runtime(Some(&runtime));
         let standalone_catalogs = mobpack_catalogs_response();
@@ -27149,6 +27192,7 @@ model = "gpt-5.5"
             has_inproc_contacts: true,
             runtime_flow_rows: Vec::new(),
             runtime_agent_definition_sources: Vec::new(),
+            runtime_skill_realms: Vec::new(),
         };
         let cross_mob_catalogs = mobpack_catalogs_response_with_runtime(Some(&cross_mob_runtime));
         let cross_mob_tool = cross_mob_catalogs["tool_catalog"]
@@ -27260,6 +27304,7 @@ depends_on_mode = "all"
             has_inproc_contacts: false,
             runtime_flow_rows: rows.clone(),
             runtime_agent_definition_sources: Vec::new(),
+            runtime_skill_realms: Vec::new(),
         };
         let catalogs = mobpack_catalogs_response_with_runtime(Some(&runtime));
         assert_eq!(catalogs["runtime_flows"], json!(rows));
@@ -27328,6 +27373,7 @@ depends_on_mode = "all"
             has_inproc_contacts: false,
             runtime_flow_rows: Vec::new(),
             runtime_agent_definition_sources: sources,
+            runtime_skill_realms: runtime_skill_realms_from_definition(&definition),
         };
         let catalogs = mobpack_catalogs_response_with_runtime(Some(&runtime));
         let runtime_definition = catalogs["agent_definitions"]
@@ -27366,6 +27412,14 @@ depends_on_mode = "all"
         assert_eq!(
             mob_tool["runtime_availability"]["state"],
             json!("unavailable")
+        );
+        assert_eq!(
+            runtime_definition["skillDefinitions"][0]["id"],
+            json!("mob.runtime.review")
+        );
+        assert_eq!(
+            catalogs["skill_realms"][0]["provenance"]["source"],
+            json!("UnifiedRuntime.MobDefinition")
         );
     }
 
