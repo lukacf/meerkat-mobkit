@@ -2720,6 +2720,15 @@ shell = true
 comms = true
 mob = true
 
+[profiles.agent]
+model = "gpt-5.5"
+peer_description = "Start from a minimal editable MobKit profile member and configure its prompt, tools, skills, schema, and runtime mode in the Agent Editor."
+runtime_mode = "turn_driven"
+
+[profiles.agent.tools]
+builtins = true
+comms = true
+
 [profiles.reviewer.output_schema]
 type = "object"
 description = "MobKit authoring review result."
@@ -26134,6 +26143,57 @@ model = "gpt-5.5"
     }
 
     #[test]
+    fn apply_operation_adds_blank_authoring_profile_member() {
+        let catalogs = mobpack_catalogs_response();
+        let blank_definition = catalogs["agent_definitions"]
+            .as_array()
+            .expect("agent definitions")
+            .iter()
+            .find(|definition| {
+                definition["role"] == "agent"
+                    && definition["sourceOrigin"] == "mobkit/authoring-agent-definitions"
+            })
+            .expect("blank authoring profile definition");
+        let document: MobpackDocument =
+            serde_json::from_value(catalogs["blank_mobpack"]["document"].clone())
+                .expect("blank document");
+
+        let result = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "expected_catalog_snapshot_id": catalogs["catalog_snapshot"]["id"],
+            "operation": {
+                "type": "add_agent_definition",
+                "definition_id": blank_definition["id"],
+            }
+        }))
+        .expect("add blank authoring agent definition");
+
+        assert_eq!(result["operation"], json!("add_agent_definition"));
+        assert_eq!(
+            result["selection"],
+            json!({ "kind": "agent", "id": "m_agent" })
+        );
+        let member = result["document"]["members"]
+            .as_array()
+            .expect("members")
+            .iter()
+            .find(|member| member["id"] == "m_agent")
+            .expect("blank agent member");
+        assert_eq!(member["role"], json!("agent"));
+        assert_eq!(member["profileBinding"], json!("inline"));
+        assert_eq!(member["runtimeMode"], json!("turn_driven"));
+        assert_eq!(member["model"], json!("gpt-5.5"));
+        assert_eq!(
+            member["sourceDefinition"]["definitionId"],
+            blank_definition["id"]
+        );
+        assert_eq!(
+            member["sourceDefinition"]["sourceOrigin"],
+            json!("mobkit/authoring-agent-definitions")
+        );
+    }
+
+    #[test]
     fn apply_operation_rejects_stale_catalog_snapshot_for_catalog_backed_operations() {
         let catalogs = mobpack_catalogs_response();
         let document: MobpackDocument =
@@ -29620,6 +29680,20 @@ model = "gpt-5.5"
                         })
                     })
                 && definition["schemaDefinition"]["id"] == "ReviewerOutput"
+                && definition["deployability"]["command"] == "rkat mob deploy"
+                && definition["provenance"]["source"] == "mobkit/authoring-agent-definitions"
+        }));
+        assert!(authoring_agent_definitions.iter().any(|definition| {
+            definition["role"] == "agent"
+                && definition["name"] == "agent"
+                && definition["model"] == "gpt-5.5"
+                && definition["profileBinding"] == "inline"
+                && definition["runtimeMode"] == "turn_driven"
+                && definition["sourceKind"] == "authoring"
+                && definition["definitionKind"] == "authoring"
+                && definition["tools"]
+                    .as_array()
+                    .is_some_and(|tools| tools.contains(&json!("builtins")))
                 && definition["deployability"]["command"] == "rkat mob deploy"
                 && definition["provenance"]["source"] == "mobkit/authoring-agent-definitions"
         }));

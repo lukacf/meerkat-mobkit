@@ -1500,13 +1500,18 @@ async function validateNamedTypedOperations(catalogs) {
   if (!catalogSnapshotId) {
     throw new Error(`named operation proof needs a MobKit catalog snapshot id: ${JSON.stringify(catalogs.catalog_snapshot)}`);
   }
+  const implementerDefinition = array(catalogs.agent_definitions, "catalogs.agent_definitions")
+    .find((definition) => definition.role === "implementer" && definition.sourceOrigin === "mobkit/authoring-agent-definitions");
+  if (!implementerDefinition?.id) {
+    throw new Error(`MobKit catalogs did not expose an implementer authoring profile definition: ${JSON.stringify(catalogs.agent_definitions)}`);
+  }
   try {
     await rpc("mobkit/mobpacks/apply_operation", {
       document,
       expected_catalog_snapshot_id: "stale-catalog-snapshot",
       operation: {
         type: "add_agent_definition",
-        definition_id: "mobkit_authoring_profiles__01_implementer",
+        definition_id: implementerDefinition.id,
       },
     });
     throw new Error("stale catalog snapshot unexpectedly accepted add_agent_definition");
@@ -1520,7 +1525,7 @@ async function validateNamedTypedOperations(catalogs) {
     expected_catalog_snapshot_id: catalogSnapshotId,
     operation: {
       type: "add_agent_definition",
-      definition_id: "mobkit_authoring_profiles__01_implementer",
+      definition_id: implementerDefinition.id,
     },
   });
   if (!added.ok) {
@@ -1541,8 +1546,26 @@ async function validateNamedTypedOperations(catalogs) {
   if (!updated.ok || updatedMember?.name !== "Named typed operation agent") {
     throw new Error(`named typed operation did not apply member patch: ${JSON.stringify(updated)}`);
   }
-  const settings = await rpc("mobkit/mobpacks/apply_operation", {
+  const blankDefinition = array(catalogs.agent_definitions, "catalogs.agent_definitions")
+    .find((definition) => definition.role === "agent" && definition.sourceOrigin === "mobkit/authoring-agent-definitions");
+  if (!blankDefinition?.id) {
+    throw new Error(`MobKit catalogs did not expose a blank authoring profile definition: ${JSON.stringify(catalogs.agent_definitions)}`);
+  }
+  const blankAdded = await rpc("mobkit/mobpacks/apply_operation", {
     document: updated.document,
+    expected_catalog_snapshot_id: catalogSnapshotId,
+    operation: {
+      type: "add_agent_definition",
+      definition_id: blankDefinition.id,
+    },
+  });
+  const blankMemberId = blankAdded.selection?.id;
+  const blankMember = blankAdded.document.members.find((member) => member.id === blankMemberId);
+  if (!blankAdded.ok || blankMember?.role !== "agent" || blankMember?.sourceDefinition?.definitionId !== blankDefinition.id) {
+    throw new Error(`blank authoring profile definition did not materialize as an editable member: ${JSON.stringify(blankAdded)}`);
+  }
+  const settings = await rpc("mobkit/mobpacks/apply_operation", {
+    document: blankAdded.document,
     operation: {
       type: "update_deploy_settings",
       field: "prompt",
@@ -1583,6 +1606,7 @@ async function validateNamedTypedOperations(catalogs) {
   }
   return {
     memberId,
+    blankMemberId,
     name: roleWiring.document.name,
     prompt: roleWiring.document.deploy.prompt,
     operationDocumentApplied: updated.operation === "update_flow_step",
