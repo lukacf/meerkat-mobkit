@@ -422,14 +422,20 @@ function App() {
           applyMobKitAuthoringOperation({
             intent: "graph.deleteNode",
             instanceId: selection.id,
-          }).then(() => clearSelection(nextSelection));
+          }).then((result) => {
+            if (result?.ok === false) return;
+            clearSelection(nextSelection);
+          });
         }
         else if (selection.kind === "edge") {
           const nextSelection = { kind: null, id: null };
           applyMobKitAuthoringOperation({
             intent: "graph.deleteEdge",
             edgeId: selection.id,
-          }).then(() => clearSelection(nextSelection));
+          }).then((result) => {
+            if (result?.ok === false) return;
+            clearSelection(nextSelection);
+          });
         }
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
@@ -584,60 +590,21 @@ function App() {
     authoringOperationRunner.current(operation), []);
   const mobKitStudio = {
     ...studio,
-    addInstance: (instance) => {
-      const memberId = String(instance?.memberId || instance?.member_id || "").trim();
-      const col = Number(instance?.col);
-      const row = Number(instance?.row);
-      if (!memberId || !Number.isFinite(col) || !Number.isFinite(row)) {
-        return { ok: false, error: "Graph instance adds require a semantic member pick and cell" };
-      }
-      return applyMobKitAuthoringOperation({
-        intent: "graph.insertNode",
-        pick: { kind: "memberInstance", memberId },
-        cell: { col, row },
-      });
-    },
-    editInstance: (id, action, payload = {}) => {
-      return applyMobKitAuthoringOperation({
-        intent: "graph.editNode",
-        instanceId: id,
-        action,
-        payload,
-      });
-    },
-    deleteInstance: (id) => {
-      return applyMobKitAuthoringOperation({
-        intent: "graph.deleteNode",
-        instanceId: id,
-      });
-    },
-    addEdge: (edge) => {
-      const fromId = String(edge?.from || "").trim();
-      const toId = String(edge?.to || "").trim();
-      if (!fromId || !toId) {
-        return { ok: false, error: "Graph edge adds require semantic from/to endpoints" };
-      }
-      return applyMobKitAuthoringOperation({
-        intent: "graph.connectNodes",
-        fromId,
-        toId,
-      });
-    },
-    editEdge: (id, action, payload = {}) => {
-      return applyMobKitAuthoringOperation({
-        intent: "graph.editEdge",
-        edgeId: id,
-        action,
-        payload,
-      });
-    },
-    deleteEdge: (id) => {
-      return applyMobKitAuthoringOperation({
-        intent: "graph.deleteEdge",
-        edgeId: id,
-      });
-    },
   };
+  const editGraphNode = React.useCallback((id, action, payload = {}) =>
+    applyMobKitAuthoringOperation({
+      intent: "graph.editNode",
+      instanceId: id,
+      action,
+      payload,
+    }), [applyMobKitAuthoringOperation]);
+  const editGraphEdge = React.useCallback((id, action, payload = {}) =>
+    applyMobKitAuthoringOperation({
+      intent: "graph.editEdge",
+      edgeId: id,
+      action,
+      payload,
+    }), [applyMobKitAuthoringOperation]);
   const saveRegistryDocument = (rowPatch) => {
     if (!rowPatch?.document) return;
     window.MobKitFlowController.saveDocument(rowPatch)
@@ -1185,6 +1152,8 @@ function App() {
               selectMember={handleAgentNavigation}
               selectInstance={selectInstance}
               clearSelection={clearSelection}
+              editGraphNode={editGraphNode}
+              editGraphEdge={editGraphEdge}
               deleteGraphNode={(id) => applyMobKitAuthoringOperation({
                 intent: "graph.deleteNode",
                 instanceId: id,

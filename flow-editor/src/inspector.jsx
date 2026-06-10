@@ -9,7 +9,7 @@
 // AddNodeMenu lets the user place existing real members. Control-flow rows are
 // projected from the Basic Editor's deployable flow model.
 
-function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, deleteGraphNode = null, deleteGraphEdge = null, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
+function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, deleteGraphEdge = null, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
   const selectionState = window.MobKitFlowController.graphSelectionState({
     selection,
     instances: studio.instances,
@@ -17,11 +17,11 @@ function Inspector({ studio, selection, selectMember, selectInstance, clearSelec
   });
   if (selectionState.kind === "instance") {
     if (!selectionState.instance) return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
-    return <InstanceInspector studio={studio} flow={flow} inst={selectionState.instance} selectMember={selectMember} clearSelection={clearSelection} deleteGraphNode={deleteGraphNode} contract={contract} launchView={launchView} graphView={graphView} conditionView={conditionView} />;
+    return <InstanceInspector studio={studio} flow={flow} inst={selectionState.instance} selectMember={selectMember} clearSelection={clearSelection} editGraphNode={editGraphNode} editGraphEdge={editGraphEdge} deleteGraphNode={deleteGraphNode} contract={contract} launchView={launchView} graphView={graphView} conditionView={conditionView} />;
   }
   if (selectionState.kind === "edge") {
     if (!selectionState.edge) return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
-    return <EdgeInspector studio={studio} flow={flow} edge={selectionState.edge} clearSelection={clearSelection} deleteGraphEdge={deleteGraphEdge} contract={contract} graphView={graphView} conditionView={conditionView} />;
+    return <EdgeInspector studio={studio} flow={flow} edge={selectionState.edge} clearSelection={clearSelection} editGraphEdge={editGraphEdge} deleteGraphEdge={deleteGraphEdge} contract={contract} graphView={graphView} conditionView={conditionView} />;
   }
   return <TemplateInspector studio={studio} template={template} templateSeed={templateSeed} templateView={templateView} />;
 }
@@ -83,8 +83,8 @@ function TemplateInspector({ studio, template, templateSeed, templateView }) {
 }
 
 // ── Gate (fork / join / branch) ───────────────────────────────────
-function GateInspector({ studio, flow, inst, clearSelection, deleteGraphNode = null, contract, graphView = null, conditionView = null }) {
-  const change = (action, payload = {}) => studio.editInstance(inst.id, action, payload);
+function GateInspector({ studio, flow, inst, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, contract, graphView = null, conditionView = null }) {
+  const change = (action, payload = {}) => editGraphNode?.(inst.id, action, payload);
   const kind = inst.gateKind;
   const gateState = window.MobKitFlowController.graphGateControlState(inst, {
     edges: studio.edges,
@@ -178,13 +178,13 @@ function GateInspector({ studio, flow, inst, clearSelection, deleteGraphNode = n
             {branchRows.length === 0 && <div className="kv__hint">{gateState.emptyBranchHint}</div>}
             {branchRows.map(row => {
               const e = row.edge;
-              const setCondOwner = (instanceId) => studio.editEdge(e.id, "set_condition_owner", { owner_instance_id: instanceId });
-              const setCondField = (field) => studio.editEdge(e.id, "set_condition_field", { field_name: field });
+              const setCondOwner = (instanceId) => editGraphEdge?.(e.id, "set_condition_owner", { owner_instance_id: instanceId });
+              const setCondField = (field) => editGraphEdge?.(e.id, "set_condition_field", { field_name: field });
               return (
                 <div key={e.id} className="branch-cond-row">
                   <div className="row row--gap">
                     <select className="field__select" value={row.modeValue} onChange={ev => {
-                      studio.editEdge(e.id, "set_condition_mode", { mode: ev.target.value, owner_instance_id: row.firstOwnerId });
+                      editGraphEdge?.(e.id, "set_condition_mode", { mode: ev.target.value, owner_instance_id: row.firstOwnerId });
                     }}>
                       {row.modeOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
@@ -202,12 +202,12 @@ function GateInspector({ studio, flow, inst, clearSelection, deleteGraphNode = n
                           <option value={row.fieldPlaceholderOption.value}>{row.fieldPlaceholderOption.label}</option>
                           {row.fieldOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                         </select>
-                        <select className="field__select bld-cond__op" value={row.operatorValue} onChange={ev => studio.editEdge(e.id, "set_condition_operator", { operator: ev.target.value })}>
+                        <select className="field__select bld-cond__op" value={row.operatorValue} onChange={ev => editGraphEdge?.(e.id, "set_condition_operator", { operator: ev.target.value })}>
                           {row.operatorOptions.map(option => (
                             <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
                           ))}
                         </select>
-                        <GraphCondValue field={row.condField} value={e.cond?.val} conditionView={conditionView} onChange={val => studio.editEdge(e.id, "set_condition_value", { value: val })} />
+                        <GraphCondValue field={row.condField} value={e.cond?.val} conditionView={conditionView} onChange={val => editGraphEdge?.(e.id, "set_condition_value", { value: val })} />
                       </div>
                     )
                   )}
@@ -229,7 +229,7 @@ function GateInspector({ studio, flow, inst, clearSelection, deleteGraphNode = n
 }
 
 // ── Instance (graph node) — TEMPLATE-ONLY fields + member summary ──
-function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, deleteGraphNode = null, contract, launchView = null, graphView = null, conditionView = null }) {
+function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, contract, launchView = null, graphView = null, conditionView = null }) {
   const instanceState = window.MobKitFlowController.graphInstanceControlState({
     inst,
     instances: studio.instances,
@@ -240,7 +240,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, d
   const member = instanceState.member;
 
   if (inst.isGate) {
-    return <GateInspector studio={studio} flow={flow} inst={inst} clearSelection={clearSelection} deleteGraphNode={deleteGraphNode} contract={contract} graphView={graphView} conditionView={conditionView} />;
+    return <GateInspector studio={studio} flow={flow} inst={inst} clearSelection={clearSelection} editGraphNode={editGraphNode} editGraphEdge={editGraphEdge} deleteGraphNode={deleteGraphNode} contract={contract} graphView={graphView} conditionView={conditionView} />;
   }
 
   if (inst.isTerminal) {
@@ -325,7 +325,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, d
             className="field__select"
             value={launchState.launchKind}
             onChange={e => {
-              studio.editInstance(inst.id, "set_launch_kind", { kind: e.target.value, first_fork_source_id: instanceState.firstForkSourceId });
+              editGraphNode?.(inst.id, "set_launch_kind", { kind: e.target.value, first_fork_source_id: instanceState.firstForkSourceId });
             }}
           >
             {launchState.launchOptions.map(option => (
@@ -340,7 +340,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, d
 	                className="field__input"
 	                value={launchState.launchMode.sessionId || ""}
 	                placeholder={launchState.resumeSessionPlaceholder}
-	                onChange={e => studio.editInstance(inst.id, "set_launch_session", { session_id: e.target.value })}
+	                onChange={e => editGraphNode?.(inst.id, "set_launch_session", { session_id: e.target.value })}
 	              />
             </div>
           )}
@@ -348,13 +348,13 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, d
             <>
               <div className="field" style={{ marginTop: 8 }}>
                 <label className="field__label">{launchState.forkSourceLabel}</label>
-                <select className="field__select" value={launchState.launchMode.from || ""} onChange={e => studio.editInstance(inst.id, "set_launch_fork_source", { from: e.target.value })}>
+                <select className="field__select" value={launchState.launchMode.from || ""} onChange={e => editGraphNode?.(inst.id, "set_launch_fork_source", { from: e.target.value })}>
                   {instanceState.forkSourceOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </div>
               <div className="field">
                 <label className="field__label">{launchState.graphForkContextLabel}</label>
-                <select className="field__select" value={launchState.forkContextValue} onChange={e => studio.editInstance(inst.id, "set_launch_fork_context", { context: e.target.value })}>
+                <select className="field__select" value={launchState.forkContextValue} onChange={e => editGraphNode?.(inst.id, "set_launch_fork_context", { context: e.target.value })}>
                   {launchState.forkContextOptions.map(option => (
                     <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
                   ))}
@@ -365,7 +365,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, d
           )}
           <div className="field" style={{ marginTop: 8 }}>
             <label className="field__label">{launchState.budgetPolicyLabel}</label>
-            <select className="field__select" value={launchState.budgetSplitPolicy.kind} onChange={e => studio.editInstance(inst.id, "set_launch_budget_kind", { budget_kind: e.target.value })}>
+            <select className="field__select" value={launchState.budgetSplitPolicy.kind} onChange={e => editGraphNode?.(inst.id, "set_launch_budget_kind", { budget_kind: e.target.value })}>
               {launchState.budgetOptions.map(option => (
                 <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
               ))}
@@ -375,7 +375,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, d
           {launchState.budgetSplitPolicy.kind === "Fixed" && (
             <div className="field">
               <label className="field__label">{launchState.fixedBudgetLabel}</label>
-              <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => studio.editInstance(inst.id, "set_launch_budget_limit", { limit: e.target.value })} />
+              <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => editGraphNode?.(inst.id, "set_launch_budget_limit", { limit: e.target.value })} />
             </div>
           )}
         </div>
@@ -433,7 +433,7 @@ function GraphCondValue({ field, value, onChange, conditionView = null }) {
 }
 
 // ── Edge ─────────────────────────────────────────────────────────
-function EdgeInspector({ studio, flow, edge, clearSelection, deleteGraphEdge = null, contract, graphView = null, conditionView = null }) {
+function EdgeInspector({ studio, flow, edge, clearSelection, editGraphEdge = null, deleteGraphEdge = null, contract, graphView = null, conditionView = null }) {
   const edgeState = window.MobKitFlowController.graphEdgeInspectorState({
     edge,
     instances: studio.instances,
@@ -443,7 +443,7 @@ function EdgeInspector({ studio, flow, edge, clearSelection, deleteGraphEdge = n
     contract,
     graphView,
   });
-  const change = (action, payload = {}) => studio.editEdge(edge.id, action, payload);
+  const change = (action, payload = {}) => editGraphEdge?.(edge.id, action, payload);
   const setEdgeKind = (kind) => change("set_kind", { edge_kind: kind });
   const setCondOwner = (instanceId) => change("set_condition_owner", { owner_instance_id: instanceId });
   const setCondField = (field) => change("set_condition_field", { field_name: field });

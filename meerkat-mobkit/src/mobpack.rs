@@ -29556,7 +29556,12 @@ depends_on_mode = "all"
                 .unwrap_or_default()
                 .starts_with("STEP ·")
         }));
-        assert!(std::path::Path::new(&result.pack_path).exists());
+        let pack_exists = std::path::Path::new(&result.pack_path).exists();
+        if result.executed {
+            assert!(pack_exists);
+        } else {
+            assert!(!pack_exists);
+        }
         if let Ok(path) = std::env::var("MOBKIT_MOBPACK_DEPLOY_OUT") {
             std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap())
                 .expect("write deploy result");

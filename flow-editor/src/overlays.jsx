@@ -132,7 +132,7 @@ function SourceDrawer({ open, onClose, state, sourceView = null }) {
           {editorState.validationSource && <div className="inspector__id">{editorState.validationSource}</div>}
         </div>
         <div className="row">
-          <button className="btn btn--sm" onClick={() => navigator.clipboard?.writeText(editorState.source)}>{editorState.copyLabel}</button>
+          <button className="btn btn--sm" onClick={() => navigator.clipboard?.writeText(editorState.source)} disabled={editorState.copyDisabled}>{editorState.copyLabel}</button>
           <button className="btn btn--ghost btn--sm" onClick={onClose}>{editorState.closeLabel}</button>
         </div>
       </div>

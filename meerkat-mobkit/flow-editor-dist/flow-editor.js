@@ -12689,7 +12689,7 @@ window.GraphEditor = GraphEditor;
 /* inspector.jsx */
 
 {
-function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, deleteGraphNode = null, deleteGraphEdge = null, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
+function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, deleteGraphEdge = null, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
   const selectionState = window.MobKitFlowController.graphSelectionState({
     selection,
     instances: studio.instances,
@@ -12697,11 +12697,11 @@ function Inspector({ studio, selection, selectMember, selectInstance, clearSelec
   });
   if (selectionState.kind === "instance") {
     if (!selectionState.instance) return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
-    return /* @__PURE__ */ React.createElement(InstanceInspector, { studio, flow, inst: selectionState.instance, selectMember, clearSelection, deleteGraphNode, contract, launchView, graphView, conditionView });
+    return /* @__PURE__ */ React.createElement(InstanceInspector, { studio, flow, inst: selectionState.instance, selectMember, clearSelection, editGraphNode, editGraphEdge, deleteGraphNode, contract, launchView, graphView, conditionView });
   }
   if (selectionState.kind === "edge") {
     if (!selectionState.edge) return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
-    return /* @__PURE__ */ React.createElement(EdgeInspector, { studio, flow, edge: selectionState.edge, clearSelection, deleteGraphEdge, contract, graphView, conditionView });
+    return /* @__PURE__ */ React.createElement(EdgeInspector, { studio, flow, edge: selectionState.edge, clearSelection, editGraphEdge, deleteGraphEdge, contract, graphView, conditionView });
   }
   return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
 }
@@ -12721,8 +12721,8 @@ function TemplateInspector({ studio, template, templateSeed, templateView }) {
     return /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text);
   }))))));
 }
-function GateInspector({ studio, flow, inst, clearSelection, deleteGraphNode = null, contract, graphView = null, conditionView = null }) {
-  const change = (action, payload = {}) => studio.editInstance(inst.id, action, payload);
+function GateInspector({ studio, flow, inst, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, contract, graphView = null, conditionView = null }) {
+  const change = (action, payload = {}) => editGraphNode?.(inst.id, action, payload);
   const kind = inst.gateKind;
   const gateState = window.MobKitFlowController.graphGateControlState(inst, {
     edges: studio.edges,
@@ -12751,14 +12751,14 @@ function GateInspector({ studio, flow, inst, clearSelection, deleteGraphNode = n
     }
   ), /* @__PURE__ */ React.createElement("span", { className: "kv__hint" }, gateState.quorumIncomingLabel)), gateState.collection && gateState.collection !== "all" && /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, gateState.joinMemberLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: inst.controllerRole || "", onChange: (e) => change("set_join_controller_role", { controller_role: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: gateState.joinMemberPlaceholderOption.value }, gateState.joinMemberPlaceholderOption.label), gateState.memberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("div", { className: "kv__hint" }, gateState.joinMemberHint))), kind === "fork" && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.dispatchTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: gateState.dispatch, onChange: (e) => change("set_fork_dispatch", { dispatch: e.target.value }) }, gateState.dispatchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), gateState.selectedDispatch?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, gateState.selectedDispatch.reason), /* @__PURE__ */ React.createElement("div", { className: "kv__hint" }, gateState.dispatchHint)), kind === "branch" && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.conditionsTitle), branchRows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "kv__hint" }, gateState.emptyBranchHint), branchRows.map((row) => {
     const e = row.edge;
-    const setCondOwner = (instanceId) => studio.editEdge(e.id, "set_condition_owner", { owner_instance_id: instanceId });
-    const setCondField = (field) => studio.editEdge(e.id, "set_condition_field", { field_name: field });
+    const setCondOwner = (instanceId) => editGraphEdge?.(e.id, "set_condition_owner", { owner_instance_id: instanceId });
+    const setCondField = (field) => editGraphEdge?.(e.id, "set_condition_field", { field_name: field });
     return /* @__PURE__ */ React.createElement("div", { key: e.id, className: "branch-cond-row" }, /* @__PURE__ */ React.createElement("div", { className: "row row--gap" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.modeValue, onChange: (ev) => {
-      studio.editEdge(e.id, "set_condition_mode", { mode: ev.target.value, owner_instance_id: row.firstOwnerId });
-    } }, row.modeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("span", { className: "kv__hint" }, row.targetPrefix, " ", row.targetLabel)), row.isCondition && (!row.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, row.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "bld-cond", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.ownerValue, onChange: (ev) => setCondOwner(ev.target.value) }, row.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.fieldValue, onChange: (ev) => setCondField(ev.target.value) }, /* @__PURE__ */ React.createElement("option", { value: row.fieldPlaceholderOption.value }, row.fieldPlaceholderOption.label), row.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: row.operatorValue, onChange: (ev) => studio.editEdge(e.id, "set_condition_operator", { operator: ev.target.value }) }, row.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: row.condField, value: e.cond?.val, conditionView, onChange: (val) => studio.editEdge(e.id, "set_condition_value", { value: val }) }))));
+      editGraphEdge?.(e.id, "set_condition_mode", { mode: ev.target.value, owner_instance_id: row.firstOwnerId });
+    } }, row.modeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("span", { className: "kv__hint" }, row.targetPrefix, " ", row.targetLabel)), row.isCondition && (!row.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, row.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "bld-cond", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.ownerValue, onChange: (ev) => setCondOwner(ev.target.value) }, row.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.fieldValue, onChange: (ev) => setCondField(ev.target.value) }, /* @__PURE__ */ React.createElement("option", { value: row.fieldPlaceholderOption.value }, row.fieldPlaceholderOption.label), row.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: row.operatorValue, onChange: (ev) => editGraphEdge?.(e.id, "set_condition_operator", { operator: ev.target.value }) }, row.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: row.condField, value: e.cond?.val, conditionView, onChange: (val) => editGraphEdge?.(e.id, "set_condition_value", { value: val }) }))));
   })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.wiringTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, /* @__PURE__ */ React.createElement("dt", null, gateState.incomingLabel), /* @__PURE__ */ React.createElement("dd", null, gateState.incomingCount), /* @__PURE__ */ React.createElement("dt", null, gateState.outgoingLabel), /* @__PURE__ */ React.createElement("dd", null, gateState.outgoingCount)))));
 }
-function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, deleteGraphNode = null, contract, launchView = null, graphView = null, conditionView = null }) {
+function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, contract, launchView = null, graphView = null, conditionView = null }) {
   const instanceState = window.MobKitFlowController.graphInstanceControlState({
     inst,
     instances: studio.instances,
@@ -12768,7 +12768,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, d
   });
   const member = instanceState.member;
   if (inst.isGate) {
-    return /* @__PURE__ */ React.createElement(GateInspector, { studio, flow, inst, clearSelection, deleteGraphNode, contract, graphView, conditionView });
+    return /* @__PURE__ */ React.createElement(GateInspector, { studio, flow, inst, clearSelection, editGraphNode, editGraphEdge, deleteGraphNode, contract, graphView, conditionView });
   }
   if (inst.isTerminal) {
     const terminalState = window.MobKitFlowController.graphTerminalControlState(inst, contract, graphView);
@@ -12781,7 +12781,7 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, d
       className: "field__select",
       value: launchState.launchKind,
       onChange: (e) => {
-        studio.editInstance(inst.id, "set_launch_kind", { kind: e.target.value, first_fork_source_id: instanceState.firstForkSourceId });
+        editGraphNode?.(inst.id, "set_launch_kind", { kind: e.target.value, first_fork_source_id: instanceState.firstForkSourceId });
       }
     },
     launchState.launchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
@@ -12791,9 +12791,9 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, d
       className: "field__input",
       value: launchState.launchMode.sessionId || "",
       placeholder: launchState.resumeSessionPlaceholder,
-      onChange: (e) => studio.editInstance(inst.id, "set_launch_session", { session_id: e.target.value })
+      onChange: (e) => editGraphNode?.(inst.id, "set_launch_session", { session_id: e.target.value })
     }
-  )), launchState.launchKind === "Fork" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.forkSourceLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.launchMode.from || "", onChange: (e) => studio.editInstance(inst.id, "set_launch_fork_source", { from: e.target.value }) }, instanceState.forkSourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.graphForkContextLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.forkContextValue, onChange: (e) => studio.editInstance(inst.id, "set_launch_fork_context", { context: e.target.value }) }, launchState.forkContextOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedForkContext?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, launchState.selectedForkContext.reason)), /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.budgetPolicyLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.budgetSplitPolicy.kind, onChange: (e) => studio.editInstance(inst.id, "set_launch_budget_kind", { budget_kind: e.target.value }) }, launchState.budgetOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), launchState.selectedBudgetPolicy?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, launchState.selectedBudgetPolicy.reason)), launchState.budgetSplitPolicy.kind === "Fixed" && /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.fixedBudgetLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", value: launchState.fixedBudgetValue, onChange: (e) => studio.editInstance(inst.id, "set_launch_budget_limit", { limit: e.target.value }) }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, instanceState.positionTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, instanceState.positionRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), member && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, instanceState.outputTitle), instanceState.outputSchema && /* @__PURE__ */ React.createElement("ul", { className: "schema-fields" }, instanceState.outputFieldRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, instanceState.outputHint, " ", /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => selectMember(instanceState.memberId) }, instanceState.outputOpenMemberLabel)))));
+  )), launchState.launchKind === "Fork" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.forkSourceLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.launchMode.from || "", onChange: (e) => editGraphNode?.(inst.id, "set_launch_fork_source", { from: e.target.value }) }, instanceState.forkSourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.graphForkContextLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.forkContextValue, onChange: (e) => editGraphNode?.(inst.id, "set_launch_fork_context", { context: e.target.value }) }, launchState.forkContextOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedForkContext?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, launchState.selectedForkContext.reason)), /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.budgetPolicyLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.budgetSplitPolicy.kind, onChange: (e) => editGraphNode?.(inst.id, "set_launch_budget_kind", { budget_kind: e.target.value }) }, launchState.budgetOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), launchState.selectedBudgetPolicy?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, launchState.selectedBudgetPolicy.reason)), launchState.budgetSplitPolicy.kind === "Fixed" && /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.fixedBudgetLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", value: launchState.fixedBudgetValue, onChange: (e) => editGraphNode?.(inst.id, "set_launch_budget_limit", { limit: e.target.value }) }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, instanceState.positionTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, instanceState.positionRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), member && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, instanceState.outputTitle), instanceState.outputSchema && /* @__PURE__ */ React.createElement("ul", { className: "schema-fields" }, instanceState.outputFieldRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, instanceState.outputHint, " ", /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => selectMember(instanceState.memberId) }, instanceState.outputOpenMemberLabel)))));
 }
 function GraphCondValue({ field, value, onChange, conditionView = null }) {
   const control = window.MobKitFlowController.conditionValueControl(field, value, conditionView);
@@ -12805,7 +12805,7 @@ function GraphCondValue({ field, value, onChange, conditionView = null }) {
   }
   return /* @__PURE__ */ React.createElement("input", { className: "field__input", placeholder: control.placeholder, value: control.value, onChange: (e) => onChange(e.target.value) });
 }
-function EdgeInspector({ studio, flow, edge, clearSelection, deleteGraphEdge = null, contract, graphView = null, conditionView = null }) {
+function EdgeInspector({ studio, flow, edge, clearSelection, editGraphEdge = null, deleteGraphEdge = null, contract, graphView = null, conditionView = null }) {
   const edgeState = window.MobKitFlowController.graphEdgeInspectorState({
     edge,
     instances: studio.instances,
@@ -12815,7 +12815,7 @@ function EdgeInspector({ studio, flow, edge, clearSelection, deleteGraphEdge = n
     contract,
     graphView
   });
-  const change = (action, payload = {}) => studio.editEdge(edge.id, action, payload);
+  const change = (action, payload = {}) => editGraphEdge?.(edge.id, action, payload);
   const setEdgeKind = (kind) => change("set_kind", { edge_kind: kind });
   const setCondOwner = (instanceId) => change("set_condition_owner", { owner_instance_id: instanceId });
   const setCondField = (field) => change("set_condition_field", { field_name: field });
@@ -12915,7 +12915,7 @@ function SourceDrawer({ open, onClose, state, sourceView = null }) {
   }, [state]);
   if (!open) return null;
   const editorState = window.MobKitFlowController.sourceEditorState(state, { sourceView, sourcePath });
-  return /* @__PURE__ */ React.createElement("div", { className: "source-drawer" }, /* @__PURE__ */ React.createElement("div", { className: "source-drawer__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.drawerEyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source) }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => selectSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, sourceView, sourcePath }));
+  return /* @__PURE__ */ React.createElement("div", { className: "source-drawer" }, /* @__PURE__ */ React.createElement("div", { className: "source-drawer__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.drawerEyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => selectSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, sourceView, sourcePath }));
 }
 function InlineSourceEditor({ open, onClose, state, busy = false, surface = "basic", sourceView = null }) {
   const [sourcePath, setSourcePath] = React.useState("");
@@ -14476,13 +14476,19 @@ function App() {
           applyMobKitAuthoringOperation({
             intent: "graph.deleteNode",
             instanceId: selection.id
-          }).then(() => clearSelection(nextSelection));
+          }).then((result) => {
+            if (result?.ok === false) return;
+            clearSelection(nextSelection);
+          });
         } else if (selection.kind === "edge") {
           const nextSelection = { kind: null, id: null };
           applyMobKitAuthoringOperation({
             intent: "graph.deleteEdge",
             edgeId: selection.id
-          }).then(() => clearSelection(nextSelection));
+          }).then((result) => {
+            if (result?.ok === false) return;
+            clearSelection(nextSelection);
+          });
         }
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
@@ -14633,61 +14639,20 @@ function App() {
   };
   const applyMobKitAuthoringOperation = React.useCallback((operation) => authoringOperationRunner.current(operation), []);
   const mobKitStudio = {
-    ...studio,
-    addInstance: (instance) => {
-      const memberId = String(instance?.memberId || instance?.member_id || "").trim();
-      const col = Number(instance?.col);
-      const row = Number(instance?.row);
-      if (!memberId || !Number.isFinite(col) || !Number.isFinite(row)) {
-        return { ok: false, error: "Graph instance adds require a semantic member pick and cell" };
-      }
-      return applyMobKitAuthoringOperation({
-        intent: "graph.insertNode",
-        pick: { kind: "memberInstance", memberId },
-        cell: { col, row }
-      });
-    },
-    editInstance: (id, action, payload = {}) => {
-      return applyMobKitAuthoringOperation({
-        intent: "graph.editNode",
-        instanceId: id,
-        action,
-        payload
-      });
-    },
-    deleteInstance: (id) => {
-      return applyMobKitAuthoringOperation({
-        intent: "graph.deleteNode",
-        instanceId: id
-      });
-    },
-    addEdge: (edge) => {
-      const fromId = String(edge?.from || "").trim();
-      const toId = String(edge?.to || "").trim();
-      if (!fromId || !toId) {
-        return { ok: false, error: "Graph edge adds require semantic from/to endpoints" };
-      }
-      return applyMobKitAuthoringOperation({
-        intent: "graph.connectNodes",
-        fromId,
-        toId
-      });
-    },
-    editEdge: (id, action, payload = {}) => {
-      return applyMobKitAuthoringOperation({
-        intent: "graph.editEdge",
-        edgeId: id,
-        action,
-        payload
-      });
-    },
-    deleteEdge: (id) => {
-      return applyMobKitAuthoringOperation({
-        intent: "graph.deleteEdge",
-        edgeId: id
-      });
-    }
+    ...studio
   };
+  const editGraphNode = React.useCallback((id, action, payload = {}) => applyMobKitAuthoringOperation({
+    intent: "graph.editNode",
+    instanceId: id,
+    action,
+    payload
+  }), [applyMobKitAuthoringOperation]);
+  const editGraphEdge = React.useCallback((id, action, payload = {}) => applyMobKitAuthoringOperation({
+    intent: "graph.editEdge",
+    edgeId: id,
+    action,
+    payload
+  }), [applyMobKitAuthoringOperation]);
   const saveRegistryDocument = (rowPatch) => {
     if (!rowPatch?.document) return;
     window.MobKitFlowController.saveDocument(rowPatch).then((result) => {
@@ -15215,6 +15180,8 @@ function App() {
       selectMember: handleAgentNavigation,
       selectInstance,
       clearSelection,
+      editGraphNode,
+      editGraphEdge,
       deleteGraphNode: (id) => applyMobKitAuthoringOperation({
         intent: "graph.deleteNode",
         instanceId: id
