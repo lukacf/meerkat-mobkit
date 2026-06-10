@@ -389,18 +389,16 @@ function App() {
       if (e.key === "Backspace" || e.key === "Delete") {
         if (selection.kind === "instance") {
           const nextSelection = { kind: null, id: null };
-          applyMobKitAuthoringReplacement({
+          applyMobKitAuthoringOperation({
             intent: "graph.deleteNode",
             instanceId: selection.id,
-            selection: nextSelection,
           }).then(() => clearSelection(nextSelection));
         }
         else if (selection.kind === "edge") {
           const nextSelection = { kind: null, id: null };
-          applyMobKitAuthoringReplacement({
+          applyMobKitAuthoringOperation({
             intent: "graph.deleteEdge",
             edgeId: selection.id,
-            selection: nextSelection,
           }).then(() => clearSelection(nextSelection));
         }
       }
@@ -437,7 +435,7 @@ function App() {
   const handlePick = (pick) => {
     if (!addAt) return;
     const nextMenu = window.MobKitFlowController.graphAddMenuCloseProjection();
-    applyMobKitAuthoringReplacement({
+    applyMobKitAuthoringOperation({
       intent: "graph.insertNode",
       pick,
       cell: addAt,
@@ -644,35 +642,31 @@ function App() {
     ...studio,
     addInstance: (instance) => {
       const id = String(instance?.id || "").trim();
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.insertNode",
         instance,
-        selection: id ? { kind: "instance", id } : null,
+        ...(id ? { selection: { kind: "instance", id } } : {}),
       });
     },
     updateInstance: (id, patch) => {
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.updateNode",
         instanceId: id,
         patch,
-        selection: { kind: "instance", id },
       });
     },
     editInstance: (id, action, payload = {}) => {
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.editNode",
         instanceId: id,
         action,
         payload,
-        selection: { kind: "instance", id },
       });
     },
     deleteInstance: (id) => {
-      const selection = { kind: null, id: null };
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.deleteNode",
         instanceId: id,
-        selection,
       });
     },
     addEdge: (edge) => {
@@ -682,35 +676,31 @@ function App() {
       const operation = fromId && toId
         ? { from_id: fromId, to_id: toId }
         : { edge };
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.connectNodes",
         operation,
-        selection: id ? { kind: "edge", id } : null,
+        ...(id ? { selection: { kind: "edge", id } } : {}),
       });
     },
     updateEdge: (id, patch) => {
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.updateEdge",
         edgeId: id,
         patch,
-        selection: { kind: "edge", id },
       });
     },
     editEdge: (id, action, payload = {}) => {
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.editEdge",
         edgeId: id,
         action,
         payload,
-        selection: { kind: "edge", id },
       });
     },
     deleteEdge: (id) => {
-      const selection = { kind: null, id: null };
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.deleteEdge",
         edgeId: id,
-        selection,
       });
     },
     addSchema: () => {
@@ -1227,7 +1217,7 @@ function App() {
             contract={contract}
             graphView={catalogs.graphView}
             toolCatalog={catalogs.toolCatalog}
-            applyAuthoringIntent={applyMobKitAuthoringReplacement}
+            applyAuthoringIntent={applyMobKitAuthoringOperation}
           />
             <InlineSourceEditor
               open={inlineSourceOpen && inlineSourceSurface === "graph"}

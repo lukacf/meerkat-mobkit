@@ -179,24 +179,6 @@
         return withSelection({ operationType: "rename_input_param", operation: { step_id: input.stepId, param_id: input.paramId, new_name: input.newName } });
       case "basic.deleteInputParam":
         return withSelection({ operationType: "delete_input_param", operation: { step_id: input.stepId, param_id: input.paramId } });
-      case "graph.insertNode":
-        return withSelection({ operationType: "insert_graph_node", operation: input.operation || { pick: input.pick, cell: input.cell, instance: input.instance } });
-      case "graph.updateNode":
-        return withSelection({ operationType: "update_graph_node", operation: { instance_id: input.instanceId, patch: input.patch || {} } });
-      case "graph.editNode":
-        return withSelection({ operationType: "apply_graph_node_edit", operation: { instance_id: input.instanceId, action: input.action, ...(input.payload || {}) } });
-      case "graph.moveNode":
-        return withSelection({ operationType: "move_graph_node", operation: { instance_id: input.instanceId, cell: input.cell, original_cell: input.originalCell } });
-      case "graph.deleteNode":
-        return withSelection({ operationType: "delete_graph_node", operation: { instance_id: input.instanceId } });
-      case "graph.connectNodes":
-        return withSelection({ operationType: "connect_graph_nodes", operation: input.operation || { from_id: input.fromId, to_id: input.toId, edge: input.edge } });
-      case "graph.updateEdge":
-        return withSelection({ operationType: "update_graph_edge", operation: { edge_id: input.edgeId, patch: input.patch || {} } });
-      case "graph.editEdge":
-        return withSelection({ operationType: "apply_graph_edge_edit", operation: { edge_id: input.edgeId, action: input.action, ...(input.payload || {}) } });
-      case "graph.deleteEdge":
-        return withSelection({ operationType: "delete_graph_edge", operation: { edge_id: input.edgeId } });
       case "schema.add":
         return withSelection({ operationType: "add_schema", operation: {} });
       case "schema.update":
@@ -247,6 +229,24 @@
         return { type: "remove_member_skill", member_id: input.memberId, skill_id: input.skillId };
       case "agent.createInlineSkill":
         return { type: "create_inline_skill", member_id: input.memberId, label: input.label, content: input.content };
+      case "graph.insertNode":
+        return { type: "insert_graph_node", ...(input.operation || { pick: input.pick, cell: input.cell, instance: input.instance }) };
+      case "graph.updateNode":
+        return { type: "update_graph_node", instance_id: input.instanceId, patch: input.patch || {} };
+      case "graph.editNode":
+        return { type: "apply_graph_node_edit", instance_id: input.instanceId, action: input.action, ...(input.payload || {}) };
+      case "graph.moveNode":
+        return { type: "move_graph_node", instance_id: input.instanceId, cell: input.cell, original_cell: input.originalCell };
+      case "graph.deleteNode":
+        return { type: "delete_graph_node", instance_id: input.instanceId };
+      case "graph.connectNodes":
+        return { type: "connect_graph_nodes", ...(input.operation || { from_id: input.fromId, to_id: input.toId, edge: input.edge }) };
+      case "graph.updateEdge":
+        return { type: "update_graph_edge", edge_id: input.edgeId, patch: input.patch || {} };
+      case "graph.editEdge":
+        return { type: "apply_graph_edge_edit", edge_id: input.edgeId, action: input.action, ...(input.payload || {}) };
+      case "graph.deleteEdge":
+        return { type: "delete_graph_edge", edge_id: input.edgeId };
       default:
         return input;
     }

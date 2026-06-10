@@ -1402,7 +1402,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["pick_or_instance"],
             "mutates": ["document.instances", "document.edges", "document.frames", "document.flow"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "update_graph_node",
@@ -1410,7 +1410,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["instance_id", "patch"],
             "mutates": ["document.instances", "document.edges", "document.frames", "document.flow"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "apply_graph_node_edit",
@@ -1426,7 +1426,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["instance_id", "cell"],
             "mutates": ["document.instances"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "delete_graph_node",
@@ -1434,7 +1434,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["instance_id"],
             "mutates": ["document.instances", "document.edges", "document.frames", "document.flow"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "connect_graph_nodes",
@@ -1442,7 +1442,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["edge_or_endpoints"],
             "mutates": ["document.edges", "document.flow"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "update_graph_edge",
@@ -1450,7 +1450,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["edge_id", "patch"],
             "mutates": ["document.edges", "document.flow"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         },
         {
             "type": "apply_graph_edge_edit",
@@ -1466,7 +1466,7 @@ pub fn mobpack_authoring_operations() -> Value {
             "authority": "mobkit",
             "requires": ["edge_id"],
             "mutates": ["document.edges", "document.flow"],
-            "projection_document_supported": true
+            "projection_document_supported": false
         }
     ])
 }
@@ -8307,13 +8307,6 @@ fn apply_insert_graph_node_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation.get("instance").is_none()
-        && operation.get("instances").is_none()
-        && operation.get("pick").is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let mut incoming_instances = Vec::new();
     let mut incoming_edges = Vec::new();
     let mut semantic_selection = None;
@@ -8378,7 +8371,8 @@ fn apply_insert_graph_node_operation(
         }
         document.edges = Value::Array(edges);
     }
-    apply_graph_operation_sections(document, operation, &["flow", "edges", "frames"]);
+    apply_graph_operation_sections(document, operation, &["frames"]);
+    document.flow = graph_to_flow_from_document(document);
     let selected_id = semantic_selection.unwrap_or(selected_id);
     Ok(json!({ "kind": "instance", "id": selected_id, "inserted_ids": inserted_ids }))
 }
@@ -8387,15 +8381,6 @@ fn apply_update_graph_node_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("instance_id")
-            .or_else(|| operation.get("instanceId"))
-            .or_else(|| operation.get("id"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let instance_id = operation_instance_id(operation)?;
     let patch = operation
         .get("patch")
@@ -8426,7 +8411,8 @@ fn apply_update_graph_node_operation(
     )?;
     instances[index] = next_instance;
     document.instances = Value::Array(instances);
-    apply_graph_operation_sections(document, operation, &["flow", "edges", "frames"]);
+    apply_graph_operation_sections(document, operation, &["frames"]);
+    document.flow = graph_to_flow_from_document(document);
     Ok(json!({ "kind": "instance", "id": instance_id }))
 }
 
@@ -8851,15 +8837,6 @@ fn apply_move_graph_node_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("instance_id")
-            .or_else(|| operation.get("instanceId"))
-            .or_else(|| operation.get("id"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let instance_id = operation_instance_id(operation)?;
     let cell = operation
         .get("cell")
@@ -8918,6 +8895,7 @@ fn apply_move_graph_node_operation(
         }
     }
     document.instances = Value::Array(instances);
+    document.flow = graph_to_flow_from_document(document);
     Ok(json!({ "kind": "instance", "id": instance_id }))
 }
 
@@ -8991,15 +8969,6 @@ fn apply_delete_graph_node_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("instance_id")
-            .or_else(|| operation.get("instanceId"))
-            .or_else(|| operation.get("id"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let instance_id = operation_instance_id(operation)?;
     let mut instances = document
         .instances
@@ -9028,7 +8997,8 @@ fn apply_delete_graph_node_operation(
     clear_deleted_graph_condition_edges(&mut edges, &instance_id);
     document.instances = Value::Array(instances);
     document.edges = Value::Array(edges);
-    apply_graph_operation_sections(document, operation, &["flow", "frames"]);
+    apply_graph_operation_sections(document, operation, &["frames"]);
+    document.flow = graph_to_flow_from_document(document);
     Ok(json!({ "kind": null, "id": null }))
 }
 
@@ -9036,16 +9006,6 @@ fn apply_connect_graph_nodes_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation.get("edge").is_none()
-        && operation
-            .get("from_id")
-            .or_else(|| operation.get("fromId"))
-            .or_else(|| operation.get("from"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let instances = document
         .instances
         .as_array()
@@ -9068,15 +9028,6 @@ fn apply_update_graph_edge_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("edge_id")
-            .or_else(|| operation.get("edgeId"))
-            .or_else(|| operation.get("id"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let edge_id = operation_edge_id(operation)?;
     let patch = operation
         .get("patch")
@@ -9103,7 +9054,8 @@ fn apply_update_graph_edge_operation(
     validate_graph_edge(&next_edge, &edges, &instances, Some(&edge_id))?;
     edges[index] = next_edge;
     document.edges = Value::Array(edges);
-    apply_graph_operation_sections(document, operation, &["flow", "frames"]);
+    apply_graph_operation_sections(document, operation, &["frames"]);
+    document.flow = graph_to_flow_from_document(document);
     Ok(json!({ "kind": "edge", "id": edge_id }))
 }
 
@@ -9476,15 +9428,6 @@ fn apply_delete_graph_edge_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    if operation.get("document").is_some()
-        && operation
-            .get("edge_id")
-            .or_else(|| operation.get("edgeId"))
-            .or_else(|| operation.get("id"))
-            .is_none()
-    {
-        return apply_projected_authoring_document_operation(document, operation);
-    }
     let edge_id = operation_edge_id(operation)?;
     let mut edges = document.edges.as_array().cloned().unwrap_or_else(Vec::new);
     let before = edges.len();
@@ -9498,7 +9441,8 @@ fn apply_delete_graph_edge_operation(
         return Err(format!("graph edge not found: {edge_id}"));
     }
     document.edges = Value::Array(edges);
-    apply_graph_operation_sections(document, operation, &["flow", "frames"]);
+    apply_graph_operation_sections(document, operation, &["frames"]);
+    document.flow = graph_to_flow_from_document(document);
     Ok(json!({ "kind": null, "id": null }))
 }
 
@@ -26377,6 +26321,228 @@ model = "gpt-5.5"
             operations.len()
         );
         assert_eq!(capabilities["deploy_command"], json!("rkat mob deploy"));
+    }
+
+    fn graph_apply_operation_document() -> Value {
+        let mut document = valid_document();
+        document.mob_toml = None;
+        document.members = json!([
+            {
+                "id": "planner",
+                "name": "planner",
+                "role": "planner",
+                "profileBinding": "inline",
+                "runtimeMode": "turn_driven",
+                "model": "gpt-5.5",
+                "tools": []
+            },
+            {
+                "id": "reviewer",
+                "name": "reviewer",
+                "role": "reviewer",
+                "profileBinding": "inline",
+                "runtimeMode": "turn_driven",
+                "model": "gpt-5.5",
+                "tools": []
+            }
+        ]);
+        document.schemas = json!([]);
+        document.instances = json!([
+            { "id": "n_plan", "memberId": "planner", "kind": "member", "col": 0, "row": 0 },
+            { "id": "n_review", "memberId": "reviewer", "kind": "member", "col": 1, "row": 0 }
+        ]);
+        document.edges = json!([]);
+        document.frames = json!([]);
+        document.flow = graph_to_flow_from_document(&document);
+        serde_json::to_value(document).expect("serialize graph document")
+    }
+
+    fn apply_narrow_graph_operation(document: Value, operation: Value) -> Value {
+        assert!(
+            operation
+                .as_object()
+                .expect("operation object")
+                .get("document")
+                .is_none(),
+            "graph apply_operation tests must use narrow payloads without operation.document"
+        );
+        let result = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": operation
+        }))
+        .expect("apply narrow graph operation");
+        assert_eq!(result["source"], json!("mobkit/mobpacks/apply_operation"));
+        assert!(result.get("document").is_some());
+        assert!(result.get("selection").is_some());
+        result
+    }
+
+    fn graph_instance<'a>(document: &'a Value, instance_id: &str) -> &'a Value {
+        document["instances"]
+            .as_array()
+            .expect("instances")
+            .iter()
+            .find(|instance| instance["id"] == instance_id)
+            .unwrap_or_else(|| panic!("missing graph instance {instance_id}"))
+    }
+
+    fn graph_edge<'a>(document: &'a Value, edge_id: &str) -> &'a Value {
+        document["edges"]
+            .as_array()
+            .expect("edges")
+            .iter()
+            .find(|edge| edge["id"] == edge_id)
+            .unwrap_or_else(|| panic!("missing graph edge {edge_id}"))
+    }
+
+    fn assert_graph_flow_projection_synced(result: &Value) {
+        let projection = graph_to_flow_mobpack(&json!({ "document": result["document"].clone() }))
+            .expect("graph to flow projection");
+        assert_eq!(result["document"]["flow"], projection["flow"]);
+    }
+
+    #[test]
+    fn apply_operation_mutates_graph_nodes_from_narrow_payloads() {
+        let inserted = apply_narrow_graph_operation(
+            graph_apply_operation_document(),
+            json!({
+                "type": "insert_graph_node",
+                "instance": { "id": "n_done", "kind": "member", "memberId": "reviewer", "col": 2, "row": 0 }
+            }),
+        );
+        assert_eq!(inserted["operation"], json!("insert_graph_node"));
+        assert_eq!(inserted["selection"]["kind"], json!("instance"));
+        assert_eq!(inserted["selection"]["id"], json!("n_done"));
+        assert_eq!(
+            graph_instance(&inserted["document"], "n_done")["col"],
+            json!(2)
+        );
+        assert_graph_flow_projection_synced(&inserted);
+
+        let updated = apply_narrow_graph_operation(
+            inserted["document"].clone(),
+            json!({
+                "type": "update_graph_node",
+                "instance_id": "n_done",
+                "patch": { "lane": "review", "label": "Done" }
+            }),
+        );
+        assert_eq!(updated["operation"], json!("update_graph_node"));
+        assert_eq!(
+            updated["selection"],
+            json!({ "kind": "instance", "id": "n_done" })
+        );
+        assert_eq!(
+            graph_instance(&updated["document"], "n_done")["lane"],
+            json!("review")
+        );
+        assert_eq!(
+            graph_instance(&updated["document"], "n_done")["label"],
+            json!("Done")
+        );
+        assert_graph_flow_projection_synced(&updated);
+
+        let moved = apply_narrow_graph_operation(
+            updated["document"].clone(),
+            json!({
+                "type": "move_graph_node",
+                "instance_id": "n_done",
+                "cell": { "col": 1, "row": 0 },
+                "original_cell": { "col": 2, "row": 0 }
+            }),
+        );
+        assert_eq!(moved["operation"], json!("move_graph_node"));
+        assert_eq!(
+            moved["selection"],
+            json!({ "kind": "instance", "id": "n_done" })
+        );
+        assert_eq!(
+            graph_instance(&moved["document"], "n_done")["col"],
+            json!(1)
+        );
+        assert_eq!(
+            graph_instance(&moved["document"], "n_review")["col"],
+            json!(2)
+        );
+        assert_graph_flow_projection_synced(&moved);
+
+        let deleted = apply_narrow_graph_operation(
+            moved["document"].clone(),
+            json!({
+                "type": "delete_graph_node",
+                "instance_id": "n_done"
+            }),
+        );
+        assert_eq!(deleted["operation"], json!("delete_graph_node"));
+        assert_eq!(deleted["selection"], json!({ "kind": null, "id": null }));
+        assert!(
+            !deleted["document"]["instances"]
+                .as_array()
+                .expect("instances")
+                .iter()
+                .any(|instance| instance["id"] == "n_done")
+        );
+        assert_graph_flow_projection_synced(&deleted);
+    }
+
+    #[test]
+    fn apply_operation_mutates_graph_edges_from_narrow_payloads() {
+        let connected = apply_narrow_graph_operation(
+            graph_apply_operation_document(),
+            json!({
+                "type": "connect_graph_nodes",
+                "from_id": "n_plan",
+                "to_id": "n_review"
+            }),
+        );
+        assert_eq!(connected["operation"], json!("connect_graph_nodes"));
+        assert_eq!(connected["selection"]["kind"], json!("edge"));
+        assert_eq!(connected["selection"]["id"], json!("e_n_plan_n_review"));
+        assert_eq!(
+            graph_edge(&connected["document"], "e_n_plan_n_review")["kind"],
+            json!("next")
+        );
+        assert_graph_flow_projection_synced(&connected);
+
+        let edge_updated = apply_narrow_graph_operation(
+            connected["document"].clone(),
+            json!({
+                "type": "update_graph_edge",
+                "edge_id": "e_n_plan_n_review",
+                "patch": { "label": "ready", "kind": "next" }
+            }),
+        );
+        assert_eq!(edge_updated["operation"], json!("update_graph_edge"));
+        assert_eq!(
+            edge_updated["selection"],
+            json!({ "kind": "edge", "id": "e_n_plan_n_review" })
+        );
+        assert_eq!(
+            graph_edge(&edge_updated["document"], "e_n_plan_n_review")["label"],
+            json!("ready")
+        );
+        assert_graph_flow_projection_synced(&edge_updated);
+
+        let edge_deleted = apply_narrow_graph_operation(
+            edge_updated["document"].clone(),
+            json!({
+                "type": "delete_graph_edge",
+                "edge_id": "e_n_plan_n_review"
+            }),
+        );
+        assert_eq!(edge_deleted["operation"], json!("delete_graph_edge"));
+        assert_eq!(
+            edge_deleted["selection"],
+            json!({ "kind": null, "id": null })
+        );
+        assert_eq!(
+            edge_deleted["document"]["edges"]
+                .as_array()
+                .expect("edges")
+                .len(),
+            0
+        );
+        assert_graph_flow_projection_synced(&edge_deleted);
     }
 
     #[test]

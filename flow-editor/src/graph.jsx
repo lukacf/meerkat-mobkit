@@ -239,7 +239,6 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
             instanceId: drag.instId,
             cell,
             originalCell: { col: drag.origCol, row: drag.origRow },
-            selection: { kind: "instance", id: drag.instId },
           }, "MobKit graph node move failed");
         }
         setDrag(null); setHoverCell(null);

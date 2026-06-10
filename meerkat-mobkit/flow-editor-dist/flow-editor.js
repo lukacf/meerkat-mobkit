@@ -212,24 +212,6 @@ window.MOBKIT_BOOT = {
         return withSelection({ operationType: "rename_input_param", operation: { step_id: input.stepId, param_id: input.paramId, new_name: input.newName } });
       case "basic.deleteInputParam":
         return withSelection({ operationType: "delete_input_param", operation: { step_id: input.stepId, param_id: input.paramId } });
-      case "graph.insertNode":
-        return withSelection({ operationType: "insert_graph_node", operation: input.operation || { pick: input.pick, cell: input.cell, instance: input.instance } });
-      case "graph.updateNode":
-        return withSelection({ operationType: "update_graph_node", operation: { instance_id: input.instanceId, patch: input.patch || {} } });
-      case "graph.editNode":
-        return withSelection({ operationType: "apply_graph_node_edit", operation: { instance_id: input.instanceId, action: input.action, ...(input.payload || {}) } });
-      case "graph.moveNode":
-        return withSelection({ operationType: "move_graph_node", operation: { instance_id: input.instanceId, cell: input.cell, original_cell: input.originalCell } });
-      case "graph.deleteNode":
-        return withSelection({ operationType: "delete_graph_node", operation: { instance_id: input.instanceId } });
-      case "graph.connectNodes":
-        return withSelection({ operationType: "connect_graph_nodes", operation: input.operation || { from_id: input.fromId, to_id: input.toId, edge: input.edge } });
-      case "graph.updateEdge":
-        return withSelection({ operationType: "update_graph_edge", operation: { edge_id: input.edgeId, patch: input.patch || {} } });
-      case "graph.editEdge":
-        return withSelection({ operationType: "apply_graph_edge_edit", operation: { edge_id: input.edgeId, action: input.action, ...(input.payload || {}) } });
-      case "graph.deleteEdge":
-        return withSelection({ operationType: "delete_graph_edge", operation: { edge_id: input.edgeId } });
       case "schema.add":
         return withSelection({ operationType: "add_schema", operation: {} });
       case "schema.update":
@@ -280,6 +262,24 @@ window.MOBKIT_BOOT = {
         return { type: "remove_member_skill", member_id: input.memberId, skill_id: input.skillId };
       case "agent.createInlineSkill":
         return { type: "create_inline_skill", member_id: input.memberId, label: input.label, content: input.content };
+      case "graph.insertNode":
+        return { type: "insert_graph_node", ...(input.operation || { pick: input.pick, cell: input.cell, instance: input.instance }) };
+      case "graph.updateNode":
+        return { type: "update_graph_node", instance_id: input.instanceId, patch: input.patch || {} };
+      case "graph.editNode":
+        return { type: "apply_graph_node_edit", instance_id: input.instanceId, action: input.action, ...(input.payload || {}) };
+      case "graph.moveNode":
+        return { type: "move_graph_node", instance_id: input.instanceId, cell: input.cell, original_cell: input.originalCell };
+      case "graph.deleteNode":
+        return { type: "delete_graph_node", instance_id: input.instanceId };
+      case "graph.connectNodes":
+        return { type: "connect_graph_nodes", ...(input.operation || { from_id: input.fromId, to_id: input.toId, edge: input.edge }) };
+      case "graph.updateEdge":
+        return { type: "update_graph_edge", edge_id: input.edgeId, patch: input.patch || {} };
+      case "graph.editEdge":
+        return { type: "apply_graph_edge_edit", edge_id: input.edgeId, action: input.action, ...(input.payload || {}) };
+      case "graph.deleteEdge":
+        return { type: "delete_graph_edge", edge_id: input.edgeId };
       default:
         return input;
     }
@@ -12776,8 +12776,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
             intent: "graph.moveNode",
             instanceId: drag.instId,
             cell,
-            originalCell: { col: drag.origCol, row: drag.origRow },
-            selection: { kind: "instance", id: drag.instId }
+            originalCell: { col: drag.origCol, row: drag.origRow }
           }, "MobKit graph node move failed");
         }
         setDrag(null);
@@ -14784,17 +14783,15 @@ function App() {
       if (e.key === "Backspace" || e.key === "Delete") {
         if (selection.kind === "instance") {
           const nextSelection = { kind: null, id: null };
-          applyMobKitAuthoringReplacement({
+          applyMobKitAuthoringOperation({
             intent: "graph.deleteNode",
-            instanceId: selection.id,
-            selection: nextSelection
+            instanceId: selection.id
           }).then(() => clearSelection(nextSelection));
         } else if (selection.kind === "edge") {
           const nextSelection = { kind: null, id: null };
-          applyMobKitAuthoringReplacement({
+          applyMobKitAuthoringOperation({
             intent: "graph.deleteEdge",
-            edgeId: selection.id,
-            selection: nextSelection
+            edgeId: selection.id
           }).then(() => clearSelection(nextSelection));
         }
       }
@@ -14831,7 +14828,7 @@ function App() {
   const handlePick = (pick) => {
     if (!addAt) return;
     const nextMenu = window.MobKitFlowController.graphAddMenuCloseProjection();
-    applyMobKitAuthoringReplacement({
+    applyMobKitAuthoringOperation({
       intent: "graph.insertNode",
       pick,
       cell: addAt
@@ -15032,35 +15029,31 @@ function App() {
     ...studio,
     addInstance: (instance) => {
       const id = String(instance?.id || "").trim();
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.insertNode",
         instance,
-        selection: id ? { kind: "instance", id } : null
+        ...id ? { selection: { kind: "instance", id } } : {}
       });
     },
     updateInstance: (id, patch) => {
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.updateNode",
         instanceId: id,
-        patch,
-        selection: { kind: "instance", id }
+        patch
       });
     },
     editInstance: (id, action, payload = {}) => {
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.editNode",
         instanceId: id,
         action,
-        payload,
-        selection: { kind: "instance", id }
+        payload
       });
     },
     deleteInstance: (id) => {
-      const selection2 = { kind: null, id: null };
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.deleteNode",
-        instanceId: id,
-        selection: selection2
+        instanceId: id
       });
     },
     addEdge: (edge) => {
@@ -15068,35 +15061,31 @@ function App() {
       const toId = String(edge?.to || "").trim();
       const id = String(edge?.id || "").trim();
       const operation = fromId && toId ? { from_id: fromId, to_id: toId } : { edge };
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.connectNodes",
         operation,
-        selection: id ? { kind: "edge", id } : null
+        ...id ? { selection: { kind: "edge", id } } : {}
       });
     },
     updateEdge: (id, patch) => {
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.updateEdge",
         edgeId: id,
-        patch,
-        selection: { kind: "edge", id }
+        patch
       });
     },
     editEdge: (id, action, payload = {}) => {
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.editEdge",
         edgeId: id,
         action,
-        payload,
-        selection: { kind: "edge", id }
+        payload
       });
     },
     deleteEdge: (id) => {
-      const selection2 = { kind: null, id: null };
-      return applyMobKitAuthoringReplacement({
+      return applyMobKitAuthoringOperation({
         intent: "graph.deleteEdge",
-        edgeId: id,
-        selection: selection2
+        edgeId: id
       });
     },
     addSchema: () => {
@@ -15588,7 +15577,7 @@ function App() {
       contract,
       graphView: catalogs.graphView,
       toolCatalog: catalogs.toolCatalog,
-      applyAuthoringIntent: applyMobKitAuthoringReplacement
+      applyAuthoringIntent: applyMobKitAuthoringOperation
     }
   ), /* @__PURE__ */ React.createElement(
     InlineSourceEditor,
