@@ -2089,6 +2089,24 @@ pub fn mobpack_schema_response() -> Value {
         { "value": "bottom", "label": "Bottom" },
         { "value": "modal", "label": "Modal" }
     ]);
+    editor_settings_view["unsupported_label_separator"] = json!(" — not in MobKit ");
+    editor_settings_view["unsupported_reason_prefix"] = json!("Unsupported by the MobKit ");
+    editor_settings_view["unsupported_reason_suffix"] = json!(" contract.");
+    editor_settings_view["deploy_surface_contract_label"] = json!("deploy_settings.surfaces");
+    editor_settings_view["trust_policy_contract_label"] = json!("deploy_settings.trust_policies");
+    editor_settings_view["realm_backend_contract_label"] = json!("deploy_settings.realm_backends");
+    editor_settings_view["deploy_surface_labels"] = json!({
+        "cli": "cli",
+        "rpc": "rpc"
+    });
+    editor_settings_view["trust_policy_labels"] = json!({
+        "permissive": "permissive",
+        "strict": "strict"
+    });
+    editor_settings_view["realm_backend_labels"] = json!({
+        "jsonl": "jsonl",
+        "sqlite": "sqlite"
+    });
     let editor_launch_view = json!({
         "launch_title": "Launch mode",
         "graph_launch_title": "LAUNCH MODE · this position",
@@ -29552,6 +29570,34 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_settings_view"]["role_wiring_add_label"],
             json!("+ rule")
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["unsupported_label_separator"],
+            json!(" — not in MobKit ")
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["deploy_surface_contract_label"],
+            json!("deploy_settings.surfaces")
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["trust_policy_contract_label"],
+            json!("deploy_settings.trust_policies")
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["realm_backend_contract_label"],
+            json!("deploy_settings.realm_backends")
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["deploy_surface_labels"]["cli"],
+            json!("cli")
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["trust_policy_labels"]["strict"],
+            json!("strict")
+        );
+        assert_eq!(
+            mob_definition["editor_settings_view"]["realm_backend_labels"]["sqlite"],
+            json!("sqlite")
         );
         assert_eq!(
             mob_definition["editor_settings_view"]["advanced_object_required_error"],

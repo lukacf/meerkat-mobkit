@@ -1352,6 +1352,17 @@
       : [];
   }
 
+  function settingsViewLabelMapFromSchema(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const out = {};
+    for (const [key, label] of Object.entries(value)) {
+      const optionValue = String(key || "").trim();
+      const optionLabel = String(label || "").trim();
+      if (optionValue && optionLabel) out[optionValue] = optionLabel;
+    }
+    return out;
+  }
+
   function settingsViewFromSchema(schema) {
     const view = schema?.mob_definition?.editor_settings_view;
     if (!view || typeof view !== "object") return null;
@@ -1362,6 +1373,9 @@
       loadMobLabel: String(view.load_mob_label || "").trim(),
       flowStageFallback: String(view.flow_stage_fallback || "").trim(),
       optionSeparator: String(view.option_separator || ""),
+      unsupportedLabelSeparator: String(view.unsupported_label_separator || ""),
+      unsupportedReasonPrefix: String(view.unsupported_reason_prefix || ""),
+      unsupportedReasonSuffix: String(view.unsupported_reason_suffix || ""),
       canvasTitle: String(view.canvas_title || "").trim(),
       edgeStyleLabel: String(view.edge_style_label || "").trim(),
       edgeStyleOptions: settingsViewOptionsFromSchema(view.edge_style_options),
@@ -1385,7 +1399,11 @@
       advancedInvalidJsonError: String(view.advanced_invalid_json_error || "").trim(),
       deployTitle: String(view.deploy_title || "").trim(),
       surfaceLabel: String(view.surface_label || "").trim(),
+      deploySurfaceContractLabel: String(view.deploy_surface_contract_label || "").trim(),
+      deploySurfaceLabels: settingsViewLabelMapFromSchema(view.deploy_surface_labels),
       trustLabel: String(view.trust_label || "").trim(),
+      trustPolicyContractLabel: String(view.trust_policy_contract_label || "").trim(),
+      trustPolicyLabels: settingsViewLabelMapFromSchema(view.trust_policy_labels),
       modelLabel: String(view.model_label || "").trim(),
       modelDefaultLabel: String(view.model_default_label || "").trim(),
       modelVendorFallback: String(view.model_vendor_fallback || "").trim(),
@@ -1402,6 +1420,8 @@
       realmIdLabel: String(view.realm_id_label || "").trim(),
       realmIdPlaceholder: String(view.realm_id_placeholder || "").trim(),
       backendLabel: String(view.backend_label || "").trim(),
+      realmBackendContractLabel: String(view.realm_backend_contract_label || "").trim(),
+      realmBackendLabels: settingsViewLabelMapFromSchema(view.realm_backend_labels),
       promptLabel: String(view.prompt_label || "").trim(),
       promptPlaceholder: String(view.prompt_placeholder || "").trim(),
       commandLabel: String(view.command_label || "").trim(),
@@ -1412,7 +1432,9 @@
     };
     const numericOk = [out.toolCallsMin, out.toolCallsMax, out.tokensMin, out.tokensMax].every(Number.isFinite);
     const optionsOk = out.edgeStyleOptions.length && out.densityOptions.length && out.themeModeOptions.length
-      && out.autoWireOptions.length && out.realmOptions.length && out.inspectorLayoutOptions.length;
+      && out.autoWireOptions.length && out.realmOptions.length && out.inspectorLayoutOptions.length
+      && Object.keys(out.deploySurfaceLabels).length && Object.keys(out.trustPolicyLabels).length
+      && Object.keys(out.realmBackendLabels).length;
     const stringsOk = Object.entries(out).every(([key, value]) => {
       if (Array.isArray(value) || typeof value === "number") return true;
       return key === "optionSeparator" ? value.length > 0 : !!value;
@@ -1429,6 +1451,9 @@
       loadMobLabel: String(view?.loadMobLabel || ""),
       flowStageFallback: String(view?.flowStageFallback || ""),
       optionSeparator: String(view?.optionSeparator || ""),
+      unsupportedLabelSeparator: String(view?.unsupportedLabelSeparator || ""),
+      unsupportedReasonPrefix: String(view?.unsupportedReasonPrefix || ""),
+      unsupportedReasonSuffix: String(view?.unsupportedReasonSuffix || ""),
       canvasTitle: String(view?.canvasTitle || ""),
       edgeStyleLabel: String(view?.edgeStyleLabel || ""),
       edgeStyleOptions: Array.isArray(view?.edgeStyleOptions) ? view.edgeStyleOptions : [],
@@ -1452,7 +1477,11 @@
       advancedInvalidJsonError: String(view?.advancedInvalidJsonError || ""),
       deployTitle: String(view?.deployTitle || ""),
       surfaceLabel: String(view?.surfaceLabel || ""),
+      deploySurfaceContractLabel: String(view?.deploySurfaceContractLabel || ""),
+      deploySurfaceLabels: settingsViewLabelMapFromSchema(view?.deploySurfaceLabels),
       trustLabel: String(view?.trustLabel || ""),
+      trustPolicyContractLabel: String(view?.trustPolicyContractLabel || ""),
+      trustPolicyLabels: settingsViewLabelMapFromSchema(view?.trustPolicyLabels),
       modelLabel: String(view?.modelLabel || ""),
       modelDefaultLabel: String(view?.modelDefaultLabel || ""),
       modelVendorFallback: String(view?.modelVendorFallback || ""),
@@ -1469,6 +1498,8 @@
       realmIdLabel: String(view?.realmIdLabel || ""),
       realmIdPlaceholder: String(view?.realmIdPlaceholder || ""),
       backendLabel: String(view?.backendLabel || ""),
+      realmBackendContractLabel: String(view?.realmBackendContractLabel || ""),
+      realmBackendLabels: settingsViewLabelMapFromSchema(view?.realmBackendLabels),
       promptLabel: String(view?.promptLabel || ""),
       promptPlaceholder: String(view?.promptPlaceholder || ""),
       commandLabel: String(view?.commandLabel || ""),
@@ -8951,20 +8982,24 @@
     return deploySurfaceRuntimeModes(contract, surface)[0] || "";
   }
 
-  function simpleContractOptions(values, currentValue, labels, contractName) {
+  function simpleContractOptions(values, currentValue, labels, contractName, display = {}) {
     const contractValues = Array.isArray(values)
       ? values.map((value) => String(value || "").trim()).filter(Boolean)
       : [];
     const options = contractValues.length ? [...contractValues] : [];
     const current = String(currentValue || "").trim();
     if (current && !options.includes(current)) options.push(current);
+    const unsupportedLabelSeparator = String(display.unsupportedLabelSeparator || "");
+    const unsupportedReasonPrefix = String(display.unsupportedReasonPrefix || "Unsupported ");
+    const unsupportedReasonSuffix = String(display.unsupportedReasonSuffix || "");
     return options.map((value) => {
       const known = contractValues.includes(value);
+      const label = labels?.[value] || (known || !unsupportedLabelSeparator ? value : `${value}${unsupportedLabelSeparator}${contractName}`);
       return {
         value,
-        label: labels?.[value] || value,
+        label,
         disabled: !known,
-        reason: known ? "" : `Unsupported by the MobKit ${contractName} contract.`,
+        reason: known ? "" : `${unsupportedReasonPrefix}${contractName}${unsupportedReasonSuffix}`,
       };
     });
   }
@@ -8975,30 +9010,36 @@
     return value && typeof value === "object" ? value : {};
   }
 
-  function deploySurfaceOptions(contract, currentSurface) {
+  function deploySurfaceOptions(contract, currentSurface, settingsView = null) {
+    const view = settingsViewForState(settingsView);
     return simpleContractOptions(
       contract?.deploy_settings?.surfaces,
       currentSurface || "",
-      { cli: "cli", rpc: "rpc" },
-      "deploy_settings.surfaces"
+      view.deploySurfaceLabels,
+      view.deploySurfaceContractLabel,
+      view
     );
   }
 
-  function trustPolicyOptions(contract, currentPolicy) {
+  function trustPolicyOptions(contract, currentPolicy, settingsView = null) {
+    const view = settingsViewForState(settingsView);
     return simpleContractOptions(
       contract?.deploy_settings?.trust_policies,
       currentPolicy || "",
-      { permissive: "permissive", strict: "strict" },
-      "deploy_settings.trust_policies"
+      view.trustPolicyLabels,
+      view.trustPolicyContractLabel,
+      view
     );
   }
 
-  function realmBackendOptions(contract, currentBackend) {
+  function realmBackendOptions(contract, currentBackend, settingsView = null) {
+    const view = settingsViewForState(settingsView);
     return simpleContractOptions(
       contract?.deploy_settings?.realm_backends,
       currentBackend || "",
-      { jsonl: "jsonl", sqlite: "sqlite" },
-      "deploy_settings.realm_backends"
+      view.realmBackendLabels,
+      view.realmBackendContractLabel,
+      view
     );
   }
 
@@ -9126,9 +9167,9 @@
       profileOptions,
       profileChoices: profileOptions.filter((option) => option.value),
       mobBackendOptions: mobBackendDefaultOptions(contract, mobSettings.backendDefault || ""),
-      surfaceOptions: deploySurfaceOptions(contract, deploySettings.surface || ""),
-      trustOptions: trustPolicyOptions(contract, deploySettings.trustPolicy || ""),
-      realmBackendOptions: realmBackendOptions(contract, deploySettings.realmBackend || ""),
+      surfaceOptions: deploySurfaceOptions(contract, deploySettings.surface || "", view),
+      trustOptions: trustPolicyOptions(contract, deploySettings.trustPolicy || "", view),
+      realmBackendOptions: realmBackendOptions(contract, deploySettings.realmBackend || "", view),
       modelOptions,
     };
   }

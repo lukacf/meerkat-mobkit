@@ -1681,6 +1681,14 @@ assert(!/change\(\{\s*maxInlinePeerNotifications:/.test(agents), "Agent Editor m
 assert(!/JSON\.stringify|JSON\.parse\(trimmed\)|provider_params must be a JSON object|placeholder=\{['"]\{\"thinking_budget\"|>Provider params<\/label>/.test(providerParamsBlock), "Agent Editor must not serialize, parse, or label provider params locally");
 assert(!/editor_schema_field_types\s*\|\|\s*\[/.test(controller), "Schema field type options must come from MobKit schema, not a controller-local type catalog");
 assert(!/deploy_settings\?\.(surfaces|trust_policies|realm_backends)\s*\|\|\s*\[/.test(controller), "Deploy option lists must come from MobKit schema, not controller-local catalogs");
+assert.match(controller, /unsupportedLabelSeparator:\s*String\(view\.unsupported_label_separator \|\| ""\)/, "Settings unsupported label separator must hydrate from MobKit settings view");
+assert.match(controller, /unsupportedReasonPrefix:\s*String\(view\.unsupported_reason_prefix \|\| ""\)/, "Settings unsupported reason prefix must hydrate from MobKit settings view");
+assert.match(controller, /unsupportedReasonSuffix:\s*String\(view\.unsupported_reason_suffix \|\| ""\)/, "Settings unsupported reason suffix must hydrate from MobKit settings view");
+assert.match(controller, /deploySurfaceLabels:\s*settingsViewLabelMapFromSchema\(view\.deploy_surface_labels\)/, "Deploy surface labels must hydrate from MobKit settings view");
+assert.match(controller, /trustPolicyLabels:\s*settingsViewLabelMapFromSchema\(view\.trust_policy_labels\)/, "Trust policy labels must hydrate from MobKit settings view");
+assert.match(controller, /realmBackendLabels:\s*settingsViewLabelMapFromSchema\(view\.realm_backend_labels\)/, "Realm backend labels must hydrate from MobKit settings view");
+assert.match(controller, /surfaceOptions:\s*deploySurfaceOptions\(contract,\s*deploySettings\.surface \|\| "",\s*view\)/, "Tweaks deploy surface options must use schema-backed settings view metadata");
+assert(!/\{\s*cli:\s*"cli",\s*rpc:\s*"rpc"\s*\}|\{\s*permissive:\s*"permissive",\s*strict:\s*"strict"\s*\}|\{\s*jsonl:\s*"jsonl",\s*sqlite:\s*"sqlite"\s*\}/.test(controller), "controller must not carry local deploy surface, trust policy, or realm backend label maps");
 assert(!/mob_definition\?\.[\w?.]+\s*\|\|\s*\[/.test(controller), "Mob definition option lists must come from MobKit schema, not controller-local catalogs");
 assert(!/function\s+deployCommand\s*\(|args\s*=\s*\[\s*["']rkat["']\s*,\s*["']mob["']\s*,\s*["']deploy["']/.test(controller), "Deploy command previews must come from mobkit/mobpacks/deploy_command, not a controller-local shell renderer");
 assert.match(controller, /mobkit\/mobpacks\/deploy_command/, "controller must use MobKit deploy command preview RPC");

@@ -217,6 +217,9 @@ const TEST_SETTINGS_VIEW_SCHEMA = {
   load_mob_label: "Mobpack",
   flow_stage_fallback: "draft",
   option_separator: " · ",
+  unsupported_label_separator: " — not in MobKit ",
+  unsupported_reason_prefix: "Unsupported by the MobKit ",
+  unsupported_reason_suffix: " contract.",
   canvas_title: "Canvas",
   edge_style_label: "Edges",
   edge_style_options: [{ value: "text", label: "Text" }, { value: "icons", label: "Icons" }, { value: "colored", label: "Color" }],
@@ -240,7 +243,11 @@ const TEST_SETTINGS_VIEW_SCHEMA = {
   advanced_invalid_json_error: "invalid JSON",
   deploy_title: "Deploy",
   surface_label: "Surface",
+  deploy_surface_contract_label: "deploy_settings.surfaces",
+  deploy_surface_labels: { cli: "cli", rpc: "rpc" },
   trust_label: "Trust",
+  trust_policy_contract_label: "deploy_settings.trust_policies",
+  trust_policy_labels: { permissive: "permissive", strict: "strict" },
   model_label: "Model",
   model_default_label: "default",
   model_vendor_fallback: "provider",
@@ -257,6 +264,8 @@ const TEST_SETTINGS_VIEW_SCHEMA = {
   realm_id_label: "Realm ID",
   realm_id_placeholder: "realm id",
   backend_label: "Backend",
+  realm_backend_contract_label: "deploy_settings.realm_backends",
+  realm_backend_labels: { jsonl: "jsonl", sqlite: "sqlite" },
   prompt_label: "Prompt",
   prompt_placeholder: "Deploy prompt",
   command_label: "Command",
@@ -272,6 +281,9 @@ const TEST_SETTINGS_VIEW = {
   loadMobLabel: "Mobpack",
   flowStageFallback: "draft",
   optionSeparator: " · ",
+  unsupportedLabelSeparator: " — not in MobKit ",
+  unsupportedReasonPrefix: "Unsupported by the MobKit ",
+  unsupportedReasonSuffix: " contract.",
   canvasTitle: "Canvas",
   edgeStyleLabel: "Edges",
   edgeStyleOptions: [{ value: "text", label: "Text" }, { value: "icons", label: "Icons" }, { value: "colored", label: "Color" }],
@@ -295,7 +307,11 @@ const TEST_SETTINGS_VIEW = {
   advancedInvalidJsonError: "invalid JSON",
   deployTitle: "Deploy",
   surfaceLabel: "Surface",
+  deploySurfaceContractLabel: "deploy_settings.surfaces",
+  deploySurfaceLabels: { cli: "cli", rpc: "rpc" },
   trustLabel: "Trust",
+  trustPolicyContractLabel: "deploy_settings.trust_policies",
+  trustPolicyLabels: { permissive: "permissive", strict: "strict" },
   modelLabel: "Model",
   modelDefaultLabel: "default",
   modelVendorFallback: "provider",
@@ -312,6 +328,8 @@ const TEST_SETTINGS_VIEW = {
   realmIdLabel: "Realm ID",
   realmIdPlaceholder: "realm id",
   backendLabel: "Backend",
+  realmBackendContractLabel: "deploy_settings.realm_backends",
+  realmBackendLabels: { jsonl: "jsonl", sqlite: "sqlite" },
   promptLabel: "Prompt",
   promptPlaceholder: "Deploy prompt",
   commandLabel: "Command",
@@ -4587,6 +4605,39 @@ assert.deepEqual(tweaksState.surfaceOptions.map((option) => option.value), ["cli
 assert.deepEqual(tweaksState.trustOptions.map((option) => option.value), ["permissive", "strict"]);
 assert.deepEqual(tweaksState.realmBackendOptions.map((option) => option.value), ["sqlite"]);
 assert.deepEqual(tweaksState.mobBackendOptions.map((option) => option.value), ["session", "external"]);
+const unsupportedDeployTweaksState = controller.tweaksControlState({
+  deploySettings: { surface: "grpc", trustPolicy: "dangerous", realmBackend: "memory" },
+  mobSettings: {},
+  settingsView: TEST_SETTINGS_VIEW,
+  contract: {
+    deploy_settings: {
+      surfaces: ["cli"],
+      trust_policies: ["permissive"],
+      realm_backends: ["jsonl"],
+    },
+    mob_definition: {
+      profile_backends: ["session"],
+    },
+  },
+});
+assert.deepEqual(unsupportedDeployTweaksState.surfaceOptions.at(-1), {
+  value: "grpc",
+  label: "grpc — not in MobKit deploy_settings.surfaces",
+  disabled: true,
+  reason: "Unsupported by the MobKit deploy_settings.surfaces contract.",
+});
+assert.deepEqual(unsupportedDeployTweaksState.trustOptions.at(-1), {
+  value: "dangerous",
+  label: "dangerous — not in MobKit deploy_settings.trust_policies",
+  disabled: true,
+  reason: "Unsupported by the MobKit deploy_settings.trust_policies contract.",
+});
+assert.deepEqual(unsupportedDeployTweaksState.realmBackendOptions.at(-1), {
+  value: "memory",
+  label: "memory — not in MobKit deploy_settings.realm_backends",
+  disabled: true,
+  reason: "Unsupported by the MobKit deploy_settings.realm_backends contract.",
+});
 assert.deepEqual(controller.memberProfileBindingPatch({ role: "reviewer", name: "Reviewer" }, "realm_profile", agentContract), {});
 assert.deepEqual(controller.memberProfileBindingPatch({ realmProfile: "qa_profile" }, "inline", agentContract), {
   profileBinding: "inline",
