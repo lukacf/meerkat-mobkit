@@ -1225,6 +1225,17 @@ const hydratedContractAndCatalogFixture = {
       apply_skeleton_label: "APPLY SKELETON",
       apply_skeleton_title: "Apply a MobKit profile prompt skeleton",
       system_prompt_placeholder: "Describe the member mandate. This text is exported as the profile peer_description.",
+      budget_title: "BUDGET",
+      budget_disabled_reason: "MobKit budgets are authored on flow launch modes (document.launch_modes[].budget_split_policy), not profile members.",
+      budget_weight_label: "Weight",
+      budget_token_cap_label: "Token cap",
+      budget_split_policies_contract_label: "budget_split_policies",
+      budget_split_policy_labels: {
+        Equal: "Equal — split among siblings",
+        Proportional: "Proportional — weighted",
+        Remaining: "Remaining — take what's left",
+        Fixed: "Fixed — hard cap",
+      },
       output_schema_title: "OUTPUT SCHEMA",
       schema_none_label: "— none —",
       schema_required_label: "req",
@@ -1753,6 +1764,17 @@ assert.deepEqual(hydratedCatalogs.agentDetailView, {
   applySkeletonLabel: "APPLY SKELETON",
   applySkeletonTitle: "Apply a MobKit profile prompt skeleton",
   systemPromptPlaceholder: "Describe the member mandate. This text is exported as the profile peer_description.",
+  budgetTitle: "BUDGET",
+  budgetDisabledReason: "MobKit budgets are authored on flow launch modes (document.launch_modes[].budget_split_policy), not profile members.",
+  budgetWeightLabel: "Weight",
+  budgetTokenCapLabel: "Token cap",
+  budgetSplitPoliciesContractLabel: "budget_split_policies",
+  budgetSplitPolicyLabels: {
+    Equal: "Equal — split among siblings",
+    Proportional: "Proportional — weighted",
+    Remaining: "Remaining — take what's left",
+    Fixed: "Fixed — hard cap",
+  },
   outputSchemaTitle: "OUTPUT SCHEMA",
   schemaNoneLabel: "— none —",
   schemaRequiredLabel: "req",
@@ -4932,6 +4954,17 @@ const agentEditorState = controller.agentEditorControlState({
     applySkeletonLabel: "SKELETON",
     applySkeletonTitle: "Apply skeleton",
     systemPromptPlaceholder: "Describe the mandate.",
+    budgetTitle: "BUDGET",
+    budgetDisabledReason: "Flow-step launch budgets own deployable budget semantics.",
+    budgetWeightLabel: "Weight",
+    budgetTokenCapLabel: "Token cap",
+    budgetSplitPoliciesContractLabel: "budget_split_policies",
+    budgetSplitPolicyLabels: {
+      Equal: "Equal — split among siblings",
+      Proportional: "Proportional — weighted",
+      Remaining: "Remaining — take what's left",
+      Fixed: "Fixed — hard cap",
+    },
     outputSchemaTitle: "OUTPUT CONTRACT",
     schemaNoneLabel: "none",
     schemaRequiredLabel: "required",
@@ -4960,6 +4993,10 @@ const agentEditorState = controller.agentEditorControlState({
       },
       runtime_modes: ["turn_driven"],
       profile_backends: ["session", "external"],
+      budget_split_policies: ["equal", "proportional", "remaining", "fixed"],
+      defaults: {
+        budget_split_policy: "equal",
+      },
     },
   },
 });
@@ -5009,6 +5046,32 @@ assert.equal(agentEditorState.systemPromptTitle, "PEER DESCRIPTION");
 assert.equal(agentEditorState.applySkeletonLabel, "SKELETON");
 assert.equal(agentEditorState.applySkeletonTitle, "Apply skeleton");
 assert.equal(agentEditorState.systemPromptPlaceholder, "Describe the mandate.");
+assert.deepEqual(agentEditorState.budgetSection, {
+  title: "BUDGET",
+  disabled: true,
+  disabledReason: "Flow-step launch budgets own deployable budget semantics.",
+  value: "Equal",
+  options: [
+    { value: "Equal", label: "Equal — split among siblings", disabled: false },
+    { value: "Proportional", label: "Proportional — weighted", disabled: false },
+    { value: "Remaining", label: "Remaining — take what's left", disabled: false },
+    { value: "Fixed", label: "Fixed — hard cap", disabled: false },
+  ],
+  showWeight: false,
+  weightLabel: "Weight",
+  weightValue: 1,
+  showTokenCap: false,
+  tokenCapLabel: "Token cap",
+  tokenCapValue: 4096,
+  contractLabel: "budget_split_policies",
+});
+assert.equal(controller.memberBudgetAffordanceState({
+  budget: { kind: "Fixed", limit: 2048 },
+}, {
+  mob_definition: {
+    budget_split_policies: ["fixed"],
+  },
+}, hydratedCatalogs.agentDetailView).tokenCapValue, 2048);
 assert.deepEqual(controller.agentEditorControlState({
   member: { id: "m_unplaced", name: "Unplaced", role: "writer" },
   instances: [],

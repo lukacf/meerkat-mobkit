@@ -1847,6 +1847,20 @@ pub fn mobpack_schema_response() -> Value {
     editor_agent_detail_view["source_schema_path_label"] = json!("Schema path");
     editor_agent_detail_view["source_tools_label"] = json!("Tool refs");
     editor_agent_detail_view["source_skills_label"] = json!("Skill refs");
+    editor_agent_detail_view["budget_title"] = json!("BUDGET");
+    editor_agent_detail_view["budget_disabled_reason"] = json!(
+        "MobKit budgets are authored on flow launch modes (document.launch_modes[].budget_split_policy), not profile members."
+    );
+    editor_agent_detail_view["budget_weight_label"] = json!("Weight");
+    editor_agent_detail_view["budget_token_cap_label"] = json!("Token cap");
+    editor_agent_detail_view["budget_split_policies_contract_label"] =
+        json!("budget_split_policies");
+    editor_agent_detail_view["budget_split_policy_labels"] = json!({
+        "Equal": "Equal — split among siblings",
+        "Proportional": "Proportional — weighted",
+        "Remaining": "Remaining — take what's left",
+        "Fixed": "Fixed — hard cap"
+    });
     let editor_agent_access_view = json!({
         "tool_invalid_error": "Use a MobKit-listed runtime tool or configured MCP/Rust source.",
         "tool_empty_error": "Choose a tool first.",
@@ -29326,6 +29340,14 @@ model = "gpt-5.5"
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["system_prompt_title"],
             json!("SYSTEM PROMPT")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["budget_title"],
+            json!("BUDGET")
+        );
+        assert_eq!(
+            mob_definition["editor_agent_detail_view"]["budget_split_policy_labels"]["Fixed"],
+            json!("Fixed — hard cap")
         );
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["empty_schema_hint"],

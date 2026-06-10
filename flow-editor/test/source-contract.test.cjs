@@ -1617,6 +1617,8 @@ assert.match(providerParamsBlock, /MobKitFlowController\.memberProviderParamsEdi
 assert.match(providerParamsBlock, /paramsState\.label/, "Agent Editor provider params label must render through controller state");
 assert.match(agentEditorBlock, /editorState\.sourceProvenance\.title[\s\S]*editorState\.sourceProvenance\.rows\.map/, "Agent Editor source provenance must render through controller-projected state");
 assert(!/SOURCE|Definition|Mobpack|Origin|Member path|Schema path|Tool refs|Skill refs/.test(agentEditorBlock), "Agent Editor must not compose source provenance labels locally");
+assert.match(agentEditorBlock, /editorState\.budgetSection\.title[\s\S]*editorState\.budgetSection\.options\.map[\s\S]*editorState\.budgetSection\.disabledReason/, "Agent Editor budget affordance must render through controller-projected state");
+assert(!/change\(\{\s*budget:|Equal — split among siblings|Proportional — weighted|Fixed — hard cap|Token cap|>BUDGET</.test(agentEditorBlock), "Agent Editor must not compose or mutate non-deployable member budget locally");
 assert.match(agents, /MobKitFlowController\.memberProviderParamsPatch/, "Agent Editor must parse provider params through the controller plane");
 assert.match(controller, /function memberProfileBindingPatch/, "controller plane must own profile binding patch semantics");
 assert.match(controller, /function memberRuntimeModePatch/, "controller plane must own runtime mode patch semantics");
@@ -1647,7 +1649,10 @@ assert(!/backend === ["']session["']|backend === ["']external["']/.test(controll
 assert.match(controller, /function memberMaxInlinePeerNotificationsPatch/, "controller plane must own inline peer notification limit semantics");
 assert.match(controller, /function memberProviderParamsEditorState/, "controller plane must own provider params textarea projection");
 assert.match(controller, /function memberProviderParamsPatch/, "controller plane must own provider params parsing semantics");
+assert.match(controller, /function memberBudgetAffordanceState/, "controller plane must own Agent budget affordance projection");
 assert.match(controller, /providerParamsLabel:\s*String\(view\.provider_params_label/, "controller plane must hydrate provider params labels from MobKit schema");
+assert.match(controller, /budgetTitle:\s*String\(view\.budget_title/, "controller plane must hydrate Agent budget labels from MobKit schema");
+assert.match(controller, /budget_split_policies/, "Agent budget affordance must read MobKit budget_split_policies");
 assert.match(controller, /memberProviderParamsEditorState\(member, agentDetailView = null\)/, "provider params display projection must accept schema-backed Agent detail view state");
 assert.match(controller, /memberProviderParamsPatch\(rawText, agentDetailView = null\)/, "provider params patch validation must accept schema-backed Agent detail view state");
 assert.match(providerParamsBlock, /memberProviderParamsEditorState\(member, agentDetailView\)/, "Agent Editor provider params display must pass schema-backed Agent detail view state");

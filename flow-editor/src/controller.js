@@ -1008,6 +1008,12 @@
       applySkeletonLabel: String(view.apply_skeleton_label || "").trim(),
       applySkeletonTitle: String(view.apply_skeleton_title || "").trim(),
       systemPromptPlaceholder: String(view.system_prompt_placeholder || "").trim(),
+      budgetTitle: String(view.budget_title || "").trim(),
+      budgetDisabledReason: String(view.budget_disabled_reason || "").trim(),
+      budgetWeightLabel: String(view.budget_weight_label || "").trim(),
+      budgetTokenCapLabel: String(view.budget_token_cap_label || "").trim(),
+      budgetSplitPoliciesContractLabel: String(view.budget_split_policies_contract_label || "").trim(),
+      budgetSplitPolicyLabels: viewStringMapFromSchema(view.budget_split_policy_labels),
       outputSchemaTitle: String(view.output_schema_title || "").trim(),
       schemaNoneLabel: String(view.schema_none_label || "").trim(),
       schemaRequiredLabel: String(view.schema_required_label || "").trim(),
@@ -1035,6 +1041,8 @@
       && out.providerParamsLabel && out.providerParamsPlaceholder && Number.isFinite(out.providerParamsRows) && out.providerParamsRows > 0
       && out.providerParamsInvalidJsonLabel && out.providerParamsObjectRequiredError
       && out.systemPromptTitle && out.applySkeletonLabel && out.applySkeletonTitle && out.systemPromptPlaceholder
+      && out.budgetTitle && out.budgetDisabledReason && out.budgetWeightLabel && out.budgetTokenCapLabel
+      && out.budgetSplitPoliciesContractLabel && Object.keys(out.budgetSplitPolicyLabels).length
       && out.outputSchemaTitle && out.schemaNoneLabel && out.schemaRequiredLabel && out.editSchemaLabel && out.emptySchemaHint
       && out.sourceTitle && out.sourceEmptyHint && out.sourceDefinitionLabel && out.sourceMobpackLabel
       && out.sourceOriginLabel && out.sourceDocumentPathLabel && out.sourceSchemaPathLabel
@@ -1084,6 +1092,12 @@
       applySkeletonLabel: String(view?.applySkeletonLabel || ""),
       applySkeletonTitle: String(view?.applySkeletonTitle || ""),
       systemPromptPlaceholder: String(view?.systemPromptPlaceholder || ""),
+      budgetTitle: String(view?.budgetTitle || ""),
+      budgetDisabledReason: String(view?.budgetDisabledReason || ""),
+      budgetWeightLabel: String(view?.budgetWeightLabel || ""),
+      budgetTokenCapLabel: String(view?.budgetTokenCapLabel || ""),
+      budgetSplitPoliciesContractLabel: String(view?.budgetSplitPoliciesContractLabel || ""),
+      budgetSplitPolicyLabels: view?.budgetSplitPolicyLabels && typeof view.budgetSplitPolicyLabels === "object" ? view.budgetSplitPolicyLabels : {},
       outputSchemaTitle: String(view?.outputSchemaTitle || ""),
       schemaNoneLabel: String(view?.schemaNoneLabel || ""),
       schemaRequiredLabel: String(view?.schemaRequiredLabel || ""),
@@ -2263,6 +2277,7 @@
     if (member?.model && !modelOptions.some((model) => model.value === member.model)) {
       modelOptions.push({ value: member.model, label: member.model, model: null });
     }
+    const budgetSection = memberBudgetAffordanceState(member, contract, view);
     return {
       placedAt,
       placedCount,
@@ -2306,6 +2321,7 @@
       applySkeletonLabel: view.applySkeletonLabel,
       applySkeletonTitle: view.applySkeletonTitle,
       systemPromptPlaceholder: view.systemPromptPlaceholder,
+      budgetSection,
       schema,
       profileBinding,
       bindingOptions,
@@ -2326,6 +2342,36 @@
       emptySchemaHint: view.emptySchemaHint,
       modelOptions,
       sourceProvenance: agentSourceProvenanceState(member, agentDetailView),
+    };
+  }
+
+  function memberBudgetAffordanceState(member, contract, agentDetailView = null) {
+    const view = agentDetailViewForState(agentDetailView);
+    const policies = Array.isArray(contract?.mob_definition?.budget_split_policies)
+      ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind).filter(Boolean)
+      : [];
+    const authored = normalizeBudgetSplitPolicy(member?.budget || member?.budgetSplitPolicy || member?.budget_split_policy);
+    const defaultKind = canonicalBudgetSplitPolicyKind(contractDefaultValue(contract, "budget_split_policy"));
+    const selectedKind = authored?.kind || defaultKind || policies[0] || "";
+    const allPolicies = [...new Set([...policies, selectedKind].filter(Boolean))];
+    const options = allPolicies.map((kind) => ({
+      value: kind,
+      label: view.budgetSplitPolicyLabels[kind] || kind,
+      disabled: false,
+    }));
+    return {
+      title: view.budgetTitle,
+      disabled: true,
+      disabledReason: view.budgetDisabledReason,
+      value: selectedKind,
+      options,
+      showWeight: authored?.kind === "Proportional",
+      weightLabel: view.budgetWeightLabel,
+      weightValue: authored?.weight || 1,
+      showTokenCap: authored?.kind === "Fixed",
+      tokenCapLabel: view.budgetTokenCapLabel,
+      tokenCapValue: authored?.limit || authored?.value || 4096,
+      contractLabel: view.budgetSplitPoliciesContractLabel,
     };
   }
 
@@ -11437,5 +11483,6 @@
     agentDefinitionsFromCatalogs,
     agentDefinitionCatalogState,
     agentDeleteConfirmationState,
+    memberBudgetAffordanceState,
   };
 })();

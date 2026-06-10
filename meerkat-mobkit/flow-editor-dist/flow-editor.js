@@ -1041,6 +1041,12 @@ window.MOBKIT_BOOT = {
       applySkeletonLabel: String(view.apply_skeleton_label || "").trim(),
       applySkeletonTitle: String(view.apply_skeleton_title || "").trim(),
       systemPromptPlaceholder: String(view.system_prompt_placeholder || "").trim(),
+      budgetTitle: String(view.budget_title || "").trim(),
+      budgetDisabledReason: String(view.budget_disabled_reason || "").trim(),
+      budgetWeightLabel: String(view.budget_weight_label || "").trim(),
+      budgetTokenCapLabel: String(view.budget_token_cap_label || "").trim(),
+      budgetSplitPoliciesContractLabel: String(view.budget_split_policies_contract_label || "").trim(),
+      budgetSplitPolicyLabels: viewStringMapFromSchema(view.budget_split_policy_labels),
       outputSchemaTitle: String(view.output_schema_title || "").trim(),
       schemaNoneLabel: String(view.schema_none_label || "").trim(),
       schemaRequiredLabel: String(view.schema_required_label || "").trim(),
@@ -1068,6 +1074,8 @@ window.MOBKIT_BOOT = {
       && out.providerParamsLabel && out.providerParamsPlaceholder && Number.isFinite(out.providerParamsRows) && out.providerParamsRows > 0
       && out.providerParamsInvalidJsonLabel && out.providerParamsObjectRequiredError
       && out.systemPromptTitle && out.applySkeletonLabel && out.applySkeletonTitle && out.systemPromptPlaceholder
+      && out.budgetTitle && out.budgetDisabledReason && out.budgetWeightLabel && out.budgetTokenCapLabel
+      && out.budgetSplitPoliciesContractLabel && Object.keys(out.budgetSplitPolicyLabels).length
       && out.outputSchemaTitle && out.schemaNoneLabel && out.schemaRequiredLabel && out.editSchemaLabel && out.emptySchemaHint
       && out.sourceTitle && out.sourceEmptyHint && out.sourceDefinitionLabel && out.sourceMobpackLabel
       && out.sourceOriginLabel && out.sourceDocumentPathLabel && out.sourceSchemaPathLabel
@@ -1117,6 +1125,12 @@ window.MOBKIT_BOOT = {
       applySkeletonLabel: String(view?.applySkeletonLabel || ""),
       applySkeletonTitle: String(view?.applySkeletonTitle || ""),
       systemPromptPlaceholder: String(view?.systemPromptPlaceholder || ""),
+      budgetTitle: String(view?.budgetTitle || ""),
+      budgetDisabledReason: String(view?.budgetDisabledReason || ""),
+      budgetWeightLabel: String(view?.budgetWeightLabel || ""),
+      budgetTokenCapLabel: String(view?.budgetTokenCapLabel || ""),
+      budgetSplitPoliciesContractLabel: String(view?.budgetSplitPoliciesContractLabel || ""),
+      budgetSplitPolicyLabels: view?.budgetSplitPolicyLabels && typeof view.budgetSplitPolicyLabels === "object" ? view.budgetSplitPolicyLabels : {},
       outputSchemaTitle: String(view?.outputSchemaTitle || ""),
       schemaNoneLabel: String(view?.schemaNoneLabel || ""),
       schemaRequiredLabel: String(view?.schemaRequiredLabel || ""),
@@ -2296,6 +2310,7 @@ window.MOBKIT_BOOT = {
     if (member?.model && !modelOptions.some((model) => model.value === member.model)) {
       modelOptions.push({ value: member.model, label: member.model, model: null });
     }
+    const budgetSection = memberBudgetAffordanceState(member, contract, view);
     return {
       placedAt,
       placedCount,
@@ -2339,6 +2354,7 @@ window.MOBKIT_BOOT = {
       applySkeletonLabel: view.applySkeletonLabel,
       applySkeletonTitle: view.applySkeletonTitle,
       systemPromptPlaceholder: view.systemPromptPlaceholder,
+      budgetSection,
       schema,
       profileBinding,
       bindingOptions,
@@ -2359,6 +2375,36 @@ window.MOBKIT_BOOT = {
       emptySchemaHint: view.emptySchemaHint,
       modelOptions,
       sourceProvenance: agentSourceProvenanceState(member, agentDetailView),
+    };
+  }
+
+  function memberBudgetAffordanceState(member, contract, agentDetailView = null) {
+    const view = agentDetailViewForState(agentDetailView);
+    const policies = Array.isArray(contract?.mob_definition?.budget_split_policies)
+      ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind).filter(Boolean)
+      : [];
+    const authored = normalizeBudgetSplitPolicy(member?.budget || member?.budgetSplitPolicy || member?.budget_split_policy);
+    const defaultKind = canonicalBudgetSplitPolicyKind(contractDefaultValue(contract, "budget_split_policy"));
+    const selectedKind = authored?.kind || defaultKind || policies[0] || "";
+    const allPolicies = [...new Set([...policies, selectedKind].filter(Boolean))];
+    const options = allPolicies.map((kind) => ({
+      value: kind,
+      label: view.budgetSplitPolicyLabels[kind] || kind,
+      disabled: false,
+    }));
+    return {
+      title: view.budgetTitle,
+      disabled: true,
+      disabledReason: view.budgetDisabledReason,
+      value: selectedKind,
+      options,
+      showWeight: authored?.kind === "Proportional",
+      weightLabel: view.budgetWeightLabel,
+      weightValue: authored?.weight || 1,
+      showTokenCap: authored?.kind === "Fixed",
+      tokenCapLabel: view.budgetTokenCapLabel,
+      tokenCapValue: authored?.limit || authored?.value || 4096,
+      contractLabel: view.budgetSplitPoliciesContractLabel,
     };
   }
 
@@ -11470,6 +11516,7 @@ window.MOBKIT_BOOT = {
     agentDefinitionsFromCatalogs,
     agentDefinitionCatalogState,
     agentDeleteConfirmationState,
+    memberBudgetAffordanceState,
   };
 })();
 
@@ -12990,7 +13037,18 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       onChange: (e) => change(window.MobKitFlowController.memberSystemPromptPatch(e.target.value)),
       placeholder: editorState.systemPromptPlaceholder
     }
-  )), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.sourceProvenance.title), editorState.sourceProvenance.hasRows ? /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, editorState.sourceProvenance.rows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.label }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))) : /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.sourceProvenance.emptyHint))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__col" }, editorState.isRealmProfile ? /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.realmProfileTitle), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.realmProfileReferenceHintBefore, " ", /* @__PURE__ */ React.createElement("code", null, editorState.realmProfileReferenceLabel), " ", editorState.realmProfileReferenceHintAfter)) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, toolAccessState.title), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginBottom: 8 } }, toolAccessState.hint), toolAccessState.rows.map((row) => {
+  )), !editorState.isRealmProfile && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.budgetSection.title), /* @__PURE__ */ React.createElement(
+    "select",
+    {
+      className: "field__select",
+      value: editorState.budgetSection.value,
+      disabled: editorState.budgetSection.disabled,
+      title: editorState.budgetSection.disabledReason,
+      onChange: () => {
+      }
+    },
+    editorState.budgetSection.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
+  ), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 8 } }, editorState.budgetSection.disabledReason), editorState.budgetSection.showWeight && /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.budgetSection.weightLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", value: editorState.budgetSection.weightValue, disabled: true, readOnly: true })), editorState.budgetSection.showTokenCap && /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.budgetSection.tokenCapLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", value: editorState.budgetSection.tokenCapValue, disabled: true, readOnly: true }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.sourceProvenance.title), editorState.sourceProvenance.hasRows ? /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, editorState.sourceProvenance.rows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.label }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))) : /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.sourceProvenance.emptyHint))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__col" }, editorState.isRealmProfile ? /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.realmProfileTitle), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.realmProfileReferenceHintBefore, " ", /* @__PURE__ */ React.createElement("code", null, editorState.realmProfileReferenceLabel), " ", editorState.realmProfileReferenceHintAfter)) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, toolAccessState.title), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginBottom: 8 } }, toolAccessState.hint), toolAccessState.rows.map((row) => {
     return /* @__PURE__ */ React.createElement("div", { key: row.id, className: row.className }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "name" }, row.name), /* @__PURE__ */ React.createElement("div", { className: "auth" }, row.description)), /* @__PURE__ */ React.createElement("button", { onClick: () => removeToolAccess(row.id) }, row.removeLabel));
   }), /* @__PURE__ */ React.createElement(
     "select",
