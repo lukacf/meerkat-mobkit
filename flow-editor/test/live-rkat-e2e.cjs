@@ -51,6 +51,23 @@ async function rpc(method, params) {
   return payload.result;
 }
 
+async function rpcExpectError(method, params) {
+  const response = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: Math.floor(Math.random() * 1e9),
+      method,
+      params: params || {},
+    }),
+  });
+  if (!response.ok) throw new Error(`${method} HTTP ${response.status}`);
+  const payload = await response.json();
+  if (!payload.error) throw new Error(`${method} unexpectedly succeeded: ${JSON.stringify(payload.result)}`);
+  return payload.error;
+}
+
 async function assertAuthoringCapabilities() {
   const capabilities = await rpc("mobkit/capabilities", {});
   const authoring = capabilities.authoring_capabilities || {};
@@ -1377,6 +1394,9 @@ async function validateCustomDeploySettings(dir) {
   }
   if (result.executed) throw new Error("custom deploy settings proof unexpectedly executed deploy");
   if (result.success) throw new Error("custom deploy settings proof reported success without executing deploy");
+  if (fs.existsSync(packPath)) {
+    throw new Error(`deploy planning wrote host mobpack without execute=true: ${packPath}`);
+  }
   const argv = result.argv || [];
   if (preview.command !== result.command || JSON.stringify(preview.argv || []) !== JSON.stringify(argv)) {
     throw new Error(`deploy command preview drifted from deploy plan\npreview=${JSON.stringify(preview)}\nresult=${JSON.stringify({ command: result.command, argv })}`);
@@ -1417,10 +1437,12 @@ async function validateCustomDeploySettings(dir) {
     throw new Error(`MobKit deploy response did not provide API-backed display rows: ${JSON.stringify(result.display_rows)}`);
   }
   const planTrace = assertDeployPlanTrace(result, "customDeploySettings");
-  const packBytes = fs.readFileSync(result.pack_path);
+  const exported = await rpc("mobkit/mobpacks/export", { document });
+  const packBytes = Buffer.from(exported.content_base64, "base64");
   if (result.pack_sha256 !== sha256(packBytes)) {
-    throw new Error(`MobKit deploy response did not report the written pack sha256: ${JSON.stringify({ pack_sha256: result.pack_sha256, pack_path: result.pack_path })}`);
+    throw new Error(`MobKit deploy response did not report the planned pack sha256: ${JSON.stringify({ pack_sha256: result.pack_sha256, pack_path: result.pack_path })}`);
   }
+  fs.writeFileSync(result.pack_path, packBytes);
   const validate = run("rkat", ["mob", "validate", result.pack_path]);
   return {
     validate,
@@ -1584,6 +1606,17 @@ async function validateNamedTypedOperations(catalogs) {
   });
   if (!settings.ok || settings.document.deploy.prompt !== "Named section payload prompt.") {
     throw new Error(`named deploy settings operation did not apply field payload: ${JSON.stringify(settings)}`);
+  }
+  const invalidSettings = await rpcExpectError("mobkit/mobpacks/apply_operation", {
+    document: settings.document,
+    operation: {
+      type: "update_deploy_settings",
+      field: "surface",
+      value: "desktop",
+    },
+  });
+  if (!String(invalidSettings.message || "").includes("update_deploy_settings surface must be one of cli, rpc")) {
+    throw new Error(`invalid deploy settings were not rejected at the mutation boundary: ${JSON.stringify(invalidSettings)}`);
   }
   const mobSettings = await rpc("mobkit/mobpacks/apply_operation", {
     document: settings.document,

@@ -4060,10 +4060,14 @@ pub fn apply_mobpack_authoring_operation_with_runtime(
         "reconcile_contract_refs" => {
             apply_reconcile_contract_refs_operation(&mut document, operation)?
         }
-        "add_agent_definition" => apply_add_agent_definition_operation(&mut document, operation)?,
+        "add_agent_definition" => {
+            apply_add_agent_definition_operation(&mut document, operation, runtime)?
+        }
         "update_member" => apply_update_member_operation(&mut document, operation)?,
-        "add_member_tool" => apply_member_tool_operation(&mut document, operation, true)?,
-        "remove_member_tool" => apply_member_tool_operation(&mut document, operation, false)?,
+        "add_member_tool" => apply_member_tool_operation(&mut document, operation, true, runtime)?,
+        "remove_member_tool" => {
+            apply_member_tool_operation(&mut document, operation, false, runtime)?
+        }
         "toggle_member_skill" => {
             apply_member_skill_operation(&mut document, operation, SkillOperation::Toggle)?
         }
@@ -4695,9 +4699,9 @@ fn apply_update_deploy_settings_operation(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "update_deploy_settings requires field".to_string())?;
-    let value = operation.get("value").cloned().unwrap_or(Value::Null);
     let key = deploy_settings_field_key(field)
         .ok_or_else(|| format!("unsupported deploy settings field: {field}"))?;
+    let value = normalize_deploy_settings_field_value(key, operation.get("value"))?;
     let mut settings = document
         .deploy
         .as_object()
@@ -4727,9 +4731,9 @@ fn apply_update_mob_settings_operation(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "update_mob_settings requires field".to_string())?;
-    let value = operation.get("value").cloned().unwrap_or(Value::Null);
     let key = mob_settings_field_key(field)
         .ok_or_else(|| format!("unsupported mob settings field: {field}"))?;
+    let value = normalize_mob_settings_field_value(key, operation.get("value"))?;
     let mut settings = document
         .mob_settings
         .as_object()
@@ -4803,6 +4807,153 @@ fn mob_settings_field_key(field: &str) -> Option<&'static str> {
         "advanced" => Some("advanced"),
         _ => None,
     }
+}
+
+fn normalize_deploy_settings_field_value(
+    key: &str,
+    value: Option<&Value>,
+) -> Result<Value, String> {
+    let value = value.unwrap_or(&Value::Null);
+    match key {
+        "command" => {
+            let command = required_trimmed_string(value, "update_deploy_settings command")?;
+            if command != "rkat mob deploy" {
+                return Err(format!(
+                    "deploy.command must be 'rkat mob deploy', got '{command}'"
+                ));
+            }
+            Ok(Value::String(command))
+        }
+        "surface" => {
+            optional_string_enum_value(value, "update_deploy_settings surface", &["cli", "rpc"])
+        }
+        "trust_policy" => optional_string_enum_value(
+            value,
+            "update_deploy_settings trustPolicy",
+            &["permissive", "strict"],
+        ),
+        "realm_backend" => optional_string_enum_value(
+            value,
+            "update_deploy_settings realmBackend",
+            &["jsonl", "sqlite"],
+        ),
+        "model" => {
+            let model = optional_trimmed_string(value, "update_deploy_settings model")?;
+            if let Value::String(model) = &model
+                && !model.is_empty()
+                && !available_model_ids().contains(model)
+            {
+                return Err(format!("unknown deploy model: {model}"));
+            }
+            Ok(model)
+        }
+        "max_tool_calls" | "max_total_tokens" => {
+            optional_non_negative_integer_value(value, &format!("update_deploy_settings {key}"))
+        }
+        "isolated" => optional_bool_value(value, "update_deploy_settings isolated"),
+        "max_duration" | "realm" | "instance" | "context_root" | "state_root"
+        | "user_config_root" => {
+            optional_trimmed_string(value, &format!("update_deploy_settings {key}"))
+        }
+        "prompt" => {
+            required_trimmed_string(value, "update_deploy_settings prompt").map(Value::String)
+        }
+        other => Err(format!("unsupported deploy settings field: {other}")),
+    }
+}
+
+fn normalize_mob_settings_field_value(key: &str, value: Option<&Value>) -> Result<Value, String> {
+    let value = value.unwrap_or(&Value::Null);
+    match key {
+        "orchestrator" | "externalAddressBase" => {
+            optional_trimmed_string(value, &format!("update_mob_settings {key}"))
+        }
+        "autoWireOrchestrator" => {
+            optional_bool_value(value, "update_mob_settings autoWireOrchestrator")
+        }
+        "backendDefault" => optional_string_enum_value(
+            value,
+            "update_mob_settings backendDefault",
+            &["session", "external"],
+        ),
+        "advanced" => {
+            if value.is_null() || value.is_object() {
+                Ok(value.clone())
+            } else {
+                Err("update_mob_settings advanced must be a JSON object or null".to_string())
+            }
+        }
+        other => Err(format!("unsupported mob settings field: {other}")),
+    }
+}
+
+fn required_trimmed_string(value: &Value, context: &str) -> Result<String, String> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("{context} must be a non-empty string"))
+}
+
+fn optional_trimmed_string(value: &Value, context: &str) -> Result<Value, String> {
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    let text = value
+        .as_str()
+        .map(str::trim)
+        .ok_or_else(|| format!("{context} must be a string or null"))?;
+    Ok(Value::String(text.to_string()))
+}
+
+fn optional_string_enum_value(
+    value: &Value,
+    context: &str,
+    allowed: &[&str],
+) -> Result<Value, String> {
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    let text = required_trimmed_string(value, context)?;
+    if allowed.contains(&text.as_str()) {
+        Ok(Value::String(text))
+    } else {
+        Err(format!(
+            "{context} must be one of {}, got '{text}'",
+            allowed.join(", ")
+        ))
+    }
+}
+
+fn optional_bool_value(value: &Value, context: &str) -> Result<Value, String> {
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    value
+        .as_bool()
+        .map(Value::Bool)
+        .ok_or_else(|| format!("{context} must be a boolean or null"))
+}
+
+fn optional_non_negative_integer_value(value: &Value, context: &str) -> Result<Value, String> {
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    if let Some(value) = value.as_i64() {
+        if value >= 0 {
+            return Ok(Value::from(value));
+        }
+    } else if let Some(value) = value.as_u64() {
+        return Ok(Value::from(value));
+    } else if let Some(value) = value.as_f64()
+        && value >= 0.0
+        && value.fract() == 0.0
+        && value <= i64::MAX as f64
+    {
+        return Ok(Value::from(value as i64));
+    }
+    Err(format!("{context} must be a non-negative integer or null"))
 }
 
 fn set_document_role_wiring(document: &mut MobpackDocument, role_wiring: Value) {
@@ -4918,6 +5069,7 @@ fn editor_role_wiring_pairs(value: Option<&Value>) -> Vec<(String, String)> {
 fn apply_add_agent_definition_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
+    runtime: Option<&MobpackRuntimeCatalogState>,
 ) -> Result<Value, String> {
     let definition_id = operation
         .get("definition_id")
@@ -4926,7 +5078,7 @@ fn apply_add_agent_definition_operation(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "add_agent_definition requires definition_id".to_string())?;
-    let definition = mobpack_agent_definition_by_id(definition_id)
+    let definition = mobpack_agent_definition_by_id(definition_id, runtime)
         .ok_or_else(|| format!("unknown MobKit agent definition: {definition_id}"))?;
     let member = member_from_agent_definition(&definition, &document.members)?;
     merge_agent_definition_schema(document, &definition);
@@ -9990,11 +10142,28 @@ fn apply_member_tool_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
     add: bool,
+    runtime: Option<&MobpackRuntimeCatalogState>,
 ) -> Result<Value, String> {
     let member_id = operation_member_id(operation)?;
     let tool_id = operation_string(operation, "tool_id", "toolId")?;
-    if add && !tool_catalog_by_id(&tool_catalog_response()).contains_key(&tool_id) {
-        return Err(format!("unknown MobKit tool: {tool_id}"));
+    if add {
+        let tools = tool_catalog_response_with_runtime_state(runtime);
+        let tool = tool_catalog_by_id(&tools)
+            .get(&tool_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown MobKit tool: {tool_id}"))?;
+        if runtime.is_some()
+            && !tool
+                .get("runtime_availability")
+                .or_else(|| tool.get("runtimeAvailability"))
+                .and_then(|availability| availability.get("available"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        {
+            return Err(format!(
+                "MobKit tool is unavailable in current runtime: {tool_id}"
+            ));
+        }
     }
     let mut members = document
         .members
@@ -10389,8 +10558,11 @@ fn prune_graph_edges_for_instances(edges: &mut Value, instances: &Value) {
     });
 }
 
-fn mobpack_agent_definition_by_id(definition_id: &str) -> Option<Value> {
-    let catalogs = mobpack_catalogs_response();
+fn mobpack_agent_definition_by_id(
+    definition_id: &str,
+    runtime: Option<&MobpackRuntimeCatalogState>,
+) -> Option<Value> {
+    let catalogs = mobpack_catalogs_response_with_runtime(runtime);
     ["agent_definitions", "sample_agent_definitions"]
         .into_iter()
         .filter_map(|key| catalogs.get(key).and_then(Value::as_array))
@@ -11748,12 +11920,6 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
         .map_err(|err| format!("failed to decode exported mobpack: {err}"))?;
     let pack_sha256 = source_file_sha256(&bytes);
     let pack_path = deploy_pack_path(params, &export.filename)?;
-    if let Some(parent) = pack_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| format!("failed to create deploy output directory: {err}"))?;
-    }
-    std::fs::write(&pack_path, bytes)
-        .map_err(|err| format!("failed to write deploy mobpack: {err}"))?;
 
     let document = document_from_params(params)?;
     let deploy = document.deploy.clone();
@@ -11783,6 +11949,12 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
         .unwrap_or(false);
 
     let (status_code, stdout, stderr) = if execute {
+        if let Some(parent) = pack_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create deploy output directory: {err}"))?;
+        }
+        std::fs::write(&pack_path, bytes)
+            .map_err(|err| format!("failed to write deploy mobpack: {err}"))?;
         let timeout = deploy_execution_timeout(&deploy);
         let output = run_deploy_command(&argv, timeout);
         (output.status_code, output.stdout, output.stderr)
@@ -25583,8 +25755,11 @@ model = "gpt-5.5"
         assert!(!result.executed);
         assert!(!result.success);
         assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
-        assert!(std::path::Path::new(&result.pack_path).exists());
-        let packed_bytes = std::fs::read(&result.pack_path).expect("read deploy pack");
+        assert!(!std::path::Path::new(&result.pack_path).exists());
+        let exported = export_mobpack(&json!({ "document": valid_document() })).expect("export");
+        let packed_bytes = base64::engine::general_purpose::STANDARD
+            .decode(exported.content_base64.as_bytes())
+            .expect("decode exported pack");
         assert_eq!(result.pack_sha256, source_file_sha256(&packed_bytes));
         assert_eq!(&result.argv[0..3], ["rkat", "mob", "deploy"]);
         assert_eq!(preview.argv, result.argv);
@@ -26717,6 +26892,24 @@ model = "gpt-5.5"
         .expect("runtime apply_operation accepts runtime tool catalog snapshot");
         assert_eq!(tool_added["operation"], json!("add_member_tool"));
 
+        let unavailable_tool = apply_mobpack_authoring_operation_with_runtime(
+            &json!({
+                "document": tool_added["document"].clone(),
+                "expected_catalog_snapshot_id": runtime_snapshot,
+                "operation": {
+                    "type": "add_member_tool",
+                    "member_id": member_id,
+                    "tool_id": "mob"
+                }
+            }),
+            Some(&runtime),
+        )
+        .expect_err("runtime-unavailable tool must fail");
+        assert!(
+            unavailable_tool.contains("MobKit tool is unavailable in current runtime: mob"),
+            "{unavailable_tool}"
+        );
+
         let cross_mob_runtime = MobpackRuntimeCatalogState {
             loaded_modules: vec!["editor-host".to_string()],
             runtime_methods: vec![
@@ -27078,6 +27271,32 @@ model = "gpt-5.5"
             field_settings["document"]["deploy"]["prompt"],
             json!("Field section prompt.")
         );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": field_settings["document"],
+                "operation": {
+                    "type": "update_deploy_settings",
+                    "field": "surface",
+                    "value": "desktop"
+                }
+            }))
+            .expect_err("invalid deploy surface rejected before mutation")
+            .contains("update_deploy_settings surface must be one of cli, rpc")
+        );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": field_settings["document"],
+                "operation": {
+                    "type": "update_deploy_settings",
+                    "field": "maxTotalTokens",
+                    "value": -1
+                }
+            }))
+            .expect_err("invalid deploy number rejected before mutation")
+            .contains(
+                "update_deploy_settings max_total_tokens must be a non-negative integer or null"
+            )
+        );
         let mob_settings = apply_mobpack_authoring_operation(&json!({
             "document": field_settings["document"],
             "operation": {
@@ -27090,6 +27309,18 @@ model = "gpt-5.5"
         assert_eq!(
             mob_settings["document"]["mob_settings"]["backendDefault"],
             json!("external")
+        );
+        assert!(
+            apply_mobpack_authoring_operation(&json!({
+                "document": mob_settings["document"],
+                "operation": {
+                    "type": "update_mob_settings",
+                    "field": "backendDefault",
+                    "value": "memory"
+                }
+            }))
+            .expect_err("invalid mob backend rejected before mutation")
+            .contains("update_mob_settings backendDefault must be one of session, external")
         );
         let role_wiring_added = apply_mobpack_authoring_operation(&json!({
             "document": mob_settings["document"],
