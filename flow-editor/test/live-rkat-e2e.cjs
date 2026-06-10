@@ -1496,10 +1496,10 @@ async function validateNamedTypedOperations(catalogs) {
     operation: {
       type: "update_mob_settings",
       field: "backendDefault",
-      value: "external",
+      value: "session",
     },
   });
-  if (!mobSettings.ok || mobSettings.document.mob_settings?.backendDefault !== "external") {
+  if (!mobSettings.ok || mobSettings.document.mob_settings?.backendDefault !== "session") {
     throw new Error(`named mob settings operation did not apply field payload: ${JSON.stringify(mobSettings)}`);
   }
   const roleWiring = await rpc("mobkit/mobpacks/apply_operation", {
@@ -1508,9 +1508,13 @@ async function validateNamedTypedOperations(catalogs) {
       type: "update_role_wiring",
       action: "add",
     },
+    rkat_validate: true,
   });
   if (!roleWiring.ok || !Array.isArray(roleWiring.document.mob_settings?.roleWiring) || roleWiring.document.mob_settings.roleWiring.length < 1) {
     throw new Error(`named role wiring operation did not apply action payload: ${JSON.stringify(roleWiring)}`);
+  }
+  if (roleWiring.validation?.validation_source !== "rkat mob validate") {
+    throw new Error(`named role wiring operation did not run rkat validation: ${JSON.stringify(roleWiring.validation)}`);
   }
   const validation = await rpc("mobkit/mobpacks/validate", { document: roleWiring.document });
   if (!validation.ok) {
@@ -1524,6 +1528,7 @@ async function validateNamedTypedOperations(catalogs) {
     sectionPayloadApplied: settings.operation === "update_deploy_settings",
     mobFieldApplied: mobSettings.operation === "update_mob_settings",
     roleActionApplied: roleWiring.operation === "update_role_wiring",
+    roleActionValidationSource: roleWiring.validation?.validation_source,
   };
 }
 

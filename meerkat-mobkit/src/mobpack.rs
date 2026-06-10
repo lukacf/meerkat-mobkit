@@ -3988,7 +3988,10 @@ pub fn apply_mobpack_authoring_operation(params: &Value) -> Result<Value, String
             ));
         }
     };
-    let validation = validate_document(&document);
+    let mut validation = validate_document(&document);
+    if validate_with_rkat_requested(params) && validation.ok {
+        validation = validate_document_with_rkat(params, &document, validation)?;
+    }
     Ok(json!({
         "source": "mobkit/mobpacks/apply_operation",
         "operation": operation_type,
@@ -4610,14 +4613,14 @@ fn apply_role_wiring_action(
             .get("roleWiring")
             .or_else(|| document.mob_settings.get("role_wiring")),
     );
-    let member_ids = document_member_ids(document);
+    let profiles = document_member_profiles(document);
     match action {
         "add" => {
-            let first = member_ids
+            let first = profiles
                 .first()
                 .cloned()
                 .ok_or_else(|| "update_role_wiring add requires at least one member".to_string())?;
-            let second = member_ids.get(1).cloned().unwrap_or_else(|| first.clone());
+            let second = profiles.get(1).cloned().unwrap_or_else(|| first.clone());
             wiring.push((first, second));
         }
         "delete" | "remove" => {
@@ -4638,8 +4641,10 @@ fn apply_role_wiring_action(
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| "update_role_wiring set requires value".to_string())?;
-            if !member_ids.is_empty() && !member_ids.iter().any(|id| id == value) {
-                return Err(format!("role wiring value is not a member id: {value}"));
+            if !profiles.is_empty() && !profiles.iter().any(|profile| profile == value) {
+                return Err(format!(
+                    "role wiring value is not a member profile: {value}"
+                ));
             }
             if action == "set_source" {
                 wiring[index].0 = value.to_string();
@@ -4673,20 +4678,14 @@ fn operation_index(
     usize::try_from(index).map_err(|_| format!("{context} index is too large"))
 }
 
-fn document_member_ids(document: &MobpackDocument) -> Vec<String> {
+fn document_member_profiles(document: &MobpackDocument) -> Vec<String> {
     document
         .members
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|member| {
-            member
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToString::to_string)
-        })
+        .map(editor_profile_name)
+        .filter(|value| !value.is_empty())
         .collect()
 }
 
@@ -25197,6 +25196,62 @@ model = "gpt-5.5"
                 && row.head == "rkat mob validate executed"
                 && row.sub.contains("valid")
         }));
+        let args = std::fs::read_to_string(args_path).expect("read fake rkat args");
+        let args = args.lines().collect::<Vec<_>>();
+        assert_eq!(&args[0..2], ["mob", "validate"]);
+        assert!(
+            args.get(2).is_some_and(
+                |path| path.ends_with(".mobpack") && std::path::Path::new(path).exists()
+            ),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn apply_operation_runs_rkat_validate_when_requested() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rkat_path = dir.path().join("rkat");
+        let args_path = dir.path().join("apply-rkat-args.txt");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho 'valid\\tapply-sha'\n",
+            args_path.to_string_lossy()
+        );
+        std::fs::write(&rkat_path, script).expect("write fake rkat");
+        let mut perms = std::fs::metadata(&rkat_path)
+            .expect("fake rkat metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&rkat_path, perms).expect("chmod fake rkat");
+
+        let result = apply_mobpack_authoring_operation(&json!({
+            "document": valid_document(),
+            "operation": {
+                "type": "update_deploy_settings",
+                "field": "prompt",
+                "value": "Validate the operation-mutated document."
+            },
+            "rkat_validate": true,
+            "rkat_bin": rkat_path,
+            "validation_output_dir": dir.path()
+        }))
+        .expect("rkat-backed apply operation");
+
+        assert!(result["ok"].as_bool().unwrap_or(false), "{result:#?}");
+        assert_eq!(
+            result["validation"]["validation_source"],
+            json!("rkat mob validate")
+        );
+        assert!(
+            result["validation"]["display_rows"]
+                .as_array()
+                .expect("display rows")
+                .iter()
+                .any(|row| row["head"] == "rkat mob validate executed"
+                    && row["sub"].as_str().is_some_and(|sub| sub.contains("valid")))
+        );
         let args = std::fs::read_to_string(args_path).expect("read fake rkat args");
         let args = args.lines().collect::<Vec<_>>();
         assert_eq!(&args[0..2], ["mob", "validate"]);
