@@ -9,6 +9,7 @@
     "test:controller": "node build.cjs --check && node test/source-contract.test.cjs && node test/controller-projection.test.cjs",
     "test:handoff-contract": "node test/handoff-visual-contract.test.cjs",
     "test:visual-contract": "node test/handoff-visual-contract.test.cjs",
+    "test:browser-source": "node test/browser-source-smoke.cjs",
     "test:rkat-e2e": "node test/live-rkat-e2e.cjs",
     "test:rkat-deploy-e2e": "node test/live-rkat-e2e.cjs --deploy",
     "dev": "node dev-server.cjs"
@@ -17,5 +18,8 @@
     "esbuild": "0.25.10",
     "react": "18.3.1",
     "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.55.0"
   }
 }

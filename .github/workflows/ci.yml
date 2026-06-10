@@ -83,9 +83,14 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: flow-editor/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: npm --prefix flow-editor ci --silent --no-fund --no-audit
+      - run: npm --prefix flow-editor exec -- playwright install --with-deps chromium
+      - run: CARGO_INCREMENTAL=0 scripts/repo-cargo build -p meerkat-mobkit --bin mobkit_flow_editor
       - run: npm --prefix flow-editor run test:controller --silent
       - run: npm --prefix flow-editor run test:visual-contract --silent
+      - run: npm --prefix flow-editor run test:browser-source --silent
 
   audit:
     name: audit
