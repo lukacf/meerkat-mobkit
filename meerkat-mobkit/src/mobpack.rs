@@ -3976,25 +3976,68 @@ fn normalize_mobpack_draft_row(row: &Value) -> Value {
 }
 
 pub fn list_mobpack_drafts(params: &Value) -> Result<Value, String> {
+    list_mobpack_drafts_with_runtime(params, None)
+}
+
+pub fn list_mobpack_drafts_with_runtime(
+    params: &Value,
+    runtime: Option<&MobpackRuntimeCatalogState>,
+) -> Result<Value, String> {
     let _guard = MOBPACK_DRAFT_STORE_LOCK
         .lock()
         .map_err(|_| "mobpack draft store lock poisoned".to_string())?;
     let path = mobpack_draft_store_path(params);
     let rows = read_mobpack_draft_store(&path)?;
+    let runtime_rows = runtime
+        .map(|state| state.runtime_flow_rows.clone())
+        .unwrap_or_default();
+    let runtime_ids = runtime_rows
+        .iter()
+        .filter_map(|row| row.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    let draft_rows = sorted_mobpack_draft_rows(&rows).into_iter().filter(|row| {
+        row.get("id")
+            .and_then(Value::as_str)
+            .map(|id| !runtime_ids.contains(id))
+            .unwrap_or(true)
+    });
+    let merged_rows = runtime_rows
+        .into_iter()
+        .chain(draft_rows)
+        .collect::<Vec<_>>();
     Ok(json!({
         "source": "mobkit/mobpacks/list",
         "store_path": path,
-        "rows": sorted_mobpack_draft_rows(&rows),
+        "runtime_backed": runtime.is_some(),
+        "rows": merged_rows,
     }))
 }
 
 pub fn get_mobpack_draft(params: &Value) -> Result<Value, String> {
+    get_mobpack_draft_with_runtime(params, None)
+}
+
+pub fn get_mobpack_draft_with_runtime(
+    params: &Value,
+    runtime: Option<&MobpackRuntimeCatalogState>,
+) -> Result<Value, String> {
     let id = params
         .get("id")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "mobkit/mobpacks/get requires id".to_string())?;
+    if let Some(row) = runtime
+        .into_iter()
+        .flat_map(|state| state.runtime_flow_rows.iter())
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(id))
+    {
+        return Ok(json!({
+            "source": "mobkit/mobpacks/get",
+            "runtime_backed": true,
+            "row": row,
+        }));
+    }
     let _guard = MOBPACK_DRAFT_STORE_LOCK
         .lock()
         .map_err(|_| "mobpack draft store lock poisoned".to_string())?;
@@ -4008,6 +4051,7 @@ pub fn get_mobpack_draft(params: &Value) -> Result<Value, String> {
     Ok(json!({
         "source": "mobkit/mobpacks/get",
         "store_path": path,
+        "runtime_backed": runtime.is_some(),
         "row": row,
     }))
 }

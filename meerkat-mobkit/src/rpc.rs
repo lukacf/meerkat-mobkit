@@ -147,6 +147,8 @@ async fn handle_unified_mobpack_authoring_rpc(
         | "mobkit/skills/catalog"
         | "mobkit/agent_definitions/list"
         | "mobkit/mobpacks/templates"
+        | "mobkit/mobpacks/list"
+        | "mobkit/mobpacks/get"
         | "mobkit/mobpacks/apply_operation" => Some(mobpack_runtime_catalog_state(runtime).await),
         _ => None,
     };
@@ -238,8 +240,8 @@ pub(crate) fn handle_mobpack_authoring_rpc_with_runtime(
         "mobkit/mobpacks/export" => crate::mobpack::export_mobpack(params)
             .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
         "mobkit/mobpacks/import" => crate::mobpack::import_mobpack(params),
-        "mobkit/mobpacks/list" => crate::mobpack::list_mobpack_drafts(params),
-        "mobkit/mobpacks/get" => crate::mobpack::get_mobpack_draft(params),
+        "mobkit/mobpacks/list" => crate::mobpack::list_mobpack_drafts_with_runtime(params, runtime),
+        "mobkit/mobpacks/get" => crate::mobpack::get_mobpack_draft_with_runtime(params, runtime),
         "mobkit/mobpacks/create" => crate::mobpack::create_mobpack_draft(params),
         "mobkit/mobpacks/save" => crate::mobpack::save_mobpack_draft(params),
         "mobkit/mobpacks/delete" => crate::mobpack::delete_mobpack_draft(params),
@@ -4503,11 +4505,32 @@ comms = true
             catalogs["result"]["runtime_flows"][0]["id"],
             json!("runtime_rpc_main")
         );
+        let listed = super::handle_mobpack_authoring_rpc_with_runtime(
+            "mobkit/mobpacks/list",
+            &json!({}),
+            json!(2),
+            Some(&runtime),
+        )
+        .expect("list method");
+        let listed: Value = serde_json::to_value(listed)?;
+        assert_eq!(listed["result"]["runtime_backed"], json!(true));
+        assert_eq!(listed["result"]["rows"][0]["id"], json!("runtime_rpc_main"));
+
+        let fetched = super::handle_mobpack_authoring_rpc_with_runtime(
+            "mobkit/mobpacks/get",
+            &json!({ "id": "runtime_rpc_main" }),
+            json!(3),
+            Some(&runtime),
+        )
+        .expect("get method");
+        let fetched: Value = serde_json::to_value(fetched)?;
+        assert_eq!(fetched["result"]["runtime_backed"], json!(true));
+        assert_eq!(fetched["result"]["row"]["id"], json!("runtime_rpc_main"));
 
         let tools = super::handle_mobpack_authoring_rpc_with_runtime(
             "mobkit/tools/catalog",
             &json!({}),
-            json!(2),
+            json!(4),
             Some(&runtime),
         )
         .expect("tools catalog method");
