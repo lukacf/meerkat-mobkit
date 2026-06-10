@@ -10444,6 +10444,23 @@
     return { inlineSourceBusy: !!busy };
   }
 
+  function inlineSourceRequestPath(request = null, options = {}) {
+    const explicitPath = String(request?.sourcePath || request?.path || "").trim();
+    if (explicitPath) return explicitPath;
+    const graphView = graphCanvasViewState(options.graphView);
+    const sourceView = sourceViewForState(null, options.sourceView);
+    const requestedId = String(request?.id || "").trim();
+    const requestedKind = String(request?.kind || "").trim();
+    if (
+      requestedId === graphView.sourceFileNodeId
+      || requestedKind === graphView.sourceFileNodeKind
+      || request?.isSourceFile
+    ) {
+      return sourceView.primarySourcePath || "mobkit/mob.toml";
+    }
+    return "";
+  }
+
   function sourceFileForPath(sourceDocument, path) {
     const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
     const selectedPath = String(path || sourceDocument?.sourcePath || sourceViewForState(sourceDocument).primarySourcePath || "").trim();
@@ -11942,6 +11959,7 @@
     inlineSourcePendingTransition,
     inlineSourceReadyTransition,
     inlineSourceBusyTransition,
+    inlineSourceRequestPath,
     sourceEditorState,
     sourceFileSelectionTransition,
     sampleFlowsFromCatalogs,

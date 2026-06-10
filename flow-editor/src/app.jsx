@@ -917,8 +917,12 @@ function App() {
     clearSourceProjection();
   }, [view, editorMode, clearSourceProjection]);
 
-  const handleInlineSource = async (surface = "basic") => {
+  const handleInlineSource = async (surface = "basic", sourceRequest = null) => {
     let requestToken = null;
+    const requestedSourcePath = window.MobKitFlowController.inlineSourceRequestPath(sourceRequest, {
+      sourceView: catalogs.sourceView,
+      graphView: catalogs.graphView,
+    });
     applySourceProjectionPatch(window.MobKitFlowController.inlineSourcePendingTransition(surface));
     setApiBusy(true);
     try {
@@ -929,7 +933,10 @@ function App() {
       applySourceProjectionPatch(window.MobKitFlowController.inlineSourcePendingTransition(surface));
       const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document);
       if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
-      applySourceProjectionPatch(window.MobKitFlowController.inlineSourceReadyTransition(nextSourceDocument));
+      applySourceProjectionPatch(window.MobKitFlowController.inlineSourceReadyTransition({
+        ...nextSourceDocument,
+        ...(requestedSourcePath ? { sourcePath: requestedSourcePath } : {}),
+      }));
     } catch (error) {
       if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
@@ -947,7 +954,7 @@ function App() {
       const canvasView = window.MobKitFlowController.graphCanvasViewState(catalogs.graphView);
       if (!canvasView.sourceFileActivationHash || window.location.hash !== canvasView.sourceFileActivationHash) return;
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-      handleInlineSource("graph");
+      handleInlineSource("graph", { sourcePath: canvasView.sourcePath || catalogs.sourceView.primarySourcePath });
     };
     window.addEventListener("hashchange", openGraphSourceFromHash);
     openGraphSourceFromHash();
@@ -1214,7 +1221,7 @@ function App() {
             edgeStyle={t.edgeStyle}
             density={t.density}
             onRequestAdd={handleRequestAdd}
-            onOpenSourceFile={() => handleInlineSource("graph")}
+            onOpenSourceFile={(sourceRequest) => handleInlineSource("graph", sourceRequest)}
             memberFocus={null}
             grid={catalogs.grid}
             contract={contract}

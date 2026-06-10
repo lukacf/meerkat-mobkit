@@ -6654,6 +6654,19 @@ assert.deepEqual(controller.inlineSourceReadyTransition(readySourceDocument), {
 assert.deepEqual(controller.inlineSourceBusyTransition(false), {
   inlineSourceBusy: false,
 });
+assert.equal(controller.inlineSourceRequestPath({
+  id: "source_mob_toml",
+  kind: "source",
+}, {
+  graphView: hydratedCatalogs.graphView,
+  sourceView: hydratedCatalogs.sourceView,
+}), "mobkit/mob.toml");
+assert.equal(controller.inlineSourceRequestPath({
+  sourcePath: "definition.json",
+}, {
+  graphView: hydratedCatalogs.graphView,
+  sourceView: hydratedCatalogs.sourceView,
+}), "definition.json");
 
 const sourceProjection = controller.sourceDocumentFromSourceResult({
   name: "Source Proof",

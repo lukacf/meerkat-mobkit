@@ -10477,6 +10477,23 @@ window.MOBKIT_BOOT = {
     return { inlineSourceBusy: !!busy };
   }
 
+  function inlineSourceRequestPath(request = null, options = {}) {
+    const explicitPath = String(request?.sourcePath || request?.path || "").trim();
+    if (explicitPath) return explicitPath;
+    const graphView = graphCanvasViewState(options.graphView);
+    const sourceView = sourceViewForState(null, options.sourceView);
+    const requestedId = String(request?.id || "").trim();
+    const requestedKind = String(request?.kind || "").trim();
+    if (
+      requestedId === graphView.sourceFileNodeId
+      || requestedKind === graphView.sourceFileNodeKind
+      || request?.isSourceFile
+    ) {
+      return sourceView.primarySourcePath || "mobkit/mob.toml";
+    }
+    return "";
+  }
+
   function sourceFileForPath(sourceDocument, path) {
     const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
     const selectedPath = String(path || sourceDocument?.sourcePath || sourceViewForState(sourceDocument).primarySourcePath || "").trim();
@@ -11975,6 +11992,7 @@ window.MOBKIT_BOOT = {
     inlineSourcePendingTransition,
     inlineSourceReadyTransition,
     inlineSourceBusyTransition,
+    inlineSourceRequestPath,
     sourceEditorState,
     sourceFileSelectionTransition,
     sampleFlowsFromCatalogs,
@@ -15274,8 +15292,12 @@ function App() {
   React.useEffect(() => {
     clearSourceProjection();
   }, [view, editorMode, clearSourceProjection]);
-  const handleInlineSource = async (surface = "basic") => {
+  const handleInlineSource = async (surface = "basic", sourceRequest = null) => {
     let requestToken = null;
+    const requestedSourcePath = window.MobKitFlowController.inlineSourceRequestPath(sourceRequest, {
+      sourceView: catalogs.sourceView,
+      graphView: catalogs.graphView
+    });
     applySourceProjectionPatch(window.MobKitFlowController.inlineSourcePendingTransition(surface));
     setApiBusy(true);
     try {
@@ -15286,7 +15308,10 @@ function App() {
       applySourceProjectionPatch(window.MobKitFlowController.inlineSourcePendingTransition(surface));
       const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document2);
       if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
-      applySourceProjectionPatch(window.MobKitFlowController.inlineSourceReadyTransition(nextSourceDocument));
+      applySourceProjectionPatch(window.MobKitFlowController.inlineSourceReadyTransition({
+        ...nextSourceDocument,
+        ...requestedSourcePath ? { sourcePath: requestedSourcePath } : {}
+      }));
     } catch (error) {
       if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
       const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
@@ -15303,7 +15328,7 @@ function App() {
       const canvasView = window.MobKitFlowController.graphCanvasViewState(catalogs.graphView);
       if (!canvasView.sourceFileActivationHash || window.location.hash !== canvasView.sourceFileActivationHash) return;
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-      handleInlineSource("graph");
+      handleInlineSource("graph", { sourcePath: canvasView.sourcePath || catalogs.sourceView.primarySourcePath });
     };
     window.addEventListener("hashchange", openGraphSourceFromHash);
     openGraphSourceFromHash();
@@ -15557,7 +15582,7 @@ function App() {
       edgeStyle: t.edgeStyle,
       density: t.density,
       onRequestAdd: handleRequestAdd,
-      onOpenSourceFile: () => handleInlineSource("graph"),
+      onOpenSourceFile: (sourceRequest) => handleInlineSource("graph", sourceRequest),
       memberFocus: null,
       grid: catalogs.grid,
       contract,
