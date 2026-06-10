@@ -159,7 +159,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
   );
 }
 
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringReplacement = null }) {
+function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringIntent = null }) {
   const members = studio?.members || [];
   const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [selLocal, setSelLocal] = React.useState(null);
@@ -178,15 +178,15 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
     ? { ...view, ty: 0 }
     : view;
 
-  const commitFlow = async (operationType = "update_flow_step", operation = {}) => {
+  const commitFlow = async (intentRequest) => {
     const fallback = viewState.authoringOperationFallbackError;
-    if (!applyAuthoringReplacement) {
+    if (!applyAuthoringIntent) {
       const result = { ok: false, error: viewState.authoringOperationUnavailableError };
       setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       return result;
     }
     try {
-      const result = await applyAuthoringReplacement({ operationType, operation });
+      const result = await applyAuthoringIntent(intentRequest);
       if (result?.ok === false) {
         setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       } else {
@@ -202,14 +202,12 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       return result;
     }
   };
-  const update = (id, patch, operationType = "update_flow_step", operation = {}) => {
-    const payload = operationType === "update_flow_step" && !Object.keys(operation || {}).length
-      ? { step_id: id, patch }
-      : operation;
-    return commitFlow(operationType, payload);
+  const update = (requestOrId, patch = {}) => {
+    if (requestOrId && typeof requestOrId === "object") return commitFlow(requestOrId);
+    return commitFlow({ intent: "basic.updateStep", stepId: requestOrId, patch });
   };
   const editStep = (id, action, payload = {}) => {
-    return commitFlow("apply_flow_step_edit", { step_id: id, action, ...payload });
+    return commitFlow({ intent: "basic.editStep", stepId: id, action, payload });
   };
   const selStep = findStep(flow.steps, sel);
   const applyBasicInteraction = (result) => {
@@ -220,7 +218,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
 
   const insertAt = (laneRef, pick) => {
     applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition());
-    commitFlow("insert_flow_step", { pick, lane_ref: laneRef }).then((result) => {
+    commitFlow({ intent: "basic.insertStep", pick, laneRef }).then((result) => {
       if (result?.ok === false) return;
       const id = result?.selection?.id;
       if (id) setSel(id);
@@ -228,7 +226,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   };
   const removeStep = (id) => {
     const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
-    commitFlow("delete_flow_step", { step_id: id }).then((operationResult) => {
+    commitFlow({ intent: "basic.deleteStep", stepId: id }).then((operationResult) => {
       if (operationResult?.ok === false) return;
       setSel(result.selection);
       setPicker(result.picker);
@@ -312,7 +310,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
         ) : selStep ? (
           <>
             {operationError && <div className="hint__line" style={{ color: "var(--danger)", padding: "0 16px 8px" }}>{operationError}</div>}
-            <StepInspector studio={studio} members={members} flow={flow} setFlow={setFlow} step={selStep} update={update} editStep={editStep} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} launchView={launchView} conditionView={conditionView} applyAuthoringReplacement={applyAuthoringReplacement} />
+            <StepInspector studio={studio} members={members} flow={flow} setFlow={setFlow} step={selStep} update={update} editStep={editStep} onDelete={() => removeStep(selStep.id)} contract={contract} toolCatalog={toolCatalog} basicView={basicView} launchView={launchView} conditionView={conditionView} />
           </>
         ) : (
           <EmptyPanel state={viewState} />
@@ -502,7 +500,7 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
 }
 
 // ── Inspector ──
-function StepInspector({ studio, members, flow, setFlow, step, update, editStep, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null, applyAuthoringReplacement = null }) {
+function StepInspector({ studio, members, flow, setFlow, step, update, editStep, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null }) {
   const [paramAddResult, setParamAddResult] = React.useState(null);
   React.useEffect(() => setParamAddResult(null), [step?.id]);
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
@@ -510,22 +508,22 @@ function StepInspector({ studio, members, flow, setFlow, step, update, editStep,
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
     const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult, viewState.authoringOperationFallbackError);
-    const applyInputOperation = (operationType, operation = {}) => {
+    const applyInputIntent = (intentRequest) => {
       if (!update) return Promise.resolve({ ok: false, error: viewState.authoringOperationUnavailableError });
-      return update(step.id, {}, operationType, operation);
+      return update(intentRequest);
     };
     const updateParam = (id, patch) => {
-      return applyInputOperation("update_input_param", { step_id: step.id, param_id: id, patch });
+      return applyInputIntent({ intent: "basic.updateInputParam", stepId: step.id, paramId: id, patch });
     };
     const deleteParam = (id) => {
-      return applyInputOperation("delete_input_param", { step_id: step.id, param_id: id });
+      return applyInputIntent({ intent: "basic.deleteInputParam", stepId: step.id, paramId: id });
     };
     const renameParam = (id, rawName, previousName) => {
-      return applyInputOperation("rename_input_param", { step_id: step.id, param_id: id, new_name: rawName });
+      return applyInputIntent({ intent: "basic.renameInputParam", stepId: step.id, paramId: id, newName: rawName, previousName });
     };
     const addParam = () => {
       setParamAddResult(null);
-      applyInputOperation("add_input_param", { step_id: step.id }).then((result) => {
+      applyInputIntent({ intent: "basic.addInputParam", stepId: step.id }).then((result) => {
         if (result?.ok === false) {
           setParamAddResult(result);
           return;
@@ -534,7 +532,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, editStep,
       }).catch((error) => {
         setParamAddResult({
           ok: false,
-          error: error?.message || String(error || "add_input_param failed"),
+          error: error?.message || String(error || viewState.authoringOperationFallbackError),
         });
       });
     };

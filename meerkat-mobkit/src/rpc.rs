@@ -93,6 +93,103 @@ pub(crate) fn mobpack_authoring_capabilities() -> Value {
     })
 }
 
+async fn mobpack_runtime_catalog_state(
+    runtime: &UnifiedRuntime,
+) -> crate::mobpack::MobpackRuntimeCatalogState {
+    let loaded_modules = runtime.loaded_modules().await;
+    let mut runtime_methods = vec![
+        "mobkit/capabilities".to_string(),
+        "mobkit/models/catalog".to_string(),
+        "mobkit/spawn_member".to_string(),
+        "mobkit/list_members".to_string(),
+        "mobkit/get_member".to_string(),
+        "mobkit/run_flow".to_string(),
+        "mobkit/list_flows".to_string(),
+        "mobkit/list_runs".to_string(),
+    ];
+    runtime_methods.extend(
+        MOBPACK_AUTHORING_METHODS
+            .iter()
+            .map(|method| method.to_string()),
+    );
+    if runtime.has_contact_directory() {
+        runtime_methods.push("mobkit/cross_mob/directory".to_string());
+    }
+    if runtime.has_peer_mob_handles().await && runtime.has_inproc_contacts() {
+        runtime_methods.extend([
+            "mobkit/cross_mob/wire".to_string(),
+            "mobkit/cross_mob/unwire".to_string(),
+            "mobkit/cross_mob/send".to_string(),
+        ]);
+    }
+    crate::mobpack::MobpackRuntimeCatalogState {
+        loaded_modules,
+        runtime_methods,
+        has_contact_directory: runtime.has_contact_directory(),
+        has_peer_mob_handles: runtime.has_peer_mob_handles().await,
+        has_inproc_contacts: runtime.has_inproc_contacts(),
+    }
+}
+
+async fn handle_unified_mobpack_authoring_rpc(
+    runtime: &UnifiedRuntime,
+    method: &str,
+    params: &Value,
+    response_id: Value,
+) -> JsonRpcResponse {
+    let runtime_catalog_state = match method {
+        "mobkit/mobpacks/catalogs"
+        | "mobkit/tools/catalog"
+        | "mobkit/skills/catalog"
+        | "mobkit/agent_definitions/list"
+        | "mobkit/mobpacks/templates" => Some(mobpack_runtime_catalog_state(runtime).await),
+        _ => None,
+    };
+    let result = match method {
+        "mobkit/mobpacks/catalogs" => Ok(crate::mobpack::mobpack_catalogs_response_with_runtime(
+            runtime_catalog_state.as_ref(),
+        )),
+        "mobkit/tools/catalog" => Ok(crate::mobpack::mobpack_tools_catalog_response_with_runtime(
+            runtime_catalog_state.as_ref(),
+        )),
+        "mobkit/skills/catalog" => Ok(
+            crate::mobpack::mobpack_skills_catalog_response_with_runtime(
+                runtime_catalog_state.as_ref(),
+            ),
+        ),
+        "mobkit/agent_definitions/list" => Ok(
+            crate::mobpack::mobpack_agent_definitions_response_with_runtime(
+                runtime_catalog_state.as_ref(),
+            ),
+        ),
+        "mobkit/mobpacks/templates" => Ok(crate::mobpack::mobpack_templates_response_with_runtime(
+            runtime_catalog_state.as_ref(),
+        )),
+        _ => {
+            return handle_mobpack_authoring_rpc(method, params, response_id)
+                .expect("known mobpack authoring method");
+        }
+    };
+    match result {
+        Ok(result) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(result),
+            error: None,
+        },
+        Err(message) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message,
+                data: None,
+            }),
+        },
+    }
+}
+
 pub(crate) fn handle_mobpack_authoring_rpc(
     method: &str,
     params: &Value,
@@ -1979,8 +2076,8 @@ async fn handle_unified_rpc_json_inner(
             error: None,
         },
         method if MOBPACK_AUTHORING_METHODS.contains(&method) => {
-            handle_mobpack_authoring_rpc(method, &request.params, response_id)
-                .expect("known mobpack authoring method")
+            handle_unified_mobpack_authoring_rpc(runtime, method, &request.params, response_id)
+                .await
         }
         "mobkit/blob/get" => {
             mob_methods::handle_blob_get(runtime, response_id, &request.params).await
@@ -4279,6 +4376,58 @@ comms = true
         );
         assert!(response["result"]["sample_mobpacks"].is_null());
         assert!(response["result"]["agent_definitions"].is_null());
+
+        let catalogs: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "mobkit/mobpacks/catalogs",
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                None,
+            )
+            .await,
+        )?;
+        assert!(catalogs["error"].is_null(), "{catalogs:#?}");
+        assert_eq!(catalogs["result"]["runtime_backed"], json!(true));
+        assert_eq!(
+            catalogs["result"]["authoring_provider"]["id"],
+            json!("unified_runtime")
+        );
+        assert_eq!(
+            catalogs["result"]["authoring_provider"]["runtime_binding"],
+            json!("bound")
+        );
+        assert_eq!(
+            catalogs["result"]["sources"]["runtime"],
+            json!("unified_runtime")
+        );
+        assert_eq!(
+            catalogs["result"]["sources"]["runtime_binding"],
+            json!("bound")
+        );
+        assert!(
+            catalogs["result"]["runtime_unavailable_reason"].is_null(),
+            "{catalogs:#?}"
+        );
+        assert_eq!(
+            catalogs["result"]["catalog_snapshot"]["runtime_backed"],
+            json!(true)
+        );
+        assert_eq!(
+            catalogs["result"]["authoring_provider"]["deploy_target"]["command"],
+            json!("rkat mob deploy")
+        );
+        assert!(
+            catalogs["result"]["authoring_provider"]["runtime_methods"]
+                .as_array()
+                .is_some_and(|methods| methods.contains(&json!("mobkit/mobpacks/deploy"))),
+            "{catalogs:#?}"
+        );
 
         Ok(())
     }

@@ -141,6 +141,127 @@
     };
   }
 
+  function authoringReplacementFromIntent(request = {}) {
+    const input = request && typeof request === "object" ? request : {};
+    if (input.operationType) return input;
+    const intent = String(input.intent || "").trim();
+    const selection = Object.prototype.hasOwnProperty.call(input, "selection") ? input.selection : undefined;
+    const withSelection = (payload) => selection === undefined ? payload : { ...payload, selection };
+    switch (intent) {
+      case "system.syncGraphToFlow":
+        return withSelection({ operationType: "sync_graph_to_flow", operation: { reason: input.reason || "sync_graph_to_flow" } });
+      case "system.reconcileMembers":
+        return withSelection({ operationType: "reconcile_members", operation: { reason: input.reason || "reconcile_members" } });
+      case "system.reconcileConditionFields":
+        return withSelection({ operationType: "reconcile_condition_fields", operation: { reason: input.reason || "reconcile_condition_fields" } });
+      case "system.reconcileContractRefs":
+        return withSelection({ operationType: "reconcile_contract_refs", operation: { reason: input.reason || "reconcile_contract_refs" } });
+      case "system.replaceAuthoringDocument":
+        return withSelection({
+          operationType: "replace_authoring_document",
+          operation: { reason: input.reason || "replace_authoring_document" },
+          studio: input.studio,
+          useAuthoringProjection: true,
+        });
+      case "basic.updateStep":
+        return withSelection({ operationType: "update_flow_step", operation: { step_id: input.stepId, patch: input.patch || {} } });
+      case "basic.editStep":
+        return withSelection({ operationType: "apply_flow_step_edit", operation: { step_id: input.stepId, action: input.action, ...(input.payload || {}) } });
+      case "basic.insertStep":
+        return withSelection({ operationType: "insert_flow_step", operation: { pick: input.pick, lane_ref: input.laneRef } });
+      case "basic.deleteStep":
+        return withSelection({ operationType: "delete_flow_step", operation: { step_id: input.stepId } });
+      case "basic.addInputParam":
+        return withSelection({ operationType: "add_input_param", operation: { step_id: input.stepId } });
+      case "basic.updateInputParam":
+        return withSelection({ operationType: "update_input_param", operation: { step_id: input.stepId, param_id: input.paramId, patch: input.patch || {} } });
+      case "basic.renameInputParam":
+        return withSelection({ operationType: "rename_input_param", operation: { step_id: input.stepId, param_id: input.paramId, new_name: input.newName } });
+      case "basic.deleteInputParam":
+        return withSelection({ operationType: "delete_input_param", operation: { step_id: input.stepId, param_id: input.paramId } });
+      case "graph.insertNode":
+        return withSelection({ operationType: "insert_graph_node", operation: input.operation || { pick: input.pick, cell: input.cell, instance: input.instance } });
+      case "graph.updateNode":
+        return withSelection({ operationType: "update_graph_node", operation: { instance_id: input.instanceId, patch: input.patch || {} } });
+      case "graph.editNode":
+        return withSelection({ operationType: "apply_graph_node_edit", operation: { instance_id: input.instanceId, action: input.action, ...(input.payload || {}) } });
+      case "graph.moveNode":
+        return withSelection({ operationType: "move_graph_node", operation: { instance_id: input.instanceId, cell: input.cell, original_cell: input.originalCell } });
+      case "graph.deleteNode":
+        return withSelection({ operationType: "delete_graph_node", operation: { instance_id: input.instanceId } });
+      case "graph.connectNodes":
+        return withSelection({ operationType: "connect_graph_nodes", operation: input.operation || { from_id: input.fromId, to_id: input.toId, edge: input.edge } });
+      case "graph.updateEdge":
+        return withSelection({ operationType: "update_graph_edge", operation: { edge_id: input.edgeId, patch: input.patch || {} } });
+      case "graph.editEdge":
+        return withSelection({ operationType: "apply_graph_edge_edit", operation: { edge_id: input.edgeId, action: input.action, ...(input.payload || {}) } });
+      case "graph.deleteEdge":
+        return withSelection({ operationType: "delete_graph_edge", operation: { edge_id: input.edgeId } });
+      case "schema.add":
+        return withSelection({ operationType: "add_schema", operation: {} });
+      case "schema.update":
+        return withSelection({ operationType: "update_schema", operation: { schema_id: input.schemaId, patch: input.patch || {} } });
+      case "schema.rename":
+        return withSelection({ operationType: "rename_schema", operation: { schema_id: input.schemaId, new_id: input.newId } });
+      case "schema.delete":
+        return withSelection({ operationType: "delete_schema", operation: { schema_id: input.schemaId } });
+      case "schema.addField":
+        return withSelection({ operationType: "add_schema_field", operation: { schema_id: input.schemaId } });
+      case "schema.updateField":
+        return withSelection({ operationType: "update_schema_field", operation: { schema_id: input.schemaId, field_id: input.fieldId, patch: input.patch || {} } });
+      case "schema.renameField":
+        return withSelection({ operationType: "rename_schema_field", operation: { schema_id: input.schemaId, field_id: input.fieldId, new_name: input.newName } });
+      case "schema.deleteField":
+        return withSelection({ operationType: "delete_schema_field", operation: { schema_id: input.schemaId, field_id: input.fieldId } });
+      case "agent.assignSchema":
+        return withSelection({ operationType: "assign_member_schema", operation: { member_id: input.memberId, schema_id: input.schemaId } });
+      case "agent.deleteMember":
+        return withSelection({ operationType: "delete_member", operation: { member_id: input.memberId } });
+      case "settings.updateDeploy":
+        return withSelection({ operationType: "update_deploy_settings", operation: { deploy: input.deploy } });
+      case "settings.updateMob":
+        return withSelection({ operationType: "update_mob_settings", operation: { mob_settings: input.mobSettings } });
+      case "settings.updateRoleWiring":
+        return withSelection({ operationType: "update_role_wiring", operation: { role_wiring: input.roleWiring || [] } });
+      default:
+        return input;
+    }
+  }
+
+  function authoringOperationFromIntent(request = {}) {
+    const input = request && typeof request === "object" ? request : {};
+    if (input.type) return input;
+    const intent = String(input.intent || "").trim();
+    switch (intent) {
+      case "agent.addDefinition":
+        return { type: "add_agent_definition", definition_id: input.definitionId };
+      case "agent.updateMember":
+        return { type: "update_member", member_id: input.memberId, patch: input.patch || {} };
+      case "agent.addTool":
+        return { type: "add_member_tool", member_id: input.memberId, tool_id: input.toolId };
+      case "agent.removeTool":
+        return { type: "remove_member_tool", member_id: input.memberId, tool_id: input.toolId };
+      case "agent.toggleSkill":
+        return { type: "toggle_member_skill", member_id: input.memberId, skill_id: input.skillId };
+      case "agent.removeSkill":
+        return { type: "remove_member_skill", member_id: input.memberId, skill_id: input.skillId };
+      case "agent.createInlineSkill":
+        return { type: "create_inline_skill", member_id: input.memberId, label: input.label, content: input.content };
+      default:
+        return input;
+    }
+  }
+
+  function inlineSkillRealmIdFromOperationResult(result) {
+    const skillId = String(result?.selection?.skill_id || result?.skill_id || "").trim();
+    const realms = Array.isArray(result?.document?.skill_realms) ? result.document.skill_realms : [];
+    if (!skillId) return "";
+    const realm = realms.find(candidate => {
+      return Array.isArray(candidate?.skills) && candidate.skills.some(skill => String(skill?.id || "").trim() === skillId);
+    });
+    return String(realm?.id || "").trim();
+  }
+
   function configureAuthoringMethodsFromSchema(schema) {
     const methods = authoringRpcMethodsFromSchema(schema);
     controllerConfig.rpcMethods = { ...RPC_METHODS, ...methods };
@@ -11764,6 +11885,9 @@
     loadCatalogs,
     authoringRpcMethodsFromSchema,
     configureAuthoringMethodsFromSchema,
+    authoringReplacementFromIntent,
+    authoringOperationFromIntent,
+    inlineSkillRealmIdFromOperationResult,
     validateDocument,
     sourceDocument,
     exportDocument,

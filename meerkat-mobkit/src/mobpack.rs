@@ -49,6 +49,15 @@ const EDITOR_SCHEMA_FIELD_TYPES: &[&str] = &[
 
 static MOBPACK_DRAFT_STORE_LOCK: Mutex<()> = Mutex::new(());
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MobpackRuntimeCatalogState {
+    pub loaded_modules: Vec<String>,
+    pub runtime_methods: Vec<String>,
+    pub has_contact_directory: bool,
+    pub has_peer_mob_handles: bool,
+    pub has_inproc_contacts: bool,
+}
+
 fn editor_input_step_default_task() -> &'static str {
     EDITOR_INPUT_STEP_DEFAULT_TASK
 }
@@ -857,6 +866,65 @@ fn standalone_authoring_provider(source: &str) -> Value {
     })
 }
 
+fn runtime_authoring_provider(source: &str, state: &MobpackRuntimeCatalogState) -> Value {
+    let mut loaded_modules = state.loaded_modules.clone();
+    loaded_modules.sort();
+    loaded_modules.dedup();
+    let mut runtime_methods = state.runtime_methods.clone();
+    runtime_methods.sort();
+    runtime_methods.dedup();
+    json!({
+        "id": "unified_runtime",
+        "kind": "mobpack_authoring_provider",
+        "source": source,
+        "runtime_backed": true,
+        "runtime_binding": "bound",
+        "runtime_type": "unified",
+        "loaded_modules": loaded_modules,
+        "runtime_methods": runtime_methods,
+        "deploy_target": {
+            "command": "rkat mob deploy",
+            "surface": ["cli", "rpc"],
+            "available": true,
+            "realm_backend": ["jsonl", "sqlite"],
+        },
+        "cross_mob": {
+            "contact_directory": state.has_contact_directory,
+            "peer_mob_handles": state.has_peer_mob_handles,
+            "inproc_contacts": state.has_inproc_contacts,
+        },
+    })
+}
+
+fn authoring_provider(source: &str, runtime: Option<&MobpackRuntimeCatalogState>) -> Value {
+    runtime
+        .map(|state| runtime_authoring_provider(source, state))
+        .unwrap_or_else(|| standalone_authoring_provider(source))
+}
+
+fn authoring_provider_is_runtime_backed(provider: &Value) -> bool {
+    provider
+        .get("runtime_backed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn authoring_provider_runtime_binding(provider: &Value) -> &'static str {
+    if authoring_provider_is_runtime_backed(provider) {
+        "bound"
+    } else {
+        "unbound"
+    }
+}
+
+fn runtime_unavailable_reason(provider: &Value) -> Value {
+    if authoring_provider_is_runtime_backed(provider) {
+        Value::Null
+    } else {
+        Value::String(STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON.to_string())
+    }
+}
+
 fn model_catalog_response() -> Vec<Value> {
     meerkat_models::catalog()
         .iter()
@@ -889,36 +957,60 @@ fn authoring_skill_realms_response() -> Value {
 }
 
 pub fn mobpack_tools_catalog_response() -> Value {
+    mobpack_tools_catalog_response_with_runtime(None)
+}
+
+pub fn mobpack_tools_catalog_response_with_runtime(
+    runtime: Option<&MobpackRuntimeCatalogState>,
+) -> Value {
+    let provider = authoring_provider("mobkit/tools/catalog", runtime);
+    let runtime_backed = authoring_provider_is_runtime_backed(&provider);
     with_catalog_snapshot(
         json!({
             "schema_version": MOBPACK_SCHEMA_VERSION,
-            "runtime_backed": false,
+            "runtime_backed": runtime_backed,
             "source": "mobkit/tool-config",
-            "authoring_provider": standalone_authoring_provider("mobkit/tools/catalog"),
-            "runtime_unavailable_reason": STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON,
+            "authoring_provider": provider.clone(),
+            "runtime_unavailable_reason": runtime_unavailable_reason(&provider),
             "tool_catalog": tool_catalog_response(),
         }),
         "mobkit/tools/catalog",
-        false,
+        runtime_backed,
     )
 }
 
 pub fn mobpack_skills_catalog_response() -> Value {
+    mobpack_skills_catalog_response_with_runtime(None)
+}
+
+pub fn mobpack_skills_catalog_response_with_runtime(
+    runtime: Option<&MobpackRuntimeCatalogState>,
+) -> Value {
+    let provider = authoring_provider("mobkit/skills/catalog", runtime);
+    let runtime_backed = authoring_provider_is_runtime_backed(&provider);
     with_catalog_snapshot(
         json!({
             "schema_version": MOBPACK_SCHEMA_VERSION,
-            "runtime_backed": false,
+            "runtime_backed": runtime_backed,
             "source": "mobkit/authoring-skill-realms",
-            "authoring_provider": standalone_authoring_provider("mobkit/skills/catalog"),
-            "runtime_unavailable_reason": STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON,
+            "authoring_provider": provider.clone(),
+            "runtime_unavailable_reason": runtime_unavailable_reason(&provider),
             "skill_realms": authoring_skill_realms_response(),
         }),
         "mobkit/skills/catalog",
-        false,
+        runtime_backed,
     )
 }
 
 pub fn mobpack_agent_definitions_response() -> Value {
+    mobpack_agent_definitions_response_with_runtime(None)
+}
+
+pub fn mobpack_agent_definitions_response_with_runtime(
+    runtime: Option<&MobpackRuntimeCatalogState>,
+) -> Value {
+    let provider = authoring_provider("mobkit/agent_definitions/list", runtime);
+    let runtime_backed = authoring_provider_is_runtime_backed(&provider);
     let tool_catalog = tool_catalog_response();
     let skill_realms = authoring_skill_realms_response();
     let authoring_sources = authoring_agent_definition_mobpack_sources();
@@ -931,18 +1023,26 @@ pub fn mobpack_agent_definitions_response() -> Value {
     with_catalog_snapshot(
         json!({
             "schema_version": MOBPACK_SCHEMA_VERSION,
-            "runtime_backed": false,
+            "runtime_backed": runtime_backed,
             "source": "mobkit/authoring-agent-definitions",
-            "authoring_provider": standalone_authoring_provider("mobkit/agent_definitions/list"),
-            "runtime_unavailable_reason": STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON,
+            "authoring_provider": provider.clone(),
+            "runtime_unavailable_reason": runtime_unavailable_reason(&provider),
             "agent_definitions": agent_definitions,
         }),
         "mobkit/agent_definitions/list",
-        false,
+        runtime_backed,
     )
 }
 
 pub fn mobpack_templates_response() -> Value {
+    mobpack_templates_response_with_runtime(None)
+}
+
+pub fn mobpack_templates_response_with_runtime(
+    runtime: Option<&MobpackRuntimeCatalogState>,
+) -> Value {
+    let provider = authoring_provider("mobkit/mobpacks/templates", runtime);
+    let runtime_backed = authoring_provider_is_runtime_backed(&provider);
     let sample_mobpacks = sample_mobpack_catalog();
     let blank_mobpack = blank_mobpack_template();
     let tool_catalog = tool_catalog_response();
@@ -959,9 +1059,9 @@ pub fn mobpack_templates_response() -> Value {
         json!({
             "schema_version": MOBPACK_SCHEMA_VERSION,
             "source": "mobkit/mobpack-templates",
-            "runtime_backed": false,
-            "authoring_provider": standalone_authoring_provider("mobkit/mobpacks/templates"),
-            "runtime_unavailable_reason": STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON,
+            "runtime_backed": runtime_backed,
+            "authoring_provider": provider.clone(),
+            "runtime_unavailable_reason": runtime_unavailable_reason(&provider),
             "blank_mobpack": blank_mobpack,
             "sample_mobpacks": sample_mobpacks,
             "sample_agent_definitions": sample_agent_definitions,
@@ -971,30 +1071,39 @@ pub fn mobpack_templates_response() -> Value {
             },
         }),
         "mobkit/mobpacks/templates",
-        false,
+        runtime_backed,
     )
 }
 
 pub fn mobpack_catalogs_response() -> Value {
-    let tools = mobpack_tools_catalog_response();
-    let skills = mobpack_skills_catalog_response();
-    let agents = mobpack_agent_definitions_response();
-    let templates = mobpack_templates_response();
+    mobpack_catalogs_response_with_runtime(None)
+}
+
+pub fn mobpack_catalogs_response_with_runtime(
+    runtime: Option<&MobpackRuntimeCatalogState>,
+) -> Value {
+    let provider = authoring_provider("mobkit/mobpacks/catalogs", runtime);
+    let runtime_backed = authoring_provider_is_runtime_backed(&provider);
+    let runtime_binding = authoring_provider_runtime_binding(&provider);
+    let tools = mobpack_tools_catalog_response_with_runtime(runtime);
+    let skills = mobpack_skills_catalog_response_with_runtime(runtime);
+    let agents = mobpack_agent_definitions_response_with_runtime(runtime);
+    let templates = mobpack_templates_response_with_runtime(runtime);
     with_catalog_snapshot(
         json!({
             "schema_version": MOBPACK_SCHEMA_VERSION,
-            "runtime_backed": false,
-            "authoring_provider": standalone_authoring_provider("mobkit/mobpacks/catalogs"),
-            "runtime_unavailable_reason": STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON,
+            "runtime_backed": runtime_backed,
+            "authoring_provider": provider.clone(),
+            "runtime_unavailable_reason": runtime_unavailable_reason(&provider),
             "sources": {
                 "catalog": "mobkit/mobpacks/catalogs",
                 "tools": "mobkit/tools/catalog",
                 "skills": "mobkit/skills/catalog",
                 "agent_definitions": "mobkit/agent_definitions/list",
                 "templates": "mobkit/mobpacks/templates",
-                "runtime": "standalone_authoring",
-                "runtime_binding": "unbound",
-                "runtime_unavailable_reason": STANDALONE_AUTHORING_RUNTIME_UNAVAILABLE_REASON
+                "runtime": provider["id"].clone(),
+                "runtime_binding": runtime_binding,
+                "runtime_unavailable_reason": runtime_unavailable_reason(&provider)
             },
             "templates": templates["templates"].clone(),
             "tool_catalog": tools["tool_catalog"].clone(),
@@ -1007,7 +1116,7 @@ pub fn mobpack_catalogs_response() -> Value {
             "provider_defaults": provider_defaults_response(),
         }),
         "mobkit/mobpacks/catalogs",
-        false,
+        runtime_backed,
     )
 }
 

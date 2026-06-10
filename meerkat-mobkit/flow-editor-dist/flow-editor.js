@@ -174,6 +174,127 @@ window.MOBKIT_BOOT = {
     };
   }
 
+  function authoringReplacementFromIntent(request = {}) {
+    const input = request && typeof request === "object" ? request : {};
+    if (input.operationType) return input;
+    const intent = String(input.intent || "").trim();
+    const selection = Object.prototype.hasOwnProperty.call(input, "selection") ? input.selection : undefined;
+    const withSelection = (payload) => selection === undefined ? payload : { ...payload, selection };
+    switch (intent) {
+      case "system.syncGraphToFlow":
+        return withSelection({ operationType: "sync_graph_to_flow", operation: { reason: input.reason || "sync_graph_to_flow" } });
+      case "system.reconcileMembers":
+        return withSelection({ operationType: "reconcile_members", operation: { reason: input.reason || "reconcile_members" } });
+      case "system.reconcileConditionFields":
+        return withSelection({ operationType: "reconcile_condition_fields", operation: { reason: input.reason || "reconcile_condition_fields" } });
+      case "system.reconcileContractRefs":
+        return withSelection({ operationType: "reconcile_contract_refs", operation: { reason: input.reason || "reconcile_contract_refs" } });
+      case "system.replaceAuthoringDocument":
+        return withSelection({
+          operationType: "replace_authoring_document",
+          operation: { reason: input.reason || "replace_authoring_document" },
+          studio: input.studio,
+          useAuthoringProjection: true,
+        });
+      case "basic.updateStep":
+        return withSelection({ operationType: "update_flow_step", operation: { step_id: input.stepId, patch: input.patch || {} } });
+      case "basic.editStep":
+        return withSelection({ operationType: "apply_flow_step_edit", operation: { step_id: input.stepId, action: input.action, ...(input.payload || {}) } });
+      case "basic.insertStep":
+        return withSelection({ operationType: "insert_flow_step", operation: { pick: input.pick, lane_ref: input.laneRef } });
+      case "basic.deleteStep":
+        return withSelection({ operationType: "delete_flow_step", operation: { step_id: input.stepId } });
+      case "basic.addInputParam":
+        return withSelection({ operationType: "add_input_param", operation: { step_id: input.stepId } });
+      case "basic.updateInputParam":
+        return withSelection({ operationType: "update_input_param", operation: { step_id: input.stepId, param_id: input.paramId, patch: input.patch || {} } });
+      case "basic.renameInputParam":
+        return withSelection({ operationType: "rename_input_param", operation: { step_id: input.stepId, param_id: input.paramId, new_name: input.newName } });
+      case "basic.deleteInputParam":
+        return withSelection({ operationType: "delete_input_param", operation: { step_id: input.stepId, param_id: input.paramId } });
+      case "graph.insertNode":
+        return withSelection({ operationType: "insert_graph_node", operation: input.operation || { pick: input.pick, cell: input.cell, instance: input.instance } });
+      case "graph.updateNode":
+        return withSelection({ operationType: "update_graph_node", operation: { instance_id: input.instanceId, patch: input.patch || {} } });
+      case "graph.editNode":
+        return withSelection({ operationType: "apply_graph_node_edit", operation: { instance_id: input.instanceId, action: input.action, ...(input.payload || {}) } });
+      case "graph.moveNode":
+        return withSelection({ operationType: "move_graph_node", operation: { instance_id: input.instanceId, cell: input.cell, original_cell: input.originalCell } });
+      case "graph.deleteNode":
+        return withSelection({ operationType: "delete_graph_node", operation: { instance_id: input.instanceId } });
+      case "graph.connectNodes":
+        return withSelection({ operationType: "connect_graph_nodes", operation: input.operation || { from_id: input.fromId, to_id: input.toId, edge: input.edge } });
+      case "graph.updateEdge":
+        return withSelection({ operationType: "update_graph_edge", operation: { edge_id: input.edgeId, patch: input.patch || {} } });
+      case "graph.editEdge":
+        return withSelection({ operationType: "apply_graph_edge_edit", operation: { edge_id: input.edgeId, action: input.action, ...(input.payload || {}) } });
+      case "graph.deleteEdge":
+        return withSelection({ operationType: "delete_graph_edge", operation: { edge_id: input.edgeId } });
+      case "schema.add":
+        return withSelection({ operationType: "add_schema", operation: {} });
+      case "schema.update":
+        return withSelection({ operationType: "update_schema", operation: { schema_id: input.schemaId, patch: input.patch || {} } });
+      case "schema.rename":
+        return withSelection({ operationType: "rename_schema", operation: { schema_id: input.schemaId, new_id: input.newId } });
+      case "schema.delete":
+        return withSelection({ operationType: "delete_schema", operation: { schema_id: input.schemaId } });
+      case "schema.addField":
+        return withSelection({ operationType: "add_schema_field", operation: { schema_id: input.schemaId } });
+      case "schema.updateField":
+        return withSelection({ operationType: "update_schema_field", operation: { schema_id: input.schemaId, field_id: input.fieldId, patch: input.patch || {} } });
+      case "schema.renameField":
+        return withSelection({ operationType: "rename_schema_field", operation: { schema_id: input.schemaId, field_id: input.fieldId, new_name: input.newName } });
+      case "schema.deleteField":
+        return withSelection({ operationType: "delete_schema_field", operation: { schema_id: input.schemaId, field_id: input.fieldId } });
+      case "agent.assignSchema":
+        return withSelection({ operationType: "assign_member_schema", operation: { member_id: input.memberId, schema_id: input.schemaId } });
+      case "agent.deleteMember":
+        return withSelection({ operationType: "delete_member", operation: { member_id: input.memberId } });
+      case "settings.updateDeploy":
+        return withSelection({ operationType: "update_deploy_settings", operation: { deploy: input.deploy } });
+      case "settings.updateMob":
+        return withSelection({ operationType: "update_mob_settings", operation: { mob_settings: input.mobSettings } });
+      case "settings.updateRoleWiring":
+        return withSelection({ operationType: "update_role_wiring", operation: { role_wiring: input.roleWiring || [] } });
+      default:
+        return input;
+    }
+  }
+
+  function authoringOperationFromIntent(request = {}) {
+    const input = request && typeof request === "object" ? request : {};
+    if (input.type) return input;
+    const intent = String(input.intent || "").trim();
+    switch (intent) {
+      case "agent.addDefinition":
+        return { type: "add_agent_definition", definition_id: input.definitionId };
+      case "agent.updateMember":
+        return { type: "update_member", member_id: input.memberId, patch: input.patch || {} };
+      case "agent.addTool":
+        return { type: "add_member_tool", member_id: input.memberId, tool_id: input.toolId };
+      case "agent.removeTool":
+        return { type: "remove_member_tool", member_id: input.memberId, tool_id: input.toolId };
+      case "agent.toggleSkill":
+        return { type: "toggle_member_skill", member_id: input.memberId, skill_id: input.skillId };
+      case "agent.removeSkill":
+        return { type: "remove_member_skill", member_id: input.memberId, skill_id: input.skillId };
+      case "agent.createInlineSkill":
+        return { type: "create_inline_skill", member_id: input.memberId, label: input.label, content: input.content };
+      default:
+        return input;
+    }
+  }
+
+  function inlineSkillRealmIdFromOperationResult(result) {
+    const skillId = String(result?.selection?.skill_id || result?.skill_id || "").trim();
+    const realms = Array.isArray(result?.document?.skill_realms) ? result.document.skill_realms : [];
+    if (!skillId) return "";
+    const realm = realms.find(candidate => {
+      return Array.isArray(candidate?.skills) && candidate.skills.some(skill => String(skill?.id || "").trim() === skillId);
+    });
+    return String(realm?.id || "").trim();
+  }
+
   function configureAuthoringMethodsFromSchema(schema) {
     const methods = authoringRpcMethodsFromSchema(schema);
     controllerConfig.rpcMethods = { ...RPC_METHODS, ...methods };
@@ -11797,6 +11918,9 @@ window.MOBKIT_BOOT = {
     loadCatalogs,
     authoringRpcMethodsFromSchema,
     configureAuthoringMethodsFromSchema,
+    authoringReplacementFromIntent,
+    authoringOperationFromIntent,
+    inlineSkillRealmIdFromOperationResult,
     validateDocument,
     sourceDocument,
     exportDocument,
@@ -12466,7 +12590,7 @@ function useStudioState(initial, onDirty, authoring = {}) {
     canRedo: !!future.length
   };
 }
-function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [], applyAuthoringReplacement = null }) {
+function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [], applyAuthoringIntent = null }) {
   const hostRef = React.useRef(null);
   const [drag, setDrag] = React.useState(null);
   const [conn, setConn] = React.useState(null);
@@ -12484,15 +12608,15 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   const g = gridState.grid;
   const totalW = gridState.totalW;
   const totalH = gridState.totalH;
-  const applyGraphOperation = async (payload, fallback) => {
+  const applyGraphIntent = async (payload, fallback) => {
     const fallbackText = fallback || canvasView.authoringOperationFallbackError;
-    if (!applyAuthoringReplacement) {
+    if (!applyAuthoringIntent) {
       const result = { ok: false, error: canvasView.authoringOperationUnavailableError };
       setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
       return result;
     }
     try {
-      const result = await applyAuthoringReplacement(payload);
+      const result = await applyAuthoringIntent(payload);
       if (result?.ok === false) {
         setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
       } else {
@@ -12630,13 +12754,11 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const w = screenToWorld(e.clientX, e.clientY);
         const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
         if (cell && (cell.col !== drag.origCol || cell.row !== drag.origRow)) {
-          applyGraphOperation({
-            operationType: "move_graph_node",
-            operation: {
-              instance_id: drag.instId,
-              cell,
-              original_cell: { col: drag.origCol, row: drag.origRow }
-            },
+          applyGraphIntent({
+            intent: "graph.moveNode",
+            instanceId: drag.instId,
+            cell,
+            originalCell: { col: drag.origCol, row: drag.origRow },
             selection: { kind: "instance", id: drag.instId }
           }, "MobKit graph node move failed");
         }
@@ -12647,9 +12769,10 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const t = document.elementFromPoint(e.clientX, e.clientY);
         const closest = t?.closest?.("[data-inst-id]");
         if (closest && closest.dataset.instId !== conn.fromId) {
-          applyGraphOperation({
-            operationType: "connect_graph_nodes",
-            operation: { from_id: conn.fromId, to_id: closest.dataset.instId }
+          applyGraphIntent({
+            intent: "graph.connectNodes",
+            fromId: conn.fromId,
+            toId: closest.dataset.instId
           }, "MobKit graph connection failed").then((result) => {
             if (result?.ok === false) return;
             const id = result?.selection?.id;
@@ -13136,10 +13259,10 @@ window.InlineSourceEditor = InlineSourceEditor;
 /* agents.jsx */
 
 {
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAuthoringOperation = null, applyAuthoringReplacement = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAuthoringOperation, applyAuthoringReplacement, toolCatalog, modelCatalog, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAuthoringOperation, applyAuthoringReplacement, agentView, agentDetailView, agentAccessView, schemaView })));
+function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAgentIntent = null, applyAgentReplacementIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAgentIntent, applyAgentReplacementIntent, toolCatalog, modelCatalog, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent, applyAgentReplacementIntent, agentView, agentDetailView, agentAccessView, schemaView })));
 }
-function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAuthoringOperation = null, applyAuthoringReplacement = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
+function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAgentIntent = null, applyAgentReplacementIntent = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const [schemaAddResult, setSchemaAddResult] = React.useState(null);
   const listState = window.MobKitFlowController.agentListState({
     members: studio.members,
@@ -13161,7 +13284,7 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
       /* @__PURE__ */ React.createElement("div", { className: "agents-list__col" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "agents-list__sub" }, row.subLabel)),
       /* @__PURE__ */ React.createElement("span", { className: row.placedClass }, row.placedLabel)
     );
-  }), /* @__PURE__ */ React.createElement(AddAgentControl, { studio, setAgentSel, agentDefinitions, applyAuthoringOperation, contract, deploySettings, toolCatalog, modelCatalog, agentView })), /* @__PURE__ */ React.createElement("div", { className: "agents-list__head agents-list__head--sub" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__title" }, listState.schemasHeading), /* @__PURE__ */ React.createElement("span", { className: "agents-list__count" }, listState.schemaCount)), /* @__PURE__ */ React.createElement("div", { className: "agents-list__scroll" }, listState.schemaRows.map((row) => {
+  }), /* @__PURE__ */ React.createElement(AddAgentControl, { studio, setAgentSel, agentDefinitions, applyAgentIntent, contract, deploySettings, toolCatalog, modelCatalog, agentView })), /* @__PURE__ */ React.createElement("div", { className: "agents-list__head agents-list__head--sub" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__title" }, listState.schemasHeading), /* @__PURE__ */ React.createElement("span", { className: "agents-list__count" }, listState.schemaCount)), /* @__PURE__ */ React.createElement("div", { className: "agents-list__scroll" }, listState.schemaRows.map((row) => {
     return /* @__PURE__ */ React.createElement(
       "button",
       {
@@ -13177,15 +13300,12 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
     {
       className: "agents-list__add",
       onClick: () => {
-        if (!applyAuthoringReplacement) {
+        if (!applyAgentReplacementIntent) {
           setSchemaAddResult({ ok: false, error: listState.authoringOperationUnavailableError });
           return;
         }
         setSchemaAddResult(null);
-        applyAuthoringReplacement({
-          operationType: "add_schema",
-          operation: {}
-        }).then((result) => {
+        applyAgentReplacementIntent({ intent: "schema.add" }).then((result) => {
           if (result?.ok === false) {
             setSchemaAddResult(result);
             return;
@@ -13204,21 +13324,18 @@ function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, a
     listState.addSchemaLabel
   ), schemaAddErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaAddErrorState.text)));
 }
-function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAuthoringOperation = null, contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
+function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAgentIntent = null, contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
   const [lastAddResult, setLastAddResult] = React.useState(null);
   const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
   const catalogState = window.MobKitFlowController.agentDefinitionCatalogState(agentDefinitions, agentView);
   const definitionErrorState = window.MobKitFlowController.agentDefinitionAddErrorState(lastAddResult, agentView);
   const createFromDefinition = async (definitionId) => {
-    if (!applyAuthoringOperation) {
+    if (!applyAgentIntent) {
       setLastAddResult({ ok: false, error: definitionState.authoringOperationUnavailableError });
       return;
     }
     if (studio.snap) studio.snap();
-    const result = await applyAuthoringOperation({
-      type: "add_agent_definition",
-      definition_id: definitionId
-    });
+    const result = await applyAgentIntent({ intent: "agent.addDefinition", definitionId });
     setLastAddResult(result);
     if (!result.ok) return;
     setAgentSel(result.selection);
@@ -13264,7 +13381,7 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAuth
     row.skills && /* @__PURE__ */ React.createElement("span", { className: "agent-def-card__meta" }, /* @__PURE__ */ React.createElement("strong", null, row.skillsLabel), row.skills)
   )) : /* @__PURE__ */ React.createElement("div", { className: "agent-def-catalog__empty" }, catalogState.empty)), definitionErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, definitionErrorState.text));
 }
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAuthoringOperation = null, applyAuthoringReplacement = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent = null, applyAgentReplacementIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   const selectionState = window.MobKitFlowController.agentSelectionState({
     selection: agentSel,
     members: studio.members,
@@ -13276,12 +13393,12 @@ function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, f
   }
   if (selectionState.kind === "schema") {
     if (!selectionState.schema) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingSchemaLabel);
-    return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow, schemaView, applyAuthoringReplacement });
+    return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow, schemaView, applyAgentReplacementIntent });
   }
   if (!selectionState.member) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingAgentLabel);
-  return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAuthoringOperation, applyAuthoringReplacement, agentView, agentDetailView, agentAccessView });
+  return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent, applyAgentReplacementIntent, agentView, agentDetailView, agentAccessView });
 }
-function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAuthoringOperation = null, applyAuthoringReplacement = null, agentView = null, agentDetailView = null, agentAccessView = null }) {
+function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAgentIntent = null, applyAgentReplacementIntent = null, agentView = null, agentDetailView = null, agentAccessView = null }) {
   const [memberEditError, setMemberEditError] = React.useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
   React.useEffect(() => {
@@ -13303,17 +13420,13 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
   const unavailableError = editorState.authoringOperationUnavailableError;
   const change = async (patch) => {
     if (!patch || typeof patch !== "object" || !Object.keys(patch).length) return;
-    if (!applyAuthoringOperation) {
+    if (!applyAgentIntent) {
       setMemberEditError(unavailableError);
       return;
     }
     try {
       if (studio.snap) studio.snap();
-      const result = await applyAuthoringOperation({
-        type: "update_member",
-        member_id: member.id,
-        patch
-      });
+      const result = await applyAgentIntent({ intent: "agent.updateMember", memberId: member.id, patch });
       if (!result?.ok) {
         setMemberEditError(mobKitOperationError(result, editorState.memberUpdateFallbackError));
         return;
@@ -13334,17 +13447,13 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       setToolDraftError(toolAccessState.emptyToolError);
       return;
     }
-    if (!applyAuthoringOperation) {
+    if (!applyAgentIntent) {
       setToolDraftError(toolAccessState.authoringOperationUnavailableError);
       return;
     }
     try {
       if (studio.snap) studio.snap();
-      const result = await applyAuthoringOperation({
-        type: "add_member_tool",
-        member_id: member.id,
-        tool_id: toolId
-      });
+      const result = await applyAgentIntent({ intent: "agent.addTool", memberId: member.id, toolId });
       if (!result?.ok) {
         setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
         return;
@@ -13356,17 +13465,13 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     }
   };
   const removeToolAccess = async (toolId) => {
-    if (!applyAuthoringOperation) {
+    if (!applyAgentIntent) {
       setToolDraftError(toolAccessState.authoringOperationUnavailableError);
       return;
     }
     try {
       if (studio.snap) studio.snap();
-      const result = await applyAuthoringOperation({
-        type: "remove_member_tool",
-        member_id: member.id,
-        tool_id: toolId
-      });
+      const result = await applyAgentIntent({ intent: "agent.removeTool", memberId: member.id, toolId });
       if (!result?.ok) {
         setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
         return;
@@ -13377,13 +13482,14 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
     }
   };
   const changeSchema = (rawSchema) => {
-    if (!applyAuthoringReplacement) {
+    if (!applyAgentReplacementIntent) {
       setSchemaChangeResult({ ok: false, error: unavailableError });
       return;
     }
-    applyAuthoringReplacement({
-      operationType: "assign_member_schema",
-      operation: { member_id: member.id, schema_id: rawSchema },
+    applyAgentReplacementIntent({
+      intent: "agent.assignSchema",
+      memberId: member.id,
+      schemaId: rawSchema,
       selection: { kind: "agent", id: member.id }
     }).then((result) => {
       setSchemaChangeResult(result?.ok === false ? result : null);
@@ -13393,11 +13499,11 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
   };
   const deleteConfirmState = window.MobKitFlowController.agentDeleteConfirmationState(editorState, deleteConfirmOpen);
   const deleteMember = () => {
-    if (!applyAuthoringReplacement) return;
+    if (!applyAgentReplacementIntent) return;
     const selection = null;
-    applyAuthoringReplacement({
-      operationType: "delete_member",
-      operation: { member_id: member.id },
+    applyAgentReplacementIntent({
+      intent: "agent.deleteMember",
+      memberId: member.id,
       selection
     }).then((result) => {
       if (result?.ok === false) return;
@@ -13493,9 +13599,9 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       onChange: (e) => changeSchema(e.target.value)
     },
     editorState.schemaOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value || "none", value: option.value }, option.label))
-  ), schemaErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaErrorState.text), editorState.hasOutputSchema ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("ul", { className: "schema-fields schema-fields--preview" }, editorState.schemaPreviewRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => setAgentSel(editorState.editSchemaSelection) }, editorState.editSchemaLabel)) : /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, editorState.emptySchemaHint)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement(SkillAccess, { studio, member, agentAccessView, applyAuthoringOperation }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.usageTitle), editorState.placedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.emptyUsageHint), editorState.usageRows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.id, className: "usage-row usage-row--ro" }, /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.cellLabel), /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.laneLabel))))))));
+  ), schemaErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaErrorState.text), editorState.hasOutputSchema ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("ul", { className: "schema-fields schema-fields--preview" }, editorState.schemaPreviewRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => setAgentSel(editorState.editSchemaSelection) }, editorState.editSchemaLabel)) : /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, editorState.emptySchemaHint)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement(SkillAccess, { studio, member, agentAccessView, applyAgentIntent }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.usageTitle), editorState.placedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.emptyUsageHint), editorState.usageRows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.id, className: "usage-row usage-row--ro" }, /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.cellLabel), /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.laneLabel))))))));
 }
-function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null, applyAuthoringReplacement = null }) {
+function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null, applyAgentReplacementIntent = null }) {
   const [fieldAddResult, setFieldAddResult] = React.useState(null);
   const [schemaOperationError, setSchemaOperationError] = React.useState("");
   React.useEffect(() => setFieldAddResult(null), [schema?.id]);
@@ -13506,19 +13612,15 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     schemaView
   });
   const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult, schemaState.fieldAddFallbackError);
-  const applySchemaOperation = async (selection = { kind: "schema", id: schema.id }, operationType = "update_schema", operation = {}) => {
+  const applySchemaIntent = async (intentRequest, selection = { kind: "schema", id: schema.id }) => {
     const fallback = schemaState.schemaOperationFallbackError;
-    if (!applyAuthoringReplacement) {
+    if (!applyAgentReplacementIntent) {
       const result = { ok: false, error: schemaState.authoringOperationUnavailableError };
       setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       return result;
     }
     try {
-      const result = await applyAuthoringReplacement({
-        operationType,
-        operation,
-        selection
-      });
+      const result = await applyAgentReplacementIntent({ ...intentRequest, selection });
       if (result?.ok === false) {
         setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       } else {
@@ -13532,40 +13634,26 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
     }
   };
   const change = (patch) => {
-    applySchemaOperation({ kind: "schema", id: schema.id }, "update_schema", {
-      schema_id: schema.id,
-      patch
-    });
+    applySchemaIntent({ intent: "schema.update", schemaId: schema.id, patch });
   };
   const renameField = (fieldId, oldName, newName) => {
-    applySchemaOperation({ kind: "schema", id: schema.id }, "rename_schema_field", {
-      schema_id: schema.id,
-      field_id: fieldId,
-      new_name: newName
-    });
+    applySchemaIntent({ intent: "schema.renameField", schemaId: schema.id, fieldId, oldName, newName });
   };
   const updateField = (fieldId, patch) => {
-    applySchemaOperation({ kind: "schema", id: schema.id }, "update_schema_field", {
-      schema_id: schema.id,
-      field_id: fieldId,
-      patch
-    });
+    applySchemaIntent({ intent: "schema.updateField", schemaId: schema.id, fieldId, patch });
   };
   const deleteField = (fieldId) => {
-    applySchemaOperation({ kind: "schema", id: schema.id }, "delete_schema_field", {
-      schema_id: schema.id,
-      field_id: fieldId
-    });
+    applySchemaIntent({ intent: "schema.deleteField", schemaId: schema.id, fieldId });
   };
   const addField = () => {
-    if (!applyAuthoringReplacement) {
+    if (!applyAgentReplacementIntent) {
       setFieldAddResult({ ok: false, error: schemaState.authoringOperationUnavailableError });
       return;
     }
     setFieldAddResult(null);
-    applyAuthoringReplacement({
-      operationType: "add_schema_field",
-      operation: { schema_id: schema.id },
+    applyAgentReplacementIntent({
+      intent: "schema.addField",
+      schemaId: schema.id,
       selection: { kind: "schema", id: schema.id }
     }).then((result) => {
       if (result?.ok === false) {
@@ -13582,7 +13670,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   };
   const deleteSchema = async () => {
     const selection = { kind: null, id: null };
-    const result = await applySchemaOperation(selection, "delete_schema", { schema_id: schema.id });
+    const result = await applySchemaIntent({ intent: "schema.delete", schemaId: schema.id }, selection);
     if (result?.ok === false) return;
     setAgentSel(result?.selection || selection);
   };
@@ -13593,10 +13681,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
       flow
     }, schema.id, newId);
     if (!result.renamed) return;
-    const operationResult = await applySchemaOperation(result.selection, "rename_schema", {
-      schema_id: schema.id,
-      new_id: newId
-    });
+    const operationResult = await applySchemaIntent({ intent: "schema.rename", schemaId: schema.id, newId }, result.selection);
     if (operationResult?.ok === false) return;
     setAgentSel(operationResult?.selection || result.selection);
   };
@@ -13771,16 +13856,7 @@ function ProviderParamsEditor({ member, change, agentDetailView = null }) {
     }
   ), error && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, error));
 }
-function inlineSkillRealmIdFromOperationResult(result) {
-  const skillId = String(result?.selection?.skill_id || result?.skill_id || "").trim();
-  const realms = Array.isArray(result?.document?.skill_realms) ? result.document.skill_realms : [];
-  if (!skillId) return "";
-  const realm = realms.find((candidate) => {
-    return Array.isArray(candidate?.skills) && candidate.skills.some((skill) => String(skill?.id || "").trim() === skillId);
-  });
-  return String(realm?.id || "").trim();
-}
-function SkillAccess({ studio, member, agentAccessView = null, applyAuthoringOperation = null }) {
+function SkillAccess({ studio, member, agentAccessView = null, applyAgentIntent = null }) {
   const realms = studio.skillRealms || [];
   const initialSkillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, accessView: agentAccessView });
   const [realmId, setRealmId] = React.useState(initialSkillState.realmId);
@@ -13792,17 +13868,14 @@ function SkillAccess({ studio, member, agentAccessView = null, applyAuthoringOpe
   React.useEffect(() => {
     if (skillState.realmId !== realmId) setRealmId(skillState.realmId);
   }, [skillState.realmId, realmId]);
-  const applySkillOperation = async (operation, fallback = skillState.inlineErrorFallback) => {
-    if (!applyAuthoringOperation) {
+  const applySkillIntent = async (intentRequest, fallback = skillState.inlineErrorFallback) => {
+    if (!applyAgentIntent) {
       setInlineError(fallback);
       return null;
     }
     try {
       if (studio.snap) studio.snap();
-      const result = await applyAuthoringOperation({
-        member_id: member.id,
-        ...operation
-      });
+      const result = await applyAgentIntent({ memberId: member.id, ...intentRequest });
       if (!result?.ok) {
         const validationError = result?.validation?.display_rows?.length ? result.validation.display_rows[0].head : "";
         setInlineError(validationError || result?.error || fallback);
@@ -13816,25 +13889,19 @@ function SkillAccess({ studio, member, agentAccessView = null, applyAuthoringOpe
     }
   };
   const toggle = (sid) => {
-    applySkillOperation({
-      type: "toggle_member_skill",
-      skill_id: sid
-    });
+    applySkillIntent({ intent: "agent.toggleSkill", skillId: sid });
   };
   const removeSkill = (sid) => {
-    applySkillOperation({
-      type: "remove_member_skill",
-      skill_id: sid
-    });
+    applySkillIntent({ intent: "agent.removeSkill", skillId: sid });
   };
   const addInlineSkill = async () => {
-    const result = await applySkillOperation({
-      type: "create_inline_skill",
+    const result = await applySkillIntent({
+      intent: "agent.createInlineSkill",
       label: inlineLabel,
       content: inlineContent
     }, skillState.inlineErrorFallback);
     if (result) {
-      const nextRealmId = inlineSkillRealmIdFromOperationResult(result);
+      const nextRealmId = window.MobKitFlowController.inlineSkillRealmIdFromOperationResult(result);
       if (nextRealmId) setRealmId(nextRealmId);
       setInlineLabel("");
       setInlineContent("");
@@ -13962,7 +14029,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
   });
   return /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card" }, /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card__head" }, conditionState.rowTitle), !conditionState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, conditionState.emptyHint) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bld-cond" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.stepId || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionSourcePatch(options, e.target.value, { includeNamespace: true })) }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.sourcePlaceholder), conditionState.sourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.field || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, conditionState.fieldOptions)), disabled: !conditionState.fields.length }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.fieldPlaceholder), conditionState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: conditionState.operatorValue, onChange: (e) => onChange(window.MobKitFlowController.basicConditionOperatorPatch(e.target.value, contract)) }, conditionState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(CondValue, { field: conditionState.field, value: conditionState.cond.val, conditionView, onChange: (v) => onChange(window.MobKitFlowController.basicConditionValuePatch(v)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-cond__preview" }, conditionState.previewPrefix, " ", /* @__PURE__ */ React.createElement("code", null, conditionState.previewLabel))));
 }
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringReplacement = null }) {
+function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringIntent = null }) {
   const members = studio?.members || [];
   const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [selLocal, setSelLocal] = React.useState(null);
@@ -13978,15 +14045,15 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   const isFlow = mode === "flow";
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
   const canvasView = Math.abs(view.ty) > 1200 ? { ...view, ty: 0 } : view;
-  const commitFlow = async (operationType = "update_flow_step", operation = {}) => {
+  const commitFlow = async (intentRequest) => {
     const fallback = viewState.authoringOperationFallbackError;
-    if (!applyAuthoringReplacement) {
+    if (!applyAuthoringIntent) {
       const result = { ok: false, error: viewState.authoringOperationUnavailableError };
       setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       return result;
     }
     try {
-      const result = await applyAuthoringReplacement({ operationType, operation });
+      const result = await applyAuthoringIntent(intentRequest);
       if (result?.ok === false) {
         setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
       } else {
@@ -14002,12 +14069,12 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       return result;
     }
   };
-  const update = (id, patch, operationType = "update_flow_step", operation = {}) => {
-    const payload = operationType === "update_flow_step" && !Object.keys(operation || {}).length ? { step_id: id, patch } : operation;
-    return commitFlow(operationType, payload);
+  const update = (requestOrId, patch = {}) => {
+    if (requestOrId && typeof requestOrId === "object") return commitFlow(requestOrId);
+    return commitFlow({ intent: "basic.updateStep", stepId: requestOrId, patch });
   };
   const editStep = (id, action, payload = {}) => {
-    return commitFlow("apply_flow_step_edit", { step_id: id, action, ...payload });
+    return commitFlow({ intent: "basic.editStep", stepId: id, action, payload });
   };
   const selStep = findStep(flow.steps, sel);
   const applyBasicInteraction = (result) => {
@@ -14017,7 +14084,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   };
   const insertAt = (laneRef, pick) => {
     applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition());
-    commitFlow("insert_flow_step", { pick, lane_ref: laneRef }).then((result) => {
+    commitFlow({ intent: "basic.insertStep", pick, laneRef }).then((result) => {
       if (result?.ok === false) return;
       const id = result?.selection?.id;
       if (id) setSel(id);
@@ -14025,7 +14092,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
   };
   const removeStep = (id) => {
     const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
-    commitFlow("delete_flow_step", { step_id: id }).then((operationResult) => {
+    commitFlow({ intent: "basic.deleteStep", stepId: id }).then((operationResult) => {
       if (operationResult?.ok === false) return;
       setSel(result.selection);
       setPicker(result.picker);
@@ -14100,7 +14167,7 @@ function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowP
       onPick: (pick) => insertAt(picker.at, pick),
       onClose: () => applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition())
     }
-  ) : selStep ? /* @__PURE__ */ React.createElement(React.Fragment, null, operationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)", padding: "0 16px 8px" } }, operationError), /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, setFlow, step: selStep, update, editStep, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, launchView, conditionView, applyAuthoringReplacement })) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
+  ) : selStep ? /* @__PURE__ */ React.createElement(React.Fragment, null, operationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)", padding: "0 16px 8px" } }, operationError), /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, setFlow, step: selStep, update, editStep, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, launchView, conditionView })) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
 }
 function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract, basicView = null }) {
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
@@ -14152,7 +14219,7 @@ function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView =
   }
   return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-search" }, /* @__PURE__ */ React.createElement("span", { className: "bld-search__icon" }, pickerState.searchIcon), /* @__PURE__ */ React.createElement("input", { className: "bld-search__input", placeholder: pickerState.searchPlaceholder, value: q, onChange: (e) => setQ(e.target.value), autoFocus: true })), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.membersLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.iconTint }, row.icon), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub)))), !pickerState.hasConfiguredMembers && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { padding: "4px 8px" } }, pickerState.emptyMembersHint)), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.flowLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.primitiveRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.tint }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.label, row.isNew && /* @__PURE__ */ React.createElement("span", { className: "bld-opt__new" }, pickerState.newBadgeLabel)), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub))))));
 }
-function StepInspector({ studio, members, flow, setFlow, step, update, editStep, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null, applyAuthoringReplacement = null }) {
+function StepInspector({ studio, members, flow, setFlow, step, update, editStep, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null }) {
   const [paramAddResult, setParamAddResult] = React.useState(null);
   React.useEffect(() => setParamAddResult(null), [step?.id]);
   const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
@@ -14160,22 +14227,22 @@ function StepInspector({ studio, members, flow, setFlow, step, update, editStep,
     const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
     const params = inputState.params;
     const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult, viewState.authoringOperationFallbackError);
-    const applyInputOperation = (operationType, operation = {}) => {
+    const applyInputIntent = (intentRequest) => {
       if (!update) return Promise.resolve({ ok: false, error: viewState.authoringOperationUnavailableError });
-      return update(step.id, {}, operationType, operation);
+      return update(intentRequest);
     };
     const updateParam = (id, patch) => {
-      return applyInputOperation("update_input_param", { step_id: step.id, param_id: id, patch });
+      return applyInputIntent({ intent: "basic.updateInputParam", stepId: step.id, paramId: id, patch });
     };
     const deleteParam = (id) => {
-      return applyInputOperation("delete_input_param", { step_id: step.id, param_id: id });
+      return applyInputIntent({ intent: "basic.deleteInputParam", stepId: step.id, paramId: id });
     };
     const renameParam = (id, rawName, previousName) => {
-      return applyInputOperation("rename_input_param", { step_id: step.id, param_id: id, new_name: rawName });
+      return applyInputIntent({ intent: "basic.renameInputParam", stepId: step.id, paramId: id, newName: rawName, previousName });
     };
     const addParam = () => {
       setParamAddResult(null);
-      applyInputOperation("add_input_param", { step_id: step.id }).then((result) => {
+      applyInputIntent({ intent: "basic.addInputParam", stepId: step.id }).then((result) => {
         if (result?.ok === false) {
           setParamAddResult(result);
           return;
@@ -14184,7 +14251,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, editStep,
       }).catch((error) => {
         setParamAddResult({
           ok: false,
-          error: error?.message || String(error || "add_input_param failed")
+          error: error?.message || String(error || viewState.authoringOperationFallbackError)
         });
       });
     };
@@ -14610,8 +14677,8 @@ function App() {
     graphProjectionSig.current = sig;
     skipNextGraphProjection.current = true;
     applyMobKitAuthoringReplacement({
-      operationType: "sync_graph_to_flow",
-      operation: { reason: "advanced_graph_changed" }
+      intent: "system.syncGraphToFlow",
+      reason: "advanced_graph_changed"
     }).then((result) => {
       if (result?.ok === false) showAuthoringFailure(result, authoringFailureHead("graph_sync"));
     }).catch((error) => showAuthoringFailure(error, authoringFailureHead("graph_sync")));
@@ -14634,8 +14701,7 @@ function App() {
     previousMembersRef.current = studio.members;
     if (!changed) return;
     applyMobKitAuthoringReplacement({
-      operationType: "reconcile_members",
-      operation: { reason: "reconcile_members" }
+      intent: "system.reconcileMembers"
     });
   }, [studio.members, flow, studio.instances, studio.edges, mobSettings]);
   React.useEffect(() => {
@@ -14652,8 +14718,7 @@ function App() {
     const edgesChanged = result.edges !== studio.edges;
     if (!flowChanged && !edgesChanged) return;
     applyMobKitAuthoringReplacement({
-      operationType: "reconcile_condition_fields",
-      operation: { reason: "reconcile_condition_fields" }
+      intent: "system.reconcileConditionFields"
     });
   }, [flow, studio.edges, studio.instances, studio.members, studio.schemas]);
   React.useEffect(() => {
@@ -14674,8 +14739,7 @@ function App() {
     });
     if (!result.changed) return;
     applyMobKitAuthoringReplacement({
-      operationType: "reconcile_contract_refs",
-      operation: { reason: "reconcile_contract_refs" }
+      intent: "system.reconcileContractRefs"
     });
   }, [
     studio.members,
@@ -14703,15 +14767,15 @@ function App() {
         if (selection.kind === "instance") {
           const nextSelection = { kind: null, id: null };
           applyMobKitAuthoringReplacement({
-            operationType: "delete_graph_node",
-            operation: { instance_id: selection.id },
+            intent: "graph.deleteNode",
+            instanceId: selection.id,
             selection: nextSelection
           }).then(() => clearSelection(nextSelection));
         } else if (selection.kind === "edge") {
           const nextSelection = { kind: null, id: null };
           applyMobKitAuthoringReplacement({
-            operationType: "delete_graph_edge",
-            operation: { edge_id: selection.id },
+            intent: "graph.deleteEdge",
+            edgeId: selection.id,
             selection: nextSelection
           }).then(() => clearSelection(nextSelection));
         }
@@ -14721,8 +14785,8 @@ function App() {
         const result = e.shiftKey ? studio.redo() : studio.undo();
         if (result?.state) {
           applyMobKitAuthoringReplacement({
-            operationType: "replace_authoring_document",
-            operation: { reason: e.shiftKey ? "redo" : "undo" },
+            intent: "system.replaceAuthoringDocument",
+            reason: e.shiftKey ? "redo" : "undo",
             studio: result.state
           });
         }
@@ -14750,8 +14814,9 @@ function App() {
     if (!addAt) return;
     const nextMenu = window.MobKitFlowController.graphAddMenuCloseProjection();
     applyMobKitAuthoringReplacement({
-      operationType: "insert_graph_node",
-      operation: { pick, cell: addAt }
+      intent: "graph.insertNode",
+      pick,
+      cell: addAt
     }).then((result) => {
       if (result?.ok === false) {
         showAuthoringFailure(result, authoringFailureHead("graph_node_insert"));
@@ -14880,8 +14945,8 @@ function App() {
       return { document: document2, requestToken };
     }
     const result = await applyMobKitAuthoringReplacement({
-      operationType: "sync_graph_to_flow",
-      operation: { reason: "build_projected_document" }
+      intent: "system.syncGraphToFlow",
+      reason: "build_projected_document"
     });
     if (!authoringRevisionIsCurrent(requestToken)) {
       return { document: null, requestToken, stale: true };
@@ -14890,11 +14955,12 @@ function App() {
   };
   const applyMobKitAuthoringOperation = async (operation) => {
     return enqueueMobKitAuthoringTask(async () => {
-      const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operation?.type);
+      const translatedOperation = window.MobKitFlowController.authoringOperationFromIntent(operation);
+      const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, translatedOperation?.type);
       if (!availability.supported) return { ok: false, error: availability.error };
       const requestToken = currentAuthoringRevision();
       const document2 = currentMobKitDocument();
-      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, operation, currentDraftGuard());
+      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, translatedOperation, currentDraftGuard());
       if (!authoringRevisionIsCurrent(requestToken)) {
         return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
       }
@@ -14911,18 +14977,21 @@ function App() {
   };
   const applyMobKitAuthoringReplacement = async (overrides = {}) => {
     return enqueueMobKitAuthoringTask(async () => {
-      const operationType = overrides.operationType || "replace_authoring_document";
+      const normalizedOverrides = window.MobKitFlowController.authoringReplacementFromIntent(
+        overrides?.intent || overrides?.operationType ? overrides : { intent: "system.replaceAuthoringDocument", ...overrides }
+      );
+      const operationType = normalizedOverrides.operationType;
       const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operationType);
       if (!availability.supported) return { ok: false, error: availability.error };
       const requestToken = currentAuthoringRevision();
       const document2 = currentMobKitDocument();
       const operation = {
         type: operationType,
-        ...overrides.operation || {},
-        selection: overrides.selection || null
+        ...normalizedOverrides.operation || {},
+        selection: normalizedOverrides.selection || null
       };
-      if (operationType === "replace_authoring_document") {
-        operation.document = buildAuthoringProjection(overrides).document;
+      if (normalizedOverrides.useAuthoringProjection) {
+        operation.document = buildAuthoringProjection(normalizedOverrides).document;
       }
       const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document2, {
         ...operation
@@ -14946,30 +15015,33 @@ function App() {
     addInstance: (instance) => {
       const id = String(instance?.id || "").trim();
       return applyMobKitAuthoringReplacement({
-        operationType: "insert_graph_node",
-        operation: { instance },
+        intent: "graph.insertNode",
+        instance,
         selection: id ? { kind: "instance", id } : null
       });
     },
     updateInstance: (id, patch) => {
       return applyMobKitAuthoringReplacement({
-        operationType: "update_graph_node",
-        operation: { instance_id: id, patch },
+        intent: "graph.updateNode",
+        instanceId: id,
+        patch,
         selection: { kind: "instance", id }
       });
     },
     editInstance: (id, action, payload = {}) => {
       return applyMobKitAuthoringReplacement({
-        operationType: "apply_graph_node_edit",
-        operation: { instance_id: id, action, ...payload },
+        intent: "graph.editNode",
+        instanceId: id,
+        action,
+        payload,
         selection: { kind: "instance", id }
       });
     },
     deleteInstance: (id) => {
       const selection2 = { kind: null, id: null };
       return applyMobKitAuthoringReplacement({
-        operationType: "delete_graph_node",
-        operation: { instance_id: id },
+        intent: "graph.deleteNode",
+        instanceId: id,
         selection: selection2
       });
     },
@@ -14979,51 +15051,52 @@ function App() {
       const id = String(edge?.id || "").trim();
       const operation = fromId && toId ? { from_id: fromId, to_id: toId } : { edge };
       return applyMobKitAuthoringReplacement({
-        operationType: "connect_graph_nodes",
+        intent: "graph.connectNodes",
         operation,
         selection: id ? { kind: "edge", id } : null
       });
     },
     updateEdge: (id, patch) => {
       return applyMobKitAuthoringReplacement({
-        operationType: "update_graph_edge",
-        operation: { edge_id: id, patch },
+        intent: "graph.updateEdge",
+        edgeId: id,
+        patch,
         selection: { kind: "edge", id }
       });
     },
     editEdge: (id, action, payload = {}) => {
       return applyMobKitAuthoringReplacement({
-        operationType: "apply_graph_edge_edit",
-        operation: { edge_id: id, action, ...payload },
+        intent: "graph.editEdge",
+        edgeId: id,
+        action,
+        payload,
         selection: { kind: "edge", id }
       });
     },
     deleteEdge: (id) => {
       const selection2 = { kind: null, id: null };
       return applyMobKitAuthoringReplacement({
-        operationType: "delete_graph_edge",
-        operation: { edge_id: id },
+        intent: "graph.deleteEdge",
+        edgeId: id,
         selection: selection2
       });
     },
     addSchema: () => {
-      return applyMobKitAuthoringReplacement({
-        operationType: "add_schema",
-        operation: {}
-      });
+      return applyMobKitAuthoringReplacement({ intent: "schema.add" });
     },
     updateSchema: (id, patch) => {
       return applyMobKitAuthoringReplacement({
-        operationType: "update_schema",
-        operation: { schema_id: id, patch },
+        intent: "schema.update",
+        schemaId: id,
+        patch,
         selection: { kind: "schema", id }
       });
     },
     deleteSchema: (id) => {
       const selection2 = { kind: null, id: null };
       return applyMobKitAuthoringReplacement({
-        operationType: "delete_schema",
-        operation: { schema_id: id },
+        intent: "schema.delete",
+        schemaId: id,
         selection: selection2
       });
     }
@@ -15490,7 +15563,7 @@ function App() {
       contract,
       graphView: catalogs.graphView,
       toolCatalog: catalogs.toolCatalog,
-      applyAuthoringReplacement: applyMobKitAuthoringReplacement
+      applyAuthoringIntent: applyMobKitAuthoringReplacement
     }
   ), /* @__PURE__ */ React.createElement(
     InlineSourceEditor,
@@ -15551,7 +15624,7 @@ function App() {
       basicView: catalogs.basicView,
       launchView: catalogs.launchView,
       conditionView: catalogs.conditionView,
-      applyAuthoringReplacement: applyMobKitAuthoringReplacement
+      applyAuthoringIntent: applyMobKitAuthoringReplacement
     }
   ), view === "agents" && /* @__PURE__ */ React.createElement(
     AgentsView,
@@ -15568,8 +15641,8 @@ function App() {
       toolCatalog: catalogs.toolCatalog,
       modelCatalog: catalogs.models,
       agentDefinitions: catalogs.agentDefinitions,
-      applyAuthoringOperation: applyMobKitAuthoringOperation,
-      applyAuthoringReplacement: applyMobKitAuthoringReplacement,
+      applyAgentIntent: applyMobKitAuthoringOperation,
+      applyAgentReplacementIntent: applyMobKitAuthoringReplacement,
       agentView: catalogs.agentView,
       agentDetailView: catalogs.agentDetailView,
       agentAccessView: catalogs.agentAccessView,
@@ -15714,8 +15787,8 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     const next = window.MobKitFlowController.deploySettingsFieldPatch(deploySettings, field, value, { contract, modelCatalog });
     if (applyAuthoringReplacement) {
       applyAuthoringReplacement({
-        operationType: "update_deploy_settings",
-        operation: { deploy: next }
+        intent: "settings.updateDeploy",
+        deploy: next
       });
     } else {
       setDeploySettings(next);
@@ -15725,8 +15798,9 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     const next = window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, field, value, { contract });
     if (applyAuthoringReplacement) {
       applyAuthoringReplacement({
-        operationType: field === "roleWiring" ? "update_role_wiring" : "update_mob_settings",
-        operation: field === "roleWiring" ? { role_wiring: next.roleWiring || [] } : { mob_settings: next }
+        intent: field === "roleWiring" ? "settings.updateRoleWiring" : "settings.updateMob",
+        roleWiring: next.roleWiring || [],
+        mobSettings: next
       });
     } else {
       setMobSettings(next);

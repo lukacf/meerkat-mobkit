@@ -54,7 +54,7 @@ function useStudioState(initial, onDirty, authoring = {}) {
   };
 }
 
-function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [], applyAuthoringReplacement = null }) {
+function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [], applyAuthoringIntent = null }) {
   const hostRef = React.useRef(null);
   const [drag, setDrag] = React.useState(null);
   const [conn, setConn] = React.useState(null);
@@ -73,15 +73,15 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   const g = gridState.grid;
   const totalW = gridState.totalW;
   const totalH = gridState.totalH;
-  const applyGraphOperation = async (payload, fallback) => {
+  const applyGraphIntent = async (payload, fallback) => {
     const fallbackText = fallback || canvasView.authoringOperationFallbackError;
-    if (!applyAuthoringReplacement) {
+    if (!applyAuthoringIntent) {
       const result = { ok: false, error: canvasView.authoringOperationUnavailableError };
       setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
       return result;
     }
     try {
-      const result = await applyAuthoringReplacement(payload);
+      const result = await applyAuthoringIntent(payload);
       if (result?.ok === false) {
         setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
       } else {
@@ -234,13 +234,11 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const w = screenToWorld(e.clientX, e.clientY);
         const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
         if (cell && (cell.col !== drag.origCol || cell.row !== drag.origRow)) {
-          applyGraphOperation({
-            operationType: "move_graph_node",
-            operation: {
-              instance_id: drag.instId,
-              cell,
-              original_cell: { col: drag.origCol, row: drag.origRow },
-            },
+          applyGraphIntent({
+            intent: "graph.moveNode",
+            instanceId: drag.instId,
+            cell,
+            originalCell: { col: drag.origCol, row: drag.origRow },
             selection: { kind: "instance", id: drag.instId },
           }, "MobKit graph node move failed");
         }
@@ -250,9 +248,10 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
         const t = document.elementFromPoint(e.clientX, e.clientY);
         const closest = t?.closest?.("[data-inst-id]");
         if (closest && closest.dataset.instId !== conn.fromId) {
-          applyGraphOperation({
-            operationType: "connect_graph_nodes",
-            operation: { from_id: conn.fromId, to_id: closest.dataset.instId },
+          applyGraphIntent({
+            intent: "graph.connectNodes",
+            fromId: conn.fromId,
+            toId: closest.dataset.instId,
           }, "MobKit graph connection failed").then((result) => {
             if (result?.ok === false) return;
             const id = result?.selection?.id;

@@ -345,6 +345,53 @@ impl UnifiedRuntime {
         Arc::clone(&self.module_runtime)
     }
 
+    pub(crate) fn mobpack_runtime_catalog_state_snapshot(
+        &self,
+    ) -> crate::mobpack::MobpackRuntimeCatalogState {
+        let loaded_modules = self
+            .module_runtime
+            .try_lock()
+            .map(|runtime| runtime.loaded_modules())
+            .unwrap_or_default();
+        let has_peer_mob_handles = self
+            .peer_mob_handles
+            .try_read()
+            .map(|handles| !handles.is_empty())
+            .unwrap_or(false);
+        let mut runtime_methods = vec![
+            "mobkit/capabilities".to_string(),
+            "mobkit/models/catalog".to_string(),
+            "mobkit/spawn_member".to_string(),
+            "mobkit/list_members".to_string(),
+            "mobkit/get_member".to_string(),
+            "mobkit/run_flow".to_string(),
+            "mobkit/list_flows".to_string(),
+            "mobkit/list_runs".to_string(),
+        ];
+        runtime_methods.extend(
+            crate::rpc::MOBPACK_AUTHORING_METHODS
+                .iter()
+                .map(|method| method.to_string()),
+        );
+        if self.has_contact_directory() {
+            runtime_methods.push("mobkit/cross_mob/directory".to_string());
+        }
+        if has_peer_mob_handles && self.has_inproc_contacts() {
+            runtime_methods.extend([
+                "mobkit/cross_mob/wire".to_string(),
+                "mobkit/cross_mob/unwire".to_string(),
+                "mobkit/cross_mob/send".to_string(),
+            ]);
+        }
+        crate::mobpack::MobpackRuntimeCatalogState {
+            loaded_modules,
+            runtime_methods,
+            has_contact_directory: self.has_contact_directory(),
+            has_peer_mob_handles,
+            has_inproc_contacts: self.has_inproc_contacts(),
+        }
+    }
+
     /// Return the session bridge for identity-first operations, if configured.
     pub fn session_bridge(&self) -> Option<&Arc<dyn crate::identity_first::bridge::SessionBridge>> {
         self.session_bridge.as_ref()

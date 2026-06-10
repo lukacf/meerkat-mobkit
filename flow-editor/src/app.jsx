@@ -292,8 +292,8 @@ function App() {
     graphProjectionSig.current = sig;
     skipNextGraphProjection.current = true;
     applyMobKitAuthoringReplacement({
-      operationType: "sync_graph_to_flow",
-      operation: { reason: "advanced_graph_changed" },
+      intent: "system.syncGraphToFlow",
+      reason: "advanced_graph_changed",
     }).then((result) => {
       if (result?.ok === false) showAuthoringFailure(result, authoringFailureHead("graph_sync"));
     }).catch((error) => showAuthoringFailure(error, authoringFailureHead("graph_sync")));
@@ -320,8 +320,7 @@ function App() {
     previousMembersRef.current = studio.members;
     if (!changed) return;
     applyMobKitAuthoringReplacement({
-      operationType: "reconcile_members",
-      operation: { reason: "reconcile_members" },
+      intent: "system.reconcileMembers",
     });
   }, [studio.members, flow, studio.instances, studio.edges, mobSettings]);
 
@@ -339,8 +338,7 @@ function App() {
     const edgesChanged = result.edges !== studio.edges;
     if (!flowChanged && !edgesChanged) return;
     applyMobKitAuthoringReplacement({
-      operationType: "reconcile_condition_fields",
-      operation: { reason: "reconcile_condition_fields" },
+      intent: "system.reconcileConditionFields",
     });
   }, [flow, studio.edges, studio.instances, studio.members, studio.schemas]);
 
@@ -362,8 +360,7 @@ function App() {
     });
     if (!result.changed) return;
     applyMobKitAuthoringReplacement({
-      operationType: "reconcile_contract_refs",
-      operation: { reason: "reconcile_contract_refs" },
+      intent: "system.reconcileContractRefs",
     });
   }, [
     studio.members,
@@ -393,16 +390,16 @@ function App() {
         if (selection.kind === "instance") {
           const nextSelection = { kind: null, id: null };
           applyMobKitAuthoringReplacement({
-            operationType: "delete_graph_node",
-            operation: { instance_id: selection.id },
+            intent: "graph.deleteNode",
+            instanceId: selection.id,
             selection: nextSelection,
           }).then(() => clearSelection(nextSelection));
         }
         else if (selection.kind === "edge") {
           const nextSelection = { kind: null, id: null };
           applyMobKitAuthoringReplacement({
-            operationType: "delete_graph_edge",
-            operation: { edge_id: selection.id },
+            intent: "graph.deleteEdge",
+            edgeId: selection.id,
             selection: nextSelection,
           }).then(() => clearSelection(nextSelection));
         }
@@ -412,8 +409,8 @@ function App() {
         const result = e.shiftKey ? studio.redo() : studio.undo();
         if (result?.state) {
           applyMobKitAuthoringReplacement({
-            operationType: "replace_authoring_document",
-            operation: { reason: e.shiftKey ? "redo" : "undo" },
+            intent: "system.replaceAuthoringDocument",
+            reason: e.shiftKey ? "redo" : "undo",
             studio: result.state,
           });
         }
@@ -441,8 +438,9 @@ function App() {
     if (!addAt) return;
     const nextMenu = window.MobKitFlowController.graphAddMenuCloseProjection();
     applyMobKitAuthoringReplacement({
-      operationType: "insert_graph_node",
-      operation: { pick, cell: addAt },
+      intent: "graph.insertNode",
+      pick,
+      cell: addAt,
     }).then((result) => {
       if (result?.ok === false) {
         showAuthoringFailure(result, authoringFailureHead("graph_node_insert"));
@@ -575,8 +573,8 @@ function App() {
       return { document, requestToken };
     }
     const result = await applyMobKitAuthoringReplacement({
-      operationType: "sync_graph_to_flow",
-      operation: { reason: "build_projected_document" },
+      intent: "system.syncGraphToFlow",
+      reason: "build_projected_document",
     });
     if (!authoringRevisionIsCurrent(requestToken)) {
       return { document: null, requestToken, stale: true };
@@ -585,11 +583,12 @@ function App() {
   };
   const applyMobKitAuthoringOperation = async (operation) => {
     return enqueueMobKitAuthoringTask(async () => {
-      const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operation?.type);
+      const translatedOperation = window.MobKitFlowController.authoringOperationFromIntent(operation);
+      const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, translatedOperation?.type);
       if (!availability.supported) return { ok: false, error: availability.error };
       const requestToken = currentAuthoringRevision();
       const document = currentMobKitDocument();
-      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, operation, currentDraftGuard());
+      const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, translatedOperation, currentDraftGuard());
       if (!authoringRevisionIsCurrent(requestToken)) {
         return { ok: false, error: catalogs.errorView.authoringOperationStaleError };
       }
@@ -606,18 +605,23 @@ function App() {
   };
   const applyMobKitAuthoringReplacement = async (overrides = {}) => {
     return enqueueMobKitAuthoringTask(async () => {
-      const operationType = overrides.operationType || "replace_authoring_document";
+      const normalizedOverrides = window.MobKitFlowController.authoringReplacementFromIntent(
+        overrides?.intent || overrides?.operationType
+          ? overrides
+          : { intent: "system.replaceAuthoringDocument", ...overrides }
+      );
+      const operationType = normalizedOverrides.operationType;
       const availability = window.MobKitFlowController.authoringOperationAvailability(catalogs.authoringOperations, operationType);
       if (!availability.supported) return { ok: false, error: availability.error };
       const requestToken = currentAuthoringRevision();
       const document = currentMobKitDocument();
       const operation = {
         type: operationType,
-        ...(overrides.operation || {}),
-        selection: overrides.selection || null,
+        ...(normalizedOverrides.operation || {}),
+        selection: normalizedOverrides.selection || null,
       };
-      if (operationType === "replace_authoring_document") {
-        operation.document = buildAuthoringProjection(overrides).document;
+      if (normalizedOverrides.useAuthoringProjection) {
+        operation.document = buildAuthoringProjection(normalizedOverrides).document;
       }
       const result = await window.MobKitFlowController.applyAuthoringOperationDocument(document, {
         ...operation,
@@ -641,30 +645,33 @@ function App() {
     addInstance: (instance) => {
       const id = String(instance?.id || "").trim();
       return applyMobKitAuthoringReplacement({
-        operationType: "insert_graph_node",
-        operation: { instance },
+        intent: "graph.insertNode",
+        instance,
         selection: id ? { kind: "instance", id } : null,
       });
     },
     updateInstance: (id, patch) => {
       return applyMobKitAuthoringReplacement({
-        operationType: "update_graph_node",
-        operation: { instance_id: id, patch },
+        intent: "graph.updateNode",
+        instanceId: id,
+        patch,
         selection: { kind: "instance", id },
       });
     },
     editInstance: (id, action, payload = {}) => {
       return applyMobKitAuthoringReplacement({
-        operationType: "apply_graph_node_edit",
-        operation: { instance_id: id, action, ...payload },
+        intent: "graph.editNode",
+        instanceId: id,
+        action,
+        payload,
         selection: { kind: "instance", id },
       });
     },
     deleteInstance: (id) => {
       const selection = { kind: null, id: null };
       return applyMobKitAuthoringReplacement({
-        operationType: "delete_graph_node",
-        operation: { instance_id: id },
+        intent: "graph.deleteNode",
+        instanceId: id,
         selection,
       });
     },
@@ -676,51 +683,52 @@ function App() {
         ? { from_id: fromId, to_id: toId }
         : { edge };
       return applyMobKitAuthoringReplacement({
-        operationType: "connect_graph_nodes",
+        intent: "graph.connectNodes",
         operation,
         selection: id ? { kind: "edge", id } : null,
       });
     },
     updateEdge: (id, patch) => {
       return applyMobKitAuthoringReplacement({
-        operationType: "update_graph_edge",
-        operation: { edge_id: id, patch },
+        intent: "graph.updateEdge",
+        edgeId: id,
+        patch,
         selection: { kind: "edge", id },
       });
     },
     editEdge: (id, action, payload = {}) => {
       return applyMobKitAuthoringReplacement({
-        operationType: "apply_graph_edge_edit",
-        operation: { edge_id: id, action, ...payload },
+        intent: "graph.editEdge",
+        edgeId: id,
+        action,
+        payload,
         selection: { kind: "edge", id },
       });
     },
     deleteEdge: (id) => {
       const selection = { kind: null, id: null };
       return applyMobKitAuthoringReplacement({
-        operationType: "delete_graph_edge",
-        operation: { edge_id: id },
+        intent: "graph.deleteEdge",
+        edgeId: id,
         selection,
       });
     },
     addSchema: () => {
-      return applyMobKitAuthoringReplacement({
-        operationType: "add_schema",
-        operation: {},
-      });
+      return applyMobKitAuthoringReplacement({ intent: "schema.add" });
     },
     updateSchema: (id, patch) => {
       return applyMobKitAuthoringReplacement({
-        operationType: "update_schema",
-        operation: { schema_id: id, patch },
+        intent: "schema.update",
+        schemaId: id,
+        patch,
         selection: { kind: "schema", id },
       });
     },
     deleteSchema: (id) => {
       const selection = { kind: null, id: null };
       return applyMobKitAuthoringReplacement({
-        operationType: "delete_schema",
-        operation: { schema_id: id },
+        intent: "schema.delete",
+        schemaId: id,
         selection,
       });
     },
@@ -1212,7 +1220,7 @@ function App() {
             contract={contract}
             graphView={catalogs.graphView}
             toolCatalog={catalogs.toolCatalog}
-            applyAuthoringReplacement={applyMobKitAuthoringReplacement}
+            applyAuthoringIntent={applyMobKitAuthoringReplacement}
           />
             <InlineSourceEditor
               open={inlineSourceOpen && inlineSourceSurface === "graph"}
@@ -1271,7 +1279,7 @@ function App() {
           basicView={catalogs.basicView}
           launchView={catalogs.launchView}
           conditionView={catalogs.conditionView}
-          applyAuthoringReplacement={applyMobKitAuthoringReplacement}
+          applyAuthoringIntent={applyMobKitAuthoringReplacement}
         />
       )}
 
@@ -1289,8 +1297,8 @@ function App() {
           toolCatalog={catalogs.toolCatalog}
           modelCatalog={catalogs.models}
           agentDefinitions={catalogs.agentDefinitions}
-          applyAuthoringOperation={applyMobKitAuthoringOperation}
-          applyAuthoringReplacement={applyMobKitAuthoringReplacement}
+          applyAgentIntent={applyMobKitAuthoringOperation}
+          applyAgentReplacementIntent={applyMobKitAuthoringReplacement}
           agentView={catalogs.agentView}
           agentDetailView={catalogs.agentDetailView}
           agentAccessView={catalogs.agentAccessView}
@@ -1566,8 +1574,8 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     const next = window.MobKitFlowController.deploySettingsFieldPatch(deploySettings, field, value, { contract, modelCatalog });
     if (applyAuthoringReplacement) {
       applyAuthoringReplacement({
-        operationType: "update_deploy_settings",
-        operation: { deploy: next },
+        intent: "settings.updateDeploy",
+        deploy: next,
       });
     } else {
       setDeploySettings(next);
@@ -1577,8 +1585,9 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     const next = window.MobKitFlowController.mobSettingsFieldPatch(mobSettings, field, value, { contract });
     if (applyAuthoringReplacement) {
       applyAuthoringReplacement({
-        operationType: field === "roleWiring" ? "update_role_wiring" : "update_mob_settings",
-        operation: field === "roleWiring" ? { role_wiring: next.roleWiring || [] } : { mob_settings: next },
+        intent: field === "roleWiring" ? "settings.updateRoleWiring" : "settings.updateMob",
+        roleWiring: next.roleWiring || [],
+        mobSettings: next,
       });
     } else {
       setMobSettings(next);

@@ -8,6 +8,7 @@ use axum::{
 use serde_json::Value;
 
 use crate::http_sse::sse_request_authorized;
+use crate::mobpack::MobpackRuntimeCatalogState;
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::RuntimeDecisionState;
 
@@ -31,6 +32,16 @@ pub fn flow_editor_router_with_host_deploy() -> Router {
 
 pub fn protected_flow_editor_router(decisions: RuntimeDecisionState) -> Router {
     flow_editor_frontend_router::<()>().merge(flow_editor_rpc_router_with_decisions(decisions))
+}
+
+pub(crate) fn protected_flow_editor_router_with_runtime_catalog(
+    decisions: RuntimeDecisionState,
+    runtime_catalog: MobpackRuntimeCatalogState,
+) -> Router {
+    flow_editor_frontend_router::<()>().merge(flow_editor_rpc_router_with_runtime_catalog(
+        decisions,
+        Some(runtime_catalog),
+    ))
 }
 
 pub fn flow_editor_frontend_router<S>() -> Router<S>
@@ -72,9 +83,19 @@ where
 }
 
 pub fn flow_editor_rpc_router_with_decisions(decisions: RuntimeDecisionState) -> Router {
+    flow_editor_rpc_router_with_runtime_catalog(decisions, None)
+}
+
+fn flow_editor_rpc_router_with_runtime_catalog(
+    decisions: RuntimeDecisionState,
+    runtime_catalog: Option<MobpackRuntimeCatalogState>,
+) -> Router {
     Router::new()
         .route("/flow-editor/rpc", post(protected_flow_editor_rpc_handler))
-        .with_state(FlowEditorRpcState { decisions })
+        .with_state(FlowEditorRpcState {
+            decisions,
+            runtime_catalog,
+        })
 }
 
 pub async fn flow_editor_frontend_index_handler() -> impl IntoResponse {
@@ -167,6 +188,7 @@ fn flow_editor_rpc_handler_with_policy(
             host_mutation_allowed: allow_host_deploy,
             deploy_execute_allowed: allow_host_deploy,
         },
+        None,
     );
     (StatusCode::OK, Json::<Value>(response))
 }
@@ -174,6 +196,7 @@ fn flow_editor_rpc_handler_with_policy(
 #[derive(Clone)]
 struct FlowEditorRpcState {
     decisions: RuntimeDecisionState,
+    runtime_catalog: Option<MobpackRuntimeCatalogState>,
 }
 
 #[derive(Clone, Copy)]
@@ -226,6 +249,7 @@ async fn protected_flow_editor_rpc_handler(
             host_mutation_allowed: true,
             deploy_execute_allowed: true,
         },
+        state.runtime_catalog.as_ref(),
     );
     (StatusCode::OK, Json::<Value>(response))
 }
@@ -240,10 +264,15 @@ pub fn handle_flow_editor_rpc(request: JsonRpcRequest) -> Value {
             host_mutation_allowed: false,
             deploy_execute_allowed: false,
         },
+        None,
     )
 }
 
-fn handle_flow_editor_rpc_with_auth(request: JsonRpcRequest, auth: FlowEditorAuthReport) -> Value {
+fn handle_flow_editor_rpc_with_auth(
+    request: JsonRpcRequest,
+    auth: FlowEditorAuthReport,
+    runtime_catalog: Option<&MobpackRuntimeCatalogState>,
+) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
     match request.method.as_str() {
         "mobkit/capabilities" => {
@@ -254,6 +283,8 @@ fn handle_flow_editor_rpc_with_auth(request: JsonRpcRequest, auth: FlowEditorAut
                 serde_json::json!(auth.host_mutation_allowed);
             authoring_capabilities["deploy_execute_allowed"] =
                 serde_json::json!(auth.deploy_execute_allowed);
+            authoring_capabilities["runtime_backed_catalogs"] =
+                serde_json::json!(runtime_catalog.is_some());
             response_value(
                 response_id,
                 Some(serde_json::json!({
@@ -272,6 +303,41 @@ fn handle_flow_editor_rpc_with_auth(request: JsonRpcRequest, auth: FlowEditorAut
                 None,
             )
         }
+        "mobkit/mobpacks/catalogs" => response_value(
+            response_id,
+            Some(crate::mobpack::mobpack_catalogs_response_with_runtime(
+                runtime_catalog,
+            )),
+            None,
+        ),
+        "mobkit/tools/catalog" => response_value(
+            response_id,
+            Some(crate::mobpack::mobpack_tools_catalog_response_with_runtime(
+                runtime_catalog,
+            )),
+            None,
+        ),
+        "mobkit/skills/catalog" => response_value(
+            response_id,
+            Some(crate::mobpack::mobpack_skills_catalog_response_with_runtime(
+                runtime_catalog,
+            )),
+            None,
+        ),
+        "mobkit/agent_definitions/list" => response_value(
+            response_id,
+            Some(
+                crate::mobpack::mobpack_agent_definitions_response_with_runtime(runtime_catalog),
+            ),
+            None,
+        ),
+        "mobkit/mobpacks/templates" => response_value(
+            response_id,
+            Some(crate::mobpack::mobpack_templates_response_with_runtime(
+                runtime_catalog,
+            )),
+            None,
+        ),
         "mobkit/mobpacks/deploy"
             if !auth.deploy_execute_allowed && deploy_execute_requested(&request.params) =>
         {
@@ -406,6 +472,11 @@ mod tests {
             method: "mobkit/mobpacks/catalogs".to_string(),
             params: Value::Null,
         });
+        assert_eq!(catalogs["result"]["runtime_backed"], json!(false));
+        assert_eq!(
+            catalogs["result"]["authoring_provider"]["runtime_binding"],
+            json!("unbound")
+        );
         let sample = catalogs["result"]["sample_mobpacks"]
             .as_array()
             .expect("sample mobpacks")
@@ -434,6 +505,55 @@ mod tests {
         assert_eq!(
             response["error"]["data"]["deploy_command"],
             json!("rkat mob deploy")
+        );
+    }
+
+    #[test]
+    fn protected_flow_editor_rpc_returns_runtime_bound_catalogs_when_state_is_available() {
+        let response = super::handle_flow_editor_rpc_with_auth(
+            JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(json!(1)),
+                method: "mobkit/mobpacks/catalogs".to_string(),
+                params: Value::Null,
+            },
+            super::FlowEditorAuthReport {
+                authenticated: true,
+                mode: "reference_app",
+                reason: "reference app Flow Editor authoring server",
+                host_mutation_allowed: true,
+                deploy_execute_allowed: true,
+            },
+            Some(&crate::mobpack::MobpackRuntimeCatalogState {
+                loaded_modules: vec!["worker".to_string()],
+                runtime_methods: vec!["mobkit/mobpacks/deploy".to_string()],
+                has_contact_directory: true,
+                has_peer_mob_handles: false,
+                has_inproc_contacts: false,
+            }),
+        );
+
+        assert!(response["error"].is_null(), "{response:#?}");
+        assert_eq!(response["result"]["runtime_backed"], json!(true));
+        assert_eq!(
+            response["result"]["authoring_provider"]["id"],
+            json!("unified_runtime")
+        );
+        assert_eq!(
+            response["result"]["authoring_provider"]["runtime_binding"],
+            json!("bound")
+        );
+        assert_eq!(
+            response["result"]["authoring_provider"]["loaded_modules"],
+            json!(["worker"])
+        );
+        assert_eq!(
+            response["result"]["authoring_provider"]["cross_mob"]["contact_directory"],
+            json!(true)
+        );
+        assert_eq!(
+            response["result"]["catalog_snapshot"]["runtime_backed"],
+            json!(true)
         );
     }
 
@@ -484,6 +604,7 @@ mod tests {
                 host_mutation_allowed: true,
                 deploy_execute_allowed: true,
             },
+            None,
         );
         assert_eq!(
             capabilities["result"]["authoring_capabilities"]["host_mutation_allowed"],
@@ -514,6 +635,7 @@ mod tests {
                 host_mutation_allowed: true,
                 deploy_execute_allowed: true,
             },
+            None,
         );
 
         assert!(response["error"].is_null(), "{response:#?}");
