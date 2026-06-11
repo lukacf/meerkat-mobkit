@@ -4497,44 +4497,12 @@ fn apply_sync_graph_to_flow_operation(
     document: &mut MobpackDocument,
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
+    // The advanced-mode canvas keeps the user's node/edge authoring as-is;
+    // the flow is derived from it. Validation accepts the gate-less graph
+    // because `validate_graph_projection` proves the equivalence by
+    // re-deriving the flow from the graph.
     document.flow = graph_to_flow_from_document(document);
     reconcile_flow_step_launch_modes(document);
-    // Normalize the graph to the canonical projection of the regenerated
-    // flow so synthesized constructs (parallel fan-out/join gates, frames)
-    // exist in the graph the document carries. The caller's node layout is
-    // preserved by id; only synthesized nodes take canonical positions.
-    let prior_positions: BTreeMap<String, (Value, Value)> = document
-        .instances
-        .as_array()
-        .map(|instances| {
-            instances
-                .iter()
-                .filter_map(|instance| {
-                    let id = instance.get("id").and_then(Value::as_str)?;
-                    let col = instance.get("col")?;
-                    let row = instance.get("row")?;
-                    Some((id.to_string(), (col.clone(), row.clone())))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    if let Some(steps) = document.flow.get("steps").and_then(Value::as_array) {
-        let (mut instances, edges, frames) = graph_projection_from_visual_steps(steps);
-        for instance in &mut instances {
-            let Some((col, row)) = instance
-                .get("id")
-                .and_then(Value::as_str)
-                .and_then(|id| prior_positions.get(id))
-            else {
-                continue;
-            };
-            instance["col"] = col.clone();
-            instance["row"] = row.clone();
-        }
-        document.instances = Value::Array(instances);
-        document.edges = Value::Array(edges);
-        document.frames = Value::Array(frames);
-    }
     Ok(operation_selection_or_clear(operation))
 }
 
@@ -9305,6 +9273,7 @@ fn apply_insert_graph_node_operation(
     }
     reject_raw_graph_operation_sections(operation, &["frames"])?;
     document.flow = graph_to_flow_from_document(document);
+    reconcile_flow_step_launch_modes(document);
     let selected_id = semantic_selection.unwrap_or(selected_id);
     Ok(json!({ "kind": "instance", "id": selected_id, "inserted_ids": inserted_ids }))
 }
@@ -9728,6 +9697,7 @@ fn apply_graph_node_edit_operation(
     instances[index] = next_instance;
     document.instances = Value::Array(instances);
     document.flow = graph_to_flow_from_document(document);
+    reconcile_flow_step_launch_modes(document);
     Ok(json!({ "kind": "instance", "id": instance_id }))
 }
 
@@ -9794,6 +9764,7 @@ fn apply_move_graph_node_operation(
     }
     document.instances = Value::Array(instances);
     document.flow = graph_to_flow_from_document(document);
+    reconcile_flow_step_launch_modes(document);
     Ok(json!({ "kind": "instance", "id": instance_id }))
 }
 
@@ -9897,6 +9868,7 @@ fn apply_delete_graph_node_operation(
     document.edges = Value::Array(edges);
     reject_raw_graph_operation_sections(operation, &["frames"])?;
     document.flow = graph_to_flow_from_document(document);
+    reconcile_flow_step_launch_modes(document);
     Ok(json!({ "kind": null, "id": null }))
 }
 
@@ -9920,6 +9892,7 @@ fn apply_connect_graph_nodes_operation(
     edges.push(edge);
     document.edges = Value::Array(edges);
     document.flow = graph_to_flow_from_document(document);
+    reconcile_flow_step_launch_modes(document);
     reject_raw_graph_operation_sections(operation, &["frames"])?;
     Ok(json!({ "kind": "edge", "id": id }))
 }
@@ -10287,6 +10260,7 @@ fn apply_graph_edge_edit_operation(
     edges[index] = next_edge;
     document.edges = Value::Array(edges);
     document.flow = graph_to_flow_from_document(document);
+    reconcile_flow_step_launch_modes(document);
     Ok(json!({ "kind": "edge", "id": edge_id }))
 }
 
@@ -10309,6 +10283,7 @@ fn apply_delete_graph_edge_operation(
     document.edges = Value::Array(edges);
     reject_raw_graph_operation_sections(operation, &["frames"])?;
     document.flow = graph_to_flow_from_document(document);
+    reconcile_flow_step_launch_modes(document);
     Ok(json!({ "kind": null, "id": null }))
 }
 
@@ -13852,8 +13827,7 @@ fn projected_deploy_for_runtime_modes(definition: &MobDefinition, deploy: Value)
         .get("surface")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_some()
+        .is_some_and(|value| !value.is_empty())
     {
         return deploy;
     }
@@ -18379,6 +18353,17 @@ fn validate_graph_projection(document: &MobpackDocument) -> Vec<MobpackDiagnosti
     if document.instances.is_null() && document.edges.is_null() && document.frames.is_null() {
         return Vec::new();
     }
+    // Advanced-mode graphs carry the user's plain nodes and edges without
+    // materialized fan-out/join gates or frames. When re-deriving the flow
+    // from this graph reproduces the document's flow, the graph provably is
+    // the source of that flow, so the flow<->graph cross-checks (compiled
+    // gates/frames/edges, member/metadata/launch expectations) hold by
+    // construction and are skipped. Well-formedness checks (shapes, ids,
+    // edge endpoints/kinds/conditions, terminals) always run: the
+    // derivation ignores malformed pieces, so equality cannot vouch for
+    // them.
+    let graph_derives_flow =
+        document.flow.is_object() && graph_to_flow_from_document(document) == document.flow;
     let mut diagnostics = Vec::new();
     let Some(instances) = document.instances.as_array() else {
         if !document.instances.is_null() {
@@ -18464,25 +18449,27 @@ fn validate_graph_projection(document: &MobpackDocument) -> Vec<MobpackDiagnosti
                     path: Some(format!("{path}.gateKind")),
                 });
             }
-            if !graph_controls.gate_ids.contains(id) {
-                diagnostics.push(MobpackDiagnostic {
-                    severity: "error".to_string(),
-                    code: "uncompiled_graph_gate".to_string(),
-                    message: format!(
-                        "graph gate '{id}' is not backed by a branch/parallel flow primitive"
-                    ),
-                    path: Some(path.clone()),
-                });
-            }
-            if gate_kind == "fork"
-                && let Some(expected) = graph_controls.fork_controls.get(id)
-            {
-                validate_graph_fork_control(instance, &path, expected, &mut diagnostics);
-            }
-            if gate_kind == "join"
-                && let Some(expected) = graph_controls.join_controls.get(id)
-            {
-                validate_graph_join_control(instance, &path, expected, &mut diagnostics);
+            if !graph_derives_flow {
+                if !graph_controls.gate_ids.contains(id) {
+                    diagnostics.push(MobpackDiagnostic {
+                        severity: "error".to_string(),
+                        code: "uncompiled_graph_gate".to_string(),
+                        message: format!(
+                            "graph gate '{id}' is not backed by a branch/parallel flow primitive"
+                        ),
+                        path: Some(path.clone()),
+                    });
+                }
+                if gate_kind == "fork"
+                    && let Some(expected) = graph_controls.fork_controls.get(id)
+                {
+                    validate_graph_fork_control(instance, &path, expected, &mut diagnostics);
+                }
+                if gate_kind == "join"
+                    && let Some(expected) = graph_controls.join_controls.get(id)
+                {
+                    validate_graph_join_control(instance, &path, expected, &mut diagnostics);
+                }
             }
             continue;
         }
@@ -18533,7 +18520,7 @@ fn validate_graph_projection(document: &MobpackDocument) -> Vec<MobpackDiagnosti
                 path: Some(format!("{path}.memberId")),
             });
         }
-        if !flow_members.is_empty() {
+        if !flow_members.is_empty() && !graph_derives_flow {
             match flow_members.get(id) {
                 Some(expected_member) if expected_member != member_id => {
                     diagnostics.push(MobpackDiagnostic {
@@ -18556,34 +18543,48 @@ fn validate_graph_projection(document: &MobpackDocument) -> Vec<MobpackDiagnosti
                 }),
             }
         }
-        if let Some(expected_metadata) = flow_member_metadata.get(id) {
-            validate_graph_member_metadata(instance, &path, expected_metadata, &mut diagnostics);
-        }
-        if let Some(expected_launch) = flow_launch_modes.get(id) {
-            validate_graph_member_launch_mode(instance, &path, expected_launch, &mut diagnostics);
+        if !graph_derives_flow {
+            if let Some(expected_metadata) = flow_member_metadata.get(id) {
+                validate_graph_member_metadata(
+                    instance,
+                    &path,
+                    expected_metadata,
+                    &mut diagnostics,
+                );
+            }
+            if let Some(expected_launch) = flow_launch_modes.get(id) {
+                validate_graph_member_launch_mode(
+                    instance,
+                    &path,
+                    expected_launch,
+                    &mut diagnostics,
+                );
+            }
         }
     }
 
-    for step_id in flow_members.keys() {
-        if !member_instance_ids.contains(step_id) {
-            diagnostics.push(MobpackDiagnostic {
-                severity: "error".to_string(),
-                code: "flow_step_missing_graph_instance".to_string(),
-                message: format!("flow member step '{step_id}' has no matching graph instance"),
-                path: Some("instances".to_string()),
-            });
+    if !graph_derives_flow {
+        for step_id in flow_members.keys() {
+            if !member_instance_ids.contains(step_id) {
+                diagnostics.push(MobpackDiagnostic {
+                    severity: "error".to_string(),
+                    code: "flow_step_missing_graph_instance".to_string(),
+                    message: format!("flow member step '{step_id}' has no matching graph instance"),
+                    path: Some("instances".to_string()),
+                });
+            }
         }
-    }
-    for gate_id in &graph_controls.gate_ids {
-        if !gate_instance_ids.contains(gate_id) {
-            diagnostics.push(MobpackDiagnostic {
-                severity: "error".to_string(),
-                code: "missing_compiled_graph_gate".to_string(),
-                message: format!(
-                    "flow compiles graph gate '{gate_id}', but document.instances has no matching gate instance"
-                ),
-                path: Some("instances".to_string()),
-            });
+        for gate_id in &graph_controls.gate_ids {
+            if !gate_instance_ids.contains(gate_id) {
+                diagnostics.push(MobpackDiagnostic {
+                    severity: "error".to_string(),
+                    code: "missing_compiled_graph_gate".to_string(),
+                    message: format!(
+                        "flow compiles graph gate '{gate_id}', but document.instances has no matching gate instance"
+                    ),
+                    path: Some("instances".to_string()),
+                });
+            }
         }
     }
 
@@ -18758,7 +18759,9 @@ fn validate_graph_projection(document: &MobpackDocument) -> Vec<MobpackDiagnosti
             }
         }
     }
-    validate_expected_graph_edges(edges, &graph_controls.expected_edges, &mut diagnostics);
+    if !graph_derives_flow {
+        validate_expected_graph_edges(edges, &graph_controls.expected_edges, &mut diagnostics);
+    }
 
     let mut frame_ids = BTreeSet::new();
     if let Some(frames) = document.frames.as_array() {
@@ -18782,7 +18785,9 @@ fn validate_graph_projection(document: &MobpackDocument) -> Vec<MobpackDiagnosti
                 .filter(|value| !value.is_empty())
             {
                 frame_ids.insert(frame_id.to_string());
-                if !graph_controls.frame_ids.contains(frame_id) {
+                if graph_derives_flow {
+                    // flow<->frame backing is implied by the derivation
+                } else if !graph_controls.frame_ids.contains(frame_id) {
                     diagnostics.push(MobpackDiagnostic {
                         severity: "error".to_string(),
                         code: "uncompiled_graph_frame".to_string(),
@@ -18813,16 +18818,18 @@ fn validate_graph_projection(document: &MobpackDocument) -> Vec<MobpackDiagnosti
             path: Some("frames".to_string()),
         });
     }
-    for frame_id in &graph_controls.frame_ids {
-        if !frame_ids.contains(frame_id) {
-            diagnostics.push(MobpackDiagnostic {
-                severity: "error".to_string(),
-                code: "missing_compiled_graph_frame".to_string(),
-                message: format!(
-                    "flow compiles graph frame '{frame_id}', but document.frames has no matching frame"
-                ),
-                path: Some("frames".to_string()),
-            });
+    if !graph_derives_flow {
+        for frame_id in &graph_controls.frame_ids {
+            if !frame_ids.contains(frame_id) {
+                diagnostics.push(MobpackDiagnostic {
+                    severity: "error".to_string(),
+                    code: "missing_compiled_graph_frame".to_string(),
+                    message: format!(
+                        "flow compiles graph frame '{frame_id}', but document.frames has no matching frame"
+                    ),
+                    path: Some("frames".to_string()),
+                });
+            }
         }
     }
 
@@ -19815,7 +19822,14 @@ fn collect_editor_flow_member_launch_modes(
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|id| !id.is_empty())
-            && let Some(mode) = step.get("launchMode").or_else(|| step.get("launch_mode"))
+            // graph_to_flow emits launchMode: null for steps without one; a
+            // null mode is "no expectation", matching the reconciler
+            // (collect_editor_flow_member_step_launch_values) — otherwise the
+            // two sides disagree forever and reconciliation cannot converge.
+            && let Some(mode) = step
+                .get("launchMode")
+                .or_else(|| step.get("launch_mode"))
+                .filter(|mode| mode.is_object())
         {
             launch_modes.insert(id.to_string(), editor_graph_launch_mode(Some(mode)));
         }

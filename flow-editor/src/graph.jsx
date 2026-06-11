@@ -338,7 +338,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     }
 
     return (
-      <g key={edge.id} className="edge" onClick={(e) => { e.stopPropagation(); selectEdge(edge.id); }}>
+      <g key={edge.id} className="edge" data-edge-id={edge.id} data-edge-from={edge.from} data-edge-to={edge.to} onClick={(e) => { e.stopPropagation(); selectEdge(edge.id); }}>
         <path d={d} className="edge-hit" />
         <path d={d} className={edgeState.lineClass} markerEnd={edgeState.markerEnd} />
         {labelEl}

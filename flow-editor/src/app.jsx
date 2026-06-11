@@ -64,24 +64,28 @@ function App() {
   // System reconciles must not retry without bound: a client/server
   // disagreement (failed validation, or a change the server will not make)
   // would otherwise turn into an unbounded RPC retry loop. Each reconcile
-  // intent gets a few attempts per authoring revision; the latch releases on
-  // the next real edit (markDraft / hydration bumps the revision).
-  const RECONCILE_MAX_ATTEMPTS_PER_REVISION = 4;
-  const reconcileFailureRevision = React.useRef(null);
-  const reconcileAttempts = React.useRef({ revision: null, counts: {} });
+  // intent gets a few attempts per edit epoch; the latch releases on the
+  // next real edit. The epoch is bumped by every non-system authoring
+  // operation and by document hydration — authoringRevision cannot serve
+  // here, because the runner's markDraft call is suppressed during
+  // projection sync, so op-based edits never bump it.
+  const RECONCILE_MAX_ATTEMPTS_PER_EPOCH = 4;
+  const reconcileEpoch = React.useRef(0);
+  const reconcileFailureEpoch = React.useRef(null);
+  const reconcileAttempts = React.useRef({ epoch: null, counts: {} });
   const reconcileLatched = () =>
-    reconcileFailureRevision.current !== null
-    && reconcileFailureRevision.current === authoringRevision.current;
+    reconcileFailureEpoch.current !== null
+    && reconcileFailureEpoch.current === reconcileEpoch.current;
   const reconcileShouldRun = (intent) => {
     if (reconcileLatched()) return false;
     const attempts = reconcileAttempts.current;
-    if (attempts.revision !== authoringRevision.current) {
-      attempts.revision = authoringRevision.current;
+    if (attempts.epoch !== reconcileEpoch.current) {
+      attempts.epoch = reconcileEpoch.current;
       attempts.counts = {};
     }
     attempts.counts[intent] = (attempts.counts[intent] || 0) + 1;
-    if (attempts.counts[intent] > RECONCILE_MAX_ATTEMPTS_PER_REVISION) {
-      reconcileFailureRevision.current = authoringRevision.current;
+    if (attempts.counts[intent] > RECONCILE_MAX_ATTEMPTS_PER_EPOCH) {
+      reconcileFailureEpoch.current = reconcileEpoch.current;
       console.warn(`MobKit ${intent} did not converge; reconciliation paused until the next edit`);
       return false;
     }
@@ -91,13 +95,16 @@ function App() {
   // so the cap only trips on consecutive non-converging attempts.
   const markReconcileConverged = (intent) => {
     const attempts = reconcileAttempts.current;
-    if (attempts.revision === authoringRevision.current) {
+    if (attempts.epoch === reconcileEpoch.current) {
       attempts.counts[intent] = 0;
     }
   };
-  const latchReconcileFailure = (result) => {
-    if (result?.ok === false) {
-      reconcileFailureRevision.current = authoringRevision.current;
+  // Latch only genuine server-validated failures (the result carries a
+  // document) at the epoch the reconcile was issued: synthetic stale
+  // results from a mid-flight hydration must not poison the new document.
+  const latchReconcileFailure = (epochAtIssue) => (result) => {
+    if (result?.ok === false && result?.document && reconcileEpoch.current === epochAtIssue) {
+      reconcileFailureEpoch.current = epochAtIssue;
       console.warn("MobKit system reconcile paused until the next edit:", result?.error || result?.validation?.display_rows?.[0]?.sub || "validation failed");
     }
     return result;
@@ -178,6 +185,7 @@ function App() {
   }, [clearSourceProjection, currentFlowId]);
   const beginDocumentHydration = React.useCallback(() => {
     authoringRevision.current += 1;
+    reconcileEpoch.current += 1;
     clearSourceProjection();
   }, [clearSourceProjection]);
   const showAuthoringFailure = React.useCallback((resultOrError, fallbackHead = "") => {
@@ -396,7 +404,7 @@ function App() {
     if (!reconcileShouldRun("system.reconcileMembers")) return;
     applyMobKitAuthoringOperation({
       intent: "system.reconcileMembers",
-    }).then(latchReconcileFailure);
+    }).then(latchReconcileFailure(reconcileEpoch.current));
   }, [studio.members, flow, studio.instances, studio.edges, mobSettings]);
 
   React.useEffect(() => {
@@ -418,7 +426,7 @@ function App() {
     if (!reconcileShouldRun("system.reconcileConditionFields")) return;
     applyMobKitAuthoringOperation({
       intent: "system.reconcileConditionFields",
-    }).then(latchReconcileFailure);
+    }).then(latchReconcileFailure(reconcileEpoch.current));
   }, [flow, studio.edges, studio.instances, studio.members, studio.schemas]);
 
   React.useEffect(() => {
@@ -444,7 +452,7 @@ function App() {
     if (!reconcileShouldRun("system.reconcileContractRefs")) return;
     applyMobKitAuthoringOperation({
       intent: "system.reconcileContractRefs",
-    }).then(latchReconcileFailure);
+    }).then(latchReconcileFailure(reconcileEpoch.current));
   }, [
     studio.members,
     studio.skillRealms,
@@ -639,8 +647,12 @@ function App() {
     applyAuthoringDocumentProjection,
     markDraft,
   };
-  const applyMobKitAuthoringOperation = React.useCallback((operation) =>
-    authoringOperationRunner.current(operation), []);
+  const applyMobKitAuthoringOperation = React.useCallback((operation) => {
+    if (!String(operation?.intent || "").startsWith("system.")) {
+      reconcileEpoch.current += 1;
+    }
+    return authoringOperationRunner.current(operation);
+  }, []);
   const mobKitStudio = {
     ...studio,
   };
@@ -666,7 +678,19 @@ function App() {
           setFlows((rows) => window.MobKitFlowController.flowRegistryUpsertRowPatch(rows, result.row));
         }
       })
-      .catch((error) => showAuthoringFailure(error, authoringFailureHead("draft_save")));
+      .catch((error) => {
+        if (window.MobKitFlowController.isDraftGuardConflictError(error)) {
+          // A concurrent autosave already bumped the draft revision. This
+          // save carries the older document, so retrying it would overwrite
+          // the newer draft; drop it and force the persistence effect to
+          // re-save the CURRENT document against the refreshed registry row.
+          console.warn("MobKit draft save superseded; re-persisting the current draft:", error?.message || error);
+          persistedDocumentSig.current = "";
+          setFlows((rows) => (Array.isArray(rows) ? [...rows] : rows));
+          return;
+        }
+        showAuthoringFailure(error, authoringFailureHead("draft_save"));
+      });
   };
   React.useEffect(() => {
     let cancelled = false;

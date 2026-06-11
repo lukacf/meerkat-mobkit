@@ -8560,6 +8560,11 @@ window.MOBKIT_BOOT = {
     }, { signal });
   }
 
+  function isDraftGuardConflictError(error) {
+    const message = String(error?.message || error || "");
+    return message.includes("draft revision conflict") || message.includes("draft etag conflict");
+  }
+
   function createAuthoringOperationRunner(options = {}) {
     const hooks = options && typeof options === "object" ? options : {};
     let queue = Promise.resolve();
@@ -8583,10 +8588,22 @@ window.MOBKIT_BOOT = {
       } catch (error) {
         return { ok: false, error: error?.message || String(error) };
       }
-      const result = await applyAuthoringOperationDocument(document, translatedOperation, {
-        ...(hooks.getDraftGuard?.() || {}),
-        catalogSnapshot: hooks.getCatalogSnapshot?.(),
-      });
+      let result;
+      try {
+        result = await applyAuthoringOperationDocument(document, translatedOperation, {
+          ...(hooks.getDraftGuard?.() || {}),
+          catalogSnapshot: hooks.getCatalogSnapshot?.(),
+        });
+      } catch (error) {
+        if (!isDraftGuardConflictError(error)) throw error;
+        // Our own autosave raced this operation and bumped the draft store
+        // revision. The submitted document is still the freshest authoring
+        // state, so retry once without the optimistic store guard; save-time
+        // concurrency control is unaffected.
+        result = await applyAuthoringOperationDocument(document, translatedOperation, {
+          catalogSnapshot: hooks.getCatalogSnapshot?.(),
+        });
+      }
       if (hooks.isRevisionCurrent && !hooks.isRevisionCurrent(requestToken)) {
         return {
           ok: false,
@@ -11683,6 +11700,7 @@ window.MOBKIT_BOOT = {
     flowRegistryRowIsRuntimeProjection,
     flowImportedIdFromDocument,
     flowRegistryDraftGuard,
+    isDraftGuardConflictError,
     flowRegistryRememberDocumentPatch,
     flowRegistryDocumentPersistence,
     flowRegistryPersistDocumentProjection,
@@ -12553,7 +12571,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     } else {
       labelEl = /* @__PURE__ */ React.createElement("g", { transform: `translate(${mid.x}, ${mid.y})` }, /* @__PURE__ */ React.createElement("rect", { x: -edgeState.labelWidth / 2, y: -8, width: edgeState.labelWidth, height: 14, className: "edge-label-bg" }), /* @__PURE__ */ React.createElement("text", { textAnchor: "middle", y: 3, className: edgeState.textLabelClass }, edgeState.labelText));
     }
-    return /* @__PURE__ */ React.createElement("g", { key: edge.id, className: "edge", onClick: (e) => {
+    return /* @__PURE__ */ React.createElement("g", { key: edge.id, className: "edge", "data-edge-id": edge.id, "data-edge-from": edge.from, "data-edge-to": edge.to, onClick: (e) => {
       e.stopPropagation();
       selectEdge(edge.id);
     } }, /* @__PURE__ */ React.createElement("path", { d, className: "edge-hit" }), /* @__PURE__ */ React.createElement("path", { d, className: edgeState.lineClass, markerEnd: edgeState.markerEnd }), labelEl);
@@ -14167,20 +14185,21 @@ function App() {
   const authoringOperationRunner = React.useRef(null);
   const projectionSyncInFlight = React.useRef(false);
   const projectionSyncReset = React.useRef(0);
-  const RECONCILE_MAX_ATTEMPTS_PER_REVISION = 4;
-  const reconcileFailureRevision = React.useRef(null);
-  const reconcileAttempts = React.useRef({ revision: null, counts: {} });
-  const reconcileLatched = () => reconcileFailureRevision.current !== null && reconcileFailureRevision.current === authoringRevision.current;
+  const RECONCILE_MAX_ATTEMPTS_PER_EPOCH = 4;
+  const reconcileEpoch = React.useRef(0);
+  const reconcileFailureEpoch = React.useRef(null);
+  const reconcileAttempts = React.useRef({ epoch: null, counts: {} });
+  const reconcileLatched = () => reconcileFailureEpoch.current !== null && reconcileFailureEpoch.current === reconcileEpoch.current;
   const reconcileShouldRun = (intent) => {
     if (reconcileLatched()) return false;
     const attempts = reconcileAttempts.current;
-    if (attempts.revision !== authoringRevision.current) {
-      attempts.revision = authoringRevision.current;
+    if (attempts.epoch !== reconcileEpoch.current) {
+      attempts.epoch = reconcileEpoch.current;
       attempts.counts = {};
     }
     attempts.counts[intent] = (attempts.counts[intent] || 0) + 1;
-    if (attempts.counts[intent] > RECONCILE_MAX_ATTEMPTS_PER_REVISION) {
-      reconcileFailureRevision.current = authoringRevision.current;
+    if (attempts.counts[intent] > RECONCILE_MAX_ATTEMPTS_PER_EPOCH) {
+      reconcileFailureEpoch.current = reconcileEpoch.current;
       console.warn(`MobKit ${intent} did not converge; reconciliation paused until the next edit`);
       return false;
     }
@@ -14188,13 +14207,13 @@ function App() {
   };
   const markReconcileConverged = (intent) => {
     const attempts = reconcileAttempts.current;
-    if (attempts.revision === authoringRevision.current) {
+    if (attempts.epoch === reconcileEpoch.current) {
       attempts.counts[intent] = 0;
     }
   };
-  const latchReconcileFailure = (result) => {
-    if (result?.ok === false) {
-      reconcileFailureRevision.current = authoringRevision.current;
+  const latchReconcileFailure = (epochAtIssue) => (result) => {
+    if (result?.ok === false && result?.document && reconcileEpoch.current === epochAtIssue) {
+      reconcileFailureEpoch.current = epochAtIssue;
       console.warn("MobKit system reconcile paused until the next edit:", result?.error || result?.validation?.display_rows?.[0]?.sub || "validation failed");
     }
     return result;
@@ -14273,6 +14292,7 @@ function App() {
   }, [clearSourceProjection, currentFlowId]);
   const beginDocumentHydration = React.useCallback(() => {
     authoringRevision.current += 1;
+    reconcileEpoch.current += 1;
     clearSourceProjection();
   }, [clearSourceProjection]);
   const showAuthoringFailure = React.useCallback((resultOrError, fallbackHead = "") => {
@@ -14473,7 +14493,7 @@ function App() {
     if (!reconcileShouldRun("system.reconcileMembers")) return;
     applyMobKitAuthoringOperation({
       intent: "system.reconcileMembers"
-    }).then(latchReconcileFailure);
+    }).then(latchReconcileFailure(reconcileEpoch.current));
   }, [studio.members, flow, studio.instances, studio.edges, mobSettings]);
   React.useEffect(() => {
     if (!window.MobKitFlowController?.reconcileConditionFieldAvailability) return;
@@ -14494,7 +14514,7 @@ function App() {
     if (!reconcileShouldRun("system.reconcileConditionFields")) return;
     applyMobKitAuthoringOperation({
       intent: "system.reconcileConditionFields"
-    }).then(latchReconcileFailure);
+    }).then(latchReconcileFailure(reconcileEpoch.current));
   }, [flow, studio.edges, studio.instances, studio.members, studio.schemas]);
   React.useEffect(() => {
     if (hydratingDocumentRef.current) return;
@@ -14519,7 +14539,7 @@ function App() {
     if (!reconcileShouldRun("system.reconcileContractRefs")) return;
     applyMobKitAuthoringOperation({
       intent: "system.reconcileContractRefs"
-    }).then(latchReconcileFailure);
+    }).then(latchReconcileFailure(reconcileEpoch.current));
   }, [
     studio.members,
     studio.skillRealms,
@@ -14709,7 +14729,12 @@ function App() {
     applyAuthoringDocumentProjection,
     markDraft
   };
-  const applyMobKitAuthoringOperation = React.useCallback((operation) => authoringOperationRunner.current(operation), []);
+  const applyMobKitAuthoringOperation = React.useCallback((operation) => {
+    if (!String(operation?.intent || "").startsWith("system.")) {
+      reconcileEpoch.current += 1;
+    }
+    return authoringOperationRunner.current(operation);
+  }, []);
   const mobKitStudio = {
     ...studio
   };
@@ -14731,7 +14756,15 @@ function App() {
       if (result?.row) {
         setFlows((rows) => window.MobKitFlowController.flowRegistryUpsertRowPatch(rows, result.row));
       }
-    }).catch((error) => showAuthoringFailure(error, authoringFailureHead("draft_save")));
+    }).catch((error) => {
+      if (window.MobKitFlowController.isDraftGuardConflictError(error)) {
+        console.warn("MobKit draft save superseded; re-persisting the current draft:", error?.message || error);
+        persistedDocumentSig.current = "";
+        setFlows((rows) => Array.isArray(rows) ? [...rows] : rows);
+        return;
+      }
+      showAuthoringFailure(error, authoringFailureHead("draft_save"));
+    });
   };
   React.useEffect(() => {
     let cancelled = false;

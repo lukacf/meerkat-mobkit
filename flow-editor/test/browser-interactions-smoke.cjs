@@ -99,23 +99,27 @@ async function main() {
     });
     await page.getByText("api ready").waitFor({ timeout: 10_000 });
 
+    // Member nodes only: structural edits reproject the canvas, which can
+    // add or remove synthesized gate instances (fan-out/join) and their
+    // edges, so counts of [data-inst-id]/.edge are not stable assertions.
+    const memberNodes = "[data-inst-id]:not(.node--gate)";
     await page.locator("button.modetoggle__opt", { hasText: "Graph" }).click();
     await page.locator(".canvas-host").waitFor({ state: "visible", timeout: 10_000 });
-    const graphNodeCountBefore = await page.locator("[data-inst-id]").count();
+    const graphNodeCountBefore = await page.locator(memberNodes).count();
     await page.locator(".cell:not(.is-occupied)").first().click();
     await page.locator(".add-menu").waitFor({ state: "visible", timeout: 10_000 });
     await chooseFirstGraphMember(page);
     await page.waitForFunction(
-      (count) => document.querySelectorAll("[data-inst-id]").length > count,
-      graphNodeCountBefore,
+      ({ selector, count }) => document.querySelectorAll(selector).length > count,
+      { selector: memberNodes, count: graphNodeCountBefore },
       { timeout: 10_000 },
     );
-    const graphNodeCountAfter = await page.locator("[data-inst-id]").count();
+    const graphNodeCountAfter = await page.locator(memberNodes).count();
     if (graphNodeCountAfter <= graphNodeCountBefore) {
       throw new Error(`Graph add menu did not create a MobKit graph node: before=${graphNodeCountBefore} after=${graphNodeCountAfter}`);
     }
 
-    const movedNode = page.locator("[data-inst-id]").last();
+    const movedNode = page.locator(memberNodes).last();
     const beforeMove = await movedNode.boundingBox();
     const targetCell = await page.locator(".cell:not(.is-occupied)").last().boundingBox();
     if (!beforeMove || !targetCell) throw new Error("Graph node drag test could not measure node/cell bounds");
@@ -129,9 +133,10 @@ async function main() {
       throw new Error(`Graph drag did not move through MobKit graph projection: before=${JSON.stringify(beforeMove)} after=${JSON.stringify(afterMove)}`);
     }
 
-    const edgeCountBefore = await page.locator(".edge").count();
-    const sourceNode = page.locator("[data-inst-id]").first();
-    const targetNode = page.locator("[data-inst-id]").last();
+    const sourceNode = page.locator(memberNodes).first();
+    const targetNode = page.locator(memberNodes).last();
+    const sourceId = await sourceNode.getAttribute("data-inst-id");
+    const targetId = await targetNode.getAttribute("data-inst-id");
     const sourcePort = sourceNode.locator(".port-out");
     const sourcePortBox = await sourcePort.boundingBox();
     const targetNodeBox = await targetNode.boundingBox();
@@ -140,15 +145,29 @@ async function main() {
     await page.mouse.down();
     await page.mouse.move(targetNodeBox.x + Math.min(12, targetNodeBox.width / 4), targetNodeBox.y + targetNodeBox.height / 2, { steps: 24 });
     await page.mouse.up();
+    // Asserting the specific member-to-member connection survives canvas
+    // reprojection (the sequence edge may run through synthesized gates).
     await page.waitForFunction(
-      (count) => document.querySelectorAll(".edge").length > count,
-      edgeCountBefore,
+      ({ from, to }) => {
+        const edges = Array.from(document.querySelectorAll(".edge"));
+        const reachable = new Set([from]);
+        let grew = true;
+        while (grew) {
+          grew = false;
+          for (const edge of edges) {
+            const edgeFrom = edge.dataset.edgeFrom;
+            const edgeTo = edge.dataset.edgeTo;
+            if (reachable.has(edgeFrom) && !reachable.has(edgeTo)) {
+              reachable.add(edgeTo);
+              grew = true;
+            }
+          }
+        }
+        return reachable.has(to);
+      },
+      { from: sourceId, to: targetId },
       { timeout: 10_000 },
     );
-    const edgeCountAfter = await page.locator(".edge").count();
-    if (edgeCountAfter <= edgeCountBefore) {
-      throw new Error(`Graph port drag did not create a MobKit edge: before=${edgeCountBefore} after=${edgeCountAfter}`);
-    }
 
     await page.locator("button.viewtab", { hasText: "AGENTS" }).click();
     await page.locator(".agents-view").waitFor({ state: "visible", timeout: 10_000 });

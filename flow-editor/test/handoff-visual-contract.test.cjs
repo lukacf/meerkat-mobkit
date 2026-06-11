@@ -109,6 +109,12 @@ function allowedCssDelta(sign, line) {
     /agents-list__bullet/,
     /font-size: 10px; line-height: 1; color: var\(--muted\); text-align: center;/,
     /add-menu__dot \{ width: 8px; height: 8px; border-radius: 50%; background:/,
+    // .node must not form a stacking context: it would trap the out-port
+    // under .edges-svg and edge hit areas would swallow port drags.
+    /z-index: 1/,
+    /No z-index here/,
+    /stacking context/,
+    /swallow port drags/,
   ];
   if (shared.some((pattern) => pattern.test(text))) return true;
   if (sign === "+") {

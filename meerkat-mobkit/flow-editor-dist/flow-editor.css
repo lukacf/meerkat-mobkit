@@ -722,8 +722,9 @@ body {
   display: flex;
   flex-direction: column;
   transition: border-color var(--motion-state), box-shadow var(--motion-state);
-  overflow: hidden;
-  z-index: 1;
+  /* No z-index here: it would trap the out-port (z-index 4) in the node's
+     stacking context, underneath .edges-svg (z-index 2) — edge hit areas
+     would swallow port drags on any node that already has an edge. */
 }
 button.node,
 a.node {
@@ -781,6 +782,9 @@ a.node {
   font-weight: 500;
   color: var(--ink);
   letter-spacing: -0.005em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .node__model {
   font-family: var(--font-mono);

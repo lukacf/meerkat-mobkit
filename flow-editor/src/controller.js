@@ -8527,6 +8527,11 @@
     }, { signal });
   }
 
+  function isDraftGuardConflictError(error) {
+    const message = String(error?.message || error || "");
+    return message.includes("draft revision conflict") || message.includes("draft etag conflict");
+  }
+
   function createAuthoringOperationRunner(options = {}) {
     const hooks = options && typeof options === "object" ? options : {};
     let queue = Promise.resolve();
@@ -8550,10 +8555,22 @@
       } catch (error) {
         return { ok: false, error: error?.message || String(error) };
       }
-      const result = await applyAuthoringOperationDocument(document, translatedOperation, {
-        ...(hooks.getDraftGuard?.() || {}),
-        catalogSnapshot: hooks.getCatalogSnapshot?.(),
-      });
+      let result;
+      try {
+        result = await applyAuthoringOperationDocument(document, translatedOperation, {
+          ...(hooks.getDraftGuard?.() || {}),
+          catalogSnapshot: hooks.getCatalogSnapshot?.(),
+        });
+      } catch (error) {
+        if (!isDraftGuardConflictError(error)) throw error;
+        // Our own autosave raced this operation and bumped the draft store
+        // revision. The submitted document is still the freshest authoring
+        // state, so retry once without the optimistic store guard; save-time
+        // concurrency control is unaffected.
+        result = await applyAuthoringOperationDocument(document, translatedOperation, {
+          catalogSnapshot: hooks.getCatalogSnapshot?.(),
+        });
+      }
       if (hooks.isRevisionCurrent && !hooks.isRevisionCurrent(requestToken)) {
         return {
           ok: false,
@@ -11650,6 +11667,7 @@
     flowRegistryRowIsRuntimeProjection,
     flowImportedIdFromDocument,
     flowRegistryDraftGuard,
+    isDraftGuardConflictError,
     flowRegistryRememberDocumentPatch,
     flowRegistryDocumentPersistence,
     flowRegistryPersistDocumentProjection,
