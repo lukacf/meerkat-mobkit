@@ -73,17 +73,40 @@ var MobKitFlowCore = (() => {
     authoringOperationsFromSchema: () => authoringOperationsFromSchema,
     authoringRpcMethodsFromSchema: () => authoringRpcMethodsFromSchema,
     basicFlowPrimitiveRowsFromSchema: () => basicFlowPrimitiveRowsFromSchema,
+    basicStepPickerState: () => basicStepPickerState,
     basicViewFromSchema: () => basicViewFromSchema,
     basicViewPartsFromSchema: () => basicViewPartsFromSchema,
+    budgetSplitPolicyAllowed: () => budgetSplitPolicyAllowed,
+    budgetSplitPolicyOptions: () => budgetSplitPolicyOptions,
     callRpc: () => callRpc,
+    canonicalBudgetSplitPolicyKind: () => canonicalBudgetSplitPolicyKind,
+    canonicalLaunchModeKind: () => canonicalLaunchModeKind,
+    childLanes: () => childLanes,
+    collectVisualSteps: () => collectVisualSteps,
+    collectionPolicyAllowed: () => collectionPolicyAllowed,
+    collectionPolicyOptions: () => collectionPolicyOptions,
+    conditionOperatorOptions: () => conditionOperatorOptions,
+    conditionTextFromEdge: () => conditionTextFromEdge,
     conditionValueControl: () => conditionValueControl,
     conditionViewForState: () => conditionViewForState,
     conditionViewFromSchema: () => conditionViewFromSchema,
     configure: () => configure,
     configureAuthoringMethodsFromSchema: () => configureAuthoringMethodsFromSchema,
+    contractDefaultFromList: () => contractDefaultFromList,
+    contractDefaultRaw: () => contractDefaultRaw,
+    contractDefaultValue: () => contractDefaultValue,
     contractStringValues: () => contractStringValues,
+    dependencyModeAllowed: () => dependencyModeAllowed,
+    dependencyModeOptions: () => dependencyModeOptions,
+    deployRuntimeCompatibility: () => deployRuntimeCompatibility,
+    deploySurfaceOptions: () => deploySurfaceOptions,
+    deploySurfaceRuntimeModes: () => deploySurfaceRuntimeModes,
     deployViewForState: () => deployViewForState,
     deployViewFromSchema: () => deployViewFromSchema,
+    dispatchModeAllowed: () => dispatchModeAllowed,
+    dispatchModeOptions: () => dispatchModeOptions,
+    edgeConditionToEditorCond: () => edgeConditionToEditorCond,
+    editorFlowPrimitiveOptions: () => editorFlowPrimitiveOptions,
     editorSchemaDraftContract: () => editorSchemaDraftContract,
     editorSchemaDraftField: () => editorSchemaDraftField,
     editorSchemaFieldNameFallback: () => editorSchemaFieldNameFallback,
@@ -96,21 +119,52 @@ var MobKitFlowCore = (() => {
     errorViewFromSchema: () => errorViewFromSchema,
     escapeHtml: () => escapeHtml,
     findMember: () => findMember,
+    firstContractValue: () => firstContractValue,
+    firstDeploySurfaceRuntimeMode: () => firstDeploySurfaceRuntimeMode,
+    firstSupportedOption: () => firstSupportedOption,
     flowRegistryViewForState: () => flowRegistryViewForState,
     flowRegistryViewFromSchema: () => flowRegistryViewFromSchema,
+    forkContextAllowed: () => forkContextAllowed,
+    forkContextOptions: () => forkContextOptions,
+    graphAddMenuCloseProjection: () => graphAddMenuCloseProjection,
+    graphAddMenuOpenProjection: () => graphAddMenuOpenProjection,
+    graphAddNodeMenuState: () => graphAddNodeMenuState,
+    graphControlNodes: () => graphControlNodes,
+    graphEdgeKindOptions: () => graphEdgeKindOptions,
+    graphFrameKindOptions: () => graphFrameKindOptions,
+    graphGateKindOptions: () => graphGateKindOptions,
     graphGatePaletteRowsFromSchema: () => graphGatePaletteRowsFromSchema,
     graphInstanceIdSet: () => graphInstanceIdSet,
     graphTemplateQuickStartRowsFromSchema: () => graphTemplateQuickStartRowsFromSchema,
     graphTemplateViewForState: () => graphTemplateViewForState,
     graphTemplateViewFromSchema: () => graphTemplateViewFromSchema,
+    graphTerminalKindOptions: () => graphTerminalKindOptions,
     graphTerminalPaletteRowsFromSchema: () => graphTerminalPaletteRowsFromSchema,
     graphViewFromSchema: () => graphViewFromSchema,
+    hasAuthoringLaunchMode: () => hasAuthoringLaunchMode,
     inlineSkillRealmIdFromOperationResult: () => inlineSkillRealmIdFromOperationResult,
     inputParamFieldControlState: () => inputParamFieldControlState,
     inputParamName: () => inputParamName,
     jsonEquivalent: () => jsonEquivalent,
+    launchBudgetFixedLimitPatch: () => launchBudgetFixedLimitPatch,
+    launchBudgetKindPatch: () => launchBudgetKindPatch,
+    launchModeBudgetPatch: () => launchModeBudgetPatch,
+    launchModeControlState: () => launchModeControlState,
+    launchModeForkContextPatch: () => launchModeForkContextPatch,
+    launchModeForkSourcePatch: () => launchModeForkSourcePatch,
+    launchModeFromAuthoringSource: () => launchModeFromAuthoringSource,
+    launchModeKindAllowed: () => launchModeKindAllowed,
+    launchModeKindPatch: () => launchModeKindPatch,
+    launchModeMergePatch: () => launchModeMergePatch,
+    launchModeOptions: () => launchModeOptions,
+    launchModeSessionPatch: () => launchModeSessionPatch,
+    launchModesFromFlow: () => launchModesFromFlow,
+    launchOptionLabel: () => launchOptionLabel,
+    launchSourceAllowed: () => launchSourceAllowed,
+    launchUnsupportedReason: () => launchUnsupportedReason,
     launchViewForState: () => launchViewForState,
     launchViewFromSchema: () => launchViewFromSchema,
+    memberDisplayName: () => memberDisplayName,
     memberInlineSkillPatch: () => memberInlineSkillPatch,
     memberSkillAccessState: () => memberSkillAccessState,
     memberSkillRemovePatch: () => memberSkillRemovePatch,
@@ -118,8 +172,17 @@ var MobKitFlowCore = (() => {
     memberToolAccessPatch: () => memberToolAccessPatch,
     memberToolAccessState: () => memberToolAccessState,
     memberToolRemovePatch: () => memberToolRemovePatch,
+    mobBackendDefaultOptions: () => mobBackendDefaultOptions,
+    mobDefinitionUnsupportedOptionLabel: () => mobDefinitionUnsupportedOptionLabel,
+    mobDefinitionUnsupportedOptionReason: () => mobDefinitionUnsupportedOptionReason,
+    mobKitBudgetSplitPolicy: () => mobKitBudgetSplitPolicy,
     newFlowViewForState: () => newFlowViewForState,
     newFlowViewFromSchema: () => newFlowViewFromSchema,
+    normalizeBudgetSplitPolicy: () => normalizeBudgetSplitPolicy,
+    normalizeCollectionMode: () => normalizeCollectionMode,
+    normalizeDispatchMode: () => normalizeDispatchMode,
+    normalizeForkContext: () => normalizeForkContext,
+    normalizeLaunchMode: () => normalizeLaunchMode,
     normalizeMaxInlinePeerNotifications: () => normalizeMaxInlinePeerNotifications,
     normalizeOptionalObject: () => normalizeOptionalObject,
     normalizeOutputFormat: () => normalizeOutputFormat,
@@ -131,13 +194,23 @@ var MobKitFlowCore = (() => {
     normalizeStepToolScopeList: () => normalizeStepToolScopeList,
     normalizeStringList: () => normalizeStringList,
     normalizeToolRef: () => normalizeToolRef,
+    normalizedEdgeCondition: () => normalizedEdgeCondition,
     numberOrNull: () => numberOrNull,
     operationErrorText: () => operationErrorText,
+    profileBackendOptions: () => profileBackendOptions,
+    profileBindingOptions: () => profileBindingOptions,
+    profileBindingRestriction: () => profileBindingRestriction,
     profileName: () => profileName,
+    realmBackendOptions: () => realmBackendOptions,
+    repeatConditionFromEdge: () => repeatConditionFromEdge,
+    repeatIterationInputOptions: () => repeatIterationInputOptions,
     roleAccentColor: () => roleAccentColor,
     roleAccentStyle: () => roleAccentStyle,
     rpcMethod: () => rpcMethod,
     rpcPath: () => rpcPath,
+    runtimeModeDeploySurfaceAllowed: () => runtimeModeDeploySurfaceAllowed,
+    runtimeModeDeploySurfaceReason: () => runtimeModeDeploySurfaceReason,
+    runtimeModeOptions: () => runtimeModeOptions,
     schemaDescriptionPatch: () => schemaDescriptionPatch,
     schemaFieldDeleteCascadePatch: () => schemaFieldDeleteCascadePatch,
     schemaFieldDeletePatch: () => schemaFieldDeletePatch,
@@ -145,6 +218,7 @@ var MobKitFlowCore = (() => {
     schemaFieldRenameCascadePatch: () => schemaFieldRenameCascadePatch,
     schemaFieldRowControlState: () => schemaFieldRowControlState,
     schemaFieldTypeAllowedSet: () => schemaFieldTypeAllowedSet,
+    schemaFieldTypeOptions: () => schemaFieldTypeOptions,
     schemaFieldUpdateCascadePatch: () => schemaFieldUpdateCascadePatch,
     schemaFieldUpdatePatch: () => schemaFieldUpdatePatch,
     schemaLikeFieldDescriptionPatch: () => schemaLikeFieldDescriptionPatch,
@@ -157,6 +231,7 @@ var MobKitFlowCore = (() => {
     settingsViewFromSchema: () => settingsViewFromSchema,
     settingsViewLabelMapFromSchema: () => settingsViewLabelMapFromSchema,
     settingsViewOptionsFromSchema: () => settingsViewOptionsFromSchema,
+    simpleContractOptions: () => simpleContractOptions,
     skillIdsFromRealms: () => skillIdsFromRealms,
     slug: () => slug,
     stepToolScopeAddPatch: () => stepToolScopeAddPatch,
@@ -164,6 +239,8 @@ var MobKitFlowCore = (() => {
     stepToolScopeState: () => stepToolScopeState,
     toolCatalogEntryAvailability: () => toolCatalogEntryAvailability,
     toolCatalogEntryAvailable: () => toolCatalogEntryAvailable,
+    trustPolicyOptions: () => trustPolicyOptions,
+    tweaksControlState: () => tweaksControlState,
     uniqueEnumValue: () => uniqueEnumValue,
     uniqueInputParamName: () => uniqueInputParamName,
     uniqueSchemaFieldName: () => uniqueSchemaFieldName,
@@ -171,11 +248,6 @@ var MobKitFlowCore = (() => {
     validStepToolSet: () => validStepToolSet,
     viewStringMapFromSchema: () => viewStringMapFromSchema
   });
-
-  // ../packages/flow-editor-core/src/contract/options.ts
-  function contractStringValues(values) {
-    return Array.isArray(values) ? values.map((value) => String(value || "").trim()).filter(Boolean) : [];
-  }
 
   // ../packages/flow-editor-core/src/shared/normalize.ts
   function normalizeProfileBackend(value) {
@@ -1353,11 +1425,11 @@ var MobKitFlowCore = (() => {
   function basicEditorViewState(basicView) {
     return window.MobKitFlowController.basicEditorViewState(basicView);
   }
-  function contractDefaultValue(contract, name) {
-    return window.MobKitFlowController.contractDefaultValue(contract, name);
+  function graphCanvasViewState(graphView) {
+    return window.MobKitFlowController.graphCanvasViewState(graphView);
   }
-  function schemaFieldTypeOptions(contract, currentType) {
-    return window.MobKitFlowController.schemaFieldTypeOptions(contract, currentType);
+  function graphCellXY(grid, col, row) {
+    return window.MobKitFlowController.graphCellXY(grid, col, row);
   }
   function reconcileConditionFieldAvailability(spec) {
     return window.MobKitFlowController.reconcileConditionFieldAvailability(spec);
@@ -1704,6 +1776,1007 @@ var MobKitFlowCore = (() => {
       unavailableHeading: view.skillUnavailableHeading,
       outsideRealmHeading: view.skillOutsideRealmHeading
     };
+  }
+
+  // ../packages/flow-editor-core/src/flow/step-tree.ts
+  function childLanes(step) {
+    if (!step) return [];
+    if (step.type === "repeat") return [{ id: "body", steps: step.steps || [] }];
+    if (step.type === "branch") {
+      return [
+        ...(step.branches || []).map((branch) => ({ id: branch.id, steps: branch.steps || [] })),
+        { id: "fallback", steps: step.fallback || [] }
+      ];
+    }
+    if (step.type === "parallel") {
+      return (step.branches || []).map((branch) => ({ id: branch.id, steps: branch.steps || [] }));
+    }
+    return [];
+  }
+
+  // ../packages/flow-editor-core/src/flow/launch-modes.ts
+  function hasAuthoringLaunchMode(source) {
+    return !!source && typeof source === "object" && ("launchMode" in source || "launch_mode" in source);
+  }
+  function launchModeFromAuthoringSource(source, fallback) {
+    const raw = hasAuthoringLaunchMode(source) ? source.launchMode ?? source.launch_mode : hasAuthoringLaunchMode(fallback) ? fallback.launchMode ?? fallback.launch_mode : null;
+    if (!raw || typeof raw !== "object" || !String(raw.kind || "").trim()) return null;
+    return normalizeLaunchMode(raw);
+  }
+  function memberDisplayName(members, id) {
+    return ((members || []).find((member) => member.id === id) || {}).name || id;
+  }
+  function normalizeLaunchMode(mode) {
+    if (!mode || typeof mode !== "object") return null;
+    const kind = canonicalLaunchModeKind(mode.kind);
+    if (!kind) return null;
+    const rawBudgetSplitPolicy = mode.budgetSplitPolicy ?? mode.budget_split_policy ?? mode.budget;
+    const budgetSplitPolicy = rawBudgetSplitPolicy ? normalizeBudgetSplitPolicy(rawBudgetSplitPolicy) : null;
+    const budgetPatch = budgetSplitPolicy ? { budgetSplitPolicy } : {};
+    if (kind === "Resume") {
+      return {
+        kind: "Resume",
+        sessionId: String(mode.sessionId || mode.session_id || mode.bridgeSessionId || mode.bridge_session_id || "").trim(),
+        ...budgetPatch
+      };
+    }
+    if (kind === "Fork") {
+      return {
+        kind: "Fork",
+        from: String(mode.from || mode.sourceMemberId || mode.source_member_id || "").trim(),
+        context: normalizeForkContext(mode.context || mode.forkContext || mode.fork_context),
+        ...budgetPatch
+      };
+    }
+    return { kind, ...budgetPatch };
+  }
+  function launchModeControlState(source, contract, launchView = null) {
+    const view = launchViewForState(launchView);
+    const authoredLaunchMode = source && typeof source === "object" ? source.launchMode ?? source.launch_mode : null;
+    const defaultLaunchMode = contractDefaultValue(contract, "launch_mode");
+    const launchMode = authoredLaunchMode && typeof authoredLaunchMode === "object" ? authoredLaunchMode : { kind: defaultLaunchMode };
+    const launchKind = canonicalLaunchModeKind(launchMode.kind || defaultLaunchMode);
+    const authoredBudgetSplitPolicy = normalizeBudgetSplitPolicy(
+      launchMode.budgetSplitPolicy || launchMode.budget_split_policy
+    );
+    const defaultBudgetSplitKind = contractDefaultValue(contract, "budget_split_policy");
+    const budgetSplitPolicy = authoredBudgetSplitPolicy || normalizeBudgetSplitPolicy(defaultBudgetSplitKind ? { kind: defaultBudgetSplitKind } : null) || { kind: "" };
+    const budgetLaunchPatch = authoredBudgetSplitPolicy ? { budgetSplitPolicy: authoredBudgetSplitPolicy } : {};
+    const launchOptions = launchModeOptions(contract, launchKind, view);
+    const budgetOptions = budgetSplitPolicyOptions(contract, budgetSplitPolicy.kind, view);
+    const defaultForkContext = contractDefaultValue(contract, "fork_context");
+    const forkContextValue = normalizeForkContext(launchMode.context || defaultForkContext);
+    const forkOptions = forkContextOptions(contract, forkContextValue, view);
+    const fixedLimitValue = budgetSplitPolicy.limit || view.fixedBudgetDefaultValue;
+    return {
+      launchTitle: view.launchTitle,
+      graphLaunchTitle: view.graphLaunchTitle,
+      resumeSessionLabel: view.resumeSessionLabel,
+      resumeSessionPlaceholder: view.resumeSessionPlaceholder,
+      forkSourceLabel: view.forkSourceLabel,
+      forkContextLabel: view.forkContextLabel,
+      graphForkContextLabel: view.graphForkContextLabel,
+      budgetPolicyLabel: view.budgetPolicyLabel,
+      fixedBudgetLabel: view.fixedBudgetLabel,
+      fixedBudgetValue: fixedLimitValue,
+      launchMode,
+      launchKind,
+      defaultLaunchMode,
+      launchOptions,
+      selectedLaunchMode: launchOptions.find((option) => option.value === launchKind),
+      authoredBudgetSplitPolicy,
+      budgetSplitPolicy,
+      budgetLaunchPatch,
+      budgetOptions,
+      selectedBudgetPolicy: budgetOptions.find((option) => option.value === budgetSplitPolicy.kind),
+      defaultForkContext,
+      forkContextValue,
+      forkContextOptions: forkOptions,
+      selectedForkContext: forkOptions.find((option) => option.value === forkContextValue)
+    };
+  }
+  function launchModeKindPatch(source, kind, contract, options = {}) {
+    const state = launchModeControlState(source, contract);
+    const nextKind = canonicalLaunchModeKind(kind);
+    if (!launchModeKindAllowed(contract, nextKind)) return {};
+    if (nextKind === "Fork") {
+      return {
+        launchMode: {
+          ...state.launchMode,
+          kind: "Fork",
+          from: options.firstForkSourceId || state.launchMode.from || "",
+          context: state.launchMode.context || state.defaultForkContext,
+          ...state.budgetLaunchPatch
+        }
+      };
+    }
+    if (nextKind === "Resume") {
+      return {
+        launchMode: {
+          ...state.launchMode,
+          kind: "Resume",
+          sessionId: state.launchMode.sessionId || "",
+          ...state.budgetLaunchPatch
+        }
+      };
+    }
+    return { launchMode: { kind: nextKind, ...state.budgetLaunchPatch } };
+  }
+  function launchModeMergePatch(source, patch, contract) {
+    const state = launchModeControlState(source, contract);
+    const nextPatch = patch && typeof patch === "object" ? { ...patch } : {};
+    if ("kind" in nextPatch) {
+      const kind = canonicalLaunchModeKind(nextPatch.kind);
+      if (!launchModeKindAllowed(contract, kind)) return {};
+      nextPatch.kind = kind;
+    }
+    if ("context" in nextPatch) {
+      const context = normalizeForkContext(nextPatch.context);
+      if (!forkContextAllowed(contract, context)) return {};
+      nextPatch.context = context;
+    }
+    return { launchMode: { ...state.launchMode, ...nextPatch } };
+  }
+  function launchModeSessionPatch(source, sessionId, contract) {
+    return launchModeMergePatch(source, { sessionId: String(sessionId || "") }, contract);
+  }
+  function launchSourceAllowed(sourceOptions, from) {
+    const value = String(from || "").trim();
+    if (!value) return true;
+    return (Array.isArray(sourceOptions) ? sourceOptions : []).some((option) => String(option?.value || option?.id || "").trim() === value);
+  }
+  function launchModeForkSourcePatch(source, from, contract, options = {}) {
+    const value = String(from || "").trim();
+    if (!launchSourceAllowed(options.sourceOptions, value)) return {};
+    return launchModeMergePatch(source, { from: value }, contract);
+  }
+  function launchModeForkContextPatch(source, context, contract) {
+    return launchModeMergePatch(source, { context }, contract);
+  }
+  function launchModeBudgetPatch(source, patch, contract) {
+    const state = launchModeControlState(source, contract);
+    if (patch && typeof patch === "object" && "kind" in patch) {
+      const requestedKind = canonicalBudgetSplitPolicyKind(patch.kind);
+      if (!budgetSplitPolicyAllowed(contract, requestedKind)) return {};
+    }
+    const nextPolicy = normalizeBudgetSplitPolicy({ ...state.budgetSplitPolicy, ...patch });
+    if (!nextPolicy || !budgetSplitPolicyAllowed(contract, nextPolicy.kind)) return {};
+    return {
+      launchMode: {
+        ...state.launchMode,
+        budgetSplitPolicy: nextPolicy
+      }
+    };
+  }
+  function launchBudgetKindPatch(source, kind, contract) {
+    return launchModeBudgetPatch(source, { kind: canonicalBudgetSplitPolicyKind(kind) }, contract);
+  }
+  function launchBudgetFixedLimitPatch(source, limit, contract) {
+    return launchModeBudgetPatch(source, { kind: "Fixed", limit }, contract);
+  }
+  function canonicalLaunchModeKind(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    if (lower === "resume") return "Resume";
+    if (lower === "fork") return "Fork";
+    if (lower === "fresh") return "Fresh";
+    return raw;
+  }
+  function launchModeKindAllowed(contract, kind) {
+    const canonicalKind = canonicalLaunchModeKind(kind);
+    if (!canonicalKind) return false;
+    const contractModes = Array.isArray(contract?.mob_definition?.launch_modes) ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind) : [];
+    return contractModes.includes(canonicalKind);
+  }
+  function normalizeForkContext(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    if (raw === "FullHistory") return "full_history";
+    if (raw === "LastMessages") return "last_messages";
+    return raw;
+  }
+  function forkContextAllowed(contract, context) {
+    const normalized = normalizeForkContext(context);
+    if (!normalized) return false;
+    const contexts = Array.isArray(contract?.mob_definition?.fork_contexts) ? contract.mob_definition.fork_contexts.map(normalizeForkContext) : [];
+    return contexts.includes(normalized);
+  }
+  function launchOptionLabel(labels, value, view, contractLabel) {
+    return labels?.[value] || `${value}${view.unsupportedLabelSeparator}${contractLabel}`;
+  }
+  function launchUnsupportedReason(view, contractLabel) {
+    return `${view.unsupportedReasonPrefix}${contractLabel}${view.unsupportedReasonSuffix}`;
+  }
+  function launchModeOptions(contract, currentKind, launchView = null) {
+    const view = launchViewForState(launchView);
+    const contractModes = Array.isArray(contract?.mob_definition?.launch_modes) && contract.mob_definition.launch_modes.length ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind) : [];
+    const modes = [...contractModes];
+    const currentSource = currentKind || contractDefaultValue(contract, "launch_mode");
+    const current = currentSource ? canonicalLaunchModeKind(currentSource) : "";
+    if (current && !modes.includes(current)) modes.push(current);
+    return modes.map((mode) => {
+      const supported = contractModes.includes(mode);
+      return {
+        value: mode,
+        label: launchOptionLabel(view.launchModeLabels, mode, view, view.launchModesContractLabel),
+        disabled: !supported,
+        reason: supported ? "" : launchUnsupportedReason(view, view.launchModesContractLabel)
+      };
+    });
+  }
+  function normalizeDispatchMode(mode) {
+    return String(mode || "").trim();
+  }
+  function dispatchModeOptions(contract, currentMode) {
+    const contractLabel = "dispatch_modes";
+    const contractModes = Array.isArray(contract?.mob_definition?.dispatch_modes) && contract.mob_definition.dispatch_modes.length ? contract.mob_definition.dispatch_modes.map(String) : [];
+    const modes = [...contractModes];
+    const current = String(currentMode || contractDefaultValue(contract, "dispatch_mode") || "").trim();
+    if (!modes.includes(current)) modes.push(current);
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.dispatch_mode_labels);
+    return modes.map((mode) => {
+      const supported = contractModes.includes(mode);
+      return {
+        value: mode,
+        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
+        disabled: !supported,
+        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
+      };
+    });
+  }
+  function dispatchModeAllowed(contract, mode) {
+    const value = String(mode || "").trim();
+    if (!value) return true;
+    const contractModes = Array.isArray(contract?.mob_definition?.dispatch_modes) ? contract.mob_definition.dispatch_modes.map(String) : [];
+    return contractModes.includes(value);
+  }
+  function normalizeCollectionMode(policy) {
+    const raw = typeof policy === "object" && policy ? String(policy.type || "").trim() : String(policy || "").trim();
+    return raw;
+  }
+  function dependencyModeOptions(contract, currentMode) {
+    const contractLabel = "dependency_modes";
+    const contractModes = Array.isArray(contract?.mob_definition?.dependency_modes) && contract.mob_definition.dependency_modes.length ? contract.mob_definition.dependency_modes.map(String) : [];
+    const modes = [...contractModes];
+    const current = String(currentMode || contractDefaultValue(contract, "dependency_mode") || "").trim();
+    if (!modes.includes(current)) modes.push(current);
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.dependency_mode_labels);
+    return modes.map((mode) => {
+      const supported = contractModes.includes(mode);
+      return {
+        value: mode,
+        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
+        disabled: !supported,
+        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
+      };
+    });
+  }
+  function dependencyModeAllowed(contract, mode) {
+    const value = String(mode || "").trim();
+    if (!value) return true;
+    const contractModes = Array.isArray(contract?.mob_definition?.dependency_modes) ? contract.mob_definition.dependency_modes.map(String) : [];
+    return contractModes.includes(value);
+  }
+  function collectionPolicyOptions(contract, currentPolicy) {
+    const contractLabel = "collection_policies";
+    const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies) && contract.mob_definition.collection_policies.length ? contract.mob_definition.collection_policies.map(String) : [];
+    const policies = [...contractPolicies];
+    const current = String(currentPolicy || contractDefaultValue(contract, "collection_policy") || "").trim();
+    if (!policies.includes(current)) policies.push(current);
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.collection_policy_labels);
+    return policies.map((policy) => {
+      const supported = contractPolicies.includes(policy);
+      return {
+        value: policy,
+        label: labels[policy] || mobDefinitionUnsupportedOptionLabel(contract, policy, contractLabel),
+        disabled: !supported,
+        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
+      };
+    });
+  }
+  function mobDefinitionUnsupportedOptionLabel(contract, value, contractLabel) {
+    const separator = String(contract?.mob_definition?.option_unsupported_label_separator || " ");
+    return `${value}${separator}${contractLabel}`;
+  }
+  function mobDefinitionUnsupportedOptionReason(contract, contractLabel) {
+    const prefix = String(contract?.mob_definition?.option_unsupported_reason_prefix || "");
+    const suffix = String(contract?.mob_definition?.option_unsupported_reason_suffix || "");
+    return `${prefix}${contractLabel}${suffix}`;
+  }
+  function collectionPolicyAllowed(contract, policy) {
+    const value = String(policy || "").trim();
+    if (!value) return true;
+    const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies) ? contract.mob_definition.collection_policies.map(String) : [];
+    return contractPolicies.includes(value);
+  }
+  function normalizeBudgetSplitPolicy(policy) {
+    if (!policy || typeof policy !== "object") return null;
+    const rawKind = String(policy.kind || policy.type || "").trim();
+    if (!rawKind) return null;
+    const kind = canonicalBudgetSplitPolicyKind(rawKind);
+    if (kind === "Fixed") {
+      const limit = numberOrNull(policy?.limit ?? policy?.value ?? policy?.tokens);
+      return { kind: "Fixed", limit: limit && limit > 0 ? limit : 4096 };
+    }
+    return { kind };
+  }
+  function canonicalBudgetSplitPolicyKind(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    if (lower === "fixed") return "Fixed";
+    if (lower === "proportional") return "Proportional";
+    if (lower === "remaining") return "Remaining";
+    if (lower === "equal") return "Equal";
+    return raw;
+  }
+  function budgetSplitPolicyAllowed(contract, kind) {
+    const canonicalKind = canonicalBudgetSplitPolicyKind(kind);
+    if (!canonicalKind) return false;
+    const policies = Array.isArray(contract?.mob_definition?.budget_split_policies) ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind) : [];
+    return policies.includes(canonicalKind);
+  }
+  function budgetSplitPolicyOptions(contract, currentKind, launchView = null) {
+    const view = launchViewForState(launchView);
+    const contractPolicies = Array.isArray(contract?.mob_definition?.budget_split_policies) && contract.mob_definition.budget_split_policies.length ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind) : [];
+    const policies = [...contractPolicies];
+    const currentSource = currentKind || contractDefaultValue(contract, "budget_split_policy");
+    const current = currentSource ? canonicalBudgetSplitPolicyKind(currentSource) : "";
+    if (current && !policies.includes(current)) policies.push(current);
+    return policies.map((policy) => {
+      const supported = contractPolicies.includes(policy);
+      return {
+        value: policy,
+        label: launchOptionLabel(view.budgetSplitPolicyLabels, policy, view, view.budgetSplitPoliciesContractLabel),
+        disabled: !supported,
+        reason: supported ? "" : launchUnsupportedReason(view, view.budgetSplitPoliciesContractLabel)
+      };
+    });
+  }
+  function mobKitBudgetSplitPolicy(policy) {
+    const normalized = normalizeBudgetSplitPolicy(policy);
+    if (!normalized) return null;
+    if (normalized.kind === "Fixed") return { type: "fixed", value: normalized.limit || 4096 };
+    return { type: normalized.kind.replace(/[A-Z]/g, (ch, index) => `${index ? "_" : ""}${ch.toLowerCase()}`) };
+  }
+  function launchModesFromFlow(flow, members) {
+    const out = [];
+    collectVisualSteps(flow?.steps || [], (step) => {
+      if (step.type !== "member") return;
+      const member = findMember(members, step.role);
+      const launchMode = launchModeFromAuthoringSource(step);
+      const row = {
+        step_id: step.id,
+        member_id: step.role || "",
+        profile: profileName(member || { id: step.role }),
+        launch_mode: launchMode
+      };
+      if (launchMode?.budgetSplitPolicy) {
+        const budgetSplitPolicy = mobKitBudgetSplitPolicy(launchMode.budgetSplitPolicy);
+        if (budgetSplitPolicy) row.budget_split_policy = budgetSplitPolicy;
+      }
+      out.push(row);
+    });
+    return out;
+  }
+  function conditionTextFromEdge(edge, fallback) {
+    if (!edge) return fallback;
+    const condition = normalizedEdgeCondition(edge);
+    if (condition?.path) {
+      if (condition.val === void 0 || condition.val === null || String(condition.val).trim() === "") return fallback;
+      const value = condition.val;
+      if (!condition.op) return fallback;
+      return `${condition.path} ${condition.op} ${JSON.stringify(value)}`;
+    }
+    return edge.label || fallback;
+  }
+  function edgeConditionToEditorCond(edge) {
+    const condition = normalizedEdgeCondition(edge);
+    const rawVar = String(condition?.path || "").trim();
+    const op = String(condition?.op || "").trim();
+    const val = condition?.val === void 0 || condition?.val === null ? "" : String(condition.val);
+    if (!rawVar || !op || !val) return null;
+    const parts = rawVar.split(".").filter(Boolean);
+    if (parts.length === 2 && parts[0] === "params") {
+      return {
+        namespace: "params",
+        stepId: "params",
+        field: parts[1],
+        op,
+        val
+      };
+    }
+    if (parts.length === 3 && parts[0] === "steps") {
+      return {
+        namespace: "steps",
+        stepId: parts[1],
+        field: parts[2],
+        op,
+        val
+      };
+    }
+    return null;
+  }
+  function repeatConditionFromEdge(edge, stepId) {
+    const condition = normalizedEdgeCondition(edge);
+    if (condition?.path) {
+      const parts = String(condition.path).split(".").filter(Boolean);
+      const field = parts.pop() || "";
+      const op = String(condition.op || "").trim();
+      const val = condition.val === void 0 || condition.val === null ? "" : String(condition.val).trim();
+      if (!field || !op || !val) return null;
+      return { stepId, field, op, val };
+    }
+    const label = String(edge?.label || "");
+    const match = /([A-Za-z0-9_.-]+)\s*(==|>|<)\s*['"]?([^'"]+)['"]?/.exec(label);
+    if (match) {
+      return { stepId, field: match[1].split(".").pop(), op: match[2], val: match[3] };
+    }
+    return null;
+  }
+  function normalizedEdgeCondition(edge) {
+    const cond = edge?.cond || {};
+    const op = String(cond.op || cond.operator || "").trim();
+    const val = cond.val ?? cond.value;
+    if (cond.var || cond.path || cond.source) {
+      return {
+        path: String(cond.var || cond.path || cond.source || "").trim(),
+        op,
+        val
+      };
+    }
+    const namespace = String(cond.namespace || "").trim();
+    const stepId = String(cond.stepId || cond.step_id || "").trim();
+    const field = String(cond.field || "").trim();
+    if (field && (namespace === "params" || stepId === "params")) {
+      return { path: `params.${field}`, op, val };
+    }
+    if (field && stepId) {
+      return { path: `steps.${stepId}.${field}`, op, val };
+    }
+    return null;
+  }
+  function collectVisualSteps(steps, visit) {
+    for (const step of steps || []) {
+      visit(step);
+      for (const lane of childLanes(step)) collectVisualSteps(lane.steps, visit);
+    }
+  }
+
+  // ../packages/flow-editor-core/src/contract/options.ts
+  function runtimeModeOptions(contract, deploySettings, currentMode) {
+    const modes = Array.isArray(contract?.mob_definition?.runtime_modes) && contract.mob_definition.runtime_modes.length ? contract.mob_definition.runtime_modes.map(String) : [];
+    const current = String(currentMode || "");
+    if (current && !modes.includes(current)) modes.push(current);
+    const surface = String(deploySettings?.surface || contract?.deploy_settings?.defaults?.surface || "");
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.runtime_mode_labels);
+    return modes.map((mode) => {
+      const surfaceBlocked = !runtimeModeDeploySurfaceAllowed(contract, surface, mode);
+      return {
+        value: mode,
+        label: labels[mode] || `${mode}`,
+        disabled: surfaceBlocked,
+        reason: surfaceBlocked ? runtimeModeDeploySurfaceReason(contract, surface, mode) : ""
+      };
+    });
+  }
+  function deployRuntimeCompatibility(contract, surface) {
+    const compatibility = contract?.mob_definition?.deploy_runtime_mode_compatibility;
+    if (!compatibility || typeof compatibility !== "object") return null;
+    const surfaceKey = String(surface || contract?.deploy_settings?.defaults?.surface || "").trim();
+    const surfaceContract = compatibility[surfaceKey];
+    return surfaceContract && typeof surfaceContract === "object" ? surfaceContract : null;
+  }
+  function deploySurfaceRuntimeModes(contract, surface) {
+    return contractStringValues(deployRuntimeCompatibility(contract, surface)?.allowed);
+  }
+  function runtimeModeDeploySurfaceAllowed(contract, surface, mode) {
+    const value = String(mode || "").trim();
+    if (!value) return true;
+    const allowed = deploySurfaceRuntimeModes(contract, surface);
+    return allowed.length ? allowed.includes(value) : true;
+  }
+  function runtimeModeDeploySurfaceReason(contract, surface, mode) {
+    const value = String(mode || "").trim();
+    const blocked = deployRuntimeCompatibility(contract, surface)?.blocked;
+    const reason = blocked && typeof blocked === "object" ? blocked[value] : "";
+    return String(reason || "Unsupported by this MobKit deploy surface.");
+  }
+  function firstDeploySurfaceRuntimeMode(contract, surface) {
+    return deploySurfaceRuntimeModes(contract, surface)[0] || "";
+  }
+  function simpleContractOptions(values, currentValue, labels, contractName, display = {}) {
+    const contractValues = Array.isArray(values) ? values.map((value) => String(value || "").trim()).filter(Boolean) : [];
+    const options = contractValues.length ? [...contractValues] : [];
+    const current = String(currentValue || "").trim();
+    if (current && !options.includes(current)) options.push(current);
+    const unsupportedLabelSeparator = String(display.unsupportedLabelSeparator || "");
+    const unsupportedReasonPrefix = String(display.unsupportedReasonPrefix || "Unsupported ");
+    const unsupportedReasonSuffix = String(display.unsupportedReasonSuffix || "");
+    return options.map((value) => {
+      const known = contractValues.includes(value);
+      const label = labels?.[value] || (known || !unsupportedLabelSeparator ? value : `${value}${unsupportedLabelSeparator}${contractName}`);
+      return {
+        value,
+        label,
+        disabled: !known,
+        reason: known ? "" : `${unsupportedReasonPrefix}${contractName}${unsupportedReasonSuffix}`
+      };
+    });
+  }
+  function profileBindingRestriction(contract, binding) {
+    const restrictions = contract?.mob_definition?.profile_binding_restrictions;
+    const value = restrictions && typeof restrictions === "object" ? restrictions[binding] : null;
+    return value && typeof value === "object" ? value : {};
+  }
+  function deploySurfaceOptions(contract, currentSurface, settingsView = null) {
+    const view = settingsViewForState(settingsView);
+    return simpleContractOptions(
+      contract?.deploy_settings?.surfaces,
+      currentSurface || "",
+      view.deploySurfaceLabels,
+      view.deploySurfaceContractLabel,
+      view
+    );
+  }
+  function trustPolicyOptions(contract, currentPolicy, settingsView = null) {
+    const view = settingsViewForState(settingsView);
+    return simpleContractOptions(
+      contract?.deploy_settings?.trust_policies,
+      currentPolicy || "",
+      view.trustPolicyLabels,
+      view.trustPolicyContractLabel,
+      view
+    );
+  }
+  function realmBackendOptions(contract, currentBackend, settingsView = null) {
+    const view = settingsViewForState(settingsView);
+    return simpleContractOptions(
+      contract?.deploy_settings?.realm_backends,
+      currentBackend || "",
+      view.realmBackendLabels,
+      view.realmBackendContractLabel,
+      view
+    );
+  }
+  function profileBackendOptions(contract, currentBackend, includeDefault, defaultLabel = "") {
+    const options = simpleContractOptions(
+      contract?.mob_definition?.profile_backends,
+      currentBackend || "",
+      { session: "session", external: "external" },
+      "mob_definition.profile_backends"
+    );
+    if (!includeDefault) return options;
+    return [{ value: "", label: String(defaultLabel || ""), disabled: false, reason: "" }, ...options.filter((option) => option.value)];
+  }
+  function profileBindingOptions(contract, currentBinding) {
+    return simpleContractOptions(
+      contract?.mob_definition?.profile_binding,
+      currentBinding || "",
+      {
+        inline: "inline \u2014 define profile in this mobpack",
+        realm_profile: "realm_profile"
+      },
+      "mob_definition.profile_binding"
+    ).map((option) => {
+      const restriction = profileBindingRestriction(contract, option.value);
+      const deployable = restriction.deployable;
+      return {
+        ...option,
+        label: String(restriction.label || option.label || option.value),
+        disabled: option.disabled || deployable === false,
+        reason: String(restriction.reason || option.reason || "")
+      };
+    });
+  }
+  function mobBackendDefaultOptions(contract, currentBackend) {
+    return simpleContractOptions(
+      contract?.mob_definition?.profile_backends,
+      currentBackend || "",
+      { session: "session", external: "external" },
+      "mob_definition.mob_settings.backendDefault"
+    );
+  }
+  function tweaksControlState({
+    flows = [],
+    deploySettings = {},
+    mobSettings = {},
+    members = [],
+    modelCatalog = [],
+    contract = null,
+    settingsView = null
+  } = {}) {
+    const view = settingsViewForState(settingsView);
+    const loadableFlowOptions = (Array.isArray(flows) ? flows : []).filter((flow) => flow?.document).map((flow) => ({
+      value: flow.id,
+      label: `${flow.name}${view.optionSeparator}${flow.stage || flow.source || view.flowStageFallback}`
+    }));
+    const profileOptions = [
+      { value: "", label: view.profileNoneLabel },
+      ...(Array.isArray(members) ? members : []).map((member) => {
+        const profile = profileName(member);
+        return { value: profile, label: profile };
+      })
+    ];
+    const modelOptions = [
+      { value: "", label: view.modelDefaultLabel },
+      ...(Array.isArray(modelCatalog) ? modelCatalog : []).map((model) => ({
+        value: model.id,
+        label: `${model.label || model.id}${view.optionSeparator}${model.vendor || view.modelVendorFallback}`
+      }))
+    ];
+    return {
+      panelTitle: view.panelTitle,
+      panelCloseLabel: view.panelCloseLabel,
+      loadMobTitle: view.loadMobTitle,
+      loadMobLabel: view.loadMobLabel,
+      canvasTitle: view.canvasTitle,
+      edgeStyleLabel: view.edgeStyleLabel,
+      edgeStyleOptions: view.edgeStyleOptions,
+      densityLabel: view.densityLabel,
+      densityOptions: view.densityOptions,
+      themeTitle: view.themeTitle,
+      themeModeLabel: view.themeModeLabel,
+      themeModeOptions: view.themeModeOptions,
+      mobTitle: view.mobTitle,
+      orchestratorLabel: view.orchestratorLabel,
+      autoWireLabel: view.autoWireLabel,
+      autoWireOptions: view.autoWireOptions,
+      roleWiringLabel: view.roleWiringLabel,
+      roleWiringAddLabel: view.roleWiringAddLabel,
+      defaultBackendLabel: view.defaultBackendLabel,
+      externalBaseLabel: view.externalBaseLabel,
+      externalBasePlaceholder: view.externalBasePlaceholder,
+      advancedLabel: view.advancedLabel,
+      advancedObjectRequiredError: view.advancedObjectRequiredError,
+      advancedInvalidJsonError: view.advancedInvalidJsonError,
+      deployTitle: view.deployTitle,
+      surfaceLabel: view.surfaceLabel,
+      trustLabel: view.trustLabel,
+      modelLabel: view.modelLabel,
+      durationLabel: view.durationLabel,
+      durationPlaceholder: view.durationPlaceholder,
+      toolCallsLabel: view.toolCallsLabel,
+      toolCallsMin: view.toolCallsMin,
+      toolCallsMax: view.toolCallsMax,
+      tokensLabel: view.tokensLabel,
+      tokensMin: view.tokensMin,
+      tokensMax: view.tokensMax,
+      realmLabel: view.realmLabel,
+      realmOptions: view.realmOptions,
+      realmIdLabel: view.realmIdLabel,
+      realmIdPlaceholder: view.realmIdPlaceholder,
+      backendLabel: view.backendLabel,
+      promptLabel: view.promptLabel,
+      promptPlaceholder: view.promptPlaceholder,
+      commandLabel: view.commandLabel,
+      commandFallback: view.commandFallback,
+      inspectorTitle: view.inspectorTitle,
+      inspectorLayoutLabel: view.inspectorLayoutLabel,
+      inspectorLayoutOptions: view.inspectorLayoutOptions,
+      loadableFlowOptions,
+      profileOptions,
+      profileChoices: profileOptions.filter((option) => option.value),
+      mobBackendOptions: mobBackendDefaultOptions(contract, mobSettings.backendDefault || ""),
+      surfaceOptions: deploySurfaceOptions(contract, deploySettings.surface || "", view),
+      trustOptions: trustPolicyOptions(contract, deploySettings.trustPolicy || "", view),
+      realmBackendOptions: realmBackendOptions(contract, deploySettings.realmBackend || "", view),
+      modelOptions
+    };
+  }
+  function schemaFieldTypeOptions(contract, currentType) {
+    return simpleContractOptions(
+      contract?.mob_definition?.editor_schema_field_types,
+      currentType || contractDefaultValue(contract, "schema_field_type"),
+      {
+        string: "string",
+        "string[]": "string[] \u2014 list",
+        number: "number",
+        float: "float",
+        int: "int",
+        integer: "integer",
+        boolean: "boolean",
+        bool: "bool",
+        enum: "enum \u2014 fixed choices",
+        bytes: "bytes \u2014 binary blob",
+        object: "object \u2014 nested"
+      },
+      "mob_definition.editor_schema_field_types"
+    );
+  }
+  function conditionOperatorOptions(contract, currentOperator) {
+    return simpleContractOptions(
+      contract?.mob_definition?.condition_operators,
+      currentOperator || contractDefaultValue(contract, "condition_operator"),
+      { "==": "==", ">": ">", "<": "<" },
+      "mob_definition.condition_operators"
+    );
+  }
+  function forkContextOptions(contract, currentContext, launchView = null) {
+    const view = launchViewForState(launchView);
+    const contractValues = Array.isArray(contract?.mob_definition?.fork_contexts) ? contract.mob_definition.fork_contexts.map((value) => normalizeForkContext(value)).filter(Boolean) : [];
+    const options = contractValues.length ? [...contractValues] : [];
+    const currentSource = currentContext || contractDefaultValue(contract, "fork_context");
+    const current = currentSource ? normalizeForkContext(currentSource) : "";
+    if (current && !options.includes(current)) options.push(current);
+    return options.map((value) => {
+      const supported = contractValues.includes(value);
+      return {
+        value,
+        label: launchOptionLabel(view.forkContextLabels, value, view, view.forkContextsContractLabel),
+        disabled: !supported,
+        reason: supported ? "" : launchUnsupportedReason(view, view.forkContextsContractLabel)
+      };
+    });
+  }
+  function graphGateKindOptions(contract, currentKind, graphView = null) {
+    const view = graphCanvasViewState(graphView);
+    return simpleContractOptions(
+      contract?.mob_definition?.graph_gate_kinds,
+      currentKind || contractDefaultValue(contract, "graph_gate_kind"),
+      view.gateKindLabels,
+      "mob_definition.graph_gate_kinds"
+    );
+  }
+  function graphTerminalKindOptions(contract, currentKind, graphView = null) {
+    const view = graphCanvasViewState(graphView);
+    return simpleContractOptions(
+      contract?.mob_definition?.graph_terminal_kinds,
+      currentKind || contractDefaultValue(contract, "graph_terminal_kind"),
+      view.terminalKindLabels,
+      "mob_definition.graph_terminal_kinds"
+    );
+  }
+  function graphFrameKindOptions(contract, currentKind, graphView = null) {
+    const view = graphCanvasViewState(graphView);
+    return simpleContractOptions(
+      contract?.mob_definition?.graph_frame_kinds,
+      currentKind || contractDefaultValue(contract, "graph_frame_kind"),
+      view.frameKindLabels,
+      "mob_definition.graph_frame_kinds"
+    );
+  }
+  function graphEdgeKindOptions(contract, currentKind, graphView = null) {
+    const view = graphCanvasViewState(graphView);
+    return simpleContractOptions(
+      contract?.mob_definition?.graph_edge_kinds,
+      currentKind || contractDefaultValue(contract, "graph_edge_kind"),
+      view.edgeKindLabels,
+      "mob_definition.graph_edge_kinds"
+    );
+  }
+  function repeatIterationInputOptions(contract, currentMode) {
+    return simpleContractOptions(
+      contract?.mob_definition?.repeat_iteration_inputs,
+      currentMode || contractDefaultValue(contract, "repeat_iteration_input"),
+      {
+        carry: "Carry \u2014 last body step's output feeds the next pass"
+      },
+      "mob_definition.repeat_iteration_inputs"
+    );
+  }
+  function editorFlowPrimitiveOptions(contract, basicView = null) {
+    const view = basicEditorViewState(basicView);
+    const stepTypes = Array.isArray(contract?.mob_definition?.editor_flow_step_types) && contract.mob_definition.editor_flow_step_types.length ? contract.mob_definition.editor_flow_step_types.map(String) : [];
+    const metadata = Object.fromEntries((view.flowPrimitiveRows || []).map((row) => [row.id, row]));
+    const supportedRows = stepTypes.filter((type) => metadata[type]).map((type) => metadata[type]);
+    return supportedRows;
+  }
+  function graphControlNodes(contract, graphView = null) {
+    const view = graphCanvasViewState(graphView);
+    const metadata = Object.fromEntries((view.gatePaletteRows || []).map((row) => [row.id, row]));
+    const paletteKinds = Array.isArray(contract?.mob_definition?.graph_palette_gate_kinds) ? contract.mob_definition.graph_palette_gate_kinds.map(String) : [];
+    return graphGateKindOptions(contract, "").filter((option) => !option.disabled && paletteKinds.includes(option.value) && metadata[option.value]).map((option) => ({
+      id: option.value,
+      gateKind: option.value,
+      glyph: metadata[option.value].glyph,
+      label: metadata[option.value].label,
+      meta: metadata[option.value].meta
+    }));
+  }
+  function graphAddNodeMenuState({ members = [], contract = null, query = "", graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
+    const q = String(query || "");
+    const ql = q.trim().toLowerCase();
+    const memberRows = (Array.isArray(members) ? members : []).filter((member) => {
+      if (!ql) return true;
+      return [
+        member?.name,
+        member?.role,
+        member?.model
+      ].map((part) => String(part || "")).join(" ").toLowerCase().includes(ql);
+    }).map((member) => ({
+      id: String(member.id || ""),
+      role: String(member.role || ""),
+      name: String(member.name || ""),
+      model: String(member.model || ""),
+      dotStyle: roleAccentStyle(member.role),
+      pick: { kind: "memberInstance", memberId: member.id }
+    })).filter((row) => row.id);
+    const controls = graphControlNodes(contract, graphView);
+    const controlRows = controls.filter((node) => {
+      if (!ql) return true;
+      return [
+        node?.label,
+        node?.meta,
+        node?.gateKind
+      ].map((part) => String(part || "")).join(" ").toLowerCase().includes(ql);
+    }).map((node) => ({
+      id: String(node.id || ""),
+      gateKind: String(node.gateKind || ""),
+      glyph: String(node.glyph || ""),
+      label: String(node.label || ""),
+      meta: String(node.meta || ""),
+      pick: { kind: "gate", gateKind: node.gateKind }
+    })).filter((row) => row.id);
+    const terminalRows = [];
+    return {
+      searchIcon: view.addNodeSearchIcon,
+      searchPlaceholder: view.addNodeSearchPlaceholder,
+      closeLabel: view.addNodeCloseLabel,
+      closeTitle: view.addNodeCloseTitle,
+      agentsLabel: view.addNodeAgentsLabel,
+      controlsLabel: view.addNodeControlsLabel,
+      terminalsLabel: view.addNodeTerminalsLabel,
+      emptyLabel: `${view.addNodeEmptyPrefix}${q}${view.addNodeEmptySuffix}`,
+      jumpLabel: view.addNodeJumpLabel,
+      memberRows,
+      controlRows,
+      terminalRows,
+      hasMembers: memberRows.length > 0,
+      hasControls: controlRows.length > 0,
+      hasTerminals: terminalRows.length > 0,
+      isEmpty: memberRows.length === 0 && controlRows.length === 0 && terminalRows.length === 0
+    };
+  }
+  function graphAddMenuOpenProjection({ col, row, grid } = {}) {
+    const cell = graphCellXY(grid, col, row);
+    return {
+      addAt: {
+        col,
+        row,
+        x: cell.x + Number(grid?.cellW || 0) * 0.5 - 130,
+        y: 90
+      }
+    };
+  }
+  function graphAddMenuCloseProjection() {
+    return { addAt: null };
+  }
+  function basicStepPickerState({ members = [], contract = null, query = "", isKickoff = false, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
+    if (isKickoff) {
+      return {
+        mode: "kickoff",
+        title: view.pickerKickoffTitle,
+        sub: view.pickerKickoffSub,
+        kickoffHint: view.pickerKickoffHint
+      };
+    }
+    const q = String(query || "");
+    const ql = q.trim().toLowerCase();
+    const memberRows = (Array.isArray(members) ? members : []).filter((member) => {
+      if (!ql) return true;
+      return [
+        member?.name,
+        member?.role
+      ].map((part) => String(part || "")).join(" ").toLowerCase().includes(ql);
+    }).map((member) => ({
+      id: String(member.id || ""),
+      name: String(member.name || ""),
+      role: String(member.role || ""),
+      model: String(member.model || ""),
+      schema: String(member.schema || ""),
+      icon: "\u25C6",
+      iconTint: "accent",
+      sub: [
+        member?.role,
+        member?.model,
+        member?.schema
+      ].map((part) => String(part || "").trim()).filter(Boolean).join(" \xB7 "),
+      pick: { kind: "member", id: member.id }
+    })).filter((row) => row.id);
+    const primitiveRows = editorFlowPrimitiveOptions(contract, basicView).filter((primitive) => {
+      if (!ql) return true;
+      return [
+        primitive?.label,
+        primitive?.sub
+      ].map((part) => String(part || "")).join(" ").toLowerCase().includes(ql);
+    }).map((primitive) => ({
+      id: String(primitive.id || ""),
+      glyph: String(primitive.glyph || ""),
+      tint: String(primitive.tint || ""),
+      label: String(primitive.label || ""),
+      sub: String(primitive.sub || ""),
+      isNew: Boolean(primitive.isNew),
+      disabled: Boolean(primitive.disabled),
+      disabledReason: String(primitive.disabledReason || ""),
+      pick: primitive.disabled ? null : { kind: primitive.id }
+    })).filter((row) => row.id);
+    return {
+      mode: "picker",
+      title: view.pickerTitle,
+      sub: view.pickerSub,
+      searchIcon: view.pickerSearchIcon,
+      searchPlaceholder: view.pickerSearchPlaceholder,
+      membersLabel: view.pickerMembersLabel,
+      flowLabel: view.pickerFlowLabel,
+      emptyMembersHint: view.pickerEmptyMembersHint,
+      newBadgeLabel: view.pickerNewBadgeLabel,
+      memberRows,
+      primitiveRows,
+      hasConfiguredMembers: Array.isArray(members) && members.length > 0
+    };
+  }
+  function firstSupportedOption(options, preferred = []) {
+    const list = Array.isArray(options) ? options : [];
+    for (const value of preferred) {
+      const option = list.find((candidate) => candidate.value === value && !candidate.disabled);
+      if (option) return option.value;
+    }
+    return list.find((option) => !option.disabled)?.value || "";
+  }
+  function contractStringValues(values) {
+    return Array.isArray(values) ? values.map((value) => String(value || "").trim()).filter(Boolean) : [];
+  }
+  function firstContractValue(values, preferred = []) {
+    const list = contractStringValues(values);
+    for (const value of preferred) {
+      if (list.includes(value)) return value;
+    }
+    return list[0] || "";
+  }
+  function contractDefaultRaw(contract, name) {
+    return String(contract?.mob_definition?.defaults?.[name] || "").trim();
+  }
+  function contractDefaultFromList(contract, name, values, normalizer) {
+    const raw = contractDefaultRaw(contract, name);
+    if (!raw) return "";
+    const normalized = normalizer ? normalizer(raw) : raw;
+    const allowed = new Set(contractStringValues(values).map((value) => normalizer ? normalizer(value) : value));
+    return allowed.has(normalized) ? normalized : "";
+  }
+  function contractDefaultValue(contract, name) {
+    const mob = contract?.mob_definition || {};
+    switch (name) {
+      case "launch_mode":
+        return contractDefaultFromList(contract, "launch_mode", mob.launch_modes, canonicalLaunchModeKind);
+      case "dispatch_mode":
+        return contractDefaultFromList(contract, "dispatch_mode", mob.dispatch_modes);
+      case "collection_policy":
+        return contractDefaultFromList(contract, "collection_policy", mob.collection_policies);
+      case "dependency_mode":
+        return contractDefaultFromList(contract, "dependency_mode", mob.dependency_modes);
+      case "condition_operator":
+        return contractDefaultFromList(contract, "condition_operator", mob.condition_operators);
+      case "fork_context":
+        return contractDefaultFromList(contract, "fork_context", mob.fork_contexts, normalizeForkContext);
+      case "budget_split_policy":
+        return contractDefaultFromList(contract, "budget_split_policy", mob.budget_split_policies, canonicalBudgetSplitPolicyKind);
+      case "graph_gate_kind":
+        return contractDefaultFromList(contract, "graph_gate_kind", mob.graph_gate_kinds);
+      case "graph_edge_kind":
+        return contractDefaultFromList(contract, "graph_edge_kind", mob.graph_edge_kinds);
+      case "graph_condition_edge_kind":
+        return contractDefaultFromList(contract, "graph_condition_edge_kind", mob.graph_edge_kinds);
+      case "graph_fanout_edge_kind":
+        return contractDefaultFromList(contract, "graph_fanout_edge_kind", mob.graph_edge_kinds);
+      case "graph_terminal_kind":
+        return contractDefaultFromList(contract, "graph_terminal_kind", mob.graph_terminal_kinds);
+      case "schema_field_type":
+        return contractDefaultFromList(contract, "schema_field_type", mob.editor_schema_field_types);
+      case "branch_param_type":
+        return contractDefaultFromList(contract, "branch_param_type", mob.editor_schema_field_types);
+      case "repeat_iteration_input":
+        return contractDefaultFromList(contract, "repeat_iteration_input", mob.repeat_iteration_inputs);
+      case "step_output_format":
+        return contractDefaultFromList(contract, "step_output_format", mob.step_output_formats);
+      case "runtime_mode":
+        return contractDefaultFromList(contract, "runtime_mode", mob.runtime_modes);
+      default:
+        return "";
+    }
   }
 
   // ../packages/flow-editor-core/src/schema/field-edit.ts
@@ -2352,17 +3425,40 @@ const {
   authoringOperationsFromSchema,
   authoringRpcMethodsFromSchema,
   basicFlowPrimitiveRowsFromSchema,
+  basicStepPickerState,
   basicViewFromSchema,
   basicViewPartsFromSchema,
+  budgetSplitPolicyAllowed,
+  budgetSplitPolicyOptions,
   callRpc,
+  canonicalBudgetSplitPolicyKind,
+  canonicalLaunchModeKind,
+  childLanes,
+  collectVisualSteps,
+  collectionPolicyAllowed,
+  collectionPolicyOptions,
+  conditionOperatorOptions,
+  conditionTextFromEdge,
   conditionValueControl,
   conditionViewForState,
   conditionViewFromSchema,
   configure,
   configureAuthoringMethodsFromSchema,
+  contractDefaultFromList,
+  contractDefaultRaw,
+  contractDefaultValue,
   contractStringValues,
+  dependencyModeAllowed,
+  dependencyModeOptions,
+  deployRuntimeCompatibility,
+  deploySurfaceOptions,
+  deploySurfaceRuntimeModes,
   deployViewForState,
   deployViewFromSchema,
+  dispatchModeAllowed,
+  dispatchModeOptions,
+  edgeConditionToEditorCond,
+  editorFlowPrimitiveOptions,
   editorSchemaDraftContract,
   editorSchemaDraftField,
   editorSchemaFieldNameFallback,
@@ -2375,21 +3471,52 @@ const {
   errorViewFromSchema,
   escapeHtml,
   findMember,
+  firstContractValue,
+  firstDeploySurfaceRuntimeMode,
+  firstSupportedOption,
   flowRegistryViewForState,
   flowRegistryViewFromSchema,
+  forkContextAllowed,
+  forkContextOptions,
+  graphAddMenuCloseProjection,
+  graphAddMenuOpenProjection,
+  graphAddNodeMenuState,
+  graphControlNodes,
+  graphEdgeKindOptions,
+  graphFrameKindOptions,
+  graphGateKindOptions,
   graphGatePaletteRowsFromSchema,
   graphInstanceIdSet,
   graphTemplateQuickStartRowsFromSchema,
   graphTemplateViewForState,
   graphTemplateViewFromSchema,
+  graphTerminalKindOptions,
   graphTerminalPaletteRowsFromSchema,
   graphViewFromSchema,
+  hasAuthoringLaunchMode,
   inlineSkillRealmIdFromOperationResult,
   inputParamFieldControlState,
   inputParamName,
   jsonEquivalent,
+  launchBudgetFixedLimitPatch,
+  launchBudgetKindPatch,
+  launchModeBudgetPatch,
+  launchModeControlState,
+  launchModeForkContextPatch,
+  launchModeForkSourcePatch,
+  launchModeFromAuthoringSource,
+  launchModeKindAllowed,
+  launchModeKindPatch,
+  launchModeMergePatch,
+  launchModeOptions,
+  launchModeSessionPatch,
+  launchModesFromFlow,
+  launchOptionLabel,
+  launchSourceAllowed,
+  launchUnsupportedReason,
   launchViewForState,
   launchViewFromSchema,
+  memberDisplayName,
   memberInlineSkillPatch,
   memberSkillAccessState,
   memberSkillRemovePatch,
@@ -2397,8 +3524,17 @@ const {
   memberToolAccessPatch,
   memberToolAccessState,
   memberToolRemovePatch,
+  mobBackendDefaultOptions,
+  mobDefinitionUnsupportedOptionLabel,
+  mobDefinitionUnsupportedOptionReason,
+  mobKitBudgetSplitPolicy,
   newFlowViewForState,
   newFlowViewFromSchema,
+  normalizeBudgetSplitPolicy,
+  normalizeCollectionMode,
+  normalizeDispatchMode,
+  normalizeForkContext,
+  normalizeLaunchMode,
   normalizeMaxInlinePeerNotifications,
   normalizeOptionalObject,
   normalizeOutputFormat,
@@ -2410,13 +3546,23 @@ const {
   normalizeStepToolScopeList,
   normalizeStringList,
   normalizeToolRef,
+  normalizedEdgeCondition,
   numberOrNull,
   operationErrorText,
+  profileBackendOptions,
+  profileBindingOptions,
+  profileBindingRestriction,
   profileName,
+  realmBackendOptions,
+  repeatConditionFromEdge,
+  repeatIterationInputOptions,
   roleAccentColor,
   roleAccentStyle,
   rpcMethod,
   rpcPath,
+  runtimeModeDeploySurfaceAllowed,
+  runtimeModeDeploySurfaceReason,
+  runtimeModeOptions,
   schemaDescriptionPatch,
   schemaFieldDeleteCascadePatch,
   schemaFieldDeletePatch,
@@ -2424,6 +3570,7 @@ const {
   schemaFieldRenameCascadePatch,
   schemaFieldRowControlState,
   schemaFieldTypeAllowedSet,
+  schemaFieldTypeOptions,
   schemaFieldUpdateCascadePatch,
   schemaFieldUpdatePatch,
   schemaLikeFieldDescriptionPatch,
@@ -2436,6 +3583,7 @@ const {
   settingsViewFromSchema,
   settingsViewLabelMapFromSchema,
   settingsViewOptionsFromSchema,
+  simpleContractOptions,
   skillIdsFromRealms,
   slug,
   stepToolScopeAddPatch,
@@ -2443,6 +3591,8 @@ const {
   stepToolScopeState,
   toolCatalogEntryAvailability,
   toolCatalogEntryAvailable,
+  trustPolicyOptions,
+  tweaksControlState,
   uniqueEnumValue,
   uniqueInputParamName,
   uniqueSchemaFieldName,
@@ -3178,21 +4328,6 @@ const {
       canDelete: usedBy.length === 0,
       deleteTitle: usedBy.length > 0 ? view.deleteBlockedTitle : "",
     };
-  }
-
-  function childLanes(step) {
-    if (!step) return [];
-    if (step.type === "repeat") return [{ id: "body", steps: step.steps || [] }];
-    if (step.type === "branch") {
-      return [
-        ...(step.branches || []).map((branch) => ({ id: branch.id, steps: branch.steps || [] })),
-        { id: "fallback", steps: step.fallback || [] },
-      ];
-    }
-    if (step.type === "parallel") {
-      return (step.branches || []).map((branch) => ({ id: branch.id, steps: branch.steps || [] }));
-    }
-    return [];
   }
 
   function collectFlowMemberSteps(steps, out = []) {
@@ -7992,531 +9127,6 @@ const {
     return out;
   }
 
-  function hasAuthoringLaunchMode(source) {
-    return !!source && typeof source === "object" && ("launchMode" in source || "launch_mode" in source);
-  }
-
-  function launchModeFromAuthoringSource(source, fallback) {
-    const raw = hasAuthoringLaunchMode(source)
-      ? (source.launchMode ?? source.launch_mode)
-      : (hasAuthoringLaunchMode(fallback) ? (fallback.launchMode ?? fallback.launch_mode) : null);
-    if (!raw || typeof raw !== "object" || !String(raw.kind || "").trim()) return null;
-    return normalizeLaunchMode(raw);
-  }
-
-  function memberDisplayName(members, id) {
-    return ((members || []).find((member) => member.id === id) || {}).name || id;
-  }
-
-  function normalizeLaunchMode(mode) {
-    if (!mode || typeof mode !== "object") return null;
-    const kind = canonicalLaunchModeKind(mode.kind);
-    if (!kind) return null;
-    const rawBudgetSplitPolicy = mode.budgetSplitPolicy ?? mode.budget_split_policy ?? mode.budget;
-    const budgetSplitPolicy = rawBudgetSplitPolicy
-      ? normalizeBudgetSplitPolicy(rawBudgetSplitPolicy)
-      : null;
-    const budgetPatch = budgetSplitPolicy ? { budgetSplitPolicy } : {};
-    if (kind === "Resume") {
-      return {
-        kind: "Resume",
-        sessionId: String(mode.sessionId || mode.session_id || mode.bridgeSessionId || mode.bridge_session_id || "").trim(),
-        ...budgetPatch,
-      };
-    }
-    if (kind === "Fork") {
-      return {
-        kind: "Fork",
-        from: String(mode.from || mode.sourceMemberId || mode.source_member_id || "").trim(),
-        context: normalizeForkContext(mode.context || mode.forkContext || mode.fork_context),
-        ...budgetPatch,
-      };
-    }
-    return { kind, ...budgetPatch };
-  }
-
-  function launchModeControlState(source, contract, launchView = null) {
-    const view = launchViewForState(launchView);
-    const authoredLaunchMode = source && typeof source === "object"
-      ? (source.launchMode ?? source.launch_mode)
-      : null;
-    const defaultLaunchMode = contractDefaultValue(contract, "launch_mode");
-    const launchMode = authoredLaunchMode && typeof authoredLaunchMode === "object"
-      ? authoredLaunchMode
-      : { kind: defaultLaunchMode };
-    const launchKind = canonicalLaunchModeKind(launchMode.kind || defaultLaunchMode);
-    const authoredBudgetSplitPolicy = normalizeBudgetSplitPolicy(
-      launchMode.budgetSplitPolicy || launchMode.budget_split_policy,
-    );
-    const defaultBudgetSplitKind = contractDefaultValue(contract, "budget_split_policy");
-    const budgetSplitPolicy = authoredBudgetSplitPolicy
-      || normalizeBudgetSplitPolicy(defaultBudgetSplitKind ? { kind: defaultBudgetSplitKind } : null)
-      || { kind: "" };
-    const budgetLaunchPatch = authoredBudgetSplitPolicy ? { budgetSplitPolicy: authoredBudgetSplitPolicy } : {};
-    const launchOptions = launchModeOptions(contract, launchKind, view);
-    const budgetOptions = budgetSplitPolicyOptions(contract, budgetSplitPolicy.kind, view);
-    const defaultForkContext = contractDefaultValue(contract, "fork_context");
-    const forkContextValue = normalizeForkContext(launchMode.context || defaultForkContext);
-    const forkOptions = forkContextOptions(contract, forkContextValue, view);
-    const fixedLimitValue = budgetSplitPolicy.limit || view.fixedBudgetDefaultValue;
-    return {
-      launchTitle: view.launchTitle,
-      graphLaunchTitle: view.graphLaunchTitle,
-      resumeSessionLabel: view.resumeSessionLabel,
-      resumeSessionPlaceholder: view.resumeSessionPlaceholder,
-      forkSourceLabel: view.forkSourceLabel,
-      forkContextLabel: view.forkContextLabel,
-      graphForkContextLabel: view.graphForkContextLabel,
-      budgetPolicyLabel: view.budgetPolicyLabel,
-      fixedBudgetLabel: view.fixedBudgetLabel,
-      fixedBudgetValue: fixedLimitValue,
-      launchMode,
-      launchKind,
-      defaultLaunchMode,
-      launchOptions,
-      selectedLaunchMode: launchOptions.find((option) => option.value === launchKind),
-      authoredBudgetSplitPolicy,
-      budgetSplitPolicy,
-      budgetLaunchPatch,
-      budgetOptions,
-      selectedBudgetPolicy: budgetOptions.find((option) => option.value === budgetSplitPolicy.kind),
-      defaultForkContext,
-      forkContextValue,
-      forkContextOptions: forkOptions,
-      selectedForkContext: forkOptions.find((option) => option.value === forkContextValue),
-    };
-  }
-
-  function launchModeKindPatch(source, kind, contract, options = {}) {
-    const state = launchModeControlState(source, contract);
-    const nextKind = canonicalLaunchModeKind(kind);
-    if (!launchModeKindAllowed(contract, nextKind)) return {};
-    if (nextKind === "Fork") {
-      return {
-        launchMode: {
-          ...state.launchMode,
-          kind: "Fork",
-          from: options.firstForkSourceId || state.launchMode.from || "",
-          context: state.launchMode.context || state.defaultForkContext,
-          ...state.budgetLaunchPatch,
-        },
-      };
-    }
-    if (nextKind === "Resume") {
-      return {
-        launchMode: {
-          ...state.launchMode,
-          kind: "Resume",
-          sessionId: state.launchMode.sessionId || "",
-          ...state.budgetLaunchPatch,
-        },
-      };
-    }
-    return { launchMode: { kind: nextKind, ...state.budgetLaunchPatch } };
-  }
-
-  function launchModeMergePatch(source, patch, contract) {
-    const state = launchModeControlState(source, contract);
-    const nextPatch = patch && typeof patch === "object" ? { ...patch } : {};
-    if ("kind" in nextPatch) {
-      const kind = canonicalLaunchModeKind(nextPatch.kind);
-      if (!launchModeKindAllowed(contract, kind)) return {};
-      nextPatch.kind = kind;
-    }
-    if ("context" in nextPatch) {
-      const context = normalizeForkContext(nextPatch.context);
-      if (!forkContextAllowed(contract, context)) return {};
-      nextPatch.context = context;
-    }
-    return { launchMode: { ...state.launchMode, ...nextPatch } };
-  }
-
-  function launchModeSessionPatch(source, sessionId, contract) {
-    return launchModeMergePatch(source, { sessionId: String(sessionId || "") }, contract);
-  }
-
-  function launchSourceAllowed(sourceOptions, from) {
-    const value = String(from || "").trim();
-    if (!value) return true;
-    return (Array.isArray(sourceOptions) ? sourceOptions : [])
-      .some((option) => String(option?.value || option?.id || "").trim() === value);
-  }
-
-  function launchModeForkSourcePatch(source, from, contract, options = {}) {
-    const value = String(from || "").trim();
-    if (!launchSourceAllowed(options.sourceOptions, value)) return {};
-    return launchModeMergePatch(source, { from: value }, contract);
-  }
-
-  function launchModeForkContextPatch(source, context, contract) {
-    return launchModeMergePatch(source, { context }, contract);
-  }
-
-  function launchModeBudgetPatch(source, patch, contract) {
-    const state = launchModeControlState(source, contract);
-    if (patch && typeof patch === "object" && "kind" in patch) {
-      const requestedKind = canonicalBudgetSplitPolicyKind(patch.kind);
-      if (!budgetSplitPolicyAllowed(contract, requestedKind)) return {};
-    }
-    const nextPolicy = normalizeBudgetSplitPolicy({ ...state.budgetSplitPolicy, ...patch });
-    if (!nextPolicy || !budgetSplitPolicyAllowed(contract, nextPolicy.kind)) return {};
-    return {
-      launchMode: {
-        ...state.launchMode,
-        budgetSplitPolicy: nextPolicy,
-      },
-    };
-  }
-
-  function launchBudgetKindPatch(source, kind, contract) {
-    return launchModeBudgetPatch(source, { kind: canonicalBudgetSplitPolicyKind(kind) }, contract);
-  }
-
-  function launchBudgetFixedLimitPatch(source, limit, contract) {
-    return launchModeBudgetPatch(source, { kind: "Fixed", limit }, contract);
-  }
-
-  function canonicalLaunchModeKind(value) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    const lower = raw.toLowerCase();
-    if (lower === "resume") return "Resume";
-    if (lower === "fork") return "Fork";
-    if (lower === "fresh") return "Fresh";
-    return raw;
-  }
-
-  function launchModeKindAllowed(contract, kind) {
-    const canonicalKind = canonicalLaunchModeKind(kind);
-    if (!canonicalKind) return false;
-    const contractModes = Array.isArray(contract?.mob_definition?.launch_modes)
-      ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind)
-      : [];
-    return contractModes.includes(canonicalKind);
-  }
-
-  function normalizeForkContext(value) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    if (raw === "FullHistory") return "full_history";
-    if (raw === "LastMessages") return "last_messages";
-    return raw;
-  }
-
-  function forkContextAllowed(contract, context) {
-    const normalized = normalizeForkContext(context);
-    if (!normalized) return false;
-    const contexts = Array.isArray(contract?.mob_definition?.fork_contexts)
-      ? contract.mob_definition.fork_contexts.map(normalizeForkContext)
-      : [];
-    return contexts.includes(normalized);
-  }
-
-  function launchOptionLabel(labels, value, view, contractLabel) {
-    return labels?.[value] || `${value}${view.unsupportedLabelSeparator}${contractLabel}`;
-  }
-
-  function launchUnsupportedReason(view, contractLabel) {
-    return `${view.unsupportedReasonPrefix}${contractLabel}${view.unsupportedReasonSuffix}`;
-  }
-
-  function launchModeOptions(contract, currentKind, launchView = null) {
-    const view = launchViewForState(launchView);
-    const contractModes = Array.isArray(contract?.mob_definition?.launch_modes) && contract.mob_definition.launch_modes.length
-      ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind)
-      : [];
-    const modes = [...contractModes];
-    const currentSource = currentKind || contractDefaultValue(contract, "launch_mode");
-    const current = currentSource ? canonicalLaunchModeKind(currentSource) : "";
-    if (current && !modes.includes(current)) modes.push(current);
-    return modes.map((mode) => {
-      const supported = contractModes.includes(mode);
-      return {
-        value: mode,
-        label: launchOptionLabel(view.launchModeLabels, mode, view, view.launchModesContractLabel),
-        disabled: !supported,
-        reason: supported ? "" : launchUnsupportedReason(view, view.launchModesContractLabel),
-      };
-    });
-  }
-
-  function normalizeDispatchMode(mode) {
-    return String(mode || "").trim();
-  }
-
-  function dispatchModeOptions(contract, currentMode) {
-    const contractLabel = "dispatch_modes";
-    const contractModes = Array.isArray(contract?.mob_definition?.dispatch_modes) && contract.mob_definition.dispatch_modes.length
-      ? contract.mob_definition.dispatch_modes.map(String)
-      : [];
-    const modes = [...contractModes];
-    const current = String(currentMode || contractDefaultValue(contract, "dispatch_mode") || "").trim();
-    if (!modes.includes(current)) modes.push(current);
-    const labels = viewStringMapFromSchema(contract?.mob_definition?.dispatch_mode_labels);
-    return modes.map((mode) => {
-      const supported = contractModes.includes(mode);
-      return {
-        value: mode,
-        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
-        disabled: !supported,
-        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel),
-      };
-    });
-  }
-
-  function dispatchModeAllowed(contract, mode) {
-    const value = String(mode || "").trim();
-    if (!value) return true;
-    const contractModes = Array.isArray(contract?.mob_definition?.dispatch_modes)
-      ? contract.mob_definition.dispatch_modes.map(String)
-      : [];
-    return contractModes.includes(value);
-  }
-
-  function normalizeCollectionMode(policy) {
-    const raw = typeof policy === "object" && policy
-      ? String(policy.type || "").trim()
-      : String(policy || "").trim();
-    return raw;
-  }
-
-  function dependencyModeOptions(contract, currentMode) {
-    const contractLabel = "dependency_modes";
-    const contractModes = Array.isArray(contract?.mob_definition?.dependency_modes) && contract.mob_definition.dependency_modes.length
-      ? contract.mob_definition.dependency_modes.map(String)
-      : [];
-    const modes = [...contractModes];
-    const current = String(currentMode || contractDefaultValue(contract, "dependency_mode") || "").trim();
-    if (!modes.includes(current)) modes.push(current);
-    const labels = viewStringMapFromSchema(contract?.mob_definition?.dependency_mode_labels);
-    return modes.map((mode) => {
-      const supported = contractModes.includes(mode);
-      return {
-        value: mode,
-        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
-        disabled: !supported,
-        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel),
-      };
-    });
-  }
-
-  function dependencyModeAllowed(contract, mode) {
-    const value = String(mode || "").trim();
-    if (!value) return true;
-    const contractModes = Array.isArray(contract?.mob_definition?.dependency_modes)
-      ? contract.mob_definition.dependency_modes.map(String)
-      : [];
-    return contractModes.includes(value);
-  }
-
-  function collectionPolicyOptions(contract, currentPolicy) {
-    const contractLabel = "collection_policies";
-    const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies) && contract.mob_definition.collection_policies.length
-      ? contract.mob_definition.collection_policies.map(String)
-      : [];
-    const policies = [...contractPolicies];
-    const current = String(currentPolicy || contractDefaultValue(contract, "collection_policy") || "").trim();
-    if (!policies.includes(current)) policies.push(current);
-    const labels = viewStringMapFromSchema(contract?.mob_definition?.collection_policy_labels);
-    return policies.map((policy) => {
-      const supported = contractPolicies.includes(policy);
-      return {
-        value: policy,
-        label: labels[policy] || mobDefinitionUnsupportedOptionLabel(contract, policy, contractLabel),
-        disabled: !supported,
-        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel),
-      };
-    });
-  }
-
-  function mobDefinitionUnsupportedOptionLabel(contract, value, contractLabel) {
-    const separator = String(contract?.mob_definition?.option_unsupported_label_separator || " ");
-    return `${value}${separator}${contractLabel}`;
-  }
-
-  function mobDefinitionUnsupportedOptionReason(contract, contractLabel) {
-    const prefix = String(contract?.mob_definition?.option_unsupported_reason_prefix || "");
-    const suffix = String(contract?.mob_definition?.option_unsupported_reason_suffix || "");
-    return `${prefix}${contractLabel}${suffix}`;
-  }
-
-  function collectionPolicyAllowed(contract, policy) {
-    const value = String(policy || "").trim();
-    if (!value) return true;
-    const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies)
-      ? contract.mob_definition.collection_policies.map(String)
-      : [];
-    return contractPolicies.includes(value);
-  }
-
-  function normalizeBudgetSplitPolicy(policy) {
-    if (!policy || typeof policy !== "object") return null;
-    const rawKind = String(policy.kind || policy.type || "").trim();
-    if (!rawKind) return null;
-    const kind = canonicalBudgetSplitPolicyKind(rawKind);
-    if (kind === "Fixed") {
-      const limit = numberOrNull(policy?.limit ?? policy?.value ?? policy?.tokens);
-      return { kind: "Fixed", limit: limit && limit > 0 ? limit : 4096 };
-    }
-    return { kind };
-  }
-
-  function canonicalBudgetSplitPolicyKind(value) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    const lower = raw.toLowerCase();
-    if (lower === "fixed") return "Fixed";
-    if (lower === "proportional") return "Proportional";
-    if (lower === "remaining") return "Remaining";
-    if (lower === "equal") return "Equal";
-    return raw;
-  }
-
-  function budgetSplitPolicyAllowed(contract, kind) {
-    const canonicalKind = canonicalBudgetSplitPolicyKind(kind);
-    if (!canonicalKind) return false;
-    const policies = Array.isArray(contract?.mob_definition?.budget_split_policies)
-      ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind)
-      : [];
-    return policies.includes(canonicalKind);
-  }
-
-  function budgetSplitPolicyOptions(contract, currentKind, launchView = null) {
-    const view = launchViewForState(launchView);
-    const contractPolicies = Array.isArray(contract?.mob_definition?.budget_split_policies) && contract.mob_definition.budget_split_policies.length
-      ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind)
-      : [];
-    const policies = [...contractPolicies];
-    const currentSource = currentKind || contractDefaultValue(contract, "budget_split_policy");
-    const current = currentSource ? canonicalBudgetSplitPolicyKind(currentSource) : "";
-    if (current && !policies.includes(current)) policies.push(current);
-    return policies.map((policy) => {
-      const supported = contractPolicies.includes(policy);
-      return {
-        value: policy,
-        label: launchOptionLabel(view.budgetSplitPolicyLabels, policy, view, view.budgetSplitPoliciesContractLabel),
-        disabled: !supported,
-        reason: supported ? "" : launchUnsupportedReason(view, view.budgetSplitPoliciesContractLabel),
-      };
-    });
-  }
-
-  function mobKitBudgetSplitPolicy(policy) {
-    const normalized = normalizeBudgetSplitPolicy(policy);
-    if (!normalized) return null;
-    if (normalized.kind === "Fixed") return { type: "fixed", value: normalized.limit || 4096 };
-    return { type: normalized.kind.replace(/[A-Z]/g, (ch, index) => `${index ? "_" : ""}${ch.toLowerCase()}`) };
-  }
-
-  function launchModesFromFlow(flow, members) {
-    const out = [];
-    collectVisualSteps(flow?.steps || [], (step) => {
-      if (step.type !== "member") return;
-      const member = findMember(members, step.role);
-      const launchMode = launchModeFromAuthoringSource(step);
-      const row = {
-        step_id: step.id,
-        member_id: step.role || "",
-        profile: profileName(member || { id: step.role }),
-        launch_mode: launchMode,
-      };
-      if (launchMode?.budgetSplitPolicy) {
-        const budgetSplitPolicy = mobKitBudgetSplitPolicy(launchMode.budgetSplitPolicy);
-        if (budgetSplitPolicy) row.budget_split_policy = budgetSplitPolicy;
-      }
-      out.push(row);
-    });
-    return out;
-  }
-
-  function conditionTextFromEdge(edge, fallback) {
-    if (!edge) return fallback;
-    const condition = normalizedEdgeCondition(edge);
-    if (condition?.path) {
-      if (condition.val === undefined || condition.val === null || String(condition.val).trim() === "") return fallback;
-      const value = condition.val;
-      if (!condition.op) return fallback;
-      return `${condition.path} ${condition.op} ${JSON.stringify(value)}`;
-    }
-    return edge.label || fallback;
-  }
-
-  function edgeConditionToEditorCond(edge) {
-    const condition = normalizedEdgeCondition(edge);
-    const rawVar = String(condition?.path || "").trim();
-    const op = String(condition?.op || "").trim();
-    const val = condition?.val === undefined || condition?.val === null ? "" : String(condition.val);
-    if (!rawVar || !op || !val) return null;
-    const parts = rawVar.split(".").filter(Boolean);
-    if (parts.length === 2 && parts[0] === "params") {
-      return {
-        namespace: "params",
-        stepId: "params",
-        field: parts[1],
-        op,
-        val,
-      };
-    }
-    if (parts.length === 3 && parts[0] === "steps") {
-      return {
-        namespace: "steps",
-        stepId: parts[1],
-        field: parts[2],
-        op,
-        val,
-      };
-    }
-    return null;
-  }
-
-  function repeatConditionFromEdge(edge, stepId) {
-    const condition = normalizedEdgeCondition(edge);
-    if (condition?.path) {
-      const parts = String(condition.path).split(".").filter(Boolean);
-      const field = parts.pop() || "";
-      const op = String(condition.op || "").trim();
-      const val = condition.val === undefined || condition.val === null ? "" : String(condition.val).trim();
-      if (!field || !op || !val) return null;
-      return { stepId, field, op, val };
-    }
-    const label = String(edge?.label || "");
-    const match = /([A-Za-z0-9_.-]+)\s*(==|>|<)\s*['"]?([^'"]+)['"]?/.exec(label);
-    if (match) {
-      return { stepId, field: match[1].split(".").pop(), op: match[2], val: match[3] };
-    }
-    return null;
-  }
-
-  function normalizedEdgeCondition(edge) {
-    const cond = edge?.cond || {};
-    const op = String(cond.op || cond.operator || "").trim();
-    const val = cond.val ?? cond.value;
-    if (cond.var || cond.path || cond.source) {
-      return {
-        path: String(cond.var || cond.path || cond.source || "").trim(),
-        op,
-        val,
-      };
-    }
-    const namespace = String(cond.namespace || "").trim();
-    const stepId = String(cond.stepId || cond.step_id || "").trim();
-    const field = String(cond.field || "").trim();
-    if (field && (namespace === "params" || stepId === "params")) {
-      return { path: `params.${field}`, op, val };
-    }
-    if (field && stepId) {
-      return { path: `steps.${stepId}.${field}`, op, val };
-    }
-    return null;
-  }
-
-  function collectVisualSteps(steps, visit) {
-    for (const step of steps || []) {
-      visit(step);
-      for (const lane of childLanes(step)) collectVisualSteps(lane.steps, visit);
-    }
-  }
-
   async function loadSchema(options = {}) {
     return callRpc(rpcMethod("schema"), {}, options);
   }
@@ -9113,598 +9723,6 @@ const {
     return flowDraftIdFromSpec({
       name,
     }, existingRows);
-  }
-
-  function runtimeModeOptions(contract, deploySettings, currentMode) {
-    const modes = Array.isArray(contract?.mob_definition?.runtime_modes) && contract.mob_definition.runtime_modes.length
-      ? contract.mob_definition.runtime_modes.map(String)
-      : [];
-    const current = String(currentMode || "");
-    if (current && !modes.includes(current)) modes.push(current);
-    const surface = String(deploySettings?.surface || contract?.deploy_settings?.defaults?.surface || "");
-    const labels = viewStringMapFromSchema(contract?.mob_definition?.runtime_mode_labels);
-    return modes.map((mode) => {
-      const surfaceBlocked = !runtimeModeDeploySurfaceAllowed(contract, surface, mode);
-      return {
-        value: mode,
-        label: labels[mode] || `${mode}`,
-        disabled: surfaceBlocked,
-        reason: surfaceBlocked ? runtimeModeDeploySurfaceReason(contract, surface, mode) : "",
-      };
-    });
-  }
-
-  function deployRuntimeCompatibility(contract, surface) {
-    const compatibility = contract?.mob_definition?.deploy_runtime_mode_compatibility;
-    if (!compatibility || typeof compatibility !== "object") return null;
-    const surfaceKey = String(surface || contract?.deploy_settings?.defaults?.surface || "").trim();
-    const surfaceContract = compatibility[surfaceKey];
-    return surfaceContract && typeof surfaceContract === "object" ? surfaceContract : null;
-  }
-
-  function deploySurfaceRuntimeModes(contract, surface) {
-    return contractStringValues(deployRuntimeCompatibility(contract, surface)?.allowed);
-  }
-
-  function runtimeModeDeploySurfaceAllowed(contract, surface, mode) {
-    const value = String(mode || "").trim();
-    if (!value) return true;
-    const allowed = deploySurfaceRuntimeModes(contract, surface);
-    return allowed.length ? allowed.includes(value) : true;
-  }
-
-  function runtimeModeDeploySurfaceReason(contract, surface, mode) {
-    const value = String(mode || "").trim();
-    const blocked = deployRuntimeCompatibility(contract, surface)?.blocked;
-    const reason = blocked && typeof blocked === "object" ? blocked[value] : "";
-    return String(reason || "Unsupported by this MobKit deploy surface.");
-  }
-
-  function firstDeploySurfaceRuntimeMode(contract, surface) {
-    return deploySurfaceRuntimeModes(contract, surface)[0] || "";
-  }
-
-  function simpleContractOptions(values, currentValue, labels, contractName, display = {}) {
-    const contractValues = Array.isArray(values)
-      ? values.map((value) => String(value || "").trim()).filter(Boolean)
-      : [];
-    const options = contractValues.length ? [...contractValues] : [];
-    const current = String(currentValue || "").trim();
-    if (current && !options.includes(current)) options.push(current);
-    const unsupportedLabelSeparator = String(display.unsupportedLabelSeparator || "");
-    const unsupportedReasonPrefix = String(display.unsupportedReasonPrefix || "Unsupported ");
-    const unsupportedReasonSuffix = String(display.unsupportedReasonSuffix || "");
-    return options.map((value) => {
-      const known = contractValues.includes(value);
-      const label = labels?.[value] || (known || !unsupportedLabelSeparator ? value : `${value}${unsupportedLabelSeparator}${contractName}`);
-      return {
-        value,
-        label,
-        disabled: !known,
-        reason: known ? "" : `${unsupportedReasonPrefix}${contractName}${unsupportedReasonSuffix}`,
-      };
-    });
-  }
-
-  function profileBindingRestriction(contract, binding) {
-    const restrictions = contract?.mob_definition?.profile_binding_restrictions;
-    const value = restrictions && typeof restrictions === "object" ? restrictions[binding] : null;
-    return value && typeof value === "object" ? value : {};
-  }
-
-  function deploySurfaceOptions(contract, currentSurface, settingsView = null) {
-    const view = settingsViewForState(settingsView);
-    return simpleContractOptions(
-      contract?.deploy_settings?.surfaces,
-      currentSurface || "",
-      view.deploySurfaceLabels,
-      view.deploySurfaceContractLabel,
-      view
-    );
-  }
-
-  function trustPolicyOptions(contract, currentPolicy, settingsView = null) {
-    const view = settingsViewForState(settingsView);
-    return simpleContractOptions(
-      contract?.deploy_settings?.trust_policies,
-      currentPolicy || "",
-      view.trustPolicyLabels,
-      view.trustPolicyContractLabel,
-      view
-    );
-  }
-
-  function realmBackendOptions(contract, currentBackend, settingsView = null) {
-    const view = settingsViewForState(settingsView);
-    return simpleContractOptions(
-      contract?.deploy_settings?.realm_backends,
-      currentBackend || "",
-      view.realmBackendLabels,
-      view.realmBackendContractLabel,
-      view
-    );
-  }
-
-  function profileBackendOptions(contract, currentBackend, includeDefault, defaultLabel = "") {
-    const options = simpleContractOptions(
-      contract?.mob_definition?.profile_backends,
-      currentBackend || "",
-      { session: "session", external: "external" },
-      "mob_definition.profile_backends"
-    );
-    if (!includeDefault) return options;
-    return [{ value: "", label: String(defaultLabel || ""), disabled: false, reason: "" }, ...options.filter(option => option.value)];
-  }
-
-  function profileBindingOptions(contract, currentBinding) {
-    return simpleContractOptions(
-      contract?.mob_definition?.profile_binding,
-      currentBinding || "",
-      {
-        inline: "inline — define profile in this mobpack",
-        realm_profile: "realm_profile",
-      },
-      "mob_definition.profile_binding"
-    ).map((option) => {
-      const restriction = profileBindingRestriction(contract, option.value);
-      const deployable = restriction.deployable;
-      return {
-        ...option,
-        label: String(restriction.label || option.label || option.value),
-        disabled: option.disabled || deployable === false,
-        reason: String(restriction.reason || option.reason || ""),
-      };
-    });
-  }
-
-  function mobBackendDefaultOptions(contract, currentBackend) {
-    return simpleContractOptions(
-      contract?.mob_definition?.profile_backends,
-      currentBackend || "",
-      { session: "session", external: "external" },
-      "mob_definition.mob_settings.backendDefault"
-    );
-  }
-
-  function tweaksControlState({
-    flows = [],
-    deploySettings = {},
-    mobSettings = {},
-    members = [],
-    modelCatalog = [],
-    contract = null,
-    settingsView = null,
-  } = {}) {
-    const view = settingsViewForState(settingsView);
-    const loadableFlowOptions = (Array.isArray(flows) ? flows : [])
-      .filter((flow) => flow?.document)
-      .map((flow) => ({
-        value: flow.id,
-        label: `${flow.name}${view.optionSeparator}${flow.stage || flow.source || view.flowStageFallback}`,
-      }));
-    const profileOptions = [
-      { value: "", label: view.profileNoneLabel },
-      ...(Array.isArray(members) ? members : []).map((member) => {
-        const profile = profileName(member);
-        return { value: profile, label: profile };
-      }),
-    ];
-    const modelOptions = [
-      { value: "", label: view.modelDefaultLabel },
-      ...(Array.isArray(modelCatalog) ? modelCatalog : []).map((model) => ({
-        value: model.id,
-        label: `${model.label || model.id}${view.optionSeparator}${model.vendor || view.modelVendorFallback}`,
-      })),
-    ];
-    return {
-      panelTitle: view.panelTitle,
-      panelCloseLabel: view.panelCloseLabel,
-      loadMobTitle: view.loadMobTitle,
-      loadMobLabel: view.loadMobLabel,
-      canvasTitle: view.canvasTitle,
-      edgeStyleLabel: view.edgeStyleLabel,
-      edgeStyleOptions: view.edgeStyleOptions,
-      densityLabel: view.densityLabel,
-      densityOptions: view.densityOptions,
-      themeTitle: view.themeTitle,
-      themeModeLabel: view.themeModeLabel,
-      themeModeOptions: view.themeModeOptions,
-      mobTitle: view.mobTitle,
-      orchestratorLabel: view.orchestratorLabel,
-      autoWireLabel: view.autoWireLabel,
-      autoWireOptions: view.autoWireOptions,
-      roleWiringLabel: view.roleWiringLabel,
-      roleWiringAddLabel: view.roleWiringAddLabel,
-      defaultBackendLabel: view.defaultBackendLabel,
-      externalBaseLabel: view.externalBaseLabel,
-      externalBasePlaceholder: view.externalBasePlaceholder,
-      advancedLabel: view.advancedLabel,
-      advancedObjectRequiredError: view.advancedObjectRequiredError,
-      advancedInvalidJsonError: view.advancedInvalidJsonError,
-      deployTitle: view.deployTitle,
-      surfaceLabel: view.surfaceLabel,
-      trustLabel: view.trustLabel,
-      modelLabel: view.modelLabel,
-      durationLabel: view.durationLabel,
-      durationPlaceholder: view.durationPlaceholder,
-      toolCallsLabel: view.toolCallsLabel,
-      toolCallsMin: view.toolCallsMin,
-      toolCallsMax: view.toolCallsMax,
-      tokensLabel: view.tokensLabel,
-      tokensMin: view.tokensMin,
-      tokensMax: view.tokensMax,
-      realmLabel: view.realmLabel,
-      realmOptions: view.realmOptions,
-      realmIdLabel: view.realmIdLabel,
-      realmIdPlaceholder: view.realmIdPlaceholder,
-      backendLabel: view.backendLabel,
-      promptLabel: view.promptLabel,
-      promptPlaceholder: view.promptPlaceholder,
-      commandLabel: view.commandLabel,
-      commandFallback: view.commandFallback,
-      inspectorTitle: view.inspectorTitle,
-      inspectorLayoutLabel: view.inspectorLayoutLabel,
-      inspectorLayoutOptions: view.inspectorLayoutOptions,
-      loadableFlowOptions,
-      profileOptions,
-      profileChoices: profileOptions.filter((option) => option.value),
-      mobBackendOptions: mobBackendDefaultOptions(contract, mobSettings.backendDefault || ""),
-      surfaceOptions: deploySurfaceOptions(contract, deploySettings.surface || "", view),
-      trustOptions: trustPolicyOptions(contract, deploySettings.trustPolicy || "", view),
-      realmBackendOptions: realmBackendOptions(contract, deploySettings.realmBackend || "", view),
-      modelOptions,
-    };
-  }
-
-  function schemaFieldTypeOptions(contract, currentType) {
-    return simpleContractOptions(
-      contract?.mob_definition?.editor_schema_field_types,
-      currentType || contractDefaultValue(contract, "schema_field_type"),
-      {
-        string: "string",
-        "string[]": "string[] — list",
-        number: "number",
-        float: "float",
-        int: "int",
-        integer: "integer",
-        boolean: "boolean",
-        bool: "bool",
-        enum: "enum — fixed choices",
-        bytes: "bytes — binary blob",
-        object: "object — nested",
-      },
-      "mob_definition.editor_schema_field_types"
-    );
-  }
-
-  function conditionOperatorOptions(contract, currentOperator) {
-    return simpleContractOptions(
-      contract?.mob_definition?.condition_operators,
-      currentOperator || contractDefaultValue(contract, "condition_operator"),
-      { "==": "==", ">": ">", "<": "<" },
-      "mob_definition.condition_operators"
-    );
-  }
-
-  function forkContextOptions(contract, currentContext, launchView = null) {
-    const view = launchViewForState(launchView);
-    const contractValues = Array.isArray(contract?.mob_definition?.fork_contexts)
-      ? contract.mob_definition.fork_contexts.map((value) => normalizeForkContext(value)).filter(Boolean)
-      : [];
-    const options = contractValues.length ? [...contractValues] : [];
-    const currentSource = currentContext || contractDefaultValue(contract, "fork_context");
-    const current = currentSource ? normalizeForkContext(currentSource) : "";
-    if (current && !options.includes(current)) options.push(current);
-    return options.map((value) => {
-      const supported = contractValues.includes(value);
-      return {
-        value,
-        label: launchOptionLabel(view.forkContextLabels, value, view, view.forkContextsContractLabel),
-        disabled: !supported,
-        reason: supported ? "" : launchUnsupportedReason(view, view.forkContextsContractLabel),
-      };
-    });
-  }
-
-  function graphGateKindOptions(contract, currentKind, graphView = null) {
-    const view = graphCanvasViewState(graphView);
-    return simpleContractOptions(
-      contract?.mob_definition?.graph_gate_kinds,
-      currentKind || contractDefaultValue(contract, "graph_gate_kind"),
-      view.gateKindLabels,
-      "mob_definition.graph_gate_kinds"
-    );
-  }
-
-  function graphTerminalKindOptions(contract, currentKind, graphView = null) {
-    const view = graphCanvasViewState(graphView);
-    return simpleContractOptions(
-      contract?.mob_definition?.graph_terminal_kinds,
-      currentKind || contractDefaultValue(contract, "graph_terminal_kind"),
-      view.terminalKindLabels,
-      "mob_definition.graph_terminal_kinds"
-    );
-  }
-
-  function graphFrameKindOptions(contract, currentKind, graphView = null) {
-    const view = graphCanvasViewState(graphView);
-    return simpleContractOptions(
-      contract?.mob_definition?.graph_frame_kinds,
-      currentKind || contractDefaultValue(contract, "graph_frame_kind"),
-      view.frameKindLabels,
-      "mob_definition.graph_frame_kinds"
-    );
-  }
-
-  function graphEdgeKindOptions(contract, currentKind, graphView = null) {
-    const view = graphCanvasViewState(graphView);
-    return simpleContractOptions(
-      contract?.mob_definition?.graph_edge_kinds,
-      currentKind || contractDefaultValue(contract, "graph_edge_kind"),
-      view.edgeKindLabels,
-      "mob_definition.graph_edge_kinds"
-    );
-  }
-
-  function repeatIterationInputOptions(contract, currentMode) {
-    return simpleContractOptions(
-      contract?.mob_definition?.repeat_iteration_inputs,
-      currentMode || contractDefaultValue(contract, "repeat_iteration_input"),
-      {
-        carry: "Carry — last body step's output feeds the next pass",
-      },
-      "mob_definition.repeat_iteration_inputs"
-    );
-  }
-
-  function editorFlowPrimitiveOptions(contract, basicView = null) {
-    const view = basicEditorViewState(basicView);
-    const stepTypes = Array.isArray(contract?.mob_definition?.editor_flow_step_types) && contract.mob_definition.editor_flow_step_types.length
-      ? contract.mob_definition.editor_flow_step_types.map(String)
-      : [];
-    const metadata = Object.fromEntries((view.flowPrimitiveRows || []).map((row) => [row.id, row]));
-    const supportedRows = stepTypes
-      .filter((type) => metadata[type])
-      .map((type) => metadata[type]);
-    return supportedRows;
-  }
-
-  function graphControlNodes(contract, graphView = null) {
-    const view = graphCanvasViewState(graphView);
-    const metadata = Object.fromEntries((view.gatePaletteRows || []).map((row) => [row.id, row]));
-    const paletteKinds = Array.isArray(contract?.mob_definition?.graph_palette_gate_kinds)
-      ? contract.mob_definition.graph_palette_gate_kinds.map(String)
-      : [];
-    return graphGateKindOptions(contract, "")
-      .filter((option) => !option.disabled && paletteKinds.includes(option.value) && metadata[option.value])
-      .map((option) => ({
-        id: option.value,
-        gateKind: option.value,
-        glyph: metadata[option.value].glyph,
-        label: metadata[option.value].label,
-        meta: metadata[option.value].meta,
-      }));
-  }
-
-  function graphAddNodeMenuState({ members = [], contract = null, query = "", graphView = null } = {}) {
-    const view = graphCanvasViewState(graphView);
-    const q = String(query || "");
-    const ql = q.trim().toLowerCase();
-    const memberRows = (Array.isArray(members) ? members : [])
-      .filter((member) => {
-        if (!ql) return true;
-        return [
-          member?.name,
-          member?.role,
-          member?.model,
-        ].map((part) => String(part || "")).join(" ").toLowerCase().includes(ql);
-      })
-      .map((member) => ({
-        id: String(member.id || ""),
-        role: String(member.role || ""),
-        name: String(member.name || ""),
-        model: String(member.model || ""),
-        dotStyle: roleAccentStyle(member.role),
-        pick: { kind: "memberInstance", memberId: member.id },
-      }))
-      .filter((row) => row.id);
-    const controls = graphControlNodes(contract, graphView);
-    const controlRows = controls
-      .filter((node) => {
-        if (!ql) return true;
-        return [
-          node?.label,
-          node?.meta,
-          node?.gateKind,
-        ].map((part) => String(part || "")).join(" ").toLowerCase().includes(ql);
-      })
-      .map((node) => ({
-        id: String(node.id || ""),
-        gateKind: String(node.gateKind || ""),
-        glyph: String(node.glyph || ""),
-        label: String(node.label || ""),
-        meta: String(node.meta || ""),
-        pick: { kind: "gate", gateKind: node.gateKind },
-      }))
-      .filter((row) => row.id);
-    const terminalRows = [];
-    return {
-      searchIcon: view.addNodeSearchIcon,
-      searchPlaceholder: view.addNodeSearchPlaceholder,
-      closeLabel: view.addNodeCloseLabel,
-      closeTitle: view.addNodeCloseTitle,
-      agentsLabel: view.addNodeAgentsLabel,
-      controlsLabel: view.addNodeControlsLabel,
-      terminalsLabel: view.addNodeTerminalsLabel,
-      emptyLabel: `${view.addNodeEmptyPrefix}${q}${view.addNodeEmptySuffix}`,
-      jumpLabel: view.addNodeJumpLabel,
-      memberRows,
-      controlRows,
-      terminalRows,
-      hasMembers: memberRows.length > 0,
-      hasControls: controlRows.length > 0,
-      hasTerminals: terminalRows.length > 0,
-      isEmpty: memberRows.length === 0 && controlRows.length === 0 && terminalRows.length === 0,
-    };
-  }
-
-  function graphAddMenuOpenProjection({ col, row, grid } = {}) {
-    const cell = graphCellXY(grid, col, row);
-    return {
-      addAt: {
-        col,
-        row,
-        x: cell.x + Number(grid?.cellW || 0) * 0.5 - 130,
-        y: 90,
-      },
-    };
-  }
-
-  function graphAddMenuCloseProjection() {
-    return { addAt: null };
-  }
-
-  function basicStepPickerState({ members = [], contract = null, query = "", isKickoff = false, basicView = null } = {}) {
-    const view = basicEditorViewState(basicView);
-    if (isKickoff) {
-      return {
-        mode: "kickoff",
-        title: view.pickerKickoffTitle,
-        sub: view.pickerKickoffSub,
-        kickoffHint: view.pickerKickoffHint,
-      };
-    }
-    const q = String(query || "");
-    const ql = q.trim().toLowerCase();
-    const memberRows = (Array.isArray(members) ? members : [])
-      .filter((member) => {
-        if (!ql) return true;
-        return [
-          member?.name,
-          member?.role,
-        ].map((part) => String(part || "")).join(" ").toLowerCase().includes(ql);
-      })
-      .map((member) => ({
-        id: String(member.id || ""),
-        name: String(member.name || ""),
-        role: String(member.role || ""),
-        model: String(member.model || ""),
-        schema: String(member.schema || ""),
-        icon: "◆",
-        iconTint: "accent",
-        sub: [
-          member?.role,
-          member?.model,
-          member?.schema,
-        ].map((part) => String(part || "").trim()).filter(Boolean).join(" · "),
-        pick: { kind: "member", id: member.id },
-      }))
-      .filter((row) => row.id);
-    const primitiveRows = editorFlowPrimitiveOptions(contract, basicView)
-      .filter((primitive) => {
-        if (!ql) return true;
-        return [
-          primitive?.label,
-          primitive?.sub,
-        ].map((part) => String(part || "")).join(" ").toLowerCase().includes(ql);
-      })
-      .map((primitive) => ({
-        id: String(primitive.id || ""),
-        glyph: String(primitive.glyph || ""),
-        tint: String(primitive.tint || ""),
-        label: String(primitive.label || ""),
-        sub: String(primitive.sub || ""),
-        isNew: Boolean(primitive.isNew),
-        disabled: Boolean(primitive.disabled),
-        disabledReason: String(primitive.disabledReason || ""),
-        pick: primitive.disabled ? null : { kind: primitive.id },
-      }))
-      .filter((row) => row.id);
-    return {
-      mode: "picker",
-      title: view.pickerTitle,
-      sub: view.pickerSub,
-      searchIcon: view.pickerSearchIcon,
-      searchPlaceholder: view.pickerSearchPlaceholder,
-      membersLabel: view.pickerMembersLabel,
-      flowLabel: view.pickerFlowLabel,
-      emptyMembersHint: view.pickerEmptyMembersHint,
-      newBadgeLabel: view.pickerNewBadgeLabel,
-      memberRows,
-      primitiveRows,
-      hasConfiguredMembers: Array.isArray(members) && members.length > 0,
-    };
-  }
-
-  function firstSupportedOption(options, preferred = []) {
-    const list = Array.isArray(options) ? options : [];
-    for (const value of preferred) {
-      const option = list.find((candidate) => candidate.value === value && !candidate.disabled);
-      if (option) return option.value;
-    }
-    return list.find((option) => !option.disabled)?.value || "";
-  }
-
-  function firstContractValue(values, preferred = []) {
-    const list = contractStringValues(values);
-    for (const value of preferred) {
-      if (list.includes(value)) return value;
-    }
-    return list[0] || "";
-  }
-
-  function contractDefaultRaw(contract, name) {
-    return String(contract?.mob_definition?.defaults?.[name] || "").trim();
-  }
-
-  function contractDefaultFromList(contract, name, values, normalizer) {
-    const raw = contractDefaultRaw(contract, name);
-    if (!raw) return "";
-    const normalized = normalizer ? normalizer(raw) : raw;
-    const allowed = new Set(contractStringValues(values).map((value) => normalizer ? normalizer(value) : value));
-    return allowed.has(normalized) ? normalized : "";
-  }
-
-  function contractDefaultValue(contract, name) {
-    const mob = contract?.mob_definition || {};
-    switch (name) {
-      case "launch_mode":
-        return contractDefaultFromList(contract, "launch_mode", mob.launch_modes, canonicalLaunchModeKind);
-      case "dispatch_mode":
-        return contractDefaultFromList(contract, "dispatch_mode", mob.dispatch_modes);
-      case "collection_policy":
-        return contractDefaultFromList(contract, "collection_policy", mob.collection_policies);
-      case "dependency_mode":
-        return contractDefaultFromList(contract, "dependency_mode", mob.dependency_modes);
-      case "condition_operator":
-        return contractDefaultFromList(contract, "condition_operator", mob.condition_operators);
-      case "fork_context":
-        return contractDefaultFromList(contract, "fork_context", mob.fork_contexts, normalizeForkContext);
-      case "budget_split_policy":
-        return contractDefaultFromList(contract, "budget_split_policy", mob.budget_split_policies, canonicalBudgetSplitPolicyKind);
-      case "graph_gate_kind":
-        return contractDefaultFromList(contract, "graph_gate_kind", mob.graph_gate_kinds);
-      case "graph_edge_kind":
-        return contractDefaultFromList(contract, "graph_edge_kind", mob.graph_edge_kinds);
-      case "graph_condition_edge_kind":
-        return contractDefaultFromList(contract, "graph_condition_edge_kind", mob.graph_edge_kinds);
-      case "graph_fanout_edge_kind":
-        return contractDefaultFromList(contract, "graph_fanout_edge_kind", mob.graph_edge_kinds);
-      case "graph_terminal_kind":
-        return contractDefaultFromList(contract, "graph_terminal_kind", mob.graph_terminal_kinds);
-      case "schema_field_type":
-        return contractDefaultFromList(contract, "schema_field_type", mob.editor_schema_field_types);
-      case "branch_param_type":
-        return contractDefaultFromList(contract, "branch_param_type", mob.editor_schema_field_types);
-      case "repeat_iteration_input":
-        return contractDefaultFromList(contract, "repeat_iteration_input", mob.repeat_iteration_inputs);
-      case "step_output_format":
-        return contractDefaultFromList(contract, "step_output_format", mob.step_output_formats);
-      case "runtime_mode":
-        return contractDefaultFromList(contract, "runtime_mode", mob.runtime_modes);
-      default:
-        return "";
-    }
   }
 
   function editorInputParamDraftContract(contract) {

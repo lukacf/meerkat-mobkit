@@ -5,11 +5,11 @@
 // its design-destined home early along with its draft-contract chain
 // (editorSchemaDraftContract, editorSchemaDraftField). editorSchemaDraftField
 // calls schema/field-edit's schemaFieldName, a runtime-only import cycle with
-// no module-init cross-calls; contractDefaultValue stays in the residue until
-// S6 and goes through the lazy bridge. The rest of the drafts-mob-settings
-// cluster lands here in S7.
+// no module-init cross-calls; contractDefaultValue landed in
+// contract/options.ts in S6 and is imported relatively. The rest of the
+// drafts-mob-settings cluster lands here in S7.
+import { contractDefaultValue } from "../contract/options";
 import { schemaFieldName } from "../schema/field-edit";
-import { contractDefaultValue } from "../_residue-bridge";
 
 export function editorSchemaDraftField(rawField) {
   if (!rawField || typeof rawField !== "object") return null;

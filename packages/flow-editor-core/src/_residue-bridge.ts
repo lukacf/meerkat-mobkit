@@ -1,5 +1,5 @@
 // Temporary residue bridge — each wrapper is removed when its home slice
-// lands (S6 contract/options, S8 flow/reconcile, S11 editors).
+// lands (S8 flow/reconcile, S11 editors).
 //
 // Package modules normally import each other relatively and never touch
 // window or the facade. The ONE sanctioned exception (extraction-design
@@ -13,25 +13,29 @@
 //
 // Bridged edges:
 // - domain/tool-skill-access.ts stepToolScopeState -> basicEditorViewState,
-//   schema/field-edit.ts inputParamFieldControlState -> basicEditorViewState
+//   schema/field-edit.ts inputParamFieldControlState -> basicEditorViewState,
+//   contract/options.ts basicStepPickerState -> basicEditorViewState
 //   (residue until the S11 editors/basic-editor.ts slice).
-// - schema/field-edit.ts schemaLikeFieldTypeControlState ->
-//   contractDefaultValue + schemaFieldTypeOptions, and
-//   drafts/mob-settings.ts editorSchemaDraftContract -> contractDefaultValue
-//   (residue until the S6 contract/options.ts slice).
+// - contract/options.ts graph option/menu builders -> graphCanvasViewState,
+//   contract/options.ts graphAddMenuOpenProjection -> graphCellXY
+//   (residue until the S11 editors/graph-editor.ts slice).
 // - schema/field-edit.ts schemaFieldUpdate/Rename/DeleteCascadePatch ->
 //   reconcileConditionFieldAvailability + reconcileSchemaFieldReferences
 //   (residue until the S8 flow/reconcile.ts slice).
+//
+// The S6 wrappers (contractDefaultValue, schemaFieldTypeOptions) were
+// retired when contract/options.ts landed; importers now use the package
+// module relatively.
 export function basicEditorViewState(basicView: unknown) {
   return (window as any).MobKitFlowController.basicEditorViewState(basicView);
 }
 
-export function contractDefaultValue(contract: unknown, name: unknown) {
-  return (window as any).MobKitFlowController.contractDefaultValue(contract, name);
+export function graphCanvasViewState(graphView: unknown) {
+  return (window as any).MobKitFlowController.graphCanvasViewState(graphView);
 }
 
-export function schemaFieldTypeOptions(contract: unknown, currentType: unknown) {
-  return (window as any).MobKitFlowController.schemaFieldTypeOptions(contract, currentType);
+export function graphCellXY(grid: unknown, col: unknown, row: unknown) {
+  return (window as any).MobKitFlowController.graphCellXY(grid, col, row);
 }
 
 export function reconcileConditionFieldAvailability(spec: unknown) {

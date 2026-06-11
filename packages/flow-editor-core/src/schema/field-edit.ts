@@ -16,23 +16,25 @@
 // cascade patches.
 //
 // Straggler edges go through the lazy _residue-bridge until their home
-// slices land: contractDefaultValue and schemaFieldTypeOptions stay in the
-// residue until S6 (contract/options), reconcileConditionFieldAvailability
-// and reconcileSchemaFieldReferences until S8 (flow/reconcile), and
-// basicEditorViewState until S11 (editors/basic-editor). The two
-// facade-internal stragglers no bridge can reach — contractStringValues and
-// editorSchemaFieldNameFallback — were co-moved into their design-destined
-// homes (contract/options.ts, drafts/mob-settings.ts) in this slice and are
-// imported relatively.
-import { contractStringValues } from "../contract/options";
+// slices land: reconcileConditionFieldAvailability and
+// reconcileSchemaFieldReferences stay in the residue until S8
+// (flow/reconcile) and basicEditorViewState until S11
+// (editors/basic-editor). contractDefaultValue and schemaFieldTypeOptions
+// landed in contract/options.ts in S6 and are imported relatively, like the
+// two facade-internal stragglers no bridge could reach — contractStringValues
+// and editorSchemaFieldNameFallback — which were co-moved into their
+// design-destined homes (contract/options.ts, drafts/mob-settings.ts) in S5.
+import {
+  contractDefaultValue,
+  contractStringValues,
+  schemaFieldTypeOptions,
+} from "../contract/options";
 import { editorSchemaFieldNameFallback } from "../drafts/mob-settings";
 import { schemaViewForState, viewStringMapFromSchema } from "../views/view-config";
 import {
   basicEditorViewState,
-  contractDefaultValue,
   reconcileConditionFieldAvailability,
   reconcileSchemaFieldReferences,
-  schemaFieldTypeOptions,
 } from "../_residue-bridge";
 
 export function conditionViewFromSchema(schema) {
