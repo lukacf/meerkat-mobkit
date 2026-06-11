@@ -4,7 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
-const { build, transform } = require("esbuild");
+const { build } = require("esbuild");
 
 const root = __dirname;
 const srcDir = path.join(root, "src");
@@ -13,41 +13,16 @@ const defaultRustOutDir = path.join(root, "../meerkat-mobkit/flow-editor-dist");
 const tmpDir = path.join(root, ".tmp");
 const corePackageEntry = path.join(root, "../packages/flow-editor-core/src/index.ts");
 const componentsPackageEntry = path.join(root, "../packages/flow-editor-components/src/index.ts");
+const appEntry = path.join(srcDir, "app.tsx");
 
-// "@flow-editor-core" is a virtual entry: the headless controller package is
-// bundled as an IIFE assigned to window.MobKitFlowCore, and the controller.js
-// bootstrap builds window.MobKitFlowController from its
-// createMobKitFlowController facade. The emitted artifact set and names
-// never change.
-//
-// "@flow-editor-components" is the second virtual entry: the React view
-// package is bundled as an IIFE and a shell adapter footer assigns the same
-// window.* component globals the replaced legacy .jsx files assigned, so
-// app.jsx and the remaining legacy files keep resolving components through
-// window unchanged.
-const CORE_SCRIPT = "@flow-editor-core";
-const COMPONENTS_SCRIPT = "@flow-editor-components";
-const scriptOrder = [
-  "data.js",
-  CORE_SCRIPT,
-  "controller.js",
-  COMPONENTS_SCRIPT,
-  "app.jsx",
-];
-
-// The window globals the legacy files assigned (tweaks-panel.jsx's
-// Object.assign(window, ...) footer; the window.X = X footers of
-// overlays.jsx, inspector.jsx, graph.jsx, agents.jsx, and builder.jsx);
-// grows per slice as each .jsx file moves into @flow-editor-components.
-const componentsWindowGlobals = [
-  "useTweaks", "TweaksPanel", "TweakSection", "TweakRow",
-  "TweakSlider", "TweakToggle", "TweakRadio", "TweakSelect",
-  "TweakText", "TweakNumber", "TweakColor", "TweakButton",
-  "DeployPlanTrace", "ValidateSheet", "SourceDrawer", "InlineSourceEditor",
-  "Inspector", "AddNodeMenu",
-  "useStudioState", "GraphEditor",
-  "AgentsView", "BuilderView",
-];
+// S23 end-state: flow-editor.js is a single esbuild bundle of the app.tsx
+// shell entry, which imports the views from @flow-editor-components and
+// builds the controller facade from @flow-editor-core directly. React and
+// ReactDOM are NOT bundled: nothing in the bundle graph imports "react" —
+// the classic JSX transform emits free React/ReactDOM identifiers that
+// resolve to the window globals react-globals.js provides, exactly like the
+// legacy concatenated artifact. Artifact names, routes, and the 4-file
+// embedded set never change.
 
 async function buildCoreIife() {
   const result = await build({
@@ -65,31 +40,6 @@ async function buildCoreIife() {
   return `${code}\nwindow.MobKitFlowCore = MobKitFlowCore;\n`;
 }
 
-async function buildComponentsIife() {
-  const result = await build({
-    absWorkingDir: root,
-    entryPoints: [componentsPackageEntry],
-    bundle: true,
-    format: "iife",
-    globalName: "MobKitFlowComponents",
-    platform: "neutral",
-    target: ["es2020"],
-    write: false,
-    jsxFactory: "React.createElement",
-    jsxFragment: "React.Fragment",
-    alias: {
-      "@flow-editor-core": corePackageEntry,
-      "@flow-editor-components": componentsPackageEntry,
-    },
-    nodePaths: [path.join(root, "node_modules")],
-  });
-  const code = result.outputFiles[0].text;
-  const assignments = componentsWindowGlobals
-    .map((name) => `  ${name}: MobKitFlowComponents.${name},`)
-    .join("\n");
-  return `${code}\nObject.assign(window, {\n${assignments}\n});\n`;
-}
-
 function hash(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex").slice(0, 12);
 }
@@ -97,24 +47,6 @@ function hash(bytes) {
 async function cleanDir(dir) {
   await fs.rm(dir, { force: true, recursive: true });
   await fs.mkdir(dir, { recursive: true });
-}
-
-async function compileClassicScript(file) {
-  const source = await fs.readFile(path.join(srcDir, file), "utf8");
-  if (file.endsWith(".js")) return source;
-  const appGlobals = file === "app.jsx"
-    ? `const { useStudioState, GraphEditor, Inspector, AddNodeMenu, DeployPlanTrace, ValidateSheet, SourceDrawer, InlineSourceEditor, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakSelect, TweakText, TweakNumber, AgentsView, BuilderView } = window;\n`
-    : "";
-  const result = await transform(source, {
-    loader: "jsx",
-    target: "es2020",
-    jsxFactory: "React.createElement",
-    jsxFragment: "React.Fragment",
-  });
-  if (file === "app.jsx") {
-    return `${appGlobals}${result.code}`;
-  }
-  return `{\n${result.code}\n}`;
 }
 
 function renderHtml({ vendorVersion, appVersion, cssVersion }) {
@@ -165,21 +97,23 @@ async function buildAssets({ outDir, rustOutDir }) {
     minify: true,
   });
 
-  const coreIife = await buildCoreIife();
-  const componentsIife = await buildComponentsIife();
-  const appParts = [];
-  for (const file of scriptOrder) {
-    appParts.push(`\n/* ${file} */\n`);
-    if (file === CORE_SCRIPT) {
-      appParts.push(coreIife);
-    } else if (file === COMPONENTS_SCRIPT) {
-      appParts.push(componentsIife);
-    } else {
-      appParts.push(await compileClassicScript(file));
-    }
-  }
-  const appJs = appParts.join("\n");
-  await fs.writeFile(path.join(outDir, "flow-editor.js"), appJs, "utf8");
+  const appPath = path.join(outDir, "flow-editor.js");
+  await build({
+    absWorkingDir: root,
+    entryPoints: [appEntry],
+    outfile: appPath,
+    bundle: true,
+    format: "iife",
+    platform: "browser",
+    target: ["es2020"],
+    jsxFactory: "React.createElement",
+    jsxFragment: "React.Fragment",
+    alias: {
+      "@flow-editor-core": corePackageEntry,
+      "@flow-editor-components": componentsPackageEntry,
+    },
+    nodePaths: [path.join(root, "node_modules")],
+  });
 
   const [tokensCss, stylesCss] = await Promise.all([
     fs.readFile(path.join(srcDir, "tokens.css"), "utf8"),
@@ -190,7 +124,7 @@ async function buildAssets({ outDir, rustOutDir }) {
 
   const [vendorBytes, appBytes, cssBytes] = await Promise.all([
     fs.readFile(vendorPath),
-    fs.readFile(path.join(outDir, "flow-editor.js")),
+    fs.readFile(appPath),
     fs.readFile(path.join(outDir, "flow-editor.css")),
   ]);
   await fs.writeFile(
@@ -226,14 +160,21 @@ async function assertFresh(generatedDir, expectedDir) {
 }
 
 // The projection suite loads the controller through this Node-requirable
-// bundle: the core package (window.MobKitFlowCore) followed by the
-// controller.js bootstrap — the same linkage the browser artifact uses, in
-// bare Node with a window stub.
+// bundle: the core package (window.MobKitFlowCore) followed by a bootstrap
+// shim equivalent to the app shell's module-scope facade construction, with
+// the suite's window.__MOBKIT_FLOW_CONTROLLER_TEST__ flag mapped to the
+// includeTestExports option so the test-gated assembler exports stay
+// reachable only through that explicit flag.
 async function buildTestBundle() {
   await fs.mkdir(tmpDir, { recursive: true });
   const coreIife = await buildCoreIife();
-  const controller = await compileClassicScript("controller.js");
-  const bundle = `/* generated by build.cjs --test-bundle; do not edit */\n${coreIife}\n${controller}`;
+  const bootstrap = [
+    "window.MobKitFlowController = window.MobKitFlowCore.createMobKitFlowController({",
+    "  includeTestExports: !!window.__MOBKIT_FLOW_CONTROLLER_TEST__,",
+    "});",
+    "",
+  ].join("\n");
+  const bundle = `/* generated by build.cjs --test-bundle; do not edit */\n${coreIife}\n${bootstrap}`;
   await fs.writeFile(path.join(tmpDir, "controller-under-test.cjs"), bundle, "utf8");
 }
 

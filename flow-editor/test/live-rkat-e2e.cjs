@@ -11,7 +11,10 @@ global.document = { querySelector: () => null };
 global.Blob = class Blob {};
 global.URL.createObjectURL = global.URL.createObjectURL || (() => "blob:mobkit-live-test");
 global.URL.revokeObjectURL = global.URL.revokeObjectURL || (() => {});
-require("../src/controller.js");
+// The controller links exactly like the projection suite: the core package
+// IIFE plus the window.MobKitFlowController bootstrap shim, emitted by
+// `node build.cjs --test-bundle` (the test:rkat-e2e scripts run it first).
+require("../.tmp/controller-under-test.cjs");
 
 const rpcUrl = process.env.MOBKIT_FLOW_EDITOR_RPC_URL || "http://127.0.0.1:4191/flow-editor/rpc";
 const sampleId = process.env.MOBKIT_FLOW_EDITOR_SAMPLE_ID || "sample_docs_only";

@@ -1,44 +1,15 @@
-
-/* data.js */
-
-/* global window */
-// MobKit Flow Editor boot constants only.
-// Live mobpack state, models, tools, skills, and agent definitions hydrate from
-// the MobKit schema RPC and live in the app/controller state planes.
-
-const GRID = {
-  cols: 5,    // initial; grows dynamically based on instances
-  rows: 3,    // initial; grows dynamically based on instances
-  cellW: 220,
-  cellH: 158,
-  gapX: 32,
-  gapY: 24,
-  padX: 56,
-  padY: 56,
-};
-function cellXY(col, row) {
-  return {
-    x: GRID.padX + col * (GRID.cellW + GRID.gapX),
-    y: GRID.padY + row * (GRID.cellH + GRID.gapY),
-  };
-}
-
-window.MOBKIT_BOOT = {
-  GRID,
-  cellXY,
-};
-
-
-/* @flow-editor-core */
-
-var MobKitFlowCore = (() => {
+(() => {
+  var __create = Object.create;
   var __defProp = Object.defineProperty;
   var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __getProtoOf = Object.getPrototypeOf;
   var __hasOwnProp = Object.prototype.hasOwnProperty;
-  var __export = (target, all) => {
-    for (var name in all)
-      __defProp(target, name, { get: all[name], enumerable: true });
+  var __esm = (fn, res) => function __init() {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  };
+  var __commonJS = (cb, mod) => function __require() {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
   };
   var __copyProps = (to, from, except, desc) => {
     if (from && typeof from === "object" || typeof from === "function") {
@@ -48,663 +19,41 @@ var MobKitFlowCore = (() => {
     }
     return to;
   };
-  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+  var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+    // If the importer is in node compatibility mode or this is not an ESM
+    // file that has been converted to a CommonJS file using a Babel-
+    // compatible transform (i.e. "__esModule" has not been set), then set
+    // "default" to the CommonJS "module.exports" for node compatibility.
+    isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+    mod
+  ));
 
-  // ../packages/flow-editor-core/src/index.ts
-  var index_exports = {};
-  __export(index_exports, {
-    EMPTY_DEPLOY_SETTINGS: () => EMPTY_DEPLOY_SETTINGS,
-    EMPTY_MOB_SETTINGS: () => EMPTY_MOB_SETTINGS,
-    GRAPH_NODE_H: () => GRAPH_NODE_H,
-    GRAPH_NODE_W: () => GRAPH_NODE_W,
-    MOB_SETTINGS_PATCH_KEYS: () => MOB_SETTINGS_PATCH_KEYS,
-    RPC_METHODS: () => RPC_METHODS,
-    SCHEMA_COMMAND_KEYS: () => SCHEMA_COMMAND_KEYS,
-    SCHEMA_VERSION: () => SCHEMA_VERSION,
-    addInlineSkillToRealms: () => addInlineSkillToRealms,
-    advancedMobSettingsDraftPatch: () => advancedMobSettingsDraftPatch,
-    advancedMobSettingsEditorState: () => advancedMobSettingsEditorState,
-    agentAccessViewForState: () => agentAccessViewForState,
-    agentAccessViewFromSchema: () => agentAccessViewFromSchema,
-    agentDefaultSelectionProjection: () => agentDefaultSelectionProjection,
-    agentDefinitionAddControlState: () => agentDefinitionAddControlState,
-    agentDefinitionAddErrorState: () => agentDefinitionAddErrorState,
-    agentDefinitionCatalogState: () => agentDefinitionCatalogState,
-    agentDefinitionOptions: () => agentDefinitionOptions,
-    agentDefinitionsFromCatalogs: () => agentDefinitionsFromCatalogs,
-    agentDeleteConfirmationState: () => agentDeleteConfirmationState,
-    agentDetailViewForState: () => agentDetailViewForState,
-    agentDetailViewFromSchema: () => agentDetailViewFromSchema,
-    agentEditorControlState: () => agentEditorControlState,
-    agentListSelectionProjection: () => agentListSelectionProjection,
-    agentListState: () => agentListState,
-    agentNavigationProjection: () => agentNavigationProjection,
-    agentSelectionState: () => agentSelectionState,
-    agentSourceProvenanceState: () => agentSourceProvenanceState,
-    agentViewForState: () => agentViewForState,
-    agentViewFromSchema: () => agentViewFromSchema,
-    apiDisplayRows: () => apiDisplayRows,
-    apiOverlayClearTransition: () => apiOverlayClearTransition,
-    applyAuthoringOperationDocument: () => applyAuthoringOperationDocument,
-    authoringDocumentFromState: () => authoringDocumentFromState,
-    authoringFlowForDocument: () => authoringFlowForDocument,
-    authoringOperationAvailability: () => authoringOperationAvailability,
-    authoringOperationFromIntent: () => authoringOperationFromIntent,
-    authoringOperationsFromSchema: () => authoringOperationsFromSchema,
-    authoringProjectionApplyPlan: () => authoringProjectionApplyPlan,
-    authoringProjectionFromMobKitDocument: () => authoringProjectionFromMobKitDocument,
-    authoringProjectionFromOperationResult: () => authoringProjectionFromOperationResult,
-    authoringRpcMethodsFromSchema: () => authoringRpcMethodsFromSchema,
-    basicBranchAddPatch: () => basicBranchAddPatch,
-    basicBranchConditionControlState: () => basicBranchConditionControlState,
-    basicBranchConditionPatch: () => basicBranchConditionPatch,
-    basicBranchDefaultLabel: () => basicBranchDefaultLabel,
-    basicBranchParallelControlState: () => basicBranchParallelControlState,
-    basicCanvasClearTransition: () => basicCanvasClearTransition,
-    basicConditionFieldPatch: () => basicConditionFieldPatch,
-    basicConditionFromText: () => basicConditionFromText,
-    basicConditionLabel: () => basicConditionLabel,
-    basicConditionOperatorPatch: () => basicConditionOperatorPatch,
-    basicConditionOptions: () => basicConditionOptions,
-    basicConditionSourcePatch: () => basicConditionSourcePatch,
-    basicConditionText: () => basicConditionText,
-    basicConditionValuePatch: () => basicConditionValuePatch,
-    basicEditorViewState: () => basicEditorViewState,
-    basicFlowPrimitiveRowsFromSchema: () => basicFlowPrimitiveRowsFromSchema,
-    basicForkCanvasState: () => basicForkCanvasState,
-    basicInputControlState: () => basicInputControlState,
-    basicMemberStepControlState: () => basicMemberStepControlState,
-    basicRepeatCanvasState: () => basicRepeatCanvasState,
-    basicRepeatControlState: () => basicRepeatControlState,
-    basicRepeatIterationLabel: () => basicRepeatIterationLabel,
-    basicRepeatUntilExpression: () => basicRepeatUntilExpression,
-    basicStepCardState: () => basicStepCardState,
-    basicStepPickerCloseTransition: () => basicStepPickerCloseTransition,
-    basicStepPickerOpenTransition: () => basicStepPickerOpenTransition,
-    basicStepPickerState: () => basicStepPickerState,
-    basicStepSelectionTransition: () => basicStepSelectionTransition,
-    basicViewFromSchema: () => basicViewFromSchema,
-    basicViewPartsFromSchema: () => basicViewPartsFromSchema,
-    blankMobpackFromCatalogs: () => blankMobpackFromCatalogs,
-    branchFrameLabel: () => branchFrameLabel,
-    budgetSplitPolicyAllowed: () => budgetSplitPolicyAllowed,
-    budgetSplitPolicyOptions: () => budgetSplitPolicyOptions,
-    buildDocument: () => buildDocument,
-    callRpc: () => callRpc,
-    canonicalBudgetSplitPolicyKind: () => canonicalBudgetSplitPolicyKind,
-    canonicalLaunchModeKind: () => canonicalLaunchModeKind,
-    canonicalizeGraphInstance: () => canonicalizeGraphInstance,
-    catalogSkillRealmsPatch: () => catalogSkillRealmsPatch,
-    catalogValueAllowed: () => catalogValueAllowed,
-    childLanes: () => childLanes,
-    clearDeletedGraphConditionEdges: () => clearDeletedGraphConditionEdges,
-    clearDeletedLaunchSource: () => clearDeletedLaunchSource,
-    clearDeletedStepCondition: () => clearDeletedStepCondition,
-    clearDeletedStepConditionText: () => clearDeletedStepConditionText,
-    clearUnavailableConditionText: () => clearUnavailableConditionText,
-    clearUnavailableEditorCondition: () => clearUnavailableEditorCondition,
-    collectFlowBranchIds: () => collectFlowBranchIds,
-    collectFlowMemberSteps: () => collectFlowMemberSteps,
-    collectFlowStepIds: () => collectFlowStepIds,
-    collectLaneToJoin: () => collectLaneToJoin,
-    collectVisualSteps: () => collectVisualSteps,
-    collectionFromJoin: () => collectionFromJoin,
-    collectionModeFromStepSource: () => collectionModeFromStepSource,
-    collectionPolicyAllowed: () => collectionPolicyAllowed,
-    collectionPolicyOptions: () => collectionPolicyOptions,
-    compareGraphNodes: () => compareGraphNodes,
-    conditionFieldValueAvailable: () => conditionFieldValueAvailable,
-    conditionOperatorOptions: () => conditionOperatorOptions,
-    conditionTextForPath: () => conditionTextForPath,
-    conditionTextFromEdge: () => conditionTextFromEdge,
-    conditionTextToGraphCond: () => conditionTextToGraphCond,
-    conditionValueControl: () => conditionValueControl,
-    conditionValueLiteral: () => conditionValueLiteral,
-    conditionViewForState: () => conditionViewForState,
-    conditionViewFromSchema: () => conditionViewFromSchema,
-    configure: () => configure,
-    configureAuthoringMethodsFromSchema: () => configureAuthoringMethodsFromSchema,
-    contractDefaultFromList: () => contractDefaultFromList,
-    contractDefaultRaw: () => contractDefaultRaw,
-    contractDefaultValue: () => contractDefaultValue,
-    contractStringValues: () => contractStringValues,
-    contractValueAllowed: () => contractValueAllowed,
-    createAuthoringOperationRunner: () => createAuthoringOperationRunner,
-    createDocument: () => createDocument,
-    createMobKitFlowController: () => createMobKitFlowController,
-    criticalErrorOutcome: () => criticalErrorOutcome,
-    deleteDocument: () => deleteDocument,
-    dependencyModeAllowed: () => dependencyModeAllowed,
-    dependencyModeFromStepSource: () => dependencyModeFromStepSource,
-    dependencyModeOptions: () => dependencyModeOptions,
-    deployCommandPreviewForDocument: () => deployCommandPreviewForDocument,
-    deployDefaultsFromSchema: () => deployDefaultsFromSchema,
-    deployDocument: () => deployDocument,
-    deployErrorOutcome: () => deployErrorOutcome,
-    deployOutcome: () => deployOutcome,
-    deployPlanTraceCloseTransition: () => deployPlanTraceCloseTransition,
-    deployPlanTraceReadyTransition: () => deployPlanTraceReadyTransition,
-    deployPlanTraceState: () => deployPlanTraceState,
-    deployResultToRows: () => deployResultToRows,
-    deployRuntimeCompatibility: () => deployRuntimeCompatibility,
-    deploySettingsFieldPatch: () => deploySettingsFieldPatch,
-    deploySettingsForUi: () => deploySettingsForUi,
-    deploySettingsPatch: () => deploySettingsPatch,
-    deploySurfaceOptions: () => deploySurfaceOptions,
-    deploySurfaceRuntimeModes: () => deploySurfaceRuntimeModes,
-    deployViewForState: () => deployViewForState,
-    deployViewFromSchema: () => deployViewFromSchema,
-    deployableInlineProfileBindingAllowed: () => deployableInlineProfileBindingAllowed,
-    diagnosticsToRows: () => diagnosticsToRows,
-    directMemberAddValidation: () => directMemberAddValidation,
-    dispatchFromFork: () => dispatchFromFork,
-    dispatchModeAllowed: () => dispatchModeAllowed,
-    dispatchModeFromStepSource: () => dispatchModeFromStepSource,
-    dispatchModeOptions: () => dispatchModeOptions,
-    edgeConditionToEditorCond: () => edgeConditionToEditorCond,
-    edgesForDocument: () => edgesForDocument,
-    editorCondToGraphCond: () => editorCondToGraphCond,
-    editorConditionFieldAvailable: () => editorConditionFieldAvailable,
-    editorConditionText: () => editorConditionText,
-    editorFlowPrimitiveOptions: () => editorFlowPrimitiveOptions,
-    editorGraphDraftContract: () => editorGraphDraftContract,
-    editorInputParamDraftContract: () => editorInputParamDraftContract,
-    editorInputParamNameFallback: () => editorInputParamNameFallback,
-    editorInputStepDraftContract: () => editorInputStepDraftContract,
-    editorModeTransition: () => editorModeTransition,
-    editorSchemaDraftContract: () => editorSchemaDraftContract,
-    editorSchemaDraftField: () => editorSchemaDraftField,
-    editorSchemaFieldNameFallback: () => editorSchemaFieldNameFallback,
-    emptyAuthoringFlowState: () => emptyAuthoringFlowState,
-    emptyGraphDraftContract: () => emptyGraphDraftContract,
-    emptyMobKitCatalogs: () => emptyMobKitCatalogs,
-    enumValueAddPatch: () => enumValueAddPatch,
-    enumValueCommitPatch: () => enumValueCommitPatch,
-    enumValueDeletePatch: () => enumValueDeletePatch,
-    enumValueDraftPatch: () => enumValueDraftPatch,
-    enumValuesForField: () => enumValuesForField,
-    errorMessage: () => errorMessage,
-    errorViewForState: () => errorViewForState,
-    errorViewFromSchema: () => errorViewFromSchema,
-    escapeHtml: () => escapeHtml,
-    exportDocument: () => exportDocument,
-    exportDownloadPayload: () => exportDownloadPayload,
-    exportErrorOutcome: () => exportErrorOutcome,
-    exportOutcome: () => exportOutcome,
-    findJoinForBranches: () => findJoinForBranches,
-    findMember: () => findMember,
-    firstContractValue: () => firstContractValue,
-    firstDeploySurfaceRuntimeMode: () => firstDeploySurfaceRuntimeMode,
-    firstSupportedOption: () => firstSupportedOption,
-    flowCatalogBootstrapState: () => flowCatalogBootstrapState,
-    flowDraftIdFromSpec: () => flowDraftIdFromSpec,
-    flowForDocument: () => flowForDocument,
-    flowFromHydratedDocument: () => flowFromHydratedDocument,
-    flowImportedIdFromDocument: () => flowImportedIdFromDocument,
-    flowLaunchSourceSet: () => flowLaunchSourceSet,
-    flowPrimitiveIdFromGate: () => flowPrimitiveIdFromGate,
-    flowRegistryAppendRowPatch: () => flowRegistryAppendRowPatch,
-    flowRegistryDocumentPersistence: () => flowRegistryDocumentPersistence,
-    flowRegistryDraftGuard: () => flowRegistryDraftGuard,
-    flowRegistryMarkDraftPatch: () => flowRegistryMarkDraftPatch,
-    flowRegistryPersistDocumentProjection: () => flowRegistryPersistDocumentProjection,
-    flowRegistryPersistOutcomeProjection: () => flowRegistryPersistOutcomeProjection,
-    flowRegistryRememberDocumentPatch: () => flowRegistryRememberDocumentPatch,
-    flowRegistryRowEtag: () => flowRegistryRowEtag,
-    flowRegistryRowFromDocument: () => flowRegistryRowFromDocument,
-    flowRegistryRowIsRuntimeProjection: () => flowRegistryRowIsRuntimeProjection,
-    flowRegistryRowRevision: () => flowRegistryRowRevision,
-    flowRegistryRowsFromBackend: () => flowRegistryRowsFromBackend,
-    flowRegistrySelectionState: () => flowRegistrySelectionState,
-    flowRegistryUpsertRowPatch: () => flowRegistryUpsertRowPatch,
-    flowRegistryViewForState: () => flowRegistryViewForState,
-    flowRegistryViewFromSchema: () => flowRegistryViewFromSchema,
-    flowRegistryViewState: () => flowRegistryViewState,
-    flowStepAllowedToolsPatch: () => flowStepAllowedToolsPatch,
-    flowStepBlockedToolsPatch: () => flowStepBlockedToolsPatch,
-    flowStepById: () => flowStepById,
-    flowStepCollectionPatch: () => flowStepCollectionPatch,
-    flowStepControllerRolePatch: () => flowStepControllerRolePatch,
-    flowStepDeletePatch: () => flowStepDeletePatch,
-    flowStepDeleteTransition: () => flowStepDeleteTransition,
-    flowStepDependencyModePatch: () => flowStepDependencyModePatch,
-    flowStepDispatchModePatch: () => flowStepDispatchModePatch,
-    flowStepForGraphGroup: () => flowStepForGraphGroup,
-    flowStepInsertIntoLane: () => flowStepInsertIntoLane,
-    flowStepInsertPatch: () => flowStepInsertPatch,
-    flowStepInsertTransition: () => flowStepInsertTransition,
-    flowStepInstructionPatch: () => flowStepInstructionPatch,
-    flowStepIterationInputPatch: () => flowStepIterationInputPatch,
-    flowStepLoopIdPatch: () => flowStepLoopIdPatch,
-    flowStepMap: () => flowStepMap,
-    flowStepMaxIterationsPatch: () => flowStepMaxIterationsPatch,
-    flowStepMemberRolePatch: () => flowStepMemberRolePatch,
-    flowStepOutputFormatPatch: () => flowStepOutputFormatPatch,
-    flowStepParallelDispatchPatch: () => flowStepParallelDispatchPatch,
-    flowStepQuorumPatch: () => flowStepQuorumPatch,
-    flowStepRemoveFromTree: () => flowStepRemoveFromTree,
-    flowStepRepeatConditionPatch: () => flowStepRepeatConditionPatch,
-    flowStepSchemaIndex: () => flowStepSchemaIndex,
-    flowStepTaskPatch: () => flowStepTaskPatch,
-    flowStepTemplate: () => flowStepTemplate,
-    flowStepTimeoutPatch: () => flowStepTimeoutPatch,
-    flowStepUpdatePatch: () => flowStepUpdatePatch,
-    flowStepValidation: () => flowStepValidation,
-    forkContextAllowed: () => forkContextAllowed,
-    forkContextOptions: () => forkContextOptions,
-    framesForDocument: () => framesForDocument,
-    freshLaunchModePreservingBudget: () => freshLaunchModePreservingBudget,
-    getDocument: () => getDocument,
-    graphAddMenuCloseProjection: () => graphAddMenuCloseProjection,
-    graphAddMenuOpenProjection: () => graphAddMenuOpenProjection,
-    graphAddNodeMenuState: () => graphAddNodeMenuState,
-    graphBranchConditionModePatch: () => graphBranchConditionModePatch,
-    graphBranchConditionRows: () => graphBranchConditionRows,
-    graphCanvasAdornments: () => graphCanvasAdornments,
-    graphCanvasInstances: () => graphCanvasInstances,
-    graphCanvasViewState: () => graphCanvasViewState,
-    graphCellAt: () => graphCellAt,
-    graphCellCanvasRows: () => graphCellCanvasRows,
-    graphCellXY: () => graphCellXY,
-    graphConditionEdgeKindForPatch: () => graphConditionEdgeKindForPatch,
-    graphConditionOptions: () => graphConditionOptions,
-    graphConditionPathForOption: () => graphConditionPathForOption,
-    graphConditionRefForEdge: () => graphConditionRefForEdge,
-    graphControlDependsMode: () => graphControlDependsMode,
-    graphControlNodes: () => graphControlNodes,
-    graphDraftLabelEquals: () => graphDraftLabelEquals,
-    graphDragCellAt: () => graphDragCellAt,
-    graphEdgeCanvasState: () => graphEdgeCanvasState,
-    graphEdgeConditionFieldPatch: () => graphEdgeConditionFieldPatch,
-    graphEdgeConditionOperatorPatch: () => graphEdgeConditionOperatorPatch,
-    graphEdgeConditionOwnerPatch: () => graphEdgeConditionOwnerPatch,
-    graphEdgeConditionPatch: () => graphEdgeConditionPatch,
-    graphEdgeConditionValuePatch: () => graphEdgeConditionValuePatch,
-    graphEdgeFallbackPatch: () => graphEdgeFallbackPatch,
-    graphEdgeInspectorState: () => graphEdgeInspectorState,
-    graphEdgeKey: () => graphEdgeKey,
-    graphEdgeKindOptions: () => graphEdgeKindOptions,
-    graphEdgeKindPatch: () => graphEdgeKindPatch,
-    graphEdgeLabelPatch: () => graphEdgeLabelPatch,
-    graphEdgeMidpoint: () => graphEdgeMidpoint,
-    graphEdgePath: () => graphEdgePath,
-    graphEdgeValidation: () => graphEdgeValidation,
-    graphFirstConditionPatch: () => graphFirstConditionPatch,
-    graphForkDispatchPatch: () => graphForkDispatchPatch,
-    graphFrameCanvasState: () => graphFrameCanvasState,
-    graphFrameKindOptions: () => graphFrameKindOptions,
-    graphGateCanvasState: () => graphGateCanvasState,
-    graphGateControlState: () => graphGateControlState,
-    graphGateKindAllowed: () => graphGateKindAllowed,
-    graphGateKindOptions: () => graphGateKindOptions,
-    graphGateKindPatch: () => graphGateKindPatch,
-    graphGatePaletteRowsFromSchema: () => graphGatePaletteRowsFromSchema,
-    graphGridHeaderCanvasRows: () => graphGridHeaderCanvasRows,
-    graphGridState: () => graphGridState,
-    graphInstanceControlState: () => graphInstanceControlState,
-    graphInstanceIdSet: () => graphInstanceIdSet,
-    graphInstanceLabelPatch: () => graphInstanceLabelPatch,
-    graphInstanceValidation: () => graphInstanceValidation,
-    graphIsConditionEdge: () => graphIsConditionEdge,
-    graphIsFallbackBranchLane: () => graphIsFallbackBranchLane,
-    graphJoinCollectionPatch: () => graphJoinCollectionPatch,
-    graphJoinControllerRolePatch: () => graphJoinControllerRolePatch,
-    graphJoinQuorumPatch: () => graphJoinQuorumPatch,
-    graphLaunchSourceSet: () => graphLaunchSourceSet,
-    graphNodeBox: () => graphNodeBox,
-    graphNodeCanvasState: () => graphNodeCanvasState,
-    graphPortIn: () => graphPortIn,
-    graphPortOut: () => graphPortOut,
-    graphProjectionDocument: () => graphProjectionDocument,
-    graphProjectionEdgeKinds: () => graphProjectionEdgeKinds,
-    graphProjectionForDocument: () => graphProjectionForDocument,
-    graphProjectionForFlow: () => graphProjectionForFlow,
-    graphProjectionFromMobKitResult: () => graphProjectionFromMobKitResult,
-    graphSegmentsToFlowSteps: () => graphSegmentsToFlowSteps,
-    graphSelectionProjection: () => graphSelectionProjection,
-    graphSelectionState: () => graphSelectionState,
-    graphSignature: () => graphSignature,
-    graphSignatureFor: () => graphSignatureFor,
-    graphSourceFileAdornment: () => graphSourceFileAdornment,
-    graphSourceFileAdornmentCanvasState: () => graphSourceFileAdornmentCanvasState,
-    graphStructureSignature: () => graphStructureSignature,
-    graphTemplateInspectorState: () => graphTemplateInspectorState,
-    graphTemplateQuickStartRowsFromSchema: () => graphTemplateQuickStartRowsFromSchema,
-    graphTemplateSeedFromBlankMobpack: () => graphTemplateSeedFromBlankMobpack,
-    graphTemplateText: () => graphTemplateText,
-    graphTemplateViewForState: () => graphTemplateViewForState,
-    graphTemplateViewFromSchema: () => graphTemplateViewFromSchema,
-    graphTerminalControlState: () => graphTerminalControlState,
-    graphTerminalKindAllowed: () => graphTerminalKindAllowed,
-    graphTerminalKindOptions: () => graphTerminalKindOptions,
-    graphTerminalKindPatch: () => graphTerminalKindPatch,
-    graphTerminalPaletteRowsFromSchema: () => graphTerminalPaletteRowsFromSchema,
-    graphToFlow: () => graphToFlow,
-    graphToFlowDocument: () => graphToFlowDocument,
-    graphToolTagClass: () => graphToolTagClass,
-    graphViewFromSchema: () => graphViewFromSchema,
-    hasAuthoringLaunchMode: () => hasAuthoringLaunchMode,
-    highlightSourceFile: () => highlightSourceFile,
-    highlightTomlSource: () => highlightTomlSource,
-    historyStepDocument: () => historyStepDocument,
-    hydrateMobpackDocumentState: () => hydrateMobpackDocumentState,
-    importDocument: () => importDocument,
-    importErrorOutcome: () => importErrorOutcome,
-    importParamsFromDecodedFile: () => importParamsFromDecodedFile,
-    incomingEdges: () => incomingEdges,
-    inferDecodedFileKind: () => inferDecodedFileKind,
-    inlineSkillRealmIdFromOperationResult: () => inlineSkillRealmIdFromOperationResult,
-    inlineSourceBusyTransition: () => inlineSourceBusyTransition,
-    inlineSourcePendingTransition: () => inlineSourcePendingTransition,
-    inlineSourceReadyTransition: () => inlineSourceReadyTransition,
-    inlineSourceRequestPath: () => inlineSourceRequestPath,
-    inlineSourceToggleButtonState: () => inlineSourceToggleButtonState,
-    inlineSourceToggleTransition: () => inlineSourceToggleTransition,
-    inputParamAddErrorState: () => inputParamAddErrorState,
-    inputParamDeletePatch: () => inputParamDeletePatch,
-    inputParamFieldControlState: () => inputParamFieldControlState,
-    inputParamName: () => inputParamName,
-    inputParamNameSet: () => inputParamNameSet,
-    inputParamOptions: () => inputParamOptions,
-    inputParamRenamePatch: () => inputParamRenamePatch,
-    inputParamSummary: () => inputParamSummary,
-    inputParamUpdatePatch: () => inputParamUpdatePatch,
-    inputParamsForStep: () => inputParamsForStep,
-    inputStepDraft: () => inputStepDraft,
-    instancesForDocument: () => instancesForDocument,
-    isDraftGuardConflictError: () => isDraftGuardConflictError,
-    jsonEquivalent: () => jsonEquivalent,
-    laneReaches: () => laneReaches,
-    launchBudgetFixedLimitPatch: () => launchBudgetFixedLimitPatch,
-    launchBudgetKindPatch: () => launchBudgetKindPatch,
-    launchModeBudgetPatch: () => launchModeBudgetPatch,
-    launchModeControlState: () => launchModeControlState,
-    launchModeForkContextPatch: () => launchModeForkContextPatch,
-    launchModeForkSourcePatch: () => launchModeForkSourcePatch,
-    launchModeFromAuthoringSource: () => launchModeFromAuthoringSource,
-    launchModeKindAllowed: () => launchModeKindAllowed,
-    launchModeKindPatch: () => launchModeKindPatch,
-    launchModeMergePatch: () => launchModeMergePatch,
-    launchModeOptions: () => launchModeOptions,
-    launchModeSessionPatch: () => launchModeSessionPatch,
-    launchModesFromFlow: () => launchModesFromFlow,
-    launchOptionLabel: () => launchOptionLabel,
-    launchSourceAllowed: () => launchSourceAllowed,
-    launchUnsupportedReason: () => launchUnsupportedReason,
-    launchViewForState: () => launchViewForState,
-    launchViewFromSchema: () => launchViewFromSchema,
-    listDocuments: () => listDocuments,
-    loadCapabilities: () => loadCapabilities,
-    loadCatalogs: () => loadCatalogs,
-    loadSchema: () => loadSchema,
-    maxInlinePeerNotificationsPatchValueIsValid: () => maxInlinePeerNotificationsPatchValueIsValid,
-    memberBackendPatch: () => memberBackendPatch,
-    memberBudgetAffordanceState: () => memberBudgetAffordanceState,
-    memberConditionOptionsBefore: () => memberConditionOptionsBefore,
-    memberConditionOptionsBeforeWithMap: () => memberConditionOptionsBeforeWithMap,
-    memberDeleteCascadePatch: () => memberDeleteCascadePatch,
-    memberDisplayName: () => memberDisplayName,
-    memberIdSet: () => memberIdSet,
-    memberInlineSkillPatch: () => memberInlineSkillPatch,
-    memberMaxInlinePeerNotificationsPatch: () => memberMaxInlinePeerNotificationsPatch,
-    memberModelPatch: () => memberModelPatch,
-    memberNamePatch: () => memberNamePatch,
-    memberProfileBindingPatch: () => memberProfileBindingPatch,
-    memberPromptSkeleton: () => memberPromptSkeleton,
-    memberProviderParamsEditorState: () => memberProviderParamsEditorState,
-    memberProviderParamsPatch: () => memberProviderParamsPatch,
-    memberRealmProfilePatch: () => memberRealmProfilePatch,
-    memberRoleAllowed: () => memberRoleAllowed,
-    memberRuntimeModePatch: () => memberRuntimeModePatch,
-    memberSchemaCascadePatch: () => memberSchemaCascadePatch,
-    memberSchemaChangeErrorState: () => memberSchemaChangeErrorState,
-    memberSchemaPatch: () => memberSchemaPatch,
-    memberSkillAccessState: () => memberSkillAccessState,
-    memberSkillRemovePatch: () => memberSkillRemovePatch,
-    memberSkillTogglePatch: () => memberSkillTogglePatch,
-    memberStepFromInstance: () => memberStepFromInstance,
-    memberSystemPromptPatch: () => memberSystemPromptPatch,
-    memberToolAccessPatch: () => memberToolAccessPatch,
-    memberToolAccessState: () => memberToolAccessState,
-    memberToolIndex: () => memberToolIndex,
-    memberToolRemovePatch: () => memberToolRemovePatch,
-    memberUpdateCascadePatch: () => memberUpdateCascadePatch,
-    memberUpdateValidation: () => memberUpdateValidation,
-    mergeSkillRealms: () => mergeSkillRealms,
-    mobBackendDefaultOptions: () => mobBackendDefaultOptions,
-    mobDefaultsFromSchema: () => mobDefaultsFromSchema,
-    mobDefinitionUnsupportedOptionLabel: () => mobDefinitionUnsupportedOptionLabel,
-    mobDefinitionUnsupportedOptionReason: () => mobDefinitionUnsupportedOptionReason,
-    mobKitBudgetSplitPolicy: () => mobKitBudgetSplitPolicy,
-    mobKitCatalogsFromSchema: () => mobKitCatalogsFromSchema,
-    mobRoleWiringAddPatch: () => mobRoleWiringAddPatch,
-    mobRoleWiringDeletePatch: () => mobRoleWiringDeletePatch,
-    mobRoleWiringEditorState: () => mobRoleWiringEditorState,
-    mobRoleWiringSourcePatch: () => mobRoleWiringSourcePatch,
-    mobRoleWiringTargetPatch: () => mobRoleWiringTargetPatch,
-    mobRoleWiringUpdatePatch: () => mobRoleWiringUpdatePatch,
-    mobSettingsFieldPatch: () => mobSettingsFieldPatch,
-    mobSettingsForUi: () => mobSettingsForUi,
-    mobSettingsPatch: () => mobSettingsPatch,
-    modelCatalogFromCatalogs: () => modelCatalogFromCatalogs,
-    newFlowInitialState: () => newFlowInitialState,
-    newFlowModalCreateSpec: () => newFlowModalCreateSpec,
-    newFlowModalFieldPatch: () => newFlowModalFieldPatch,
-    newFlowModalPatch: () => newFlowModalPatch,
-    newFlowModalState: () => newFlowModalState,
-    newFlowModalStepPatch: () => newFlowModalStepPatch,
-    newFlowTemplateOptions: () => newFlowTemplateOptions,
-    newFlowViewForState: () => newFlowViewForState,
-    newFlowViewFromSchema: () => newFlowViewFromSchema,
-    nodeById: () => nodeById,
-    normalizeAgentDefinitionRows: () => normalizeAgentDefinitionRows,
-    normalizeAgentDefinitionsFromCatalog: () => normalizeAgentDefinitionsFromCatalog,
-    normalizeAgentSchemaDefinition: () => normalizeAgentSchemaDefinition,
-    normalizeBudgetSplitPolicy: () => normalizeBudgetSplitPolicy,
-    normalizeCollectionMode: () => normalizeCollectionMode,
-    normalizeDeploySettings: () => normalizeDeploySettings,
-    normalizeDispatchMode: () => normalizeDispatchMode,
-    normalizeForkContext: () => normalizeForkContext,
-    normalizeGraphEdgeForDocument: () => normalizeGraphEdgeForDocument,
-    normalizeLaunchMode: () => normalizeLaunchMode,
-    normalizeMaxInlinePeerNotifications: () => normalizeMaxInlinePeerNotifications,
-    normalizeMobSettings: () => normalizeMobSettings,
-    normalizeOptionalObject: () => normalizeOptionalObject,
-    normalizeOutputFormat: () => normalizeOutputFormat,
-    normalizePositiveInteger: () => normalizePositiveInteger,
-    normalizeProfileBackend: () => normalizeProfileBackend,
-    normalizeProviderParams: () => normalizeProviderParams,
-    normalizeRoleWiring: () => normalizeRoleWiring,
-    normalizeRoleWiringForOptions: () => normalizeRoleWiringForOptions,
-    normalizeSchemaLikeFieldPatch: () => normalizeSchemaLikeFieldPatch,
-    normalizeSkillId: () => normalizeSkillId,
-    normalizeStepToolScopeList: () => normalizeStepToolScopeList,
-    normalizeStringList: () => normalizeStringList,
-    normalizeToolRef: () => normalizeToolRef,
-    normalizedEdgeCondition: () => normalizedEdgeCondition,
-    numberOrNull: () => numberOrNull,
-    operationErrorText: () => operationErrorText,
-    optionValueAllowed: () => optionValueAllowed,
-    outgoingEdges: () => outgoingEdges,
-    outputFormatAllowed: () => outputFormatAllowed,
-    outputFormatOptions: () => outputFormatOptions,
-    parallelFrameLabel: () => parallelFrameLabel,
-    parseDecodedJsonImport: () => parseDecodedJsonImport,
-    parseEditorConditionText: () => parseEditorConditionText,
-    parseGraphConditionVar: () => parseGraphConditionVar,
-    parseLegacyInputFields: () => parseLegacyInputFields,
-    previousRepeatForBody: () => previousRepeatForBody,
-    profileBackendOptions: () => profileBackendOptions,
-    profileBindingOptions: () => profileBindingOptions,
-    profileBindingRestriction: () => profileBindingRestriction,
-    profileName: () => profileName,
-    providerParamsPatchValueIsValid: () => providerParamsPatchValueIsValid,
-    pruneMissingMemberStep: () => pruneMissingMemberStep,
-    pruneMissingMemberSteps: () => pruneMissingMemberSteps,
-    realmBackendOptions: () => realmBackendOptions,
-    reconcileAuthoringForMembers: () => reconcileAuthoringForMembers,
-    reconcileAuthoringWithContract: () => reconcileAuthoringWithContract,
-    reconcileConditionAvailabilityInEdges: () => reconcileConditionAvailabilityInEdges,
-    reconcileConditionAvailabilityInFlow: () => reconcileConditionAvailabilityInFlow,
-    reconcileConditionAvailabilityInStep: () => reconcileConditionAvailabilityInStep,
-    reconcileConditionAvailabilityInSteps: () => reconcileConditionAvailabilityInSteps,
-    reconcileConditionFieldAvailability: () => reconcileConditionFieldAvailability,
-    reconcileControlRoleObject: () => reconcileControlRoleObject,
-    reconcileControlRolesInStep: () => reconcileControlRolesInStep,
-    reconcileControlRolesInSteps: () => reconcileControlRolesInSteps,
-    reconcileDeletedFlowStepReferences: () => reconcileDeletedFlowStepReferences,
-    reconcileDeletedFlowStepReferencesInStep: () => reconcileDeletedFlowStepReferencesInStep,
-    reconcileDeletedFlowStepReferencesInSteps: () => reconcileDeletedFlowStepReferencesInSteps,
-    reconcileDeploySettingsWithContract: () => reconcileDeploySettingsWithContract,
-    reconcileFlowControlRoles: () => reconcileFlowControlRoles,
-    reconcileFlowLaunchSources: () => reconcileFlowLaunchSources,
-    reconcileFlowMemberSchemas: () => reconcileFlowMemberSchemas,
-    reconcileFlowMemberSteps: () => reconcileFlowMemberSteps,
-    reconcileFlowStepToolScopes: () => reconcileFlowStepToolScopes,
-    reconcileGraphControlRoles: () => reconcileGraphControlRoles,
-    reconcileGraphLaunchSources: () => reconcileGraphLaunchSources,
-    reconcileGraphMemberInstances: () => reconcileGraphMemberInstances,
-    reconcileGraphStepToolScopes: () => reconcileGraphStepToolScopes,
-    reconcileInputParamReferences: () => reconcileInputParamReferences,
-    reconcileInputParamReferencesInEdges: () => reconcileInputParamReferencesInEdges,
-    reconcileInputParamReferencesInFlow: () => reconcileInputParamReferencesInFlow,
-    reconcileInputParamReferencesInStep: () => reconcileInputParamReferencesInStep,
-    reconcileInputParamReferencesInSteps: () => reconcileInputParamReferencesInSteps,
-    reconcileLaunchSourceObject: () => reconcileLaunchSourceObject,
-    reconcileLaunchSourcesInStep: () => reconcileLaunchSourcesInStep,
-    reconcileLaunchSourcesInSteps: () => reconcileLaunchSourcesInSteps,
-    reconcileMemberSchemaInStep: () => reconcileMemberSchemaInStep,
-    reconcileMemberSchemaRefs: () => reconcileMemberSchemaRefs,
-    reconcileMemberSchemasInSteps: () => reconcileMemberSchemasInSteps,
-    reconcileMemberSkillRefs: () => reconcileMemberSkillRefs,
-    reconcileMembersWithContract: () => reconcileMembersWithContract,
-    reconcileMobSettingsProfiles: () => reconcileMobSettingsProfiles,
-    reconcileMobSettingsWithContract: () => reconcileMobSettingsWithContract,
-    reconcileSchemaFieldReferences: () => reconcileSchemaFieldReferences,
-    reconcileSchemaFieldReferencesInEdges: () => reconcileSchemaFieldReferencesInEdges,
-    reconcileSchemaFieldReferencesInFlow: () => reconcileSchemaFieldReferencesInFlow,
-    reconcileSchemaFieldReferencesInStep: () => reconcileSchemaFieldReferencesInStep,
-    reconcileSchemaFieldReferencesInSteps: () => reconcileSchemaFieldReferencesInSteps,
-    reconcileStringField: () => reconcileStringField,
-    reconcileToolScopeObject: () => reconcileToolScopeObject,
-    reconcileToolScopesInStep: () => reconcileToolScopesInStep,
-    reconcileToolScopesInSteps: () => reconcileToolScopesInSteps,
-    redoDocument: () => redoDocument,
-    renameSchemaDefinition: () => renameSchemaDefinition,
-    repeatCondToGraphCond: () => repeatCondToGraphCond,
-    repeatConditionFromEdge: () => repeatConditionFromEdge,
-    repeatEdgeLabel: () => repeatEdgeLabel,
-    repeatFrameLabel: () => repeatFrameLabel,
-    repeatIterationInputOptions: () => repeatIterationInputOptions,
-    requireExportArchiveMetadata: () => requireExportArchiveMetadata,
-    requiredFramesFromFlow: () => requiredFramesFromFlow,
-    reserveFlowBranchId: () => reserveFlowBranchId,
-    rewriteConditionTextReference: () => rewriteConditionTextReference,
-    rewriteEditorCondition: () => rewriteEditorCondition,
-    rewriteInputParamCondition: () => rewriteInputParamCondition,
-    rewriteInputParamConditionText: () => rewriteInputParamConditionText,
-    roleAccentColor: () => roleAccentColor,
-    roleAccentStyle: () => roleAccentStyle,
-    roleWiringOptionValues: () => roleWiringOptionValues,
-    rpcMethod: () => rpcMethod,
-    rpcPath: () => rpcPath,
-    runtimeModeDeploySurfaceAllowed: () => runtimeModeDeploySurfaceAllowed,
-    runtimeModeDeploySurfaceReason: () => runtimeModeDeploySurfaceReason,
-    runtimeModeOptions: () => runtimeModeOptions,
-    sampleAgentDefinitionsFromCatalogs: () => sampleAgentDefinitionsFromCatalogs,
-    sampleFlowsFromCatalogs: () => sampleFlowsFromCatalogs,
-    sanitizeFlowStepForDocument: () => sanitizeFlowStepForDocument,
-    sanitizeFlowStepsForDocument: () => sanitizeFlowStepsForDocument,
-    saveDocument: () => saveDocument,
-    schemaDefinitionAddErrorState: () => schemaDefinitionAddErrorState,
-    schemaDescriptionPatch: () => schemaDescriptionPatch,
-    schemaEditorControlState: () => schemaEditorControlState,
-    schemaFieldAddErrorState: () => schemaFieldAddErrorState,
-    schemaFieldDeleteCascadePatch: () => schemaFieldDeleteCascadePatch,
-    schemaFieldDeletePatch: () => schemaFieldDeletePatch,
-    schemaFieldForCondition: () => schemaFieldForCondition,
-    schemaFieldName: () => schemaFieldName,
-    schemaFieldNameIndex: () => schemaFieldNameIndex,
-    schemaFieldRenameCascadePatch: () => schemaFieldRenameCascadePatch,
-    schemaFieldRowControlState: () => schemaFieldRowControlState,
-    schemaFieldTypeAllowedSet: () => schemaFieldTypeAllowedSet,
-    schemaFieldTypeOptions: () => schemaFieldTypeOptions,
-    schemaFieldUpdateCascadePatch: () => schemaFieldUpdateCascadePatch,
-    schemaFieldUpdatePatch: () => schemaFieldUpdatePatch,
-    schemaHasField: () => schemaHasField,
-    schemaLikeFieldDescriptionPatch: () => schemaLikeFieldDescriptionPatch,
-    schemaLikeFieldRequiredPatch: () => schemaLikeFieldRequiredPatch,
-    schemaLikeFieldTypeControlState: () => schemaLikeFieldTypeControlState,
-    schemaLikeFieldTypePatch: () => schemaLikeFieldTypePatch,
-    schemaViewForState: () => schemaViewForState,
-    schemaViewFromSchema: () => schemaViewFromSchema,
-    settingsViewForState: () => settingsViewForState,
-    settingsViewFromSchema: () => settingsViewFromSchema,
-    settingsViewLabelMapFromSchema: () => settingsViewLabelMapFromSchema,
-    settingsViewOptionsFromSchema: () => settingsViewOptionsFromSchema,
-    simpleContractOptions: () => simpleContractOptions,
-    skillIdSet: () => skillIdSet,
-    skillIdsFromRealms: () => skillIdsFromRealms,
-    skillRealmsForDocument: () => skillRealmsForDocument,
-    skillRealmsFromCatalogs: () => skillRealmsFromCatalogs,
-    slug: () => slug,
-    sourceDefinitionRefRows: () => sourceDefinitionRefRows,
-    sourceDocument: () => sourceDocument,
-    sourceDocumentFromSourceResult: () => sourceDocumentFromSourceResult,
-    sourceDrawerReadyTransition: () => sourceDrawerReadyTransition,
-    sourceEditorState: () => sourceEditorState,
-    sourceErrorOutcome: () => sourceErrorOutcome,
-    sourceFileContent: () => sourceFileContent,
-    sourceFileForPath: () => sourceFileForPath,
-    sourceFileRequiresText: () => sourceFileRequiresText,
-    sourceFileRows: () => sourceFileRows,
-    sourceFileSelectionTransition: () => sourceFileSelectionTransition,
-    sourceProjectionClearTransition: () => sourceProjectionClearTransition,
-    sourceViewForState: () => sourceViewForState,
-    sourceViewFromSchema: () => sourceViewFromSchema,
-    splitLegacyInputFieldLine: () => splitLegacyInputFieldLine,
-    stepToolScopeAddPatch: () => stepToolScopeAddPatch,
-    stepToolScopeRemovePatch: () => stepToolScopeRemovePatch,
-    stepToolScopeState: () => stepToolScopeState,
-    stringListPatchValueIsValid: () => stringListPatchValueIsValid,
-    studioAddMemberPatch: () => studioAddMemberPatch,
-    studioAddSchemaPatch: () => studioAddSchemaPatch,
-    studioDeleteEdgePatch: () => studioDeleteEdgePatch,
-    studioDeleteInstancePatch: () => studioDeleteInstancePatch,
-    studioDeleteMemberPatch: () => studioDeleteMemberPatch,
-    studioDeleteSchemaPatch: () => studioDeleteSchemaPatch,
-    studioHistorySnapshotPatch: () => studioHistorySnapshotPatch,
-    studioMoveInstancePatch: () => studioMoveInstancePatch,
-    studioRedoPatch: () => studioRedoPatch,
-    studioSnapshotState: () => studioSnapshotState,
-    studioUndoPatch: () => studioUndoPatch,
-    studioUpdateEdgePatch: () => studioUpdateEdgePatch,
-    studioUpdateInstancePatch: () => studioUpdateInstancePatch,
-    studioUpdateMemberPatch: () => studioUpdateMemberPatch,
-    studioUpdateSchemaPatch: () => studioUpdateSchemaPatch,
-    themeToggleTransition: () => themeToggleTransition,
-    toolCatalogEntryAvailability: () => toolCatalogEntryAvailability,
-    toolCatalogEntryAvailable: () => toolCatalogEntryAvailable,
-    toolCatalogFromCatalogs: () => toolCatalogFromCatalogs,
-    topRailNavigationTransition: () => topRailNavigationTransition,
-    topRailState: () => topRailState,
-    trustPolicyOptions: () => trustPolicyOptions,
-    tweaksControlState: () => tweaksControlState,
-    undoDocument: () => undoDocument,
-    uniqueEnumValue: () => uniqueEnumValue,
-    uniqueFlowStepId: () => uniqueFlowStepId,
-    uniqueInputParamName: () => uniqueInputParamName,
-    uniqueSchemaFieldName: () => uniqueSchemaFieldName,
-    validMemberToolIds: () => validMemberToolIds,
-    validStepToolSet: () => validStepToolSet,
-    validateDocument: () => validateDocument,
-    validateSourceFileMetadata: () => validateSourceFileMetadata,
-    validationErrorOutcome: () => validationErrorOutcome,
-    validationOutcome: () => validationOutcome,
-    validationSheetCloseTransition: () => validationSheetCloseTransition,
-    validationSheetOpenTransition: () => validationSheetOpenTransition,
-    validationSheetState: () => validationSheetState,
-    viewStringMapFromSchema: () => viewStringMapFromSchema
+  // src/data.js
+  var require_data = __commonJS({
+    "src/data.js"() {
+      var GRID = {
+        cols: 5,
+        // initial; grows dynamically based on instances
+        rows: 3,
+        // initial; grows dynamically based on instances
+        cellW: 220,
+        cellH: 158,
+        gapX: 32,
+        gapY: 24,
+        padX: 56,
+        padY: 56
+      };
+      function cellXY(col, row) {
+        return {
+          x: GRID.padX + col * (GRID.cellW + GRID.gapX),
+          y: GRID.padY + row * (GRID.cellH + GRID.gapY)
+        };
+      }
+      window.MOBKIT_BOOT = {
+        GRID,
+        cellXY
+      };
+    }
   });
 
   // ../packages/flow-editor-core/src/shared/normalize.ts
@@ -755,6 +104,10 @@ var MobKitFlowCore = (() => {
   function graphInstanceIdSet(instances = []) {
     return new Set((Array.isArray(instances) ? instances : []).map((instance) => String(instance?.id || "").trim()).filter(Boolean));
   }
+  var init_normalize = __esm({
+    "../packages/flow-editor-core/src/shared/normalize.ts"() {
+    }
+  });
 
   // ../packages/flow-editor-core/src/views/view-config.ts
   function roleAccentColor(role) {
@@ -1878,6 +1231,10 @@ var MobKitFlowCore = (() => {
       return { id, glyph, label, meta };
     }).filter(Boolean);
   }
+  var init_view_config = __esm({
+    "../packages/flow-editor-core/src/views/view-config.ts"() {
+    }
+  });
 
   // ../packages/flow-editor-core/src/schema/field-edit.ts
   function conditionViewFromSchema(schema) {
@@ -2194,83 +1551,97 @@ var MobKitFlowCore = (() => {
       edges: reconciled.edges
     };
   }
+  var init_field_edit = __esm({
+    "../packages/flow-editor-core/src/schema/field-edit.ts"() {
+      init_options();
+      init_mob_settings();
+      init_basic_editor();
+      init_reconcile();
+      init_view_config();
+    }
+  });
 
   // ../packages/flow-editor-core/src/shared/constants.ts
-  var SCHEMA_VERSION = "0.1.0";
-  var RPC_METHODS = {
-    schema: "mobkit/mobpacks/schema",
-    catalogs: "mobkit/mobpacks/catalogs",
-    validate: "mobkit/mobpacks/validate",
-    source: "mobkit/mobpacks/source",
-    export: "mobkit/mobpacks/export",
-    import: "mobkit/mobpacks/import",
-    list: "mobkit/mobpacks/list",
-    get: "mobkit/mobpacks/get",
-    create: "mobkit/mobpacks/create",
-    save: "mobkit/mobpacks/save",
-    delete: "mobkit/mobpacks/delete",
-    undo: "mobkit/mobpacks/undo",
-    redo: "mobkit/mobpacks/redo",
-    applyOperation: "mobkit/mobpacks/apply_operation",
-    graphProjection: "mobkit/mobpacks/graph_projection",
-    graphToFlow: "mobkit/mobpacks/graph_to_flow",
-    deployCommand: "mobkit/mobpacks/deploy_command",
-    deploy: "mobkit/mobpacks/deploy"
-  };
-  var SCHEMA_COMMAND_KEYS = {
-    schema: "schema",
-    catalogs: "catalogs",
-    validate: "validate",
-    source: "source",
-    export: "export",
-    import: "import",
-    list: "list",
-    get: "get",
-    create: "create",
-    save: "save",
-    delete: "delete",
-    undo: "undo",
-    redo: "redo",
-    applyOperation: "apply_operation",
-    graphProjection: "graph_projection",
-    graphToFlow: "graph_to_flow",
-    deployCommand: "deploy_command",
-    deploy: "deploy_rpc"
-  };
-  var EMPTY_DEPLOY_SETTINGS = {
-    command: "",
-    surface: "",
-    trustPolicy: "",
-    model: "",
-    maxDuration: "",
-    maxToolCalls: null,
-    maxTotalTokens: null,
-    isolated: false,
-    realm: "",
-    instance: "",
-    realmBackend: "",
-    contextRoot: "",
-    stateRoot: "",
-    userConfigRoot: "",
-    prompt: ""
-  };
-  var EMPTY_MOB_SETTINGS = {
-    orchestrator: "",
-    autoWireOrchestrator: false,
-    roleWiring: [],
-    backendDefault: "",
-    externalAddressBase: "",
-    advanced: {
-      topology: null,
-      supervisor: null,
-      limits: null,
-      spawnPolicy: null,
-      eventRouter: null
+  var SCHEMA_VERSION, RPC_METHODS, SCHEMA_COMMAND_KEYS, EMPTY_DEPLOY_SETTINGS, EMPTY_MOB_SETTINGS, MOB_SETTINGS_PATCH_KEYS, GRAPH_NODE_W, GRAPH_NODE_H;
+  var init_constants = __esm({
+    "../packages/flow-editor-core/src/shared/constants.ts"() {
+      SCHEMA_VERSION = "0.1.0";
+      RPC_METHODS = {
+        schema: "mobkit/mobpacks/schema",
+        catalogs: "mobkit/mobpacks/catalogs",
+        validate: "mobkit/mobpacks/validate",
+        source: "mobkit/mobpacks/source",
+        export: "mobkit/mobpacks/export",
+        import: "mobkit/mobpacks/import",
+        list: "mobkit/mobpacks/list",
+        get: "mobkit/mobpacks/get",
+        create: "mobkit/mobpacks/create",
+        save: "mobkit/mobpacks/save",
+        delete: "mobkit/mobpacks/delete",
+        undo: "mobkit/mobpacks/undo",
+        redo: "mobkit/mobpacks/redo",
+        applyOperation: "mobkit/mobpacks/apply_operation",
+        graphProjection: "mobkit/mobpacks/graph_projection",
+        graphToFlow: "mobkit/mobpacks/graph_to_flow",
+        deployCommand: "mobkit/mobpacks/deploy_command",
+        deploy: "mobkit/mobpacks/deploy"
+      };
+      SCHEMA_COMMAND_KEYS = {
+        schema: "schema",
+        catalogs: "catalogs",
+        validate: "validate",
+        source: "source",
+        export: "export",
+        import: "import",
+        list: "list",
+        get: "get",
+        create: "create",
+        save: "save",
+        delete: "delete",
+        undo: "undo",
+        redo: "redo",
+        applyOperation: "apply_operation",
+        graphProjection: "graph_projection",
+        graphToFlow: "graph_to_flow",
+        deployCommand: "deploy_command",
+        deploy: "deploy_rpc"
+      };
+      EMPTY_DEPLOY_SETTINGS = {
+        command: "",
+        surface: "",
+        trustPolicy: "",
+        model: "",
+        maxDuration: "",
+        maxToolCalls: null,
+        maxTotalTokens: null,
+        isolated: false,
+        realm: "",
+        instance: "",
+        realmBackend: "",
+        contextRoot: "",
+        stateRoot: "",
+        userConfigRoot: "",
+        prompt: ""
+      };
+      EMPTY_MOB_SETTINGS = {
+        orchestrator: "",
+        autoWireOrchestrator: false,
+        roleWiring: [],
+        backendDefault: "",
+        externalAddressBase: "",
+        advanced: {
+          topology: null,
+          supervisor: null,
+          limits: null,
+          spawnPolicy: null,
+          eventRouter: null
+        }
+      };
+      MOB_SETTINGS_PATCH_KEYS = new Set(Object.keys(EMPTY_MOB_SETTINGS));
+      GRAPH_NODE_W = 200;
+      GRAPH_NODE_H = 156;
     }
-  };
-  var MOB_SETTINGS_PATCH_KEYS = new Set(Object.keys(EMPTY_MOB_SETTINGS));
-  var GRAPH_NODE_W = 200;
-  var GRAPH_NODE_H = 156;
+  });
 
   // ../packages/flow-editor-core/src/flow/reconcile.ts
   function reconcileDeletedFlowStepReferences(flow, deletedId) {
@@ -3258,9 +2629,6 @@ var MobKitFlowCore = (() => {
     });
     return changed ? next : edges;
   }
-  function schemaHasField(schemaFields, schemaId, field) {
-    return !!schemaFieldForCondition(schemaFields, schemaId, field);
-  }
   function schemaFieldForCondition(schemaFields, schemaId, field) {
     const id = String(schemaId || "").trim();
     const name = String(field || "").trim();
@@ -3481,6 +2849,18 @@ var MobKitFlowCore = (() => {
     }
     return step;
   }
+  var init_reconcile = __esm({
+    "../packages/flow-editor-core/src/flow/reconcile.ts"() {
+      init_hydration();
+      init_options();
+      init_tool_skill_access();
+      init_mob_settings();
+      init_field_edit();
+      init_constants();
+      init_normalize();
+      init_launch_modes();
+    }
+  });
 
   // ../packages/flow-editor-core/src/flow/step-tree.ts
   function childLanes(step) {
@@ -3693,18 +3073,6 @@ var MobKitFlowCore = (() => {
     }
     return out;
   }
-  function flowStepById(steps, id) {
-    const target = String(id || "").trim();
-    if (!target) return null;
-    for (const step of steps || []) {
-      if (String(step?.id || "").trim() === target) return step;
-      for (const lane of childLanes(step || {})) {
-        const found = flowStepById(lane.steps || [], target);
-        if (found) return found;
-      }
-    }
-    return null;
-  }
   function flowStepMap(steps, id, fn) {
     return (steps || []).map((step) => {
       if (step?.id === id) return fn(step);
@@ -3784,6 +3152,16 @@ var MobKitFlowCore = (() => {
   function emptyAuthoringFlowState() {
     return { name: "", steps: [] };
   }
+  var init_step_tree = __esm({
+    "../packages/flow-editor-core/src/flow/step-tree.ts"() {
+      init_options();
+      init_tool_skill_access();
+      init_mob_settings();
+      init_normalize();
+      init_launch_modes();
+      init_reconcile();
+    }
+  });
 
   // ../packages/flow-editor-core/src/flow/launch-modes.ts
   function hasAuthoringLaunchMode(source) {
@@ -4234,6 +3612,15 @@ var MobKitFlowCore = (() => {
       for (const lane of childLanes(step)) collectVisualSteps(lane.steps, visit);
     }
   }
+  var init_launch_modes = __esm({
+    "../packages/flow-editor-core/src/flow/launch-modes.ts"() {
+      init_options();
+      init_tool_skill_access();
+      init_normalize();
+      init_view_config();
+      init_step_tree();
+    }
+  });
 
   // ../packages/flow-editor-core/src/editors/basic-editor.ts
   function basicEditorViewState(basicView) {
@@ -4917,6 +4304,17 @@ var MobKitFlowCore = (() => {
     if (!op) return step?.until || "";
     return `${member.name || member.role || member.id}.${cond.field} ${op} ${conditionValueLiteral(cond.val ?? cond.value ?? "")}`;
   }
+  var init_basic_editor = __esm({
+    "../packages/flow-editor-core/src/editors/basic-editor.ts"() {
+      init_options();
+      init_mob_settings();
+      init_launch_modes();
+      init_reconcile();
+      init_step_tree();
+      init_field_edit();
+      init_normalize();
+    }
+  });
 
   // ../packages/flow-editor-core/src/domain/tool-skill-access.ts
   function slug(value, fallback) {
@@ -5257,6 +4655,13 @@ var MobKitFlowCore = (() => {
       outsideRealmHeading: view.skillOutsideRealmHeading
     };
   }
+  var init_tool_skill_access = __esm({
+    "../packages/flow-editor-core/src/domain/tool-skill-access.ts"() {
+      init_basic_editor();
+      init_normalize();
+      init_view_config();
+    }
+  });
 
   // ../packages/flow-editor-core/src/document/build-projection.ts
   function buildDocument({ flow, studio, currentFlow, deploySettings, contract }) {
@@ -5310,7 +4715,7 @@ var MobKitFlowCore = (() => {
       toolCatalog,
       contractLoaded
     });
-    const document = buildDocument({
+    const document2 = buildDocument({
       flow: reconciled.flow,
       studio: {
         members: reconciled.members,
@@ -5327,11 +4732,11 @@ var MobKitFlowCore = (() => {
     });
     return {
       flow: reconciled.flow,
-      document,
+      document: document2,
       members: reconciled.members,
-      instances: document.instances,
-      edges: document.edges,
-      frames: document.frames,
+      instances: document2.instances,
+      edges: document2.edges,
+      frames: document2.frames,
       deploySettings: reconciled.deploySettings,
       mobSettings: reconciled.mobSettings
     };
@@ -6222,6 +5627,17 @@ ${kind}` : "";
     if (outputFormat) out.outputFormat = outputFormat;
     return out;
   }
+  var init_build_projection = __esm({
+    "../packages/flow-editor-core/src/document/build-projection.ts"() {
+      init_options();
+      init_tool_skill_access();
+      init_mob_settings();
+      init_launch_modes();
+      init_reconcile();
+      init_constants();
+      init_normalize();
+    }
+  });
 
   // ../packages/flow-editor-core/src/editors/graph-editor.ts
   function graphCanvasViewState(graphView) {
@@ -7202,6 +6618,20 @@ ${kind}` : "";
     if (!dispatchModeAllowed(contract, next)) return {};
     return { dispatch: next, label: next };
   }
+  var init_graph_editor = __esm({
+    "../packages/flow-editor-core/src/editors/graph-editor.ts"() {
+      init_options();
+      init_build_projection();
+      init_mob_settings();
+      init_launch_modes();
+      init_reconcile();
+      init_step_tree();
+      init_constants();
+      init_normalize();
+      init_view_config();
+      init_basic_editor();
+    }
+  });
 
   // ../packages/flow-editor-core/src/contract/options.ts
   function runtimeModeOptions(contract, deploySettings, currentMode) {
@@ -7668,23 +7098,8 @@ ${kind}` : "";
       hasConfiguredMembers: Array.isArray(members) && members.length > 0
     };
   }
-  function firstSupportedOption(options, preferred = []) {
-    const list = Array.isArray(options) ? options : [];
-    for (const value of preferred) {
-      const option = list.find((candidate) => candidate.value === value && !candidate.disabled);
-      if (option) return option.value;
-    }
-    return list.find((option) => !option.disabled)?.value || "";
-  }
   function contractStringValues(values) {
     return Array.isArray(values) ? values.map((value) => String(value || "").trim()).filter(Boolean) : [];
-  }
-  function firstContractValue(values, preferred = []) {
-    const list = contractStringValues(values);
-    for (const value of preferred) {
-      if (list.includes(value)) return value;
-    }
-    return list[0] || "";
   }
   function contractDefaultRaw(contract, name) {
     return String(contract?.mob_definition?.defaults?.[name] || "").trim();
@@ -7737,6 +7152,15 @@ ${kind}` : "";
         return "";
     }
   }
+  var init_options = __esm({
+    "../packages/flow-editor-core/src/contract/options.ts"() {
+      init_tool_skill_access();
+      init_basic_editor();
+      init_graph_editor();
+      init_launch_modes();
+      init_view_config();
+    }
+  });
 
   // ../packages/flow-editor-core/src/drafts/mob-settings.ts
   function editorSchemaDraftField(rawField) {
@@ -8073,6 +7497,18 @@ ${kind}` : "";
   function mobDefaultsFromSchema(schema) {
     return mobSettingsForUi(schema?.mob_definition?.mob_settings?.defaults);
   }
+  var init_mob_settings = __esm({
+    "../packages/flow-editor-core/src/drafts/mob-settings.ts"() {
+      init_options();
+      init_tool_skill_access();
+      init_basic_editor();
+      init_step_tree();
+      init_field_edit();
+      init_constants();
+      init_normalize();
+      init_view_config();
+    }
+  });
 
   // ../packages/flow-editor-core/src/registry/flow-registry.ts
   function sampleFlowsFromCatalogs(schema) {
@@ -8260,7 +7696,7 @@ ${kind}` : "";
   }
   function flowRegistryRowFromDocument({
     id,
-    document,
+    document: document2,
     validation = null,
     stage,
     trigger = "",
@@ -8271,11 +7707,11 @@ ${kind}` : "";
     fallbackVersion = ""
   } = {}) {
     const rowId = String(id || "").trim();
-    if (!rowId || !document || typeof document !== "object") return null;
+    if (!rowId || !document2 || typeof document2 !== "object") return null;
     const name = String(
-      flowRow?.name || document.name || document.flow?.name || document.mob_id || fallbackName
+      flowRow?.name || document2.name || document2.flow?.name || document2.mob_id || fallbackName
     );
-    const version = String(flowRow?.version || document.schema_version || fallbackVersion);
+    const version = String(flowRow?.version || document2.schema_version || fallbackVersion);
     return {
       id: rowId,
       name,
@@ -8283,7 +7719,7 @@ ${kind}` : "";
       stage: String(stage || (validation?.ok ? "valid" : "draft")),
       trigger: String(flowRow?.trigger || trigger || sourceLabel || ""),
       source: String(flowRow?.source || source || ""),
-      document,
+      document: document2,
       validation: validation ?? null,
       ...flowRow?.registry_source ? { registry_source: String(flowRow.registry_source) } : {},
       ...flowRow?.document_kind ? { document_kind: String(flowRow.document_kind) } : {},
@@ -8299,22 +7735,22 @@ ${kind}` : "";
   }
   function flowRegistryRememberDocumentPatch(rows, {
     currentFlowId,
-    document,
+    document: document2,
     validation = null,
     stage = "draft"
   } = {}) {
     const list = Array.isArray(rows) ? rows : [];
-    if (!currentFlowId || !document || typeof document !== "object") return list;
+    if (!currentFlowId || !document2 || typeof document2 !== "object") return list;
     let changed = false;
     const next = list.map((row) => {
       if (!row || row.id !== currentFlowId) return row;
       changed = true;
       return {
         ...row,
-        name: document.name || document.flow?.name || row.name,
-        version: document.schema_version || row.version,
+        name: document2.name || document2.flow?.name || row.name,
+        version: document2.schema_version || row.version,
         stage,
-        document,
+        document: document2,
         validation: validation ?? null
       };
     });
@@ -8342,7 +7778,7 @@ ${kind}` : "";
   }
   function flowRegistryDocumentPersistence({
     currentFlowId,
-    document,
+    document: document2,
     validation = null,
     stage = "draft",
     previousSignature = "",
@@ -8350,7 +7786,7 @@ ${kind}` : "";
     expectedRevision = null,
     expectedEtag = ""
   } = {}) {
-    if (!currentFlowId || !document || typeof document !== "object") {
+    if (!currentFlowId || !document2 || typeof document2 !== "object") {
       return {
         ok: false,
         changed: false,
@@ -8359,7 +7795,7 @@ ${kind}` : "";
       };
     }
     const signature = `${currentFlowId}
-${JSON.stringify(document)}`;
+${JSON.stringify(document2)}`;
     if (skipIfUnchanged && signature === previousSignature) {
       return {
         ok: true,
@@ -8375,7 +7811,7 @@ ${JSON.stringify(document)}`;
       signature,
       rowPatch: {
         currentFlowId,
-        document,
+        document: document2,
         validation,
         stage: nextStage,
         ...expectedRevision !== null && expectedRevision !== void 0 ? { expectedRevision } : {},
@@ -8618,12 +8054,15 @@ ${JSON.stringify(document)}`;
     if (!Array.isArray(value)) return [];
     return value.filter((row) => row && typeof row === "object" && !Array.isArray(row)).map((row) => JSON.parse(JSON.stringify(row)));
   }
+  var init_flow_registry = __esm({
+    "../packages/flow-editor-core/src/registry/flow-registry.ts"() {
+      init_tool_skill_access();
+      init_normalize();
+      init_view_config();
+    }
+  });
 
   // ../packages/flow-editor-core/src/rpc/client.ts
-  var controllerConfig = {
-    rpcUrl: "/flow-editor/rpc",
-    rpcMethods: { ...RPC_METHODS }
-  };
   function configure(options) {
     const rpcUrl = String(options?.rpcUrl || "").trim();
     if (rpcUrl) {
@@ -8794,7 +8233,6 @@ ${JSON.stringify(document)}`;
     controllerConfig.authoringOperations = authoringOperationsFromSchema(schema);
     return { ...controllerConfig.rpcMethods };
   }
-  var requestId = 0;
   async function callRpc(method, params, options = {}) {
     const response = await fetch(rpcPath(), {
       method: "POST",
@@ -8816,6 +8254,17 @@ ${JSON.stringify(document)}`;
     }
     return payload.result;
   }
+  var controllerConfig, requestId;
+  var init_client = __esm({
+    "../packages/flow-editor-core/src/rpc/client.ts"() {
+      init_constants();
+      controllerConfig = {
+        rpcUrl: "/flow-editor/rpc",
+        rpcMethods: { ...RPC_METHODS }
+      };
+      requestId = 0;
+    }
+  });
 
   // ../packages/flow-editor-core/src/shell/outcomes.ts
   function diagnosticsToRows(validation) {
@@ -8868,14 +8317,14 @@ ${JSON.stringify(document)}`;
       deployRunDisabled: actionsDisabled || !deployExecuteAllowed
     };
   }
-  function deployPlanTraceState(document, plan, options = {}) {
+  function deployPlanTraceState(document2, plan, options = {}) {
     const view = deployViewForState(options.deployView);
     const steps = Array.isArray(plan?.plan_trace) && plan.plan_trace.length ? plan.plan_trace : [{
       node: null,
       head: view.planUnavailableHead,
       body: view.planUnavailableBody
     }];
-    const title = document?.mob_id || document?.name || "mobkit_flow";
+    const title = document2?.mob_id || document2?.name || "mobkit_flow";
     const subtitle = plan?.command || "";
     const packLabel = plan?.pack_path || "";
     return {
@@ -8956,23 +8405,23 @@ ${JSON.stringify(document)}`;
       value: currentTheme === "dark" ? "light" : "dark"
     };
   }
-  function validationOutcome(document, result) {
+  function validationOutcome(document2, result) {
     const validation = result || null;
     return {
-      document,
+      document: document2,
       validation,
       validationRows: diagnosticsToRows(validation),
       stage: validation?.ok ? "valid" : "draft"
     };
   }
-  function exportOutcome(document, result, options = {}) {
+  function exportOutcome(document2, result, options = {}) {
     const validation = result?.validation || null;
     if (validation?.ok) {
       requireExportArchiveMetadata(result);
     }
     const publishedStage = options.publishedStage || "published";
     return {
-      document,
+      document: document2,
       exportResult: result || null,
       validation,
       validationRows: diagnosticsToRows(validation),
@@ -8990,12 +8439,12 @@ ${JSON.stringify(document)}`;
       throw new Error("mobkit/mobpacks/export did not return filename");
     }
   }
-  function deployOutcome(document, result, options = {}) {
+  function deployOutcome(document2, result, options = {}) {
     const validation = result?.validation || null;
     const executing = options.execute === true;
     const deployOk = executing && result?.executed === true && result?.success === true && result?.status_code === 0;
     return {
-      document,
+      document: document2,
       deployResult: result || null,
       validation,
       validationRows: deployResultToRows(result),
@@ -9008,10 +8457,10 @@ ${JSON.stringify(document)}`;
   function validationSheetCloseTransition() {
     return { validate: false };
   }
-  function deployPlanTraceReadyTransition(document, plan) {
+  function deployPlanTraceReadyTransition(document2, plan) {
     return {
       deployPlanOpen: true,
-      deployPlanDocument: document || null,
+      deployPlanDocument: document2 || null,
       deployPlanResult: plan || null,
       incrementDeployPlanKey: true
     };
@@ -9086,6 +8535,12 @@ ${JSON.stringify(document)}`;
       errorView: view
     });
   }
+  var init_outcomes = __esm({
+    "../packages/flow-editor-core/src/shell/outcomes.ts"() {
+      init_field_edit();
+      init_view_config();
+    }
+  });
 
   // ../packages/flow-editor-core/src/source/view.ts
   function sourceFileRequiresText(file) {
@@ -9105,7 +8560,7 @@ ${JSON.stringify(document)}`;
       throw new Error(`${prefix} did not return text`);
     }
   }
-  function sourceDocumentFromSourceResult(document, result, options = {}) {
+  function sourceDocumentFromSourceResult(document2, result, options = {}) {
     const apiSource = String(result?.source || "").trim();
     if (apiSource !== "mobkit/mobpacks/source") {
       throw new Error(`source preview expected mobkit/mobpacks/source but received ${apiSource}`);
@@ -9126,7 +8581,7 @@ ${JSON.stringify(document)}`;
     const sourceDigest = String(primarySourceFile.sha256 || "").trim();
     if (!sourceDigest) throw new Error(`${apiSource} did not return primary source sha256 ${primarySourcePath}`);
     files.forEach((file, index) => validateSourceFileMetadata(apiSource, file, index));
-    const authoringDocument = document && typeof document === "object" ? document : {};
+    const authoringDocument = document2 && typeof document2 === "object" ? document2 : {};
     const validation = result?.validation || null;
     const stage = validation?.ok ? "valid" : "draft";
     return {
@@ -9328,6 +8783,14 @@ ${JSON.stringify(document)}`;
       closeLabel: String(view?.closeLabel || "")
     };
   }
+  var init_view = __esm({
+    "../packages/flow-editor-core/src/source/view.ts"() {
+      init_basic_editor();
+      init_graph_editor();
+      init_normalize();
+      init_outcomes();
+    }
+  });
 
   // ../packages/flow-editor-core/src/catalogs/hydration.ts
   function deploySettingsForUi(deploy) {
@@ -9500,17 +8963,17 @@ ${JSON.stringify(document)}`;
       skillRealms: Array.isArray(skillRealms) ? skillRealms : []
     };
   }
-  function flowFromHydratedDocument(document) {
-    if (document?.flow && typeof document.flow === "object" && Array.isArray(document.flow.steps)) {
-      return document.flow;
+  function flowFromHydratedDocument(document2) {
+    if (document2?.flow && typeof document2.flow === "object" && Array.isArray(document2.flow.steps)) {
+      return document2.flow;
     }
     return null;
   }
-  function graphProjectionForDocument(document, members, contract) {
-    const storedFrames = Array.isArray(document?.frames) ? document.frames : [];
+  function graphProjectionForDocument(document2, members, contract) {
+    const storedFrames = Array.isArray(document2?.frames) ? document2.frames : [];
     return {
-      instances: Array.isArray(document?.instances) ? document.instances : [],
-      edges: Array.isArray(document?.edges) ? document.edges : [],
+      instances: Array.isArray(document2?.instances) ? document2.instances : [],
+      edges: Array.isArray(document2?.edges) ? document2.edges : [],
       frames: storedFrames
     };
   }
@@ -9527,21 +8990,21 @@ ${JSON.stringify(document)}`;
     };
   }
   function hydrateMobpackDocumentState(result, options = {}) {
-    const document = result?.document && typeof result.document === "object" ? result.document : {};
-    const members = Array.isArray(document.members) ? document.members : [];
-    const schemas = Array.isArray(document.schemas) ? document.schemas : [];
-    const id = String(options.id || flowImportedIdFromDocument(document, result, options.existingRows)).trim();
-    const flow = flowFromHydratedDocument(document);
+    const document2 = result?.document && typeof result.document === "object" ? result.document : {};
+    const members = Array.isArray(document2.members) ? document2.members : [];
+    const schemas = Array.isArray(document2.schemas) ? document2.schemas : [];
+    const id = String(options.id || flowImportedIdFromDocument(document2, result, options.existingRows)).trim();
+    const flow = flowFromHydratedDocument(document2);
     const errorView = errorViewForState(options.errorView);
     if (!flow) {
       return {
         ok: false,
         id,
-        document,
+        document: document2,
         members,
         schemas,
         flow: null,
-        skillRealms: mergeSkillRealms(document.skill_realms, options.contractSkillRealms || []),
+        skillRealms: mergeSkillRealms(document2.skill_realms, options.contractSkillRealms || []),
         graphProjection: null,
         deploySettings: deploySettingsForUi(options.deployDefaults),
         mobSettings: mobSettingsForUi(options.mobDefaults),
@@ -9560,16 +9023,16 @@ ${JSON.stringify(document)}`;
         error: errorView.missingEditorFlowMeta
       };
     }
-    const skillRealms = mergeSkillRealms(document.skill_realms, options.contractSkillRealms || []);
-    const graphProjection = graphProjectionFromMobKitResult(result) || graphProjectionForDocument({ ...document, flow }, members, options.contract);
-    const hasDeploySettings = document.deploy && typeof document.deploy === "object" && !Array.isArray(document.deploy);
-    const hasMobSettings = document.mob_settings && typeof document.mob_settings === "object" && !Array.isArray(document.mob_settings);
+    const skillRealms = mergeSkillRealms(document2.skill_realms, options.contractSkillRealms || []);
+    const graphProjection = graphProjectionFromMobKitResult(result) || graphProjectionForDocument({ ...document2, flow }, members, options.contract);
+    const hasDeploySettings = document2.deploy && typeof document2.deploy === "object" && !Array.isArray(document2.deploy);
+    const hasMobSettings = document2.mob_settings && typeof document2.mob_settings === "object" && !Array.isArray(document2.mob_settings);
     const validation = result?.validation || null;
     const validationRows = diagnosticsToRows(validation);
     const stage = validation?.ok ? "valid" : "draft";
     const registryRow = flowRegistryRowFromDocument({
       id,
-      document,
+      document: document2,
       validation,
       stage,
       sourceLabel: result?.source_label || "",
@@ -9578,14 +9041,14 @@ ${JSON.stringify(document)}`;
     });
     return {
       id,
-      document,
+      document: document2,
       members,
       schemas,
       flow,
       skillRealms,
       graphProjection,
-      deploySettings: deploySettingsForUi(hasDeploySettings ? document.deploy : options.deployDefaults),
-      mobSettings: mobSettingsForUi(hasMobSettings ? document.mob_settings : options.mobDefaults),
+      deploySettings: deploySettingsForUi(hasDeploySettings ? document2.deploy : options.deployDefaults),
+      mobSettings: mobSettingsForUi(hasMobSettings ? document2.mob_settings : options.mobDefaults),
       registryRow,
       addToRegistry: options.addToRegistry !== false,
       openEditor: options.openEditor !== false,
@@ -9594,8 +9057,8 @@ ${JSON.stringify(document)}`;
       stage
     };
   }
-  function authoringProjectionFromMobKitDocument(document, options = {}) {
-    const source = document && typeof document === "object" ? document : {};
+  function authoringProjectionFromMobKitDocument(document2, options = {}) {
+    const source = document2 && typeof document2 === "object" ? document2 : {};
     const flow = flowFromHydratedDocument(source) || emptyAuthoringFlowState();
     return {
       document: source,
@@ -9611,9 +9074,9 @@ ${JSON.stringify(document)}`;
     };
   }
   function authoringProjectionFromOperationResult(result, options = {}) {
-    const document = result?.document && typeof result.document === "object" ? result.document : null;
-    if (!document) return null;
-    const projection = authoringProjectionFromMobKitDocument(document, options);
+    const document2 = result?.document && typeof result.document === "object" ? result.document : null;
+    if (!document2) return null;
+    const projection = authoringProjectionFromMobKitDocument(document2, options);
     const graphProjection = graphProjectionFromMobKitResult(result);
     if (graphProjection) {
       projection.instances = graphProjection.instances;
@@ -9622,14 +9085,27 @@ ${JSON.stringify(document)}`;
     }
     return projection;
   }
-  function flowImportedIdFromDocument(document, result = {}, existingRows = []) {
+  function flowImportedIdFromDocument(document2, result = {}, existingRows = []) {
     const source = result?.source_name || result?.sourceName || result?.filename || result?.source;
-    const name = document?.name || document?.mob_id || document?.flow?.name || source || "";
+    const name = document2?.name || document2?.mob_id || document2?.flow?.name || source || "";
     if (!String(name || "").trim()) return "";
     return flowDraftIdFromSpec({
       name
     }, existingRows);
   }
+  var init_hydration = __esm({
+    "../packages/flow-editor-core/src/catalogs/hydration.ts"() {
+      init_mob_settings();
+      init_step_tree();
+      init_flow_registry();
+      init_client();
+      init_field_edit();
+      init_constants();
+      init_outcomes();
+      init_view();
+      init_view_config();
+    }
+  });
 
   // ../packages/flow-editor-core/src/editors/agent-editor.ts
   function agentListState({ members = [], instances = [], schemas = [], selection = null, agentView = null } = {}) {
@@ -10063,6 +9539,16 @@ ${JSON.stringify(document)}`;
       deleteTitle: usedBy.length > 0 ? view.deleteBlockedTitle : ""
     };
   }
+  var init_agent_editor = __esm({
+    "../packages/flow-editor-core/src/editors/agent-editor.ts"() {
+      init_options();
+      init_launch_modes();
+      init_flow_registry();
+      init_client();
+      init_view_config();
+      init_graph_editor();
+    }
+  });
 
   // ../packages/flow-editor-core/src/members/patches.ts
   function memberPromptSkeleton(member) {
@@ -10184,6 +9670,14 @@ ${JSON.stringify(document)}`;
       return { ok: false, patch: null, error: err?.message || view.providerParamsInvalidJsonLabel };
     }
   }
+  var init_patches = __esm({
+    "../packages/flow-editor-core/src/members/patches.ts"() {
+      init_options();
+      init_reconcile();
+      init_normalize();
+      init_view_config();
+    }
+  });
 
   // ../packages/flow-editor-core/src/rpc/doc-ops.ts
   async function loadSchema(options = {}) {
@@ -10195,29 +9689,29 @@ ${JSON.stringify(document)}`;
   async function loadCatalogs(options = {}) {
     return callRpc(rpcMethod("catalogs"), {}, options);
   }
-  async function validateDocument(document, options = {}) {
+  async function validateDocument(document2, options = {}) {
     const { signal, rkatValidate, rkat_validate, ...requestOptions } = options || {};
     return callRpc(rpcMethod("validate"), {
-      document,
+      document: document2,
       rkat_validate: rkatValidate ?? rkat_validate ?? true,
       ...requestOptions
     }, { signal });
   }
-  async function sourceDocument(document, options = {}) {
+  async function sourceDocument(document2, options = {}) {
     const { signal, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("source"), { document, ...requestOptions }, { signal });
+    return callRpc(rpcMethod("source"), { document: document2, ...requestOptions }, { signal });
   }
-  async function exportDocument(document, options = {}) {
+  async function exportDocument(document2, options = {}) {
     const { signal, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("export"), { document, ...requestOptions }, { signal });
+    return callRpc(rpcMethod("export"), { document: document2, ...requestOptions }, { signal });
   }
-  async function deployDocument(document, options = {}) {
+  async function deployDocument(document2, options = {}) {
     const { signal, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("deploy"), { document, ...requestOptions }, { signal });
+    return callRpc(rpcMethod("deploy"), { document: document2, ...requestOptions }, { signal });
   }
-  async function deployCommandPreviewForDocument(document, options = {}) {
+  async function deployCommandPreviewForDocument(document2, options = {}) {
     const { signal, packPath, prompt: optionPrompt, deploySettings, ...requestOptions } = options || {};
-    const sourceDocument2 = document && typeof document === "object" ? document : {};
+    const sourceDocument2 = document2 && typeof document2 === "object" ? document2 : {};
     const deploy = normalizeDeploySettings(sourceDocument2.deploy || deploySettings);
     const prompt = String(optionPrompt || deploy.prompt || "").trim();
     const request = {
@@ -10269,10 +9763,10 @@ ${JSON.stringify(document)}`;
         reason: "Runtime flow projections must be forked into a MobKit draft before saving."
       };
     }
-    const document = row.document;
+    const document2 = row.document;
     const request = {
       id: row.id || row.currentFlowId,
-      document,
+      document: document2,
       validation: row.validation ?? null,
       stage: row.stage,
       trigger: row.trigger,
@@ -10291,7 +9785,7 @@ ${JSON.stringify(document)}`;
   async function deleteDocument(id, params = {}, options = {}) {
     return callRpc(rpcMethod("delete"), { ...params || {}, id }, options);
   }
-  async function applyAuthoringOperationDocument(document, operation, options = {}) {
+  async function applyAuthoringOperationDocument(document2, operation, options = {}) {
     const {
       signal,
       catalogSnapshot,
@@ -10304,7 +9798,7 @@ ${JSON.stringify(document)}`;
       expectedCatalogSnapshotId ?? expected_catalog_snapshot_id ?? catalogSnapshot?.id ?? catalog_snapshot?.id ?? catalogSnapshot ?? catalog_snapshot ?? ""
     ).trim();
     return callRpc(rpcMethod("applyOperation"), {
-      document,
+      document: document2,
       operation,
       ...expectedSnapshotId ? { expected_catalog_snapshot_id: expectedSnapshotId } : {},
       ...requestOptions
@@ -10331,21 +9825,21 @@ ${JSON.stringify(document)}`;
       );
       if (!availability.supported) return { ok: false, error: availability.error };
       const requestToken = hooks.getCurrentRevision?.();
-      let document;
+      let document2;
       try {
-        document = hooks.getCurrentDocument?.();
+        document2 = hooks.getCurrentDocument?.();
       } catch (error) {
         return { ok: false, error: error?.message || String(error) };
       }
       let result;
       try {
-        result = await applyAuthoringOperationDocument(document, translatedOperation, {
+        result = await applyAuthoringOperationDocument(document2, translatedOperation, {
           ...hooks.getDraftGuard?.() || {},
           catalogSnapshot: hooks.getCatalogSnapshot?.()
         });
       } catch (error) {
         if (!isDraftGuardConflictError(error)) throw error;
-        result = await applyAuthoringOperationDocument(document, translatedOperation, {
+        result = await applyAuthoringOperationDocument(document2, translatedOperation, {
           catalogSnapshot: hooks.getCatalogSnapshot?.()
         });
       }
@@ -10374,13 +9868,13 @@ ${JSON.stringify(document)}`;
       return run;
     };
   }
-  async function graphProjectionDocument(document, options = {}) {
+  async function graphProjectionDocument(document2, options = {}) {
     const { signal, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("graphProjection"), { document, ...requestOptions }, { signal });
+    return callRpc(rpcMethod("graphProjection"), { document: document2, ...requestOptions }, { signal });
   }
-  async function graphToFlowDocument(document, options = {}) {
+  async function graphToFlowDocument(document2, options = {}) {
     const { signal, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("graphToFlow"), { document, ...requestOptions }, { signal });
+    return callRpc(rpcMethod("graphToFlow"), { document: document2, ...requestOptions }, { signal });
   }
   function importParamsFromDecodedFile(input = {}) {
     const {
@@ -10422,6 +9916,14 @@ ${JSON.stringify(document)}`;
       throw new Error(`${label} is not valid JSON: ${error?.message || error}`);
     }
   }
+  var init_doc_ops = __esm({
+    "../packages/flow-editor-core/src/rpc/doc-ops.ts"() {
+      init_hydration();
+      init_build_projection();
+      init_flow_registry();
+      init_client();
+    }
+  });
 
   // ../packages/flow-editor-core/src/studio/state.ts
   function directMemberAddValidation(member, members = [], contract = null) {
@@ -10855,6 +10357,15 @@ ${JSON.stringify(document)}`;
       future: currentFuture.slice(0, -1)
     };
   }
+  var init_state = __esm({
+    "../packages/flow-editor-core/src/studio/state.ts"() {
+      init_options();
+      init_mob_settings();
+      init_launch_modes();
+      init_reconcile();
+      init_normalize();
+    }
+  });
 
   // ../packages/flow-editor-core/src/controller-facade.ts
   function createMobKitFlowController({ includeTestExports } = {}) {
@@ -11249,72 +10760,59 @@ ${JSON.stringify(document)}`;
     }
     return MobKitFlowController;
   }
-  return __toCommonJS(index_exports);
-})();
-
-window.MobKitFlowCore = MobKitFlowCore;
-
-
-/* controller.js */
-
-/* global window */
-// MobKit Flow Editor controller plane bootstrap.
-// All controller logic lives in @flow-editor-core, bundled ahead of this
-// file as window.MobKitFlowCore; this shim only constructs the
-// window.MobKitFlowController facade the JSX views consume. The
-// __MOBKIT_FLOW_CONTROLLER_TEST__ flag adds the test-gated assembler
-// exports for the projection suite.
-window.MobKitFlowController = window.MobKitFlowCore.createMobKitFlowController({
-  includeTestExports: !!window.__MOBKIT_FLOW_CONTROLLER_TEST__,
-});
-
-
-/* @flow-editor-components */
-
-var MobKitFlowComponents = (() => {
-  var __defProp = Object.defineProperty;
-  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-  var __getOwnPropNames = Object.getOwnPropertyNames;
-  var __hasOwnProp = Object.prototype.hasOwnProperty;
-  var __export = (target, all) => {
-    for (var name in all)
-      __defProp(target, name, { get: all[name], enumerable: true });
-  };
-  var __copyProps = (to, from, except, desc) => {
-    if (from && typeof from === "object" || typeof from === "function") {
-      for (let key of __getOwnPropNames(from))
-        if (!__hasOwnProp.call(to, key) && key !== except)
-          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  var init_controller_facade = __esm({
+    "../packages/flow-editor-core/src/controller-facade.ts"() {
+      init_hydration();
+      init_options();
+      init_build_projection();
+      init_tool_skill_access();
+      init_mob_settings();
+      init_agent_editor();
+      init_basic_editor();
+      init_graph_editor();
+      init_launch_modes();
+      init_reconcile();
+      init_step_tree();
+      init_patches();
+      init_flow_registry();
+      init_client();
+      init_doc_ops();
+      init_field_edit();
+      init_constants();
+      init_normalize();
+      init_outcomes();
+      init_view();
+      init_state();
     }
-    return to;
-  };
-  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+  });
 
-  // ../packages/flow-editor-components/src/index.ts
-  var index_exports = {};
-  __export(index_exports, {
-    AddNodeMenu: () => AddNodeMenu,
-    AgentsView: () => AgentsView,
-    BuilderView: () => BuilderView,
-    DeployPlanTrace: () => DeployPlanTrace,
-    GraphEditor: () => GraphEditor,
-    InlineSourceEditor: () => InlineSourceEditor,
-    Inspector: () => Inspector,
-    SourceDrawer: () => SourceDrawer,
-    TweakButton: () => TweakButton,
-    TweakColor: () => TweakColor,
-    TweakNumber: () => TweakNumber,
-    TweakRadio: () => TweakRadio,
-    TweakRow: () => TweakRow,
-    TweakSection: () => TweakSection,
-    TweakSelect: () => TweakSelect,
-    TweakSlider: () => TweakSlider,
-    TweakText: () => TweakText,
-    TweakToggle: () => TweakToggle,
-    TweaksPanel: () => TweaksPanel,
-    ValidateSheet: () => ValidateSheet,
-    useStudioState: () => useStudioState,
-    useTweaks: () => useTweaks
+  // ../packages/flow-editor-core/src/index.ts
+  var init_src = __esm({
+    "../packages/flow-editor-core/src/index.ts"() {
+      init_hydration();
+      init_options();
+      init_controller_facade();
+      init_build_projection();
+      init_tool_skill_access();
+      init_mob_settings();
+      init_agent_editor();
+      init_basic_editor();
+      init_graph_editor();
+      init_launch_modes();
+      init_reconcile();
+      init_step_tree();
+      init_patches();
+      init_flow_registry();
+      init_client();
+      init_doc_ops();
+      init_field_edit();
+      init_constants();
+      init_normalize();
+      init_outcomes();
+      init_view();
+      init_state();
+      init_view_config();
+    }
   });
 
   // ../packages/flow-editor-components/src/agents/agents.tsx
@@ -11980,6 +11478,10 @@ var MobKitFlowComponents = (() => {
       return /* @__PURE__ */ React.createElement("button", { key: row.id, className: row.className, onClick: () => toggle(row.id) }, /* @__PURE__ */ React.createElement("span", { className: "skill-row__check" }, row.checkLabel), /* @__PURE__ */ React.createElement("span", { className: "skill-row__text" }, /* @__PURE__ */ React.createElement("span", { className: "skill-row__name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "skill-row__desc" }, row.desc)));
     }))), skillState.selectedOutsideRealm.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "skill-other" }, /* @__PURE__ */ React.createElement("span", { className: "hint__line" }, skillState.outsideRealmHeading), skillState.selectedOutsideRealm.map((skill) => /* @__PURE__ */ React.createElement("span", { key: skill.id, className: skill.className, title: skill.title }, skill.label, /* @__PURE__ */ React.createElement("em", null, skill.detail), /* @__PURE__ */ React.createElement("button", { onClick: () => removeSkill(skill.id) }, skill.removeLabel)))), skillState.unavailableSelected.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "skill-other" }, /* @__PURE__ */ React.createElement("span", { className: "hint__line", style: { color: "var(--warn)" } }, skillState.unavailableHeading), skillState.unavailableSelected.map((sid) => /* @__PURE__ */ React.createElement("span", { key: sid.id, className: sid.className }, sid.label, /* @__PURE__ */ React.createElement("button", { onClick: () => removeSkill(sid.id) }, sid.removeLabel)))));
   }
+  var init_agents = __esm({
+    "../packages/flow-editor-components/src/agents/agents.tsx"() {
+    }
+  });
 
   // ../packages/flow-editor-components/src/overlays/overlays.tsx
   function DeployPlanTrace({ open, onClose, onActiveStep, runKey, document: document2, plan, deployView = null }) {
@@ -12062,6 +11564,10 @@ var MobKitFlowComponents = (() => {
     const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true, sourceView, sourcePath });
     return /* @__PURE__ */ React.createElement("div", { className: "bld-toml bld-toml--" + surface, onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "bld-toml__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", null, editorState.inlineTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list source-file-list--inline" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => selectSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, busy, compact: true, sourceView, sourcePath }));
   }
+  var init_overlays = __esm({
+    "../packages/flow-editor-components/src/overlays/overlays.tsx"() {
+    }
+  });
 
   // ../packages/flow-editor-components/src/builder/builder.tsx
   function CondValue({ field, value, onChange, conditionView = null }) {
@@ -12150,7 +11656,7 @@ var MobKitFlowComponents = (() => {
     });
     return /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card" }, /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card__head" }, conditionState.rowTitle), !conditionState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, conditionState.emptyHint) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bld-cond" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.stepId || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionSourcePatch(options, e.target.value, { includeNamespace: true })) }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.sourcePlaceholder), conditionState.sourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.field || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, conditionState.fieldOptions)), disabled: !conditionState.fields.length }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.fieldPlaceholder), conditionState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: conditionState.operatorValue, onChange: (e) => onChange(window.MobKitFlowController.basicConditionOperatorPatch(e.target.value, contract)) }, conditionState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(CondValue, { field: conditionState.field, value: conditionState.cond.val, conditionView, onChange: (v) => onChange(window.MobKitFlowController.basicConditionValuePatch(v)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-cond__preview" }, conditionState.previewPrefix, " ", /* @__PURE__ */ React.createElement("code", null, conditionState.previewLabel))));
   }
-  function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, sourceToggleLabel = "", onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringIntent = null }) {
+  function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument: sourceDocument2 = null, sourceBusy = false, sourceToggleLabel = "", onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringIntent = null }) {
     const members = studio?.members || [];
     const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
     const [selLocal, setSelLocal] = React.useState(null);
@@ -12274,7 +11780,7 @@ var MobKitFlowComponents = (() => {
       {
         open: sourceOpen,
         onClose: () => onCloseSource && onCloseSource(),
-        state: sourceDocument,
+        state: sourceDocument2,
         busy: sourceBusy,
         sourceView
       }
@@ -12515,7 +12021,7 @@ var MobKitFlowComponents = (() => {
     const first = flow.steps[0];
     return !!first && first.type === "input";
   }
-  function childLanes(s) {
+  function childLanes2(s) {
     if (s.type === "branch") return [...s.branches, { id: "fallback", steps: s.fallback }];
     if (s.type === "parallel") return s.branches;
     if (s.type === "repeat") return [{ id: "body", steps: s.steps, _direct: true }];
@@ -12524,13 +12030,18 @@ var MobKitFlowComponents = (() => {
   function findStep(steps, id) {
     for (const s of steps) {
       if (s.id === id) return s;
-      for (const l of childLanes(s)) {
+      for (const l of childLanes2(s)) {
         const r = findStep(l.steps, id);
         if (r) return r;
       }
     }
     return null;
   }
+  var init_builder = __esm({
+    "../packages/flow-editor-components/src/builder/builder.tsx"() {
+      init_overlays();
+    }
+  });
 
   // ../packages/flow-editor-components/src/graph/graph.tsx
   function useStudioState(initial, onDirty, authoring = {}) {
@@ -13005,6 +12516,10 @@ var MobKitFlowComponents = (() => {
       /* @__PURE__ */ React.createElement("span", { className: "gate__label" }, gateState.sublabel)
     );
   }
+  var init_graph = __esm({
+    "../packages/flow-editor-components/src/graph/graph.tsx"() {
+    }
+  });
 
   // ../packages/flow-editor-components/src/inspector/inspector.tsx
   function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, deleteGraphEdge = null, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
@@ -13160,122 +12675,12 @@ var MobKitFlowComponents = (() => {
       }
     ), /* @__PURE__ */ React.createElement("button", { className: "add-menu__x", onClick: onClose, title: menuState.closeTitle }, menuState.closeLabel)), /* @__PURE__ */ React.createElement("div", { className: "add-menu__scroll" }, menuState.hasMembers && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.agentsLabel), menuState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__dot", "data-role": row.role, style: row.dotStyle }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.model))), menuState.hasControls && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.controlsLabel), menuState.controlRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__glyph" }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.meta))), menuState.isEmpty && /* @__PURE__ */ React.createElement("div", { className: "add-menu__empty" }, menuState.emptyLabel)), onJumpToAgents && /* @__PURE__ */ React.createElement("button", { className: "add-menu__foot", onClick: () => onJumpToAgents(null) }, menuState.jumpLabel));
   }
+  var init_inspector = __esm({
+    "../packages/flow-editor-components/src/inspector/inspector.tsx"() {
+    }
+  });
 
   // ../packages/flow-editor-components/src/tweaks/tweaks-panel.tsx
-  var __TWEAKS_STYLE = `
-  .twk-panel{position:fixed;right:16px;bottom:16px;z-index:2147483646;width:280px;
-    max-height:calc(100vh - 32px);display:flex;flex-direction:column;
-    transform:scale(var(--dc-inv-zoom,1));transform-origin:bottom right;
-    background:rgba(250,249,247,.78);color:#29261b;
-    -webkit-backdrop-filter:blur(24px) saturate(160%);backdrop-filter:blur(24px) saturate(160%);
-    border:.5px solid rgba(255,255,255,.6);border-radius:14px;
-    box-shadow:0 1px 0 rgba(255,255,255,.5) inset,0 12px 40px rgba(0,0,0,.18);
-    font:11.5px/1.4 ui-sans-serif,system-ui,-apple-system,sans-serif;overflow:hidden}
-  .twk-hd{display:flex;align-items:center;justify-content:space-between;
-    padding:10px 8px 10px 14px;cursor:move;user-select:none}
-  .twk-hd b{font-size:12px;font-weight:600;letter-spacing:.01em}
-  .twk-x{appearance:none;border:0;background:transparent;color:rgba(41,38,27,.55);
-    width:22px;height:22px;border-radius:6px;cursor:default;font-size:13px;line-height:1}
-  .twk-x:hover{background:rgba(0,0,0,.06);color:#29261b}
-  .twk-body{padding:2px 14px 14px;display:flex;flex-direction:column;gap:10px;
-    overflow-y:auto;overflow-x:hidden;min-height:0;
-    scrollbar-width:thin;scrollbar-color:rgba(0,0,0,.15) transparent}
-  .twk-body::-webkit-scrollbar{width:8px}
-  .twk-body::-webkit-scrollbar-track{background:transparent;margin:2px}
-  .twk-body::-webkit-scrollbar-thumb{background:rgba(0,0,0,.15);border-radius:4px;
-    border:2px solid transparent;background-clip:content-box}
-  .twk-body::-webkit-scrollbar-thumb:hover{background:rgba(0,0,0,.25);
-    border:2px solid transparent;background-clip:content-box}
-  .twk-row{display:flex;flex-direction:column;gap:5px}
-  .twk-row-h{flex-direction:row;align-items:center;justify-content:space-between;gap:10px}
-  .twk-lbl{display:flex;justify-content:space-between;align-items:baseline;
-    color:rgba(41,38,27,.72)}
-  .twk-lbl>span:first-child{font-weight:500}
-  .twk-val{color:rgba(41,38,27,.5);font-variant-numeric:tabular-nums}
-
-  .twk-sect{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
-    color:rgba(41,38,27,.45);padding:10px 0 0}
-  .twk-sect:first-child{padding-top:0}
-
-  .twk-field{appearance:none;width:100%;height:26px;padding:0 8px;
-    border:.5px solid rgba(0,0,0,.1);border-radius:7px;
-    background:rgba(255,255,255,.6);color:inherit;font:inherit;outline:none}
-  .twk-field:focus{border-color:rgba(0,0,0,.25);background:rgba(255,255,255,.85)}
-  select.twk-field{padding-right:22px;
-    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='rgba(0,0,0,.5)' d='M0 0h10L5 6z'/></svg>");
-    background-repeat:no-repeat;background-position:right 8px center}
-
-  .twk-slider{appearance:none;-webkit-appearance:none;width:100%;height:4px;margin:6px 0;
-    border-radius:999px;background:rgba(0,0,0,.12);outline:none}
-  .twk-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
-    width:14px;height:14px;border-radius:50%;background:#fff;
-    border:.5px solid rgba(0,0,0,.12);box-shadow:0 1px 3px rgba(0,0,0,.2);cursor:default}
-  .twk-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;
-    background:#fff;border:.5px solid rgba(0,0,0,.12);box-shadow:0 1px 3px rgba(0,0,0,.2);cursor:default}
-
-  .twk-seg{position:relative;display:flex;padding:2px;border-radius:8px;
-    background:rgba(0,0,0,.06);user-select:none}
-  .twk-seg-thumb{position:absolute;top:2px;bottom:2px;border-radius:6px;
-    background:rgba(255,255,255,.9);box-shadow:0 1px 2px rgba(0,0,0,.12);
-    transition:left .15s cubic-bezier(.3,.7,.4,1),width .15s}
-  .twk-seg.dragging .twk-seg-thumb{transition:none}
-  .twk-seg button{appearance:none;position:relative;z-index:1;flex:1;border:0;
-    background:transparent;color:inherit;font:inherit;font-weight:500;min-height:22px;
-    border-radius:6px;cursor:default;padding:4px 6px;line-height:1.2;
-    overflow-wrap:anywhere}
-
-  .twk-toggle{position:relative;width:32px;height:18px;border:0;border-radius:999px;
-    background:rgba(0,0,0,.15);transition:background .15s;cursor:default;padding:0}
-  .twk-toggle[data-on="1"]{background:#34c759}
-  .twk-toggle i{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;
-    background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s}
-  .twk-toggle[data-on="1"] i{transform:translateX(14px)}
-
-  .twk-num{display:flex;align-items:center;height:26px;padding:0 0 0 8px;
-    border:.5px solid rgba(0,0,0,.1);border-radius:7px;background:rgba(255,255,255,.6)}
-  .twk-num-lbl{font-weight:500;color:rgba(41,38,27,.6);cursor:ew-resize;
-    user-select:none;padding-right:8px}
-  .twk-num input{flex:1;min-width:0;height:100%;border:0;background:transparent;
-    font:inherit;font-variant-numeric:tabular-nums;text-align:right;padding:0 8px 0 0;
-    outline:none;color:inherit;-moz-appearance:textfield}
-  .twk-num input::-webkit-inner-spin-button,.twk-num input::-webkit-outer-spin-button{
-    -webkit-appearance:none;margin:0}
-  .twk-num-unit{padding-right:8px;color:rgba(41,38,27,.45)}
-
-  .twk-btn{appearance:none;height:26px;padding:0 12px;border:0;border-radius:7px;
-    background:rgba(0,0,0,.78);color:#fff;font:inherit;font-weight:500;cursor:default}
-  .twk-btn:hover{background:rgba(0,0,0,.88)}
-  .twk-btn.secondary{background:rgba(0,0,0,.06);color:inherit}
-  .twk-btn.secondary:hover{background:rgba(0,0,0,.1)}
-
-  .deploy-command{display:block;max-height:74px;overflow:auto;padding:7px 8px;
-    border:.5px solid rgba(0,0,0,.1);border-radius:7px;background:rgba(255,255,255,.62);
-    color:rgba(41,38,27,.72);font:10.5px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;
-    white-space:pre-wrap;overflow-wrap:anywhere}
-
-  .twk-swatch{appearance:none;-webkit-appearance:none;width:56px;height:22px;
-    border:.5px solid rgba(0,0,0,.1);border-radius:6px;padding:0;cursor:default;
-    background:transparent;flex-shrink:0}
-  .twk-swatch::-webkit-color-swatch-wrapper{padding:0}
-  .twk-swatch::-webkit-color-swatch{border:0;border-radius:5.5px}
-  .twk-swatch::-moz-color-swatch{border:0;border-radius:5.5px}
-
-  .twk-chips{display:flex;gap:6px}
-  .twk-chip{position:relative;appearance:none;flex:1;min-width:0;height:46px;
-    padding:0;border:0;border-radius:6px;overflow:hidden;cursor:default;
-    box-shadow:0 0 0 .5px rgba(0,0,0,.12),0 1px 2px rgba(0,0,0,.06);
-    transition:transform .12s cubic-bezier(.3,.7,.4,1),box-shadow .12s}
-  .twk-chip:hover{transform:translateY(-1px);
-    box-shadow:0 0 0 .5px rgba(0,0,0,.18),0 4px 10px rgba(0,0,0,.12)}
-  .twk-chip[data-on="1"]{box-shadow:0 0 0 1.5px rgba(0,0,0,.85),
-    0 2px 6px rgba(0,0,0,.15)}
-  .twk-chip>span{position:absolute;top:0;bottom:0;right:0;width:34%;
-    display:flex;flex-direction:column;box-shadow:-1px 0 0 rgba(0,0,0,.1)}
-  .twk-chip>span>i{flex:1;box-shadow:0 -1px 0 rgba(0,0,0,.1)}
-  .twk-chip>span>i:first-child{box-shadow:none}
-  .twk-chip svg{position:absolute;top:6px;left:6px;width:13px;height:13px;
-    filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))}
-`;
   function useTweaks(defaults) {
     const [values, setValues] = React.useState(defaults);
     const setTweak = React.useCallback((keyOrEdits, val) => {
@@ -13408,20 +12813,6 @@ var MobKitFlowComponents = (() => {
   }
   function TweakRow({ label, value, children, inline = false }) {
     return /* @__PURE__ */ React.createElement("div", { className: inline ? "twk-row twk-row-h" : "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, label), value != null && /* @__PURE__ */ React.createElement("span", { className: "twk-val" }, value)), children);
-  }
-  function TweakSlider({ label, value, min = 0, max = 100, step = 1, unit = "", onChange }) {
-    return /* @__PURE__ */ React.createElement(TweakRow, { label, value: `${value}${unit}` }, /* @__PURE__ */ React.createElement(
-      "input",
-      {
-        type: "range",
-        className: "twk-slider",
-        min,
-        max,
-        step,
-        value,
-        onChange: (e) => onChange(Number(e.target.value))
-      }
-    ));
   }
   function TweakToggle({ label, value, onChange }) {
     return /* @__PURE__ */ React.createElement("div", { className: "twk-row twk-row-h" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, label)), /* @__PURE__ */ React.createElement(
@@ -13564,1681 +12955,1725 @@ var MobKitFlowComponents = (() => {
       }
     ), unit && /* @__PURE__ */ React.createElement("span", { className: "twk-num-unit" }, unit));
   }
-  function __twkIsLight(hex) {
-    const h = String(hex).replace("#", "");
-    const x = h.length === 3 ? h.replace(/./g, (c) => c + c) : h.padEnd(6, "0");
-    const n = parseInt(x.slice(0, 6), 16);
-    if (Number.isNaN(n)) return true;
-    const r = n >> 16 & 255, g = n >> 8 & 255, b = n & 255;
-    return r * 299 + g * 587 + b * 114 > 148e3;
-  }
-  var __TwkCheck = ({ light }) => /* @__PURE__ */ React.createElement("svg", { viewBox: "0 0 14 14", "aria-hidden": "true" }, /* @__PURE__ */ React.createElement(
-    "path",
-    {
-      d: "M3 7.2 5.8 10 11 4.2",
-      fill: "none",
-      strokeWidth: "2.2",
-      strokeLinecap: "round",
-      strokeLinejoin: "round",
-      stroke: light ? "rgba(0,0,0,.78)" : "#fff"
-    }
-  ));
-  function TweakColor({ label, value, options, onChange }) {
-    if (!options || !options.length) {
-      return /* @__PURE__ */ React.createElement("div", { className: "twk-row twk-row-h" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, label)), /* @__PURE__ */ React.createElement(
-        "input",
-        {
-          type: "color",
-          className: "twk-swatch",
-          value,
-          onChange: (e) => onChange(e.target.value)
-        }
-      ));
-    }
-    const key = (o) => String(JSON.stringify(o)).toLowerCase();
-    const cur = key(value);
-    return /* @__PURE__ */ React.createElement(TweakRow, { label }, /* @__PURE__ */ React.createElement("div", { className: "twk-chips", role: "radiogroup" }, options.map((o, i) => {
-      const colors = Array.isArray(o) ? o : [o];
-      const [hero, ...rest] = colors;
-      const sup = rest.slice(0, 4);
-      const on = key(o) === cur;
-      return /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          key: i,
-          type: "button",
-          className: "twk-chip",
-          role: "radio",
-          "aria-checked": on,
-          "data-on": on ? "1" : "0",
-          "aria-label": colors.join(", "),
-          title: colors.join(" \xB7 "),
-          style: { background: hero },
-          onClick: () => onChange(o)
-        },
-        sup.length > 0 && /* @__PURE__ */ React.createElement("span", null, sup.map((c, j) => /* @__PURE__ */ React.createElement("i", { key: j, style: { background: c } }))),
-        on && /* @__PURE__ */ React.createElement(__TwkCheck, { light: __twkIsLight(hero) })
-      );
-    })));
-  }
-  function TweakButton({ label, onClick, secondary = false }) {
-    return /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        type: "button",
-        className: secondary ? "twk-btn secondary" : "twk-btn",
-        onClick
-      },
-      label
-    );
-  }
-  return __toCommonJS(index_exports);
-})();
+  var __TWEAKS_STYLE;
+  var init_tweaks_panel = __esm({
+    "../packages/flow-editor-components/src/tweaks/tweaks-panel.tsx"() {
+      __TWEAKS_STYLE = `
+  .twk-panel{position:fixed;right:16px;bottom:16px;z-index:2147483646;width:280px;
+    max-height:calc(100vh - 32px);display:flex;flex-direction:column;
+    transform:scale(var(--dc-inv-zoom,1));transform-origin:bottom right;
+    background:rgba(250,249,247,.78);color:#29261b;
+    -webkit-backdrop-filter:blur(24px) saturate(160%);backdrop-filter:blur(24px) saturate(160%);
+    border:.5px solid rgba(255,255,255,.6);border-radius:14px;
+    box-shadow:0 1px 0 rgba(255,255,255,.5) inset,0 12px 40px rgba(0,0,0,.18);
+    font:11.5px/1.4 ui-sans-serif,system-ui,-apple-system,sans-serif;overflow:hidden}
+  .twk-hd{display:flex;align-items:center;justify-content:space-between;
+    padding:10px 8px 10px 14px;cursor:move;user-select:none}
+  .twk-hd b{font-size:12px;font-weight:600;letter-spacing:.01em}
+  .twk-x{appearance:none;border:0;background:transparent;color:rgba(41,38,27,.55);
+    width:22px;height:22px;border-radius:6px;cursor:default;font-size:13px;line-height:1}
+  .twk-x:hover{background:rgba(0,0,0,.06);color:#29261b}
+  .twk-body{padding:2px 14px 14px;display:flex;flex-direction:column;gap:10px;
+    overflow-y:auto;overflow-x:hidden;min-height:0;
+    scrollbar-width:thin;scrollbar-color:rgba(0,0,0,.15) transparent}
+  .twk-body::-webkit-scrollbar{width:8px}
+  .twk-body::-webkit-scrollbar-track{background:transparent;margin:2px}
+  .twk-body::-webkit-scrollbar-thumb{background:rgba(0,0,0,.15);border-radius:4px;
+    border:2px solid transparent;background-clip:content-box}
+  .twk-body::-webkit-scrollbar-thumb:hover{background:rgba(0,0,0,.25);
+    border:2px solid transparent;background-clip:content-box}
+  .twk-row{display:flex;flex-direction:column;gap:5px}
+  .twk-row-h{flex-direction:row;align-items:center;justify-content:space-between;gap:10px}
+  .twk-lbl{display:flex;justify-content:space-between;align-items:baseline;
+    color:rgba(41,38,27,.72)}
+  .twk-lbl>span:first-child{font-weight:500}
+  .twk-val{color:rgba(41,38,27,.5);font-variant-numeric:tabular-nums}
 
-Object.assign(window, {
-  useTweaks: MobKitFlowComponents.useTweaks,
-  TweaksPanel: MobKitFlowComponents.TweaksPanel,
-  TweakSection: MobKitFlowComponents.TweakSection,
-  TweakRow: MobKitFlowComponents.TweakRow,
-  TweakSlider: MobKitFlowComponents.TweakSlider,
-  TweakToggle: MobKitFlowComponents.TweakToggle,
-  TweakRadio: MobKitFlowComponents.TweakRadio,
-  TweakSelect: MobKitFlowComponents.TweakSelect,
-  TweakText: MobKitFlowComponents.TweakText,
-  TweakNumber: MobKitFlowComponents.TweakNumber,
-  TweakColor: MobKitFlowComponents.TweakColor,
-  TweakButton: MobKitFlowComponents.TweakButton,
-  DeployPlanTrace: MobKitFlowComponents.DeployPlanTrace,
-  ValidateSheet: MobKitFlowComponents.ValidateSheet,
-  SourceDrawer: MobKitFlowComponents.SourceDrawer,
-  InlineSourceEditor: MobKitFlowComponents.InlineSourceEditor,
-  Inspector: MobKitFlowComponents.Inspector,
-  AddNodeMenu: MobKitFlowComponents.AddNodeMenu,
-  useStudioState: MobKitFlowComponents.useStudioState,
-  GraphEditor: MobKitFlowComponents.GraphEditor,
-  AgentsView: MobKitFlowComponents.AgentsView,
-  BuilderView: MobKitFlowComponents.BuilderView,
-});
+  .twk-sect{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+    color:rgba(41,38,27,.45);padding:10px 0 0}
+  .twk-sect:first-child{padding-top:0}
 
+  .twk-field{appearance:none;width:100%;height:26px;padding:0 8px;
+    border:.5px solid rgba(0,0,0,.1);border-radius:7px;
+    background:rgba(255,255,255,.6);color:inherit;font:inherit;outline:none}
+  .twk-field:focus{border-color:rgba(0,0,0,.25);background:rgba(255,255,255,.85)}
+  select.twk-field{padding-right:22px;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='rgba(0,0,0,.5)' d='M0 0h10L5 6z'/></svg>");
+    background-repeat:no-repeat;background-position:right 8px center}
 
-/* app.jsx */
+  .twk-slider{appearance:none;-webkit-appearance:none;width:100%;height:4px;margin:6px 0;
+    border-radius:999px;background:rgba(0,0,0,.12);outline:none}
+  .twk-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+    width:14px;height:14px;border-radius:50%;background:#fff;
+    border:.5px solid rgba(0,0,0,.12);box-shadow:0 1px 3px rgba(0,0,0,.2);cursor:default}
+  .twk-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;
+    background:#fff;border:.5px solid rgba(0,0,0,.12);box-shadow:0 1px 3px rgba(0,0,0,.2);cursor:default}
 
-const { useStudioState, GraphEditor, Inspector, AddNodeMenu, DeployPlanTrace, ValidateSheet, SourceDrawer, InlineSourceEditor, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakSelect, TweakText, TweakNumber, AgentsView, BuilderView } = window;
-const TWEAK_DEFAULTS = (
-  /*EDITMODE-BEGIN*/
-  {
-    "edgeStyle": "text",
-    "density": "comfortable",
-    "theme": "light",
-    "inspectorLayout": "right"
-  }
-);
-const CATALOG_BOOT = {
-  grid: MOBKIT_BOOT.GRID,
-  cellXY: MOBKIT_BOOT.cellXY,
-  template: MOBKIT_BOOT.template
-};
-function App() {
-  const [stage, setStage] = React.useState("draft");
-  const [flow, setFlow] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
-  const [authoringDocument, setAuthoringDocument] = React.useState(null);
-  const [stepSel, setStepSel] = React.useState(null);
-  const [editorMode, setEditorMode] = React.useState("basic");
-  const [view, setView] = React.useState("editor");
-  const [flows, setFlows] = React.useState([]);
-  const [currentFlowId, setCurrentFlowId] = React.useState("");
-  const [templates, setTemplates] = React.useState([]);
-  const [creating, setCreating] = React.useState(null);
-  const [agentSel, setAgentSel] = React.useState(null);
-  const [selection, setSelection] = React.useState({ kind: null, id: null });
-  const [activeStepId, setActiveStepId] = React.useState(null);
-  const [deployPlanOpen, setDeployPlanOpen] = React.useState(false);
-  const [deployPlanKey, setDeployPlanKey] = React.useState(0);
-  const [deployPlanDocument, setDeployPlanDocument] = React.useState(null);
-  const [deployPlanResult, setDeployPlanResult] = React.useState(null);
-  const [validate, setValidate] = React.useState(false);
-  const [validationResults, setValidationResults] = React.useState([]);
-  const [apiBusy, setApiBusy] = React.useState(false);
-  const [contract, setContract] = React.useState(null);
-  const [capabilities, setCapabilities] = React.useState(null);
-  const contractSkillRealms = React.useRef([]);
-  const [catalogs, setCatalogs] = React.useState(() => window.MobKitFlowController.emptyMobKitCatalogs(CATALOG_BOOT));
-  const [sourceOpen, setSourceOpen] = React.useState(false);
-  const [sourceDocument, setSourceDocument] = React.useState(null);
-  const [inlineSourceOpen, setInlineSourceOpen] = React.useState(false);
-  const [inlineSourceSurface, setInlineSourceSurface] = React.useState(null);
-  const [inlineSourceDocument, setInlineSourceDocument] = React.useState(null);
-  const [inlineSourceBusy, setInlineSourceBusy] = React.useState(false);
-  const authoringRevision = React.useRef(0);
-  const authoringDocumentRef = React.useRef(null);
-  const sourceProjectionVersion = React.useRef(0);
-  const [addAt, setAddAt] = React.useState(null);
-  const [deploySettings, setDeploySettings] = React.useState(() => window.MobKitFlowController.deployDefaultsFromSchema(null));
-  const [deployCommandPreview, setDeployCommandPreview] = React.useState("");
-  const [mobSettings, setMobSettings] = React.useState(() => window.MobKitFlowController.mobDefaultsFromSchema(null));
-  const authoringRunnerContext = React.useRef({});
-  const authoringOperationRunner = React.useRef(null);
-  const projectionSyncInFlight = React.useRef(false);
-  const projectionSyncReset = React.useRef(0);
-  const RECONCILE_MAX_ATTEMPTS_PER_EPOCH = 4;
-  const reconcileEpoch = React.useRef(0);
-  const reconcileFailureEpoch = React.useRef(null);
-  const reconcileAttempts = React.useRef({ epoch: null, counts: {} });
-  const reconcileLatched = () => reconcileFailureEpoch.current !== null && reconcileFailureEpoch.current === reconcileEpoch.current;
-  const reconcileShouldRun = (intent) => {
-    if (reconcileLatched()) return false;
-    const attempts = reconcileAttempts.current;
-    if (attempts.epoch !== reconcileEpoch.current) {
-      attempts.epoch = reconcileEpoch.current;
-      attempts.counts = {};
+  .twk-seg{position:relative;display:flex;padding:2px;border-radius:8px;
+    background:rgba(0,0,0,.06);user-select:none}
+  .twk-seg-thumb{position:absolute;top:2px;bottom:2px;border-radius:6px;
+    background:rgba(255,255,255,.9);box-shadow:0 1px 2px rgba(0,0,0,.12);
+    transition:left .15s cubic-bezier(.3,.7,.4,1),width .15s}
+  .twk-seg.dragging .twk-seg-thumb{transition:none}
+  .twk-seg button{appearance:none;position:relative;z-index:1;flex:1;border:0;
+    background:transparent;color:inherit;font:inherit;font-weight:500;min-height:22px;
+    border-radius:6px;cursor:default;padding:4px 6px;line-height:1.2;
+    overflow-wrap:anywhere}
+
+  .twk-toggle{position:relative;width:32px;height:18px;border:0;border-radius:999px;
+    background:rgba(0,0,0,.15);transition:background .15s;cursor:default;padding:0}
+  .twk-toggle[data-on="1"]{background:#34c759}
+  .twk-toggle i{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;
+    background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s}
+  .twk-toggle[data-on="1"] i{transform:translateX(14px)}
+
+  .twk-num{display:flex;align-items:center;height:26px;padding:0 0 0 8px;
+    border:.5px solid rgba(0,0,0,.1);border-radius:7px;background:rgba(255,255,255,.6)}
+  .twk-num-lbl{font-weight:500;color:rgba(41,38,27,.6);cursor:ew-resize;
+    user-select:none;padding-right:8px}
+  .twk-num input{flex:1;min-width:0;height:100%;border:0;background:transparent;
+    font:inherit;font-variant-numeric:tabular-nums;text-align:right;padding:0 8px 0 0;
+    outline:none;color:inherit;-moz-appearance:textfield}
+  .twk-num input::-webkit-inner-spin-button,.twk-num input::-webkit-outer-spin-button{
+    -webkit-appearance:none;margin:0}
+  .twk-num-unit{padding-right:8px;color:rgba(41,38,27,.45)}
+
+  .twk-btn{appearance:none;height:26px;padding:0 12px;border:0;border-radius:7px;
+    background:rgba(0,0,0,.78);color:#fff;font:inherit;font-weight:500;cursor:default}
+  .twk-btn:hover{background:rgba(0,0,0,.88)}
+  .twk-btn.secondary{background:rgba(0,0,0,.06);color:inherit}
+  .twk-btn.secondary:hover{background:rgba(0,0,0,.1)}
+
+  .deploy-command{display:block;max-height:74px;overflow:auto;padding:7px 8px;
+    border:.5px solid rgba(0,0,0,.1);border-radius:7px;background:rgba(255,255,255,.62);
+    color:rgba(41,38,27,.72);font:10.5px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;
+    white-space:pre-wrap;overflow-wrap:anywhere}
+
+  .twk-swatch{appearance:none;-webkit-appearance:none;width:56px;height:22px;
+    border:.5px solid rgba(0,0,0,.1);border-radius:6px;padding:0;cursor:default;
+    background:transparent;flex-shrink:0}
+  .twk-swatch::-webkit-color-swatch-wrapper{padding:0}
+  .twk-swatch::-webkit-color-swatch{border:0;border-radius:5.5px}
+  .twk-swatch::-moz-color-swatch{border:0;border-radius:5.5px}
+
+  .twk-chips{display:flex;gap:6px}
+  .twk-chip{position:relative;appearance:none;flex:1;min-width:0;height:46px;
+    padding:0;border:0;border-radius:6px;overflow:hidden;cursor:default;
+    box-shadow:0 0 0 .5px rgba(0,0,0,.12),0 1px 2px rgba(0,0,0,.06);
+    transition:transform .12s cubic-bezier(.3,.7,.4,1),box-shadow .12s}
+  .twk-chip:hover{transform:translateY(-1px);
+    box-shadow:0 0 0 .5px rgba(0,0,0,.18),0 4px 10px rgba(0,0,0,.12)}
+  .twk-chip[data-on="1"]{box-shadow:0 0 0 1.5px rgba(0,0,0,.85),
+    0 2px 6px rgba(0,0,0,.15)}
+  .twk-chip>span{position:absolute;top:0;bottom:0;right:0;width:34%;
+    display:flex;flex-direction:column;box-shadow:-1px 0 0 rgba(0,0,0,.1)}
+  .twk-chip>span>i{flex:1;box-shadow:0 -1px 0 rgba(0,0,0,.1)}
+  .twk-chip>span>i:first-child{box-shadow:none}
+  .twk-chip svg{position:absolute;top:6px;left:6px;width:13px;height:13px;
+    filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))}
+`;
     }
-    attempts.counts[intent] = (attempts.counts[intent] || 0) + 1;
-    if (attempts.counts[intent] > RECONCILE_MAX_ATTEMPTS_PER_EPOCH) {
-      reconcileFailureEpoch.current = reconcileEpoch.current;
-      console.warn(`MobKit ${intent} did not converge; reconciliation paused until the next edit`);
-      return false;
-    }
-    return true;
-  };
-  const markReconcileConverged = (intent) => {
-    const attempts = reconcileAttempts.current;
-    if (attempts.epoch === reconcileEpoch.current) {
-      attempts.counts[intent] = 0;
-    }
-  };
-  const latchReconcileFailure = (epochAtIssue) => (result) => {
-    if (result?.ok === false && result?.document && reconcileEpoch.current === epochAtIssue) {
-      reconcileFailureEpoch.current = epochAtIssue;
-      console.warn("MobKit system reconcile paused until the next edit:", result?.error || result?.validation?.display_rows?.[0]?.sub || "validation failed");
-    }
-    return result;
-  };
-  if (!authoringOperationRunner.current) {
-    authoringOperationRunner.current = window.MobKitFlowController.createAuthoringOperationRunner({
-      getAuthoringOperations: () => authoringRunnerContext.current.catalogs?.authoringOperations,
-      getCurrentDocument: () => authoringRunnerContext.current.currentMobKitDocument(),
-      getDraftGuard: () => authoringRunnerContext.current.currentDraftGuard(),
-      getCatalogSnapshot: () => authoringRunnerContext.current.catalogs?.catalogSnapshot,
-      getCurrentRevision: () => authoringRunnerContext.current.currentAuthoringRevision(),
-      isRevisionCurrent: (requestToken) => authoringRunnerContext.current.authoringRevisionIsCurrent(requestToken),
-      getProjectionDefaults: () => ({
-        deployDefaults: authoringRunnerContext.current.catalogs?.deployDefaults,
-        mobDefaults: authoringRunnerContext.current.catalogs?.mobDefaults
-      }),
-      getStaleError: () => authoringRunnerContext.current.catalogs?.errorView?.authoringOperationStaleError,
-      getMissingDocumentError: () => authoringRunnerContext.current.catalogs?.errorView?.authoringOperationMissingDocumentError,
-      beginProjectionSync: () => authoringRunnerContext.current.beginProjectionSync(),
-      applyProjection: (projection) => authoringRunnerContext.current.applyAuthoringDocumentProjection(projection),
-      markDraft: () => authoringRunnerContext.current.markDraft()
-    });
-  }
-  const beginProjectionSync = React.useCallback(() => {
-    projectionSyncInFlight.current = true;
-    if (projectionSyncReset.current) window.cancelAnimationFrame(projectionSyncReset.current);
-    projectionSyncReset.current = window.requestAnimationFrame(() => {
-      projectionSyncReset.current = window.requestAnimationFrame(() => {
-        projectionSyncInFlight.current = false;
-        projectionSyncReset.current = 0;
-      });
-    });
-  }, []);
-  const beginSourceProjection = React.useCallback(() => {
-    sourceProjectionVersion.current += 1;
-    return sourceProjectionVersion.current;
-  }, []);
-  const sourceProjectionIsCurrent = React.useCallback((requestToken) => requestToken === sourceProjectionVersion.current, []);
-  const currentAuthoringRevision = React.useCallback(() => authoringRevision.current, []);
-  const authoringRevisionIsCurrent = React.useCallback((requestToken) => requestToken === authoringRevision.current, []);
-  const setCurrentAuthoringDocument = React.useCallback((document2) => {
-    const next = document2 && typeof document2 === "object" ? document2 : null;
-    authoringDocumentRef.current = next;
-    setAuthoringDocument(next);
-  }, []);
-  const applySourceProjectionPatch = React.useCallback((patch) => {
-    const next = patch && typeof patch === "object" ? patch : {};
-    if (Object.prototype.hasOwnProperty.call(next, "sourceOpen")) setSourceOpen(next.sourceOpen);
-    if (Object.prototype.hasOwnProperty.call(next, "sourceDocument")) setSourceDocument(next.sourceDocument);
-    if (Object.prototype.hasOwnProperty.call(next, "inlineSourceOpen")) setInlineSourceOpen(next.inlineSourceOpen);
-    if (Object.prototype.hasOwnProperty.call(next, "inlineSourceSurface")) setInlineSourceSurface(next.inlineSourceSurface);
-    if (Object.prototype.hasOwnProperty.call(next, "inlineSourceDocument")) setInlineSourceDocument(next.inlineSourceDocument);
-    if (Object.prototype.hasOwnProperty.call(next, "inlineSourceBusy")) setInlineSourceBusy(next.inlineSourceBusy);
-  }, []);
-  const applyApiOverlayPatch = React.useCallback((patch) => {
-    const next = patch && typeof patch === "object" ? patch : {};
-    if (Object.prototype.hasOwnProperty.call(next, "deployPlanOpen")) setDeployPlanOpen(next.deployPlanOpen);
-    if (Object.prototype.hasOwnProperty.call(next, "deployPlanDocument")) setDeployPlanDocument(next.deployPlanDocument);
-    if (Object.prototype.hasOwnProperty.call(next, "deployPlanResult")) setDeployPlanResult(next.deployPlanResult);
-    if (next.incrementDeployPlanKey) setDeployPlanKey((k) => k + 1);
-    if (Object.prototype.hasOwnProperty.call(next, "validate")) setValidate(next.validate);
-  }, []);
-  const clearSourceProjection = React.useCallback(() => {
-    sourceProjectionVersion.current += 1;
-    applySourceProjectionPatch(window.MobKitFlowController.sourceProjectionClearTransition());
-  }, [applySourceProjectionPatch]);
-  const markDraft = React.useCallback(() => {
-    if (projectionSyncInFlight.current) return;
-    authoringRevision.current += 1;
-    setStage("draft");
-    setValidationResults([]);
-    clearSourceProjection();
-    if (currentFlowId) {
-      setFlows((rows) => window.MobKitFlowController.flowRegistryMarkDraftPatch(rows, currentFlowId));
-    }
-  }, [clearSourceProjection, currentFlowId]);
-  const beginDocumentHydration = React.useCallback(() => {
-    authoringRevision.current += 1;
-    reconcileEpoch.current += 1;
-    clearSourceProjection();
-  }, [clearSourceProjection]);
-  const showAuthoringFailure = React.useCallback((resultOrError, fallbackHead = "") => {
-    const errorView = catalogs.errorView || {};
-    const authoringHead = fallbackHead || errorView.authoringOperationFailedHead;
-    const validation = resultOrError?.validation || null;
-    const validationRows = validation ? window.MobKitFlowController.diagnosticsToRows(validation) : null;
-    const outcome = validationRows?.length ? { validationRows, stage: "draft" } : window.MobKitFlowController.criticalErrorOutcome({
-      head: authoringHead,
-      error: resultOrError?.error || resultOrError,
-      meta: errorView.authoringOperationMeta,
-      errorView
-    });
-    setValidationResults(outcome.validationRows);
-    setStage(outcome.stage);
-    applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
-    return outcome;
-  }, [applyApiOverlayPatch, catalogs.errorView]);
-  const authoringFailureHead = React.useCallback(
-    (key) => catalogs.errorView.authoringOperationFallbackHeads?.[key] || catalogs.errorView.authoringOperationFailedHead,
-    [catalogs.errorView]
-  );
-  const setAuthoringFlow = React.useCallback((next) => {
-    markDraft();
-    setFlow(next);
-  }, [markDraft]);
-  const studio = useStudioState({
-    members: [],
-    instances: [],
-    edges: [],
-    frames: [],
-    schemas: [],
-    skillRealms: []
-  }, markDraft, {
-    flow,
-    setFlow: setAuthoringFlow,
-    contract
   });
-  const setAuthoringDeploySettings = React.useCallback((next) => {
-    markDraft();
-    setDeploySettings(next);
-  }, [markDraft]);
-  const setAuthoringMobSettings = React.useCallback((next) => {
-    markDraft();
-    setMobSettings(next);
-  }, [markDraft]);
-  const graphProjectionSig = React.useRef("");
-  const pendingGraphProjection = React.useRef(null);
-  const skipNextGraphProjection = React.useRef(false);
-  const persistedDocumentSig = React.useRef("");
-  const importInputRef = React.useRef(null);
-  const previousMembersRef = React.useRef([]);
-  const hydratingDocumentRef = React.useRef(false);
-  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
-  const canCreateAuthoring = !!catalogs.contractMeta.loaded && !contract?.error;
-  const deployContractLoaded = !!catalogs.contractMeta.loaded;
-  const currentFlowSelection = window.MobKitFlowController.flowRegistrySelectionState(flows, currentFlowId);
-  const currentFlow = currentFlowSelection.row;
-  React.useEffect(() => {
-    document.documentElement.dataset.ccVariant = "rams";
-    document.documentElement.dataset.ccTheme = t.theme || "light";
-  }, [t.theme]);
-  React.useEffect(() => {
-    let cancelled = false;
-    const abort = new AbortController();
-    window.MobKitFlowController.configure({ rpcUrl: rpcUrlFromShell() });
-    const rpcOptions = { signal: abort.signal };
-    window.MobKitFlowController.loadSchema(rpcOptions).then(async (schema) => {
-      window.MobKitFlowController.configureAuthoringMethodsFromSchema(schema);
-      const capabilityPayload = await window.MobKitFlowController.loadCapabilities(rpcOptions);
-      const catalogPayload = await window.MobKitFlowController.loadCatalogs(rpcOptions);
-      let registryPayload = await window.MobKitFlowController.listDocuments({}, rpcOptions).catch((error) => {
-        if (abort.signal.aborted) throw error;
-        return { rows: [] };
-      });
-      const hasRuntimeRows = Array.isArray(catalogPayload?.runtime_flows) && catalogPayload.runtime_flows.length > 0;
-      if ((!Array.isArray(registryPayload?.rows) || registryPayload.rows.length === 0) && !hasRuntimeRows) {
-        registryPayload = await window.MobKitFlowController.createDocument({
-          template: "blank",
-          trigger: "MobKit editor startup draft"
-        }, rpcOptions).catch((error) => {
-          if (abort.signal.aborted) throw error;
-          return registryPayload;
-        });
-      }
-      if (cancelled) return;
-      setCapabilities(capabilityPayload);
-      const nextCatalogs = window.MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
-      setCatalogs(nextCatalogs);
-      setDeploySettings(nextCatalogs.deployDefaults);
-      setMobSettings(nextCatalogs.mobDefaults);
-      contractSkillRealms.current = nextCatalogs.skillRealms;
-      studio.setSkillRealms(nextCatalogs.skillRealms);
-      const bootstrap = window.MobKitFlowController.flowCatalogBootstrapState(catalogPayload, {
-        openEditor: view === "editor",
-        deployDefaults: nextCatalogs.deployDefaults,
-        mobDefaults: nextCatalogs.mobDefaults,
-        registryResult: registryPayload
-      });
-      setTemplates(bootstrap.templates);
-      setFlows(bootstrap.flows);
-      if (bootstrap.initialHydration) {
-        hydrateMobpackDocument(bootstrap.initialHydration.result, {
-          ...bootstrap.initialHydration.options,
-          contract: schema
-        });
-      }
-      setContract(schema);
-    }).catch((error) => {
-      if (abort.signal.aborted) return;
-      if (!cancelled) setContract({ error: error?.message || String(error) });
-    });
-    return () => {
-      cancelled = true;
-      abort.abort();
-    };
-  }, []);
-  React.useEffect(() => {
-    if (pendingGraphProjection.current) {
-      const projection = pendingGraphProjection.current;
-      pendingGraphProjection.current = null;
-      skipNextGraphProjection.current = false;
-      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: projection.members || studio.members, contract: projection.contract || contract });
-      studio.setInstances(projection.instances || []);
-      studio.setEdges(projection.edges || []);
-      studio.setFrames(projection.frames || []);
-      queueMicrotask(() => {
-        hydratingDocumentRef.current = false;
-      });
-      return;
+
+  // ../packages/flow-editor-components/src/index.ts
+  var init_src2 = __esm({
+    "../packages/flow-editor-components/src/index.ts"() {
+      init_agents();
+      init_builder();
+      init_graph();
+      init_inspector();
+      init_overlays();
+      init_tweaks_panel();
     }
-    if (skipNextGraphProjection.current) {
-      skipNextGraphProjection.current = false;
-      return;
-    }
-    if (editorMode === "advanced") return;
-    if (!window.MobKitFlowController?.graphProjectionDocument) return;
-    let cancelled = false;
-    const abort = new AbortController();
-    if (!authoringDocumentRef.current) return;
-    const projectionDocument = currentMobKitDocument();
-    window.MobKitFlowController.graphProjectionDocument({
-      ...projectionDocument,
-      instances: [],
-      edges: [],
-      frames: []
-    }, { ...window.MobKitFlowController.flowRegistryDraftGuard(currentFlow, currentFlowId), signal: abort.signal }).then((projectionResult) => {
-      if (cancelled) return;
-      const projection = window.MobKitFlowController.graphProjectionFromMobKitResult(projectionResult);
-      if (!projection) return;
-      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: studio.members, contract });
-      studio.setInstances(projection.instances || []);
-      studio.setEdges(projection.edges || []);
-      studio.setFrames(projection.frames || []);
-    }).catch((error) => {
-      if (abort.signal.aborted) return;
-      if (cancelled) return;
-      showAuthoringFailure(error, authoringFailureHead("graph_projection"));
-    });
-    return () => {
-      cancelled = true;
-      abort.abort();
-    };
-  }, [flow, editorMode, contract, studio.members, currentFlow, currentFlowId]);
-  React.useEffect(() => {
-    if (editorMode !== "advanced") return;
-    const sig = window.MobKitFlowController.graphStructureSignature(studio.instances, studio.edges, { members: studio.members, contract });
-    if (sig === graphProjectionSig.current) return;
-    graphProjectionSig.current = sig;
-    skipNextGraphProjection.current = true;
-    applyMobKitAuthoringOperation({
-      intent: "system.syncGraphToFlow",
-      reason: "advanced_graph_changed"
-    }).then((result) => {
-      if (result?.ok === false) showAuthoringFailure(result, authoringFailureHead("graph_sync"));
-    }).catch((error) => showAuthoringFailure(error, authoringFailureHead("graph_sync")));
-  }, [editorMode, studio.instances, studio.edges, studio.members, flow, contract]);
-  React.useEffect(() => {
-    const previousMembers = previousMembersRef.current || [];
-    if (hydratingDocumentRef.current) {
-      previousMembersRef.current = studio.members;
-      return;
-    }
-    const result = window.MobKitFlowController.reconcileAuthoringForMembers({
-      flow,
-      instances: studio.instances,
-      edges: studio.edges,
-      mobSettings,
-      previousMembers,
-      members: studio.members
-    });
-    const changed = result.flow !== flow || result.edges !== studio.edges || result.instances !== studio.instances || result.mobSettings !== mobSettings;
-    previousMembersRef.current = studio.members;
-    if (!changed) {
-      markReconcileConverged("system.reconcileMembers");
-      return;
-    }
-    if (!reconcileShouldRun("system.reconcileMembers")) return;
-    applyMobKitAuthoringOperation({
-      intent: "system.reconcileMembers"
-    }).then(latchReconcileFailure(reconcileEpoch.current));
-  }, [studio.members, flow, studio.instances, studio.edges, mobSettings]);
-  React.useEffect(() => {
-    if (!window.MobKitFlowController?.reconcileConditionFieldAvailability) return;
-    if (hydratingDocumentRef.current) return;
-    const result = window.MobKitFlowController.reconcileConditionFieldAvailability({
-      flow,
-      edges: studio.edges,
-      members: studio.members,
-      instances: studio.instances,
-      schemas: studio.schemas
-    });
-    const flowChanged = result.flow !== flow;
-    const edgesChanged = result.edges !== studio.edges;
-    if (!flowChanged && !edgesChanged) {
-      markReconcileConverged("system.reconcileConditionFields");
-      return;
-    }
-    if (!reconcileShouldRun("system.reconcileConditionFields")) return;
-    applyMobKitAuthoringOperation({
-      intent: "system.reconcileConditionFields"
-    }).then(latchReconcileFailure(reconcileEpoch.current));
-  }, [flow, studio.edges, studio.instances, studio.members, studio.schemas]);
-  React.useEffect(() => {
-    if (hydratingDocumentRef.current) return;
-    const result = window.MobKitFlowController.reconcileAuthoringWithContract({
-      members: studio.members,
-      skillRealms: studio.skillRealms,
-      schemas: studio.schemas,
-      deploySettings,
-      mobSettings,
-      flow,
-      instances: studio.instances,
-      edges: studio.edges,
-      contract,
-      modelCatalog: catalogs.models,
-      toolCatalog: catalogs.toolCatalog,
-      contractLoaded: !!catalogs.contractMeta.loaded
-    });
-    if (!result.changed) {
-      markReconcileConverged("system.reconcileContractRefs");
-      return;
-    }
-    if (!reconcileShouldRun("system.reconcileContractRefs")) return;
-    applyMobKitAuthoringOperation({
-      intent: "system.reconcileContractRefs"
-    }).then(latchReconcileFailure(reconcileEpoch.current));
-  }, [
-    studio.members,
-    studio.skillRealms,
-    studio.schemas,
-    deploySettings,
-    mobSettings,
-    flow,
-    studio.instances,
-    studio.edges,
-    contract,
-    catalogs.models,
-    catalogs.toolCatalog,
-    catalogs.contractMeta.loaded,
-    authoringDocument
-  ]);
-  const selectInstance = (id) => setSelection(window.MobKitFlowController.graphSelectionProjection("instance", id));
-  const selectEdge = (id) => setSelection(window.MobKitFlowController.graphSelectionProjection("edge", id));
-  const clearSelection = (nextSelection = { kind: null, id: null }) => setSelection(nextSelection || { kind: null, id: null });
-  React.useEffect(() => {
-    const onKey = (e) => {
-      const tg = e.target;
-      if (tg.tagName === "INPUT" || tg.tagName === "TEXTAREA" || tg.tagName === "SELECT") return;
-      if (e.key === "Backspace" || e.key === "Delete") {
-        if (selection.kind === "instance") {
-          const nextSelection = { kind: null, id: null };
-          applyMobKitAuthoringOperation({
-            intent: "graph.deleteNode",
-            instanceId: selection.id
-          }).then((result) => {
-            if (result?.ok === false) return;
-            clearSelection(nextSelection);
-          });
-        } else if (selection.kind === "edge") {
-          const nextSelection = { kind: null, id: null };
-          applyMobKitAuthoringOperation({
-            intent: "graph.deleteEdge",
-            edgeId: selection.id
-          }).then((result) => {
-            if (result?.ok === false) return;
-            clearSelection(nextSelection);
-          });
-        }
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === "z") {
-        e.preventDefault();
-        handleHistoryStep(e.shiftKey ? "redo" : "undo");
-      }
-      if (e.key === "Escape") {
-        clearSelection();
-        closeGraphAddMenu();
-        applyApiOverlayPatch(window.MobKitFlowController.apiOverlayClearTransition());
-        clearSourceProjection();
-        if (creating) setCreating(null);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
   });
-  const handleRequestAdd = (col, row) => {
-    const result = window.MobKitFlowController.graphAddMenuOpenProjection({ col, row, grid: catalogs.grid });
-    setAddAt(result.addAt);
-  };
-  const closeGraphAddMenu = () => {
-    const result = window.MobKitFlowController.graphAddMenuCloseProjection();
-    setAddAt(result.addAt);
-  };
-  const handlePick = (pick) => {
-    if (!addAt) return;
-    const nextMenu = window.MobKitFlowController.graphAddMenuCloseProjection();
-    setAddAt(nextMenu.addAt);
-    applyMobKitAuthoringOperation({
-      intent: "graph.insertNode",
-      pick,
-      cell: addAt
-    }).then((result) => {
-      if (result?.ok === false) {
-        showAuthoringFailure(result, authoringFailureHead("graph_node_insert"));
-        return;
-      }
-      const id = result?.selection?.id;
-      if (id) selectInstance(id);
-    }).catch((error) => showAuthoringFailure(error, authoringFailureHead("graph_node_insert")));
-  };
-  const handleHistoryStep = async (direction) => {
-    if (!currentFlowId) return;
-    setApiBusy(true);
-    try {
-      const stepper = direction === "redo" ? window.MobKitFlowController.redoDocument : window.MobKitFlowController.undoDocument;
-      let result;
-      try {
-        result = await stepper({ id: currentFlowId, ...currentDraftGuard() });
-      } catch (error) {
-        if (!window.MobKitFlowController.isDraftGuardConflictError(error)) throw error;
-        result = await stepper({ id: currentFlowId });
-      }
-      if (!result?.stepped || !result?.row?.document) return;
-      setFlows((rows) => window.MobKitFlowController.flowRegistryUpsertRowPatch(rows, result.row));
-      hydrateMobpackDocument(
-        { document: result.row.document, validation: result.row.validation || null },
+
+  // src/app.tsx
+  var require_app = __commonJS({
+    "src/app.tsx"() {
+      var import_data = __toESM(require_data());
+      init_src();
+      init_src2();
+      var MobKitFlowController = createMobKitFlowController({ includeTestExports: false });
+      window.MobKitFlowController = MobKitFlowController;
+      var TWEAK_DEFAULTS = (
+        /*EDITMODE-BEGIN*/
         {
-          id: result.row.id,
-          flowRow: result.row,
-          addToRegistry: false,
-          openEditor: false
+          "edgeStyle": "text",
+          "density": "comfortable",
+          "theme": "light",
+          "inspectorLayout": "right"
         }
       );
-    } catch (error) {
-      showAuthoringFailure(error, authoringFailureHead(direction));
-    } finally {
-      setApiBusy(false);
-    }
-  };
-  const handleAgentNavigation = (id) => {
-    const next = window.MobKitFlowController.agentNavigationProjection(id);
-    setAddAt(next.addAt);
-    setView(next.view);
-    setAgentSel(next.selection);
-  };
-  const handleTopRailNavigation = (target) => {
-    const next = window.MobKitFlowController.topRailNavigationTransition(view, target);
-    if (!next) return;
-    setView(next.view);
-  };
-  React.useEffect(() => {
-    if (view !== "agents") return;
-    const next = window.MobKitFlowController.agentDefaultSelectionProjection({
-      selection: agentSel,
-      members: studio.members,
-      schemas: studio.schemas,
-      agentView: catalogs.agentView
-    });
-    if ((next?.kind || null) === (agentSel?.kind || null) && (next?.id || null) === (agentSel?.id || null)) {
-      return;
-    }
-    setAgentSel(next);
-  }, [view, agentSel, studio.members, studio.schemas, catalogs.agentView]);
-  const handleEditorModeSelection = (target) => {
-    const next = window.MobKitFlowController.editorModeTransition(target);
-    if (!next) return;
-    setEditorMode(next.editorMode);
-  };
-  const handleThemeToggle = () => {
-    const next = window.MobKitFlowController.themeToggleTransition(t.theme);
-    setTweak(next.field, next.value);
-  };
-  const applyAuthoringDocumentProjection = (projection) => {
-    const plan = window.MobKitFlowController.authoringProjectionApplyPlan(projection, {
-      flow,
-      studio: {
-        members: studio.members,
-        instances: studio.instances,
-        edges: studio.edges,
-        frames: studio.frames,
-        schemas: studio.schemas,
-        skillRealms: studio.skillRealms
-      },
-      deploySettings,
-      mobSettings,
-      contract
-    });
-    if (!plan.ok) return;
-    if (projection.document) setCurrentAuthoringDocument(projection.document);
-    if (plan.flow.changed) setFlow(plan.flow.value);
-    if (plan.members.changed) studio.setMembers(plan.members.value);
-    if (plan.skillRealms.changed) studio.setSkillRealms(plan.skillRealms.value);
-    if (plan.schemas.changed) studio.setSchemas(plan.schemas.value);
-    if (plan.graph.changed) {
-      graphProjectionSig.current = plan.graph.signature;
-      studio.setInstances(plan.graph.instances);
-      studio.setEdges(plan.graph.edges);
-    }
-    if (plan.frames.changed) studio.setFrames(plan.frames.value);
-    if (plan.deploySettings.changed) setDeploySettings(plan.deploySettings.value);
-    if (plan.mobSettings.changed) setMobSettings(plan.mobSettings.value);
-  };
-  const currentMobKitDocument = () => {
-    if (authoringDocumentRef.current) return authoringDocumentRef.current;
-    throw new Error(catalogs.errorView.authoringOperationMissingDocumentError || "MobKit authoring operation did not return a document");
-  };
-  const currentDraftGuard = () => window.MobKitFlowController.flowRegistryDraftGuard(currentFlow, currentFlowId);
-  const buildMobKitProjectedDocument = async (overrides = {}) => {
-    const requestToken = currentAuthoringRevision();
-    if (editorMode !== "advanced") {
-      try {
-        const document2 = currentMobKitDocument();
-        return { document: document2, requestToken };
-      } catch (error) {
-        return { document: null, requestToken, error: error?.message || String(error) };
-      }
-    }
-    const result = await applyMobKitAuthoringOperation({
-      intent: "system.syncGraphToFlow",
-      reason: "build_projected_document"
-    });
-    if (!authoringRevisionIsCurrent(requestToken)) {
-      return { document: null, requestToken, stale: true };
-    }
-    if (!result?.document) {
-      return {
-        document: null,
-        requestToken,
-        error: result?.error || catalogs.errorView.authoringOperationMissingDocumentError
+      var CATALOG_BOOT = {
+        grid: MOBKIT_BOOT.GRID,
+        cellXY: MOBKIT_BOOT.cellXY,
+        template: MOBKIT_BOOT.template
       };
-    }
-    return { document: result.document, requestToken };
-  };
-  authoringRunnerContext.current = {
-    catalogs,
-    currentMobKitDocument,
-    currentDraftGuard,
-    currentAuthoringRevision,
-    authoringRevisionIsCurrent,
-    beginProjectionSync,
-    applyAuthoringDocumentProjection,
-    markDraft
-  };
-  const applyMobKitAuthoringOperation = React.useCallback((operation) => {
-    if (!String(operation?.intent || "").startsWith("system.")) {
-      reconcileEpoch.current += 1;
-    }
-    return authoringOperationRunner.current(operation);
-  }, []);
-  const mobKitStudio = {
-    ...studio
-  };
-  const editGraphNode = React.useCallback((id, action, payload = {}) => applyMobKitAuthoringOperation({
-    intent: "graph.editNode",
-    instanceId: id,
-    action,
-    payload
-  }), [applyMobKitAuthoringOperation]);
-  const editGraphEdge = React.useCallback((id, action, payload = {}) => applyMobKitAuthoringOperation({
-    intent: "graph.editEdge",
-    edgeId: id,
-    action,
-    payload
-  }), [applyMobKitAuthoringOperation]);
-  const saveRegistryDocument = (rowPatch) => {
-    if (!rowPatch?.document) return;
-    window.MobKitFlowController.saveDocument(rowPatch).then((result) => {
-      if (result?.row) {
-        setFlows((rows) => window.MobKitFlowController.flowRegistryUpsertRowPatch(rows, result.row));
-      }
-    }).catch((error) => {
-      if (window.MobKitFlowController.isDraftGuardConflictError(error)) {
-        console.warn("MobKit draft save superseded; re-persisting the current draft:", error?.message || error);
-        persistedDocumentSig.current = "";
-        setFlows((rows) => Array.isArray(rows) ? [...rows] : rows);
-        return;
-      }
-      showAuthoringFailure(error, authoringFailureHead("draft_save"));
-    });
-  };
-  React.useEffect(() => {
-    let cancelled = false;
-    const abort = new AbortController();
-    setDeployCommandPreview("");
-    if (!deployContractLoaded) {
-      return () => {
-        cancelled = true;
-        abort.abort();
-      };
-    }
-    buildMobKitProjectedDocument().then(({ document: document2, stale }) => {
-      if (cancelled || stale || !document2) return null;
-      return window.MobKitFlowController.deployCommandPreviewForDocument(document2, { ...currentDraftGuard(), signal: abort.signal });
-    }).then((preview) => {
-      if (!cancelled) {
-        setDeployCommandPreview(preview?.command || "");
-      }
-    }).catch(() => {
-      if (abort.signal.aborted) return;
-      if (!cancelled) {
-        setDeployCommandPreview("");
-      }
-    });
-    return () => {
-      cancelled = true;
-      abort.abort();
-    };
-  }, [
-    deployContractLoaded,
-    editorMode,
-    flow,
-    studio.members,
-    studio.instances,
-    studio.edges,
-    studio.frames,
-    studio.schemas,
-    studio.skillRealms,
-    deploySettings,
-    mobSettings,
-    contract,
-    catalogs.models,
-    catalogs.toolCatalog,
-    catalogs.contractMeta.loaded
-  ]);
-  const persistCurrentOutcome = (outcome) => {
-    const projection = window.MobKitFlowController.flowRegistryPersistOutcomeProjection(flows, {
-      currentFlowId,
-      outcome
-    });
-    if (!projection.ok || !projection.changed) return projection;
-    persistedDocumentSig.current = projection.signature;
-    setFlows(projection.rows);
-    saveRegistryDocument(projection.persistence?.rowPatch);
-    return projection;
-  };
-  React.useEffect(() => {
-    if (!currentFlowId || !currentFlow) return;
-    let document2;
-    try {
-      document2 = currentMobKitDocument();
-    } catch {
-      return;
-    }
-    const persistence = window.MobKitFlowController.flowRegistryPersistDocumentProjection(flows, {
-      currentFlowId,
-      document: document2,
-      validation: null,
-      stage,
-      previousSignature: persistedDocumentSig.current,
-      skipIfUnchanged: true
-    });
-    if (!persistence.changed) return;
-    persistedDocumentSig.current = persistence.signature;
-    setFlows(persistence.rows);
-    saveRegistryDocument(persistence.rowPatch);
-  }, [
-    flows,
-    currentFlowId,
-    currentFlow,
-    stage,
-    editorMode,
-    flow,
-    studio.members,
-    studio.instances,
-    studio.edges,
-    studio.frames,
-    studio.schemas,
-    studio.skillRealms,
-    deploySettings,
-    mobSettings,
-    contract,
-    catalogs.models,
-    catalogs.toolCatalog,
-    catalogs.contractMeta.loaded,
-    authoringDocument
-  ]);
-  const handleDeployPlanTrace = async () => {
-    let requestToken = null;
-    setApiBusy(true);
-    try {
-      const projected = await buildMobKitProjectedDocument();
-      if (projected.stale || !projected.document) return;
-      const document2 = projected.document;
-      requestToken = projected.requestToken;
-      const plan = await window.MobKitFlowController.deployDocument(document2, { execute: false, ...currentDraftGuard() });
-      if (!authoringRevisionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.deployOutcome(document2, plan, { execute: false });
-      window.__mobkitFlowLastDocument = document2;
-      window.__mobkitFlowLastDeployPlanTrace = plan;
-      persistCurrentOutcome(outcome);
-      setValidationResults(outcome.validationRows);
-      setStage(outcome.stage);
-      applyApiOverlayPatch(window.MobKitFlowController.deployPlanTraceReadyTransition(document2, plan));
-    } catch (error) {
-      if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.deployErrorOutcome(error, { execute: false, errorView: catalogs.errorView });
-      setValidationResults(outcome.validationRows);
-      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
-      setStage(outcome.stage);
-    } finally {
-      setApiBusy(false);
-    }
-  };
-  const renderCurrentSourceDocument = async (requestToken, projectedDocument = null) => {
-    const document2 = projectedDocument || (await buildMobKitProjectedDocument()).document;
-    if (!document2) return null;
-    const result = await window.MobKitFlowController.sourceDocument(document2, currentDraftGuard());
-    const projection = window.MobKitFlowController.sourceDocumentFromSourceResult(document2, result, {
-      sourceView: catalogs.sourceView
-    });
-    if (!sourceProjectionIsCurrent(requestToken)) return null;
-    window.__mobkitFlowLastDocument = document2;
-    window.__mobkitFlowLastSource = result;
-    setValidationResults(projection.validationRows);
-    setStage(projection.stage);
-    return projection.sourceDocument;
-  };
-  const handleSource = async () => {
-    if (sourceOpen) {
-      clearSourceProjection();
-      return;
-    }
-    let requestToken = null;
-    setApiBusy(true);
-    try {
-      const projected = await buildMobKitProjectedDocument();
-      if (projected.stale || !projected.document) return;
-      const document2 = projected.document;
-      requestToken = beginSourceProjection();
-      const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document2);
-      if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
-      applySourceProjectionPatch(window.MobKitFlowController.sourceDrawerReadyTransition(nextSourceDocument));
-    } catch (error) {
-      if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
-      setValidationResults(outcome.validationRows);
-      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
-      setStage(outcome.stage);
-    } finally {
-      setApiBusy(false);
-    }
-  };
-  React.useEffect(() => {
-    clearSourceProjection();
-  }, [view, editorMode, clearSourceProjection]);
-  const handleInlineSource = async (surface = "basic", sourceRequest = null) => {
-    let requestToken = null;
-    const toggle = window.MobKitFlowController.inlineSourceToggleTransition({
-      open: inlineSourceOpen,
-      currentSurface: inlineSourceSurface,
-      targetSurface: surface
-    });
-    if (!toggle.shouldOpen) {
-      sourceProjectionVersion.current += 1;
-      applySourceProjectionPatch(toggle.patch);
-      return;
-    }
-    const requestedSourcePath = window.MobKitFlowController.inlineSourceRequestPath(sourceRequest, {
-      sourceView: catalogs.sourceView,
-      graphView: catalogs.graphView
-    });
-    applySourceProjectionPatch(toggle.patch);
-    setApiBusy(true);
-    try {
-      const projected = await buildMobKitProjectedDocument();
-      if (projected.stale || !projected.document) return;
-      const document2 = projected.document;
-      requestToken = beginSourceProjection();
-      applySourceProjectionPatch(window.MobKitFlowController.inlineSourcePendingTransition(surface));
-      const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document2);
-      if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
-      applySourceProjectionPatch(window.MobKitFlowController.inlineSourceReadyTransition({
-        ...nextSourceDocument,
-        ...requestedSourcePath ? { sourcePath: requestedSourcePath } : {}
-      }));
-    } catch (error) {
-      if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
-      setValidationResults(outcome.validationRows);
-      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
-      setStage(outcome.stage);
-    } finally {
-      applySourceProjectionPatch(window.MobKitFlowController.inlineSourceBusyTransition(false));
-      setApiBusy(false);
-    }
-  };
-  React.useEffect(() => {
-    const openGraphSourceFromHash = () => {
-      const canvasView = window.MobKitFlowController.graphCanvasViewState(catalogs.graphView);
-      if (!canvasView.sourceFileActivationHash || window.location.hash !== canvasView.sourceFileActivationHash) return;
-      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-      handleInlineSource("graph", { sourcePath: canvasView.sourcePath || catalogs.sourceView.primarySourcePath });
-    };
-    window.addEventListener("hashchange", openGraphSourceFromHash);
-    openGraphSourceFromHash();
-    return () => window.removeEventListener("hashchange", openGraphSourceFromHash);
-  }, [handleInlineSource, catalogs.graphView]);
-  const handleValidate = async () => {
-    let requestToken = null;
-    setApiBusy(true);
-    try {
-      const projected = await buildMobKitProjectedDocument();
-      if (projected.stale || !projected.document) return;
-      const document2 = projected.document;
-      requestToken = projected.requestToken;
-      const result = await window.MobKitFlowController.validateDocument(document2, currentDraftGuard());
-      if (!authoringRevisionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.validationOutcome(document2, result);
-      window.__mobkitFlowLastDocument = document2;
-      window.__mobkitFlowLastValidation = result;
-      persistCurrentOutcome(outcome);
-      setValidationResults(outcome.validationRows);
-      setStage(outcome.stage);
-    } catch (error) {
-      if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.validationErrorOutcome(error, { errorView: catalogs.errorView });
-      setValidationResults(outcome.validationRows);
-      setStage(outcome.stage);
-    } finally {
-      if (requestToken === null || authoringRevisionIsCurrent(requestToken)) {
-        applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
-      }
-      setApiBusy(false);
-    }
-  };
-  const handlePublish = async () => {
-    let requestToken = null;
-    setApiBusy(true);
-    try {
-      const projected = await buildMobKitProjectedDocument();
-      if (projected.stale || !projected.document) return;
-      const document2 = projected.document;
-      requestToken = projected.requestToken;
-      const result = await window.MobKitFlowController.exportDocument(document2, currentDraftGuard());
-      if (!authoringRevisionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.exportOutcome(document2, result);
-      window.__mobkitFlowLastDocument = document2;
-      window.__mobkitFlowLastExport = result;
-      persistCurrentOutcome(outcome);
-      if (!window.__mobkitFlowDisableDownload) {
-        downloadExportResult(result);
-      }
-      setValidationResults(outcome.validationRows);
-      setStage(outcome.stage);
-      applyApiOverlayPatch(window.MobKitFlowController.validationSheetCloseTransition());
-    } catch (error) {
-      if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.exportErrorOutcome(error, { errorView: catalogs.errorView });
-      setValidationResults(outcome.validationRows);
-      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
-      setStage(outcome.stage);
-    } finally {
-      setApiBusy(false);
-    }
-  };
-  const handleDeploy = async ({ execute }) => {
-    let requestToken = null;
-    setApiBusy(true);
-    try {
-      const projected = await buildMobKitProjectedDocument();
-      if (projected.stale || !projected.document) return;
-      const document2 = projected.document;
-      requestToken = projected.requestToken;
-      const result = await window.MobKitFlowController.deployDocument(document2, { execute, ...currentDraftGuard() });
-      if (!authoringRevisionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.deployOutcome(document2, result, { execute });
-      window.__mobkitFlowLastDocument = document2;
-      window.__mobkitFlowLastDeploy = result;
-      persistCurrentOutcome(outcome);
-      setValidationResults(outcome.validationRows);
-      setStage(outcome.stage);
-      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
-    } catch (error) {
-      if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
-      const outcome = window.MobKitFlowController.deployErrorOutcome(error, { execute, errorView: catalogs.errorView });
-      setValidationResults(outcome.validationRows);
-      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
-      setStage(outcome.stage);
-    } finally {
-      setApiBusy(false);
-    }
-  };
-  const handleDeployPlan = () => handleDeploy({ execute: false });
-  const handleDeployRun = () => handleDeploy({ execute: true });
-  const basicSourceToggle = window.MobKitFlowController.inlineSourceToggleButtonState({
-    open: inlineSourceOpen,
-    currentSurface: inlineSourceSurface,
-    targetSurface: "basic",
-    basicView: catalogs.basicView,
-    sourceView: catalogs.sourceView
-  });
-  const hydrateMobpackDocument = (result, options = {}) => {
-    const activeContract = options.contract || contract;
-    const hydration = window.MobKitFlowController.hydrateMobpackDocumentState(result, {
-      id: options.id,
-      existingRows: options.existingRows,
-      addToRegistry: options.addToRegistry,
-      openEditor: options.openEditor,
-      flowRow: options.flowRow || null,
-      deployDefaults: options.deployDefaults || catalogs.deployDefaults,
-      mobDefaults: options.mobDefaults || catalogs.mobDefaults,
-      contractSkillRealms: contractSkillRealms.current,
-      contract: activeContract,
-      errorView: catalogs.errorView
-    });
-    if (hydration.ok === false) {
-      setValidationResults(hydration.validationRows || []);
-      setStage(hydration.stage || "draft");
-      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
-      return;
-    }
-    const hydrationPersistence = window.MobKitFlowController.flowRegistryDocumentPersistence({
-      currentFlowId: hydration.id,
-      document: hydration.document,
-      validation: hydration.validation,
-      stage: hydration.stage
-    });
-    if (hydrationPersistence.ok) {
-      persistedDocumentSig.current = hydrationPersistence.signature;
-    }
-    beginDocumentHydration();
-    setCurrentAuthoringDocument(hydration.document);
-    hydratingDocumentRef.current = true;
-    setCatalogs((current) => window.MobKitFlowController.catalogSkillRealmsPatch(current, hydration.skillRealms));
-    studio.setSkillRealms(hydration.skillRealms);
-    studio.setMembers(hydration.members);
-    studio.setSchemas(hydration.schemas);
-    pendingGraphProjection.current = hydration.graphProjection;
-    setFlow(hydration.flow);
-    setStepSel(null);
-    setDeploySettings(hydration.deploySettings);
-    setMobSettings(hydration.mobSettings);
-    if (!pendingGraphProjection.current) {
-      queueMicrotask(() => {
-        hydratingDocumentRef.current = false;
-      });
-    }
-    if (hydration.addToRegistry) {
-      setFlows((fs) => window.MobKitFlowController.flowRegistryUpsertRowPatch(fs, hydration.registryRow));
-    }
-    setCurrentFlowId(hydration.id);
-    setStage(hydration.stage);
-    setValidationResults(hydration.validationRows);
-    if (hydration.openEditor) setView("editor");
-    const graphProjectionToken = currentAuthoringRevision();
-    window.MobKitFlowController.graphProjectionDocument(hydration.document).then((projectionResult) => {
-      if (!authoringRevisionIsCurrent(graphProjectionToken)) return;
-      const projection = window.MobKitFlowController.graphProjectionFromMobKitResult(projectionResult);
-      if (!projection) return;
-      hydratingDocumentRef.current = true;
-      graphProjectionSig.current = window.MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], {
-        members: hydration.members,
-        contract: activeContract
-      });
-      studio.setInstances(projection.instances || []);
-      studio.setEdges(projection.edges || []);
-      studio.setFrames(projection.frames || []);
-      queueMicrotask(() => {
-        hydratingDocumentRef.current = false;
-      });
-    }).catch((error) => {
-      if (!authoringRevisionIsCurrent(graphProjectionToken)) return;
-      showAuthoringFailure(error, authoringFailureHead("graph_projection"));
-    });
-  };
-  const hydrateImportedDocument = (result) => {
-    hydrateMobpackDocument(result, { existingRows: flows });
-  };
-  const openFlowRegistrySelection = (selection2) => {
-    if (selection2?.hydration) {
-      hydrateMobpackDocument(selection2.hydration.result, selection2.hydration.options);
-      return true;
-    }
-    return false;
-  };
-  const handleImportFile = async (event) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    setApiBusy(true);
-    try {
-      const result = await window.MobKitFlowController.importDocument(await importParamsFromFile(file));
-      window.__mobkitFlowLastImport = result;
-      hydrateImportedDocument(result);
-    } catch (error) {
-      const outcome = window.MobKitFlowController.importErrorOutcome(error, { filename: file.name, errorView: catalogs.errorView });
-      setValidationResults(outcome.validationRows);
-      applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
-      setStage(outcome.stage);
-    } finally {
-      setApiBusy(false);
-    }
-  };
-  const shellState = window.MobKitFlowController.topRailState({ contract, deploySettings, stage, view, theme: t.theme, deployView: catalogs.deployView, capabilities });
-  return /* @__PURE__ */ React.createElement("div", { className: "app density--" + t.density + " inspector--" + t.inspectorLayout + " view--" + view }, /* @__PURE__ */ React.createElement(
-    TopRail,
-    {
-      stage,
-      view,
-      onNavigate: handleTopRailNavigation,
-      currentFlowName: currentFlow?.name || "\u2014",
-      contract,
-      theme: t.theme,
-      railState: shellState,
-      onToggleTheme: handleThemeToggle,
-      onValidate: handleValidate,
-      onPublish: handlePublish,
-      onDeployPlan: handleDeployPlan,
-      onDeployRun: handleDeployRun,
-      onImport: () => importInputRef.current?.click(),
-      onDeployPlanTrace: handleDeployPlanTrace,
-      onYaml: handleSource,
-      onToggleSettings: () => window.dispatchEvent(new CustomEvent("mobkit-flow-editor:settings-toggle")),
-      deploySettings
-    }
-  ), /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      ref: importInputRef,
-      type: "file",
-      accept: ".mobpack,.json,.toml,application/json,application/gzip",
-      style: { display: "none" },
-      onChange: handleImportFile
-    }
-  ), view === "flows" && /* @__PURE__ */ React.createElement(
-    FlowsView,
-    {
-      flows,
-      currentFlowId,
-      onOpen: (id) => {
-        const selection2 = window.MobKitFlowController.flowRegistrySelectionState(flows, id);
-        openFlowRegistrySelection(selection2);
-      },
-      canCreate: canCreateAuthoring,
-      flowRegistryView: catalogs.flowRegistryView,
-      onNew: () => {
-        if (!canCreateAuthoring) return;
-        setCreating(window.MobKitFlowController.newFlowInitialState({ blankTemplate: catalogs.blankMobpack }));
-      }
-    }
-  ), view === "editor" && /* @__PURE__ */ React.createElement(ModeToggle, { mode: editorMode, onSelectMode: handleEditorModeSelection, railState: shellState }), view === "editor" && editorMode === "advanced" && /* @__PURE__ */ React.createElement("div", { className: "stage-area", onClick: (e) => {
-    if (e.target === e.currentTarget) closeGraphAddMenu();
-  } }, /* @__PURE__ */ React.createElement(
-    GraphEditor,
-    {
-      state: mobKitStudio,
-      selection,
-      selectInstance,
-      selectEdge,
-      clearSelection,
-      activeStepId,
-      edgeStyle: t.edgeStyle,
-      density: t.density,
-      onRequestAdd: handleRequestAdd,
-      onOpenSourceFile: (sourceRequest) => handleInlineSource("graph", sourceRequest),
-      memberFocus: null,
-      grid: catalogs.grid,
-      contract,
-      graphView: catalogs.graphView,
-      toolCatalog: catalogs.toolCatalog,
-      applyAuthoringIntent: applyMobKitAuthoringOperation
-    }
-  ), /* @__PURE__ */ React.createElement(
-    InlineSourceEditor,
-    {
-      open: inlineSourceOpen && inlineSourceSurface === "graph",
-      onClose: clearSourceProjection,
-      state: inlineSourceDocument,
-      busy: inlineSourceBusy,
-      surface: "graph",
-      sourceView: catalogs.sourceView
-    }
-  ), /* @__PURE__ */ React.createElement(
-    AddNodeMenu,
-    {
-      at: addAt,
-      members: studio.members,
-      contract,
-      graphView: catalogs.graphView,
-      onPick: handlePick,
-      onClose: closeGraphAddMenu,
-      onJumpToAgents: handleAgentNavigation
-    }
-  ), /* @__PURE__ */ React.createElement("aside", { className: "inspector" }, /* @__PURE__ */ React.createElement(
-    Inspector,
-    {
-      studio: mobKitStudio,
-      selection,
-      flow,
-      template: currentFlow,
-      templateSeed: catalogs.template,
-      templateView: catalogs.graphTemplateView,
-      launchView: catalogs.launchView,
-      graphView: catalogs.graphView,
-      conditionView: catalogs.conditionView,
-      contract,
-      deploySettings,
-      selectMember: handleAgentNavigation,
-      selectInstance,
-      clearSelection,
-      editGraphNode,
-      editGraphEdge,
-      deleteGraphNode: (id) => applyMobKitAuthoringOperation({
-        intent: "graph.deleteNode",
-        instanceId: id
-      }),
-      deleteGraphEdge: (id) => applyMobKitAuthoringOperation({
-        intent: "graph.deleteEdge",
-        edgeId: id
-      })
-    }
-  ))), view === "editor" && editorMode === "basic" && /* @__PURE__ */ React.createElement(
-    BuilderView,
-    {
-      studio: mobKitStudio,
-      mode: "build",
-      flow,
-      setFlow: setAuthoringFlow,
-      sel: stepSel,
-      setSel: setStepSel,
-      onShowSource: () => handleInlineSource("basic"),
-      sourceOpen: inlineSourceOpen && inlineSourceSurface === "basic",
-      sourceDocument: inlineSourceDocument,
-      sourceBusy: inlineSourceBusy,
-      sourceToggleLabel: basicSourceToggle.label,
-      onCloseSource: clearSourceProjection,
-      contract,
-      toolCatalog: catalogs.toolCatalog,
-      sourceView: catalogs.sourceView,
-      basicView: catalogs.basicView,
-      launchView: catalogs.launchView,
-      conditionView: catalogs.conditionView,
-      applyAuthoringIntent: applyMobKitAuthoringOperation
-    }
-  ), view === "agents" && /* @__PURE__ */ React.createElement(
-    AgentsView,
-    {
-      studio: mobKitStudio,
-      agentSel,
-      setAgentSel,
-      contract,
-      deploySettings,
-      flow,
-      setFlow: setAuthoringFlow,
-      mobSettings,
-      setMobSettings: setAuthoringMobSettings,
-      toolCatalog: catalogs.toolCatalog,
-      modelCatalog: catalogs.models,
-      agentDefinitions: catalogs.agentDefinitions,
-      applyAgentIntent: applyMobKitAuthoringOperation,
-      agentView: catalogs.agentView,
-      agentDetailView: catalogs.agentDetailView,
-      agentAccessView: catalogs.agentAccessView,
-      schemaView: catalogs.schemaView
-    }
-  ), creating && /* @__PURE__ */ React.createElement(
-    NewFlowModal,
-    {
-      state: creating,
-      setState: setCreating,
-      templateOptions: window.MobKitFlowController.newFlowTemplateOptions(templates, {
-        canCreateBlank: canCreateAuthoring,
-        blankTemplate: catalogs.blankMobpack
-      }),
-      newFlowView: catalogs.newFlowView,
-      onCreate: async (spec) => {
-        if (!canCreateAuthoring) return;
-        setApiBusy(true);
-        try {
-          const result = await window.MobKitFlowController.createDocument(spec);
-          const row = result?.row;
-          if (!row?.document) return;
-          setFlows(Array.isArray(result?.rows) ? result.rows : window.MobKitFlowController.flowRegistryUpsertRowPatch(flows, row));
-          hydrateMobpackDocument(
-            { document: row.document, validation: row.validation || null },
-            {
-              id: row.id,
-              flowRow: row,
-              addToRegistry: false,
-              openEditor: true
-            }
-          );
-          setCreating(null);
-        } catch (error) {
-          const outcome = window.MobKitFlowController.importErrorOutcome(error, { filename: "mobkit/mobpacks/create", errorView: catalogs.errorView });
+      function App() {
+        const [stage, setStage] = React.useState("draft");
+        const [flow, setFlow] = React.useState(() => MobKitFlowController.emptyAuthoringFlowState());
+        const [authoringDocument, setAuthoringDocument] = React.useState(null);
+        const [stepSel, setStepSel] = React.useState(null);
+        const [editorMode, setEditorMode] = React.useState("basic");
+        const [view, setView] = React.useState("editor");
+        const [flows, setFlows] = React.useState([]);
+        const [currentFlowId, setCurrentFlowId] = React.useState("");
+        const [templates, setTemplates] = React.useState([]);
+        const [creating, setCreating] = React.useState(null);
+        const [agentSel, setAgentSel] = React.useState(null);
+        const [selection, setSelection] = React.useState({ kind: null, id: null });
+        const [activeStepId, setActiveStepId] = React.useState(null);
+        const [deployPlanOpen, setDeployPlanOpen] = React.useState(false);
+        const [deployPlanKey, setDeployPlanKey] = React.useState(0);
+        const [deployPlanDocument, setDeployPlanDocument] = React.useState(null);
+        const [deployPlanResult, setDeployPlanResult] = React.useState(null);
+        const [validate, setValidate] = React.useState(false);
+        const [validationResults, setValidationResults] = React.useState([]);
+        const [apiBusy, setApiBusy] = React.useState(false);
+        const [contract, setContract] = React.useState(null);
+        const [capabilities, setCapabilities] = React.useState(null);
+        const contractSkillRealms = React.useRef([]);
+        const [catalogs, setCatalogs] = React.useState(() => MobKitFlowController.emptyMobKitCatalogs(CATALOG_BOOT));
+        const [sourceOpen, setSourceOpen] = React.useState(false);
+        const [sourceDocument2, setSourceDocument] = React.useState(null);
+        const [inlineSourceOpen, setInlineSourceOpen] = React.useState(false);
+        const [inlineSourceSurface, setInlineSourceSurface] = React.useState(null);
+        const [inlineSourceDocument, setInlineSourceDocument] = React.useState(null);
+        const [inlineSourceBusy, setInlineSourceBusy] = React.useState(false);
+        const authoringRevision = React.useRef(0);
+        const authoringDocumentRef = React.useRef(null);
+        const sourceProjectionVersion = React.useRef(0);
+        const [addAt, setAddAt] = React.useState(null);
+        const [deploySettings, setDeploySettings] = React.useState(() => MobKitFlowController.deployDefaultsFromSchema(null));
+        const [deployCommandPreview, setDeployCommandPreview] = React.useState("");
+        const [mobSettings, setMobSettings] = React.useState(() => MobKitFlowController.mobDefaultsFromSchema(null));
+        const authoringRunnerContext = React.useRef({});
+        const authoringOperationRunner = React.useRef(null);
+        const projectionSyncInFlight = React.useRef(false);
+        const projectionSyncReset = React.useRef(0);
+        const RECONCILE_MAX_ATTEMPTS_PER_EPOCH = 4;
+        const reconcileEpoch = React.useRef(0);
+        const reconcileFailureEpoch = React.useRef(null);
+        const reconcileAttempts = React.useRef({ epoch: null, counts: {} });
+        const reconcileLatched = () => reconcileFailureEpoch.current !== null && reconcileFailureEpoch.current === reconcileEpoch.current;
+        const reconcileShouldRun = (intent) => {
+          if (reconcileLatched()) return false;
+          const attempts = reconcileAttempts.current;
+          if (attempts.epoch !== reconcileEpoch.current) {
+            attempts.epoch = reconcileEpoch.current;
+            attempts.counts = {};
+          }
+          attempts.counts[intent] = (attempts.counts[intent] || 0) + 1;
+          if (attempts.counts[intent] > RECONCILE_MAX_ATTEMPTS_PER_EPOCH) {
+            reconcileFailureEpoch.current = reconcileEpoch.current;
+            console.warn(`MobKit ${intent} did not converge; reconciliation paused until the next edit`);
+            return false;
+          }
+          return true;
+        };
+        const markReconcileConverged = (intent) => {
+          const attempts = reconcileAttempts.current;
+          if (attempts.epoch === reconcileEpoch.current) {
+            attempts.counts[intent] = 0;
+          }
+        };
+        const latchReconcileFailure = (epochAtIssue) => (result) => {
+          if (result?.ok === false && result?.document && reconcileEpoch.current === epochAtIssue) {
+            reconcileFailureEpoch.current = epochAtIssue;
+            console.warn("MobKit system reconcile paused until the next edit:", result?.error || result?.validation?.display_rows?.[0]?.sub || "validation failed");
+          }
+          return result;
+        };
+        if (!authoringOperationRunner.current) {
+          authoringOperationRunner.current = MobKitFlowController.createAuthoringOperationRunner({
+            getAuthoringOperations: () => authoringRunnerContext.current.catalogs?.authoringOperations,
+            getCurrentDocument: () => authoringRunnerContext.current.currentMobKitDocument(),
+            getDraftGuard: () => authoringRunnerContext.current.currentDraftGuard(),
+            getCatalogSnapshot: () => authoringRunnerContext.current.catalogs?.catalogSnapshot,
+            getCurrentRevision: () => authoringRunnerContext.current.currentAuthoringRevision(),
+            isRevisionCurrent: (requestToken) => authoringRunnerContext.current.authoringRevisionIsCurrent(requestToken),
+            getProjectionDefaults: () => ({
+              deployDefaults: authoringRunnerContext.current.catalogs?.deployDefaults,
+              mobDefaults: authoringRunnerContext.current.catalogs?.mobDefaults
+            }),
+            getStaleError: () => authoringRunnerContext.current.catalogs?.errorView?.authoringOperationStaleError,
+            getMissingDocumentError: () => authoringRunnerContext.current.catalogs?.errorView?.authoringOperationMissingDocumentError,
+            beginProjectionSync: () => authoringRunnerContext.current.beginProjectionSync(),
+            applyProjection: (projection) => authoringRunnerContext.current.applyAuthoringDocumentProjection(projection),
+            markDraft: () => authoringRunnerContext.current.markDraft()
+          });
+        }
+        const beginProjectionSync = React.useCallback(() => {
+          projectionSyncInFlight.current = true;
+          if (projectionSyncReset.current) window.cancelAnimationFrame(projectionSyncReset.current);
+          projectionSyncReset.current = window.requestAnimationFrame(() => {
+            projectionSyncReset.current = window.requestAnimationFrame(() => {
+              projectionSyncInFlight.current = false;
+              projectionSyncReset.current = 0;
+            });
+          });
+        }, []);
+        const beginSourceProjection = React.useCallback(() => {
+          sourceProjectionVersion.current += 1;
+          return sourceProjectionVersion.current;
+        }, []);
+        const sourceProjectionIsCurrent = React.useCallback((requestToken) => requestToken === sourceProjectionVersion.current, []);
+        const currentAuthoringRevision = React.useCallback(() => authoringRevision.current, []);
+        const authoringRevisionIsCurrent = React.useCallback((requestToken) => requestToken === authoringRevision.current, []);
+        const setCurrentAuthoringDocument = React.useCallback((document2) => {
+          const next = document2 && typeof document2 === "object" ? document2 : null;
+          authoringDocumentRef.current = next;
+          setAuthoringDocument(next);
+        }, []);
+        const applySourceProjectionPatch = React.useCallback((patch) => {
+          const next = patch && typeof patch === "object" ? patch : {};
+          if (Object.prototype.hasOwnProperty.call(next, "sourceOpen")) setSourceOpen(next.sourceOpen);
+          if (Object.prototype.hasOwnProperty.call(next, "sourceDocument")) setSourceDocument(next.sourceDocument);
+          if (Object.prototype.hasOwnProperty.call(next, "inlineSourceOpen")) setInlineSourceOpen(next.inlineSourceOpen);
+          if (Object.prototype.hasOwnProperty.call(next, "inlineSourceSurface")) setInlineSourceSurface(next.inlineSourceSurface);
+          if (Object.prototype.hasOwnProperty.call(next, "inlineSourceDocument")) setInlineSourceDocument(next.inlineSourceDocument);
+          if (Object.prototype.hasOwnProperty.call(next, "inlineSourceBusy")) setInlineSourceBusy(next.inlineSourceBusy);
+        }, []);
+        const applyApiOverlayPatch = React.useCallback((patch) => {
+          const next = patch && typeof patch === "object" ? patch : {};
+          if (Object.prototype.hasOwnProperty.call(next, "deployPlanOpen")) setDeployPlanOpen(next.deployPlanOpen);
+          if (Object.prototype.hasOwnProperty.call(next, "deployPlanDocument")) setDeployPlanDocument(next.deployPlanDocument);
+          if (Object.prototype.hasOwnProperty.call(next, "deployPlanResult")) setDeployPlanResult(next.deployPlanResult);
+          if (next.incrementDeployPlanKey) setDeployPlanKey((k) => k + 1);
+          if (Object.prototype.hasOwnProperty.call(next, "validate")) setValidate(next.validate);
+        }, []);
+        const clearSourceProjection = React.useCallback(() => {
+          sourceProjectionVersion.current += 1;
+          applySourceProjectionPatch(MobKitFlowController.sourceProjectionClearTransition());
+        }, [applySourceProjectionPatch]);
+        const markDraft = React.useCallback(() => {
+          if (projectionSyncInFlight.current) return;
+          authoringRevision.current += 1;
+          setStage("draft");
+          setValidationResults([]);
+          clearSourceProjection();
+          if (currentFlowId) {
+            setFlows((rows) => MobKitFlowController.flowRegistryMarkDraftPatch(rows, currentFlowId));
+          }
+        }, [clearSourceProjection, currentFlowId]);
+        const beginDocumentHydration = React.useCallback(() => {
+          authoringRevision.current += 1;
+          reconcileEpoch.current += 1;
+          clearSourceProjection();
+        }, [clearSourceProjection]);
+        const showAuthoringFailure = React.useCallback((resultOrError, fallbackHead = "") => {
+          const errorView = catalogs.errorView || {};
+          const authoringHead = fallbackHead || errorView.authoringOperationFailedHead;
+          const validation = resultOrError?.validation || null;
+          const validationRows = validation ? MobKitFlowController.diagnosticsToRows(validation) : null;
+          const outcome = validationRows?.length ? { validationRows, stage: "draft" } : MobKitFlowController.criticalErrorOutcome({
+            head: authoringHead,
+            error: resultOrError?.error || resultOrError,
+            meta: errorView.authoringOperationMeta,
+            errorView
+          });
           setValidationResults(outcome.validationRows);
-          applyApiOverlayPatch(window.MobKitFlowController.validationSheetOpenTransition());
           setStage(outcome.stage);
-        } finally {
-          setApiBusy(false);
-        }
+          applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+          return outcome;
+        }, [applyApiOverlayPatch, catalogs.errorView]);
+        const authoringFailureHead = React.useCallback(
+          (key) => catalogs.errorView.authoringOperationFallbackHeads?.[key] || catalogs.errorView.authoringOperationFailedHead,
+          [catalogs.errorView]
+        );
+        const setAuthoringFlow = React.useCallback((next) => {
+          markDraft();
+          setFlow(next);
+        }, [markDraft]);
+        const studio = useStudioState({
+          members: [],
+          instances: [],
+          edges: [],
+          frames: [],
+          schemas: [],
+          skillRealms: []
+        }, markDraft, {
+          flow,
+          setFlow: setAuthoringFlow,
+          contract
+        });
+        const setAuthoringDeploySettings = React.useCallback((next) => {
+          markDraft();
+          setDeploySettings(next);
+        }, [markDraft]);
+        const setAuthoringMobSettings = React.useCallback((next) => {
+          markDraft();
+          setMobSettings(next);
+        }, [markDraft]);
+        const graphProjectionSig = React.useRef("");
+        const pendingGraphProjection = React.useRef(null);
+        const skipNextGraphProjection = React.useRef(false);
+        const persistedDocumentSig = React.useRef("");
+        const importInputRef = React.useRef(null);
+        const previousMembersRef = React.useRef([]);
+        const hydratingDocumentRef = React.useRef(false);
+        const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+        const canCreateAuthoring = !!catalogs.contractMeta.loaded && !contract?.error;
+        const deployContractLoaded = !!catalogs.contractMeta.loaded;
+        const currentFlowSelection = MobKitFlowController.flowRegistrySelectionState(flows, currentFlowId);
+        const currentFlow = currentFlowSelection.row;
+        React.useEffect(() => {
+          document.documentElement.dataset.ccVariant = "rams";
+          document.documentElement.dataset.ccTheme = t.theme || "light";
+        }, [t.theme]);
+        React.useEffect(() => {
+          let cancelled = false;
+          const abort = new AbortController();
+          MobKitFlowController.configure({ rpcUrl: rpcUrlFromShell() });
+          const rpcOptions = { signal: abort.signal };
+          MobKitFlowController.loadSchema(rpcOptions).then(async (schema) => {
+            MobKitFlowController.configureAuthoringMethodsFromSchema(schema);
+            const capabilityPayload = await MobKitFlowController.loadCapabilities(rpcOptions);
+            const catalogPayload = await MobKitFlowController.loadCatalogs(rpcOptions);
+            let registryPayload = await MobKitFlowController.listDocuments({}, rpcOptions).catch((error) => {
+              if (abort.signal.aborted) throw error;
+              return { rows: [] };
+            });
+            const hasRuntimeRows = Array.isArray(catalogPayload?.runtime_flows) && catalogPayload.runtime_flows.length > 0;
+            if ((!Array.isArray(registryPayload?.rows) || registryPayload.rows.length === 0) && !hasRuntimeRows) {
+              registryPayload = await MobKitFlowController.createDocument({
+                template: "blank",
+                trigger: "MobKit editor startup draft"
+              }, rpcOptions).catch((error) => {
+                if (abort.signal.aborted) throw error;
+                return registryPayload;
+              });
+            }
+            if (cancelled) return;
+            setCapabilities(capabilityPayload);
+            const nextCatalogs = MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
+            setCatalogs(nextCatalogs);
+            setDeploySettings(nextCatalogs.deployDefaults);
+            setMobSettings(nextCatalogs.mobDefaults);
+            contractSkillRealms.current = nextCatalogs.skillRealms;
+            studio.setSkillRealms(nextCatalogs.skillRealms);
+            const bootstrap = MobKitFlowController.flowCatalogBootstrapState(catalogPayload, {
+              openEditor: view === "editor",
+              deployDefaults: nextCatalogs.deployDefaults,
+              mobDefaults: nextCatalogs.mobDefaults,
+              registryResult: registryPayload
+            });
+            setTemplates(bootstrap.templates);
+            setFlows(bootstrap.flows);
+            if (bootstrap.initialHydration) {
+              hydrateMobpackDocument(bootstrap.initialHydration.result, {
+                ...bootstrap.initialHydration.options,
+                contract: schema
+              });
+            }
+            setContract(schema);
+          }).catch((error) => {
+            if (abort.signal.aborted) return;
+            if (!cancelled) setContract({ error: error?.message || String(error) });
+          });
+          return () => {
+            cancelled = true;
+            abort.abort();
+          };
+        }, []);
+        React.useEffect(() => {
+          if (pendingGraphProjection.current) {
+            const projection = pendingGraphProjection.current;
+            pendingGraphProjection.current = null;
+            skipNextGraphProjection.current = false;
+            graphProjectionSig.current = MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: projection.members || studio.members, contract: projection.contract || contract });
+            studio.setInstances(projection.instances || []);
+            studio.setEdges(projection.edges || []);
+            studio.setFrames(projection.frames || []);
+            queueMicrotask(() => {
+              hydratingDocumentRef.current = false;
+            });
+            return;
+          }
+          if (skipNextGraphProjection.current) {
+            skipNextGraphProjection.current = false;
+            return;
+          }
+          if (editorMode === "advanced") return;
+          if (!MobKitFlowController?.graphProjectionDocument) return;
+          let cancelled = false;
+          const abort = new AbortController();
+          if (!authoringDocumentRef.current) return;
+          const projectionDocument = currentMobKitDocument();
+          MobKitFlowController.graphProjectionDocument({
+            ...projectionDocument,
+            instances: [],
+            edges: [],
+            frames: []
+          }, { ...MobKitFlowController.flowRegistryDraftGuard(currentFlow, currentFlowId), signal: abort.signal }).then((projectionResult) => {
+            if (cancelled) return;
+            const projection = MobKitFlowController.graphProjectionFromMobKitResult(projectionResult);
+            if (!projection) return;
+            graphProjectionSig.current = MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], { members: studio.members, contract });
+            studio.setInstances(projection.instances || []);
+            studio.setEdges(projection.edges || []);
+            studio.setFrames(projection.frames || []);
+          }).catch((error) => {
+            if (abort.signal.aborted) return;
+            if (cancelled) return;
+            showAuthoringFailure(error, authoringFailureHead("graph_projection"));
+          });
+          return () => {
+            cancelled = true;
+            abort.abort();
+          };
+        }, [flow, editorMode, contract, studio.members, currentFlow, currentFlowId]);
+        React.useEffect(() => {
+          if (editorMode !== "advanced") return;
+          const sig = MobKitFlowController.graphStructureSignature(studio.instances, studio.edges, { members: studio.members, contract });
+          if (sig === graphProjectionSig.current) return;
+          graphProjectionSig.current = sig;
+          skipNextGraphProjection.current = true;
+          applyMobKitAuthoringOperation({
+            intent: "system.syncGraphToFlow",
+            reason: "advanced_graph_changed"
+          }).then((result) => {
+            if (result?.ok === false) showAuthoringFailure(result, authoringFailureHead("graph_sync"));
+          }).catch((error) => showAuthoringFailure(error, authoringFailureHead("graph_sync")));
+        }, [editorMode, studio.instances, studio.edges, studio.members, flow, contract]);
+        React.useEffect(() => {
+          const previousMembers = previousMembersRef.current || [];
+          if (hydratingDocumentRef.current) {
+            previousMembersRef.current = studio.members;
+            return;
+          }
+          const result = MobKitFlowController.reconcileAuthoringForMembers({
+            flow,
+            instances: studio.instances,
+            edges: studio.edges,
+            mobSettings,
+            previousMembers,
+            members: studio.members
+          });
+          const changed = result.flow !== flow || result.edges !== studio.edges || result.instances !== studio.instances || result.mobSettings !== mobSettings;
+          previousMembersRef.current = studio.members;
+          if (!changed) {
+            markReconcileConverged("system.reconcileMembers");
+            return;
+          }
+          if (!reconcileShouldRun("system.reconcileMembers")) return;
+          applyMobKitAuthoringOperation({
+            intent: "system.reconcileMembers"
+          }).then(latchReconcileFailure(reconcileEpoch.current));
+        }, [studio.members, flow, studio.instances, studio.edges, mobSettings]);
+        React.useEffect(() => {
+          if (!MobKitFlowController?.reconcileConditionFieldAvailability) return;
+          if (hydratingDocumentRef.current) return;
+          const result = MobKitFlowController.reconcileConditionFieldAvailability({
+            flow,
+            edges: studio.edges,
+            members: studio.members,
+            instances: studio.instances,
+            schemas: studio.schemas
+          });
+          const flowChanged = result.flow !== flow;
+          const edgesChanged = result.edges !== studio.edges;
+          if (!flowChanged && !edgesChanged) {
+            markReconcileConverged("system.reconcileConditionFields");
+            return;
+          }
+          if (!reconcileShouldRun("system.reconcileConditionFields")) return;
+          applyMobKitAuthoringOperation({
+            intent: "system.reconcileConditionFields"
+          }).then(latchReconcileFailure(reconcileEpoch.current));
+        }, [flow, studio.edges, studio.instances, studio.members, studio.schemas]);
+        React.useEffect(() => {
+          if (hydratingDocumentRef.current) return;
+          const result = MobKitFlowController.reconcileAuthoringWithContract({
+            members: studio.members,
+            skillRealms: studio.skillRealms,
+            schemas: studio.schemas,
+            deploySettings,
+            mobSettings,
+            flow,
+            instances: studio.instances,
+            edges: studio.edges,
+            contract,
+            modelCatalog: catalogs.models,
+            toolCatalog: catalogs.toolCatalog,
+            contractLoaded: !!catalogs.contractMeta.loaded
+          });
+          if (!result.changed) {
+            markReconcileConverged("system.reconcileContractRefs");
+            return;
+          }
+          if (!reconcileShouldRun("system.reconcileContractRefs")) return;
+          applyMobKitAuthoringOperation({
+            intent: "system.reconcileContractRefs"
+          }).then(latchReconcileFailure(reconcileEpoch.current));
+        }, [
+          studio.members,
+          studio.skillRealms,
+          studio.schemas,
+          deploySettings,
+          mobSettings,
+          flow,
+          studio.instances,
+          studio.edges,
+          contract,
+          catalogs.models,
+          catalogs.toolCatalog,
+          catalogs.contractMeta.loaded,
+          authoringDocument
+        ]);
+        const selectInstance = (id) => setSelection(MobKitFlowController.graphSelectionProjection("instance", id));
+        const selectEdge = (id) => setSelection(MobKitFlowController.graphSelectionProjection("edge", id));
+        const clearSelection = (nextSelection = { kind: null, id: null }) => setSelection(nextSelection || { kind: null, id: null });
+        React.useEffect(() => {
+          const onKey = (e) => {
+            const tg = e.target;
+            if (tg.tagName === "INPUT" || tg.tagName === "TEXTAREA" || tg.tagName === "SELECT") return;
+            if (e.key === "Backspace" || e.key === "Delete") {
+              if (selection.kind === "instance") {
+                const nextSelection = { kind: null, id: null };
+                applyMobKitAuthoringOperation({
+                  intent: "graph.deleteNode",
+                  instanceId: selection.id
+                }).then((result) => {
+                  if (result?.ok === false) return;
+                  clearSelection(nextSelection);
+                });
+              } else if (selection.kind === "edge") {
+                const nextSelection = { kind: null, id: null };
+                applyMobKitAuthoringOperation({
+                  intent: "graph.deleteEdge",
+                  edgeId: selection.id
+                }).then((result) => {
+                  if (result?.ok === false) return;
+                  clearSelection(nextSelection);
+                });
+              }
+            }
+            if ((e.metaKey || e.ctrlKey) && e.key === "z") {
+              e.preventDefault();
+              handleHistoryStep(e.shiftKey ? "redo" : "undo");
+            }
+            if (e.key === "Escape") {
+              clearSelection();
+              closeGraphAddMenu();
+              applyApiOverlayPatch(MobKitFlowController.apiOverlayClearTransition());
+              clearSourceProjection();
+              if (creating) setCreating(null);
+            }
+          };
+          window.addEventListener("keydown", onKey);
+          return () => window.removeEventListener("keydown", onKey);
+        });
+        const handleRequestAdd = (col, row) => {
+          const result = MobKitFlowController.graphAddMenuOpenProjection({ col, row, grid: catalogs.grid });
+          setAddAt(result.addAt);
+        };
+        const closeGraphAddMenu = () => {
+          const result = MobKitFlowController.graphAddMenuCloseProjection();
+          setAddAt(result.addAt);
+        };
+        const handlePick = (pick) => {
+          if (!addAt) return;
+          const nextMenu = MobKitFlowController.graphAddMenuCloseProjection();
+          setAddAt(nextMenu.addAt);
+          applyMobKitAuthoringOperation({
+            intent: "graph.insertNode",
+            pick,
+            cell: addAt
+          }).then((result) => {
+            if (result?.ok === false) {
+              showAuthoringFailure(result, authoringFailureHead("graph_node_insert"));
+              return;
+            }
+            const id = result?.selection?.id;
+            if (id) selectInstance(id);
+          }).catch((error) => showAuthoringFailure(error, authoringFailureHead("graph_node_insert")));
+        };
+        const handleHistoryStep = async (direction) => {
+          if (!currentFlowId) return;
+          setApiBusy(true);
+          try {
+            const stepper = direction === "redo" ? MobKitFlowController.redoDocument : MobKitFlowController.undoDocument;
+            let result;
+            try {
+              result = await stepper({ id: currentFlowId, ...currentDraftGuard() });
+            } catch (error) {
+              if (!MobKitFlowController.isDraftGuardConflictError(error)) throw error;
+              result = await stepper({ id: currentFlowId });
+            }
+            if (!result?.stepped || !result?.row?.document) return;
+            setFlows((rows) => MobKitFlowController.flowRegistryUpsertRowPatch(rows, result.row));
+            hydrateMobpackDocument(
+              { document: result.row.document, validation: result.row.validation || null },
+              {
+                id: result.row.id,
+                flowRow: result.row,
+                addToRegistry: false,
+                openEditor: false
+              }
+            );
+          } catch (error) {
+            showAuthoringFailure(error, authoringFailureHead(direction));
+          } finally {
+            setApiBusy(false);
+          }
+        };
+        const handleAgentNavigation = (id) => {
+          const next = MobKitFlowController.agentNavigationProjection(id);
+          setAddAt(next.addAt);
+          setView(next.view);
+          setAgentSel(next.selection);
+        };
+        const handleTopRailNavigation = (target) => {
+          const next = MobKitFlowController.topRailNavigationTransition(view, target);
+          if (!next) return;
+          setView(next.view);
+        };
+        React.useEffect(() => {
+          if (view !== "agents") return;
+          const next = MobKitFlowController.agentDefaultSelectionProjection({
+            selection: agentSel,
+            members: studio.members,
+            schemas: studio.schemas,
+            agentView: catalogs.agentView
+          });
+          if ((next?.kind || null) === (agentSel?.kind || null) && (next?.id || null) === (agentSel?.id || null)) {
+            return;
+          }
+          setAgentSel(next);
+        }, [view, agentSel, studio.members, studio.schemas, catalogs.agentView]);
+        const handleEditorModeSelection = (target) => {
+          const next = MobKitFlowController.editorModeTransition(target);
+          if (!next) return;
+          setEditorMode(next.editorMode);
+        };
+        const handleThemeToggle = () => {
+          const next = MobKitFlowController.themeToggleTransition(t.theme);
+          setTweak(next.field, next.value);
+        };
+        const applyAuthoringDocumentProjection = (projection) => {
+          const plan = MobKitFlowController.authoringProjectionApplyPlan(projection, {
+            flow,
+            studio: {
+              members: studio.members,
+              instances: studio.instances,
+              edges: studio.edges,
+              frames: studio.frames,
+              schemas: studio.schemas,
+              skillRealms: studio.skillRealms
+            },
+            deploySettings,
+            mobSettings,
+            contract
+          });
+          if (!plan.ok) return;
+          if (projection.document) setCurrentAuthoringDocument(projection.document);
+          if (plan.flow.changed) setFlow(plan.flow.value);
+          if (plan.members.changed) studio.setMembers(plan.members.value);
+          if (plan.skillRealms.changed) studio.setSkillRealms(plan.skillRealms.value);
+          if (plan.schemas.changed) studio.setSchemas(plan.schemas.value);
+          if (plan.graph.changed) {
+            graphProjectionSig.current = plan.graph.signature;
+            studio.setInstances(plan.graph.instances);
+            studio.setEdges(plan.graph.edges);
+          }
+          if (plan.frames.changed) studio.setFrames(plan.frames.value);
+          if (plan.deploySettings.changed) setDeploySettings(plan.deploySettings.value);
+          if (plan.mobSettings.changed) setMobSettings(plan.mobSettings.value);
+        };
+        const currentMobKitDocument = () => {
+          if (authoringDocumentRef.current) return authoringDocumentRef.current;
+          throw new Error(catalogs.errorView.authoringOperationMissingDocumentError || "MobKit authoring operation did not return a document");
+        };
+        const currentDraftGuard = () => MobKitFlowController.flowRegistryDraftGuard(currentFlow, currentFlowId);
+        const buildMobKitProjectedDocument = async (overrides = {}) => {
+          const requestToken = currentAuthoringRevision();
+          if (editorMode !== "advanced") {
+            try {
+              const document2 = currentMobKitDocument();
+              return { document: document2, requestToken };
+            } catch (error) {
+              return { document: null, requestToken, error: error?.message || String(error) };
+            }
+          }
+          const result = await applyMobKitAuthoringOperation({
+            intent: "system.syncGraphToFlow",
+            reason: "build_projected_document"
+          });
+          if (!authoringRevisionIsCurrent(requestToken)) {
+            return { document: null, requestToken, stale: true };
+          }
+          if (!result?.document) {
+            return {
+              document: null,
+              requestToken,
+              error: result?.error || catalogs.errorView.authoringOperationMissingDocumentError
+            };
+          }
+          return { document: result.document, requestToken };
+        };
+        authoringRunnerContext.current = {
+          catalogs,
+          currentMobKitDocument,
+          currentDraftGuard,
+          currentAuthoringRevision,
+          authoringRevisionIsCurrent,
+          beginProjectionSync,
+          applyAuthoringDocumentProjection,
+          markDraft
+        };
+        const applyMobKitAuthoringOperation = React.useCallback((operation) => {
+          if (!String(operation?.intent || "").startsWith("system.")) {
+            reconcileEpoch.current += 1;
+          }
+          return authoringOperationRunner.current(operation);
+        }, []);
+        const mobKitStudio = {
+          ...studio
+        };
+        const editGraphNode = React.useCallback((id, action, payload = {}) => applyMobKitAuthoringOperation({
+          intent: "graph.editNode",
+          instanceId: id,
+          action,
+          payload
+        }), [applyMobKitAuthoringOperation]);
+        const editGraphEdge = React.useCallback((id, action, payload = {}) => applyMobKitAuthoringOperation({
+          intent: "graph.editEdge",
+          edgeId: id,
+          action,
+          payload
+        }), [applyMobKitAuthoringOperation]);
+        const saveRegistryDocument = (rowPatch) => {
+          if (!rowPatch?.document) return;
+          MobKitFlowController.saveDocument(rowPatch).then((result) => {
+            if (result?.row) {
+              setFlows((rows) => MobKitFlowController.flowRegistryUpsertRowPatch(rows, result.row));
+            }
+          }).catch((error) => {
+            if (MobKitFlowController.isDraftGuardConflictError(error)) {
+              console.warn("MobKit draft save superseded; re-persisting the current draft:", error?.message || error);
+              persistedDocumentSig.current = "";
+              setFlows((rows) => Array.isArray(rows) ? [...rows] : rows);
+              return;
+            }
+            showAuthoringFailure(error, authoringFailureHead("draft_save"));
+          });
+        };
+        React.useEffect(() => {
+          let cancelled = false;
+          const abort = new AbortController();
+          setDeployCommandPreview("");
+          if (!deployContractLoaded) {
+            return () => {
+              cancelled = true;
+              abort.abort();
+            };
+          }
+          buildMobKitProjectedDocument().then(({ document: document2, stale }) => {
+            if (cancelled || stale || !document2) return null;
+            return MobKitFlowController.deployCommandPreviewForDocument(document2, { ...currentDraftGuard(), signal: abort.signal });
+          }).then((preview) => {
+            if (!cancelled) {
+              setDeployCommandPreview(preview?.command || "");
+            }
+          }).catch(() => {
+            if (abort.signal.aborted) return;
+            if (!cancelled) {
+              setDeployCommandPreview("");
+            }
+          });
+          return () => {
+            cancelled = true;
+            abort.abort();
+          };
+        }, [
+          deployContractLoaded,
+          editorMode,
+          flow,
+          studio.members,
+          studio.instances,
+          studio.edges,
+          studio.frames,
+          studio.schemas,
+          studio.skillRealms,
+          deploySettings,
+          mobSettings,
+          contract,
+          catalogs.models,
+          catalogs.toolCatalog,
+          catalogs.contractMeta.loaded
+        ]);
+        const persistCurrentOutcome = (outcome) => {
+          const projection = MobKitFlowController.flowRegistryPersistOutcomeProjection(flows, {
+            currentFlowId,
+            outcome
+          });
+          if (!projection.ok || !projection.changed) return projection;
+          persistedDocumentSig.current = projection.signature;
+          setFlows(projection.rows);
+          saveRegistryDocument(projection.persistence?.rowPatch);
+          return projection;
+        };
+        React.useEffect(() => {
+          if (!currentFlowId || !currentFlow) return;
+          let document2;
+          try {
+            document2 = currentMobKitDocument();
+          } catch {
+            return;
+          }
+          const persistence = MobKitFlowController.flowRegistryPersistDocumentProjection(flows, {
+            currentFlowId,
+            document: document2,
+            validation: null,
+            stage,
+            previousSignature: persistedDocumentSig.current,
+            skipIfUnchanged: true
+          });
+          if (!persistence.changed) return;
+          persistedDocumentSig.current = persistence.signature;
+          setFlows(persistence.rows);
+          saveRegistryDocument(persistence.rowPatch);
+        }, [
+          flows,
+          currentFlowId,
+          currentFlow,
+          stage,
+          editorMode,
+          flow,
+          studio.members,
+          studio.instances,
+          studio.edges,
+          studio.frames,
+          studio.schemas,
+          studio.skillRealms,
+          deploySettings,
+          mobSettings,
+          contract,
+          catalogs.models,
+          catalogs.toolCatalog,
+          catalogs.contractMeta.loaded,
+          authoringDocument
+        ]);
+        const handleDeployPlanTrace = async () => {
+          let requestToken = null;
+          setApiBusy(true);
+          try {
+            const projected = await buildMobKitProjectedDocument();
+            if (projected.stale || !projected.document) return;
+            const document2 = projected.document;
+            requestToken = projected.requestToken;
+            const plan = await MobKitFlowController.deployDocument(document2, { execute: false, ...currentDraftGuard() });
+            if (!authoringRevisionIsCurrent(requestToken)) return;
+            const outcome = MobKitFlowController.deployOutcome(document2, plan, { execute: false });
+            window.__mobkitFlowLastDocument = document2;
+            window.__mobkitFlowLastDeployPlanTrace = plan;
+            persistCurrentOutcome(outcome);
+            setValidationResults(outcome.validationRows);
+            setStage(outcome.stage);
+            applyApiOverlayPatch(MobKitFlowController.deployPlanTraceReadyTransition(document2, plan));
+          } catch (error) {
+            if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
+            const outcome = MobKitFlowController.deployErrorOutcome(error, { execute: false, errorView: catalogs.errorView });
+            setValidationResults(outcome.validationRows);
+            applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+            setStage(outcome.stage);
+          } finally {
+            setApiBusy(false);
+          }
+        };
+        const renderCurrentSourceDocument = async (requestToken, projectedDocument = null) => {
+          const document2 = projectedDocument || (await buildMobKitProjectedDocument()).document;
+          if (!document2) return null;
+          const result = await MobKitFlowController.sourceDocument(document2, currentDraftGuard());
+          const projection = MobKitFlowController.sourceDocumentFromSourceResult(document2, result, {
+            sourceView: catalogs.sourceView
+          });
+          if (!sourceProjectionIsCurrent(requestToken)) return null;
+          window.__mobkitFlowLastDocument = document2;
+          window.__mobkitFlowLastSource = result;
+          setValidationResults(projection.validationRows);
+          setStage(projection.stage);
+          return projection.sourceDocument;
+        };
+        const handleSource = async () => {
+          if (sourceOpen) {
+            clearSourceProjection();
+            return;
+          }
+          let requestToken = null;
+          setApiBusy(true);
+          try {
+            const projected = await buildMobKitProjectedDocument();
+            if (projected.stale || !projected.document) return;
+            const document2 = projected.document;
+            requestToken = beginSourceProjection();
+            const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document2);
+            if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
+            applySourceProjectionPatch(MobKitFlowController.sourceDrawerReadyTransition(nextSourceDocument));
+          } catch (error) {
+            if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
+            const outcome = MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
+            setValidationResults(outcome.validationRows);
+            applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+            setStage(outcome.stage);
+          } finally {
+            setApiBusy(false);
+          }
+        };
+        React.useEffect(() => {
+          clearSourceProjection();
+        }, [view, editorMode, clearSourceProjection]);
+        const handleInlineSource = async (surface = "basic", sourceRequest = null) => {
+          let requestToken = null;
+          const toggle = MobKitFlowController.inlineSourceToggleTransition({
+            open: inlineSourceOpen,
+            currentSurface: inlineSourceSurface,
+            targetSurface: surface
+          });
+          if (!toggle.shouldOpen) {
+            sourceProjectionVersion.current += 1;
+            applySourceProjectionPatch(toggle.patch);
+            return;
+          }
+          const requestedSourcePath = MobKitFlowController.inlineSourceRequestPath(sourceRequest, {
+            sourceView: catalogs.sourceView,
+            graphView: catalogs.graphView
+          });
+          applySourceProjectionPatch(toggle.patch);
+          setApiBusy(true);
+          try {
+            const projected = await buildMobKitProjectedDocument();
+            if (projected.stale || !projected.document) return;
+            const document2 = projected.document;
+            requestToken = beginSourceProjection();
+            applySourceProjectionPatch(MobKitFlowController.inlineSourcePendingTransition(surface));
+            const nextSourceDocument = await renderCurrentSourceDocument(requestToken, document2);
+            if (!nextSourceDocument || !sourceProjectionIsCurrent(requestToken)) return;
+            applySourceProjectionPatch(MobKitFlowController.inlineSourceReadyTransition({
+              ...nextSourceDocument,
+              ...requestedSourcePath ? { sourcePath: requestedSourcePath } : {}
+            }));
+          } catch (error) {
+            if (requestToken !== null && !sourceProjectionIsCurrent(requestToken)) return;
+            const outcome = MobKitFlowController.sourceErrorOutcome(error, { errorView: catalogs.errorView });
+            setValidationResults(outcome.validationRows);
+            applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+            setStage(outcome.stage);
+          } finally {
+            applySourceProjectionPatch(MobKitFlowController.inlineSourceBusyTransition(false));
+            setApiBusy(false);
+          }
+        };
+        React.useEffect(() => {
+          const openGraphSourceFromHash = () => {
+            const canvasView = MobKitFlowController.graphCanvasViewState(catalogs.graphView);
+            if (!canvasView.sourceFileActivationHash || window.location.hash !== canvasView.sourceFileActivationHash) return;
+            window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+            handleInlineSource("graph", { sourcePath: canvasView.sourcePath || catalogs.sourceView.primarySourcePath });
+          };
+          window.addEventListener("hashchange", openGraphSourceFromHash);
+          openGraphSourceFromHash();
+          return () => window.removeEventListener("hashchange", openGraphSourceFromHash);
+        }, [handleInlineSource, catalogs.graphView]);
+        const handleValidate = async () => {
+          let requestToken = null;
+          setApiBusy(true);
+          try {
+            const projected = await buildMobKitProjectedDocument();
+            if (projected.stale || !projected.document) return;
+            const document2 = projected.document;
+            requestToken = projected.requestToken;
+            const result = await MobKitFlowController.validateDocument(document2, currentDraftGuard());
+            if (!authoringRevisionIsCurrent(requestToken)) return;
+            const outcome = MobKitFlowController.validationOutcome(document2, result);
+            window.__mobkitFlowLastDocument = document2;
+            window.__mobkitFlowLastValidation = result;
+            persistCurrentOutcome(outcome);
+            setValidationResults(outcome.validationRows);
+            setStage(outcome.stage);
+          } catch (error) {
+            if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
+            const outcome = MobKitFlowController.validationErrorOutcome(error, { errorView: catalogs.errorView });
+            setValidationResults(outcome.validationRows);
+            setStage(outcome.stage);
+          } finally {
+            if (requestToken === null || authoringRevisionIsCurrent(requestToken)) {
+              applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+            }
+            setApiBusy(false);
+          }
+        };
+        const handlePublish = async () => {
+          let requestToken = null;
+          setApiBusy(true);
+          try {
+            const projected = await buildMobKitProjectedDocument();
+            if (projected.stale || !projected.document) return;
+            const document2 = projected.document;
+            requestToken = projected.requestToken;
+            const result = await MobKitFlowController.exportDocument(document2, currentDraftGuard());
+            if (!authoringRevisionIsCurrent(requestToken)) return;
+            const outcome = MobKitFlowController.exportOutcome(document2, result);
+            window.__mobkitFlowLastDocument = document2;
+            window.__mobkitFlowLastExport = result;
+            persistCurrentOutcome(outcome);
+            if (!window.__mobkitFlowDisableDownload) {
+              downloadExportResult(result);
+            }
+            setValidationResults(outcome.validationRows);
+            setStage(outcome.stage);
+            applyApiOverlayPatch(MobKitFlowController.validationSheetCloseTransition());
+          } catch (error) {
+            if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
+            const outcome = MobKitFlowController.exportErrorOutcome(error, { errorView: catalogs.errorView });
+            setValidationResults(outcome.validationRows);
+            applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+            setStage(outcome.stage);
+          } finally {
+            setApiBusy(false);
+          }
+        };
+        const handleDeploy = async ({ execute }) => {
+          let requestToken = null;
+          setApiBusy(true);
+          try {
+            const projected = await buildMobKitProjectedDocument();
+            if (projected.stale || !projected.document) return;
+            const document2 = projected.document;
+            requestToken = projected.requestToken;
+            const result = await MobKitFlowController.deployDocument(document2, { execute, ...currentDraftGuard() });
+            if (!authoringRevisionIsCurrent(requestToken)) return;
+            const outcome = MobKitFlowController.deployOutcome(document2, result, { execute });
+            window.__mobkitFlowLastDocument = document2;
+            window.__mobkitFlowLastDeploy = result;
+            persistCurrentOutcome(outcome);
+            setValidationResults(outcome.validationRows);
+            setStage(outcome.stage);
+            applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+          } catch (error) {
+            if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
+            const outcome = MobKitFlowController.deployErrorOutcome(error, { execute, errorView: catalogs.errorView });
+            setValidationResults(outcome.validationRows);
+            applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+            setStage(outcome.stage);
+          } finally {
+            setApiBusy(false);
+          }
+        };
+        const handleDeployPlan = () => handleDeploy({ execute: false });
+        const handleDeployRun = () => handleDeploy({ execute: true });
+        const basicSourceToggle = MobKitFlowController.inlineSourceToggleButtonState({
+          open: inlineSourceOpen,
+          currentSurface: inlineSourceSurface,
+          targetSurface: "basic",
+          basicView: catalogs.basicView,
+          sourceView: catalogs.sourceView
+        });
+        const hydrateMobpackDocument = (result, options = {}) => {
+          const activeContract = options.contract || contract;
+          const hydration = MobKitFlowController.hydrateMobpackDocumentState(result, {
+            id: options.id,
+            existingRows: options.existingRows,
+            addToRegistry: options.addToRegistry,
+            openEditor: options.openEditor,
+            flowRow: options.flowRow || null,
+            deployDefaults: options.deployDefaults || catalogs.deployDefaults,
+            mobDefaults: options.mobDefaults || catalogs.mobDefaults,
+            contractSkillRealms: contractSkillRealms.current,
+            contract: activeContract,
+            errorView: catalogs.errorView
+          });
+          if (hydration.ok === false) {
+            setValidationResults(hydration.validationRows || []);
+            setStage(hydration.stage || "draft");
+            applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+            return;
+          }
+          const hydrationPersistence = MobKitFlowController.flowRegistryDocumentPersistence({
+            currentFlowId: hydration.id,
+            document: hydration.document,
+            validation: hydration.validation,
+            stage: hydration.stage
+          });
+          if (hydrationPersistence.ok) {
+            persistedDocumentSig.current = hydrationPersistence.signature;
+          }
+          beginDocumentHydration();
+          setCurrentAuthoringDocument(hydration.document);
+          hydratingDocumentRef.current = true;
+          setCatalogs((current) => MobKitFlowController.catalogSkillRealmsPatch(current, hydration.skillRealms));
+          studio.setSkillRealms(hydration.skillRealms);
+          studio.setMembers(hydration.members);
+          studio.setSchemas(hydration.schemas);
+          pendingGraphProjection.current = hydration.graphProjection;
+          setFlow(hydration.flow);
+          setStepSel(null);
+          setDeploySettings(hydration.deploySettings);
+          setMobSettings(hydration.mobSettings);
+          if (!pendingGraphProjection.current) {
+            queueMicrotask(() => {
+              hydratingDocumentRef.current = false;
+            });
+          }
+          if (hydration.addToRegistry) {
+            setFlows((fs) => MobKitFlowController.flowRegistryUpsertRowPatch(fs, hydration.registryRow));
+          }
+          setCurrentFlowId(hydration.id);
+          setStage(hydration.stage);
+          setValidationResults(hydration.validationRows);
+          if (hydration.openEditor) setView("editor");
+          const graphProjectionToken = currentAuthoringRevision();
+          MobKitFlowController.graphProjectionDocument(hydration.document).then((projectionResult) => {
+            if (!authoringRevisionIsCurrent(graphProjectionToken)) return;
+            const projection = MobKitFlowController.graphProjectionFromMobKitResult(projectionResult);
+            if (!projection) return;
+            hydratingDocumentRef.current = true;
+            graphProjectionSig.current = MobKitFlowController.graphStructureSignature(projection.instances || [], projection.edges || [], {
+              members: hydration.members,
+              contract: activeContract
+            });
+            studio.setInstances(projection.instances || []);
+            studio.setEdges(projection.edges || []);
+            studio.setFrames(projection.frames || []);
+            queueMicrotask(() => {
+              hydratingDocumentRef.current = false;
+            });
+          }).catch((error) => {
+            if (!authoringRevisionIsCurrent(graphProjectionToken)) return;
+            showAuthoringFailure(error, authoringFailureHead("graph_projection"));
+          });
+        };
+        const hydrateImportedDocument = (result) => {
+          hydrateMobpackDocument(result, { existingRows: flows });
+        };
+        const openFlowRegistrySelection = (selection2) => {
+          if (selection2?.hydration) {
+            hydrateMobpackDocument(selection2.hydration.result, selection2.hydration.options);
+            return true;
+          }
+          return false;
+        };
+        const handleImportFile = async (event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (!file) return;
+          setApiBusy(true);
+          try {
+            const result = await MobKitFlowController.importDocument(await importParamsFromFile(file));
+            window.__mobkitFlowLastImport = result;
+            hydrateImportedDocument(result);
+          } catch (error) {
+            const outcome = MobKitFlowController.importErrorOutcome(error, { filename: file.name, errorView: catalogs.errorView });
+            setValidationResults(outcome.validationRows);
+            applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+            setStage(outcome.stage);
+          } finally {
+            setApiBusy(false);
+          }
+        };
+        const shellState = MobKitFlowController.topRailState({ contract, deploySettings, stage, view, theme: t.theme, deployView: catalogs.deployView, capabilities });
+        return /* @__PURE__ */ React.createElement("div", { className: "app density--" + t.density + " inspector--" + t.inspectorLayout + " view--" + view }, /* @__PURE__ */ React.createElement(
+          TopRail,
+          {
+            stage,
+            view,
+            onNavigate: handleTopRailNavigation,
+            currentFlowName: currentFlow?.name || "\u2014",
+            contract,
+            theme: t.theme,
+            railState: shellState,
+            onToggleTheme: handleThemeToggle,
+            onValidate: handleValidate,
+            onPublish: handlePublish,
+            onDeployPlan: handleDeployPlan,
+            onDeployRun: handleDeployRun,
+            onImport: () => importInputRef.current?.click(),
+            onDeployPlanTrace: handleDeployPlanTrace,
+            onYaml: handleSource,
+            onToggleSettings: () => window.dispatchEvent(new CustomEvent("mobkit-flow-editor:settings-toggle")),
+            deploySettings
+          }
+        ), /* @__PURE__ */ React.createElement(
+          "input",
+          {
+            ref: importInputRef,
+            type: "file",
+            accept: ".mobpack,.json,.toml,application/json,application/gzip",
+            style: { display: "none" },
+            onChange: handleImportFile
+          }
+        ), view === "flows" && /* @__PURE__ */ React.createElement(
+          FlowsView,
+          {
+            flows,
+            currentFlowId,
+            onOpen: (id) => {
+              const selection2 = MobKitFlowController.flowRegistrySelectionState(flows, id);
+              openFlowRegistrySelection(selection2);
+            },
+            canCreate: canCreateAuthoring,
+            flowRegistryView: catalogs.flowRegistryView,
+            onNew: () => {
+              if (!canCreateAuthoring) return;
+              setCreating(MobKitFlowController.newFlowInitialState({ blankTemplate: catalogs.blankMobpack }));
+            }
+          }
+        ), view === "editor" && /* @__PURE__ */ React.createElement(ModeToggle, { mode: editorMode, onSelectMode: handleEditorModeSelection, railState: shellState }), view === "editor" && editorMode === "advanced" && /* @__PURE__ */ React.createElement("div", { className: "stage-area", onClick: (e) => {
+          if (e.target === e.currentTarget) closeGraphAddMenu();
+        } }, /* @__PURE__ */ React.createElement(
+          GraphEditor,
+          {
+            state: mobKitStudio,
+            selection,
+            selectInstance,
+            selectEdge,
+            clearSelection,
+            activeStepId,
+            edgeStyle: t.edgeStyle,
+            density: t.density,
+            onRequestAdd: handleRequestAdd,
+            onOpenSourceFile: (sourceRequest) => handleInlineSource("graph", sourceRequest),
+            memberFocus: null,
+            grid: catalogs.grid,
+            contract,
+            graphView: catalogs.graphView,
+            toolCatalog: catalogs.toolCatalog,
+            applyAuthoringIntent: applyMobKitAuthoringOperation
+          }
+        ), /* @__PURE__ */ React.createElement(
+          InlineSourceEditor,
+          {
+            open: inlineSourceOpen && inlineSourceSurface === "graph",
+            onClose: clearSourceProjection,
+            state: inlineSourceDocument,
+            busy: inlineSourceBusy,
+            surface: "graph",
+            sourceView: catalogs.sourceView
+          }
+        ), /* @__PURE__ */ React.createElement(
+          AddNodeMenu,
+          {
+            at: addAt,
+            members: studio.members,
+            contract,
+            graphView: catalogs.graphView,
+            onPick: handlePick,
+            onClose: closeGraphAddMenu,
+            onJumpToAgents: handleAgentNavigation
+          }
+        ), /* @__PURE__ */ React.createElement("aside", { className: "inspector" }, /* @__PURE__ */ React.createElement(
+          Inspector,
+          {
+            studio: mobKitStudio,
+            selection,
+            flow,
+            template: currentFlow,
+            templateSeed: catalogs.template,
+            templateView: catalogs.graphTemplateView,
+            launchView: catalogs.launchView,
+            graphView: catalogs.graphView,
+            conditionView: catalogs.conditionView,
+            contract,
+            deploySettings,
+            selectMember: handleAgentNavigation,
+            selectInstance,
+            clearSelection,
+            editGraphNode,
+            editGraphEdge,
+            deleteGraphNode: (id) => applyMobKitAuthoringOperation({
+              intent: "graph.deleteNode",
+              instanceId: id
+            }),
+            deleteGraphEdge: (id) => applyMobKitAuthoringOperation({
+              intent: "graph.deleteEdge",
+              edgeId: id
+            })
+          }
+        ))), view === "editor" && editorMode === "basic" && /* @__PURE__ */ React.createElement(
+          BuilderView,
+          {
+            studio: mobKitStudio,
+            mode: "build",
+            flow,
+            setFlow: setAuthoringFlow,
+            sel: stepSel,
+            setSel: setStepSel,
+            onShowSource: () => handleInlineSource("basic"),
+            sourceOpen: inlineSourceOpen && inlineSourceSurface === "basic",
+            sourceDocument: inlineSourceDocument,
+            sourceBusy: inlineSourceBusy,
+            sourceToggleLabel: basicSourceToggle.label,
+            onCloseSource: clearSourceProjection,
+            contract,
+            toolCatalog: catalogs.toolCatalog,
+            sourceView: catalogs.sourceView,
+            basicView: catalogs.basicView,
+            launchView: catalogs.launchView,
+            conditionView: catalogs.conditionView,
+            applyAuthoringIntent: applyMobKitAuthoringOperation
+          }
+        ), view === "agents" && /* @__PURE__ */ React.createElement(
+          AgentsView,
+          {
+            studio: mobKitStudio,
+            agentSel,
+            setAgentSel,
+            contract,
+            deploySettings,
+            flow,
+            setFlow: setAuthoringFlow,
+            mobSettings,
+            setMobSettings: setAuthoringMobSettings,
+            toolCatalog: catalogs.toolCatalog,
+            modelCatalog: catalogs.models,
+            agentDefinitions: catalogs.agentDefinitions,
+            applyAgentIntent: applyMobKitAuthoringOperation,
+            agentView: catalogs.agentView,
+            agentDetailView: catalogs.agentDetailView,
+            agentAccessView: catalogs.agentAccessView,
+            schemaView: catalogs.schemaView
+          }
+        ), creating && /* @__PURE__ */ React.createElement(
+          NewFlowModal,
+          {
+            state: creating,
+            setState: setCreating,
+            templateOptions: MobKitFlowController.newFlowTemplateOptions(templates, {
+              canCreateBlank: canCreateAuthoring,
+              blankTemplate: catalogs.blankMobpack
+            }),
+            newFlowView: catalogs.newFlowView,
+            onCreate: async (spec) => {
+              if (!canCreateAuthoring) return;
+              setApiBusy(true);
+              try {
+                const result = await MobKitFlowController.createDocument(spec);
+                const row = result?.row;
+                if (!row?.document) return;
+                setFlows(Array.isArray(result?.rows) ? result.rows : MobKitFlowController.flowRegistryUpsertRowPatch(flows, row));
+                hydrateMobpackDocument(
+                  { document: row.document, validation: row.validation || null },
+                  {
+                    id: row.id,
+                    flowRow: row,
+                    addToRegistry: false,
+                    openEditor: true
+                  }
+                );
+                setCreating(null);
+              } catch (error) {
+                const outcome = MobKitFlowController.importErrorOutcome(error, { filename: "mobkit/mobpacks/create", errorView: catalogs.errorView });
+                setValidationResults(outcome.validationRows);
+                applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+                setStage(outcome.stage);
+              } finally {
+                setApiBusy(false);
+              }
+            }
+          }
+        ), /* @__PURE__ */ React.createElement(DeployPlanTrace, { open: deployPlanOpen, onClose: () => applyApiOverlayPatch(MobKitFlowController.deployPlanTraceCloseTransition()), onActiveStep: setActiveStepId, runKey: deployPlanKey, document: deployPlanDocument, plan: deployPlanResult, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(ValidateSheet, { open: validate, onClose: () => applyApiOverlayPatch(MobKitFlowController.validationSheetCloseTransition()), onPublish: handlePublish, onDeployPlan: handleDeployPlan, onDeployRun: handleDeployRun, results: validationResults, stage, deployView: catalogs.deployView, capabilities }), /* @__PURE__ */ React.createElement(SourceDrawer, { open: sourceOpen, onClose: clearSourceProjection, state: sourceDocument2, sourceView: catalogs.sourceView }), /* @__PURE__ */ React.createElement(
+          Tweaks,
+          {
+            t,
+            setTweak,
+            flows,
+            currentFlowId,
+            deploySettings,
+            setDeploySettings: setAuthoringDeploySettings,
+            mobSettings,
+            setMobSettings: setAuthoringMobSettings,
+            members: studio.members,
+            modelCatalog: catalogs.models,
+            contract,
+            deployCommandPreview,
+            settingsView: catalogs.settingsView,
+            applyAuthoringIntent: applyMobKitAuthoringOperation,
+            onLoadFlow: (id) => {
+              const selection2 = MobKitFlowController.flowRegistrySelectionState(flows, id);
+              openFlowRegistrySelection(selection2);
+            }
+          }
+        ));
       }
-    }
-  ), /* @__PURE__ */ React.createElement(DeployPlanTrace, { open: deployPlanOpen, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.deployPlanTraceCloseTransition()), onActiveStep: setActiveStepId, runKey: deployPlanKey, document: deployPlanDocument, plan: deployPlanResult, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(ValidateSheet, { open: validate, onClose: () => applyApiOverlayPatch(window.MobKitFlowController.validationSheetCloseTransition()), onPublish: handlePublish, onDeployPlan: handleDeployPlan, onDeployRun: handleDeployRun, results: validationResults, stage, deployView: catalogs.deployView, capabilities }), /* @__PURE__ */ React.createElement(SourceDrawer, { open: sourceOpen, onClose: clearSourceProjection, state: sourceDocument, sourceView: catalogs.sourceView }), /* @__PURE__ */ React.createElement(
-    Tweaks,
-    {
-      t,
-      setTweak,
-      flows,
-      currentFlowId,
-      deploySettings,
-      setDeploySettings: setAuthoringDeploySettings,
-      mobSettings,
-      setMobSettings: setAuthoringMobSettings,
-      members: studio.members,
-      modelCatalog: catalogs.models,
-      contract,
-      deployCommandPreview,
-      settingsView: catalogs.settingsView,
-      applyAuthoringIntent: applyMobKitAuthoringOperation,
-      onLoadFlow: (id) => {
-        const selection2 = window.MobKitFlowController.flowRegistrySelectionState(flows, id);
-        openFlowRegistrySelection(selection2);
+      function rpcUrlFromShell() {
+        const meta = document.querySelector('meta[name="mobkit-base-url"]');
+        const base = (meta?.getAttribute("content") || "").trim().replace(/\/+$/, "");
+        return `${base}/flow-editor/rpc`;
       }
+      function downloadExportResult(result) {
+        const download = MobKitFlowController.exportDownloadPayload(result);
+        const bytes = Uint8Array.from(atob(download.contentBase64), (char) => char.charCodeAt(0));
+        const blob = new Blob([bytes], { type: download.mediaType });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = download.filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+      }
+      async function importParamsFromFile(file) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const filename = file.name || "";
+        const mediaType = file.type || "";
+        let binary = "";
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        return MobKitFlowController.importParamsFromDecodedFile({
+          filename,
+          mediaType,
+          text: new TextDecoder("utf-8").decode(bytes),
+          contentBase64: btoa(binary)
+        });
+      }
+      function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, onToggleTheme, onToggleSettings, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDeployPlanTrace, onYaml, contract, deploySettings }) {
+        return /* @__PURE__ */ React.createElement("header", { className: "toprail" }, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "dot" }), /* @__PURE__ */ React.createElement("span", null, railState.brandLabel)), /* @__PURE__ */ React.createElement("nav", { className: "viewtabs" }, /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "flows" || view === "editor" ? " is-current" : ""), onClick: () => onNavigate("flows-tab") }, railState.flowsTabLabel), /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "agents" ? " is-current" : ""), onClick: () => onNavigate("agents-tab") }, railState.agentsTabLabel)), /* @__PURE__ */ React.createElement("div", { className: "mob-status", title: railState.mobStatusTitle }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.mobFileLabel), /* @__PURE__ */ React.createElement("span", { className: "env" }, "\xB7 ", railState.contractState)), /* @__PURE__ */ React.createElement("div", { className: "mob-status mob-status--env", title: railState.deployCommand }, /* @__PURE__ */ React.createElement("span", { className: "env" }, railState.deployPrefixLabel), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.deploySurface)), /* @__PURE__ */ React.createElement("nav", { className: "crumbs" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "crumb crumb--link", onClick: () => onNavigate("flows-crumb") }, railState.flowsCrumbLabel), /* @__PURE__ */ React.createElement("span", { className: "crumb crumb--sep" }, railState.crumbSeparator), /* @__PURE__ */ React.createElement("span", { className: "crumb is-current" }, currentFlowName))), /* @__PURE__ */ React.createElement("div", { className: "actions" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), stage), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onValidate }, railState.validateLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: railState.deployActionsDisabled, onClick: onPublish }, railState.publishLabel), /* @__PURE__ */ React.createElement("details", { className: "actions-menu" }, /* @__PURE__ */ React.createElement("summary", { className: "btn btn--ghost btn--sm actions-menu__summary" }, railState.overflowLabel), /* @__PURE__ */ React.createElement("div", { className: "actions-menu__panel" }, /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onDeployPlanTrace }, railState.planTraceLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onImport }, railState.importLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", disabled: railState.deployActionsDisabled, onClick: onDeployPlan }, railState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item actions-menu__item--primary", disabled: railState.deployRunDisabled, onClick: onDeployRun }, railState.deployLabel)))), /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            className: "btn btn--ghost btn--sm theme-toggle",
+            onClick: onToggleTheme,
+            title: railState.themeToggleTitle
+          },
+          railState.themeToggleLabel
+        ), /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            className: "btn btn--ghost btn--sm settings-toggle",
+            onClick: onToggleSettings,
+            title: railState.settingsTitle
+          },
+          railState.settingsLabel
+        )));
+      }
+      function FlowsView({ flows, currentFlowId, onOpen, onNew, canCreate, flowRegistryView = null }) {
+        const registryState = MobKitFlowController.flowRegistryViewState(flows, currentFlowId, { canCreate, flowRegistryView });
+        return /* @__PURE__ */ React.createElement("div", { className: "flows-view" }, /* @__PURE__ */ React.createElement("div", { className: "flows-view__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, registryState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "flows-view__title" }, registryState.title)), /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            className: "btn btn--primary",
+            disabled: registryState.createDisabled,
+            title: registryState.createTitle,
+            onClick: onNew
+          },
+          registryState.createLabel
+        )), /* @__PURE__ */ React.createElement("div", { className: "flows-list" }, /* @__PURE__ */ React.createElement("div", { className: "flows-list__head" }, registryState.columns.map((column) => /* @__PURE__ */ React.createElement("span", { key: column.key }, column.label))), registryState.rows.map((f) => /* @__PURE__ */ React.createElement("button", { key: f.id, className: f.className, onClick: () => onOpen(f.id) }, /* @__PURE__ */ React.createElement("span", { className: "flows-list__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "flows-list__sub" }, f.trigger), /* @__PURE__ */ React.createElement("span", { className: "flows-list__sub" }, f.version), /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": f.stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), f.stage)))));
+      }
+      function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlowView = null }) {
+        const setField = (field, value) => setState((current) => MobKitFlowController.newFlowModalFieldPatch(current, field, value));
+        const setStep = (step) => setState((current) => MobKitFlowController.newFlowModalStepPatch(current, step));
+        const modalState = MobKitFlowController.newFlowModalState(state, templateOptions, newFlowView);
+        return /* @__PURE__ */ React.createElement("div", { className: "modal-backdrop", onClick: () => setState(null) }, /* @__PURE__ */ React.createElement("div", { className: "modal modal--new", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "modal__head" }, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, modalState.eyebrow), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setState(null) }, modalState.closeLabel)), modalState.step === 1 && /* @__PURE__ */ React.createElement("div", { className: "modal__body" }, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, modalState.nameLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", autoFocus: true, placeholder: modalState.namePlaceholder, value: modalState.name, onChange: (e) => setField("name", e.target.value) })), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, modalState.triggerLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", placeholder: modalState.triggerPlaceholder, value: modalState.trigger, onChange: (e) => setField("trigger", e.target.value) }))), modalState.step === 2 && /* @__PURE__ */ React.createElement("div", { className: "modal__body" }, /* @__PURE__ */ React.createElement("div", { className: "field__label" }, modalState.startFromLabel), /* @__PURE__ */ React.createElement("div", { className: "template-grid" }, modalState.options.map((opt) => /* @__PURE__ */ React.createElement("button", { key: opt.id, className: opt.className, disabled: opt.disabled, onClick: () => setField("template", opt.id) }, /* @__PURE__ */ React.createElement("div", { className: "template-card__tier" }, opt.tier), /* @__PURE__ */ React.createElement("div", { className: "template-card__name" }, opt.label), /* @__PURE__ */ React.createElement("div", { className: "template-card__sub" }, opt.sub))))), /* @__PURE__ */ React.createElement("div", { className: "modal__foot" }, modalState.step > 1 ? /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setStep(modalState.step - 1) }, modalState.backLabel) : /* @__PURE__ */ React.createElement("span", null), modalState.step < 2 ? /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: modalState.nextDisabled, onClick: () => setStep(2) }, modalState.nextLabel) : /* @__PURE__ */ React.createElement(
+          "button",
+          {
+            className: "btn btn--primary btn--sm",
+            disabled: modalState.createDisabled,
+            onClick: () => onCreate(MobKitFlowController.newFlowModalCreateSpec(modalState))
+          },
+          modalState.createLabel
+        ))));
+      }
+      function ModeToggle({ mode, onSelectMode, railState }) {
+        return /* @__PURE__ */ React.createElement("div", { className: "modetoggle" }, /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "basic" ? " is-active" : ""), onClick: () => onSelectMode("basic"), title: railState.basicModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "2.2", width: "10", height: "2.2" }), /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "6.6", width: "10", height: "2.2" })), /* @__PURE__ */ React.createElement("span", null, railState.basicModeLabel)), /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "advanced" ? " is-active" : ""), onClick: () => onSelectMode("advanced"), title: railState.graphModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1", y: "4.5", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "1", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "8", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("path", { d: "M5 6.5h1.6M6.6 6.5V3h1.4M6.6 6.5V10h1.4" })), /* @__PURE__ */ React.createElement("span", null, railState.graphModeLabel)));
+      }
+      function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, applyAuthoringIntent = null, onLoadFlow }) {
+        const setDeployField = (field, value) => {
+          if (!applyAuthoringIntent) return;
+          applyAuthoringIntent({
+            intent: "settings.updateDeployField",
+            field,
+            value
+          });
+        };
+        const setMobField = (field, value) => {
+          if (!applyAuthoringIntent) return;
+          applyAuthoringIntent({
+            intent: "settings.updateMobField",
+            field,
+            value
+          });
+        };
+        const editRoleWiring = (operation) => {
+          if (!applyAuthoringIntent) return;
+          applyAuthoringIntent({
+            intent: "settings.editRoleWiring",
+            ...operation
+          });
+        };
+        const controlState = MobKitFlowController.tweaksControlState({
+          flows,
+          deploySettings,
+          mobSettings,
+          members,
+          modelCatalog,
+          contract,
+          settingsView
+        });
+        return /* @__PURE__ */ React.createElement(TweaksPanel, { title: controlState.panelTitle, closeLabel: controlState.panelCloseLabel }, /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.loadMobTitle }, /* @__PURE__ */ React.createElement(
+          TweakSelect,
+          {
+            label: controlState.loadMobLabel,
+            value: currentFlowId || "",
+            options: controlState.loadableFlowOptions,
+            onChange: (id) => {
+              onLoadFlow && onLoadFlow(id);
+            }
+          }
+        )), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.canvasTitle }, /* @__PURE__ */ React.createElement(
+          TweakRadio,
+          {
+            label: controlState.edgeStyleLabel,
+            value: t.edgeStyle,
+            onChange: (v) => setTweak("edgeStyle", v),
+            options: controlState.edgeStyleOptions
+          }
+        ), /* @__PURE__ */ React.createElement(
+          TweakRadio,
+          {
+            label: controlState.densityLabel,
+            value: t.density,
+            onChange: (v) => setTweak("density", v),
+            options: controlState.densityOptions
+          }
+        )), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.themeTitle }, /* @__PURE__ */ React.createElement(
+          TweakRadio,
+          {
+            label: controlState.themeModeLabel,
+            value: t.theme,
+            onChange: (v) => setTweak("theme", v),
+            options: controlState.themeModeOptions
+          }
+        )), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.mobTitle }, /* @__PURE__ */ React.createElement(
+          TweakSelect,
+          {
+            label: controlState.orchestratorLabel,
+            value: mobSettings.orchestrator || "",
+            options: controlState.profileOptions,
+            onChange: (v) => setMobField("orchestrator", v)
+          }
+        ), /* @__PURE__ */ React.createElement(
+          TweakRadio,
+          {
+            label: controlState.autoWireLabel,
+            value: mobSettings.autoWireOrchestrator ? "yes" : "no",
+            onChange: (v) => setMobField("autoWireOrchestrator", v === "yes"),
+            options: controlState.autoWireOptions
+          }
+        ), /* @__PURE__ */ React.createElement(
+          RoleWiringEditor,
+          {
+            value: mobSettings.roleWiring || [],
+            profileOptions: controlState.profileChoices,
+            settingsView,
+            onAction: editRoleWiring
+          }
+        ), /* @__PURE__ */ React.createElement(
+          TweakSelect,
+          {
+            label: controlState.defaultBackendLabel,
+            value: mobSettings.backendDefault || "",
+            onChange: (v) => setMobField("backendDefault", v),
+            options: controlState.mobBackendOptions
+          }
+        ), (mobSettings.backendDefault === "external" || mobSettings.externalAddressBase) && /* @__PURE__ */ React.createElement(TweakText, { label: controlState.externalBaseLabel, value: mobSettings.externalAddressBase || "", placeholder: controlState.externalBasePlaceholder, onChange: (v) => setMobField("externalAddressBase", v) }), /* @__PURE__ */ React.createElement(
+          AdvancedMobSettingsEditor,
+          {
+            value: mobSettings.advanced || {},
+            settingsView,
+            onChange: (advanced) => setMobField("advanced", advanced)
+          }
+        )), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.deployTitle }, /* @__PURE__ */ React.createElement(
+          TweakSelect,
+          {
+            label: controlState.surfaceLabel,
+            value: deploySettings.surface,
+            onChange: (v) => setDeployField("surface", v),
+            options: controlState.surfaceOptions
+          }
+        ), /* @__PURE__ */ React.createElement(
+          TweakSelect,
+          {
+            label: controlState.trustLabel,
+            value: deploySettings.trustPolicy,
+            onChange: (v) => setDeployField("trustPolicy", v),
+            options: controlState.trustOptions
+          }
+        ), /* @__PURE__ */ React.createElement(
+          TweakSelect,
+          {
+            label: controlState.modelLabel,
+            value: deploySettings.model || "",
+            options: controlState.modelOptions,
+            onChange: (v) => setDeployField("model", v)
+          }
+        ), /* @__PURE__ */ React.createElement(TweakText, { label: controlState.durationLabel, value: deploySettings.maxDuration || "", placeholder: controlState.durationPlaceholder, onChange: (v) => setDeployField("maxDuration", v) }), /* @__PURE__ */ React.createElement(TweakNumber, { label: controlState.toolCallsLabel, value: deploySettings.maxToolCalls ?? "", min: controlState.toolCallsMin, max: controlState.toolCallsMax, onChange: (v) => setDeployField("maxToolCalls", v) }), /* @__PURE__ */ React.createElement(TweakNumber, { label: controlState.tokensLabel, value: deploySettings.maxTotalTokens ?? "", min: controlState.tokensMin, max: controlState.tokensMax, onChange: (v) => setDeployField("maxTotalTokens", v) }), /* @__PURE__ */ React.createElement(
+          TweakRadio,
+          {
+            label: controlState.realmLabel,
+            value: deploySettings.isolated ? "isolated" : "shared",
+            onChange: (v) => setDeployField("isolated", v === "isolated"),
+            options: controlState.realmOptions
+          }
+        ), !deploySettings.isolated && /* @__PURE__ */ React.createElement(TweakText, { label: controlState.realmIdLabel, value: deploySettings.realm || "", placeholder: controlState.realmIdPlaceholder, onChange: (v) => setDeployField("realm", v) }), /* @__PURE__ */ React.createElement(
+          TweakSelect,
+          {
+            label: controlState.backendLabel,
+            value: deploySettings.realmBackend || "",
+            onChange: (v) => setDeployField("realmBackend", v),
+            options: controlState.realmBackendOptions
+          }
+        ), /* @__PURE__ */ React.createElement(TweakText, { label: controlState.promptLabel, value: deploySettings.prompt || "", placeholder: controlState.promptPlaceholder, onChange: (v) => setDeployField("prompt", v) }), /* @__PURE__ */ React.createElement("div", { className: "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, controlState.commandLabel)), /* @__PURE__ */ React.createElement("code", { className: "deploy-command" }, deployCommandPreview || controlState.commandFallback))), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.inspectorTitle }, /* @__PURE__ */ React.createElement(
+          TweakRadio,
+          {
+            label: controlState.inspectorLayoutLabel,
+            value: t.inspectorLayout,
+            onChange: (v) => setTweak("inspectorLayout", v),
+            options: controlState.inspectorLayoutOptions
+          }
+        )));
+      }
+      function RoleWiringEditor({ value, profileOptions, settingsView, onAction }) {
+        const wiringState = MobKitFlowController.mobRoleWiringEditorState(value, profileOptions, settingsView);
+        const updateSource = (index, value2) => {
+          onAction && onAction({ action: "set_source", index, value: value2 });
+        };
+        const updateTarget = (index, value2) => {
+          onAction && onAction({ action: "set_target", index, value: value2 });
+        };
+        const removeRule = (index) => {
+          onAction && onAction({ action: "delete", index });
+        };
+        const addRule = () => {
+          onAction && onAction({ action: "add" });
+        };
+        return /* @__PURE__ */ React.createElement("div", { className: "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, wiringState.label), /* @__PURE__ */ React.createElement("span", null, wiringState.countLabel)), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 6 } }, wiringState.wiring.map((rule, index) => /* @__PURE__ */ React.createElement("div", { key: `${rule.a}:${rule.b}:${index}`, style: { display: "grid", gridTemplateColumns: "1fr 1fr 26px", gap: 6 } }, /* @__PURE__ */ React.createElement("select", { className: "twk-field", value: rule.a, onChange: (e) => updateSource(index, e.target.value) }, wiringState.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "twk-field", value: rule.b, onChange: (e) => updateTarget(index, e.target.value) }, wiringState.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("button", { className: "twk-field", style: { padding: 0 }, type: "button", onClick: () => removeRule(index) }, "\xD7"))), /* @__PURE__ */ React.createElement("button", { className: "twk-field", type: "button", disabled: wiringState.addDisabled, onClick: addRule }, wiringState.addLabel)));
+      }
+      function AdvancedMobSettingsEditor({ value, settingsView, onChange }) {
+        const advancedState = MobKitFlowController.advancedMobSettingsEditorState(value, settingsView);
+        const [draft, setDraft] = React.useState(advancedState.text);
+        const [error, setError] = React.useState("");
+        React.useEffect(() => {
+          setDraft(advancedState.text);
+          setError("");
+        }, [advancedState.text]);
+        const commit = (next) => {
+          setDraft(next);
+          const result = MobKitFlowController.advancedMobSettingsDraftPatch(next, settingsView);
+          setError(result.error || "");
+          if (result.ok) onChange(result.value);
+        };
+        return /* @__PURE__ */ React.createElement("div", { className: "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, advancedState.label), error && /* @__PURE__ */ React.createElement("span", null, error)), /* @__PURE__ */ React.createElement(
+          "textarea",
+          {
+            className: "twk-field",
+            style: { height: 118, paddingTop: 7, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", resize: "vertical" },
+            value: draft,
+            onChange: (e) => commit(e.target.value)
+          }
+        ));
+      }
+      ReactDOM.createRoot(document.getElementById("root")).render(/* @__PURE__ */ React.createElement(App, null));
     }
-  ));
-}
-function rpcUrlFromShell() {
-  const meta = document.querySelector('meta[name="mobkit-base-url"]');
-  const base = (meta?.getAttribute("content") || "").trim().replace(/\/+$/, "");
-  return `${base}/flow-editor/rpc`;
-}
-function downloadExportResult(result) {
-  const download = window.MobKitFlowController.exportDownloadPayload(result);
-  const bytes = Uint8Array.from(atob(download.contentBase64), (char) => char.charCodeAt(0));
-  const blob = new Blob([bytes], { type: download.mediaType });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = download.filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-}
-async function importParamsFromFile(file) {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const filename = file.name || "";
-  const mediaType = file.type || "";
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return window.MobKitFlowController.importParamsFromDecodedFile({
-    filename,
-    mediaType,
-    text: new TextDecoder("utf-8").decode(bytes),
-    contentBase64: btoa(binary)
   });
-}
-function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, onToggleTheme, onToggleSettings, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDeployPlanTrace, onYaml, contract, deploySettings }) {
-  return /* @__PURE__ */ React.createElement("header", { className: "toprail" }, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "dot" }), /* @__PURE__ */ React.createElement("span", null, railState.brandLabel)), /* @__PURE__ */ React.createElement("nav", { className: "viewtabs" }, /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "flows" || view === "editor" ? " is-current" : ""), onClick: () => onNavigate("flows-tab") }, railState.flowsTabLabel), /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "agents" ? " is-current" : ""), onClick: () => onNavigate("agents-tab") }, railState.agentsTabLabel)), /* @__PURE__ */ React.createElement("div", { className: "mob-status", title: railState.mobStatusTitle }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.mobFileLabel), /* @__PURE__ */ React.createElement("span", { className: "env" }, "\xB7 ", railState.contractState)), /* @__PURE__ */ React.createElement("div", { className: "mob-status mob-status--env", title: railState.deployCommand }, /* @__PURE__ */ React.createElement("span", { className: "env" }, railState.deployPrefixLabel), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.deploySurface)), /* @__PURE__ */ React.createElement("nav", { className: "crumbs" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "crumb crumb--link", onClick: () => onNavigate("flows-crumb") }, railState.flowsCrumbLabel), /* @__PURE__ */ React.createElement("span", { className: "crumb crumb--sep" }, railState.crumbSeparator), /* @__PURE__ */ React.createElement("span", { className: "crumb is-current" }, currentFlowName))), /* @__PURE__ */ React.createElement("div", { className: "actions" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), stage), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onValidate }, railState.validateLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: railState.deployActionsDisabled, onClick: onPublish }, railState.publishLabel), /* @__PURE__ */ React.createElement("details", { className: "actions-menu" }, /* @__PURE__ */ React.createElement("summary", { className: "btn btn--ghost btn--sm actions-menu__summary" }, railState.overflowLabel), /* @__PURE__ */ React.createElement("div", { className: "actions-menu__panel" }, /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onDeployPlanTrace }, railState.planTraceLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onImport }, railState.importLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", disabled: railState.deployActionsDisabled, onClick: onDeployPlan }, railState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item actions-menu__item--primary", disabled: railState.deployRunDisabled, onClick: onDeployRun }, railState.deployLabel)))), /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      className: "btn btn--ghost btn--sm theme-toggle",
-      onClick: onToggleTheme,
-      title: railState.themeToggleTitle
-    },
-    railState.themeToggleLabel
-  ), /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      className: "btn btn--ghost btn--sm settings-toggle",
-      onClick: onToggleSettings,
-      title: railState.settingsTitle
-    },
-    railState.settingsLabel
-  )));
-}
-function FlowsView({ flows, currentFlowId, onOpen, onNew, canCreate, flowRegistryView = null }) {
-  const registryState = window.MobKitFlowController.flowRegistryViewState(flows, currentFlowId, { canCreate, flowRegistryView });
-  return /* @__PURE__ */ React.createElement("div", { className: "flows-view" }, /* @__PURE__ */ React.createElement("div", { className: "flows-view__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, registryState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "flows-view__title" }, registryState.title)), /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      className: "btn btn--primary",
-      disabled: registryState.createDisabled,
-      title: registryState.createTitle,
-      onClick: onNew
-    },
-    registryState.createLabel
-  )), /* @__PURE__ */ React.createElement("div", { className: "flows-list" }, /* @__PURE__ */ React.createElement("div", { className: "flows-list__head" }, registryState.columns.map((column) => /* @__PURE__ */ React.createElement("span", { key: column.key }, column.label))), registryState.rows.map((f) => /* @__PURE__ */ React.createElement("button", { key: f.id, className: f.className, onClick: () => onOpen(f.id) }, /* @__PURE__ */ React.createElement("span", { className: "flows-list__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "flows-list__sub" }, f.trigger), /* @__PURE__ */ React.createElement("span", { className: "flows-list__sub" }, f.version), /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": f.stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), f.stage)))));
-}
-function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlowView = null }) {
-  const setField = (field, value) => setState((current) => window.MobKitFlowController.newFlowModalFieldPatch(current, field, value));
-  const setStep = (step) => setState((current) => window.MobKitFlowController.newFlowModalStepPatch(current, step));
-  const modalState = window.MobKitFlowController.newFlowModalState(state, templateOptions, newFlowView);
-  return /* @__PURE__ */ React.createElement("div", { className: "modal-backdrop", onClick: () => setState(null) }, /* @__PURE__ */ React.createElement("div", { className: "modal modal--new", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "modal__head" }, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, modalState.eyebrow), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setState(null) }, modalState.closeLabel)), modalState.step === 1 && /* @__PURE__ */ React.createElement("div", { className: "modal__body" }, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, modalState.nameLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", autoFocus: true, placeholder: modalState.namePlaceholder, value: modalState.name, onChange: (e) => setField("name", e.target.value) })), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, modalState.triggerLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", placeholder: modalState.triggerPlaceholder, value: modalState.trigger, onChange: (e) => setField("trigger", e.target.value) }))), modalState.step === 2 && /* @__PURE__ */ React.createElement("div", { className: "modal__body" }, /* @__PURE__ */ React.createElement("div", { className: "field__label" }, modalState.startFromLabel), /* @__PURE__ */ React.createElement("div", { className: "template-grid" }, modalState.options.map((opt) => /* @__PURE__ */ React.createElement("button", { key: opt.id, className: opt.className, disabled: opt.disabled, onClick: () => setField("template", opt.id) }, /* @__PURE__ */ React.createElement("div", { className: "template-card__tier" }, opt.tier), /* @__PURE__ */ React.createElement("div", { className: "template-card__name" }, opt.label), /* @__PURE__ */ React.createElement("div", { className: "template-card__sub" }, opt.sub))))), /* @__PURE__ */ React.createElement("div", { className: "modal__foot" }, modalState.step > 1 ? /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setStep(modalState.step - 1) }, modalState.backLabel) : /* @__PURE__ */ React.createElement("span", null), modalState.step < 2 ? /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: modalState.nextDisabled, onClick: () => setStep(2) }, modalState.nextLabel) : /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      className: "btn btn--primary btn--sm",
-      disabled: modalState.createDisabled,
-      onClick: () => onCreate(window.MobKitFlowController.newFlowModalCreateSpec(modalState))
-    },
-    modalState.createLabel
-  ))));
-}
-function ModeToggle({ mode, onSelectMode, railState }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "modetoggle" }, /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "basic" ? " is-active" : ""), onClick: () => onSelectMode("basic"), title: railState.basicModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "2.2", width: "10", height: "2.2" }), /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "6.6", width: "10", height: "2.2" })), /* @__PURE__ */ React.createElement("span", null, railState.basicModeLabel)), /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "advanced" ? " is-active" : ""), onClick: () => onSelectMode("advanced"), title: railState.graphModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1", y: "4.5", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "1", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "8", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("path", { d: "M5 6.5h1.6M6.6 6.5V3h1.4M6.6 6.5V10h1.4" })), /* @__PURE__ */ React.createElement("span", null, railState.graphModeLabel)));
-}
-function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, applyAuthoringIntent = null, onLoadFlow }) {
-  const setDeployField = (field, value) => {
-    if (!applyAuthoringIntent) return;
-    applyAuthoringIntent({
-      intent: "settings.updateDeployField",
-      field,
-      value
-    });
-  };
-  const setMobField = (field, value) => {
-    if (!applyAuthoringIntent) return;
-    applyAuthoringIntent({
-      intent: "settings.updateMobField",
-      field,
-      value
-    });
-  };
-  const editRoleWiring = (operation) => {
-    if (!applyAuthoringIntent) return;
-    applyAuthoringIntent({
-      intent: "settings.editRoleWiring",
-      ...operation
-    });
-  };
-  const controlState = window.MobKitFlowController.tweaksControlState({
-    flows,
-    deploySettings,
-    mobSettings,
-    members,
-    modelCatalog,
-    contract,
-    settingsView
-  });
-  return /* @__PURE__ */ React.createElement(TweaksPanel, { title: controlState.panelTitle, closeLabel: controlState.panelCloseLabel }, /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.loadMobTitle }, /* @__PURE__ */ React.createElement(
-    TweakSelect,
-    {
-      label: controlState.loadMobLabel,
-      value: currentFlowId || "",
-      options: controlState.loadableFlowOptions,
-      onChange: (id) => {
-        onLoadFlow && onLoadFlow(id);
-      }
-    }
-  )), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.canvasTitle }, /* @__PURE__ */ React.createElement(
-    TweakRadio,
-    {
-      label: controlState.edgeStyleLabel,
-      value: t.edgeStyle,
-      onChange: (v) => setTweak("edgeStyle", v),
-      options: controlState.edgeStyleOptions
-    }
-  ), /* @__PURE__ */ React.createElement(
-    TweakRadio,
-    {
-      label: controlState.densityLabel,
-      value: t.density,
-      onChange: (v) => setTweak("density", v),
-      options: controlState.densityOptions
-    }
-  )), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.themeTitle }, /* @__PURE__ */ React.createElement(
-    TweakRadio,
-    {
-      label: controlState.themeModeLabel,
-      value: t.theme,
-      onChange: (v) => setTweak("theme", v),
-      options: controlState.themeModeOptions
-    }
-  )), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.mobTitle }, /* @__PURE__ */ React.createElement(
-    TweakSelect,
-    {
-      label: controlState.orchestratorLabel,
-      value: mobSettings.orchestrator || "",
-      options: controlState.profileOptions,
-      onChange: (v) => setMobField("orchestrator", v)
-    }
-  ), /* @__PURE__ */ React.createElement(
-    TweakRadio,
-    {
-      label: controlState.autoWireLabel,
-      value: mobSettings.autoWireOrchestrator ? "yes" : "no",
-      onChange: (v) => setMobField("autoWireOrchestrator", v === "yes"),
-      options: controlState.autoWireOptions
-    }
-  ), /* @__PURE__ */ React.createElement(
-    RoleWiringEditor,
-    {
-      value: mobSettings.roleWiring || [],
-      profileOptions: controlState.profileChoices,
-      settingsView,
-      onAction: editRoleWiring
-    }
-  ), /* @__PURE__ */ React.createElement(
-    TweakSelect,
-    {
-      label: controlState.defaultBackendLabel,
-      value: mobSettings.backendDefault || "",
-      onChange: (v) => setMobField("backendDefault", v),
-      options: controlState.mobBackendOptions
-    }
-  ), (mobSettings.backendDefault === "external" || mobSettings.externalAddressBase) && /* @__PURE__ */ React.createElement(TweakText, { label: controlState.externalBaseLabel, value: mobSettings.externalAddressBase || "", placeholder: controlState.externalBasePlaceholder, onChange: (v) => setMobField("externalAddressBase", v) }), /* @__PURE__ */ React.createElement(
-    AdvancedMobSettingsEditor,
-    {
-      value: mobSettings.advanced || {},
-      settingsView,
-      onChange: (advanced) => setMobField("advanced", advanced)
-    }
-  )), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.deployTitle }, /* @__PURE__ */ React.createElement(
-    TweakSelect,
-    {
-      label: controlState.surfaceLabel,
-      value: deploySettings.surface,
-      onChange: (v) => setDeployField("surface", v),
-      options: controlState.surfaceOptions
-    }
-  ), /* @__PURE__ */ React.createElement(
-    TweakSelect,
-    {
-      label: controlState.trustLabel,
-      value: deploySettings.trustPolicy,
-      onChange: (v) => setDeployField("trustPolicy", v),
-      options: controlState.trustOptions
-    }
-  ), /* @__PURE__ */ React.createElement(
-    TweakSelect,
-    {
-      label: controlState.modelLabel,
-      value: deploySettings.model || "",
-      options: controlState.modelOptions,
-      onChange: (v) => setDeployField("model", v)
-    }
-  ), /* @__PURE__ */ React.createElement(TweakText, { label: controlState.durationLabel, value: deploySettings.maxDuration || "", placeholder: controlState.durationPlaceholder, onChange: (v) => setDeployField("maxDuration", v) }), /* @__PURE__ */ React.createElement(TweakNumber, { label: controlState.toolCallsLabel, value: deploySettings.maxToolCalls ?? "", min: controlState.toolCallsMin, max: controlState.toolCallsMax, onChange: (v) => setDeployField("maxToolCalls", v) }), /* @__PURE__ */ React.createElement(TweakNumber, { label: controlState.tokensLabel, value: deploySettings.maxTotalTokens ?? "", min: controlState.tokensMin, max: controlState.tokensMax, onChange: (v) => setDeployField("maxTotalTokens", v) }), /* @__PURE__ */ React.createElement(
-    TweakRadio,
-    {
-      label: controlState.realmLabel,
-      value: deploySettings.isolated ? "isolated" : "shared",
-      onChange: (v) => setDeployField("isolated", v === "isolated"),
-      options: controlState.realmOptions
-    }
-  ), !deploySettings.isolated && /* @__PURE__ */ React.createElement(TweakText, { label: controlState.realmIdLabel, value: deploySettings.realm || "", placeholder: controlState.realmIdPlaceholder, onChange: (v) => setDeployField("realm", v) }), /* @__PURE__ */ React.createElement(
-    TweakSelect,
-    {
-      label: controlState.backendLabel,
-      value: deploySettings.realmBackend || "",
-      onChange: (v) => setDeployField("realmBackend", v),
-      options: controlState.realmBackendOptions
-    }
-  ), /* @__PURE__ */ React.createElement(TweakText, { label: controlState.promptLabel, value: deploySettings.prompt || "", placeholder: controlState.promptPlaceholder, onChange: (v) => setDeployField("prompt", v) }), /* @__PURE__ */ React.createElement("div", { className: "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, controlState.commandLabel)), /* @__PURE__ */ React.createElement("code", { className: "deploy-command" }, deployCommandPreview || controlState.commandFallback))), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.inspectorTitle }, /* @__PURE__ */ React.createElement(
-    TweakRadio,
-    {
-      label: controlState.inspectorLayoutLabel,
-      value: t.inspectorLayout,
-      onChange: (v) => setTweak("inspectorLayout", v),
-      options: controlState.inspectorLayoutOptions
-    }
-  )));
-}
-function RoleWiringEditor({ value, profileOptions, settingsView, onAction }) {
-  const wiringState = window.MobKitFlowController.mobRoleWiringEditorState(value, profileOptions, settingsView);
-  const updateSource = (index, value2) => {
-    onAction && onAction({ action: "set_source", index, value: value2 });
-  };
-  const updateTarget = (index, value2) => {
-    onAction && onAction({ action: "set_target", index, value: value2 });
-  };
-  const removeRule = (index) => {
-    onAction && onAction({ action: "delete", index });
-  };
-  const addRule = () => {
-    onAction && onAction({ action: "add" });
-  };
-  return /* @__PURE__ */ React.createElement("div", { className: "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, wiringState.label), /* @__PURE__ */ React.createElement("span", null, wiringState.countLabel)), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gap: 6 } }, wiringState.wiring.map((rule, index) => /* @__PURE__ */ React.createElement("div", { key: `${rule.a}:${rule.b}:${index}`, style: { display: "grid", gridTemplateColumns: "1fr 1fr 26px", gap: 6 } }, /* @__PURE__ */ React.createElement("select", { className: "twk-field", value: rule.a, onChange: (e) => updateSource(index, e.target.value) }, wiringState.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "twk-field", value: rule.b, onChange: (e) => updateTarget(index, e.target.value) }, wiringState.options.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("button", { className: "twk-field", style: { padding: 0 }, type: "button", onClick: () => removeRule(index) }, "\xD7"))), /* @__PURE__ */ React.createElement("button", { className: "twk-field", type: "button", disabled: wiringState.addDisabled, onClick: addRule }, wiringState.addLabel)));
-}
-function AdvancedMobSettingsEditor({ value, settingsView, onChange }) {
-  const advancedState = window.MobKitFlowController.advancedMobSettingsEditorState(value, settingsView);
-  const [draft, setDraft] = React.useState(advancedState.text);
-  const [error, setError] = React.useState("");
-  React.useEffect(() => {
-    setDraft(advancedState.text);
-    setError("");
-  }, [advancedState.text]);
-  const commit = (next) => {
-    setDraft(next);
-    const result = window.MobKitFlowController.advancedMobSettingsDraftPatch(next, settingsView);
-    setError(result.error || "");
-    if (result.ok) onChange(result.value);
-  };
-  return /* @__PURE__ */ React.createElement("div", { className: "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, advancedState.label), error && /* @__PURE__ */ React.createElement("span", null, error)), /* @__PURE__ */ React.createElement(
-    "textarea",
-    {
-      className: "twk-field",
-      style: { height: 118, paddingTop: 7, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", resize: "vertical" },
-      value: draft,
-      onChange: (e) => commit(e.target.value)
-    }
-  ));
-}
-ReactDOM.createRoot(document.getElementById("root")).render(/* @__PURE__ */ React.createElement(App, null));
+  require_app();
+})();

@@ -7,12 +7,13 @@ const src = (name) => fs.readFileSync(path.join(root, "src", name), "utf8");
 const testSrc = (name) => fs.readFileSync(path.join(root, "test", name), "utf8");
 
 const data = src("data.js");
-const app = src("app.jsx");
+const app = src("app.tsx");
 const styles = src("styles.css");
-// The controller plane is @flow-editor-core plus the ~10-line controller.js
-// bootstrap (S19 end-state: the residue is gone); the concatenation kept
-// whole-text controller assertions move-invariant throughout the migration
-// and now reads only the bootstrap plus the core module files.
+// The controller plane is @flow-editor-core (S23 end-state: the controller.js
+// bootstrap is gone — app.tsx constructs the facade at module scope and
+// build.cjs's --test-bundle emits the equivalent shim for the projection
+// suite); the concatenation kept whole-text controller assertions
+// move-invariant throughout the migration and now reads the core module files.
 const coreSrcDir = path.join(root, "..", "packages", "flow-editor-core", "src");
 const coreModuleFiles = (function walk(dir) {
   return fs.readdirSync(dir, { withFileTypes: true })
@@ -23,10 +24,10 @@ const coreModuleFiles = (function walk(dir) {
       return entry.name.endsWith(".ts") ? [full] : [];
     });
 })(coreSrcDir);
-const controller = [
-  src("controller.js"),
-  ...coreModuleFiles.map((file) => fs.readFileSync(file, "utf8")),
-].join("\n");
+const controller = coreModuleFiles
+  .map((file) => fs.readFileSync(file, "utf8"))
+  .join("\n");
+const buildScript = fs.readFileSync(path.join(root, "build.cjs"), "utf8");
 const topRailBlock = (app.match(/function TopRail[\s\S]*?\/\/ ── Flows registry view/) || [""])[0];
 // The view layer migrates per legacy .jsx file into @flow-editor-components
 // (S20-S22); each moved file's assertions re-anchor onto its package module.
@@ -119,12 +120,21 @@ const authoringSkillRealmsResponseBlock = (mobpackRust.match(/fn authoring_skill
 for (const [name, source] of [
   ["data.js", data],
   ["builder/builder.tsx", builder],
-  ["app.jsx", app],
+  ["app.tsx", app],
 ]) {
   assert(!/\bmock\b/i.test(source), `${name} must not carry local mock data paths`);
 }
 
 assert.match(data, /window\.MOBKIT_BOOT\s*=/, "boot file should expose static layout metadata only");
+// S23 shell modernization pins: app.tsx is a real module bundled by esbuild
+// into the single flow-editor.js artifact; the controller facade is
+// constructed once at module scope with a deliberate window back-compat
+// assignment, and data.js still executes ahead of the module body.
+assert.match(app, /import \{ createMobKitFlowController \} from "@flow-editor-core";/, "app shell must build the controller facade from @flow-editor-core");
+assert.match(app, /\} from "@flow-editor-components";/, "app shell must import its views from @flow-editor-components");
+assert.match(app, /import "\.\/data\.js";/, "app shell must import data.js so window.MOBKIT_BOOT is assigned before the module body runs");
+assert.match(app, /const MobKitFlowController: any = createMobKitFlowController\(\{ includeTestExports: false \}\);\s*window\.MobKitFlowController = MobKitFlowController;/, "app shell must keep the window.MobKitFlowController back-compat assignment for browser smokes, live verification scripts, component views, and embedders");
+assert.match(buildScript, /entryPoints: \[appEntry\],[\s\S]*?bundle: true,[\s\S]*?format: "iife",[\s\S]*?platform: "browser"/, "flow-editor.js must be a single esbuild iife bundle of the app.tsx shell entry");
 assert(!/\b(MEMBERS|INSTANCES|TOOL_CATALOG|AGENT_DEFINITIONS|SKILL_REALMS|MODELS|SCHEMAS|DEPLOY_DEFAULTS|CONTRACT_META)\b/.test(data), "boot data file must not define live MobKit catalogs");
 assert(!/TEMPLATE_META|template:\s*TEMPLATE_META|untitled-mob|mob\.toml/.test(data), "boot data file must not define local template summary metadata");
 assert.match(app, /MobKitFlowController\.flowCatalogBootstrapState\(catalogPayload,/, "flow registry must hydrate saved MobKit rows and sample templates through the controller bootstrap projection");
@@ -255,7 +265,7 @@ assert.doesNotMatch(controller, /authoringReplacementFromIntent|system\.replaceA
 assert.doesNotMatch(builder + "\n" + graph + "\n" + agents, /operationType|applyAuthoringReplacement|applyAuthoringOperation|add_agent_definition|update_member|add_member_tool|remove_member_tool|assign_member_schema|delete_member|add_schema|update_schema|rename_schema|delete_schema|toggle_member_skill|remove_member_skill|create_inline_skill|update_flow_step|apply_flow_step_edit|insert_flow_step|delete_flow_step|add_input_param|update_input_param|delete_input_param|move_graph_node|connect_graph_nodes|insert_graph_node|delete_graph_node|update_graph_node|delete_graph_edge|update_graph_edge|apply_graph_/, "Basic, Graph, and Agent UI files must emit intent callbacks rather than MobKit operation payloads");
 assert.doesNotMatch(app, /authoringOperationAvailability\(catalogs\.authoringOperations|authoringOperationFromIntent\(operation\)|authoringProjectionFromOperationResult\(result/, "app shell must not translate, gate, or project MobKit authoring operations directly");
 assert.match(app, /createAuthoringOperationRunner\(\{[\s\S]*getAuthoringOperations:[\s\S]*getCurrentDocument:[\s\S]*getDraftGuard:[\s\S]*getCatalogSnapshot:[\s\S]*applyProjection:[\s\S]*markDraft:/, "app shell must configure the controller-owned MobKit authoring runner through current-state callbacks");
-assert.match(app, /const currentDraftGuard = \(\) => window\.MobKitFlowController\.flowRegistryDraftGuard\(currentFlow,\s*currentFlowId\);/, "app shell must derive MobKit draft revision guards through the controller plane");
+assert.match(app, /const currentDraftGuard = \(\) => MobKitFlowController\.flowRegistryDraftGuard\(currentFlow,\s*currentFlowId\);/, "app shell must derive MobKit draft revision guards through the controller plane");
 assert.match(app, /const applyMobKitAuthoringOperation = React\.useCallback\(\(operation\) => \{[\s\S]{0,300}return authoringOperationRunner\.current\(operation\);[\s\S]{0,10}\}, \[\]\)/, "app shell must invoke the controller-owned MobKit authoring runner instead of applying operations inline");
 assert.match(app, /reconcileEpoch\.current \+= 1;[\s\S]{0,80}return authoringOperationRunner\.current\(operation\);/, "non-system authoring operations must advance the reconcile circuit-breaker epoch");
 assert.match(app, /<BuilderView[\s\S]*applyAuthoringIntent=\{applyMobKitAuthoringOperation\}/, "Basic editor must receive the direct MobKit authoring operation callback from the app shell");
@@ -328,7 +338,7 @@ assert.match(agentEditorBlock, /const selection = null;[\s\S]*setAgentSel\(selec
 assert(!/studio(?:Add|Update|Move|Delete)InstancePatch/.test(graph), "Graph state hook must not carry graph-node mutation authority; MobKit apply_operation owns node edits");
 assert(!/MobKitFlowController\.graphQuickInsertProjection/.test(app), "App quick graph insertion must not project graph rows locally before MobKit");
 assert.match(app, /intent:\s*"graph\.insertNode"[\s\S]*pick,[\s\S]*cell:\s*addAt/, "Graph quick insert must send semantic pick and cell intent payloads through the controller plane");
-assert.match(app, /const nextMenu = window\.MobKitFlowController\.graphAddMenuCloseProjection\(\);\s*setAddAt\(nextMenu\.addAt\);[\s\S]*intent:\s*"graph\.insertNode"/, "Graph quick insert must close the picker before async MobKit insertion resolves so the canvas remains interactive");
+assert.match(app, /const nextMenu = MobKitFlowController\.graphAddMenuCloseProjection\(\);\s*setAddAt\(nextMenu\.addAt\);[\s\S]*intent:\s*"graph\.insertNode"/, "Graph quick insert must close the picker before async MobKit insertion resolves so the canvas remains interactive");
 assert(!/instances:\s*inserted\.instances|edges:\s*inserted\.edges|flow:\s*inserted\.flow/.test(app), "Graph quick insert must not send browser-projected graph rows");
 assert(!/intent:\s*"graph\.insertNode"[\s\S]{0,260}instance,|intent:\s*"graph\.insertNode"[\s\S]{0,260}instance:/.test(app), "Graph instance adds must not send raw instance payloads through normal authoring");
 assert(!/addInstance:\s*\(instance\)/.test(app), "app shell must not expose legacy graph instance helpers through the view-state studio object");
@@ -358,8 +368,8 @@ assert.match(mobpackRust, /"move_graph_node"\s*=>\s*apply_move_graph_node_operat
 assert.match(mobpackRust, /fn apply_operation_mutates_graph_without_projected_document/, "MobKit tests must prove graph operations mutate without operation.document");
 assert.match(controller, /function studioDeleteEdgePatch[\s\S]*selection:\s*\{\s*kind:\s*null,\s*id:\s*null\s*\}/, "controller plane must own graph edge-delete selection clearing");
 assert(!/const deleteEdge = \(id\) => \{[\s\S]*studioDeleteEdgePatch/.test(graph), "Graph state hook must not return local edge-delete transitions");
-assert.match(app, /selectInstance = \(id\) => setSelection\(window\.MobKitFlowController\.graphSelectionProjection\("instance", id\)\)/, "app shell must select graph nodes through the controller plane");
-assert.match(app, /selectEdge = \(id\) => setSelection\(window\.MobKitFlowController\.graphSelectionProjection\("edge", id\)\)/, "app shell must select graph edges through the controller plane");
+assert.match(app, /selectInstance = \(id\) => setSelection\(MobKitFlowController\.graphSelectionProjection\("instance", id\)\)/, "app shell must select graph nodes through the controller plane");
+assert.match(app, /selectEdge = \(id\) => setSelection\(MobKitFlowController\.graphSelectionProjection\("edge", id\)\)/, "app shell must select graph edges through the controller plane");
 assert.match(controller, /function graphSelectionProjection/, "controller plane must own graph selection projection");
 assert(!/setSelection\(\{\s*kind:\s*"(?:instance|edge)",\s*id\s*\}\)/.test(app), "app shell must not assemble graph selection objects locally");
 assert.match(app, /const clearSelection = \(nextSelection = \{\s*kind:\s*null,\s*id:\s*null\s*\}\) => setSelection\(nextSelection \|\| \{\s*kind:\s*null,\s*id:\s*null\s*\}\)/, "app shell must allow controller-projected graph selection clearing");
@@ -687,21 +697,24 @@ assert.match(controller, /const graphProjection = graphProjectionFromMobKitResul
 assert.doesNotMatch((controller.match(/function graphProjectionForDocument[\s\S]*?function graphProjectionFromMobKitResult/) || [""])[0], /graphProjectionForFlow/, "hydration must not derive graph rows locally from Basic flow when MobKit graph projection is absent");
 assert.match(app, /MobKitFlowController\.graphProjectionDocument\(hydration\.document\)[\s\S]*graphProjectionFromMobKitResult\(projectionResult\)[\s\S]*studio\.setInstances\(projection\.instances \|\| \[\]\)[\s\S]*studio\.setEdges\(projection\.edges \|\| \[\]\)[\s\S]*studio\.setFrames\(projection\.frames \|\| \[\]\)/, "app shell must refresh hydrated graph layout from the MobKit graph projection authoring API");
 assert.match(app, /const graphProjectionToken = currentAuthoringRevision\(\);[\s\S]*if \(!authoringRevisionIsCurrent\(graphProjectionToken\)\) return;[\s\S]*catch\(\(error\) => \{[\s\S]*if \(!authoringRevisionIsCurrent\(graphProjectionToken\)\) return;/, "MobKit graph projection responses and failures must not overwrite newer authoring edits");
-assert.match(app, /const abort = new AbortController\(\);[\s\S]*MobKitFlowController\.graphProjectionDocument\(\{[\s\S]*instances:\s*\[\],[\s\S]*edges:\s*\[\],[\s\S]*frames:\s*\[\],[\s\S]*\},\s*\{ \.\.\.window\.MobKitFlowController\.flowRegistryDraftGuard\(currentFlow,\s*currentFlowId\),\s*signal:\s*abort\.signal \}\)[\s\S]*graphProjectionFromMobKitResult\(projectionResult\)[\s\S]*if \(abort\.signal\.aborted\) return;[\s\S]*abort\.abort\(\)/, "Basic-to-Graph live projection must use the guarded MobKit graph projection API and abort stale projection RPCs");
-assert.doesNotMatch(app, /const \{ instances, edges, frames \} = window\.MobKitFlowController\.graphProjectionForFlow/, "app shell must not derive Basic-to-Graph rows locally");
-assert.match(app, /graphProjectionDocument\([\s\S]*\},\s*\{ \.\.\.window\.MobKitFlowController\.flowRegistryDraftGuard\(currentFlow,\s*currentFlowId\),\s*signal:\s*abort\.signal \}\)[\s\S]*\},\s*\[flow,\s*editorMode,\s*contract,\s*studio\.members,\s*currentFlow,\s*currentFlowId\]\);/, "Basic-to-Graph live projection must rerun when Agent editor member definitions or draft revision guards change");
+assert.match(app, /const abort = new AbortController\(\);[\s\S]*MobKitFlowController\.graphProjectionDocument\(\{[\s\S]*instances:\s*\[\],[\s\S]*edges:\s*\[\],[\s\S]*frames:\s*\[\],[\s\S]*\},\s*\{ \.\.\.MobKitFlowController\.flowRegistryDraftGuard\(currentFlow,\s*currentFlowId\),\s*signal:\s*abort\.signal \}\)[\s\S]*graphProjectionFromMobKitResult\(projectionResult\)[\s\S]*if \(abort\.signal\.aborted\) return;[\s\S]*abort\.abort\(\)/, "Basic-to-Graph live projection must use the guarded MobKit graph projection API and abort stale projection RPCs");
+assert.doesNotMatch(app, /const \{ instances, edges, frames \} = MobKitFlowController\.graphProjectionForFlow/, "app shell must not derive Basic-to-Graph rows locally");
+assert.match(app, /graphProjectionDocument\([\s\S]*\},\s*\{ \.\.\.MobKitFlowController\.flowRegistryDraftGuard\(currentFlow,\s*currentFlowId\),\s*signal:\s*abort\.signal \}\)[\s\S]*\},\s*\[flow,\s*editorMode,\s*contract,\s*studio\.members,\s*currentFlow,\s*currentFlowId\]\);/, "Basic-to-Graph live projection must rerun when Agent editor member definitions or draft revision guards change");
 assert.match(app, /intent:\s*"system\.syncGraphToFlow"[\s\S]*reason:\s*"advanced_graph_changed"/, "Graph-to-Basic live projection must use MobKit apply_operation sync_graph_to_flow through an intent");
 assert(!/MobKitFlowController\.graphToFlowDocument\(projectionDocument\)[\s\S]*applyAuthoringDocumentProjection\(projection\)/.test(app), "Graph-to-Basic live projection must not apply standalone graph_to_flow RPC projections locally");
-assert(!/setFlow\(\(current\) => window\.MobKitFlowController\.graphToFlow/.test(app), "Graph-to-Basic live projection must not apply local flow state directly");
+assert(!/setFlow\(\(current\) => MobKitFlowController\.graphToFlow/.test(app), "Graph-to-Basic live projection must not apply local flow state directly");
 assert.doesNotMatch(app, /authoringDocumentFromState\(\{[\s\S]*flow:[\s\S]*studio:[\s\S]*deploySettings:[\s\S]*mobSettings:/, "Mobpack export/deploy must not build authoritative documents from browser Basic, Graph, Agent, deploy, and mob shards");
 assert.match(controller, /function authoringDocumentFromState/, "controller plane must own current editor state to deployable mobpack document projection");
-// Re-anchored in S19: the window.__MOBKIT_FLOW_CONTROLLER_TEST__ gate now
-// lives in the controller.js bootstrap (mapped to includeTestExports) and
-// the gated Object.assign moved into controller-facade.ts's
-// createMobKitFlowController; the bootstrap precedes the facade in the
-// concatenation, so the pattern still proves the assembler exports are
-// reachable only through the explicit test flag.
-assert.match(controller, /includeTestExports:\s*!!window\.__MOBKIT_FLOW_CONTROLLER_TEST__[\s\S]*if \(includeTestExports\) \{[\s\S]*Object\.assign\(MobKitFlowController,\s*\{[\s\S]*buildDocument,[\s\S]*authoringFlowForDocument,[\s\S]*authoringDocumentFromState/, "legacy shard-to-document assembler must only be exposed to explicit controller unit tests");
+// Re-anchored in S23: the window.__MOBKIT_FLOW_CONTROLLER_TEST__ →
+// includeTestExports mapping now lives in build.cjs's --test-bundle shim
+// (the controller.js bootstrap is gone), the gated Object.assign stays in
+// controller-facade.ts's createMobKitFlowController, and the browser shell
+// constructs the facade with includeTestExports hardwired false — together
+// the assembler exports remain reachable only through the explicit test
+// flag, and only in the Node test bundle.
+assert.match(buildScript, /includeTestExports:\s*!!window\.__MOBKIT_FLOW_CONTROLLER_TEST__/, "test-bundle bootstrap shim must map the projection suite's window flag to includeTestExports");
+assert.match(app, /createMobKitFlowController\(\{ includeTestExports: false \}\)/, "browser app shell must construct the controller facade without test-gated assembler exports");
+assert.match(controller, /if \(includeTestExports\) \{[\s\S]*Object\.assign\(MobKitFlowController,\s*\{[\s\S]*buildDocument,[\s\S]*authoringFlowForDocument,[\s\S]*authoringDocumentFromState/, "legacy shard-to-document assembler must only be exposed to explicit controller unit tests");
 assert(!/window\.MobKitFlowController = \{[\s\S]*authoringDocumentFromState/.test(controller), "browser controller public API must not expose the shard-to-document assembler");
 assert.match(testSrc("live-rkat-e2e.cjs"), /global\.window = \{ __MOBKIT_FLOW_CONTROLLER_TEST__:\s*true \}/, "live rkat fixture builders must explicitly opt into controller internals instead of depending on browser public exports");
 assert.match(controller, /authoringDocumentFromState[\s\S]*reconcileAuthoringWithContract\(\{[\s\S]*members:\s*sourceStudio\.members,[\s\S]*skillRealms:\s*sourceStudio\.skillRealms,[\s\S]*schemas:\s*sourceStudio\.schemas,[\s\S]*modelCatalog,[\s\S]*toolCatalog,[\s\S]*contractLoaded/, "deployable document projection must run aggregate MobKit contract/catalog reconciliation before export");
@@ -1049,10 +1062,10 @@ assert.match(controller, /function reconcileMobSettingsProfiles/, "controller pl
 assert.match(app, /function RoleWiringEditor/, "mob role wiring must use structured profile controls, not free-text profile names");
 assert(!/parseRoleWiring|TweakText label="Role wiring"/.test(app), "mob role wiring must not be edited as raw profile-name text");
 assert.match(app, /const canCreateAuthoring = !!catalogs\.contractMeta\.loaded && !contract\?\.error;/, "blank/sample authoring must be gated on loaded MobKit schema");
-assert.match(app, /if \(!canCreateAuthoring\) return;[\s\S]*setCreating\(window\.MobKitFlowController\.newFlowInitialState/, "New flow modal must not open before MobKit schema hydration");
+assert.match(app, /if \(!canCreateAuthoring\) return;[\s\S]*setCreating\(MobKitFlowController\.newFlowInitialState/, "New flow modal must not open before MobKit schema hydration");
 assert.match(app, /if \(!canCreateAuthoring\) return;[\s\S]*MobKitFlowController\.createDocument\(spec\)/, "Blank/sample mobpack creation must run through MobKit after schema hydration");
 assert(!/onCreate=\{\(spec\)[\s\S]*flowRegistryCreateDraftProjection/.test(app), "New flow modal must not clone blank/sample documents locally");
-assert.match(app, /setCreating\(window\.MobKitFlowController\.newFlowInitialState\(\{ blankTemplate: catalogs\.blankMobpack \}\)\)/, "New flow modal initial state must come from controller-projected MobKit blank mobpack data");
+assert.match(app, /setCreating\(MobKitFlowController\.newFlowInitialState\(\{ blankTemplate: catalogs\.blankMobpack \}\)\)/, "New flow modal initial state must come from controller-projected MobKit blank mobpack data");
 assert.match(controller, /async function createDocument\(spec = \{\},\s*options = \{\}\)[\s\S]*rpcMethod\("create"\)/, "controller plane must create new flow drafts through mobkit/mobpacks/create");
 assert.match(controller, /function newFlowInitialState[\s\S]*blankTemplate\.trigger[\s\S]*blankTemplate\.id/, "controller plane must seed new-flow initial trigger/template from the MobKit blank mobpack catalog");
 assert.match(app, /MobKitFlowController\.newFlowTemplateOptions\(templates, \{[\s\S]*canCreateBlank: canCreateAuthoring/, "New flow modal must receive controller-projected blank/sample template options");
@@ -1113,8 +1126,8 @@ assert.match(controller, /function validationSheetOpenTransition/, "controller p
 assert.match(controller, /function validationSheetCloseTransition/, "controller plane must own validation sheet close transitions");
 assert.match(controller, /function apiOverlayClearTransition/, "controller plane must own aggregate API overlay clear transitions");
 assert.match(app, /const applyApiOverlayPatch = React\.useCallback\(\(patch\) => \{[\s\S]*deployPlanOpen[\s\S]*deployPlanDocument[\s\S]*deployPlanResult[\s\S]*incrementDeployPlanKey[\s\S]*validate/, "app shell may only apply controller-projected API overlay patches");
-assert.match(app, /<DeployPlanTrace[\s\S]*onClose=\{\(\) => applyApiOverlayPatch\(window\.MobKitFlowController\.deployPlanTraceCloseTransition\(\)\)\}/, "Plan Trace close affordance must use controller-projected transition state");
-assert.match(app, /<ValidateSheet[\s\S]*onClose=\{\(\) => applyApiOverlayPatch\(window\.MobKitFlowController\.validationSheetCloseTransition\(\)\)\}/, "Validation sheet close affordance must use controller-projected transition state");
+assert.match(app, /<DeployPlanTrace[\s\S]*onClose=\{\(\) => applyApiOverlayPatch\(MobKitFlowController\.deployPlanTraceCloseTransition\(\)\)\}/, "Plan Trace close affordance must use controller-projected transition state");
+assert.match(app, /<ValidateSheet[\s\S]*onClose=\{\(\) => applyApiOverlayPatch\(MobKitFlowController\.validationSheetCloseTransition\(\)\)\}/, "Validation sheet close affordance must use controller-projected transition state");
 assert.match(overlays, /MobKitFlowController\.deployPlanTraceState\(document, plan, \{ deployView \}\)/, "Plan Trace overlay must render controller-projected deploy-plan state from MobKit view chrome");
 assert.match(overlays, /traceState\.eyebrow/, "Plan Trace overlay header must render through controller state");
 assert.match(overlays, /traceState\.firstLabel/, "Plan Trace first action label must render through controller state");
@@ -1210,7 +1223,7 @@ assert.match(controller, /function inlineSourcePendingTransition/, "controller p
 assert.match(controller, /function inlineSourceReadyTransition/, "controller plane must own inline source ready transitions");
 assert.match(controller, /function inlineSourceBusyTransition/, "controller plane must own inline source busy transitions");
 assert.match(app, /const applySourceProjectionPatch = React\.useCallback\(\(patch\) => \{[\s\S]*sourceOpen[\s\S]*sourceDocument[\s\S]*inlineSourceOpen[\s\S]*inlineSourceSurface[\s\S]*inlineSourceDocument[\s\S]*inlineSourceBusy/, "app shell may only apply controller-projected source state patches");
-assert.match(app, /const clearSourceProjection = React\.useCallback\(\(\) => \{[\s\S]*applySourceProjectionPatch\(window\.MobKitFlowController\.sourceProjectionClearTransition\(\)\)/, "source projections must clear through controller-projected transitions");
+assert.match(app, /const clearSourceProjection = React\.useCallback\(\(\) => \{[\s\S]*applySourceProjectionPatch\(MobKitFlowController\.sourceProjectionClearTransition\(\)\)/, "source projections must clear through controller-projected transitions");
 assert.match(app, /if \(e\.key === "Escape"\) \{[\s\S]*clearSourceProjection\(\)/, "Escape must clear full drawer and inline source projections through the same transition");
 assert.match(app, /sourceDrawerReadyTransition\(nextSourceDocument\)/, "source drawer open state must be controller-projected");
 assert.match(app, /inlineSourcePendingTransition\(surface\)/, "inline source pending state must be controller-projected");
@@ -1343,7 +1356,7 @@ assert.match(app, /const abort = new AbortController\(\);[\s\S]*loadSchema\(rpcO
 assert.match(app, /deployCommandPreviewForDocument\(document,\s*\{ \.\.\.currentDraftGuard\(\),\s*signal:\s*abort\.signal \}\)/, "deploy command preview refreshes must carry draft guards and abort stale MobKit preview RPCs");
 assert.match(controller, /authoringOperationFallbackHeads:\s*viewStringMapFromSchema\(view\.authoring_operation_fallback_heads\)/, "controller plane must hydrate authoring failure heads from MobKit editor_error_view");
 assert(!/["']MobKit graph projection failed["']|["']MobKit graph sync failed["']|["']MobKit graph node insert failed["']|["']MobKit draft save failed["']/.test(app), "app shell must not compose MobKit authoring failure heads locally");
-assert(!/const sampleFlows = window\.MobKitFlowController\.sampleFlowsFromCatalogs\(catalogPayload\)|sampleFlows\[0\]\.document|sampleFlows\[0\]\.validation|setTemplates\(sampleFlows\)|setFlows\(sampleFlows\)/.test(app), "app shell must not assemble initial sample flow registry or hydration locally");
+assert(!/const sampleFlows = MobKitFlowController\.sampleFlowsFromCatalogs\(catalogPayload\)|sampleFlows\[0\]\.document|sampleFlows\[0\]\.validation|setTemplates\(sampleFlows\)|setFlows\(sampleFlows\)/.test(app), "app shell must not assemble initial sample flow registry or hydration locally");
 assert(!/STARTER_FLOWS/.test(app), "app shell must not keep a local starter-flow catalog");
 assert.match(controller, /function flowImportedIdFromDocument[\s\S]*flowDraftIdFromSpec/, "controller plane must derive imported mobpack registry ids from document/source metadata");
 assert(!/id:\s*["']f_imported["']/.test(app + "\n" + controller), "Flow Editor must not assign every imported mobpack the same local f_imported registry id");
@@ -1861,7 +1874,7 @@ assert(!/catalogs\.cellXY\(col,\s*row\)|setAddAt\(\{\s*col,\s*row,\s*x:/.test(ap
 assert(!/setAddAt\(null\)/.test(app), "app shell must not close the Graph add-menu by setting null locally");
 assert.match(app, /intent:\s*"graph\.insertNode"[\s\S]*pick,[\s\S]*cell:\s*addAt/, "Graph quick insertion must pass only semantic pick and cell through the controller plane");
 assert(!/function graphQuickInsertResult/.test(controller), "browser controller must not keep graph quick-insert result shaping");
-assert.match(app, /const nextMenu = window\.MobKitFlowController\.graphAddMenuCloseProjection\(\)[\s\S]*setAddAt\(nextMenu\.addAt\)/, "Graph quick insertion must apply controller-projected add-menu close transitions");
+assert.match(app, /const nextMenu = MobKitFlowController\.graphAddMenuCloseProjection\(\)[\s\S]*setAddAt\(nextMenu\.addAt\)/, "Graph quick insertion must apply controller-projected add-menu close transitions");
 assert(!/graphQuickInsertProjection[\s\S]{0,900}setAddAt\(null\)/.test(app), "Graph quick insertion must not close the add menu locally after controller projection");
 assert.match(app, /MobKitFlowController\.agentNavigationProjection\(id\)/, "Graph-to-Agent navigation must ask the controller plane for view, menu, and selection transitions");
 assert.match(controller, /function agentNavigationProjection/, "controller plane must own graph-to-Agent Editor navigation projection");
@@ -1897,7 +1910,7 @@ assert(!/setCurrentFlowId\(selection\.fallback\.currentFlowId\)|setStage\(select
 assert.match(app, /MobKitFlowController\.createDocument\(spec\)[\s\S]*const row = result\?\.row[\s\S]*hydrateMobpackDocument/, "app shell must hydrate new-flow registry rows returned by MobKit");
 assert.doesNotMatch(app, /MobKitFlowController\.flowRegistryCreateDraftProjection/, "app shell must not derive new-flow registry rows from cloned catalog documents");
 assert.match(app, /MobKitFlowController\.hydrateMobpackDocumentState/, "app shell must derive imported registry rows through controller hydration");
-assert.match(app, /const hydrationPersistence = window\.MobKitFlowController\.flowRegistryDocumentPersistence\(\{[\s\S]*currentFlowId: hydration\.id,[\s\S]*document: hydration\.document,[\s\S]*validation: hydration\.validation,[\s\S]*stage: hydration\.stage,[\s\S]*persistedDocumentSig\.current = hydrationPersistence\.signature/, "hydrated registry documents must seed the controller-owned persistence signature before UI effects can clear validation");
+assert.match(app, /const hydrationPersistence = MobKitFlowController\.flowRegistryDocumentPersistence\(\{[\s\S]*currentFlowId: hydration\.id,[\s\S]*document: hydration\.document,[\s\S]*validation: hydration\.validation,[\s\S]*stage: hydration\.stage,[\s\S]*persistedDocumentSig\.current = hydrationPersistence\.signature/, "hydrated registry documents must seed the controller-owned persistence signature before UI effects can clear validation");
 assert(!/MobKitFlowController\.flowRegistryAppendRowPatch/.test(app), "app shell must not append new-flow registry rows locally");
 assert.match(app, /MobKitFlowController\.flowRegistryUpsertRowPatch/, "app shell must upsert flow registry rows through the controller plane");
 assert(!/const\s+id\s*=\s*["']f_["']\s*\+\s*Math\.random|Math\.random\(\)[\s\S]{0,80}createFlowDraftFromSpec/.test(app), "app shell must not mint deployable new-flow ids locally");
