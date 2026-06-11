@@ -932,4 +932,3 @@ function findStep(steps, id) {
   }
   return null;
 }
-

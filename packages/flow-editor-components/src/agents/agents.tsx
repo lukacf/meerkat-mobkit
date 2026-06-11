@@ -1027,4 +1027,3 @@ function SkillAccess({ studio, member, agentAccessView = null, applyAgentIntent 
     </>
   );
 }
-
