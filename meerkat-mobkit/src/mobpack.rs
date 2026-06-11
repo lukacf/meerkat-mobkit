@@ -5332,9 +5332,7 @@ fn normalize_deploy_settings_field_value(
         | "user_config_root" => {
             optional_trimmed_string(value, &format!("update_deploy_settings {key}"))
         }
-        "prompt" => {
-            required_trimmed_string(value, "update_deploy_settings prompt").map(Value::String)
-        }
+        "prompt" => required_text_string(value, "update_deploy_settings prompt").map(Value::String),
         other => Err(format!("unsupported deploy settings field: {other}")),
     }
 }
@@ -5369,6 +5367,16 @@ fn required_trimmed_string(value: &Value, context: &str) -> Result<String, Strin
         .as_str()
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("{context} must be a non-empty string"))
+}
+
+// Required free text: must not be blank, but the stored value keeps the
+// user's whitespace — these fields echo back into live inputs per keystroke.
+fn required_text_string(value: &Value, context: &str) -> Result<String, String> {
+    value
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
         .map(ToString::to_string)
         .ok_or_else(|| format!("{context} must be a non-empty string"))
 }
@@ -7672,13 +7680,13 @@ fn apply_flow_step_edit_operation(
             "set_task" => {
                 object.insert(
                     "task".to_string(),
-                    Value::String(operation_string_value(operation, &["task", "value"])),
+                    Value::String(operation_text_value(operation, &["task", "value"])),
                 );
             }
             "set_instruction" => {
                 object.insert(
                     "instruction".to_string(),
-                    Value::String(operation_string_value(operation, &["instruction", "value"])),
+                    Value::String(operation_text_value(operation, &["instruction", "value"])),
                 );
             }
             "set_loop_id" => {
@@ -9490,6 +9498,17 @@ fn operation_string_value(operation: &serde_json::Map<String, Value>, fields: &[
         .to_string()
 }
 
+// Free-text fields are echoed back to live inputs on every keystroke, so a
+// trim here would erase the trailing space the user just typed.
+fn operation_text_value(operation: &serde_json::Map<String, Value>, fields: &[&str]) -> String {
+    fields
+        .iter()
+        .find_map(|field| operation.get(*field))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
 fn graph_node_bool(instance: &Value, camel: &str, snake: &str) -> bool {
     instance
         .get(camel)
@@ -9622,7 +9641,7 @@ fn apply_graph_node_edit_operation(
             "set_label" => {
                 object.insert(
                     "label".to_string(),
-                    Value::String(operation_string_value(operation, &["label", "value"])),
+                    Value::String(operation_text_value(operation, &["label", "value"])),
                 );
             }
             "set_gate_kind" => {
@@ -10270,7 +10289,7 @@ fn apply_graph_edge_edit_operation(
     match action.as_str() {
         "set_label" => {
             next_edge["label"] =
-                Value::String(operation_string_value(operation, &["label", "value"]));
+                Value::String(operation_text_value(operation, &["label", "value"]));
         }
         "set_kind" => {
             let kind =
@@ -26777,6 +26796,98 @@ model = "gpt-5.5"
                 .iter()
                 .all(|entry| entry["step_id"].as_str() != Some(member_step_id)),
             "deleting a member step must drop its launch mode entry: {remaining:#?}"
+        );
+    }
+
+    #[test]
+    fn free_text_edits_preserve_user_whitespace() {
+        // Live inputs re-render from the echoed document on every keystroke:
+        // if the server trims, a trailing space is erased the moment it is
+        // typed and spaces become impossible to enter.
+        let template = blank_mobpack_template();
+        let document = template["document"].clone();
+        let step_id = document["flow"]["steps"]
+            .as_array()
+            .expect("flow steps array")
+            .first()
+            .and_then(|step| step["id"].as_str())
+            .expect("first flow step id")
+            .to_string();
+
+        let task = "Translate to French ";
+        let with_task = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "apply_flow_step_edit",
+                "step_id": step_id,
+                "action": "set_task",
+                "task": task
+            }
+        }))
+        .expect("set task with trailing space");
+        let echoed_task = with_task["document"]["flow"]["steps"]
+            .as_array()
+            .expect("steps after set_task")
+            .iter()
+            .find(|step| step["id"].as_str() == Some(step_id.as_str()))
+            .and_then(|step| step["task"].as_str())
+            .expect("task after set_task");
+        assert_eq!(
+            echoed_task, task,
+            "set_task must round-trip byte-identically"
+        );
+
+        let instruction = "Format the translations as a table ";
+        let with_instruction = apply_mobpack_authoring_operation(&json!({
+            "document": with_task["document"],
+            "operation": {
+                "type": "apply_flow_step_edit",
+                "step_id": step_id,
+                "action": "set_instruction",
+                "instruction": instruction
+            }
+        }))
+        .expect("set instruction with trailing space");
+        let echoed_instruction = with_instruction["document"]["flow"]["steps"]
+            .as_array()
+            .expect("steps after set_instruction")
+            .iter()
+            .find(|step| step["id"].as_str() == Some(step_id.as_str()))
+            .and_then(|step| step["instruction"].as_str())
+            .expect("instruction after set_instruction");
+        assert_eq!(
+            echoed_instruction, instruction,
+            "set_instruction must round-trip byte-identically"
+        );
+
+        let prompt = "Hello world ";
+        let with_prompt = apply_mobpack_authoring_operation(&json!({
+            "document": with_instruction["document"],
+            "operation": {
+                "type": "update_deploy_settings",
+                "field": "prompt",
+                "value": prompt
+            }
+        }))
+        .expect("set deploy prompt with trailing space");
+        assert_eq!(
+            with_prompt["document"]["deploy"]["prompt"].as_str(),
+            Some(prompt),
+            "deploy prompt must round-trip byte-identically"
+        );
+
+        // Blank-only free text is still rejected, matching the empty-field rule.
+        let blank_prompt = apply_mobpack_authoring_operation(&json!({
+            "document": with_prompt["document"],
+            "operation": {
+                "type": "update_deploy_settings",
+                "field": "prompt",
+                "value": "   "
+            }
+        }));
+        assert!(
+            blank_prompt.is_err(),
+            "whitespace-only prompt must be rejected"
         );
     }
 
