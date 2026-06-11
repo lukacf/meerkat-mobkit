@@ -114,6 +114,16 @@ async function buildAssets({ outDir, rustOutDir }) {
     },
     nodePaths: [path.join(root, "node_modules")],
   });
+  // React must stay external on the react-globals.js vendor: a value import
+  // of react anywhere in the app graph would silently bundle a second copy
+  // next to the window-global one. Every bundled React carries the
+  // Symbol.for("react.*") registrations; the app bundle must not.
+  const appBundleText = await fs.readFile(appPath, "utf8");
+  if (/Symbol\.for\(["']react\./.test(appBundleText)) {
+    throw new Error(
+      "flow-editor.js bundled a React copy; React must resolve from the react-globals.js window vendor (remove the value import of react)",
+    );
+  }
 
   const [tokensCss, stylesCss] = await Promise.all([
     fs.readFile(path.join(srcDir, "tokens.css"), "utf8"),

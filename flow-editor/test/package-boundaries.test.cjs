@@ -62,14 +62,15 @@ const coreWindowAllowlist = [
 
 const coreRules = [
   {
-    pattern: /window\./,
+    // window., window?., window["..."], and globalThis escapes all count.
+    pattern: /\bwindow\s*[.?\[]|\bglobalThis\b/,
     allow: coreWindowAllowlist,
     why: "core modules must be window-free; only the facade/bridge files may mention the shell's window contract",
   },
   {
-    // Match real React usage (member access, imports) without tripping on
-    // prose like "no React." in module headers.
-    pattern: /\bReact\.[A-Za-z$_]|from\s+["']react|require\(["']react|^import\s+React\b/m,
+    // Match real React usage (member access, static AND dynamic imports)
+    // without tripping on prose like "no React." in module headers.
+    pattern: /\bReact\.[A-Za-z$_]|from\s+["']react|require\(["']react|import\(["']react|^import\s+React\b/m,
     why: "the controller plane is framework-free; React lives in @flow-editor-components and the shell",
   },
   {
@@ -85,14 +86,18 @@ const coreRules = [
     why: "core modules are ESM bundle inputs; no CommonJS require",
   },
   {
-    pattern: /from\s+["']node:/,
+    // node: protocol, dynamic import of node builtins, and bare builtin
+    // specifiers (fs/path/os/child_process/crypto and friends).
+    pattern:
+      /from\s+["']node:|import\(["']node:|from\s+["'](?:fs|path|os|child_process|crypto|http|https|net|stream|util|url|zlib|worker_threads)["']/,
     why: "core modules must not import Node built-ins; the bundle is platform-neutral",
   },
 ];
 
 const componentsRules = [
   {
-    pattern: /\bfetch\s*\(/,
+    // Every browser network path, not just fetch.
+    pattern: /\bfetch\s*\(|new\s+XMLHttpRequest\b|new\s+WebSocket\b|new\s+EventSource\b|\bsendBeacon\b/,
     why: "views go through props or the window.MobKitFlowController facade; networking lives in @flow-editor-core rpc/client",
   },
   {
@@ -100,11 +105,26 @@ const componentsRules = [
     why: "views must not reach the RPC client directly; the facade is the runtime contract",
   },
   {
+    // Importing the core package would open a direct (network-capable)
+    // path around the facade AND create a second module instance of the
+    // rpc singletons inside the app bundle.
+    pattern: /from\s+["']@flow-editor-core/,
+    why: "views consume controller state through props or window.MobKitFlowController, never by importing @flow-editor-core",
+  },
+  {
+    // Value imports of react would silently bundle a second React into
+    // flow-editor.js next to the window-global vendor copy; only the
+    // type-only ambient import in globals.d.ts is allowed.
+    pattern: /(?<!import type \* as ReactNS )from\s+["']react["']|import\(["']react/,
+    why: "React is external (window globals from react-globals.js); components must not import it as a value",
+  },
+  {
     pattern: /\brequire\s*\(/,
     why: "components are ESM browser-bundle inputs; no CommonJS require",
   },
   {
-    pattern: /from\s+["']node:/,
+    pattern:
+      /from\s+["']node:|import\(["']node:|from\s+["'](?:fs|path|os|child_process|crypto|http|https|net|stream|util|url|zlib|worker_threads)["']/,
     why: "components must not import Node built-ins",
   },
 ];

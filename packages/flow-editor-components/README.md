@@ -57,3 +57,13 @@ rewriting moved render bodies.
 This package is private to the MobKit repository. `@flow-editor-components`
 is a build-time alias, not an npm-published package name; external consumers
 must not depend on it until MobKit makes an explicit public-package decision.
+
+## Window-global surface change (extraction note)
+
+The legacy concat build leaked every view component onto `window`
+(`window.GraphEditor`, `window.Inspector`, the `Tweak*` family, …) as its
+linking mechanism. The bundled shell no longer exposes those globals — the
+only intentional window surface of the shipped artifact is
+`window.MobKitFlowController` (and `window.MOBKIT_BOOT`). Page scripts or
+embedders that touched the old component globals must import this package
+instead.
