@@ -195,6 +195,18 @@ impl ConsoleEventStore {
             .extend(labels);
     }
 
+    /// Remove one registered console metadata key for an identity, e.g. a
+    /// stale `spawned_by` after a respawn whose spawner is unknown.
+    pub(crate) async fn unregister_identity_label(&self, identity: &str, key: &str) {
+        let mut state = self.state.write().await;
+        if let Some(labels) = state.labels_by_identity.get_mut(identity) {
+            labels.remove(key);
+            if labels.is_empty() {
+                state.labels_by_identity.remove(identity);
+            }
+        }
+    }
+
     /// Registered console metadata for one identity, if any.
     pub(crate) async fn identity_labels(&self, identity: &str) -> Option<BTreeMap<String, String>> {
         self.state

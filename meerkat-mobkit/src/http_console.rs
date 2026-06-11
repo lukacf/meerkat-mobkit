@@ -7511,6 +7511,10 @@ async fn prime_access_cache_from_handle_with_registry(
             .filter(|value| !value.is_empty())
             .map_or_else(|| member_identity.clone(), ToString::to_string);
         let mut labels = entry.labels.clone();
+        // Roster labels are caller-controlled; only the spawn registry may
+        // assert lineage, or a spoofed `spawned_by` could mint inherited
+        // visibility (or hide a member behind a denied parent).
+        crate::console_spawn::sanitize_unverified_lineage_labels(&mut labels);
         if let Some(spawn_labels) = registry_only.remove(&console_identity) {
             crate::console_spawn::merge_registered_labels(&mut labels, spawn_labels);
         }
@@ -7551,7 +7555,10 @@ async fn project_console_members_from_handle(
             model_capabilities_for_role(handle.definition(), entry.role.as_str());
         let mut labels = entry.labels.clone();
         // Spawn-time console metadata (group/display labels, spawned_by
-        // lineage) fills gaps the roster does not carry; roster labels win.
+        // lineage) fills gaps the roster does not carry; roster labels win —
+        // except lineage, which only the spawn registry may assert (this
+        // projection feeds the experience-path ABAC attribute rebuild).
+        crate::console_spawn::sanitize_unverified_lineage_labels(&mut labels);
         let console_identity_key = entry
             .labels
             .get("agent_identity")

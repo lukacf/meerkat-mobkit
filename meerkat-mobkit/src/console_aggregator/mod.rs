@@ -4176,7 +4176,10 @@ async fn identity_record_for_member(
         .or_insert_with(|| member.role.to_string());
     // Spawn-time console metadata (group/display labels, spawned_by lineage)
     // registered by the agent-tool spawn path fills gaps the roster does not
-    // carry; roster labels win on conflict.
+    // carry; roster labels win on conflict — except lineage, which only the
+    // spawn registry may assert (these records feed aggregate-mode ABAC
+    // attribute priming).
+    crate::console_spawn::sanitize_unverified_lineage_labels(&mut labels);
     if let Some(registered) = entry.console_events.identity_labels(durable_identity).await {
         crate::console_spawn::merge_registered_labels(&mut labels, &registered);
     }
@@ -9257,6 +9260,108 @@ comms = true
         assert!(
             !bob.can_view_agent("unrelated-agent"),
             "agents outside the granted lineage stay denied"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn roster_label_spoof_cannot_mint_or_evade_lineage() {
+        let runtime = build_empty_runtime("spawn-lineage-spoof-test").await;
+
+        // Server-side spawns with caller-controlled labels and NO spawn
+        // registry entry: lineage claims in roster labels are untrusted.
+        let mut imposter = SpawnMemberSpec::from_wire(
+            "worker".to_string(),
+            "imposter".to_string(),
+            None,
+            None,
+            None,
+        );
+        imposter.labels = Some(BTreeMap::from([(
+            "spawned_by".to_string(),
+            "ops-lead".to_string(),
+        )]));
+        runtime.spawn(imposter).await.expect("imposter spawns");
+
+        let mut evader = SpawnMemberSpec::from_wire(
+            "worker".to_string(),
+            "evader".to_string(),
+            None,
+            None,
+            None,
+        );
+        evader.labels = Some(BTreeMap::from([(
+            "spawned_by".to_string(),
+            "secret-lead".to_string(),
+        )]));
+        runtime.spawn(evader).await.expect("evader spawns");
+
+        // The console identity list must not present unverified lineage.
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "",
+            runtime.mob_runtime().clone(),
+            None,
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+        let identities = aggregator
+            .list_identities_fresh()
+            .await
+            .expect("list identities");
+        let imposter_record = identities
+            .iter()
+            .find(|record| record.identity == "imposter")
+            .expect("imposter listed");
+        assert!(
+            !imposter_record.labels.contains_key("spawned_by"),
+            "identity records must drop roster-claimed lineage when the spawn registry has none"
+        );
+
+        let controller = crate::access::AccessController::new(crate::access::AccessControlConfig {
+            enabled: true,
+            admins: vec!["root@example.test".to_string()],
+            groups: BTreeMap::new(),
+            rules: vec![
+                crate::access::AccessRule {
+                    id: "bob-ops-lead".to_string(),
+                    subjects: vec!["bob@example.test".to_string()],
+                    actions: vec!["agent.view".to_string()],
+                    agents: vec!["ops-lead".to_string()],
+                    ..crate::access::AccessRule::default()
+                },
+                crate::access::AccessRule {
+                    id: "carol-view-all".to_string(),
+                    subjects: vec!["carol@example.test".to_string()],
+                    actions: vec!["agent.view".to_string()],
+                    agents: vec!["*".to_string()],
+                    ..crate::access::AccessRule::default()
+                },
+                crate::access::AccessRule {
+                    id: "hide-secret-lead".to_string(),
+                    effect: crate::access::AccessEffect::Deny,
+                    actions: vec!["agent.*".to_string()],
+                    agents: vec!["secret-lead".to_string()],
+                    ..crate::access::AccessRule::default()
+                },
+            ],
+        })
+        .expect("controller");
+
+        crate::http_console::prime_access_cache_from_runtime(runtime.mob_runtime(), &controller)
+            .await;
+
+        let bob = controller.view_for_subject(Some("bob@example.test"));
+        assert!(
+            !bob.can_view_agent("imposter"),
+            "a roster-claimed spawned_by must not mint inherited visibility"
+        );
+        let carol = controller.view_for_subject(Some("carol@example.test"));
+        assert!(
+            carol.can_view_agent("evader"),
+            "a roster-claimed spawned_by must not let a member hide behind a denied parent"
         );
 
         let _ = runtime.mob_handle().stop().await;

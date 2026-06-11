@@ -122,6 +122,11 @@ impl ConsoleSpawnSink {
             }
             None => {
                 labels.remove(SPAWNED_BY_LABEL);
+                // Registrations merge per key, so a respawn with an unknown
+                // spawner must also evict any previously registered lineage.
+                self.console_events
+                    .unregister_identity_label(identity, SPAWNED_BY_LABEL)
+                    .await;
             }
         }
         labels.insert(VIA_TOOL_LABEL.to_string(), seed.via_tool.clone());
@@ -151,6 +156,11 @@ impl ConsoleSpawnSink {
                 object.insert("parent_identity".to_string(), json!(parent));
             }
         }
+        // `append_envelope` dedupes by event id against the replay window
+        // (ALL_EVENTS_REPLAY_CAP), so retries are exactly-once for as long
+        // as the original kickoff is still replayable; a respawn issued
+        // after the kickoff scrolls out re-appends, and the downstream log
+        // store still collapses it via the identical dedupe key.
         self.console_events
             .append_envelope(crate::console_contracts::ConsoleIdentityEventEnvelope {
                 event_id: kickoff_event_id(seed.mob_id.as_deref(), member_id, initial_message),
@@ -174,11 +184,33 @@ pub(crate) fn is_console_spawn_tool(name: &str) -> bool {
 }
 
 /// Identity of the spawning agent derived from its comms name. Mob member
-/// comms names are `{mob_id}/{role}/{identity}` (meerkat-mob 0.6); a name
-/// without `/` separators is already an identity.
+/// comms names are `{mob_id}/{role}/{identity}` (meerkat-mob 0.6); the
+/// identity itself may contain `/`, so everything after the second
+/// separator belongs to it. A name without separators is already an
+/// identity; any other shape is unknown and yields no lineage rather than
+/// a guess.
 pub(crate) fn spawned_by_from_comms_name(comms_name: &str) -> Option<String> {
-    let tail = comms_name.rsplit('/').next().unwrap_or(comms_name).trim();
-    (!tail.is_empty()).then(|| tail.to_string())
+    let comms_name = comms_name.trim();
+    if comms_name.is_empty() {
+        return None;
+    }
+    if !comms_name.contains('/') {
+        return Some(comms_name.to_string());
+    }
+    let mut parts = comms_name.splitn(3, '/');
+    let (_mob, _role) = (parts.next()?, parts.next()?);
+    let identity = parts.next()?.trim();
+    (!identity.is_empty()).then(|| identity.to_string())
+}
+
+/// Strip the runtime-derived lineage keys from labels that did not come
+/// from the spawn registry (roster labels, spec labels, wire payloads).
+/// ABAC inheritance hangs off `spawned_by`: an unverified claim could mint
+/// inherited visibility — or hide a member behind a denied parent — so
+/// only the spawn registry may assert these keys.
+pub(crate) fn sanitize_unverified_lineage_labels(labels: &mut BTreeMap<String, String>) {
+    labels.remove(SPAWNED_BY_LABEL);
+    labels.remove(VIA_TOOL_LABEL);
 }
 
 /// One argument record from a spawn-tool call: top-level args or one entry
@@ -621,8 +653,53 @@ mod tests {
             spawned_by_from_comms_name("ops-lead").as_deref(),
             Some("ops-lead")
         );
+        // Identities may contain `/` (e.g. `people/finder`): the comms-name
+        // shape is `{mob}/{role}/{identity}`, so everything after the second
+        // separator belongs to the identity.
+        assert_eq!(
+            spawned_by_from_comms_name("ob3/orchestrator/people/finder").as_deref(),
+            Some("people/finder")
+        );
+        // One separator is not the canonical shape — don't guess lineage.
+        assert_eq!(spawned_by_from_comms_name("mob/role"), None);
         assert_eq!(spawned_by_from_comms_name(""), None);
         assert_eq!(spawned_by_from_comms_name("mob/role/"), None);
+    }
+
+    #[tokio::test]
+    async fn respawn_with_unknown_spawner_clears_stale_lineage() {
+        let store = ConsoleEventStore::new();
+        let sink = ConsoleSpawnSink::new(store.clone());
+
+        sink.project_spawned_member(&seed("worker-3", None)).await;
+        assert_eq!(
+            store
+                .identity_labels("worker-3")
+                .await
+                .and_then(|labels| labels.get(SPAWNED_BY_LABEL).cloned())
+                .as_deref(),
+            Some("ops-lead")
+        );
+
+        let unknown_spawner = ConsoleSpawnSeed {
+            spawned_by: None,
+            via_tool: "spawn_member".to_string(),
+            ..seed("worker-3", None)
+        };
+        sink.project_spawned_member(&unknown_spawner).await;
+
+        let labels = store
+            .identity_labels("worker-3")
+            .await
+            .expect("identity labels registered");
+        assert!(
+            !labels.contains_key(SPAWNED_BY_LABEL),
+            "a respawn with an unknown spawner must not keep stale lineage alive"
+        );
+        assert_eq!(
+            labels.get(VIA_TOOL_LABEL).map(String::as_str),
+            Some("spawn_member")
+        );
     }
 
     #[test]

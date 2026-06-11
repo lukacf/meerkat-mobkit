@@ -37,6 +37,12 @@ Members spawned **by an agent** (via `mob_spawn_member`, `delegate`, and the oth
 
 This is what makes agent-fanned-out workers governable without per-worker rules: granting `agent.view` on a coordinator lets the operator watch everything that coordinator spawns, and hiding a sensitive lead also hides its helpers. Lineage resolution is bounded (depth 8) and cycle-safe, and members can always carry their own labels or rules to override the inherited outcome (subject to deny-overrides).
 
+Lineage is **runtime-derived only**: `spawned_by` and `via_tool` come from the spawn path's own record of who performed the spawn. A `spawned_by` claim arriving through caller-controlled labels (spawn specs, roster labels) is stripped at every enforcement seam — an unverified claim could otherwise mint inherited visibility, or hide a member behind a denied parent. The lineage registry is in-memory: it repopulates as members are spawned and does not survive a runtime restart.
+
+<Warning>
+Upgrading changes what existing rules grant: an operator holding `agent.view`/`agent.send` on a coordinator now also holds those actions on every member that coordinator spawns. This is the intended default — agent-spawned workers are part of the parent's work — but deployments with tight per-agent rules should review coordinator grants, and can add member-specific `deny` rules where inheritance is unwanted.
+</Warning>
+
 ## Configuration
 
 Drop a `config/access.toml` next to your other config files — its presence opts the deployment in:
