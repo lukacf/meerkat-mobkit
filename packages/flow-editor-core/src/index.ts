@@ -5,6 +5,7 @@
 // no DOM access at load time, no React. The shell bundles this package as
 // the window.MobKitFlowCore IIFE and the (shrinking) controller residue
 // destructures from it via a build-injected prelude.
+export * from "./catalogs/hydration";
 export * from "./contract/options";
 export * from "./document/build-projection";
 export * from "./domain/tool-skill-access";

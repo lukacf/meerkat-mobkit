@@ -91,6 +91,8 @@ var MobKitFlowCore = (() => {
     authoringOperationFromIntent: () => authoringOperationFromIntent,
     authoringOperationsFromSchema: () => authoringOperationsFromSchema,
     authoringProjectionApplyPlan: () => authoringProjectionApplyPlan,
+    authoringProjectionFromMobKitDocument: () => authoringProjectionFromMobKitDocument,
+    authoringProjectionFromOperationResult: () => authoringProjectionFromOperationResult,
     authoringRpcMethodsFromSchema: () => authoringRpcMethodsFromSchema,
     basicBranchAddPatch: () => basicBranchAddPatch,
     basicBranchConditionControlState: () => basicBranchConditionControlState,
@@ -131,6 +133,7 @@ var MobKitFlowCore = (() => {
     canonicalBudgetSplitPolicyKind: () => canonicalBudgetSplitPolicyKind,
     canonicalLaunchModeKind: () => canonicalLaunchModeKind,
     canonicalizeGraphInstance: () => canonicalizeGraphInstance,
+    catalogSkillRealmsPatch: () => catalogSkillRealmsPatch,
     catalogValueAllowed: () => catalogValueAllowed,
     childLanes: () => childLanes,
     clearDeletedGraphConditionEdges: () => clearDeletedGraphConditionEdges,
@@ -169,6 +172,7 @@ var MobKitFlowCore = (() => {
     dependencyModeAllowed: () => dependencyModeAllowed,
     dependencyModeFromStepSource: () => dependencyModeFromStepSource,
     dependencyModeOptions: () => dependencyModeOptions,
+    deployDefaultsFromSchema: () => deployDefaultsFromSchema,
     deployErrorOutcome: () => deployErrorOutcome,
     deployOutcome: () => deployOutcome,
     deployPlanTraceCloseTransition: () => deployPlanTraceCloseTransition,
@@ -177,6 +181,7 @@ var MobKitFlowCore = (() => {
     deployResultToRows: () => deployResultToRows,
     deployRuntimeCompatibility: () => deployRuntimeCompatibility,
     deploySettingsFieldPatch: () => deploySettingsFieldPatch,
+    deploySettingsForUi: () => deploySettingsForUi,
     deploySettingsPatch: () => deploySettingsPatch,
     deploySurfaceOptions: () => deploySurfaceOptions,
     deploySurfaceRuntimeModes: () => deploySurfaceRuntimeModes,
@@ -205,6 +210,7 @@ var MobKitFlowCore = (() => {
     editorSchemaFieldNameFallback: () => editorSchemaFieldNameFallback,
     emptyAuthoringFlowState: () => emptyAuthoringFlowState,
     emptyGraphDraftContract: () => emptyGraphDraftContract,
+    emptyMobKitCatalogs: () => emptyMobKitCatalogs,
     enumValueAddPatch: () => enumValueAddPatch,
     enumValueCommitPatch: () => enumValueCommitPatch,
     enumValueDeletePatch: () => enumValueDeletePatch,
@@ -225,6 +231,8 @@ var MobKitFlowCore = (() => {
     flowCatalogBootstrapState: () => flowCatalogBootstrapState,
     flowDraftIdFromSpec: () => flowDraftIdFromSpec,
     flowForDocument: () => flowForDocument,
+    flowFromHydratedDocument: () => flowFromHydratedDocument,
+    flowImportedIdFromDocument: () => flowImportedIdFromDocument,
     flowLaunchSourceSet: () => flowLaunchSourceSet,
     flowPrimitiveIdFromGate: () => flowPrimitiveIdFromGate,
     flowRegistryAppendRowPatch: () => flowRegistryAppendRowPatch,
@@ -339,7 +347,9 @@ var MobKitFlowCore = (() => {
     graphPortIn: () => graphPortIn,
     graphPortOut: () => graphPortOut,
     graphProjectionEdgeKinds: () => graphProjectionEdgeKinds,
+    graphProjectionForDocument: () => graphProjectionForDocument,
     graphProjectionForFlow: () => graphProjectionForFlow,
+    graphProjectionFromMobKitResult: () => graphProjectionFromMobKitResult,
     graphSegmentsToFlowSteps: () => graphSegmentsToFlowSteps,
     graphSelectionProjection: () => graphSelectionProjection,
     graphSelectionState: () => graphSelectionState,
@@ -365,6 +375,7 @@ var MobKitFlowCore = (() => {
     hasAuthoringLaunchMode: () => hasAuthoringLaunchMode,
     highlightSourceFile: () => highlightSourceFile,
     highlightTomlSource: () => highlightTomlSource,
+    hydrateMobpackDocumentState: () => hydrateMobpackDocumentState,
     importErrorOutcome: () => importErrorOutcome,
     incomingEdges: () => incomingEdges,
     inlineSkillRealmIdFromOperationResult: () => inlineSkillRealmIdFromOperationResult,
@@ -439,11 +450,13 @@ var MobKitFlowCore = (() => {
     memberToolRemovePatch: () => memberToolRemovePatch,
     memberUpdateCascadePatch: () => memberUpdateCascadePatch,
     memberUpdateValidation: () => memberUpdateValidation,
+    mergeSkillRealms: () => mergeSkillRealms,
     mobBackendDefaultOptions: () => mobBackendDefaultOptions,
     mobDefaultsFromSchema: () => mobDefaultsFromSchema,
     mobDefinitionUnsupportedOptionLabel: () => mobDefinitionUnsupportedOptionLabel,
     mobDefinitionUnsupportedOptionReason: () => mobDefinitionUnsupportedOptionReason,
     mobKitBudgetSplitPolicy: () => mobKitBudgetSplitPolicy,
+    mobKitCatalogsFromSchema: () => mobKitCatalogsFromSchema,
     mobRoleWiringAddPatch: () => mobRoleWiringAddPatch,
     mobRoleWiringDeletePatch: () => mobRoleWiringDeletePatch,
     mobRoleWiringEditorState: () => mobRoleWiringEditorState,
@@ -453,6 +466,7 @@ var MobKitFlowCore = (() => {
     mobSettingsFieldPatch: () => mobSettingsFieldPatch,
     mobSettingsForUi: () => mobSettingsForUi,
     mobSettingsPatch: () => mobSettingsPatch,
+    modelCatalogFromCatalogs: () => modelCatalogFromCatalogs,
     newFlowInitialState: () => newFlowInitialState,
     newFlowModalCreateSpec: () => newFlowModalCreateSpec,
     newFlowModalFieldPatch: () => newFlowModalFieldPatch,
@@ -609,6 +623,7 @@ var MobKitFlowCore = (() => {
     skillIdSet: () => skillIdSet,
     skillIdsFromRealms: () => skillIdsFromRealms,
     skillRealmsForDocument: () => skillRealmsForDocument,
+    skillRealmsFromCatalogs: () => skillRealmsFromCatalogs,
     slug: () => slug,
     sourceDefinitionRefRows: () => sourceDefinitionRefRows,
     sourceDocumentFromSourceResult: () => sourceDocumentFromSourceResult,
@@ -646,6 +661,7 @@ var MobKitFlowCore = (() => {
     themeToggleTransition: () => themeToggleTransition,
     toolCatalogEntryAvailability: () => toolCatalogEntryAvailability,
     toolCatalogEntryAvailable: () => toolCatalogEntryAvailable,
+    toolCatalogFromCatalogs: () => toolCatalogFromCatalogs,
     topRailNavigationTransition: () => topRailNavigationTransition,
     topRailState: () => topRailState,
     trustPolicyOptions: () => trustPolicyOptions,
@@ -1837,456 +1853,6 @@ var MobKitFlowCore = (() => {
     }).filter(Boolean);
   }
 
-  // ../packages/flow-editor-core/src/flow/launch-modes.ts
-  function hasAuthoringLaunchMode(source) {
-    return !!source && typeof source === "object" && ("launchMode" in source || "launch_mode" in source);
-  }
-  function launchModeFromAuthoringSource(source, fallback) {
-    const raw = hasAuthoringLaunchMode(source) ? source.launchMode ?? source.launch_mode : hasAuthoringLaunchMode(fallback) ? fallback.launchMode ?? fallback.launch_mode : null;
-    if (!raw || typeof raw !== "object" || !String(raw.kind || "").trim()) return null;
-    return normalizeLaunchMode(raw);
-  }
-  function memberDisplayName(members, id) {
-    return ((members || []).find((member) => member.id === id) || {}).name || id;
-  }
-  function normalizeLaunchMode(mode) {
-    if (!mode || typeof mode !== "object") return null;
-    const kind = canonicalLaunchModeKind(mode.kind);
-    if (!kind) return null;
-    const rawBudgetSplitPolicy = mode.budgetSplitPolicy ?? mode.budget_split_policy ?? mode.budget;
-    const budgetSplitPolicy = rawBudgetSplitPolicy ? normalizeBudgetSplitPolicy(rawBudgetSplitPolicy) : null;
-    const budgetPatch = budgetSplitPolicy ? { budgetSplitPolicy } : {};
-    if (kind === "Resume") {
-      return {
-        kind: "Resume",
-        sessionId: String(mode.sessionId || mode.session_id || mode.bridgeSessionId || mode.bridge_session_id || "").trim(),
-        ...budgetPatch
-      };
-    }
-    if (kind === "Fork") {
-      return {
-        kind: "Fork",
-        from: String(mode.from || mode.sourceMemberId || mode.source_member_id || "").trim(),
-        context: normalizeForkContext(mode.context || mode.forkContext || mode.fork_context),
-        ...budgetPatch
-      };
-    }
-    return { kind, ...budgetPatch };
-  }
-  function launchModeControlState(source, contract, launchView = null) {
-    const view = launchViewForState(launchView);
-    const authoredLaunchMode = source && typeof source === "object" ? source.launchMode ?? source.launch_mode : null;
-    const defaultLaunchMode = contractDefaultValue(contract, "launch_mode");
-    const launchMode = authoredLaunchMode && typeof authoredLaunchMode === "object" ? authoredLaunchMode : { kind: defaultLaunchMode };
-    const launchKind = canonicalLaunchModeKind(launchMode.kind || defaultLaunchMode);
-    const authoredBudgetSplitPolicy = normalizeBudgetSplitPolicy(
-      launchMode.budgetSplitPolicy || launchMode.budget_split_policy
-    );
-    const defaultBudgetSplitKind = contractDefaultValue(contract, "budget_split_policy");
-    const budgetSplitPolicy = authoredBudgetSplitPolicy || normalizeBudgetSplitPolicy(defaultBudgetSplitKind ? { kind: defaultBudgetSplitKind } : null) || { kind: "" };
-    const budgetLaunchPatch = authoredBudgetSplitPolicy ? { budgetSplitPolicy: authoredBudgetSplitPolicy } : {};
-    const launchOptions = launchModeOptions(contract, launchKind, view);
-    const budgetOptions = budgetSplitPolicyOptions(contract, budgetSplitPolicy.kind, view);
-    const defaultForkContext = contractDefaultValue(contract, "fork_context");
-    const forkContextValue = normalizeForkContext(launchMode.context || defaultForkContext);
-    const forkOptions = forkContextOptions(contract, forkContextValue, view);
-    const fixedLimitValue = budgetSplitPolicy.limit || view.fixedBudgetDefaultValue;
-    return {
-      launchTitle: view.launchTitle,
-      graphLaunchTitle: view.graphLaunchTitle,
-      resumeSessionLabel: view.resumeSessionLabel,
-      resumeSessionPlaceholder: view.resumeSessionPlaceholder,
-      forkSourceLabel: view.forkSourceLabel,
-      forkContextLabel: view.forkContextLabel,
-      graphForkContextLabel: view.graphForkContextLabel,
-      budgetPolicyLabel: view.budgetPolicyLabel,
-      fixedBudgetLabel: view.fixedBudgetLabel,
-      fixedBudgetValue: fixedLimitValue,
-      launchMode,
-      launchKind,
-      defaultLaunchMode,
-      launchOptions,
-      selectedLaunchMode: launchOptions.find((option) => option.value === launchKind),
-      authoredBudgetSplitPolicy,
-      budgetSplitPolicy,
-      budgetLaunchPatch,
-      budgetOptions,
-      selectedBudgetPolicy: budgetOptions.find((option) => option.value === budgetSplitPolicy.kind),
-      defaultForkContext,
-      forkContextValue,
-      forkContextOptions: forkOptions,
-      selectedForkContext: forkOptions.find((option) => option.value === forkContextValue)
-    };
-  }
-  function launchModeKindPatch(source, kind, contract, options = {}) {
-    const state = launchModeControlState(source, contract);
-    const nextKind = canonicalLaunchModeKind(kind);
-    if (!launchModeKindAllowed(contract, nextKind)) return {};
-    if (nextKind === "Fork") {
-      return {
-        launchMode: {
-          ...state.launchMode,
-          kind: "Fork",
-          from: options.firstForkSourceId || state.launchMode.from || "",
-          context: state.launchMode.context || state.defaultForkContext,
-          ...state.budgetLaunchPatch
-        }
-      };
-    }
-    if (nextKind === "Resume") {
-      return {
-        launchMode: {
-          ...state.launchMode,
-          kind: "Resume",
-          sessionId: state.launchMode.sessionId || "",
-          ...state.budgetLaunchPatch
-        }
-      };
-    }
-    return { launchMode: { kind: nextKind, ...state.budgetLaunchPatch } };
-  }
-  function launchModeMergePatch(source, patch, contract) {
-    const state = launchModeControlState(source, contract);
-    const nextPatch = patch && typeof patch === "object" ? { ...patch } : {};
-    if ("kind" in nextPatch) {
-      const kind = canonicalLaunchModeKind(nextPatch.kind);
-      if (!launchModeKindAllowed(contract, kind)) return {};
-      nextPatch.kind = kind;
-    }
-    if ("context" in nextPatch) {
-      const context = normalizeForkContext(nextPatch.context);
-      if (!forkContextAllowed(contract, context)) return {};
-      nextPatch.context = context;
-    }
-    return { launchMode: { ...state.launchMode, ...nextPatch } };
-  }
-  function launchModeSessionPatch(source, sessionId, contract) {
-    return launchModeMergePatch(source, { sessionId: String(sessionId || "") }, contract);
-  }
-  function launchSourceAllowed(sourceOptions, from) {
-    const value = String(from || "").trim();
-    if (!value) return true;
-    return (Array.isArray(sourceOptions) ? sourceOptions : []).some((option) => String(option?.value || option?.id || "").trim() === value);
-  }
-  function launchModeForkSourcePatch(source, from, contract, options = {}) {
-    const value = String(from || "").trim();
-    if (!launchSourceAllowed(options.sourceOptions, value)) return {};
-    return launchModeMergePatch(source, { from: value }, contract);
-  }
-  function launchModeForkContextPatch(source, context, contract) {
-    return launchModeMergePatch(source, { context }, contract);
-  }
-  function launchModeBudgetPatch(source, patch, contract) {
-    const state = launchModeControlState(source, contract);
-    if (patch && typeof patch === "object" && "kind" in patch) {
-      const requestedKind = canonicalBudgetSplitPolicyKind(patch.kind);
-      if (!budgetSplitPolicyAllowed(contract, requestedKind)) return {};
-    }
-    const nextPolicy = normalizeBudgetSplitPolicy({ ...state.budgetSplitPolicy, ...patch });
-    if (!nextPolicy || !budgetSplitPolicyAllowed(contract, nextPolicy.kind)) return {};
-    return {
-      launchMode: {
-        ...state.launchMode,
-        budgetSplitPolicy: nextPolicy
-      }
-    };
-  }
-  function launchBudgetKindPatch(source, kind, contract) {
-    return launchModeBudgetPatch(source, { kind: canonicalBudgetSplitPolicyKind(kind) }, contract);
-  }
-  function launchBudgetFixedLimitPatch(source, limit, contract) {
-    return launchModeBudgetPatch(source, { kind: "Fixed", limit }, contract);
-  }
-  function canonicalLaunchModeKind(value) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    const lower = raw.toLowerCase();
-    if (lower === "resume") return "Resume";
-    if (lower === "fork") return "Fork";
-    if (lower === "fresh") return "Fresh";
-    return raw;
-  }
-  function launchModeKindAllowed(contract, kind) {
-    const canonicalKind = canonicalLaunchModeKind(kind);
-    if (!canonicalKind) return false;
-    const contractModes = Array.isArray(contract?.mob_definition?.launch_modes) ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind) : [];
-    return contractModes.includes(canonicalKind);
-  }
-  function normalizeForkContext(value) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    if (raw === "FullHistory") return "full_history";
-    if (raw === "LastMessages") return "last_messages";
-    return raw;
-  }
-  function forkContextAllowed(contract, context) {
-    const normalized = normalizeForkContext(context);
-    if (!normalized) return false;
-    const contexts = Array.isArray(contract?.mob_definition?.fork_contexts) ? contract.mob_definition.fork_contexts.map(normalizeForkContext) : [];
-    return contexts.includes(normalized);
-  }
-  function launchOptionLabel(labels, value, view, contractLabel) {
-    return labels?.[value] || `${value}${view.unsupportedLabelSeparator}${contractLabel}`;
-  }
-  function launchUnsupportedReason(view, contractLabel) {
-    return `${view.unsupportedReasonPrefix}${contractLabel}${view.unsupportedReasonSuffix}`;
-  }
-  function launchModeOptions(contract, currentKind, launchView = null) {
-    const view = launchViewForState(launchView);
-    const contractModes = Array.isArray(contract?.mob_definition?.launch_modes) && contract.mob_definition.launch_modes.length ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind) : [];
-    const modes = [...contractModes];
-    const currentSource = currentKind || contractDefaultValue(contract, "launch_mode");
-    const current = currentSource ? canonicalLaunchModeKind(currentSource) : "";
-    if (current && !modes.includes(current)) modes.push(current);
-    return modes.map((mode) => {
-      const supported = contractModes.includes(mode);
-      return {
-        value: mode,
-        label: launchOptionLabel(view.launchModeLabels, mode, view, view.launchModesContractLabel),
-        disabled: !supported,
-        reason: supported ? "" : launchUnsupportedReason(view, view.launchModesContractLabel)
-      };
-    });
-  }
-  function normalizeDispatchMode(mode) {
-    return String(mode || "").trim();
-  }
-  function dispatchModeOptions(contract, currentMode) {
-    const contractLabel = "dispatch_modes";
-    const contractModes = Array.isArray(contract?.mob_definition?.dispatch_modes) && contract.mob_definition.dispatch_modes.length ? contract.mob_definition.dispatch_modes.map(String) : [];
-    const modes = [...contractModes];
-    const current = String(currentMode || contractDefaultValue(contract, "dispatch_mode") || "").trim();
-    if (!modes.includes(current)) modes.push(current);
-    const labels = viewStringMapFromSchema(contract?.mob_definition?.dispatch_mode_labels);
-    return modes.map((mode) => {
-      const supported = contractModes.includes(mode);
-      return {
-        value: mode,
-        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
-        disabled: !supported,
-        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
-      };
-    });
-  }
-  function dispatchModeAllowed(contract, mode) {
-    const value = String(mode || "").trim();
-    if (!value) return true;
-    const contractModes = Array.isArray(contract?.mob_definition?.dispatch_modes) ? contract.mob_definition.dispatch_modes.map(String) : [];
-    return contractModes.includes(value);
-  }
-  function normalizeCollectionMode(policy) {
-    const raw = typeof policy === "object" && policy ? String(policy.type || "").trim() : String(policy || "").trim();
-    return raw;
-  }
-  function dependencyModeOptions(contract, currentMode) {
-    const contractLabel = "dependency_modes";
-    const contractModes = Array.isArray(contract?.mob_definition?.dependency_modes) && contract.mob_definition.dependency_modes.length ? contract.mob_definition.dependency_modes.map(String) : [];
-    const modes = [...contractModes];
-    const current = String(currentMode || contractDefaultValue(contract, "dependency_mode") || "").trim();
-    if (!modes.includes(current)) modes.push(current);
-    const labels = viewStringMapFromSchema(contract?.mob_definition?.dependency_mode_labels);
-    return modes.map((mode) => {
-      const supported = contractModes.includes(mode);
-      return {
-        value: mode,
-        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
-        disabled: !supported,
-        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
-      };
-    });
-  }
-  function dependencyModeAllowed(contract, mode) {
-    const value = String(mode || "").trim();
-    if (!value) return true;
-    const contractModes = Array.isArray(contract?.mob_definition?.dependency_modes) ? contract.mob_definition.dependency_modes.map(String) : [];
-    return contractModes.includes(value);
-  }
-  function collectionPolicyOptions(contract, currentPolicy) {
-    const contractLabel = "collection_policies";
-    const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies) && contract.mob_definition.collection_policies.length ? contract.mob_definition.collection_policies.map(String) : [];
-    const policies = [...contractPolicies];
-    const current = String(currentPolicy || contractDefaultValue(contract, "collection_policy") || "").trim();
-    if (!policies.includes(current)) policies.push(current);
-    const labels = viewStringMapFromSchema(contract?.mob_definition?.collection_policy_labels);
-    return policies.map((policy) => {
-      const supported = contractPolicies.includes(policy);
-      return {
-        value: policy,
-        label: labels[policy] || mobDefinitionUnsupportedOptionLabel(contract, policy, contractLabel),
-        disabled: !supported,
-        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
-      };
-    });
-  }
-  function mobDefinitionUnsupportedOptionLabel(contract, value, contractLabel) {
-    const separator = String(contract?.mob_definition?.option_unsupported_label_separator || " ");
-    return `${value}${separator}${contractLabel}`;
-  }
-  function mobDefinitionUnsupportedOptionReason(contract, contractLabel) {
-    const prefix = String(contract?.mob_definition?.option_unsupported_reason_prefix || "");
-    const suffix = String(contract?.mob_definition?.option_unsupported_reason_suffix || "");
-    return `${prefix}${contractLabel}${suffix}`;
-  }
-  function collectionPolicyAllowed(contract, policy) {
-    const value = String(policy || "").trim();
-    if (!value) return true;
-    const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies) ? contract.mob_definition.collection_policies.map(String) : [];
-    return contractPolicies.includes(value);
-  }
-  function normalizeBudgetSplitPolicy(policy) {
-    if (!policy || typeof policy !== "object") return null;
-    const rawKind = String(policy.kind || policy.type || "").trim();
-    if (!rawKind) return null;
-    const kind = canonicalBudgetSplitPolicyKind(rawKind);
-    if (kind === "Fixed") {
-      const limit = numberOrNull(policy?.limit ?? policy?.value ?? policy?.tokens);
-      return { kind: "Fixed", limit: limit && limit > 0 ? limit : 4096 };
-    }
-    return { kind };
-  }
-  function canonicalBudgetSplitPolicyKind(value) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    const lower = raw.toLowerCase();
-    if (lower === "fixed") return "Fixed";
-    if (lower === "proportional") return "Proportional";
-    if (lower === "remaining") return "Remaining";
-    if (lower === "equal") return "Equal";
-    return raw;
-  }
-  function budgetSplitPolicyAllowed(contract, kind) {
-    const canonicalKind = canonicalBudgetSplitPolicyKind(kind);
-    if (!canonicalKind) return false;
-    const policies = Array.isArray(contract?.mob_definition?.budget_split_policies) ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind) : [];
-    return policies.includes(canonicalKind);
-  }
-  function budgetSplitPolicyOptions(contract, currentKind, launchView = null) {
-    const view = launchViewForState(launchView);
-    const contractPolicies = Array.isArray(contract?.mob_definition?.budget_split_policies) && contract.mob_definition.budget_split_policies.length ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind) : [];
-    const policies = [...contractPolicies];
-    const currentSource = currentKind || contractDefaultValue(contract, "budget_split_policy");
-    const current = currentSource ? canonicalBudgetSplitPolicyKind(currentSource) : "";
-    if (current && !policies.includes(current)) policies.push(current);
-    return policies.map((policy) => {
-      const supported = contractPolicies.includes(policy);
-      return {
-        value: policy,
-        label: launchOptionLabel(view.budgetSplitPolicyLabels, policy, view, view.budgetSplitPoliciesContractLabel),
-        disabled: !supported,
-        reason: supported ? "" : launchUnsupportedReason(view, view.budgetSplitPoliciesContractLabel)
-      };
-    });
-  }
-  function mobKitBudgetSplitPolicy(policy) {
-    const normalized = normalizeBudgetSplitPolicy(policy);
-    if (!normalized) return null;
-    if (normalized.kind === "Fixed") return { type: "fixed", value: normalized.limit || 4096 };
-    return { type: normalized.kind.replace(/[A-Z]/g, (ch, index) => `${index ? "_" : ""}${ch.toLowerCase()}`) };
-  }
-  function launchModesFromFlow(flow, members) {
-    const out = [];
-    collectVisualSteps(flow?.steps || [], (step) => {
-      if (step.type !== "member") return;
-      const member = findMember(members, step.role);
-      const launchMode = launchModeFromAuthoringSource(step);
-      const row = {
-        step_id: step.id,
-        member_id: step.role || "",
-        profile: profileName(member || { id: step.role }),
-        launch_mode: launchMode
-      };
-      if (launchMode?.budgetSplitPolicy) {
-        const budgetSplitPolicy = mobKitBudgetSplitPolicy(launchMode.budgetSplitPolicy);
-        if (budgetSplitPolicy) row.budget_split_policy = budgetSplitPolicy;
-      }
-      out.push(row);
-    });
-    return out;
-  }
-  function conditionTextFromEdge(edge, fallback) {
-    if (!edge) return fallback;
-    const condition = normalizedEdgeCondition(edge);
-    if (condition?.path) {
-      if (condition.val === void 0 || condition.val === null || String(condition.val).trim() === "") return fallback;
-      const value = condition.val;
-      if (!condition.op) return fallback;
-      return `${condition.path} ${condition.op} ${JSON.stringify(value)}`;
-    }
-    return edge.label || fallback;
-  }
-  function edgeConditionToEditorCond(edge) {
-    const condition = normalizedEdgeCondition(edge);
-    const rawVar = String(condition?.path || "").trim();
-    const op = String(condition?.op || "").trim();
-    const val = condition?.val === void 0 || condition?.val === null ? "" : String(condition.val);
-    if (!rawVar || !op || !val) return null;
-    const parts = rawVar.split(".").filter(Boolean);
-    if (parts.length === 2 && parts[0] === "params") {
-      return {
-        namespace: "params",
-        stepId: "params",
-        field: parts[1],
-        op,
-        val
-      };
-    }
-    if (parts.length === 3 && parts[0] === "steps") {
-      return {
-        namespace: "steps",
-        stepId: parts[1],
-        field: parts[2],
-        op,
-        val
-      };
-    }
-    return null;
-  }
-  function repeatConditionFromEdge(edge, stepId) {
-    const condition = normalizedEdgeCondition(edge);
-    if (condition?.path) {
-      const parts = String(condition.path).split(".").filter(Boolean);
-      const field = parts.pop() || "";
-      const op = String(condition.op || "").trim();
-      const val = condition.val === void 0 || condition.val === null ? "" : String(condition.val).trim();
-      if (!field || !op || !val) return null;
-      return { stepId, field, op, val };
-    }
-    const label = String(edge?.label || "");
-    const match = /([A-Za-z0-9_.-]+)\s*(==|>|<)\s*['"]?([^'"]+)['"]?/.exec(label);
-    if (match) {
-      return { stepId, field: match[1].split(".").pop(), op: match[2], val: match[3] };
-    }
-    return null;
-  }
-  function normalizedEdgeCondition(edge) {
-    const cond = edge?.cond || {};
-    const op = String(cond.op || cond.operator || "").trim();
-    const val = cond.val ?? cond.value;
-    if (cond.var || cond.path || cond.source) {
-      return {
-        path: String(cond.var || cond.path || cond.source || "").trim(),
-        op,
-        val
-      };
-    }
-    const namespace = String(cond.namespace || "").trim();
-    const stepId = String(cond.stepId || cond.step_id || "").trim();
-    const field = String(cond.field || "").trim();
-    if (field && (namespace === "params" || stepId === "params")) {
-      return { path: `params.${field}`, op, val };
-    }
-    if (field && stepId) {
-      return { path: `steps.${stepId}.${field}`, op, val };
-    }
-    return null;
-  }
-  function collectVisualSteps(steps, visit) {
-    for (const step of steps || []) {
-      visit(step);
-      for (const lane of childLanes(step)) collectVisualSteps(lane.steps, visit);
-    }
-  }
-
   // ../packages/flow-editor-core/src/schema/field-edit.ts
   function conditionViewFromSchema(schema) {
     const view = schema?.mob_definition?.editor_condition_view;
@@ -2679,11 +2245,6 @@ var MobKitFlowCore = (() => {
   var MOB_SETTINGS_PATCH_KEYS = new Set(Object.keys(EMPTY_MOB_SETTINGS));
   var GRAPH_NODE_W = 200;
   var GRAPH_NODE_H = 156;
-
-  // ../packages/flow-editor-core/src/_residue-bridge.ts
-  function deploySettingsForUi(deploy) {
-    return window.MobKitFlowController.deploySettingsForUi(deploy);
-  }
 
   // ../packages/flow-editor-core/src/flow/reconcile.ts
   function reconcileDeletedFlowStepReferences(flow, deletedId) {
@@ -4198,340 +3759,454 @@ var MobKitFlowCore = (() => {
     return { name: "", steps: [] };
   }
 
-  // ../packages/flow-editor-core/src/drafts/mob-settings.ts
-  function editorSchemaDraftField(rawField) {
-    if (!rawField || typeof rawField !== "object") return null;
-    const name = schemaFieldName(rawField.name, "");
-    if (!name) return null;
-    return {
-      name,
-      required: rawField.required === true,
-      description: String(rawField.description || ""),
-      enumValues: Array.isArray(rawField.enumValues) ? rawField.enumValues.map((value) => String(value || "").trim()).filter(Boolean) : []
-    };
+  // ../packages/flow-editor-core/src/flow/launch-modes.ts
+  function hasAuthoringLaunchMode(source) {
+    return !!source && typeof source === "object" && ("launchMode" in source || "launch_mode" in source);
   }
-  function editorSchemaDraftContract(contract) {
-    const draft = contract?.mob_definition?.editor_schema_draft;
-    if (!draft || typeof draft !== "object") return null;
-    const schemaIdPrefix = String(draft.schema_id_prefix || "").trim();
-    const schemaFieldType = contractDefaultValue(contract, "schema_field_type");
-    const initialField = editorSchemaDraftField(draft.initial_field);
-    const addedField = editorSchemaDraftField(draft.added_field);
-    if (!schemaIdPrefix || !schemaFieldType || !initialField || !addedField) return null;
-    return { schemaIdPrefix, schemaFieldType, initialField, addedField };
+  function launchModeFromAuthoringSource(source, fallback) {
+    const raw = hasAuthoringLaunchMode(source) ? source.launchMode ?? source.launch_mode : hasAuthoringLaunchMode(fallback) ? fallback.launchMode ?? fallback.launch_mode : null;
+    if (!raw || typeof raw !== "object" || !String(raw.kind || "").trim()) return null;
+    return normalizeLaunchMode(raw);
   }
-  function editorInputParamDraftContract(contract) {
-    const draft = contract?.mob_definition?.editor_input_param_draft;
-    if (!draft || typeof draft !== "object") return null;
-    const schemaFieldType = contractDefaultValue(contract, "schema_field_type");
-    const addedField = editorSchemaDraftField(draft.added_field);
-    if (!schemaFieldType || !addedField) return null;
-    return { schemaFieldType, addedField };
+  function memberDisplayName(members, id) {
+    return ((members || []).find((member) => member.id === id) || {}).name || id;
   }
-  function editorInputStepDraftContract(contract) {
-    const draft = contract?.mob_definition?.editor_input_step_draft;
-    const step = draft?.default_step;
-    if (!step || typeof step !== "object") return null;
-    const idPrefix = String(step.id || "").trim();
-    if (!idPrefix) return null;
-    return {
-      idPrefix,
-      task: String(step.task || ""),
-      fields: String(step.fields || ""),
-      inputParams: Array.isArray(step.inputParams) ? JSON.parse(JSON.stringify(step.inputParams)) : []
-    };
-  }
-  function inputStepDraft(contract, flow) {
-    const draft = editorInputStepDraftContract(contract);
-    return {
-      id: uniqueFlowStepId(draft?.idPrefix || "input", flow),
-      type: "input",
-      task: draft?.task || "",
-      fields: draft?.fields || "",
-      inputParams: Array.isArray(draft?.inputParams) ? JSON.parse(JSON.stringify(draft.inputParams)) : []
-    };
-  }
-  function editorSchemaFieldNameFallback(contract) {
-    const draft = editorSchemaDraftContract(contract);
-    return draft?.addedField?.name || draft?.initialField?.name || "field";
-  }
-  function editorInputParamNameFallback(contract) {
-    return editorInputParamDraftContract(contract)?.addedField?.name || "param";
-  }
-  function editorGraphDraftContract(contract) {
-    const draft = contract?.mob_definition?.editor_graph_draft;
-    if (!draft || typeof draft !== "object") return null;
-    const parallelLaneLabels = Array.isArray(draft.parallel_lane_labels) ? draft.parallel_lane_labels.map((label) => String(label || "").trim()).filter(Boolean) : [];
-    const out = {
-      branchGateLabel: String(draft.branch_gate_label || "").trim(),
-      branchConditionLaneLabel: String(draft.branch_condition_lane_label || "").trim(),
-      branchFallbackLaneLabel: String(draft.branch_fallback_lane_label || "").trim(),
-      branchJoinLabel: String(draft.branch_join_label || "").trim(),
-      fallbackEdgeLabel: String(draft.fallback_edge_label || "").trim(),
-      parallelLaneLabels,
-      parallelEdgeLabel: String(draft.parallel_edge_label || "").trim(),
-      reworkEdgeLabel: String(draft.rework_edge_label || "").trim(),
-      terminalEdgeLabelPrefix: String(draft.terminal_edge_label_prefix || ""),
-      joinLabelPrefix: String(draft.join_label_prefix || ""),
-      joinQuorumLabelPrefix: String(draft.join_quorum_label_prefix || ""),
-      branchFrameLabelPrefix: String(draft.branch_frame_label_prefix || ""),
-      branchFrameSingularSuffix: String(draft.branch_frame_singular_suffix || ""),
-      branchFramePluralSuffix: String(draft.branch_frame_plural_suffix || ""),
-      parallelFrameLabelPrefix: String(draft.parallel_frame_label_prefix || ""),
-      parallelFrameJoinInfix: String(draft.parallel_frame_join_infix || ""),
-      parallelMissingDispatchLabel: String(draft.parallel_missing_dispatch_label || "").trim(),
-      parallelMissingCollectionLabel: String(draft.parallel_missing_collection_label || "").trim(),
-      repeatFrameLabelPrefix: String(draft.repeat_frame_label_prefix || ""),
-      repeatMaxIterationsPrefix: String(draft.repeat_max_iterations_prefix || ""),
-      repeatMissingMaxIterationsLabel: String(draft.repeat_missing_max_iterations_label || "").trim(),
-      repeatEdgeUntilPrefix: String(draft.repeat_edge_until_prefix || ""),
-      repeatEdgeUntilFallback: String(draft.repeat_edge_until_fallback || "").trim()
-    };
-    if (!out.branchGateLabel || !out.branchConditionLaneLabel || !out.branchFallbackLaneLabel || !out.branchJoinLabel || !out.fallbackEdgeLabel || out.parallelLaneLabels.length < 2 || !out.parallelEdgeLabel || !out.reworkEdgeLabel || !out.terminalEdgeLabelPrefix || !out.joinLabelPrefix || !out.joinQuorumLabelPrefix || !out.branchFrameLabelPrefix || !out.branchFrameSingularSuffix || !out.branchFramePluralSuffix || !out.parallelFrameLabelPrefix || !out.parallelFrameJoinInfix || !out.parallelMissingDispatchLabel || !out.parallelMissingCollectionLabel || !out.repeatFrameLabelPrefix || !out.repeatMaxIterationsPrefix || !out.repeatMissingMaxIterationsLabel || !out.repeatEdgeUntilPrefix || !out.repeatEdgeUntilFallback) {
-      return null;
+  function normalizeLaunchMode(mode) {
+    if (!mode || typeof mode !== "object") return null;
+    const kind = canonicalLaunchModeKind(mode.kind);
+    if (!kind) return null;
+    const rawBudgetSplitPolicy = mode.budgetSplitPolicy ?? mode.budget_split_policy ?? mode.budget;
+    const budgetSplitPolicy = rawBudgetSplitPolicy ? normalizeBudgetSplitPolicy(rawBudgetSplitPolicy) : null;
+    const budgetPatch = budgetSplitPolicy ? { budgetSplitPolicy } : {};
+    if (kind === "Resume") {
+      return {
+        kind: "Resume",
+        sessionId: String(mode.sessionId || mode.session_id || mode.bridgeSessionId || mode.bridge_session_id || "").trim(),
+        ...budgetPatch
+      };
     }
+    if (kind === "Fork") {
+      return {
+        kind: "Fork",
+        from: String(mode.from || mode.sourceMemberId || mode.source_member_id || "").trim(),
+        context: normalizeForkContext(mode.context || mode.forkContext || mode.fork_context),
+        ...budgetPatch
+      };
+    }
+    return { kind, ...budgetPatch };
+  }
+  function launchModeControlState(source, contract, launchView = null) {
+    const view = launchViewForState(launchView);
+    const authoredLaunchMode = source && typeof source === "object" ? source.launchMode ?? source.launch_mode : null;
+    const defaultLaunchMode = contractDefaultValue(contract, "launch_mode");
+    const launchMode = authoredLaunchMode && typeof authoredLaunchMode === "object" ? authoredLaunchMode : { kind: defaultLaunchMode };
+    const launchKind = canonicalLaunchModeKind(launchMode.kind || defaultLaunchMode);
+    const authoredBudgetSplitPolicy = normalizeBudgetSplitPolicy(
+      launchMode.budgetSplitPolicy || launchMode.budget_split_policy
+    );
+    const defaultBudgetSplitKind = contractDefaultValue(contract, "budget_split_policy");
+    const budgetSplitPolicy = authoredBudgetSplitPolicy || normalizeBudgetSplitPolicy(defaultBudgetSplitKind ? { kind: defaultBudgetSplitKind } : null) || { kind: "" };
+    const budgetLaunchPatch = authoredBudgetSplitPolicy ? { budgetSplitPolicy: authoredBudgetSplitPolicy } : {};
+    const launchOptions = launchModeOptions(contract, launchKind, view);
+    const budgetOptions = budgetSplitPolicyOptions(contract, budgetSplitPolicy.kind, view);
+    const defaultForkContext = contractDefaultValue(contract, "fork_context");
+    const forkContextValue = normalizeForkContext(launchMode.context || defaultForkContext);
+    const forkOptions = forkContextOptions(contract, forkContextValue, view);
+    const fixedLimitValue = budgetSplitPolicy.limit || view.fixedBudgetDefaultValue;
+    return {
+      launchTitle: view.launchTitle,
+      graphLaunchTitle: view.graphLaunchTitle,
+      resumeSessionLabel: view.resumeSessionLabel,
+      resumeSessionPlaceholder: view.resumeSessionPlaceholder,
+      forkSourceLabel: view.forkSourceLabel,
+      forkContextLabel: view.forkContextLabel,
+      graphForkContextLabel: view.graphForkContextLabel,
+      budgetPolicyLabel: view.budgetPolicyLabel,
+      fixedBudgetLabel: view.fixedBudgetLabel,
+      fixedBudgetValue: fixedLimitValue,
+      launchMode,
+      launchKind,
+      defaultLaunchMode,
+      launchOptions,
+      selectedLaunchMode: launchOptions.find((option) => option.value === launchKind),
+      authoredBudgetSplitPolicy,
+      budgetSplitPolicy,
+      budgetLaunchPatch,
+      budgetOptions,
+      selectedBudgetPolicy: budgetOptions.find((option) => option.value === budgetSplitPolicy.kind),
+      defaultForkContext,
+      forkContextValue,
+      forkContextOptions: forkOptions,
+      selectedForkContext: forkOptions.find((option) => option.value === forkContextValue)
+    };
+  }
+  function launchModeKindPatch(source, kind, contract, options = {}) {
+    const state = launchModeControlState(source, contract);
+    const nextKind = canonicalLaunchModeKind(kind);
+    if (!launchModeKindAllowed(contract, nextKind)) return {};
+    if (nextKind === "Fork") {
+      return {
+        launchMode: {
+          ...state.launchMode,
+          kind: "Fork",
+          from: options.firstForkSourceId || state.launchMode.from || "",
+          context: state.launchMode.context || state.defaultForkContext,
+          ...state.budgetLaunchPatch
+        }
+      };
+    }
+    if (nextKind === "Resume") {
+      return {
+        launchMode: {
+          ...state.launchMode,
+          kind: "Resume",
+          sessionId: state.launchMode.sessionId || "",
+          ...state.budgetLaunchPatch
+        }
+      };
+    }
+    return { launchMode: { kind: nextKind, ...state.budgetLaunchPatch } };
+  }
+  function launchModeMergePatch(source, patch, contract) {
+    const state = launchModeControlState(source, contract);
+    const nextPatch = patch && typeof patch === "object" ? { ...patch } : {};
+    if ("kind" in nextPatch) {
+      const kind = canonicalLaunchModeKind(nextPatch.kind);
+      if (!launchModeKindAllowed(contract, kind)) return {};
+      nextPatch.kind = kind;
+    }
+    if ("context" in nextPatch) {
+      const context = normalizeForkContext(nextPatch.context);
+      if (!forkContextAllowed(contract, context)) return {};
+      nextPatch.context = context;
+    }
+    return { launchMode: { ...state.launchMode, ...nextPatch } };
+  }
+  function launchModeSessionPatch(source, sessionId, contract) {
+    return launchModeMergePatch(source, { sessionId: String(sessionId || "") }, contract);
+  }
+  function launchSourceAllowed(sourceOptions, from) {
+    const value = String(from || "").trim();
+    if (!value) return true;
+    return (Array.isArray(sourceOptions) ? sourceOptions : []).some((option) => String(option?.value || option?.id || "").trim() === value);
+  }
+  function launchModeForkSourcePatch(source, from, contract, options = {}) {
+    const value = String(from || "").trim();
+    if (!launchSourceAllowed(options.sourceOptions, value)) return {};
+    return launchModeMergePatch(source, { from: value }, contract);
+  }
+  function launchModeForkContextPatch(source, context, contract) {
+    return launchModeMergePatch(source, { context }, contract);
+  }
+  function launchModeBudgetPatch(source, patch, contract) {
+    const state = launchModeControlState(source, contract);
+    if (patch && typeof patch === "object" && "kind" in patch) {
+      const requestedKind = canonicalBudgetSplitPolicyKind(patch.kind);
+      if (!budgetSplitPolicyAllowed(contract, requestedKind)) return {};
+    }
+    const nextPolicy = normalizeBudgetSplitPolicy({ ...state.budgetSplitPolicy, ...patch });
+    if (!nextPolicy || !budgetSplitPolicyAllowed(contract, nextPolicy.kind)) return {};
+    return {
+      launchMode: {
+        ...state.launchMode,
+        budgetSplitPolicy: nextPolicy
+      }
+    };
+  }
+  function launchBudgetKindPatch(source, kind, contract) {
+    return launchModeBudgetPatch(source, { kind: canonicalBudgetSplitPolicyKind(kind) }, contract);
+  }
+  function launchBudgetFixedLimitPatch(source, limit, contract) {
+    return launchModeBudgetPatch(source, { kind: "Fixed", limit }, contract);
+  }
+  function canonicalLaunchModeKind(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    if (lower === "resume") return "Resume";
+    if (lower === "fork") return "Fork";
+    if (lower === "fresh") return "Fresh";
+    return raw;
+  }
+  function launchModeKindAllowed(contract, kind) {
+    const canonicalKind = canonicalLaunchModeKind(kind);
+    if (!canonicalKind) return false;
+    const contractModes = Array.isArray(contract?.mob_definition?.launch_modes) ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind) : [];
+    return contractModes.includes(canonicalKind);
+  }
+  function normalizeForkContext(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    if (raw === "FullHistory") return "full_history";
+    if (raw === "LastMessages") return "last_messages";
+    return raw;
+  }
+  function forkContextAllowed(contract, context) {
+    const normalized = normalizeForkContext(context);
+    if (!normalized) return false;
+    const contexts = Array.isArray(contract?.mob_definition?.fork_contexts) ? contract.mob_definition.fork_contexts.map(normalizeForkContext) : [];
+    return contexts.includes(normalized);
+  }
+  function launchOptionLabel(labels, value, view, contractLabel) {
+    return labels?.[value] || `${value}${view.unsupportedLabelSeparator}${contractLabel}`;
+  }
+  function launchUnsupportedReason(view, contractLabel) {
+    return `${view.unsupportedReasonPrefix}${contractLabel}${view.unsupportedReasonSuffix}`;
+  }
+  function launchModeOptions(contract, currentKind, launchView = null) {
+    const view = launchViewForState(launchView);
+    const contractModes = Array.isArray(contract?.mob_definition?.launch_modes) && contract.mob_definition.launch_modes.length ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind) : [];
+    const modes = [...contractModes];
+    const currentSource = currentKind || contractDefaultValue(contract, "launch_mode");
+    const current = currentSource ? canonicalLaunchModeKind(currentSource) : "";
+    if (current && !modes.includes(current)) modes.push(current);
+    return modes.map((mode) => {
+      const supported = contractModes.includes(mode);
+      return {
+        value: mode,
+        label: launchOptionLabel(view.launchModeLabels, mode, view, view.launchModesContractLabel),
+        disabled: !supported,
+        reason: supported ? "" : launchUnsupportedReason(view, view.launchModesContractLabel)
+      };
+    });
+  }
+  function normalizeDispatchMode(mode) {
+    return String(mode || "").trim();
+  }
+  function dispatchModeOptions(contract, currentMode) {
+    const contractLabel = "dispatch_modes";
+    const contractModes = Array.isArray(contract?.mob_definition?.dispatch_modes) && contract.mob_definition.dispatch_modes.length ? contract.mob_definition.dispatch_modes.map(String) : [];
+    const modes = [...contractModes];
+    const current = String(currentMode || contractDefaultValue(contract, "dispatch_mode") || "").trim();
+    if (!modes.includes(current)) modes.push(current);
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.dispatch_mode_labels);
+    return modes.map((mode) => {
+      const supported = contractModes.includes(mode);
+      return {
+        value: mode,
+        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
+        disabled: !supported,
+        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
+      };
+    });
+  }
+  function dispatchModeAllowed(contract, mode) {
+    const value = String(mode || "").trim();
+    if (!value) return true;
+    const contractModes = Array.isArray(contract?.mob_definition?.dispatch_modes) ? contract.mob_definition.dispatch_modes.map(String) : [];
+    return contractModes.includes(value);
+  }
+  function normalizeCollectionMode(policy) {
+    const raw = typeof policy === "object" && policy ? String(policy.type || "").trim() : String(policy || "").trim();
+    return raw;
+  }
+  function dependencyModeOptions(contract, currentMode) {
+    const contractLabel = "dependency_modes";
+    const contractModes = Array.isArray(contract?.mob_definition?.dependency_modes) && contract.mob_definition.dependency_modes.length ? contract.mob_definition.dependency_modes.map(String) : [];
+    const modes = [...contractModes];
+    const current = String(currentMode || contractDefaultValue(contract, "dependency_mode") || "").trim();
+    if (!modes.includes(current)) modes.push(current);
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.dependency_mode_labels);
+    return modes.map((mode) => {
+      const supported = contractModes.includes(mode);
+      return {
+        value: mode,
+        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
+        disabled: !supported,
+        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
+      };
+    });
+  }
+  function dependencyModeAllowed(contract, mode) {
+    const value = String(mode || "").trim();
+    if (!value) return true;
+    const contractModes = Array.isArray(contract?.mob_definition?.dependency_modes) ? contract.mob_definition.dependency_modes.map(String) : [];
+    return contractModes.includes(value);
+  }
+  function collectionPolicyOptions(contract, currentPolicy) {
+    const contractLabel = "collection_policies";
+    const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies) && contract.mob_definition.collection_policies.length ? contract.mob_definition.collection_policies.map(String) : [];
+    const policies = [...contractPolicies];
+    const current = String(currentPolicy || contractDefaultValue(contract, "collection_policy") || "").trim();
+    if (!policies.includes(current)) policies.push(current);
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.collection_policy_labels);
+    return policies.map((policy) => {
+      const supported = contractPolicies.includes(policy);
+      return {
+        value: policy,
+        label: labels[policy] || mobDefinitionUnsupportedOptionLabel(contract, policy, contractLabel),
+        disabled: !supported,
+        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
+      };
+    });
+  }
+  function mobDefinitionUnsupportedOptionLabel(contract, value, contractLabel) {
+    const separator = String(contract?.mob_definition?.option_unsupported_label_separator || " ");
+    return `${value}${separator}${contractLabel}`;
+  }
+  function mobDefinitionUnsupportedOptionReason(contract, contractLabel) {
+    const prefix = String(contract?.mob_definition?.option_unsupported_reason_prefix || "");
+    const suffix = String(contract?.mob_definition?.option_unsupported_reason_suffix || "");
+    return `${prefix}${contractLabel}${suffix}`;
+  }
+  function collectionPolicyAllowed(contract, policy) {
+    const value = String(policy || "").trim();
+    if (!value) return true;
+    const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies) ? contract.mob_definition.collection_policies.map(String) : [];
+    return contractPolicies.includes(value);
+  }
+  function normalizeBudgetSplitPolicy(policy) {
+    if (!policy || typeof policy !== "object") return null;
+    const rawKind = String(policy.kind || policy.type || "").trim();
+    if (!rawKind) return null;
+    const kind = canonicalBudgetSplitPolicyKind(rawKind);
+    if (kind === "Fixed") {
+      const limit = numberOrNull(policy?.limit ?? policy?.value ?? policy?.tokens);
+      return { kind: "Fixed", limit: limit && limit > 0 ? limit : 4096 };
+    }
+    return { kind };
+  }
+  function canonicalBudgetSplitPolicyKind(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    if (lower === "fixed") return "Fixed";
+    if (lower === "proportional") return "Proportional";
+    if (lower === "remaining") return "Remaining";
+    if (lower === "equal") return "Equal";
+    return raw;
+  }
+  function budgetSplitPolicyAllowed(contract, kind) {
+    const canonicalKind = canonicalBudgetSplitPolicyKind(kind);
+    if (!canonicalKind) return false;
+    const policies = Array.isArray(contract?.mob_definition?.budget_split_policies) ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind) : [];
+    return policies.includes(canonicalKind);
+  }
+  function budgetSplitPolicyOptions(contract, currentKind, launchView = null) {
+    const view = launchViewForState(launchView);
+    const contractPolicies = Array.isArray(contract?.mob_definition?.budget_split_policies) && contract.mob_definition.budget_split_policies.length ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind) : [];
+    const policies = [...contractPolicies];
+    const currentSource = currentKind || contractDefaultValue(contract, "budget_split_policy");
+    const current = currentSource ? canonicalBudgetSplitPolicyKind(currentSource) : "";
+    if (current && !policies.includes(current)) policies.push(current);
+    return policies.map((policy) => {
+      const supported = contractPolicies.includes(policy);
+      return {
+        value: policy,
+        label: launchOptionLabel(view.budgetSplitPolicyLabels, policy, view, view.budgetSplitPoliciesContractLabel),
+        disabled: !supported,
+        reason: supported ? "" : launchUnsupportedReason(view, view.budgetSplitPoliciesContractLabel)
+      };
+    });
+  }
+  function mobKitBudgetSplitPolicy(policy) {
+    const normalized = normalizeBudgetSplitPolicy(policy);
+    if (!normalized) return null;
+    if (normalized.kind === "Fixed") return { type: "fixed", value: normalized.limit || 4096 };
+    return { type: normalized.kind.replace(/[A-Z]/g, (ch, index) => `${index ? "_" : ""}${ch.toLowerCase()}`) };
+  }
+  function launchModesFromFlow(flow, members) {
+    const out = [];
+    collectVisualSteps(flow?.steps || [], (step) => {
+      if (step.type !== "member") return;
+      const member = findMember(members, step.role);
+      const launchMode = launchModeFromAuthoringSource(step);
+      const row = {
+        step_id: step.id,
+        member_id: step.role || "",
+        profile: profileName(member || { id: step.role }),
+        launch_mode: launchMode
+      };
+      if (launchMode?.budgetSplitPolicy) {
+        const budgetSplitPolicy = mobKitBudgetSplitPolicy(launchMode.budgetSplitPolicy);
+        if (budgetSplitPolicy) row.budget_split_policy = budgetSplitPolicy;
+      }
+      out.push(row);
+    });
     return out;
   }
-  function emptyGraphDraftContract() {
-    return {
-      branchGateLabel: "",
-      branchConditionLaneLabel: "",
-      branchFallbackLaneLabel: "",
-      branchJoinLabel: "",
-      fallbackEdgeLabel: "",
-      parallelLaneLabels: [],
-      parallelEdgeLabel: "",
-      reworkEdgeLabel: "",
-      terminalEdgeLabelPrefix: "",
-      joinLabelPrefix: "",
-      joinQuorumLabelPrefix: "",
-      branchFrameLabelPrefix: "",
-      branchFrameSingularSuffix: "",
-      branchFramePluralSuffix: "",
-      parallelFrameLabelPrefix: "",
-      parallelFrameJoinInfix: "",
-      parallelMissingDispatchLabel: "",
-      parallelMissingCollectionLabel: "",
-      repeatFrameLabelPrefix: "",
-      repeatMaxIterationsPrefix: "",
-      repeatMissingMaxIterationsLabel: "",
-      repeatEdgeUntilPrefix: "",
-      repeatEdgeUntilFallback: ""
-    };
+  function conditionTextFromEdge(edge, fallback) {
+    if (!edge) return fallback;
+    const condition = normalizedEdgeCondition(edge);
+    if (condition?.path) {
+      if (condition.val === void 0 || condition.val === null || String(condition.val).trim() === "") return fallback;
+      const value = condition.val;
+      if (!condition.op) return fallback;
+      return `${condition.path} ${condition.op} ${JSON.stringify(value)}`;
+    }
+    return edge.label || fallback;
   }
-  function agentNavigationProjection(memberId = null) {
-    const id = String(memberId || "").trim();
-    return {
-      view: "agents",
-      addAt: null,
-      selection: id ? { kind: "agent", id } : null
-    };
-  }
-  function flowStepTemplate(pick, contract, options = {}) {
-    const kind = String(pick?.kind || "").trim();
-    const id = uniqueFlowStepId("s", options.flow);
-    const branchIds = collectFlowBranchIds(options.flow?.steps || []);
-    const dependencyMode = contractDefaultValue(contract, "dependency_mode");
-    if (!dependencyMode) return null;
-    const stepTypes = contractStringValues(contract?.mob_definition?.editor_flow_step_types);
-    if (kind === "member") {
+  function edgeConditionToEditorCond(edge) {
+    const condition = normalizedEdgeCondition(edge);
+    const rawVar = String(condition?.path || "").trim();
+    const op = String(condition?.op || "").trim();
+    const val = condition?.val === void 0 || condition?.val === null ? "" : String(condition.val);
+    if (!rawVar || !op || !val) return null;
+    const parts = rawVar.split(".").filter(Boolean);
+    if (parts.length === 2 && parts[0] === "params") {
       return {
-        id,
-        type: "member",
-        role: String(pick?.id || "").trim(),
-        instruction: "",
-        dependsMode: dependencyMode
+        namespace: "params",
+        stepId: "params",
+        field: parts[1],
+        op,
+        val
       };
     }
-    if (!stepTypes.includes(kind)) return null;
-    if (kind === "branch") {
+    if (parts.length === 3 && parts[0] === "steps") {
       return {
-        id,
-        type: "branch",
-        controllerRole: "",
-        branches: [{ id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(1, options.basicView), condition: "", steps: [] }],
-        fallback: [],
-        dependsMode: dependencyMode
+        namespace: "steps",
+        stepId: parts[1],
+        field: parts[2],
+        op,
+        val
       };
-    }
-    if (kind === "parallel") {
-      const dispatch = contractDefaultValue(contract, "dispatch_mode");
-      const collection = contractDefaultValue(contract, "collection_policy");
-      if (!dispatch || !collection) return null;
-      return {
-        id,
-        type: "parallel",
-        controllerRole: "",
-        dispatch,
-        collection,
-        branches: [
-          { id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(1, options.basicView), steps: [] },
-          { id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(2, options.basicView), steps: [] }
-        ],
-        dependsMode: dependencyMode
-      };
-    }
-    if (kind === "repeat") {
-      return { id, type: "repeat", loopId: "", until: "", maxIterations: null, iterationInput: "", steps: [] };
     }
     return null;
   }
-  function uniqueFlowStepId(prefix, flow) {
-    const stem = slug(prefix, "s");
-    const base = `${stem}_1`;
-    const used = collectFlowStepIds(flow?.steps || []);
-    if (!used.has(base)) return base;
-    let index = 2;
-    while (used.has(`${stem}_${index}`)) index += 1;
-    return `${stem}_${index}`;
-  }
-  function reserveFlowBranchId(prefix, used) {
-    const stem = slug(prefix, "br");
-    const base = `${stem}_1`;
-    const ids = used instanceof Set ? used : /* @__PURE__ */ new Set();
-    if (!ids.has(base)) {
-      ids.add(base);
-      return base;
+  function repeatConditionFromEdge(edge, stepId) {
+    const condition = normalizedEdgeCondition(edge);
+    if (condition?.path) {
+      const parts = String(condition.path).split(".").filter(Boolean);
+      const field = parts.pop() || "";
+      const op = String(condition.op || "").trim();
+      const val = condition.val === void 0 || condition.val === null ? "" : String(condition.val).trim();
+      if (!field || !op || !val) return null;
+      return { stepId, field, op, val };
     }
-    let index = 2;
-    while (ids.has(`${stem}_${index}`)) index += 1;
-    const id = `${stem}_${index}`;
-    ids.add(id);
-    return id;
+    const label = String(edge?.label || "");
+    const match = /([A-Za-z0-9_.-]+)\s*(==|>|<)\s*['"]?([^'"]+)['"]?/.exec(label);
+    if (match) {
+      return { stepId, field: match[1].split(".").pop(), op: match[2], val: match[3] };
+    }
+    return null;
   }
-  function collectFlowBranchIds(steps, out = /* @__PURE__ */ new Set()) {
+  function normalizedEdgeCondition(edge) {
+    const cond = edge?.cond || {};
+    const op = String(cond.op || cond.operator || "").trim();
+    const val = cond.val ?? cond.value;
+    if (cond.var || cond.path || cond.source) {
+      return {
+        path: String(cond.var || cond.path || cond.source || "").trim(),
+        op,
+        val
+      };
+    }
+    const namespace = String(cond.namespace || "").trim();
+    const stepId = String(cond.stepId || cond.step_id || "").trim();
+    const field = String(cond.field || "").trim();
+    if (field && (namespace === "params" || stepId === "params")) {
+      return { path: `params.${field}`, op, val };
+    }
+    if (field && stepId) {
+      return { path: `steps.${stepId}.${field}`, op, val };
+    }
+    return null;
+  }
+  function collectVisualSteps(steps, visit) {
     for (const step of steps || []) {
-      if (step?.type === "branch" || step?.type === "parallel") {
-        for (const branch of step.branches || []) {
-          const id = String(branch?.id || "").trim();
-          if (id) out.add(id);
-          collectFlowBranchIds(branch?.steps || [], out);
-        }
-      }
-      if (step?.type === "branch") collectFlowBranchIds(step.fallback || [], out);
-      if (step?.type === "repeat") collectFlowBranchIds(step.steps || [], out);
+      visit(step);
+      for (const lane of childLanes(step)) collectVisualSteps(lane.steps, visit);
     }
-    return out;
-  }
-  function outputFormatOptions(contract, currentFormat) {
-    return simpleContractOptions(
-      contract?.mob_definition?.step_output_formats,
-      currentFormat || contractDefaultValue(contract, "step_output_format"),
-      {
-        json: "json \u2014 parse terminal output as JSON",
-        text: "text \u2014 preserve terminal text"
-      },
-      "mob_definition.step_output_formats"
-    );
-  }
-  function outputFormatAllowed(contract, format) {
-    const value = normalizeOutputFormat(format);
-    if (!value) return true;
-    const formats = Array.isArray(contract?.mob_definition?.step_output_formats) ? contract.mob_definition.step_output_formats.map(normalizeOutputFormat) : [];
-    return formats.includes(value);
-  }
-  function normalizeMobSettings(settings) {
-    const source = settings && typeof settings === "object" ? settings : {};
-    const advancedSource = source.advanced && typeof source.advanced === "object" ? source.advanced : {};
-    const roleWiring = normalizeRoleWiring(source.roleWiring || source.role_wiring);
-    return {
-      ...EMPTY_MOB_SETTINGS,
-      orchestrator: String(source.orchestrator || source.orchestratorProfile || source.orchestrator_profile || "").trim(),
-      autoWireOrchestrator: !!(source.autoWireOrchestrator ?? source.auto_wire_orchestrator),
-      roleWiring,
-      backendDefault: normalizeProfileBackend(source.backendDefault || source.backend_default || source.backend?.default) || "",
-      externalAddressBase: String(source.externalAddressBase || source.external_address_base || source.backend?.external?.address_base || "").trim(),
-      advanced: {
-        topology: normalizeOptionalObject(advancedSource.topology || source.topology),
-        supervisor: normalizeOptionalObject(advancedSource.supervisor || source.supervisor),
-        limits: normalizeOptionalObject(advancedSource.limits || source.limits),
-        spawnPolicy: normalizeOptionalObject(advancedSource.spawnPolicy || advancedSource.spawn_policy || source.spawnPolicy || source.spawn_policy),
-        eventRouter: normalizeOptionalObject(advancedSource.eventRouter || advancedSource.event_router || source.eventRouter || source.event_router)
-      }
-    };
-  }
-  function normalizeRoleWiring(value) {
-    if (!Array.isArray(value)) return [];
-    return value.map((rule) => ({
-      a: String(rule?.a || "").trim(),
-      b: String(rule?.b || "").trim()
-    })).filter((rule) => rule.a && rule.b);
-  }
-  function mobRoleWiringEditorState(value, profileOptions, settingsView = null) {
-    const view = settingsViewForState(settingsView);
-    const options = Array.isArray(profileOptions) ? profileOptions : [];
-    const wiring = normalizeRoleWiring(value);
-    return {
-      label: view.roleWiringLabel,
-      countLabel: String(wiring.length),
-      addLabel: view.roleWiringAddLabel,
-      addDisabled: !options.length,
-      options,
-      wiring
-    };
-  }
-  function roleWiringOptionValues(profileOptions) {
-    return (Array.isArray(profileOptions) ? profileOptions : []).map((option) => String(option?.value || option || "").trim()).filter(Boolean);
-  }
-  function normalizeRoleWiringForOptions(wiring, profileOptions) {
-    const allowed = new Set(roleWiringOptionValues(profileOptions));
-    if (!allowed.size) return [];
-    return normalizeRoleWiring(wiring).filter((rule) => allowed.has(rule.a) && allowed.has(rule.b));
-  }
-  function mobRoleWiringUpdatePatch(wiring, index, patch, profileOptions) {
-    const rules = normalizeRoleWiring(wiring);
-    const ruleIndex = Number(index);
-    if (!Number.isInteger(ruleIndex) || ruleIndex < 0 || ruleIndex >= rules.length) return rules;
-    return normalizeRoleWiringForOptions(
-      rules.map((rule, i) => i === ruleIndex ? { ...rule, ...patch || {} } : rule),
-      profileOptions
-    );
-  }
-  function mobRoleWiringSourcePatch(wiring, index, rawValue, profileOptions) {
-    return mobRoleWiringUpdatePatch(wiring, index, { a: String(rawValue || "").trim() }, profileOptions);
-  }
-  function mobRoleWiringTargetPatch(wiring, index, rawValue, profileOptions) {
-    return mobRoleWiringUpdatePatch(wiring, index, { b: String(rawValue || "").trim() }, profileOptions);
-  }
-  function mobRoleWiringDeletePatch(wiring, index) {
-    const rules = normalizeRoleWiring(wiring);
-    const ruleIndex = Number(index);
-    if (!Number.isInteger(ruleIndex) || ruleIndex < 0 || ruleIndex >= rules.length) return rules;
-    return rules.filter((_, i) => i !== ruleIndex);
-  }
-  function mobRoleWiringAddPatch(wiring, profileOptions) {
-    const rules = normalizeRoleWiring(wiring);
-    const options = roleWiringOptionValues(profileOptions);
-    if (!options.length) return rules;
-    return normalizeRoleWiring([
-      ...rules,
-      { a: options[0], b: options[1] || options[0] }
-    ]);
-  }
-  function advancedMobSettingsEditorState(value, settingsView = null) {
-    const view = settingsViewForState(settingsView);
-    return {
-      label: view.advancedLabel,
-      text: JSON.stringify(value || {}, null, 2)
-    };
-  }
-  function advancedMobSettingsDraftPatch(text, settingsView = null) {
-    const view = settingsViewForState(settingsView);
-    try {
-      const parsed = String(text || "").trim() ? JSON.parse(String(text)) : {};
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        return { ok: false, error: view.advancedObjectRequiredError, value: null };
-      }
-      return { ok: true, error: "", value: normalizeMobSettings({ advanced: parsed }).advanced };
-    } catch (err) {
-      return { ok: false, error: err?.message || view.advancedInvalidJsonError, value: null };
-    }
-  }
-  function mobSettingsForUi(settings) {
-    return normalizeMobSettings(settings);
-  }
-  function mobDefaultsFromSchema(schema) {
-    return mobSettingsForUi(schema?.mob_definition?.mob_settings?.defaults);
   }
 
   // ../packages/flow-editor-core/src/editors/basic-editor.ts
@@ -8037,6 +7712,342 @@ ${kind}` : "";
     }
   }
 
+  // ../packages/flow-editor-core/src/drafts/mob-settings.ts
+  function editorSchemaDraftField(rawField) {
+    if (!rawField || typeof rawField !== "object") return null;
+    const name = schemaFieldName(rawField.name, "");
+    if (!name) return null;
+    return {
+      name,
+      required: rawField.required === true,
+      description: String(rawField.description || ""),
+      enumValues: Array.isArray(rawField.enumValues) ? rawField.enumValues.map((value) => String(value || "").trim()).filter(Boolean) : []
+    };
+  }
+  function editorSchemaDraftContract(contract) {
+    const draft = contract?.mob_definition?.editor_schema_draft;
+    if (!draft || typeof draft !== "object") return null;
+    const schemaIdPrefix = String(draft.schema_id_prefix || "").trim();
+    const schemaFieldType = contractDefaultValue(contract, "schema_field_type");
+    const initialField = editorSchemaDraftField(draft.initial_field);
+    const addedField = editorSchemaDraftField(draft.added_field);
+    if (!schemaIdPrefix || !schemaFieldType || !initialField || !addedField) return null;
+    return { schemaIdPrefix, schemaFieldType, initialField, addedField };
+  }
+  function editorInputParamDraftContract(contract) {
+    const draft = contract?.mob_definition?.editor_input_param_draft;
+    if (!draft || typeof draft !== "object") return null;
+    const schemaFieldType = contractDefaultValue(contract, "schema_field_type");
+    const addedField = editorSchemaDraftField(draft.added_field);
+    if (!schemaFieldType || !addedField) return null;
+    return { schemaFieldType, addedField };
+  }
+  function editorInputStepDraftContract(contract) {
+    const draft = contract?.mob_definition?.editor_input_step_draft;
+    const step = draft?.default_step;
+    if (!step || typeof step !== "object") return null;
+    const idPrefix = String(step.id || "").trim();
+    if (!idPrefix) return null;
+    return {
+      idPrefix,
+      task: String(step.task || ""),
+      fields: String(step.fields || ""),
+      inputParams: Array.isArray(step.inputParams) ? JSON.parse(JSON.stringify(step.inputParams)) : []
+    };
+  }
+  function inputStepDraft(contract, flow) {
+    const draft = editorInputStepDraftContract(contract);
+    return {
+      id: uniqueFlowStepId(draft?.idPrefix || "input", flow),
+      type: "input",
+      task: draft?.task || "",
+      fields: draft?.fields || "",
+      inputParams: Array.isArray(draft?.inputParams) ? JSON.parse(JSON.stringify(draft.inputParams)) : []
+    };
+  }
+  function editorSchemaFieldNameFallback(contract) {
+    const draft = editorSchemaDraftContract(contract);
+    return draft?.addedField?.name || draft?.initialField?.name || "field";
+  }
+  function editorInputParamNameFallback(contract) {
+    return editorInputParamDraftContract(contract)?.addedField?.name || "param";
+  }
+  function editorGraphDraftContract(contract) {
+    const draft = contract?.mob_definition?.editor_graph_draft;
+    if (!draft || typeof draft !== "object") return null;
+    const parallelLaneLabels = Array.isArray(draft.parallel_lane_labels) ? draft.parallel_lane_labels.map((label) => String(label || "").trim()).filter(Boolean) : [];
+    const out = {
+      branchGateLabel: String(draft.branch_gate_label || "").trim(),
+      branchConditionLaneLabel: String(draft.branch_condition_lane_label || "").trim(),
+      branchFallbackLaneLabel: String(draft.branch_fallback_lane_label || "").trim(),
+      branchJoinLabel: String(draft.branch_join_label || "").trim(),
+      fallbackEdgeLabel: String(draft.fallback_edge_label || "").trim(),
+      parallelLaneLabels,
+      parallelEdgeLabel: String(draft.parallel_edge_label || "").trim(),
+      reworkEdgeLabel: String(draft.rework_edge_label || "").trim(),
+      terminalEdgeLabelPrefix: String(draft.terminal_edge_label_prefix || ""),
+      joinLabelPrefix: String(draft.join_label_prefix || ""),
+      joinQuorumLabelPrefix: String(draft.join_quorum_label_prefix || ""),
+      branchFrameLabelPrefix: String(draft.branch_frame_label_prefix || ""),
+      branchFrameSingularSuffix: String(draft.branch_frame_singular_suffix || ""),
+      branchFramePluralSuffix: String(draft.branch_frame_plural_suffix || ""),
+      parallelFrameLabelPrefix: String(draft.parallel_frame_label_prefix || ""),
+      parallelFrameJoinInfix: String(draft.parallel_frame_join_infix || ""),
+      parallelMissingDispatchLabel: String(draft.parallel_missing_dispatch_label || "").trim(),
+      parallelMissingCollectionLabel: String(draft.parallel_missing_collection_label || "").trim(),
+      repeatFrameLabelPrefix: String(draft.repeat_frame_label_prefix || ""),
+      repeatMaxIterationsPrefix: String(draft.repeat_max_iterations_prefix || ""),
+      repeatMissingMaxIterationsLabel: String(draft.repeat_missing_max_iterations_label || "").trim(),
+      repeatEdgeUntilPrefix: String(draft.repeat_edge_until_prefix || ""),
+      repeatEdgeUntilFallback: String(draft.repeat_edge_until_fallback || "").trim()
+    };
+    if (!out.branchGateLabel || !out.branchConditionLaneLabel || !out.branchFallbackLaneLabel || !out.branchJoinLabel || !out.fallbackEdgeLabel || out.parallelLaneLabels.length < 2 || !out.parallelEdgeLabel || !out.reworkEdgeLabel || !out.terminalEdgeLabelPrefix || !out.joinLabelPrefix || !out.joinQuorumLabelPrefix || !out.branchFrameLabelPrefix || !out.branchFrameSingularSuffix || !out.branchFramePluralSuffix || !out.parallelFrameLabelPrefix || !out.parallelFrameJoinInfix || !out.parallelMissingDispatchLabel || !out.parallelMissingCollectionLabel || !out.repeatFrameLabelPrefix || !out.repeatMaxIterationsPrefix || !out.repeatMissingMaxIterationsLabel || !out.repeatEdgeUntilPrefix || !out.repeatEdgeUntilFallback) {
+      return null;
+    }
+    return out;
+  }
+  function emptyGraphDraftContract() {
+    return {
+      branchGateLabel: "",
+      branchConditionLaneLabel: "",
+      branchFallbackLaneLabel: "",
+      branchJoinLabel: "",
+      fallbackEdgeLabel: "",
+      parallelLaneLabels: [],
+      parallelEdgeLabel: "",
+      reworkEdgeLabel: "",
+      terminalEdgeLabelPrefix: "",
+      joinLabelPrefix: "",
+      joinQuorumLabelPrefix: "",
+      branchFrameLabelPrefix: "",
+      branchFrameSingularSuffix: "",
+      branchFramePluralSuffix: "",
+      parallelFrameLabelPrefix: "",
+      parallelFrameJoinInfix: "",
+      parallelMissingDispatchLabel: "",
+      parallelMissingCollectionLabel: "",
+      repeatFrameLabelPrefix: "",
+      repeatMaxIterationsPrefix: "",
+      repeatMissingMaxIterationsLabel: "",
+      repeatEdgeUntilPrefix: "",
+      repeatEdgeUntilFallback: ""
+    };
+  }
+  function agentNavigationProjection(memberId = null) {
+    const id = String(memberId || "").trim();
+    return {
+      view: "agents",
+      addAt: null,
+      selection: id ? { kind: "agent", id } : null
+    };
+  }
+  function flowStepTemplate(pick, contract, options = {}) {
+    const kind = String(pick?.kind || "").trim();
+    const id = uniqueFlowStepId("s", options.flow);
+    const branchIds = collectFlowBranchIds(options.flow?.steps || []);
+    const dependencyMode = contractDefaultValue(contract, "dependency_mode");
+    if (!dependencyMode) return null;
+    const stepTypes = contractStringValues(contract?.mob_definition?.editor_flow_step_types);
+    if (kind === "member") {
+      return {
+        id,
+        type: "member",
+        role: String(pick?.id || "").trim(),
+        instruction: "",
+        dependsMode: dependencyMode
+      };
+    }
+    if (!stepTypes.includes(kind)) return null;
+    if (kind === "branch") {
+      return {
+        id,
+        type: "branch",
+        controllerRole: "",
+        branches: [{ id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(1, options.basicView), condition: "", steps: [] }],
+        fallback: [],
+        dependsMode: dependencyMode
+      };
+    }
+    if (kind === "parallel") {
+      const dispatch = contractDefaultValue(contract, "dispatch_mode");
+      const collection = contractDefaultValue(contract, "collection_policy");
+      if (!dispatch || !collection) return null;
+      return {
+        id,
+        type: "parallel",
+        controllerRole: "",
+        dispatch,
+        collection,
+        branches: [
+          { id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(1, options.basicView), steps: [] },
+          { id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(2, options.basicView), steps: [] }
+        ],
+        dependsMode: dependencyMode
+      };
+    }
+    if (kind === "repeat") {
+      return { id, type: "repeat", loopId: "", until: "", maxIterations: null, iterationInput: "", steps: [] };
+    }
+    return null;
+  }
+  function uniqueFlowStepId(prefix, flow) {
+    const stem = slug(prefix, "s");
+    const base = `${stem}_1`;
+    const used = collectFlowStepIds(flow?.steps || []);
+    if (!used.has(base)) return base;
+    let index = 2;
+    while (used.has(`${stem}_${index}`)) index += 1;
+    return `${stem}_${index}`;
+  }
+  function reserveFlowBranchId(prefix, used) {
+    const stem = slug(prefix, "br");
+    const base = `${stem}_1`;
+    const ids = used instanceof Set ? used : /* @__PURE__ */ new Set();
+    if (!ids.has(base)) {
+      ids.add(base);
+      return base;
+    }
+    let index = 2;
+    while (ids.has(`${stem}_${index}`)) index += 1;
+    const id = `${stem}_${index}`;
+    ids.add(id);
+    return id;
+  }
+  function collectFlowBranchIds(steps, out = /* @__PURE__ */ new Set()) {
+    for (const step of steps || []) {
+      if (step?.type === "branch" || step?.type === "parallel") {
+        for (const branch of step.branches || []) {
+          const id = String(branch?.id || "").trim();
+          if (id) out.add(id);
+          collectFlowBranchIds(branch?.steps || [], out);
+        }
+      }
+      if (step?.type === "branch") collectFlowBranchIds(step.fallback || [], out);
+      if (step?.type === "repeat") collectFlowBranchIds(step.steps || [], out);
+    }
+    return out;
+  }
+  function outputFormatOptions(contract, currentFormat) {
+    return simpleContractOptions(
+      contract?.mob_definition?.step_output_formats,
+      currentFormat || contractDefaultValue(contract, "step_output_format"),
+      {
+        json: "json \u2014 parse terminal output as JSON",
+        text: "text \u2014 preserve terminal text"
+      },
+      "mob_definition.step_output_formats"
+    );
+  }
+  function outputFormatAllowed(contract, format) {
+    const value = normalizeOutputFormat(format);
+    if (!value) return true;
+    const formats = Array.isArray(contract?.mob_definition?.step_output_formats) ? contract.mob_definition.step_output_formats.map(normalizeOutputFormat) : [];
+    return formats.includes(value);
+  }
+  function normalizeMobSettings(settings) {
+    const source = settings && typeof settings === "object" ? settings : {};
+    const advancedSource = source.advanced && typeof source.advanced === "object" ? source.advanced : {};
+    const roleWiring = normalizeRoleWiring(source.roleWiring || source.role_wiring);
+    return {
+      ...EMPTY_MOB_SETTINGS,
+      orchestrator: String(source.orchestrator || source.orchestratorProfile || source.orchestrator_profile || "").trim(),
+      autoWireOrchestrator: !!(source.autoWireOrchestrator ?? source.auto_wire_orchestrator),
+      roleWiring,
+      backendDefault: normalizeProfileBackend(source.backendDefault || source.backend_default || source.backend?.default) || "",
+      externalAddressBase: String(source.externalAddressBase || source.external_address_base || source.backend?.external?.address_base || "").trim(),
+      advanced: {
+        topology: normalizeOptionalObject(advancedSource.topology || source.topology),
+        supervisor: normalizeOptionalObject(advancedSource.supervisor || source.supervisor),
+        limits: normalizeOptionalObject(advancedSource.limits || source.limits),
+        spawnPolicy: normalizeOptionalObject(advancedSource.spawnPolicy || advancedSource.spawn_policy || source.spawnPolicy || source.spawn_policy),
+        eventRouter: normalizeOptionalObject(advancedSource.eventRouter || advancedSource.event_router || source.eventRouter || source.event_router)
+      }
+    };
+  }
+  function normalizeRoleWiring(value) {
+    if (!Array.isArray(value)) return [];
+    return value.map((rule) => ({
+      a: String(rule?.a || "").trim(),
+      b: String(rule?.b || "").trim()
+    })).filter((rule) => rule.a && rule.b);
+  }
+  function mobRoleWiringEditorState(value, profileOptions, settingsView = null) {
+    const view = settingsViewForState(settingsView);
+    const options = Array.isArray(profileOptions) ? profileOptions : [];
+    const wiring = normalizeRoleWiring(value);
+    return {
+      label: view.roleWiringLabel,
+      countLabel: String(wiring.length),
+      addLabel: view.roleWiringAddLabel,
+      addDisabled: !options.length,
+      options,
+      wiring
+    };
+  }
+  function roleWiringOptionValues(profileOptions) {
+    return (Array.isArray(profileOptions) ? profileOptions : []).map((option) => String(option?.value || option || "").trim()).filter(Boolean);
+  }
+  function normalizeRoleWiringForOptions(wiring, profileOptions) {
+    const allowed = new Set(roleWiringOptionValues(profileOptions));
+    if (!allowed.size) return [];
+    return normalizeRoleWiring(wiring).filter((rule) => allowed.has(rule.a) && allowed.has(rule.b));
+  }
+  function mobRoleWiringUpdatePatch(wiring, index, patch, profileOptions) {
+    const rules = normalizeRoleWiring(wiring);
+    const ruleIndex = Number(index);
+    if (!Number.isInteger(ruleIndex) || ruleIndex < 0 || ruleIndex >= rules.length) return rules;
+    return normalizeRoleWiringForOptions(
+      rules.map((rule, i) => i === ruleIndex ? { ...rule, ...patch || {} } : rule),
+      profileOptions
+    );
+  }
+  function mobRoleWiringSourcePatch(wiring, index, rawValue, profileOptions) {
+    return mobRoleWiringUpdatePatch(wiring, index, { a: String(rawValue || "").trim() }, profileOptions);
+  }
+  function mobRoleWiringTargetPatch(wiring, index, rawValue, profileOptions) {
+    return mobRoleWiringUpdatePatch(wiring, index, { b: String(rawValue || "").trim() }, profileOptions);
+  }
+  function mobRoleWiringDeletePatch(wiring, index) {
+    const rules = normalizeRoleWiring(wiring);
+    const ruleIndex = Number(index);
+    if (!Number.isInteger(ruleIndex) || ruleIndex < 0 || ruleIndex >= rules.length) return rules;
+    return rules.filter((_, i) => i !== ruleIndex);
+  }
+  function mobRoleWiringAddPatch(wiring, profileOptions) {
+    const rules = normalizeRoleWiring(wiring);
+    const options = roleWiringOptionValues(profileOptions);
+    if (!options.length) return rules;
+    return normalizeRoleWiring([
+      ...rules,
+      { a: options[0], b: options[1] || options[0] }
+    ]);
+  }
+  function advancedMobSettingsEditorState(value, settingsView = null) {
+    const view = settingsViewForState(settingsView);
+    return {
+      label: view.advancedLabel,
+      text: JSON.stringify(value || {}, null, 2)
+    };
+  }
+  function advancedMobSettingsDraftPatch(text, settingsView = null) {
+    const view = settingsViewForState(settingsView);
+    try {
+      const parsed = String(text || "").trim() ? JSON.parse(String(text)) : {};
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { ok: false, error: view.advancedObjectRequiredError, value: null };
+      }
+      return { ok: true, error: "", value: normalizeMobSettings({ advanced: parsed }).advanced };
+    } catch (err) {
+      return { ok: false, error: err?.message || view.advancedInvalidJsonError, value: null };
+    }
+  }
+  function mobSettingsForUi(settings) {
+    return normalizeMobSettings(settings);
+  }
+  function mobDefaultsFromSchema(schema) {
+    return mobSettingsForUi(schema?.mob_definition?.mob_settings?.defaults);
+  }
+
   // ../packages/flow-editor-core/src/registry/flow-registry.ts
   function sampleFlowsFromCatalogs(schema) {
     return (schema?.sample_mobpacks || []).filter((sample) => sample && typeof sample === "object" && sample.document).map((sample) => {
@@ -8780,6 +8791,820 @@ ${JSON.stringify(document)}`;
     return payload.result;
   }
 
+  // ../packages/flow-editor-core/src/shell/outcomes.ts
+  function diagnosticsToRows(validation) {
+    if (Array.isArray(validation?.display_rows)) {
+      return apiDisplayRows(validation.display_rows);
+    }
+    return [];
+  }
+  function deployResultToRows(result) {
+    if (Array.isArray(result?.display_rows)) {
+      return apiDisplayRows(result.display_rows);
+    }
+    return [];
+  }
+  function apiDisplayRows(rows) {
+    return (Array.isArray(rows) ? rows : []).filter((row) => row && typeof row === "object").map((row) => ({
+      kind: String(row.kind || ""),
+      glyph: String(row.glyph || ""),
+      head: String(row.head || ""),
+      sub: String(row.sub || ""),
+      meta: String(row.meta || "")
+    }));
+  }
+  function validationSheetState(results, options = {}) {
+    const view = deployViewForState(options.deployView);
+    const rows = Array.isArray(results) ? results : [];
+    const counts = rows.reduce((acc, row) => {
+      const kind = row?.kind || "warn";
+      if (kind === "ok") acc.ok += 1;
+      else if (kind === "crit") acc.crit += 1;
+      else acc.warn += 1;
+      return acc;
+    }, { ok: 0, warn: 0, crit: 0 });
+    const stage = String(options.stage || "").trim();
+    const stageBlocksActions = !!stage && stage !== "valid";
+    const actionsDisabled = counts.crit > 0 || stageBlocksActions;
+    const deployExecuteAllowed = options.capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
+    return {
+      rows,
+      counts,
+      eyebrow: view.validationEyebrow,
+      title: `${counts.ok} ${view.validationPassedLabel} \xB7 ${counts.warn} ${view.validationWarningsLabel} \xB7 ${counts.crit} ${view.validationBlockingLabel}`,
+      publishLabel: view.publishLabel,
+      deployPlanLabel: view.deployPlanLabel,
+      deployLabel: view.deployLabel,
+      closeLabel: view.closeLabel,
+      actionsDisabled,
+      publishDisabled: actionsDisabled,
+      deployPlanDisabled: actionsDisabled,
+      deployRunDisabled: actionsDisabled || !deployExecuteAllowed
+    };
+  }
+  function deployPlanTraceState(document, plan, options = {}) {
+    const view = deployViewForState(options.deployView);
+    const steps = Array.isArray(plan?.plan_trace) && plan.plan_trace.length ? plan.plan_trace : [{
+      node: null,
+      head: view.planUnavailableHead,
+      body: view.planUnavailableBody
+    }];
+    const title = document?.mob_id || document?.name || "mobkit_flow";
+    const subtitle = plan?.command || "";
+    const packLabel = plan?.pack_path || "";
+    return {
+      steps,
+      eyebrow: view.planEyebrow,
+      title,
+      subtitle,
+      packLabel,
+      firstLabel: view.planFirstLabel,
+      closeLabel: view.closeLabel,
+      stepLabel: view.planStepLabel,
+      previousLabel: view.planPreviousLabel,
+      nextLabel: view.planNextLabel
+    };
+  }
+  function topRailState({ contract, deploySettings, stage, view, theme, deployView, capabilities } = {}) {
+    const shell = deployViewForState(deployView);
+    const inEditor = view === "editor";
+    const contractState = contract?.error ? shell.apiErrorLabel : contract ? shell.apiReadyLabel : shell.apiLoadingLabel;
+    const deployCommand = contract?.deploy_settings?.command || "";
+    const deploySurface = deploySettings?.surface || contract?.deploy_settings?.surfaces?.[0] || "";
+    const deployActionsDisabled = stage !== "valid";
+    const deployExecuteAllowed = capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    return {
+      inEditor,
+      brandLabel: shell.brandLabel,
+      flowsTabLabel: shell.flowsTabLabel,
+      agentsTabLabel: shell.agentsTabLabel,
+      mobStatusTitle: shell.mobStatusTitle,
+      mobFileLabel: shell.mobFileLabel,
+      contractState,
+      deployPrefixLabel: shell.deployPrefixLabel,
+      deployCommand,
+      deploySurface,
+      flowsCrumbLabel: shell.flowsCrumbLabel,
+      crumbSeparator: shell.crumbSeparator,
+      planTraceLabel: shell.planTraceLabel,
+      importLabel: shell.importLabel,
+      validateLabel: shell.validateLabel,
+      publishLabel: shell.publishLabel,
+      deployPlanLabel: shell.deployPlanLabel,
+      deployLabel: shell.deployLabel,
+      overflowLabel: shell.overflowLabel,
+      settingsLabel: shell.settingsLabel,
+      settingsTitle: shell.settingsTitle,
+      deployActionsDisabled,
+      deployRunDisabled: deployActionsDisabled || !deployExecuteAllowed,
+      themeToggleTitle: `${shell.themeSwitchPrefix} ${nextTheme} ${shell.themeSwitchSuffix}`,
+      themeToggleLabel: nextTheme === "light" ? shell.darkThemeLabel : shell.lightThemeLabel,
+      basicModeTitle: shell.basicModeTitle,
+      basicModeLabel: shell.basicModeLabel,
+      graphModeTitle: shell.graphModeTitle,
+      graphModeLabel: shell.graphModeLabel
+    };
+  }
+  function topRailNavigationTransition(currentView, target) {
+    const view = String(currentView || "editor");
+    switch (String(target || "")) {
+      case "flows-tab":
+        return { view: view === "editor" ? "flows" : "editor" };
+      case "agents-tab":
+        return { view: "agents" };
+      case "flows-crumb":
+        return { view: "flows" };
+      default:
+        return null;
+    }
+  }
+  function editorModeTransition(target) {
+    const editorMode = String(target || "");
+    if (editorMode !== "basic" && editorMode !== "advanced") return null;
+    return { editorMode };
+  }
+  function themeToggleTransition(currentTheme) {
+    return {
+      field: "theme",
+      value: currentTheme === "dark" ? "light" : "dark"
+    };
+  }
+  function validationOutcome(document, result) {
+    const validation = result || null;
+    return {
+      document,
+      validation,
+      validationRows: diagnosticsToRows(validation),
+      stage: validation?.ok ? "valid" : "draft"
+    };
+  }
+  function exportOutcome(document, result, options = {}) {
+    const validation = result?.validation || null;
+    if (validation?.ok) {
+      requireExportArchiveMetadata(result);
+    }
+    const publishedStage = options.publishedStage || "published";
+    return {
+      document,
+      exportResult: result || null,
+      validation,
+      validationRows: diagnosticsToRows(validation),
+      stage: validation?.ok ? publishedStage : "draft"
+    };
+  }
+  function requireExportArchiveMetadata(result) {
+    if (!String(result?.content_base64 || "").trim()) {
+      throw new Error("mobkit/mobpacks/export did not return content_base64");
+    }
+    if (!String(result?.media_type || "").trim()) {
+      throw new Error("mobkit/mobpacks/export did not return media_type");
+    }
+    if (!String(result?.filename || "").trim()) {
+      throw new Error("mobkit/mobpacks/export did not return filename");
+    }
+  }
+  function deployOutcome(document, result, options = {}) {
+    const validation = result?.validation || null;
+    const executing = options.execute === true;
+    const deployOk = executing && result?.executed === true && result?.success === true && result?.status_code === 0;
+    return {
+      document,
+      deployResult: result || null,
+      validation,
+      validationRows: deployResultToRows(result),
+      stage: validation?.ok && deployOk ? "deployed" : "draft"
+    };
+  }
+  function validationSheetOpenTransition() {
+    return { validate: true };
+  }
+  function validationSheetCloseTransition() {
+    return { validate: false };
+  }
+  function deployPlanTraceReadyTransition(document, plan) {
+    return {
+      deployPlanOpen: true,
+      deployPlanDocument: document || null,
+      deployPlanResult: plan || null,
+      incrementDeployPlanKey: true
+    };
+  }
+  function deployPlanTraceCloseTransition() {
+    return { deployPlanOpen: false };
+  }
+  function apiOverlayClearTransition() {
+    return {
+      deployPlanOpen: false,
+      validate: false
+    };
+  }
+  function errorMessage(error) {
+    return error?.message || String(error || "");
+  }
+  function criticalErrorOutcome({ head, error, meta, errorView } = {}) {
+    const view = errorViewForState(errorView);
+    return {
+      validationRows: [{
+        kind: "crit",
+        glyph: view.criticalGlyph,
+        head: String(head || view.genericErrorHead),
+        sub: errorMessage(error),
+        meta: String(meta || "")
+      }],
+      stage: "draft"
+    };
+  }
+  function deployErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
+    return criticalErrorOutcome({
+      head: options.execute ? view.deployFailedHead : view.deployPlanFailedHead,
+      error,
+      meta: view.deployErrorMeta,
+      errorView: view
+    });
+  }
+  function sourceErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
+    return criticalErrorOutcome({
+      head: view.sourceFailedHead,
+      error,
+      meta: view.sourceErrorMeta,
+      errorView: view
+    });
+  }
+  function validationErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
+    return criticalErrorOutcome({
+      head: view.validationApiFailedHead,
+      error,
+      meta: view.rpcErrorMeta,
+      errorView: view
+    });
+  }
+  function exportErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
+    return criticalErrorOutcome({
+      head: view.exportFailedHead,
+      error,
+      meta: view.rpcErrorMeta,
+      errorView: view
+    });
+  }
+  function importErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
+    return criticalErrorOutcome({
+      head: view.importFailedHead,
+      error,
+      meta: options.filename || "",
+      errorView: view
+    });
+  }
+
+  // ../packages/flow-editor-core/src/source/view.ts
+  function sourceFileRequiresText(file) {
+    const path = String(file?.path || "");
+    const mediaType = String(file?.media_type || "");
+    return /\.toml$/i.test(path) || /\.json$/i.test(path) || /^text\//i.test(mediaType) || mediaType === "application/json";
+  }
+  function validateSourceFileMetadata(apiSource, file, index) {
+    const prefix = `${apiSource} source_files[${index}]`;
+    if (!String(file?.path || "").trim()) throw new Error(`${prefix} did not return path`);
+    if (!String(file?.media_type || "").trim()) throw new Error(`${prefix} did not return media_type`);
+    if (!String(file?.content_base64 || "").trim()) throw new Error(`${prefix} did not return content_base64`);
+    if (!String(file?.sha256 || "").trim()) throw new Error(`${prefix} did not return sha256`);
+    const size = Number(file?.size_bytes);
+    if (!Number.isFinite(size) || size < 0) throw new Error(`${prefix} did not return size_bytes`);
+    if (sourceFileRequiresText(file) && typeof file?.text !== "string") {
+      throw new Error(`${prefix} did not return text`);
+    }
+  }
+  function sourceDocumentFromSourceResult(document, result, options = {}) {
+    const apiSource = String(result?.source || "").trim();
+    if (apiSource !== "mobkit/mobpacks/source") {
+      throw new Error(`source preview expected mobkit/mobpacks/source but received ${apiSource}`);
+    }
+    const sourceView = sourceViewForState(null, options.sourceView);
+    const primarySourcePath = sourceView.primarySourcePath;
+    if (!primarySourcePath) throw new Error(`${apiSource} did not receive primary source path from MobKit schema`);
+    const files = Array.isArray(result?.source_files) ? result.source_files : [];
+    if (!files.length) throw new Error(`${apiSource} did not return source_files`);
+    const primarySourceFile = files.find((file) => String(file?.path || "") === primarySourcePath);
+    if (!primarySourceFile) throw new Error(`${apiSource} did not return primary source file ${primarySourcePath}`);
+    const exportedSource = String(primarySourceFile.text || "").trim();
+    if (!exportedSource) throw new Error(`${apiSource} did not return primary source text ${primarySourcePath}`);
+    const filename = String(result?.filename || "").trim();
+    if (!filename) throw new Error(`${apiSource} did not return filename`);
+    const mediaType = String(result?.media_type || "").trim();
+    if (!mediaType) throw new Error(`${apiSource} did not return media_type`);
+    const sourceDigest = String(primarySourceFile.sha256 || "").trim();
+    if (!sourceDigest) throw new Error(`${apiSource} did not return primary source sha256 ${primarySourcePath}`);
+    files.forEach((file, index) => validateSourceFileMetadata(apiSource, file, index));
+    const authoringDocument = document && typeof document === "object" ? document : {};
+    const validation = result?.validation || null;
+    const stage = validation?.ok ? "valid" : "draft";
+    return {
+      document: authoringDocument,
+      sourceDocument: {
+        ...authoringDocument,
+        validation,
+        filename,
+        media_type: mediaType,
+        sourcePath: primarySourceFile.path,
+        sourceFile: primarySourceFile,
+        sourceFiles: files,
+        sourceDigest,
+        source: apiSource,
+        sourceView
+      },
+      validation,
+      validationRows: diagnosticsToRows(validation),
+      stage
+    };
+  }
+  function exportDownloadPayload(result) {
+    const contentBase64 = String(result?.content_base64 || "").trim();
+    if (!contentBase64) throw new Error("mobkit/mobpacks/export did not return content_base64");
+    const mediaType = String(result?.media_type || "").trim();
+    if (!mediaType) throw new Error("mobkit/mobpacks/export did not return media_type");
+    const filename = String(result?.filename || "").trim();
+    if (!filename) throw new Error("mobkit/mobpacks/export did not return filename");
+    return {
+      contentBase64,
+      mediaType,
+      filename
+    };
+  }
+  function sourceProjectionClearTransition() {
+    return {
+      sourceOpen: false,
+      sourceDocument: null,
+      inlineSourceOpen: false,
+      inlineSourceSurface: null,
+      inlineSourceDocument: null,
+      inlineSourceBusy: false
+    };
+  }
+  function sourceDrawerReadyTransition(sourceDocument) {
+    return {
+      sourceOpen: !!sourceDocument,
+      sourceDocument: sourceDocument || null
+    };
+  }
+  function inlineSourcePendingTransition(surface = "basic") {
+    return {
+      inlineSourceOpen: true,
+      inlineSourceSurface: String(surface || "basic"),
+      inlineSourceBusy: true
+    };
+  }
+  function inlineSourceReadyTransition(sourceDocument) {
+    return {
+      inlineSourceDocument: sourceDocument || null,
+      inlineSourceBusy: false
+    };
+  }
+  function inlineSourceBusyTransition(busy) {
+    return { inlineSourceBusy: !!busy };
+  }
+  function inlineSourceToggleTransition({
+    open = false,
+    currentSurface = "",
+    targetSurface = "basic"
+  } = {}) {
+    const target = String(targetSurface || "basic");
+    const active = !!open && String(currentSurface || "") === target;
+    return active ? { shouldOpen: false, patch: sourceProjectionClearTransition() } : { shouldOpen: true, patch: inlineSourcePendingTransition(target) };
+  }
+  function inlineSourceToggleButtonState({
+    open = false,
+    currentSurface = "",
+    targetSurface = "basic",
+    basicView = null,
+    sourceView = null
+  } = {}) {
+    const target = String(targetSurface || "basic");
+    const active = !!open && String(currentSurface || "") === target;
+    const basic = basicEditorViewState(basicView);
+    const source = sourceViewForState(null, sourceView);
+    return {
+      active,
+      label: active ? source.closeLabel || basic.sourceToggleLabel : basic.sourceToggleLabel
+    };
+  }
+  function inlineSourceRequestPath(request = null, options = {}) {
+    const explicitPath = String(request?.sourcePath || request?.path || "").trim();
+    if (explicitPath) return explicitPath;
+    const graphView = graphCanvasViewState(options.graphView);
+    const sourceView = sourceViewForState(null, options.sourceView);
+    const requestedId = String(request?.id || "").trim();
+    const requestedKind = String(request?.kind || "").trim();
+    if (requestedId === graphView.sourceFileNodeId || requestedKind === graphView.sourceFileNodeKind || request?.isSourceFile) {
+      return sourceView.primarySourcePath || "mobkit/mob.toml";
+    }
+    return "";
+  }
+  function sourceFileForPath(sourceDocument, path) {
+    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
+    const selectedPath = String(path || sourceDocument?.sourcePath || sourceViewForState(sourceDocument).primarySourcePath || "").trim();
+    return files.find((file) => String(file?.path || "") === selectedPath) || sourceDocument?.sourceFile || files[0] || null;
+  }
+  function sourceFileSelectionTransition(sourceDocument, path, currentPath = "") {
+    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
+    const requestedPath = String(path || "").trim();
+    const requestedFile = files.find((file) => String(file?.path || "") === requestedPath) || null;
+    if (requestedFile) return { sourcePath: String(requestedFile.path || "") };
+    const currentFile = sourceFileForPath(sourceDocument, currentPath);
+    return { sourcePath: String(currentFile?.path || "") };
+  }
+  function sourceFileContent(file) {
+    return typeof file?.text === "string" ? file.text : "";
+  }
+  function sourceFileRows(sourceDocument, selectedPath) {
+    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
+    const activePath = String(selectedPath || sourceDocument?.sourcePath || "").trim();
+    return files.filter((file) => String(file?.path || "").trim()).map((file) => {
+      const path = String(file.path || "").trim();
+      const size = Number(file.size_bytes || 0);
+      const mediaType = String(file.media_type || "").trim();
+      return {
+        path,
+        label: path,
+        value: path,
+        selected: path === activePath,
+        className: `source-file-row${path === activePath ? " is-selected" : ""}`,
+        meta: [mediaType, size > 0 ? `${size}b` : ""].filter(Boolean).join(" \xB7 "),
+        file
+      };
+    });
+  }
+  function highlightSourceFile(file) {
+    const source = sourceFileContent(file);
+    const path = String(file?.path || "");
+    const mediaType = String(file?.media_type || "");
+    if (/\.toml$/i.test(path) || mediaType === "text/toml") return highlightTomlSource(source);
+    return escapeHtml(source);
+  }
+  function sourceEditorState(sourceDocument, options = {}) {
+    const selectedFile = sourceFileForPath(sourceDocument, options.sourcePath);
+    const source = selectedFile ? sourceFileContent(selectedFile) : "";
+    const view = sourceViewForState(sourceDocument, options.sourceView);
+    const sourcePath = String(selectedFile?.path || sourceDocument?.sourcePath || "").trim();
+    const sourceLabel = [
+      sourceDocument?.source || "",
+      sourcePath,
+      sourceDocument?.filename || "",
+      sourceDocument?.media_type || ""
+    ].filter(Boolean).join(" \xB7 ");
+    const validationSource = sourceDocument?.validation?.validation_source || "";
+    const bodyClass = options.compact ? "bld-toml__body" : "source-drawer__body";
+    return {
+      source,
+      sourceHtml: selectedFile ? highlightSourceFile(selectedFile) : "",
+      drawerEyebrow: view.drawerEyebrow,
+      inlineTitle: view.inlineTitle,
+      sourceLabel,
+      validationSource,
+      bodyClass,
+      selectedPath: sourcePath,
+      fileRows: sourceFileRows(sourceDocument, sourcePath),
+      showLoading: !!options.busy && !source,
+      loadingText: view.loadingText,
+      copyLabel: view.copyLabel,
+      closeLabel: view.closeLabel,
+      copyDisabled: !!options.busy || !source
+    };
+  }
+  function highlightTomlSource(source) {
+    return escapeHtml(String(source || "")).replace(/^(\s*#.*)$/gm, '<span class="toml-comment">$1</span>').replace(/^(\s*)(\[[^\]]+\])/gm, '$1<span class="toml-table">$2</span>').replace(/^(\s*)([A-Za-z_][\w-]*)(\s*=)/gm, '$1<span class="toml-key">$2</span>$3');
+  }
+  function sourceViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_source_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      drawerEyebrow: String(view.drawer_eyebrow || "").trim(),
+      inlineTitle: String(view.inline_title || "").trim(),
+      primarySourcePath: String(view.primary_source_path || "").trim(),
+      loadingText: String(view.loading_text || "").trim(),
+      copyLabel: String(view.copy_label || "").trim(),
+      closeLabel: String(view.close_label || "").trim()
+    };
+    return out.drawerEyebrow && out.inlineTitle && out.primarySourcePath && out.loadingText && out.copyLabel && out.closeLabel ? out : null;
+  }
+  function sourceViewForState(sourceDocument, sourceView) {
+    const view = sourceView && typeof sourceView === "object" ? sourceView : sourceDocument?.sourceView;
+    return {
+      drawerEyebrow: String(view?.drawerEyebrow || ""),
+      inlineTitle: String(view?.inlineTitle || ""),
+      primarySourcePath: String(view?.primarySourcePath || ""),
+      loadingText: String(view?.loadingText || ""),
+      copyLabel: String(view?.copyLabel || ""),
+      closeLabel: String(view?.closeLabel || "")
+    };
+  }
+
+  // ../packages/flow-editor-core/src/catalogs/hydration.ts
+  function deploySettingsForUi(deploy) {
+    if (!deploy || typeof deploy !== "object") return { ...EMPTY_DEPLOY_SETTINGS };
+    return {
+      ...EMPTY_DEPLOY_SETTINGS,
+      command: deploy.command || "",
+      surface: deploy.surface || "",
+      trustPolicy: deploy.trust_policy || deploy.trustPolicy || "",
+      model: deploy.model || "",
+      maxDuration: deploy.max_duration || deploy.maxDuration || "",
+      maxToolCalls: deploy.max_tool_calls ?? deploy.maxToolCalls ?? null,
+      maxTotalTokens: deploy.max_total_tokens ?? deploy.maxTotalTokens ?? null,
+      isolated: deploy.isolated ?? false,
+      realm: deploy.realm || "",
+      instance: deploy.instance || "",
+      realmBackend: deploy.realm_backend || deploy.realmBackend || "",
+      contextRoot: deploy.context_root || deploy.contextRoot || "",
+      stateRoot: deploy.state_root || deploy.stateRoot || "",
+      userConfigRoot: deploy.user_config_root || deploy.userConfigRoot || "",
+      prompt: deploy.prompt || ""
+    };
+  }
+  function deployDefaultsFromSchema(schema) {
+    return deploySettingsForUi(schema?.deploy_settings?.defaults);
+  }
+  function modelCatalogFromCatalogs(schema) {
+    return (schema?.models || []).filter((model) => model && typeof model === "object" && model.id && model.label && (model.vendor || model.provider)).map((model) => ({
+      id: String(model.id),
+      label: String(model.label),
+      vendor: String(model.vendor || model.provider),
+      ...model.deployability ? { deployability: model.deployability } : {},
+      ...model.provenance ? { provenance: model.provenance } : {},
+      profile: model.profile || null
+    }));
+  }
+  function toolCatalogFromCatalogs(schema) {
+    return (Array.isArray(schema?.tool_catalog) ? schema.tool_catalog : []).filter((tool) => tool && typeof tool === "object" && tool.id && tool.label && tool.desc && tool.kind && tool.source).map((tool) => ({
+      id: String(tool.id),
+      label: String(tool.label),
+      desc: String(tool.desc),
+      kind: String(tool.kind),
+      source: String(tool.source),
+      tagClass: String(tool.tag_class || ""),
+      raw: tool
+    }));
+  }
+  function emptyMobKitCatalogs(boot = {}) {
+    return {
+      models: [],
+      toolCatalog: [],
+      agentDefinitions: [],
+      sampleAgentDefinitions: [],
+      skillRealms: [],
+      blankMobpack: null,
+      catalogSnapshot: null,
+      deployDefaults: deployDefaultsFromSchema(null),
+      mobDefaults: mobDefaultsFromSchema(null),
+      mobDefinition: null,
+      sourceView: null,
+      agentView: null,
+      newFlowView: null,
+      flowRegistryView: null,
+      agentDetailView: null,
+      agentAccessView: null,
+      deployView: null,
+      settingsView: null,
+      launchView: null,
+      schemaView: null,
+      basicView: null,
+      graphView: null,
+      graphTemplateView: null,
+      conditionView: null,
+      errorView: null,
+      authoringOperations: {},
+      runtimeFlows: [],
+      validationSource: "",
+      contractMeta: {
+        loaded: false,
+        schemaVersion: "",
+        mediaType: "",
+        validationSource: ""
+      },
+      grid: boot.grid || null,
+      cellXY: boot.cellXY || null,
+      template: null
+    };
+  }
+  function mobKitCatalogsFromSchema(schema, boot = {}, catalogPayload = null) {
+    const catalogSource = catalogPayload && typeof catalogPayload === "object" ? catalogPayload : {};
+    const agentDefinitions = agentDefinitionsFromCatalogs(catalogSource);
+    const sampleAgentDefinitions = sampleAgentDefinitionsFromCatalogs(catalogSource);
+    const blankMobpack = blankMobpackFromCatalogs(catalogSource);
+    return {
+      models: modelCatalogFromCatalogs(catalogSource),
+      toolCatalog: toolCatalogFromCatalogs(catalogSource),
+      agentDefinitions,
+      sampleAgentDefinitions,
+      runtimeFlows: flowRegistryRowsFromBackend(catalogSource.runtime_flows),
+      skillRealms: skillRealmsFromCatalogs(catalogSource),
+      blankMobpack,
+      catalogSnapshot: catalogSource.catalog_snapshot || null,
+      deployDefaults: deployDefaultsFromSchema(schema),
+      mobDefaults: mobDefaultsFromSchema(schema),
+      mobDefinition: schema?.mob_definition || null,
+      sourceView: sourceViewFromSchema(schema),
+      agentView: agentViewFromSchema(schema),
+      newFlowView: newFlowViewFromSchema(schema),
+      flowRegistryView: flowRegistryViewFromSchema(schema),
+      agentDetailView: agentDetailViewFromSchema(schema),
+      agentAccessView: agentAccessViewFromSchema(schema),
+      deployView: deployViewFromSchema(schema),
+      settingsView: settingsViewFromSchema(schema),
+      launchView: launchViewFromSchema(schema),
+      schemaView: schemaViewFromSchema(schema),
+      basicView: basicViewFromSchema(schema),
+      graphView: graphViewFromSchema(schema),
+      graphTemplateView: graphTemplateViewFromSchema(schema),
+      conditionView: conditionViewFromSchema(schema),
+      errorView: errorViewFromSchema(schema),
+      authoringOperations: authoringOperationsFromSchema(schema),
+      validationSource: schema?.validation_source || "",
+      contractMeta: {
+        loaded: true,
+        schemaVersion: schema?.schema_version || "",
+        mediaType: schema?.media_type || "",
+        validationSource: schema?.validation_source || ""
+      },
+      grid: boot.grid || null,
+      cellXY: boot.cellXY || null,
+      template: graphTemplateSeedFromBlankMobpack(blankMobpack)
+    };
+  }
+  function skillRealmsFromCatalogs(schema) {
+    const skillRealms = schema?.skill_realms || [];
+    return Array.isArray(skillRealms) ? skillRealms : [];
+  }
+  function mergeSkillRealms(documentRealms, contractRealms) {
+    const merged = [];
+    const seenSkillIds = /* @__PURE__ */ new Set();
+    for (const realm of [...documentRealms || [], ...contractRealms || []]) {
+      if (!realm || typeof realm !== "object") continue;
+      const id = String(realm.id || realm.label || "").trim();
+      if (!id) continue;
+      const uniqueSkills = [];
+      for (const skill of realm.skills || []) {
+        const skillId = String(skill?.id || "").trim();
+        if (!skillId || seenSkillIds.has(skillId)) continue;
+        seenSkillIds.add(skillId);
+        uniqueSkills.push(skill);
+      }
+      const existing = merged.find((candidate) => candidate.id === id);
+      if (existing) {
+        existing.skills = [...existing.skills || [], ...uniqueSkills];
+        continue;
+      }
+      if (!uniqueSkills.length) continue;
+      merged.push({
+        ...realm,
+        id,
+        skills: uniqueSkills,
+        default: merged.length === 0 ? !!realm.default : false
+      });
+    }
+    return merged;
+  }
+  function catalogSkillRealmsPatch(catalogs, skillRealms) {
+    return {
+      ...catalogs || {},
+      skillRealms: Array.isArray(skillRealms) ? skillRealms : []
+    };
+  }
+  function flowFromHydratedDocument(document) {
+    if (document?.flow && typeof document.flow === "object" && Array.isArray(document.flow.steps)) {
+      return document.flow;
+    }
+    return null;
+  }
+  function graphProjectionForDocument(document, members, contract) {
+    const storedFrames = Array.isArray(document?.frames) ? document.frames : [];
+    return {
+      instances: Array.isArray(document?.instances) ? document.instances : [],
+      edges: Array.isArray(document?.edges) ? document.edges : [],
+      frames: storedFrames
+    };
+  }
+  function graphProjectionFromMobKitResult(result) {
+    const source = result?.graph_projection || result?.graphProjection || result;
+    if (!source || typeof source !== "object") return null;
+    if (!Array.isArray(source.instances) || !Array.isArray(source.edges) || !Array.isArray(source.frames)) return null;
+    return {
+      instances: source.instances,
+      edges: source.edges,
+      frames: source.frames,
+      source: String(source.source || ""),
+      validation: source.validation || null
+    };
+  }
+  function hydrateMobpackDocumentState(result, options = {}) {
+    const document = result?.document && typeof result.document === "object" ? result.document : {};
+    const members = Array.isArray(document.members) ? document.members : [];
+    const schemas = Array.isArray(document.schemas) ? document.schemas : [];
+    const id = String(options.id || flowImportedIdFromDocument(document, result, options.existingRows)).trim();
+    const flow = flowFromHydratedDocument(document);
+    const errorView = errorViewForState(options.errorView);
+    if (!flow) {
+      return {
+        ok: false,
+        id,
+        document,
+        members,
+        schemas,
+        flow: null,
+        skillRealms: mergeSkillRealms(document.skill_realms, options.contractSkillRealms || []),
+        graphProjection: null,
+        deploySettings: deploySettingsForUi(options.deployDefaults),
+        mobSettings: mobSettingsForUi(options.mobDefaults),
+        registryRow: null,
+        addToRegistry: false,
+        openEditor: false,
+        validation: null,
+        validationRows: [{
+          kind: "crit",
+          glyph: errorView.criticalGlyph,
+          head: errorView.missingEditorFlowHead,
+          sub: errorView.missingEditorFlowSub,
+          meta: errorView.missingEditorFlowMeta
+        }],
+        stage: "draft",
+        error: errorView.missingEditorFlowMeta
+      };
+    }
+    const skillRealms = mergeSkillRealms(document.skill_realms, options.contractSkillRealms || []);
+    const graphProjection = graphProjectionFromMobKitResult(result) || graphProjectionForDocument({ ...document, flow }, members, options.contract);
+    const hasDeploySettings = document.deploy && typeof document.deploy === "object" && !Array.isArray(document.deploy);
+    const hasMobSettings = document.mob_settings && typeof document.mob_settings === "object" && !Array.isArray(document.mob_settings);
+    const validation = result?.validation || null;
+    const validationRows = diagnosticsToRows(validation);
+    const stage = validation?.ok ? "valid" : "draft";
+    const registryRow = flowRegistryRowFromDocument({
+      id,
+      document,
+      validation,
+      stage,
+      sourceLabel: result?.source_label || "",
+      source: result?.source || "",
+      flowRow: options.flowRow || null
+    });
+    return {
+      id,
+      document,
+      members,
+      schemas,
+      flow,
+      skillRealms,
+      graphProjection,
+      deploySettings: deploySettingsForUi(hasDeploySettings ? document.deploy : options.deployDefaults),
+      mobSettings: mobSettingsForUi(hasMobSettings ? document.mob_settings : options.mobDefaults),
+      registryRow,
+      addToRegistry: options.addToRegistry !== false,
+      openEditor: options.openEditor !== false,
+      validation,
+      validationRows,
+      stage
+    };
+  }
+  function authoringProjectionFromMobKitDocument(document, options = {}) {
+    const source = document && typeof document === "object" ? document : {};
+    const flow = flowFromHydratedDocument(source) || emptyAuthoringFlowState();
+    return {
+      document: source,
+      flow,
+      members: Array.isArray(source.members) ? source.members : [],
+      schemas: Array.isArray(source.schemas) ? source.schemas : [],
+      skillRealms: Array.isArray(source.skill_realms) ? source.skill_realms : [],
+      instances: Array.isArray(source.instances) ? source.instances : [],
+      edges: Array.isArray(source.edges) ? source.edges : [],
+      frames: Array.isArray(source.frames) ? source.frames : [],
+      deploySettings: deploySettingsForUi(source.deploy || options.deployDefaults),
+      mobSettings: mobSettingsForUi(source.mob_settings || options.mobDefaults)
+    };
+  }
+  function authoringProjectionFromOperationResult(result, options = {}) {
+    const document = result?.document && typeof result.document === "object" ? result.document : null;
+    if (!document) return null;
+    const projection = authoringProjectionFromMobKitDocument(document, options);
+    const graphProjection = graphProjectionFromMobKitResult(result);
+    if (graphProjection) {
+      projection.instances = graphProjection.instances;
+      projection.edges = graphProjection.edges;
+      projection.frames = graphProjection.frames;
+    }
+    return projection;
+  }
+  function flowImportedIdFromDocument(document, result = {}, existingRows = []) {
+    const source = result?.source_name || result?.sourceName || result?.filename || result?.source;
+    const name = document?.name || document?.mob_id || document?.flow?.name || source || "";
+    if (!String(name || "").trim()) return "";
+    return flowDraftIdFromSpec({
+      name
+    }, existingRows);
+  }
+
   // ../packages/flow-editor-core/src/editors/agent-editor.ts
   function agentListState({ members = [], instances = [], schemas = [], selection = null, agentView = null } = {}) {
     const sourceMembers = Array.isArray(members) ? members : [];
@@ -9334,518 +10159,6 @@ ${JSON.stringify(document)}`;
     }
   }
 
-  // ../packages/flow-editor-core/src/shell/outcomes.ts
-  function diagnosticsToRows(validation) {
-    if (Array.isArray(validation?.display_rows)) {
-      return apiDisplayRows(validation.display_rows);
-    }
-    return [];
-  }
-  function deployResultToRows(result) {
-    if (Array.isArray(result?.display_rows)) {
-      return apiDisplayRows(result.display_rows);
-    }
-    return [];
-  }
-  function apiDisplayRows(rows) {
-    return (Array.isArray(rows) ? rows : []).filter((row) => row && typeof row === "object").map((row) => ({
-      kind: String(row.kind || ""),
-      glyph: String(row.glyph || ""),
-      head: String(row.head || ""),
-      sub: String(row.sub || ""),
-      meta: String(row.meta || "")
-    }));
-  }
-  function validationSheetState(results, options = {}) {
-    const view = deployViewForState(options.deployView);
-    const rows = Array.isArray(results) ? results : [];
-    const counts = rows.reduce((acc, row) => {
-      const kind = row?.kind || "warn";
-      if (kind === "ok") acc.ok += 1;
-      else if (kind === "crit") acc.crit += 1;
-      else acc.warn += 1;
-      return acc;
-    }, { ok: 0, warn: 0, crit: 0 });
-    const stage = String(options.stage || "").trim();
-    const stageBlocksActions = !!stage && stage !== "valid";
-    const actionsDisabled = counts.crit > 0 || stageBlocksActions;
-    const deployExecuteAllowed = options.capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
-    return {
-      rows,
-      counts,
-      eyebrow: view.validationEyebrow,
-      title: `${counts.ok} ${view.validationPassedLabel} \xB7 ${counts.warn} ${view.validationWarningsLabel} \xB7 ${counts.crit} ${view.validationBlockingLabel}`,
-      publishLabel: view.publishLabel,
-      deployPlanLabel: view.deployPlanLabel,
-      deployLabel: view.deployLabel,
-      closeLabel: view.closeLabel,
-      actionsDisabled,
-      publishDisabled: actionsDisabled,
-      deployPlanDisabled: actionsDisabled,
-      deployRunDisabled: actionsDisabled || !deployExecuteAllowed
-    };
-  }
-  function deployPlanTraceState(document, plan, options = {}) {
-    const view = deployViewForState(options.deployView);
-    const steps = Array.isArray(plan?.plan_trace) && plan.plan_trace.length ? plan.plan_trace : [{
-      node: null,
-      head: view.planUnavailableHead,
-      body: view.planUnavailableBody
-    }];
-    const title = document?.mob_id || document?.name || "mobkit_flow";
-    const subtitle = plan?.command || "";
-    const packLabel = plan?.pack_path || "";
-    return {
-      steps,
-      eyebrow: view.planEyebrow,
-      title,
-      subtitle,
-      packLabel,
-      firstLabel: view.planFirstLabel,
-      closeLabel: view.closeLabel,
-      stepLabel: view.planStepLabel,
-      previousLabel: view.planPreviousLabel,
-      nextLabel: view.planNextLabel
-    };
-  }
-  function topRailState({ contract, deploySettings, stage, view, theme, deployView, capabilities } = {}) {
-    const shell = deployViewForState(deployView);
-    const inEditor = view === "editor";
-    const contractState = contract?.error ? shell.apiErrorLabel : contract ? shell.apiReadyLabel : shell.apiLoadingLabel;
-    const deployCommand = contract?.deploy_settings?.command || "";
-    const deploySurface = deploySettings?.surface || contract?.deploy_settings?.surfaces?.[0] || "";
-    const deployActionsDisabled = stage !== "valid";
-    const deployExecuteAllowed = capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
-    const nextTheme = theme === "dark" ? "light" : "dark";
-    return {
-      inEditor,
-      brandLabel: shell.brandLabel,
-      flowsTabLabel: shell.flowsTabLabel,
-      agentsTabLabel: shell.agentsTabLabel,
-      mobStatusTitle: shell.mobStatusTitle,
-      mobFileLabel: shell.mobFileLabel,
-      contractState,
-      deployPrefixLabel: shell.deployPrefixLabel,
-      deployCommand,
-      deploySurface,
-      flowsCrumbLabel: shell.flowsCrumbLabel,
-      crumbSeparator: shell.crumbSeparator,
-      planTraceLabel: shell.planTraceLabel,
-      importLabel: shell.importLabel,
-      validateLabel: shell.validateLabel,
-      publishLabel: shell.publishLabel,
-      deployPlanLabel: shell.deployPlanLabel,
-      deployLabel: shell.deployLabel,
-      overflowLabel: shell.overflowLabel,
-      settingsLabel: shell.settingsLabel,
-      settingsTitle: shell.settingsTitle,
-      deployActionsDisabled,
-      deployRunDisabled: deployActionsDisabled || !deployExecuteAllowed,
-      themeToggleTitle: `${shell.themeSwitchPrefix} ${nextTheme} ${shell.themeSwitchSuffix}`,
-      themeToggleLabel: nextTheme === "light" ? shell.darkThemeLabel : shell.lightThemeLabel,
-      basicModeTitle: shell.basicModeTitle,
-      basicModeLabel: shell.basicModeLabel,
-      graphModeTitle: shell.graphModeTitle,
-      graphModeLabel: shell.graphModeLabel
-    };
-  }
-  function topRailNavigationTransition(currentView, target) {
-    const view = String(currentView || "editor");
-    switch (String(target || "")) {
-      case "flows-tab":
-        return { view: view === "editor" ? "flows" : "editor" };
-      case "agents-tab":
-        return { view: "agents" };
-      case "flows-crumb":
-        return { view: "flows" };
-      default:
-        return null;
-    }
-  }
-  function editorModeTransition(target) {
-    const editorMode = String(target || "");
-    if (editorMode !== "basic" && editorMode !== "advanced") return null;
-    return { editorMode };
-  }
-  function themeToggleTransition(currentTheme) {
-    return {
-      field: "theme",
-      value: currentTheme === "dark" ? "light" : "dark"
-    };
-  }
-  function validationOutcome(document, result) {
-    const validation = result || null;
-    return {
-      document,
-      validation,
-      validationRows: diagnosticsToRows(validation),
-      stage: validation?.ok ? "valid" : "draft"
-    };
-  }
-  function exportOutcome(document, result, options = {}) {
-    const validation = result?.validation || null;
-    if (validation?.ok) {
-      requireExportArchiveMetadata(result);
-    }
-    const publishedStage = options.publishedStage || "published";
-    return {
-      document,
-      exportResult: result || null,
-      validation,
-      validationRows: diagnosticsToRows(validation),
-      stage: validation?.ok ? publishedStage : "draft"
-    };
-  }
-  function requireExportArchiveMetadata(result) {
-    if (!String(result?.content_base64 || "").trim()) {
-      throw new Error("mobkit/mobpacks/export did not return content_base64");
-    }
-    if (!String(result?.media_type || "").trim()) {
-      throw new Error("mobkit/mobpacks/export did not return media_type");
-    }
-    if (!String(result?.filename || "").trim()) {
-      throw new Error("mobkit/mobpacks/export did not return filename");
-    }
-  }
-  function deployOutcome(document, result, options = {}) {
-    const validation = result?.validation || null;
-    const executing = options.execute === true;
-    const deployOk = executing && result?.executed === true && result?.success === true && result?.status_code === 0;
-    return {
-      document,
-      deployResult: result || null,
-      validation,
-      validationRows: deployResultToRows(result),
-      stage: validation?.ok && deployOk ? "deployed" : "draft"
-    };
-  }
-  function validationSheetOpenTransition() {
-    return { validate: true };
-  }
-  function validationSheetCloseTransition() {
-    return { validate: false };
-  }
-  function deployPlanTraceReadyTransition(document, plan) {
-    return {
-      deployPlanOpen: true,
-      deployPlanDocument: document || null,
-      deployPlanResult: plan || null,
-      incrementDeployPlanKey: true
-    };
-  }
-  function deployPlanTraceCloseTransition() {
-    return { deployPlanOpen: false };
-  }
-  function apiOverlayClearTransition() {
-    return {
-      deployPlanOpen: false,
-      validate: false
-    };
-  }
-  function errorMessage(error) {
-    return error?.message || String(error || "");
-  }
-  function criticalErrorOutcome({ head, error, meta, errorView } = {}) {
-    const view = errorViewForState(errorView);
-    return {
-      validationRows: [{
-        kind: "crit",
-        glyph: view.criticalGlyph,
-        head: String(head || view.genericErrorHead),
-        sub: errorMessage(error),
-        meta: String(meta || "")
-      }],
-      stage: "draft"
-    };
-  }
-  function deployErrorOutcome(error, options = {}) {
-    const view = errorViewForState(options.errorView);
-    return criticalErrorOutcome({
-      head: options.execute ? view.deployFailedHead : view.deployPlanFailedHead,
-      error,
-      meta: view.deployErrorMeta,
-      errorView: view
-    });
-  }
-  function sourceErrorOutcome(error, options = {}) {
-    const view = errorViewForState(options.errorView);
-    return criticalErrorOutcome({
-      head: view.sourceFailedHead,
-      error,
-      meta: view.sourceErrorMeta,
-      errorView: view
-    });
-  }
-  function validationErrorOutcome(error, options = {}) {
-    const view = errorViewForState(options.errorView);
-    return criticalErrorOutcome({
-      head: view.validationApiFailedHead,
-      error,
-      meta: view.rpcErrorMeta,
-      errorView: view
-    });
-  }
-  function exportErrorOutcome(error, options = {}) {
-    const view = errorViewForState(options.errorView);
-    return criticalErrorOutcome({
-      head: view.exportFailedHead,
-      error,
-      meta: view.rpcErrorMeta,
-      errorView: view
-    });
-  }
-  function importErrorOutcome(error, options = {}) {
-    const view = errorViewForState(options.errorView);
-    return criticalErrorOutcome({
-      head: view.importFailedHead,
-      error,
-      meta: options.filename || "",
-      errorView: view
-    });
-  }
-
-  // ../packages/flow-editor-core/src/source/view.ts
-  function sourceFileRequiresText(file) {
-    const path = String(file?.path || "");
-    const mediaType = String(file?.media_type || "");
-    return /\.toml$/i.test(path) || /\.json$/i.test(path) || /^text\//i.test(mediaType) || mediaType === "application/json";
-  }
-  function validateSourceFileMetadata(apiSource, file, index) {
-    const prefix = `${apiSource} source_files[${index}]`;
-    if (!String(file?.path || "").trim()) throw new Error(`${prefix} did not return path`);
-    if (!String(file?.media_type || "").trim()) throw new Error(`${prefix} did not return media_type`);
-    if (!String(file?.content_base64 || "").trim()) throw new Error(`${prefix} did not return content_base64`);
-    if (!String(file?.sha256 || "").trim()) throw new Error(`${prefix} did not return sha256`);
-    const size = Number(file?.size_bytes);
-    if (!Number.isFinite(size) || size < 0) throw new Error(`${prefix} did not return size_bytes`);
-    if (sourceFileRequiresText(file) && typeof file?.text !== "string") {
-      throw new Error(`${prefix} did not return text`);
-    }
-  }
-  function sourceDocumentFromSourceResult(document, result, options = {}) {
-    const apiSource = String(result?.source || "").trim();
-    if (apiSource !== "mobkit/mobpacks/source") {
-      throw new Error(`source preview expected mobkit/mobpacks/source but received ${apiSource}`);
-    }
-    const sourceView = sourceViewForState(null, options.sourceView);
-    const primarySourcePath = sourceView.primarySourcePath;
-    if (!primarySourcePath) throw new Error(`${apiSource} did not receive primary source path from MobKit schema`);
-    const files = Array.isArray(result?.source_files) ? result.source_files : [];
-    if (!files.length) throw new Error(`${apiSource} did not return source_files`);
-    const primarySourceFile = files.find((file) => String(file?.path || "") === primarySourcePath);
-    if (!primarySourceFile) throw new Error(`${apiSource} did not return primary source file ${primarySourcePath}`);
-    const exportedSource = String(primarySourceFile.text || "").trim();
-    if (!exportedSource) throw new Error(`${apiSource} did not return primary source text ${primarySourcePath}`);
-    const filename = String(result?.filename || "").trim();
-    if (!filename) throw new Error(`${apiSource} did not return filename`);
-    const mediaType = String(result?.media_type || "").trim();
-    if (!mediaType) throw new Error(`${apiSource} did not return media_type`);
-    const sourceDigest = String(primarySourceFile.sha256 || "").trim();
-    if (!sourceDigest) throw new Error(`${apiSource} did not return primary source sha256 ${primarySourcePath}`);
-    files.forEach((file, index) => validateSourceFileMetadata(apiSource, file, index));
-    const authoringDocument = document && typeof document === "object" ? document : {};
-    const validation = result?.validation || null;
-    const stage = validation?.ok ? "valid" : "draft";
-    return {
-      document: authoringDocument,
-      sourceDocument: {
-        ...authoringDocument,
-        validation,
-        filename,
-        media_type: mediaType,
-        sourcePath: primarySourceFile.path,
-        sourceFile: primarySourceFile,
-        sourceFiles: files,
-        sourceDigest,
-        source: apiSource,
-        sourceView
-      },
-      validation,
-      validationRows: diagnosticsToRows(validation),
-      stage
-    };
-  }
-  function exportDownloadPayload(result) {
-    const contentBase64 = String(result?.content_base64 || "").trim();
-    if (!contentBase64) throw new Error("mobkit/mobpacks/export did not return content_base64");
-    const mediaType = String(result?.media_type || "").trim();
-    if (!mediaType) throw new Error("mobkit/mobpacks/export did not return media_type");
-    const filename = String(result?.filename || "").trim();
-    if (!filename) throw new Error("mobkit/mobpacks/export did not return filename");
-    return {
-      contentBase64,
-      mediaType,
-      filename
-    };
-  }
-  function sourceProjectionClearTransition() {
-    return {
-      sourceOpen: false,
-      sourceDocument: null,
-      inlineSourceOpen: false,
-      inlineSourceSurface: null,
-      inlineSourceDocument: null,
-      inlineSourceBusy: false
-    };
-  }
-  function sourceDrawerReadyTransition(sourceDocument) {
-    return {
-      sourceOpen: !!sourceDocument,
-      sourceDocument: sourceDocument || null
-    };
-  }
-  function inlineSourcePendingTransition(surface = "basic") {
-    return {
-      inlineSourceOpen: true,
-      inlineSourceSurface: String(surface || "basic"),
-      inlineSourceBusy: true
-    };
-  }
-  function inlineSourceReadyTransition(sourceDocument) {
-    return {
-      inlineSourceDocument: sourceDocument || null,
-      inlineSourceBusy: false
-    };
-  }
-  function inlineSourceBusyTransition(busy) {
-    return { inlineSourceBusy: !!busy };
-  }
-  function inlineSourceToggleTransition({
-    open = false,
-    currentSurface = "",
-    targetSurface = "basic"
-  } = {}) {
-    const target = String(targetSurface || "basic");
-    const active = !!open && String(currentSurface || "") === target;
-    return active ? { shouldOpen: false, patch: sourceProjectionClearTransition() } : { shouldOpen: true, patch: inlineSourcePendingTransition(target) };
-  }
-  function inlineSourceToggleButtonState({
-    open = false,
-    currentSurface = "",
-    targetSurface = "basic",
-    basicView = null,
-    sourceView = null
-  } = {}) {
-    const target = String(targetSurface || "basic");
-    const active = !!open && String(currentSurface || "") === target;
-    const basic = basicEditorViewState(basicView);
-    const source = sourceViewForState(null, sourceView);
-    return {
-      active,
-      label: active ? source.closeLabel || basic.sourceToggleLabel : basic.sourceToggleLabel
-    };
-  }
-  function inlineSourceRequestPath(request = null, options = {}) {
-    const explicitPath = String(request?.sourcePath || request?.path || "").trim();
-    if (explicitPath) return explicitPath;
-    const graphView = graphCanvasViewState(options.graphView);
-    const sourceView = sourceViewForState(null, options.sourceView);
-    const requestedId = String(request?.id || "").trim();
-    const requestedKind = String(request?.kind || "").trim();
-    if (requestedId === graphView.sourceFileNodeId || requestedKind === graphView.sourceFileNodeKind || request?.isSourceFile) {
-      return sourceView.primarySourcePath || "mobkit/mob.toml";
-    }
-    return "";
-  }
-  function sourceFileForPath(sourceDocument, path) {
-    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
-    const selectedPath = String(path || sourceDocument?.sourcePath || sourceViewForState(sourceDocument).primarySourcePath || "").trim();
-    return files.find((file) => String(file?.path || "") === selectedPath) || sourceDocument?.sourceFile || files[0] || null;
-  }
-  function sourceFileSelectionTransition(sourceDocument, path, currentPath = "") {
-    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
-    const requestedPath = String(path || "").trim();
-    const requestedFile = files.find((file) => String(file?.path || "") === requestedPath) || null;
-    if (requestedFile) return { sourcePath: String(requestedFile.path || "") };
-    const currentFile = sourceFileForPath(sourceDocument, currentPath);
-    return { sourcePath: String(currentFile?.path || "") };
-  }
-  function sourceFileContent(file) {
-    return typeof file?.text === "string" ? file.text : "";
-  }
-  function sourceFileRows(sourceDocument, selectedPath) {
-    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
-    const activePath = String(selectedPath || sourceDocument?.sourcePath || "").trim();
-    return files.filter((file) => String(file?.path || "").trim()).map((file) => {
-      const path = String(file.path || "").trim();
-      const size = Number(file.size_bytes || 0);
-      const mediaType = String(file.media_type || "").trim();
-      return {
-        path,
-        label: path,
-        value: path,
-        selected: path === activePath,
-        className: `source-file-row${path === activePath ? " is-selected" : ""}`,
-        meta: [mediaType, size > 0 ? `${size}b` : ""].filter(Boolean).join(" \xB7 "),
-        file
-      };
-    });
-  }
-  function highlightSourceFile(file) {
-    const source = sourceFileContent(file);
-    const path = String(file?.path || "");
-    const mediaType = String(file?.media_type || "");
-    if (/\.toml$/i.test(path) || mediaType === "text/toml") return highlightTomlSource(source);
-    return escapeHtml(source);
-  }
-  function sourceEditorState(sourceDocument, options = {}) {
-    const selectedFile = sourceFileForPath(sourceDocument, options.sourcePath);
-    const source = selectedFile ? sourceFileContent(selectedFile) : "";
-    const view = sourceViewForState(sourceDocument, options.sourceView);
-    const sourcePath = String(selectedFile?.path || sourceDocument?.sourcePath || "").trim();
-    const sourceLabel = [
-      sourceDocument?.source || "",
-      sourcePath,
-      sourceDocument?.filename || "",
-      sourceDocument?.media_type || ""
-    ].filter(Boolean).join(" \xB7 ");
-    const validationSource = sourceDocument?.validation?.validation_source || "";
-    const bodyClass = options.compact ? "bld-toml__body" : "source-drawer__body";
-    return {
-      source,
-      sourceHtml: selectedFile ? highlightSourceFile(selectedFile) : "",
-      drawerEyebrow: view.drawerEyebrow,
-      inlineTitle: view.inlineTitle,
-      sourceLabel,
-      validationSource,
-      bodyClass,
-      selectedPath: sourcePath,
-      fileRows: sourceFileRows(sourceDocument, sourcePath),
-      showLoading: !!options.busy && !source,
-      loadingText: view.loadingText,
-      copyLabel: view.copyLabel,
-      closeLabel: view.closeLabel,
-      copyDisabled: !!options.busy || !source
-    };
-  }
-  function highlightTomlSource(source) {
-    return escapeHtml(String(source || "")).replace(/^(\s*#.*)$/gm, '<span class="toml-comment">$1</span>').replace(/^(\s*)(\[[^\]]+\])/gm, '$1<span class="toml-table">$2</span>').replace(/^(\s*)([A-Za-z_][\w-]*)(\s*=)/gm, '$1<span class="toml-key">$2</span>$3');
-  }
-  function sourceViewFromSchema(schema) {
-    const view = schema?.mob_definition?.editor_source_view;
-    if (!view || typeof view !== "object") return null;
-    const out = {
-      drawerEyebrow: String(view.drawer_eyebrow || "").trim(),
-      inlineTitle: String(view.inline_title || "").trim(),
-      primarySourcePath: String(view.primary_source_path || "").trim(),
-      loadingText: String(view.loading_text || "").trim(),
-      copyLabel: String(view.copy_label || "").trim(),
-      closeLabel: String(view.close_label || "").trim()
-    };
-    return out.drawerEyebrow && out.inlineTitle && out.primarySourcePath && out.loadingText && out.copyLabel && out.closeLabel ? out : null;
-  }
-  function sourceViewForState(sourceDocument, sourceView) {
-    const view = sourceView && typeof sourceView === "object" ? sourceView : sourceDocument?.sourceView;
-    return {
-      drawerEyebrow: String(view?.drawerEyebrow || ""),
-      inlineTitle: String(view?.inlineTitle || ""),
-      primarySourcePath: String(view?.primarySourcePath || ""),
-      loadingText: String(view?.loadingText || ""),
-      copyLabel: String(view?.copyLabel || ""),
-      closeLabel: String(view?.closeLabel || "")
-    };
-  }
-
   // ../packages/flow-editor-core/src/studio/state.ts
   function directMemberAddValidation(member, members = [], contract = null) {
     if (!member || typeof member !== "object") {
@@ -10325,6 +10638,8 @@ const {
   authoringOperationFromIntent,
   authoringOperationsFromSchema,
   authoringProjectionApplyPlan,
+  authoringProjectionFromMobKitDocument,
+  authoringProjectionFromOperationResult,
   authoringRpcMethodsFromSchema,
   basicBranchAddPatch,
   basicBranchConditionControlState,
@@ -10365,6 +10680,7 @@ const {
   canonicalBudgetSplitPolicyKind,
   canonicalLaunchModeKind,
   canonicalizeGraphInstance,
+  catalogSkillRealmsPatch,
   catalogValueAllowed,
   childLanes,
   clearDeletedGraphConditionEdges,
@@ -10403,6 +10719,7 @@ const {
   dependencyModeAllowed,
   dependencyModeFromStepSource,
   dependencyModeOptions,
+  deployDefaultsFromSchema,
   deployErrorOutcome,
   deployOutcome,
   deployPlanTraceCloseTransition,
@@ -10411,6 +10728,7 @@ const {
   deployResultToRows,
   deployRuntimeCompatibility,
   deploySettingsFieldPatch,
+  deploySettingsForUi,
   deploySettingsPatch,
   deploySurfaceOptions,
   deploySurfaceRuntimeModes,
@@ -10439,6 +10757,7 @@ const {
   editorSchemaFieldNameFallback,
   emptyAuthoringFlowState,
   emptyGraphDraftContract,
+  emptyMobKitCatalogs,
   enumValueAddPatch,
   enumValueCommitPatch,
   enumValueDeletePatch,
@@ -10459,6 +10778,8 @@ const {
   flowCatalogBootstrapState,
   flowDraftIdFromSpec,
   flowForDocument,
+  flowFromHydratedDocument,
+  flowImportedIdFromDocument,
   flowLaunchSourceSet,
   flowPrimitiveIdFromGate,
   flowRegistryAppendRowPatch,
@@ -10573,7 +10894,9 @@ const {
   graphPortIn,
   graphPortOut,
   graphProjectionEdgeKinds,
+  graphProjectionForDocument,
   graphProjectionForFlow,
+  graphProjectionFromMobKitResult,
   graphSegmentsToFlowSteps,
   graphSelectionProjection,
   graphSelectionState,
@@ -10599,6 +10922,7 @@ const {
   hasAuthoringLaunchMode,
   highlightSourceFile,
   highlightTomlSource,
+  hydrateMobpackDocumentState,
   importErrorOutcome,
   incomingEdges,
   inlineSkillRealmIdFromOperationResult,
@@ -10673,11 +10997,13 @@ const {
   memberToolRemovePatch,
   memberUpdateCascadePatch,
   memberUpdateValidation,
+  mergeSkillRealms,
   mobBackendDefaultOptions,
   mobDefaultsFromSchema,
   mobDefinitionUnsupportedOptionLabel,
   mobDefinitionUnsupportedOptionReason,
   mobKitBudgetSplitPolicy,
+  mobKitCatalogsFromSchema,
   mobRoleWiringAddPatch,
   mobRoleWiringDeletePatch,
   mobRoleWiringEditorState,
@@ -10687,6 +11013,7 @@ const {
   mobSettingsFieldPatch,
   mobSettingsForUi,
   mobSettingsPatch,
+  modelCatalogFromCatalogs,
   newFlowInitialState,
   newFlowModalCreateSpec,
   newFlowModalFieldPatch,
@@ -10843,6 +11170,7 @@ const {
   skillIdSet,
   skillIdsFromRealms,
   skillRealmsForDocument,
+  skillRealmsFromCatalogs,
   slug,
   sourceDefinitionRefRows,
   sourceDocumentFromSourceResult,
@@ -10880,6 +11208,7 @@ const {
   themeToggleTransition,
   toolCatalogEntryAvailability,
   toolCatalogEntryAvailable,
+  toolCatalogFromCatalogs,
   topRailNavigationTransition,
   topRailState,
   trustPolicyOptions,
@@ -11178,327 +11507,6 @@ const {
       const label = String(filename || "JSON import");
       throw new Error(`${label} is not valid JSON: ${error?.message || error}`);
     }
-  }
-
-  function deploySettingsForUi(deploy) {
-    if (!deploy || typeof deploy !== "object") return { ...EMPTY_DEPLOY_SETTINGS };
-    return {
-      ...EMPTY_DEPLOY_SETTINGS,
-      command: deploy.command || "",
-      surface: deploy.surface || "",
-      trustPolicy: deploy.trust_policy || deploy.trustPolicy || "",
-      model: deploy.model || "",
-      maxDuration: deploy.max_duration || deploy.maxDuration || "",
-      maxToolCalls: deploy.max_tool_calls ?? deploy.maxToolCalls ?? null,
-      maxTotalTokens: deploy.max_total_tokens ?? deploy.maxTotalTokens ?? null,
-      isolated: deploy.isolated ?? false,
-      realm: deploy.realm || "",
-      instance: deploy.instance || "",
-      realmBackend: deploy.realm_backend || deploy.realmBackend || "",
-      contextRoot: deploy.context_root || deploy.contextRoot || "",
-      stateRoot: deploy.state_root || deploy.stateRoot || "",
-      userConfigRoot: deploy.user_config_root || deploy.userConfigRoot || "",
-      prompt: deploy.prompt || "",
-    };
-  }
-
-  function deployDefaultsFromSchema(schema) {
-    return deploySettingsForUi(schema?.deploy_settings?.defaults);
-  }
-
-  function modelCatalogFromCatalogs(schema) {
-    return (schema?.models || [])
-      .filter((model) => model && typeof model === "object" && model.id && model.label && (model.vendor || model.provider))
-      .map((model) => ({
-        id: String(model.id),
-        label: String(model.label),
-        vendor: String(model.vendor || model.provider),
-        ...(model.deployability ? { deployability: model.deployability } : {}),
-        ...(model.provenance ? { provenance: model.provenance } : {}),
-        profile: model.profile || null,
-      }));
-  }
-
-  function toolCatalogFromCatalogs(schema) {
-    return (Array.isArray(schema?.tool_catalog) ? schema.tool_catalog : [])
-      .filter((tool) => tool && typeof tool === "object" && tool.id && tool.label && tool.desc && tool.kind && tool.source)
-      .map((tool) => ({
-        id: String(tool.id),
-        label: String(tool.label),
-        desc: String(tool.desc),
-        kind: String(tool.kind),
-        source: String(tool.source),
-        tagClass: String(tool.tag_class || ""),
-        raw: tool,
-      }));
-  }
-
-  function emptyMobKitCatalogs(boot = {}) {
-    return {
-      models: [],
-      toolCatalog: [],
-      agentDefinitions: [],
-      sampleAgentDefinitions: [],
-      skillRealms: [],
-      blankMobpack: null,
-      catalogSnapshot: null,
-      deployDefaults: deployDefaultsFromSchema(null),
-      mobDefaults: mobDefaultsFromSchema(null),
-      mobDefinition: null,
-      sourceView: null,
-      agentView: null,
-      newFlowView: null,
-      flowRegistryView: null,
-      agentDetailView: null,
-      agentAccessView: null,
-      deployView: null,
-      settingsView: null,
-      launchView: null,
-      schemaView: null,
-      basicView: null,
-      graphView: null,
-      graphTemplateView: null,
-      conditionView: null,
-      errorView: null,
-      authoringOperations: {},
-      runtimeFlows: [],
-      validationSource: "",
-      contractMeta: {
-        loaded: false,
-        schemaVersion: "",
-        mediaType: "",
-        validationSource: "",
-      },
-      grid: boot.grid || null,
-      cellXY: boot.cellXY || null,
-      template: null,
-    };
-  }
-
-  function mobKitCatalogsFromSchema(schema, boot = {}, catalogPayload = null) {
-    const catalogSource = catalogPayload && typeof catalogPayload === "object" ? catalogPayload : {};
-    const agentDefinitions = agentDefinitionsFromCatalogs(catalogSource);
-    const sampleAgentDefinitions = sampleAgentDefinitionsFromCatalogs(catalogSource);
-    const blankMobpack = blankMobpackFromCatalogs(catalogSource);
-    return {
-      models: modelCatalogFromCatalogs(catalogSource),
-      toolCatalog: toolCatalogFromCatalogs(catalogSource),
-      agentDefinitions,
-      sampleAgentDefinitions,
-      runtimeFlows: flowRegistryRowsFromBackend(catalogSource.runtime_flows),
-      skillRealms: skillRealmsFromCatalogs(catalogSource),
-      blankMobpack,
-      catalogSnapshot: catalogSource.catalog_snapshot || null,
-      deployDefaults: deployDefaultsFromSchema(schema),
-      mobDefaults: mobDefaultsFromSchema(schema),
-      mobDefinition: schema?.mob_definition || null,
-      sourceView: sourceViewFromSchema(schema),
-      agentView: agentViewFromSchema(schema),
-      newFlowView: newFlowViewFromSchema(schema),
-      flowRegistryView: flowRegistryViewFromSchema(schema),
-      agentDetailView: agentDetailViewFromSchema(schema),
-      agentAccessView: agentAccessViewFromSchema(schema),
-      deployView: deployViewFromSchema(schema),
-      settingsView: settingsViewFromSchema(schema),
-      launchView: launchViewFromSchema(schema),
-      schemaView: schemaViewFromSchema(schema),
-      basicView: basicViewFromSchema(schema),
-      graphView: graphViewFromSchema(schema),
-      graphTemplateView: graphTemplateViewFromSchema(schema),
-      conditionView: conditionViewFromSchema(schema),
-      errorView: errorViewFromSchema(schema),
-      authoringOperations: authoringOperationsFromSchema(schema),
-      validationSource: schema?.validation_source || "",
-      contractMeta: {
-        loaded: true,
-        schemaVersion: schema?.schema_version || "",
-        mediaType: schema?.media_type || "",
-        validationSource: schema?.validation_source || "",
-      },
-      grid: boot.grid || null,
-      cellXY: boot.cellXY || null,
-      template: graphTemplateSeedFromBlankMobpack(blankMobpack),
-    };
-  }
-
-  function skillRealmsFromCatalogs(schema) {
-    const skillRealms = schema?.skill_realms || [];
-    return Array.isArray(skillRealms) ? skillRealms : [];
-  }
-
-  function mergeSkillRealms(documentRealms, contractRealms) {
-    const merged = [];
-    const seenSkillIds = new Set();
-    for (const realm of [...(documentRealms || []), ...(contractRealms || [])]) {
-      if (!realm || typeof realm !== "object") continue;
-      const id = String(realm.id || realm.label || "").trim();
-      if (!id) continue;
-      const uniqueSkills = [];
-      for (const skill of realm.skills || []) {
-        const skillId = String(skill?.id || "").trim();
-        if (!skillId || seenSkillIds.has(skillId)) continue;
-        seenSkillIds.add(skillId);
-        uniqueSkills.push(skill);
-      }
-      const existing = merged.find((candidate) => candidate.id === id);
-      if (existing) {
-        existing.skills = [...(existing.skills || []), ...uniqueSkills];
-        continue;
-      }
-      if (!uniqueSkills.length) continue;
-      merged.push({
-        ...realm,
-        id,
-        skills: uniqueSkills,
-        default: merged.length === 0 ? !!realm.default : false,
-      });
-    }
-    return merged;
-  }
-
-  function catalogSkillRealmsPatch(catalogs, skillRealms) {
-    return {
-      ...(catalogs || {}),
-      skillRealms: Array.isArray(skillRealms) ? skillRealms : [],
-    };
-  }
-
-  function flowFromHydratedDocument(document) {
-    if (document?.flow && typeof document.flow === "object" && Array.isArray(document.flow.steps)) {
-      return document.flow;
-    }
-    return null;
-  }
-
-  function graphProjectionForDocument(document, members, contract) {
-    const storedFrames = Array.isArray(document?.frames) ? document.frames : [];
-    return {
-      instances: Array.isArray(document?.instances) ? document.instances : [],
-      edges: Array.isArray(document?.edges) ? document.edges : [],
-      frames: storedFrames,
-    };
-  }
-
-  function graphProjectionFromMobKitResult(result) {
-    const source = result?.graph_projection || result?.graphProjection || result;
-    if (!source || typeof source !== "object") return null;
-    if (!Array.isArray(source.instances) || !Array.isArray(source.edges) || !Array.isArray(source.frames)) return null;
-    return {
-      instances: source.instances,
-      edges: source.edges,
-      frames: source.frames,
-      source: String(source.source || ""),
-      validation: source.validation || null,
-    };
-  }
-
-  function hydrateMobpackDocumentState(result, options = {}) {
-    const document = result?.document && typeof result.document === "object" ? result.document : {};
-    const members = Array.isArray(document.members) ? document.members : [];
-    const schemas = Array.isArray(document.schemas) ? document.schemas : [];
-    const id = String(options.id || flowImportedIdFromDocument(document, result, options.existingRows)).trim();
-    const flow = flowFromHydratedDocument(document);
-    const errorView = errorViewForState(options.errorView);
-    if (!flow) {
-      return {
-        ok: false,
-        id,
-        document,
-        members,
-        schemas,
-        flow: null,
-        skillRealms: mergeSkillRealms(document.skill_realms, options.contractSkillRealms || []),
-        graphProjection: null,
-        deploySettings: deploySettingsForUi(options.deployDefaults),
-        mobSettings: mobSettingsForUi(options.mobDefaults),
-        registryRow: null,
-        addToRegistry: false,
-        openEditor: false,
-        validation: null,
-        validationRows: [{
-          kind: "crit",
-          glyph: errorView.criticalGlyph,
-          head: errorView.missingEditorFlowHead,
-          sub: errorView.missingEditorFlowSub,
-          meta: errorView.missingEditorFlowMeta,
-        }],
-        stage: "draft",
-        error: errorView.missingEditorFlowMeta,
-      };
-    }
-    const skillRealms = mergeSkillRealms(document.skill_realms, options.contractSkillRealms || []);
-    const graphProjection = graphProjectionFromMobKitResult(result)
-      || graphProjectionForDocument({ ...document, flow }, members, options.contract);
-    const hasDeploySettings = document.deploy && typeof document.deploy === "object" && !Array.isArray(document.deploy);
-    const hasMobSettings = document.mob_settings && typeof document.mob_settings === "object" && !Array.isArray(document.mob_settings);
-    const validation = result?.validation || null;
-    const validationRows = diagnosticsToRows(validation);
-    const stage = validation?.ok ? "valid" : "draft";
-    const registryRow = flowRegistryRowFromDocument({
-      id,
-      document,
-      validation,
-      stage,
-      sourceLabel: result?.source_label || "",
-      source: result?.source || "",
-      flowRow: options.flowRow || null,
-    });
-    return {
-      id,
-      document,
-      members,
-      schemas,
-      flow,
-      skillRealms,
-      graphProjection,
-      deploySettings: deploySettingsForUi(hasDeploySettings ? document.deploy : options.deployDefaults),
-      mobSettings: mobSettingsForUi(hasMobSettings ? document.mob_settings : options.mobDefaults),
-      registryRow,
-      addToRegistry: options.addToRegistry !== false,
-      openEditor: options.openEditor !== false,
-      validation,
-      validationRows,
-      stage,
-    };
-  }
-
-  function authoringProjectionFromMobKitDocument(document, options = {}) {
-    const source = document && typeof document === "object" ? document : {};
-    const flow = flowFromHydratedDocument(source) || emptyAuthoringFlowState();
-    return {
-      document: source,
-      flow,
-      members: Array.isArray(source.members) ? source.members : [],
-      schemas: Array.isArray(source.schemas) ? source.schemas : [],
-      skillRealms: Array.isArray(source.skill_realms) ? source.skill_realms : [],
-      instances: Array.isArray(source.instances) ? source.instances : [],
-      edges: Array.isArray(source.edges) ? source.edges : [],
-      frames: Array.isArray(source.frames) ? source.frames : [],
-      deploySettings: deploySettingsForUi(source.deploy || options.deployDefaults),
-      mobSettings: mobSettingsForUi(source.mob_settings || options.mobDefaults),
-    };
-  }
-
-  function authoringProjectionFromOperationResult(result, options = {}) {
-    const document = result?.document && typeof result.document === "object" ? result.document : null;
-    if (!document) return null;
-    const projection = authoringProjectionFromMobKitDocument(document, options);
-    const graphProjection = graphProjectionFromMobKitResult(result);
-    if (graphProjection) {
-      projection.instances = graphProjection.instances;
-      projection.edges = graphProjection.edges;
-      projection.frames = graphProjection.frames;
-    }
-    return projection;
-  }
-
-  function flowImportedIdFromDocument(document, result = {}, existingRows = []) {
-    const source = result?.source_name || result?.sourceName || result?.filename || result?.source;
-    const name = document?.name || document?.mob_id || document?.flow?.name || source || "";
-    if (!String(name || "").trim()) return "";
-    return flowDraftIdFromSpec({
-      name,
-    }, existingRows);
   }
 
   const MobKitFlowController = {

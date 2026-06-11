@@ -27,8 +27,9 @@
 // here). The schema/field-edit.ts -> flow/reconcile.ts edge that used to go
 // through the lazy _residue-bridge is now a relative import, a runtime-only
 // cycle with reconcile's enumValuesForField import (no module-init
-// cross-calls). One straggler edge remains bridge-side: deploySettingsForUi
-// stays in the residue until S17 (catalogs/hydration).
+// cross-calls). The last bridge-side straggler, deploySettingsForUi, was
+// re-homed to catalogs/hydration.ts in S17 and is now a relative import.
+import { deploySettingsForUi } from "../catalogs/hydration";
 import {
   contractStringValues,
   firstDeploySurfaceRuntimeMode,
@@ -44,7 +45,6 @@ import {
   launchModeFromAuthoringSource,
   normalizedEdgeCondition,
 } from "./launch-modes";
-import { deploySettingsForUi } from "../_residue-bridge";
 
 export function reconcileDeletedFlowStepReferences(flow, deletedId) {
   if (!flow || typeof flow !== "object") return flow;
