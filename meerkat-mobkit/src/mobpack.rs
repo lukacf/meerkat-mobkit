@@ -499,7 +499,7 @@ fn mobpack_source_skill_realm(
                         catalog_provenance(
                             "mobkit/skills/catalog",
                             mobpack_source,
-                            &skill_source_document_path,
+                            skill_source_document_path,
                         ),
                     );
                     Value::Object(projected)
@@ -659,7 +659,7 @@ fn tool_catalog_response_with_runtime_state(
                 "source": "meerkat_mob::ToolConfig",
                 "desc": tool_config_field_desc(&field),
                 "tag_class": tool_config_field_tag_class(&field),
-                "runtime_availability": runtime_availability.clone(),
+                "runtime_availability": runtime_availability,
                 "runtimeAvailability": runtime_availability,
                 "deployability": catalog_deployability(true, "ToolConfig flag is deployable through mob.toml profile tool settings"),
                 "provenance": catalog_provenance("mobkit/tools/catalog", "meerkat_mob::ToolConfig", &format!("ToolConfig.{field}")),
@@ -717,7 +717,7 @@ fn tool_config_bool_fields() -> Vec<String> {
                 object
                     .iter()
                     .filter(|(_, value)| value.is_boolean())
-                    .map(|(field, _)| field.to_string())
+                    .map(|(field, _)| field.clone())
                     .collect::<Vec<_>>()
             })
         })
@@ -817,10 +817,10 @@ fn discover_skills_in_dir(dir: &Path) -> Vec<Value> {
         if skill_path.file_name().and_then(|name| name.to_str()) != Some("SKILL.md") {
             continue;
         }
-        if let Ok(content) = std::fs::read_to_string(&skill_path) {
-            if let Some(skill) = skill_catalog_entry_from_markdown(&skill_path, &content) {
-                skills.push(skill);
-            }
+        if let Ok(content) = std::fs::read_to_string(&skill_path)
+            && let Some(skill) = skill_catalog_entry_from_markdown(&skill_path, &content)
+        {
+            skills.push(skill);
         }
     }
     skills.sort_by(|a, b| {
@@ -995,8 +995,8 @@ fn runtime_unavailable_reason(provider: &Value) -> Value {
 fn model_catalog_response() -> Vec<Value> {
     meerkat_models::catalog()
         .iter()
-        .filter_map(|entry| {
-            Some(json!({
+        .map(|entry| {
+            json!({
                 "id": entry.id,
                 "label": entry.display_name,
                 "vendor": entry.provider,
@@ -1006,7 +1006,7 @@ fn model_catalog_response() -> Vec<Value> {
                 "profile": meerkat_core::Provider::parse_strict(entry.provider)
                     .and_then(|provider| meerkat_models::profile_for(provider, entry.id))
                     .and_then(|profile| serde_json::to_value(profile).ok()),
-            }))
+            })
         })
         .collect()
 }
@@ -1054,7 +1054,7 @@ pub fn mobpack_tools_catalog_response_with_runtime(
             "schema_version": MOBPACK_SCHEMA_VERSION,
             "runtime_backed": runtime_backed,
             "source": "mobkit/tool-config",
-            "authoring_provider": provider.clone(),
+            "authoring_provider": provider,
             "runtime_unavailable_reason": runtime_unavailable_reason(&provider),
             "tool_catalog": tool_catalog_response_with_runtime_state(runtime),
         }),
@@ -1077,7 +1077,7 @@ pub fn mobpack_skills_catalog_response_with_runtime(
             "schema_version": MOBPACK_SCHEMA_VERSION,
             "runtime_backed": runtime_backed,
             "source": "mobkit/authoring-skill-realms",
-            "authoring_provider": provider.clone(),
+            "authoring_provider": provider,
             "runtime_unavailable_reason": runtime_unavailable_reason(&provider),
             "skill_realms": skill_realms_response_with_runtime_state(runtime),
         }),
@@ -1115,7 +1115,7 @@ pub fn mobpack_agent_definitions_response_with_runtime(
             "schema_version": MOBPACK_SCHEMA_VERSION,
             "runtime_backed": runtime_backed,
             "source": "mobkit/authoring-agent-definitions",
-            "authoring_provider": provider.clone(),
+            "authoring_provider": provider,
             "runtime_unavailable_reason": runtime_unavailable_reason(&provider),
             "agent_definitions": agent_definitions,
         }),
@@ -1150,7 +1150,7 @@ pub fn mobpack_templates_response_with_runtime(
             "schema_version": MOBPACK_SCHEMA_VERSION,
             "source": "mobkit/mobpack-templates",
             "runtime_backed": runtime_backed,
-            "authoring_provider": provider.clone(),
+            "authoring_provider": provider,
             "runtime_unavailable_reason": runtime_unavailable_reason(&provider),
             "blank_mobpack": blank_mobpack,
             "sample_mobpacks": sample_mobpacks,
@@ -1548,7 +1548,12 @@ fn deploy_target_string_array(provider: &Value, key: &str, fallback: &[&str]) ->
                 .collect::<Vec<_>>()
         })
         .filter(|values| !values.is_empty())
-        .unwrap_or_else(|| fallback.iter().map(|value| value.to_string()).collect())
+        .unwrap_or_else(|| {
+            fallback
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
+        })
 }
 
 fn deploy_settings_schema_for_provider(provider: &Value) -> Value {
@@ -1643,7 +1648,7 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         "trust_policies": base_deploy_settings["trust_policies"].clone(),
         "realm_backends": base_deploy_settings["realm_backends"].clone(),
         "runtime_backed": base_deploy_settings["runtime_backed"].clone(),
-        "authoring_provider": provider.clone(),
+        "authoring_provider": provider,
         "provenance": base_deploy_settings["provenance"].clone(),
         "options": [
             "model",
@@ -2850,9 +2855,9 @@ fn agent_definition_catalog(
                         "schema": schema_id,
                         "schemaSourceDocumentPath": if schema_definition.is_null() { "" } else { "document.schemas[]" },
                         "schemaDefinition": schema_definition,
-                        "skills": skills.clone(),
+                        "skills": skills,
                         "skillDefinitions": resolved_catalog_refs(&skills, &skills_by_id),
-                        "tools": tools.clone(),
+                        "tools": tools,
                         "toolDefinitions": resolved_catalog_refs(&tools, &tools_by_id),
                         "profileBinding": profile_binding,
                         "realmProfile": member.get("realmProfile").or_else(|| member.get("realm_profile")).and_then(Value::as_str).unwrap_or_default(),
@@ -2873,7 +2878,7 @@ fn agent_definition_catalog(
                         "deployability": catalog_deployability(true, "profile-member definition is projected from a deployable MobKit mobpack member"),
                         "provenance": catalog_provenance(
                             "mobkit/agent_definitions/list",
-                            &source_origin,
+                            source_origin,
                             &format!("{source_mobpack}:document.members[{member_index}]")
                         ),
                     })
@@ -3095,7 +3100,7 @@ pub fn runtime_flow_registry_rows_from_definition(definition: &MobDefinition) ->
         .flows
         .keys()
         .filter_map(|flow_id| {
-            runtime_flow_registry_row_from_definition(definition, &flow_id.to_string()).ok()
+            runtime_flow_registry_row_from_definition(definition, flow_id.as_ref()).ok()
         })
         .collect()
 }
@@ -3521,10 +3526,10 @@ branch = "review_lane"
 
 pub fn import_mobpack(params: &Value) -> Result<Value, String> {
     let mut document = document_from_params(params)?;
-    if document.mob_toml.as_deref().unwrap_or("").trim().is_empty() {
-        if let Some(text) = params.get("mob_toml").and_then(Value::as_str) {
-            document.mob_toml = Some(text.to_string());
-        }
+    if document.mob_toml.as_deref().unwrap_or("").trim().is_empty()
+        && let Some(text) = params.get("mob_toml").and_then(Value::as_str)
+    {
+        document.mob_toml = Some(text.to_string());
     }
     if needs_editor_projection(&document)
         && let Some(mob_toml) = document
@@ -3820,12 +3825,12 @@ fn enforce_mobpack_draft_expected_revision(params: &Value, source: &str) -> Resu
     let rows = read_mobpack_draft_store(&path)?;
     let existing = rows.get(&id);
     let current_revision = mobpack_draft_revision_from_row(existing);
-    if let Some(expected_revision) = expected_revision {
-        if expected_revision != current_revision {
-            return Err(format!(
-                "{source} draft revision conflict for {id}: expected {expected_revision}, found {current_revision}"
-            ));
-        }
+    if let Some(expected_revision) = expected_revision
+        && expected_revision != current_revision
+    {
+        return Err(format!(
+            "{source} draft revision conflict for {id}: expected {expected_revision}, found {current_revision}"
+        ));
     }
     if let Some(expected_etag) = expected_etag {
         let current_etag = mobpack_draft_etag(&id, current_revision);
@@ -4068,7 +4073,7 @@ pub fn create_mobpack_draft(params: &Value) -> Result<Value, String> {
     let draft_etag = mobpack_draft_etag(&id, revision);
     let row = json!({
         "id": id,
-        "name": if document.name.trim().is_empty() { document.mob_id.clone() } else { document.name.clone() },
+        "name": if document.name.trim().is_empty() { &document.mob_id } else { &document.name },
         "version": document.schema_version,
         "stage": "draft",
         "trigger": trigger,
@@ -4234,12 +4239,12 @@ pub fn save_mobpack_draft(params: &Value) -> Result<Value, String> {
     let mut rows = read_mobpack_draft_store(&path)?;
     let existing = rows.get(&id);
     let current_revision = mobpack_draft_revision_from_row(existing);
-    if let Some(expected_revision) = mobpack_draft_expected_revision(params) {
-        if expected_revision != current_revision {
-            return Err(format!(
-                "mobpack draft revision conflict for {id}: expected {expected_revision}, found {current_revision}"
-            ));
-        }
+    if let Some(expected_revision) = mobpack_draft_expected_revision(params)
+        && expected_revision != current_revision
+    {
+        return Err(format!(
+            "mobpack draft revision conflict for {id}: expected {expected_revision}, found {current_revision}"
+        ));
     }
     if let Some(expected_etag) = mobpack_draft_expected_etag(params) {
         let current_etag = mobpack_draft_etag(&id, current_revision);
@@ -4275,12 +4280,12 @@ pub fn delete_mobpack_draft(params: &Value) -> Result<Value, String> {
     let path = mobpack_draft_store_path(params);
     let mut rows = read_mobpack_draft_store(&path)?;
     let current_revision = mobpack_draft_revision_from_row(rows.get(&id));
-    if let Some(expected_revision) = mobpack_draft_expected_revision(params) {
-        if expected_revision != current_revision {
-            return Err(format!(
-                "mobkit/mobpacks/delete draft revision conflict for {id}: expected {expected_revision}, found {current_revision}"
-            ));
-        }
+    if let Some(expected_revision) = mobpack_draft_expected_revision(params)
+        && expected_revision != current_revision
+    {
+        return Err(format!(
+            "mobkit/mobpacks/delete draft revision conflict for {id}: expected {expected_revision}, found {current_revision}"
+        ));
     }
     if let Some(expected_etag) = mobpack_draft_expected_etag(params) {
         let current_etag = mobpack_draft_etag(&id, current_revision);
@@ -4494,6 +4499,42 @@ fn apply_sync_graph_to_flow_operation(
 ) -> Result<Value, String> {
     document.flow = graph_to_flow_from_document(document);
     reconcile_flow_step_launch_modes(document);
+    // Normalize the graph to the canonical projection of the regenerated
+    // flow so synthesized constructs (parallel fan-out/join gates, frames)
+    // exist in the graph the document carries. The caller's node layout is
+    // preserved by id; only synthesized nodes take canonical positions.
+    let prior_positions: BTreeMap<String, (Value, Value)> = document
+        .instances
+        .as_array()
+        .map(|instances| {
+            instances
+                .iter()
+                .filter_map(|instance| {
+                    let id = instance.get("id").and_then(Value::as_str)?;
+                    let col = instance.get("col")?;
+                    let row = instance.get("row")?;
+                    Some((id.to_string(), (col.clone(), row.clone())))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(steps) = document.flow.get("steps").and_then(Value::as_array) {
+        let (mut instances, edges, frames) = graph_projection_from_visual_steps(steps);
+        for instance in &mut instances {
+            let Some((col, row)) = instance
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|id| prior_positions.get(id))
+            else {
+                continue;
+            };
+            instance["col"] = col.clone();
+            instance["row"] = row.clone();
+        }
+        document.instances = Value::Array(instances);
+        document.edges = Value::Array(edges);
+        document.frames = Value::Array(frames);
+    }
     Ok(operation_selection_or_clear(operation))
 }
 
@@ -5371,7 +5412,7 @@ fn apply_add_agent_definition_operation(
         .and_then(Value::as_str)
         .ok_or_else(|| "MobKit agent definition produced member without id".to_string())?
         .to_string();
-    members.push(member.clone());
+    members.push(member);
     document.members = Value::Array(members);
     Ok(json!({ "kind": "agent", "id": member_id }))
 }
@@ -5813,7 +5854,7 @@ fn available_skill_ids(skill_realms: &Value) -> BTreeSet<String> {
 
 fn available_model_ids() -> BTreeSet<String> {
     meerkat_models::catalog()
-        .into_iter()
+        .iter()
         .map(|entry| entry.id.to_string())
         .filter(|id| !id.is_empty())
         .collect()
@@ -5944,14 +5985,14 @@ fn collect_flow_step_schemas(
     out: &mut BTreeMap<String, String>,
 ) {
     for step in steps {
-        if step.get("type").and_then(Value::as_str) == Some("member") {
-            if let Some(step_id) = step.get("id").and_then(Value::as_str) {
-                let role = step.get("role").and_then(Value::as_str).unwrap_or_default();
-                out.insert(
-                    step_id.to_string(),
-                    member_schemas.get(role).cloned().unwrap_or_default(),
-                );
-            }
+        if step.get("type").and_then(Value::as_str) == Some("member")
+            && let Some(step_id) = step.get("id").and_then(Value::as_str)
+        {
+            let role = step.get("role").and_then(Value::as_str).unwrap_or_default();
+            out.insert(
+                step_id.to_string(),
+                member_schemas.get(role).cloned().unwrap_or_default(),
+            );
         }
         if let Some(nested) = step.get("steps").and_then(Value::as_array) {
             collect_flow_step_schemas(nested, member_schemas, out);
@@ -6139,9 +6180,9 @@ fn rewrite_schema_field_references_in_edges(
         let field = parts.next().unwrap_or_default();
         if namespace != "steps"
             || parts.next().is_some()
-            || !step_schemas
+            || step_schemas
                 .get(step_id)
-                .is_some_and(|schema| schema == schema_id)
+                .is_none_or(|schema| schema != schema_id)
             || field != old_name
         {
             continue;
@@ -6166,17 +6207,17 @@ fn input_param_field_names(flow: &Value) -> BTreeSet<String> {
 
 fn collect_input_param_field_names(steps: &[Value], out: &mut BTreeSet<String>) {
     for step in steps {
-        if step.get("type").and_then(Value::as_str) == Some("input") {
-            if let Some(params) = step.get("inputParams").and_then(Value::as_array) {
-                out.extend(
-                    params
-                        .iter()
-                        .filter_map(|param| param.get("name").and_then(Value::as_str))
-                        .map(str::trim)
-                        .filter(|name| !name.is_empty())
-                        .map(ToString::to_string),
-                );
-            }
+        if step.get("type").and_then(Value::as_str) == Some("input")
+            && let Some(params) = step.get("inputParams").and_then(Value::as_array)
+        {
+            out.extend(
+                params
+                    .iter()
+                    .filter_map(|param| param.get("name").and_then(Value::as_str))
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(ToString::to_string),
+            );
         }
         if let Some(nested) = step.get("steps").and_then(Value::as_array) {
             collect_input_param_field_names(nested, out);
@@ -6556,10 +6597,10 @@ fn collect_flow_branch_ids_in_steps(steps: &[Value], ids: &mut BTreeSet<String>)
 }
 
 fn next_flow_branch_id(flow: &Value, ids: &mut BTreeSet<String>) -> String {
-    if ids.is_empty() {
-        if let Some(steps) = flow.get("steps").and_then(Value::as_array) {
-            collect_flow_branch_ids_in_steps(steps, ids);
-        }
+    if ids.is_empty()
+        && let Some(steps) = flow.get("steps").and_then(Value::as_array)
+    {
+        collect_flow_branch_ids_in_steps(steps, ids);
     }
     let mut index = 1;
     loop {
@@ -6699,10 +6740,10 @@ fn validate_flow_step(
         .filter(|id| !id.is_empty())
         .ok_or_else(|| "flow step requires id".to_string())?
         .to_string();
-    if let Some(current_id) = current_id {
-        if id != current_id {
-            return Err("update_flow_step cannot change step id".to_string());
-        }
+    if let Some(current_id) = current_id
+        && id != current_id
+    {
+        return Err("update_flow_step cannot change step id".to_string());
     }
     let ids = flow_step_ids(flow);
     if ids.contains(&id) && current_id.is_none_or(|current_id| current_id != id) {
@@ -6774,24 +6815,24 @@ fn insert_flow_step_into_lane(
         {
             return insert_flow_step_into_parent_lane(step, &branch_id, lane_ref, new_step);
         }
-        if let Some(nested) = step.get_mut("steps").and_then(Value::as_array_mut) {
-            if insert_flow_step_into_lane(nested, lane_ref, new_step) {
-                return true;
-            }
+        if let Some(nested) = step.get_mut("steps").and_then(Value::as_array_mut)
+            && insert_flow_step_into_lane(nested, lane_ref, new_step)
+        {
+            return true;
         }
         if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
             for branch in branches {
-                if let Some(branch_steps) = branch.get_mut("steps").and_then(Value::as_array_mut) {
-                    if insert_flow_step_into_lane(branch_steps, lane_ref, new_step) {
-                        return true;
-                    }
+                if let Some(branch_steps) = branch.get_mut("steps").and_then(Value::as_array_mut)
+                    && insert_flow_step_into_lane(branch_steps, lane_ref, new_step)
+                {
+                    return true;
                 }
             }
         }
-        if let Some(fallback) = step.get_mut("fallback").and_then(Value::as_array_mut) {
-            if insert_flow_step_into_lane(fallback, lane_ref, new_step) {
-                return true;
-            }
+        if let Some(fallback) = step.get_mut("fallback").and_then(Value::as_array_mut)
+            && insert_flow_step_into_lane(fallback, lane_ref, new_step)
+        {
+            return true;
         }
     }
     false
@@ -8273,17 +8314,17 @@ fn input_param_names(flow: &Value) -> BTreeSet<String> {
 
 fn collect_input_param_names_in_steps(steps: &[Value], names: &mut BTreeSet<String>) {
     for step in steps {
-        if step.get("type").and_then(Value::as_str) == Some("input") {
-            if let Some(params) = step.get("inputParams").and_then(Value::as_array) {
-                names.extend(params.iter().filter_map(|param| {
-                    param
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|name| !name.is_empty())
-                        .map(ToString::to_string)
-                }));
-            }
+        if step.get("type").and_then(Value::as_str) == Some("input")
+            && let Some(params) = step.get("inputParams").and_then(Value::as_array)
+        {
+            names.extend(params.iter().filter_map(|param| {
+                param
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(ToString::to_string)
+            }));
         }
         if let Some(nested) = step.get("steps").and_then(Value::as_array) {
             collect_input_param_names_in_steps(nested, names);
@@ -8632,10 +8673,10 @@ fn validate_graph_instance(
         .filter(|id| !id.is_empty())
         .ok_or_else(|| "graph node requires id".to_string())?
         .to_string();
-    if let Some(current_id) = current_id {
-        if id != current_id {
-            return Err("graph node id cannot change".to_string());
-        }
+    if let Some(current_id) = current_id
+        && id != current_id
+    {
+        return Err("graph node id cannot change".to_string());
     }
     let duplicate = instances.iter().any(|candidate| {
         let candidate_id = candidate
@@ -8700,10 +8741,10 @@ fn validate_graph_edge(
         .filter(|id| !id.is_empty())
         .ok_or_else(|| "graph edge requires id".to_string())?
         .to_string();
-    if let Some(current_id) = current_id {
-        if id != current_id {
-            return Err("graph edge id cannot change".to_string());
-        }
+    if let Some(current_id) = current_id
+        && id != current_id
+    {
+        return Err("graph edge id cannot change".to_string());
     }
     let from = edge
         .get("from")
@@ -9037,11 +9078,18 @@ fn graph_quick_insert_from_pick(
     } else {
         mob_definition_default("dispatch_mode")
     };
+    let branch_gate_label;
+    let gate_label = if is_branch {
+        branch_gate_label = graph_draft_string("branch_gate_label");
+        branch_gate_label.as_str()
+    } else {
+        dispatch.as_str()
+    };
     let mut gate = json!({
         "id": gate_id,
         "isGate": true,
         "gateKind": gate_kind,
-        "label": if is_branch { graph_draft_string("branch_gate_label") } else { dispatch.clone() },
+        "label": gate_label,
         "col": gate_col,
         "row": gate_row,
     });
@@ -9465,16 +9513,20 @@ fn apply_graph_node_edit_operation(
                     .unwrap_or_default()
                     .to_string();
                 object.insert("collection".to_string(), Value::String(collection.clone()));
+                let missing_collection_label;
+                let join_collection_label = if collection.is_empty() {
+                    missing_collection_label =
+                        graph_draft_string("parallel_missing_collection_label");
+                    missing_collection_label.as_str()
+                } else {
+                    collection.as_str()
+                };
                 object.insert(
                     "label".to_string(),
                     Value::String(format!(
                         "{}{}",
                         graph_draft_string("join_label_prefix"),
-                        if collection.is_empty() {
-                            graph_draft_string("parallel_missing_collection_label")
-                        } else {
-                            collection.clone()
-                        }
+                        join_collection_label
                     )),
                 );
                 if collection == "quorum" {
@@ -10064,21 +10116,7 @@ fn apply_graph_edge_edit_operation(
                 return Err(format!("unsupported graph edge kind: {kind}"));
             }
             let condition_kind = graph_edge_kind_for_condition();
-            if kind != condition_kind {
-                let previous = graph_to_flow_normalized_edge_condition(&next_edge)
-                    .map(|(path, op, val)| graph_condition_label(&path, &op, &val))
-                    .unwrap_or_default();
-                let current_label = next_edge
-                    .get("label")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                next_edge["kind"] = Value::String(kind);
-                next_edge["cond"] = Value::Null;
-                if !previous.is_empty() && current_label == previous {
-                    next_edge["label"] = Value::String(String::new());
-                }
-            } else {
+            if kind == condition_kind {
                 let (source, field) = graph_edge_condition_source(&next_edge);
                 let source = if source.is_empty() {
                     graph_default_condition_source(document)
@@ -10100,6 +10138,20 @@ fn apply_graph_edge_edit_operation(
                     val,
                     true,
                 );
+            } else {
+                let previous = graph_to_flow_normalized_edge_condition(&next_edge)
+                    .map(|(path, op, val)| graph_condition_label(&path, &op, &val))
+                    .unwrap_or_default();
+                let current_label = next_edge
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                next_edge["kind"] = Value::String(kind);
+                next_edge["cond"] = Value::Null;
+                if !previous.is_empty() && current_label == previous {
+                    next_edge["label"] = Value::String(String::new());
+                }
             }
         }
         "set_condition_mode" => {
@@ -10611,8 +10663,6 @@ fn normalize_inline_skill_id(raw: &str) -> String {
     for ch in raw.trim().to_ascii_lowercase().chars() {
         let next = if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
             Some(ch)
-        } else if ch == '.' {
-            Some('.')
         } else {
             Some('.')
         };
@@ -10761,7 +10811,7 @@ fn reconcile_flow_step_launch_modes(document: &mut MobpackDocument) {
             .map(|step_id| step_roles.contains_key(&step_id) && seen.insert(step_id))
             .unwrap_or(false)
     });
-    for entry in entries.iter_mut() {
+    for entry in &mut entries {
         let Some(step_id) = entry_step_id(entry) else {
             continue;
         };
@@ -10914,7 +10964,7 @@ fn prune_step_array_for_members(
                     prune_step_array_for_members(nested, members, member_ids);
                 }
             }
-            Some("branch") | Some("parallel") => {
+            Some("branch" | "parallel") => {
                 if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
                     for branch in branches {
                         if let Some(branch_steps) =
@@ -11539,8 +11589,12 @@ fn graph_to_flow_segments_to_steps(
                     graph_to_flow_string(&prior, "dispatch"),
                     graph_to_flow_string(&prior, "dispatchMode"),
                     graph_to_flow_string(&prior, "dispatch_mode"),
+                    "fan_out".to_string(),
                 ]),
-                "collection": join.as_ref().map(|join| graph_to_flow_collection_from_join(join)).unwrap_or_default(),
+                "collection": graph_to_flow_first_string(&[
+                    join.as_ref().map(graph_to_flow_collection_from_join).unwrap_or_default(),
+                    "all".to_string(),
+                ]),
                 "branches": branches,
             });
             if let Some(quorum) = join
@@ -11548,10 +11602,9 @@ fn graph_to_flow_segments_to_steps(
                 .and_then(|join| join.get("quorum"))
                 .and_then(|quorum| quorum.get("n").or(Some(quorum)))
                 .cloned()
+                && !quorum.is_null()
             {
-                if !quorum.is_null() {
-                    step["quorum"] = quorum;
-                }
+                step["quorum"] = quorum;
             }
             if !depends_mode.is_empty() {
                 step["dependsMode"] = json!(depends_mode);
@@ -11648,8 +11701,14 @@ fn graph_to_flow_step_for_group(
             "id": id,
             "type": "parallel",
             "controllerRole": graph_to_flow_control_role(&Value::Null, None, &prior),
-            "dispatch": graph_to_flow_string(&prior, "dispatch"),
-            "collection": graph_to_flow_string(&prior, "collection"),
+            "dispatch": graph_to_flow_first_string(&[
+                graph_to_flow_string(&prior, "dispatch"),
+                "fan_out".to_string(),
+            ]),
+            "collection": graph_to_flow_first_string(&[
+                graph_to_flow_string(&prior, "collection"),
+                "all".to_string(),
+            ]),
             "branches": nodes.iter().enumerate().map(|(index, node)| {
                 json!({
                     "id": format!("br_{}", graph_to_flow_string(node, "id")),
@@ -11840,11 +11899,7 @@ fn graph_to_flow_edge_condition_to_editor_cond(edge: &Value) -> Option<Value> {
 
 fn graph_to_flow_repeat_condition_from_edge(edge: &Value, step_id: &str) -> Option<Value> {
     let (path, op, val) = graph_to_flow_normalized_edge_condition(edge)?;
-    let field = path
-        .split('.')
-        .filter(|part| !part.is_empty())
-        .last()?
-        .to_string();
+    let field = path.split('.').rfind(|part| !part.is_empty())?.to_string();
     let val_string = match val {
         Value::String(value) => value,
         other => other.to_string(),
@@ -11964,10 +12019,9 @@ fn graph_to_flow_lane_reaches(
         for edge in graph_to_flow_outgoing_edges(edges, &id) {
             if let Some(node) =
                 graph_to_flow_node_by_id(instances, &graph_to_flow_string(&edge, "to"))
+                && !graph_to_flow_bool(&node, "isTerminal")
             {
-                if !graph_to_flow_bool(&node, "isTerminal") {
-                    queue.push_back(graph_to_flow_string(&node, "id"));
-                }
+                queue.push_back(graph_to_flow_string(&node, "id"));
             }
         }
     }
@@ -12027,10 +12081,10 @@ fn graph_to_flow_lane_label(node: &Value, members: &[Value], index: usize) -> St
         .map(|member| graph_to_flow_string(member, "name"))
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| {
-            if !member_id.is_empty() {
-                member_id
-            } else {
+            if member_id.is_empty() {
                 format!("Branch {}", index + 1)
+            } else {
+                member_id
             }
         })
 }
@@ -12233,7 +12287,7 @@ pub fn deploy_command_preview(params: &Value) -> Result<MobpackDeployCommandResu
         .and_then(document_from_value)?;
     let mut render_params = params.clone();
     if let Some(object) = render_params.as_object_mut() {
-        object.insert("document".to_string(), json!(document.clone()));
+        object.insert("document".to_string(), json!(document));
     }
     let rendered = render_mobpack_source_for(&render_params, "mobkit/mobpacks/deploy_command")
         .map_err(|err| {
@@ -12243,7 +12297,7 @@ pub fn deploy_command_preview(params: &Value) -> Result<MobpackDeployCommandResu
                 err
             }
         })?;
-    let deploy = document.deploy.clone();
+    let deploy = document.deploy;
     let prompt = params
         .get("prompt")
         .and_then(Value::as_str)
@@ -12367,7 +12421,7 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
     let pack_path = deploy_pack_path(params, &export.filename)?;
 
     let document = document_from_params(params)?;
-    let deploy = document.deploy.clone();
+    let deploy = document.deploy;
     let prompt = params
         .get("prompt")
         .and_then(Value::as_str)
@@ -12435,6 +12489,7 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn deploy_display_rows(
     validation: &MobpackValidationResult,
     executed: bool,
@@ -12948,7 +13003,7 @@ fn deploy_plan_trace_from_definition(
                 if let Some(step) = flow.steps.get(&step_id) {
                     rows.push(step_plan_trace_row(
                         Value::String(step_id.to_string()),
-                        &step_id.to_string(),
+                        step_id.as_ref(),
                         step,
                     ));
                 }
@@ -13032,7 +13087,7 @@ fn push_frame_plan_trace(rows: &mut Vec<Value>, flow: &FlowSpec, frame: &FrameSp
                 if let Some(step) = flow.steps.get(&frame_step.step_id) {
                     rows.push(step_plan_trace_row(
                         Value::String(node_id.to_string()),
-                        &frame_step.step_id.to_string(),
+                        frame_step.step_id.as_ref(),
                         step,
                     ));
                 } else {
@@ -13203,14 +13258,11 @@ description = "{}"
 "#,
         escape_toml_string(slug),
         MOBPACK_SCHEMA_VERSION,
-        escape_toml_string(
-            document
-                .name
-                .trim()
-                .is_empty()
-                .then_some("MobKit Flow Editor mobpack")
-                .unwrap_or(document.name.trim())
-        )
+        escape_toml_string(if document.name.trim().is_empty() {
+            "MobKit Flow Editor mobpack"
+        } else {
+            document.name.trim()
+        })
     );
     let definition_json = serde_json::to_vec_pretty(&definition)
         .map_err(|err| format!("failed to encode definition.json: {err}"))?;
@@ -13497,7 +13549,7 @@ fn document_from_archive_bytes(bytes: &[u8]) -> Result<MobpackDocument, String> 
             let definition = MobDefinition::from_toml(mob_toml)
                 .map_err(|err| format!("failed to parse mob.toml from mobpack archive: {err}"))?;
             let fallback_name = document.name.trim().to_string();
-            let deploy = document.deploy.clone();
+            let deploy = document.deploy;
             let mut projected = project_definition_to_editor_document(
                 &definition,
                 mob_toml,
@@ -13750,7 +13802,7 @@ fn project_definition_to_editor_document_for_flow(
             definition
                 .flows
                 .iter()
-                .find(|(flow_id, _)| flow_id.to_string() == selected)
+                .find(|(flow_id, _)| *flow_id == selected)
                 .ok_or_else(|| format!("runtime flow not found in MobDefinition: {selected}"))?,
         ),
         None => definition.flows.iter().next(),
@@ -14007,7 +14059,7 @@ fn emit_visual_graph_step(
             }
             body
         }
-        Some("branch") | Some("parallel") => {
+        Some("branch" | "parallel") => {
             emit_visual_graph_fork_step(step, id, col, row, instances, edges, frames, next_edge)
         }
         _ => VisualGraphProjection {
@@ -14017,6 +14069,7 @@ fn emit_visual_graph_step(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_visual_graph_fork_step(
     step: &Value,
     id: &str,
@@ -14348,22 +14401,22 @@ fn visual_steps_from_flat_flow(flow: &FlowSpec) -> Vec<Value> {
                     consumed.insert((*candidate_id).clone());
                 }
                 out.push(json!({
-                    "id": format!("branch_{}", sanitize_identifier(&branch_id.to_string())),
+                    "id": format!("branch_{}", sanitize_identifier(branch_id.as_ref())),
                     "type": "branch",
                     "dependsMode": dependency_mode_string(&step.depends_on_mode),
                     "branches": branch_steps.iter().map(|(candidate_id, candidate)| json!({
-                        "id": format!("br_{}", sanitize_identifier(&candidate_id.to_string())),
+                        "id": format!("br_{}", sanitize_identifier(candidate_id.as_ref())),
                         "label": candidate_id.to_string(),
                         "condition": candidate.condition.as_ref().map(condition_to_label).unwrap_or_default(),
                         "cond": candidate.condition.as_ref().map(condition_to_editor_cond_json),
-                        "steps": [visual_step_from_step(&candidate_id.to_string(), candidate)],
+                        "steps": [visual_step_from_step(candidate_id.as_ref(), candidate)],
                     })).collect::<Vec<_>>(),
                     "fallback": [],
                 }));
                 continue;
             }
         }
-        out.push(visual_step_from_step(&step_id.to_string(), step));
+        out.push(visual_step_from_step(step_id.as_ref(), step));
     }
     out
 }
@@ -14387,7 +14440,7 @@ fn visual_steps_from_frame(frame: &FrameSpec, flow: &FlowSpec) -> Vec<Value> {
                             let id = parallel_nodes
                                 .iter()
                                 .map(|(_, candidate_frame_step, _)| {
-                                    sanitize_identifier(&candidate_frame_step.step_id.to_string())
+                                    sanitize_identifier(candidate_frame_step.step_id.as_ref())
                                 })
                                 .collect::<Vec<_>>()
                                 .join("_");
@@ -14398,9 +14451,9 @@ fn visual_steps_from_frame(frame: &FrameSpec, flow: &FlowSpec) -> Vec<Value> {
                                 "collection": "all",
                                 "dependsMode": dependency_mode_string(&frame_step.depends_on_mode),
                                 "branches": parallel_nodes.iter().enumerate().map(|(index, (_, candidate_frame_step, candidate_step))| json!({
-                                    "id": format!("br_{}", sanitize_identifier(&candidate_frame_step.step_id.to_string())),
+                                    "id": format!("br_{}", sanitize_identifier(candidate_frame_step.step_id.as_ref())),
                                     "label": candidate_frame_step.step_id.to_string(),
-                                    "steps": [visual_step_from_step(&candidate_frame_step.step_id.to_string(), candidate_step)],
+                                    "steps": [visual_step_from_step(candidate_frame_step.step_id.as_ref(), candidate_step)],
                                     "order": index,
                                 })).collect::<Vec<_>>(),
                             }));
@@ -14432,23 +14485,23 @@ fn visual_steps_from_frame(frame: &FrameSpec, flow: &FlowSpec) -> Vec<Value> {
                             let controller_role =
                                 branch_controller_role_from_depends_on(frame, flow, &branch_nodes);
                             out.push(json!({
-                                "id": format!("branch_{}", sanitize_identifier(&branch_id.to_string())),
+                                "id": format!("branch_{}", sanitize_identifier(branch_id.as_ref())),
                                 "type": "branch",
                                 "controllerRole": controller_role,
                                 "dependsMode": dependency_mode_string(&step.depends_on_mode),
-                                "branches": branch_nodes.iter().enumerate().map(|(_, (_, candidate_frame_step, candidate_step))| json!({
-                                    "id": format!("br_{}", sanitize_identifier(&candidate_frame_step.step_id.to_string())),
+                                "branches": branch_nodes.iter().map(|(_, candidate_frame_step, candidate_step)| json!({
+                                    "id": format!("br_{}", sanitize_identifier(candidate_frame_step.step_id.as_ref())),
                                     "label": candidate_frame_step.step_id.to_string(),
                                     "condition": candidate_step.condition.as_ref().map(condition_to_label).unwrap_or_default(),
                                     "cond": candidate_step.condition.as_ref().map(condition_to_editor_cond_json),
-                                    "steps": [visual_step_from_step(&candidate_frame_step.step_id.to_string(), candidate_step)],
+                                    "steps": [visual_step_from_step(candidate_frame_step.step_id.as_ref(), candidate_step)],
                                 })).collect::<Vec<_>>(),
                                 "fallback": [],
                             }));
                             continue;
                         }
                     }
-                    out.push(visual_step_from_step(&frame_step.step_id.to_string(), step));
+                    out.push(visual_step_from_step(frame_step.step_id.as_ref(), step));
                 }
             }
             FlowNodeSpec::RepeatUntil(loop_spec) => {
@@ -14487,7 +14540,7 @@ fn branch_controller_role_from_depends_on(
             continue;
         };
         if step.branch.is_none() {
-            return Some(member_id_for_profile(&step.role.to_string()));
+            return Some(member_id_for_profile(step.role.as_ref()));
         }
     }
     None
@@ -14528,7 +14581,7 @@ fn visual_step_from_step(id: &str, step: &FlowStepSpec) -> Value {
     json!({
         "id": id,
         "type": "member",
-        "role": member_id_for_profile(&step.role.to_string()),
+        "role": member_id_for_profile(step.role.as_ref()),
         "instruction": step.message.text_content(),
         "launchMode": { "kind": "Fresh" },
         "dependsMode": dependency_mode_string(&step.depends_on_mode),
@@ -14904,7 +14957,7 @@ fn tool_ids_from_config(config: &ToolConfig) -> Vec<String> {
                 object
                     .iter()
                     .filter(|(_, value)| value.as_bool() == Some(true))
-                    .map(|(field, _)| field.to_string())
+                    .map(|(field, _)| field.clone())
                     .collect::<Vec<_>>()
             })
         })
@@ -15102,15 +15155,18 @@ fn render_editor_document_mob_toml(document: &MobpackDocument) -> Result<String,
         .collect::<Vec<_>>();
     let compiled = compile_editor_flow(&flow_member_steps, &members);
     let mob_id = sanitize_identifier(
-        document
+        if document
             .name
             .trim()
             .strip_suffix(".mobpack")
             .unwrap_or_else(|| document.name.trim())
             .trim()
             .is_empty()
-            .then_some(document.mob_id.as_str())
-            .unwrap_or_else(|| document.name.trim()),
+        {
+            document.mob_id.as_str()
+        } else {
+            document.name.trim()
+        },
     );
 
     lines.push("[mob]".to_string());
@@ -15271,7 +15327,7 @@ fn compile_editor_member_step(
     let depends_on = flat_step_depends_on(&depends_on_nodes, state);
     let rendered = RenderedStep {
         id: step_id.clone(),
-        role: profile.clone(),
+        role: profile,
         message,
         depends_on,
         depends_mode: step_string(step, "dependsMode").unwrap_or_else(|| "all".to_string()),
@@ -15457,18 +15513,18 @@ fn compile_editor_branch_step(
             exits.extend(result.nodes.iter().filter_map(rendered_node_id));
             nodes.extend(result.nodes);
         }
-        if let Some(fallback_steps) = step.get("fallback").and_then(Value::as_array) {
-            if !fallback_steps.is_empty() {
-                let mut result = compile_editor_lane(fallback_steps, depends_on_nodes, state);
-                apply_branch_to_first_step(
-                    &mut result,
-                    state,
-                    &branch_id,
-                    fallback_condition_from_branch_conditions(&branch_conditions),
-                );
-                exits.extend(result.nodes.iter().filter_map(rendered_node_id));
-                nodes.extend(result.nodes);
-            }
+        if let Some(fallback_steps) = step.get("fallback").and_then(Value::as_array)
+            && !fallback_steps.is_empty()
+        {
+            let mut result = compile_editor_lane(fallback_steps, depends_on_nodes, state);
+            apply_branch_to_first_step(
+                &mut result,
+                state,
+                &branch_id,
+                fallback_condition_from_branch_conditions(&branch_conditions),
+            );
+            exits.extend(result.nodes.iter().filter_map(rendered_node_id));
+            nodes.extend(result.nodes);
         }
         return (nodes, exits);
     }
@@ -15537,39 +15593,39 @@ fn compile_editor_branch_step(
         nodes.push(entry);
         nodes.extend(result.nodes);
     }
-    if let Some(fallback_steps) = step.get("fallback").and_then(Value::as_array) {
-        if !fallback_steps.is_empty() {
-            let fallback_entry = synthetic_rendered_step(
-                state,
-                &format!(
-                    "{}_fallback",
-                    step.get("id").and_then(Value::as_str).unwrap_or("branch")
-                ),
-                &route_member,
-                "Enter branch: fallback",
-                depends_on_nodes,
-                None,
-                "all",
-                None,
-                Some(branch_id.clone()),
-                fallback_condition_from_branch_conditions(&branch_conditions),
-            );
-            let fallback_node_id = rendered_node_id(&fallback_entry).unwrap_or_default();
-            entry_nodes.push(fallback_node_id.clone());
-            let fallback_body =
-                compile_editor_lane(fallback_steps, vec![fallback_node_id.clone()], state);
-            exits.extend(
-                fallback_body
-                    .nodes
-                    .iter()
-                    .filter_map(rendered_node_id)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .chain((fallback_body.nodes.is_empty()).then_some(fallback_node_id.clone())),
-            );
-            nodes.push(fallback_entry);
-            nodes.extend(fallback_body.nodes);
-        }
+    if let Some(fallback_steps) = step.get("fallback").and_then(Value::as_array)
+        && !fallback_steps.is_empty()
+    {
+        let fallback_entry = synthetic_rendered_step(
+            state,
+            &format!(
+                "{}_fallback",
+                step.get("id").and_then(Value::as_str).unwrap_or("branch")
+            ),
+            &route_member,
+            "Enter branch: fallback",
+            depends_on_nodes,
+            None,
+            "all",
+            None,
+            Some(branch_id.clone()),
+            fallback_condition_from_branch_conditions(&branch_conditions),
+        );
+        let fallback_node_id = rendered_node_id(&fallback_entry).unwrap_or_default();
+        entry_nodes.push(fallback_node_id.clone());
+        let fallback_body =
+            compile_editor_lane(fallback_steps, vec![fallback_node_id.clone()], state);
+        exits.extend(
+            fallback_body
+                .nodes
+                .iter()
+                .filter_map(rendered_node_id)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .chain((fallback_body.nodes.is_empty()).then_some(fallback_node_id)),
+        );
+        nodes.push(fallback_entry);
+        nodes.extend(fallback_body.nodes);
     }
     let Some(join_member) = join_member else {
         return (nodes, exits);
@@ -16037,7 +16093,7 @@ impl EditorMobSettings {
     fn string(&self, key: &str) -> Option<String> {
         self.value
             .get(key)
-            .or_else(|| self.value.get(&camel_to_snake(key)))
+            .or_else(|| self.value.get(camel_to_snake(key)))
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -16047,7 +16103,7 @@ impl EditorMobSettings {
     fn bool(&self, key: &str) -> bool {
         self.value
             .get(key)
-            .or_else(|| self.value.get(&camel_to_snake(key)))
+            .or_else(|| self.value.get(camel_to_snake(key)))
             .and_then(Value::as_bool)
             .unwrap_or(false)
     }
@@ -16123,7 +16179,7 @@ fn editor_input_schema_files(document: &MobpackDocument) -> BTreeMap<String, Val
 
 fn step_string(step: &Value, key: &str) -> Option<String> {
     step.get(key)
-        .or_else(|| step.get(&camel_to_snake(key)))
+        .or_else(|| step.get(camel_to_snake(key)))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -17189,6 +17245,7 @@ fn validate_required_repeat_max_iterations_field(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_optional_enum_field(
     object: &Value,
     camel_key: &str,
@@ -17660,11 +17717,11 @@ fn collect_editor_flow_condition_diagnostics(
                         if key == "stepId" && condition_source_is_params {
                             continue;
                         }
-                        if !cond
+                        if cond
                             .get(key)
                             .and_then(Value::as_str)
                             .map(str::trim)
-                            .is_some_and(|value| !value.is_empty())
+                            .is_none_or(str::is_empty)
                         {
                             diagnostics.push(MobpackDiagnostic {
                                 severity: "error".to_string(),
@@ -17787,11 +17844,11 @@ fn validate_required_repeat_condition_fields(
 
     let cond_path = format!("{step_path}.cond");
     for key in ["stepId", "field", "op", "val"] {
-        if !cond
+        if cond
             .get(key)
             .and_then(Value::as_str)
             .map(str::trim)
-            .is_some_and(|value| !value.is_empty())
+            .is_none_or(str::is_empty)
         {
             diagnostics.push(MobpackDiagnostic {
                 severity: "error".to_string(),
@@ -17930,7 +17987,7 @@ fn validate_deploy_settings(deploy: &Value) -> Vec<MobpackDiagnostic> {
         .filter(|model| !model.is_empty())
     {
         let known_models = meerkat_models::catalog()
-            .into_iter()
+            .iter()
             .map(|entry| entry.id.to_string())
             .collect::<BTreeSet<_>>();
         if !known_models.contains(model) {
@@ -18601,11 +18658,11 @@ fn validate_graph_projection(document: &MobpackDocument) -> Vec<MobpackDiagnosti
                 continue;
             };
             for key in ["var", "op", "val"] {
-                if !cond
+                if cond
                     .get(key)
                     .and_then(Value::as_str)
                     .map(str::trim)
-                    .is_some_and(|value| !value.is_empty())
+                    .is_none_or(str::is_empty)
                 {
                     diagnostics.push(MobpackDiagnostic {
                         severity: "error".to_string(),
@@ -19445,9 +19502,9 @@ fn editor_graph_launch_mode(value: Option<&Value>) -> EditorGraphLaunchMode {
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let canonical_kind = match kind {
-        Some("Fresh") | Some("fresh") => "Fresh".to_string(),
-        Some("Resume") | Some("resume") => "Resume".to_string(),
-        Some("Fork") | Some("fork") => "Fork".to_string(),
+        Some("Fresh" | "fresh") => "Fresh".to_string(),
+        Some("Resume" | "resume") => "Resume".to_string(),
+        Some("Fork" | "fork") => "Fork".to_string(),
         Some(other) => other.to_string(),
         None => String::new(),
     };
@@ -19857,7 +19914,7 @@ fn validate_member_catalog_references(document: &MobpackDocument) -> Vec<Mobpack
         .chain(skill_ids_from_document_definition(document))
         .collect::<BTreeSet<_>>();
     let model_ids = meerkat_models::catalog()
-        .into_iter()
+        .iter()
         .map(|entry| entry.id.to_string())
         .collect::<BTreeSet<_>>();
     let mut diagnostics = Vec::new();
@@ -20668,7 +20725,14 @@ fn validate_mob_settings_match_definition(
     };
     let mut diagnostics = Vec::new();
     let expected = mob_settings_from_definition(definition);
-    let expected = expected.as_object().expect("mob settings object");
+    let Some(expected) = expected.as_object() else {
+        return vec![MobpackDiagnostic {
+            severity: "error".to_string(),
+            code: "invalid_mob_settings".to_string(),
+            message: "mob settings derived from mob.toml must be an object".to_string(),
+            path: Some("mob_settings".to_string()),
+        }];
+    };
 
     compare_mob_setting_string(
         settings,
@@ -20732,10 +20796,9 @@ fn compare_advanced_mob_settings(
         },
         None => None,
     };
-    let expected_advanced = expected
-        .get("advanced")
-        .and_then(Value::as_object)
-        .expect("expected advanced mob settings");
+    let Some(expected_advanced) = expected.get("advanced").and_then(Value::as_object) else {
+        return;
+    };
     for (key, code) in [
         ("topology", "editor_mob_topology_mismatch"),
         ("supervisor", "editor_mob_supervisor_mismatch"),
@@ -20916,7 +20979,7 @@ fn validate_editor_projection_matches_definition(
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            && model != profile.model.to_string()
+            && model != profile.model.clone()
         {
             diagnostics.push(MobpackDiagnostic {
                 severity: "error".to_string(),
@@ -21008,7 +21071,7 @@ fn validate_editor_projection_matches_definition(
             (None, None) => {}
         }
         let editor_backend = editor_profile_backend(member);
-        let profile_backend = profile.backend.map(|backend| backend.as_str());
+        let profile_backend = profile.backend.map(meerkat_mob::MobBackendKind::as_str);
         if editor_backend != profile_backend {
             diagnostics.push(MobpackDiagnostic {
                 severity: "error".to_string(),
@@ -21384,17 +21447,16 @@ fn collect_editor_flow_member_turns(
     };
     for step in steps {
         let step_type = step.get("type").and_then(Value::as_str).unwrap_or_default();
-        if step_type == "member" {
-            if let Some(member_id) = step
+        if step_type == "member"
+            && let Some(member_id) = step
                 .get("role")
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                && let Some(profile) = profile_by_member.get(member_id)
-                && let Some(message) = editor_step_instruction(step)
-            {
-                *out.entry((profile.clone(), message)).or_default() += 1;
-            }
+            && let Some(profile) = profile_by_member.get(member_id)
+            && let Some(message) = editor_step_instruction(step)
+        {
+            *out.entry((profile.clone(), message)).or_default() += 1;
         }
         if let Some(nested) = step.get("steps").and_then(Value::as_array) {
             collect_editor_flow_member_turns(Some(nested), profile_by_member, out);
@@ -21815,6 +21877,7 @@ fn escape_toml_string(value: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -26214,13 +26277,13 @@ model = "gpt-5.5"
         let pack_path = dir.path().join("preview-proof.mobpack");
         let preview = deploy_command_preview(&json!({
             "document": valid_document(),
-            "pack_path": pack_path.clone(),
+            "pack_path": pack_path,
             "prompt": "Reply with exactly OK."
         }))
         .expect("deploy command preview");
         let result = deploy_mobpack(&json!({
             "document": valid_document(),
-            "pack_path": pack_path.clone(),
+            "pack_path": pack_path,
             "output_dir": dir.path(),
             "prompt": "Reply with exactly OK."
         }))
@@ -27507,7 +27570,7 @@ model = "gpt-5.5"
                 .expect("blank document");
 
         let standalone_add_request = json!({
-            "document": document.clone(),
+            "document": document,
             "expected_catalog_snapshot_id": runtime_snapshot,
             "operation": {
                 "type": "add_agent_definition",
@@ -28083,7 +28146,7 @@ depends_on_mode = "all"
         let mut projected_document = document.clone();
         projected_document["name"] = json!("Projected operation payload accepted");
         let rejected_projection = apply_mobpack_authoring_operation(&json!({
-            "document": current_document.clone(),
+            "document": current_document,
             "operation": {
                 "type": "update_flow_step",
                 "document": projected_document.clone(),
@@ -28097,7 +28160,7 @@ depends_on_mode = "all"
         );
 
         let rejected_replacement = apply_mobpack_authoring_operation(&json!({
-            "document": current_document.clone(),
+            "document": current_document,
             "operation": {
                 "type": "replace_authoring_document",
                 "document": projected_document,
@@ -28298,8 +28361,8 @@ depends_on_mode = "all"
             let projection_supported = operation["projection_document_supported"]
                 .as_bool()
                 .expect("projection_document_supported bool");
-            assert_eq!(
-                projection_supported, false,
+            assert!(
+                !projection_supported,
                 "normal authoring operations must not accept projected documents: {operation_type}"
             );
             assert_ne!(
@@ -28665,7 +28728,7 @@ depends_on_mode = "all"
         });
 
         let added_schema = apply_mobpack_authoring_operation(&json!({
-            "document": document.clone(),
+            "document": document,
             "operation": {
                 "type": "add_schema"
             }
@@ -28689,7 +28752,7 @@ depends_on_mode = "all"
         );
 
         let added_field = apply_mobpack_authoring_operation(&json!({
-            "document": document.clone(),
+            "document": document,
             "operation": {
                 "type": "add_schema_field",
                 "schema_id": "Review"
@@ -28710,7 +28773,7 @@ depends_on_mode = "all"
         );
 
         let updated_schema = apply_mobpack_authoring_operation(&json!({
-            "document": document.clone(),
+            "document": document,
             "operation": {
                 "type": "update_schema",
                 "schema_id": "Review",
@@ -28724,7 +28787,7 @@ depends_on_mode = "all"
         );
 
         let bad_schema_patch = apply_mobpack_authoring_operation(&json!({
-            "document": document.clone(),
+            "document": document,
             "operation": {
                 "type": "update_schema",
                 "schema_id": "Review",
@@ -28738,7 +28801,7 @@ depends_on_mode = "all"
         );
 
         let updated_field = apply_mobpack_authoring_operation(&json!({
-            "document": document.clone(),
+            "document": document,
             "operation": {
                 "type": "update_schema_field",
                 "schema_id": "Review",
@@ -28765,7 +28828,7 @@ depends_on_mode = "all"
         );
 
         let bad_field_patch = apply_mobpack_authoring_operation(&json!({
-            "document": document.clone(),
+            "document": document,
             "operation": {
                 "type": "update_schema_field",
                 "schema_id": "Review",
@@ -29292,7 +29355,7 @@ depends_on_mode = "all"
         });
 
         let semantic_member = apply_mobpack_authoring_operation(&json!({
-            "document": document.clone(),
+            "document": document,
             "operation": {
                 "type": "insert_graph_node",
                 "pick": { "kind": "memberInstance", "memberId": "planner" },
@@ -29314,7 +29377,7 @@ depends_on_mode = "all"
         );
 
         let semantic_branch = apply_mobpack_authoring_operation(&json!({
-            "document": document.clone(),
+            "document": document,
             "operation": {
                 "type": "insert_graph_node",
                 "pick": { "kind": "gate", "gateKind": "branch" },
@@ -29353,7 +29416,7 @@ depends_on_mode = "all"
         );
 
         let endpoint_connected = apply_mobpack_authoring_operation(&json!({
-            "document": document.clone(),
+            "document": document,
             "operation": {
                 "type": "connect_graph_nodes",
                 "from_id": "n_plan",
@@ -29619,7 +29682,7 @@ depends_on_mode = "all"
         });
 
         let insert_err = apply_mobpack_authoring_operation(&json!({
-            "document": document.clone(),
+            "document": document,
             "operation": {
                 "type": "insert_graph_node",
                 "pick": { "kind": "terminal", "terminalKind": "success" },
@@ -29633,7 +29696,7 @@ depends_on_mode = "all"
         );
 
         let update_err = apply_mobpack_authoring_operation(&json!({
-            "document": document.clone(),
+            "document": document,
             "operation": {
                 "type": "update_graph_node",
                 "instance_id": "n_review",
@@ -29646,13 +29709,13 @@ depends_on_mode = "all"
             "{update_err}"
         );
 
-        let mut legacy_terminal_document = document.clone();
+        let mut legacy_terminal_document = document;
         legacy_terminal_document.instances = json!([
             { "id": "n_plan", "memberId": "planner", "kind": "member", "col": 0, "row": 0 },
             { "id": "n_done", "kind": "terminal", "isTerminal": true, "col": 1, "row": 0 }
         ]);
         let connect_err = apply_mobpack_authoring_operation(&json!({
-            "document": legacy_terminal_document.clone(),
+            "document": legacy_terminal_document,
             "operation": {
                 "type": "connect_graph_nodes",
                 "from_id": "n_plan",
@@ -30547,7 +30610,7 @@ depends_on_mode = "all"
             .expect("ToolConfig object")
             .iter()
             .filter(|(_, value)| value.is_boolean())
-            .map(|(field, _)| field.to_string())
+            .map(|(field, _)| field.clone())
             .collect::<BTreeSet<_>>();
         let catalog_fields = tool_catalog
             .iter()

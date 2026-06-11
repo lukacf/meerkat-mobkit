@@ -14186,6 +14186,12 @@ function App() {
     }
     return true;
   };
+  const markReconcileConverged = (intent) => {
+    const attempts = reconcileAttempts.current;
+    if (attempts.revision === authoringRevision.current) {
+      attempts.counts[intent] = 0;
+    }
+  };
   const latchReconcileFailure = (result) => {
     if (result?.ok === false) {
       reconcileFailureRevision.current = authoringRevision.current;
@@ -14460,7 +14466,10 @@ function App() {
     });
     const changed = result.flow !== flow || result.edges !== studio.edges || result.instances !== studio.instances || result.mobSettings !== mobSettings;
     previousMembersRef.current = studio.members;
-    if (!changed) return;
+    if (!changed) {
+      markReconcileConverged("system.reconcileMembers");
+      return;
+    }
     if (!reconcileShouldRun("system.reconcileMembers")) return;
     applyMobKitAuthoringOperation({
       intent: "system.reconcileMembers"
@@ -14478,7 +14487,10 @@ function App() {
     });
     const flowChanged = result.flow !== flow;
     const edgesChanged = result.edges !== studio.edges;
-    if (!flowChanged && !edgesChanged) return;
+    if (!flowChanged && !edgesChanged) {
+      markReconcileConverged("system.reconcileConditionFields");
+      return;
+    }
     if (!reconcileShouldRun("system.reconcileConditionFields")) return;
     applyMobKitAuthoringOperation({
       intent: "system.reconcileConditionFields"
@@ -14500,7 +14512,10 @@ function App() {
       toolCatalog: catalogs.toolCatalog,
       contractLoaded: !!catalogs.contractMeta.loaded
     });
-    if (!result.changed) return;
+    if (!result.changed) {
+      markReconcileConverged("system.reconcileContractRefs");
+      return;
+    }
     if (!reconcileShouldRun("system.reconcileContractRefs")) return;
     applyMobKitAuthoringOperation({
       intent: "system.reconcileContractRefs"

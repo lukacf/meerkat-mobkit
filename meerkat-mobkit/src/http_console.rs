@@ -9348,6 +9348,9 @@ comms = true
             None,
             rpc_request("mobkit/capabilities"),
             true,
+            false,
+            None,
+            None,
         ))
         .await;
 
@@ -9366,6 +9369,9 @@ comms = true
             None,
             rpc_request("mobkit/mobpacks/schema"),
             true,
+            false,
+            None,
+            None,
         ))
         .await;
         assert_eq!(

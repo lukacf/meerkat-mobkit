@@ -120,7 +120,7 @@ async fn mobpack_runtime_catalog_state(
     runtime_methods.extend(
         MOBPACK_AUTHORING_METHODS
             .iter()
-            .map(|method| method.to_string()),
+            .map(std::string::ToString::to_string),
     );
     if runtime.has_contact_directory() {
         runtime_methods.push("mobkit/cross_mob/directory".to_string());
@@ -186,10 +186,19 @@ async fn handle_unified_mobpack_authoring_rpc(
             return handle_mobpack_authoring_rpc_with_runtime(
                 method,
                 params,
-                response_id,
+                response_id.clone(),
                 runtime_catalog_state.as_ref(),
             )
-            .expect("known mobpack authoring method");
+            .unwrap_or_else(|| JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32601,
+                    message: "Method not found".to_string(),
+                    data: None,
+                }),
+            });
         }
     };
     match result {
@@ -526,8 +535,17 @@ pub fn handle_mobkit_rpc_json(
             error: None,
         },
         method if MOBPACK_AUTHORING_METHODS.contains(&method) => {
-            handle_mobpack_authoring_rpc(method, &request.params, response_id)
-                .expect("known mobpack authoring method")
+            handle_mobpack_authoring_rpc(method, &request.params, response_id.clone())
+                .unwrap_or_else(|| JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32601,
+                        message: "Method not found".to_string(),
+                        data: None,
+                    }),
+                })
         }
         "mobkit/reconcile" => {
             let modules = match params::required_string_array(&request.params, "modules") {

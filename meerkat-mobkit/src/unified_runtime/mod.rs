@@ -375,7 +375,7 @@ impl UnifiedRuntime {
         runtime_methods.extend(
             crate::rpc::MOBPACK_AUTHORING_METHODS
                 .iter()
-                .map(|method| method.to_string()),
+                .map(std::string::ToString::to_string),
         );
         if self.has_contact_directory() {
             runtime_methods.push("mobkit/cross_mob/directory".to_string());

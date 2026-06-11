@@ -7,7 +7,7 @@ use axum::{
 };
 use serde_json::Value;
 
-use crate::http_sse::sse_request_authorized;
+use crate::http_sse::sse_access_context;
 use crate::mobpack::MobpackRuntimeCatalogState;
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::RuntimeDecisionState;
@@ -242,7 +242,7 @@ async fn protected_flow_editor_rpc_handler(
             );
         }
     };
-    if !sse_request_authorized(Some(&state.decisions), &headers, &uri) {
+    if sse_access_context(Some(&state.decisions), None, &headers, &uri).is_err() {
         return (
             StatusCode::UNAUTHORIZED,
             Json::<Value>(serde_json::json!({
@@ -370,25 +370,34 @@ fn handle_flow_editor_rpc_with_auth(
                 }),
             )
         }
-        method if crate::rpc::MOBPACK_AUTHORING_METHODS.contains(&method) => serde_json::to_value(
-            crate::rpc::handle_mobpack_authoring_rpc_with_runtime(
+        method if crate::rpc::MOBPACK_AUTHORING_METHODS.contains(&method) => {
+            match crate::rpc::handle_mobpack_authoring_rpc_with_runtime(
                 method,
                 &request.params,
-                response_id,
+                response_id.clone(),
                 runtime_catalog,
-            )
-            .expect("known mobpack authoring method"),
-        )
-        .unwrap_or_else(|_| {
-            serde_json::json!({
-                "jsonrpc": JSONRPC_VERSION,
-                "id": Value::Null,
-                "error": {
-                    "code": -32603,
-                    "message": "serialization failed",
-                }
-            })
-        }),
+            ) {
+                Some(response) => serde_json::to_value(response).unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "jsonrpc": JSONRPC_VERSION,
+                        "id": Value::Null,
+                        "error": {
+                            "code": -32603,
+                            "message": "serialization failed",
+                        }
+                    })
+                }),
+                None => response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: format!("method not found on flow editor rpc: {method}"),
+                        data: None,
+                    }),
+                ),
+            }
+        }
         other => response_value(
             response_id,
             None,
@@ -428,6 +437,7 @@ fn response_value(id: Value, result: Option<Value>, error: Option<JsonRpcError>)
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use axum::{body::Body, http::Request};
     use serde_json::{Value, json};
