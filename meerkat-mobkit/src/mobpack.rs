@@ -16203,14 +16203,17 @@ fn emit_rendered_flow_step(lines: &mut Vec<String>, step: &RenderedStep) {
             toml_array(&step.blocked_tools)
         ));
     }
-    if step
+    // Runtime-default output format is schema-aware: meerkat defaults steps
+    // to json output, which rejects the free-text replies schema-less steps
+    // produce, so those must export an explicit text format.
+    let effective_output_format = step
         .output_format
         .as_deref()
-        .is_some_and(|format| format != "json")
-    {
+        .unwrap_or_else(|| default_step_output_format(step.expected_schema_ref.is_some()));
+    if effective_output_format != "json" {
         lines.push(format!(
             "output_format = {}",
-            toml_string(step.output_format.as_deref().unwrap_or("json"))
+            toml_string(effective_output_format)
         ));
     }
     lines.push(String::new());
@@ -19656,7 +19659,9 @@ fn editor_graph_member_metadata(value: &Value) -> EditorGraphMemberMetadata {
                 .get("blockedTools")
                 .or_else(|| value.get("blocked_tools")),
         ),
-        output_format: editor_output_format(value),
+        // Graph-vs-flow comparison only needs both sides to resolve an unset
+        // format identically; the schema-aware default applies at export.
+        output_format: editor_output_format(value, false),
         dispatch_mode: editor_dispatch_mode(value),
         collection_policy: editor_collection_policy(value),
     }
@@ -19945,6 +19950,28 @@ fn editor_profile_by_member_id(document: &MobpackDocument) -> BTreeMap<String, S
                 .map(str::trim)
                 .filter(|id| !id.is_empty())?;
             Some((id.to_string(), editor_profile_name(member)))
+        })
+        .collect()
+}
+
+fn editor_member_has_schema_by_id(document: &MobpackDocument) -> BTreeMap<String, bool> {
+    document
+        .members
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|member| {
+            let id = member
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())?;
+            let has_schema = member
+                .get("schema")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty());
+            Some((id.to_string(), has_schema))
         })
         .collect()
 }
@@ -21430,10 +21457,19 @@ fn validate_editor_flow_step_metadata_matches_definition(
     definition: &MobDefinition,
 ) -> Vec<MobpackDiagnostic> {
     let profile_by_member = editor_profile_by_member_id(document);
+    // The definition under comparison comes from authoring_mob_toml: either
+    // the editor re-render (schema-aware text/json default) or a pinned
+    // snapshot that predates editor projection (meerkat json default).
+    let schema_by_member = if needs_editor_projection(document) {
+        None
+    } else {
+        Some(editor_member_has_schema_by_id(document))
+    };
     let mut expected = BTreeMap::<FlowStepMetadataKey, usize>::new();
     collect_editor_flow_step_metadata(
         document.flow.get("steps").and_then(Value::as_array),
         &profile_by_member,
+        schema_by_member.as_ref(),
         &mut expected,
     );
     if expected.is_empty() {
@@ -21461,6 +21497,7 @@ fn validate_editor_flow_step_metadata_matches_definition(
 fn collect_editor_flow_step_metadata(
     steps: Option<&Vec<Value>>,
     profile_by_member: &BTreeMap<String, String>,
+    schema_by_member: Option<&BTreeMap<String, bool>>,
     out: &mut BTreeMap<FlowStepMetadataKey, usize>,
 ) {
     let Some(steps) = steps else {
@@ -21477,6 +21514,24 @@ fn collect_editor_flow_step_metadata(
             && let Some(profile) = profile_by_member.get(member_id)
             && let Some(message) = editor_step_instruction(step)
         {
+            // Editor-rendered TOML resolves unset formats schema-aware (an
+            // explicit step schema ref or the member's assigned schema keeps
+            // the json runtime default; schema-less steps export text).
+            // Snapshot-backed documents (schema_by_member: None) keep the
+            // meerkat json default the snapshot was written against.
+            let output_format = match schema_by_member {
+                Some(schema_by_member) => {
+                    let has_schema = step
+                        .get("expectedSchemaRef")
+                        .or_else(|| step.get("expected_schema_ref"))
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .is_some_and(|value| !value.is_empty())
+                        || schema_by_member.get(member_id).copied().unwrap_or(false);
+                    editor_output_format(step, has_schema)
+                }
+                None => explicit_editor_output_format(step).unwrap_or_else(|| "json".to_string()),
+            };
             let key = FlowStepMetadataKey {
                 profile: profile.clone(),
                 message,
@@ -21490,20 +21545,26 @@ fn collect_editor_flow_step_metadata(
                     step.get("blockedTools")
                         .or_else(|| step.get("blocked_tools")),
                 ),
-                output_format: editor_output_format(step),
+                output_format,
                 dispatch_mode: editor_dispatch_mode(step),
                 collection_policy: editor_collection_policy(step),
             };
             *out.entry(key).or_default() += 1;
         }
         if let Some(nested) = step.get("steps").and_then(Value::as_array) {
-            collect_editor_flow_step_metadata(Some(nested), profile_by_member, out);
+            collect_editor_flow_step_metadata(
+                Some(nested),
+                profile_by_member,
+                schema_by_member,
+                out,
+            );
         }
         if let Some(branches) = step.get("branches").and_then(Value::as_array) {
             for branch in branches {
                 collect_editor_flow_step_metadata(
                     branch.get("steps").and_then(Value::as_array),
                     profile_by_member,
+                    schema_by_member,
                     out,
                 );
             }
@@ -21511,6 +21572,7 @@ fn collect_editor_flow_step_metadata(
         collect_editor_flow_step_metadata(
             step.get("fallback").and_then(Value::as_array),
             profile_by_member,
+            schema_by_member,
             out,
         );
     }
@@ -21580,8 +21642,13 @@ fn editor_string_vec(value: Option<&Value>) -> Vec<String> {
     }
 }
 
-fn editor_output_format(step: &Value) -> String {
-    explicit_editor_output_format(step).unwrap_or_else(|| "json".to_string())
+fn default_step_output_format(has_schema: bool) -> &'static str {
+    if has_schema { "json" } else { "text" }
+}
+
+fn editor_output_format(step: &Value, has_schema: bool) -> String {
+    explicit_editor_output_format(step)
+        .unwrap_or_else(|| default_step_output_format(has_schema).to_string())
 }
 
 fn explicit_editor_output_format(step: &Value) -> Option<String> {
@@ -25222,7 +25289,11 @@ message = "Plan the work"
         let mob_toml = render_editor_document_mob_toml(&document).expect("rendered mob.toml");
         assert!(!mob_toml.contains("dispatch_mode ="));
         assert!(!mob_toml.contains("collection_policy ="));
-        assert!(!mob_toml.contains("output_format ="));
+        // Unauthored output format is schema-aware, not omitted: meerkat
+        // defaults steps to json output, which fails free-text steps, so
+        // schema-less steps must export an explicit text format.
+        assert!(mob_toml.contains(r#"output_format = "text""#));
+        assert!(!mob_toml.contains(r#"output_format = "json""#));
 
         let steps = document
             .flow
@@ -25250,6 +25321,28 @@ message = "Plan the work"
         assert!(mob_toml.contains(r#"dispatch_mode = "one_to_one""#));
         assert!(mob_toml.contains(r#"collection_policy = { type = "quorum", n = 1 }"#));
         assert!(mob_toml.contains(r#"output_format = "text""#));
+
+        // Explicit json suppresses the text default and stays implicit in
+        // the rendered TOML (json is the meerkat runtime default).
+        let steps = document
+            .flow
+            .get_mut("steps")
+            .and_then(Value::as_array_mut)
+            .expect("flow steps");
+        for step in steps.iter_mut() {
+            if step["type"] == "member" {
+                step["outputFormat"] = json!("json");
+            }
+        }
+        if let Some(instances) = document.instances.as_array_mut() {
+            for instance in instances.iter_mut() {
+                instance["outputFormat"] = json!("json");
+            }
+        }
+        let validation = validate_document(&document);
+        assert!(validation.ok, "{:?}", validation.diagnostics);
+        let mob_toml = render_editor_document_mob_toml(&document).expect("rendered mob.toml");
+        assert!(!mob_toml.contains("output_format ="));
     }
 
     #[test]
@@ -25617,6 +25710,37 @@ message = "Plan the work"
             diagnostic.code == "editor_profile_schema_mismatch"
                 && diagnostic.path.as_deref() == Some("members[1].schema")
         }));
+    }
+
+    #[test]
+    fn schema_less_steps_export_text_output_format() {
+        // A deployed flow with json-format steps and no schema fails every
+        // free-text turn with "malformed JSON output", so the export default
+        // must be schema-aware: text without a schema, implicit json with one.
+        let document = document_with_expected_schema_ref();
+        let validation = validate_document(&document);
+        assert!(validation.ok, "{:?}", validation.diagnostics);
+        let mob_toml = render_editor_document_mob_toml(&document).expect("rendered mob.toml");
+        let plan_block = mob_toml
+            .split("[flows.")
+            .find(|block| block.contains("message = \"Plan\""))
+            .expect("plan step block");
+        assert!(
+            plan_block.contains(r#"output_format = "text""#),
+            "schema-less step must export text output format: {plan_block}"
+        );
+        let review_block = mob_toml
+            .split("[flows.")
+            .find(|block| block.contains("message = \"Review\"") && block.contains("steps"))
+            .expect("review step block");
+        assert!(
+            review_block.contains(r#"expected_schema_ref = "schemas/reviewer.json""#),
+            "{review_block}"
+        );
+        assert!(
+            !review_block.contains("output_format ="),
+            "schema-backed step keeps the implicit json runtime default: {review_block}"
+        );
     }
 
     #[test]
