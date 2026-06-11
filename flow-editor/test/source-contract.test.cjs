@@ -63,7 +63,12 @@ const builderStepPickerBlock = (builder.match(/function StepPicker[\s\S]*?\/\/ �
 const sourceEditorBlock = (controller.match(/function sourceEditorState[\s\S]*?function sampleFlowsFromCatalogs/) || [""])[0];
 const graphEditorBlock = (graph.match(/function GraphEditor[\s\S]*?function SourceFileAdornmentView/) || [""])[0];
 const agentsListBlock = (agents.match(/function AgentsList[\s\S]*?function AddAgentControl/) || [""])[0];
-const agentListStateBlock = (controller.match(/function agentListState[\s\S]*?function agentViewFromSchema/) || [""])[0];
+// Re-anchored to end-of-function in S3: the old end landmark
+// (agentViewFromSchema) moved to @flow-editor-core views/view-config.ts while
+// agentListState stays in the residue until S12. The tail pattern is the
+// function's own closing return keys, so the block keeps spanning exactly
+// agentListState wherever it lives in the concatenation.
+const agentListStateBlock = (controller.match(/function agentListState[\s\S]*?memberRows,\s*schemaRows,\s*\};\s*\}/) || [""])[0];
 const addAgentControlBlock = (agents.match(/function AddAgentControl[\s\S]*?function AgentsMain/) || [""])[0];
 const agentsMainBlock = (agents.match(/function AgentsMain[\s\S]*?\/\/ ── Agent editor/) || [""])[0];
 const agentEditorBlock = (agents.match(/function AgentEditor[\s\S]*?\/\/ ── Schema editor/) || [""])[0];

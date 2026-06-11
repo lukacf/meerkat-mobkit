@@ -8,3 +8,4 @@
 export * from "./rpc/client";
 export * from "./shared/constants";
 export * from "./shared/normalize";
+export * from "./views/view-config";
