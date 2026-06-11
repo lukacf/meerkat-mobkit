@@ -14,7 +14,8 @@
 // Bridged edges:
 // - domain/tool-skill-access.ts stepToolScopeState -> basicEditorViewState,
 //   schema/field-edit.ts inputParamFieldControlState -> basicEditorViewState,
-//   contract/options.ts basicStepPickerState -> basicEditorViewState
+//   contract/options.ts basicStepPickerState -> basicEditorViewState,
+//   editors/basic-editor.ts basicBranchDefaultLabel -> basicEditorViewState
 //   (residue until the S11 editors/basic-editor.ts slice).
 // - contract/options.ts graph option/menu builders -> graphCanvasViewState,
 //   contract/options.ts graphAddMenuOpenProjection -> graphCellXY

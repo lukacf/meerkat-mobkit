@@ -8,6 +8,7 @@
 export * from "./contract/options";
 export * from "./domain/tool-skill-access";
 export * from "./drafts/mob-settings";
+export * from "./editors/basic-editor";
 export * from "./flow/launch-modes";
 export * from "./flow/step-tree";
 export * from "./rpc/client";

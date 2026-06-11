@@ -62,16 +62,20 @@ var MobKitFlowCore = (() => {
     SCHEMA_COMMAND_KEYS: () => SCHEMA_COMMAND_KEYS,
     SCHEMA_VERSION: () => SCHEMA_VERSION,
     addInlineSkillToRealms: () => addInlineSkillToRealms,
+    advancedMobSettingsDraftPatch: () => advancedMobSettingsDraftPatch,
+    advancedMobSettingsEditorState: () => advancedMobSettingsEditorState,
     agentAccessViewForState: () => agentAccessViewForState,
     agentAccessViewFromSchema: () => agentAccessViewFromSchema,
     agentDetailViewForState: () => agentDetailViewForState,
     agentDetailViewFromSchema: () => agentDetailViewFromSchema,
+    agentNavigationProjection: () => agentNavigationProjection,
     agentViewForState: () => agentViewForState,
     agentViewFromSchema: () => agentViewFromSchema,
     authoringOperationAvailability: () => authoringOperationAvailability,
     authoringOperationFromIntent: () => authoringOperationFromIntent,
     authoringOperationsFromSchema: () => authoringOperationsFromSchema,
     authoringRpcMethodsFromSchema: () => authoringRpcMethodsFromSchema,
+    basicBranchDefaultLabel: () => basicBranchDefaultLabel,
     basicFlowPrimitiveRowsFromSchema: () => basicFlowPrimitiveRowsFromSchema,
     basicStepPickerState: () => basicStepPickerState,
     basicViewFromSchema: () => basicViewFromSchema,
@@ -82,6 +86,8 @@ var MobKitFlowCore = (() => {
     canonicalBudgetSplitPolicyKind: () => canonicalBudgetSplitPolicyKind,
     canonicalLaunchModeKind: () => canonicalLaunchModeKind,
     childLanes: () => childLanes,
+    collectFlowBranchIds: () => collectFlowBranchIds,
+    collectFlowStepIds: () => collectFlowStepIds,
     collectVisualSteps: () => collectVisualSteps,
     collectionPolicyAllowed: () => collectionPolicyAllowed,
     collectionPolicyOptions: () => collectionPolicyOptions,
@@ -107,9 +113,14 @@ var MobKitFlowCore = (() => {
     dispatchModeOptions: () => dispatchModeOptions,
     edgeConditionToEditorCond: () => edgeConditionToEditorCond,
     editorFlowPrimitiveOptions: () => editorFlowPrimitiveOptions,
+    editorGraphDraftContract: () => editorGraphDraftContract,
+    editorInputParamDraftContract: () => editorInputParamDraftContract,
+    editorInputParamNameFallback: () => editorInputParamNameFallback,
+    editorInputStepDraftContract: () => editorInputStepDraftContract,
     editorSchemaDraftContract: () => editorSchemaDraftContract,
     editorSchemaDraftField: () => editorSchemaDraftField,
     editorSchemaFieldNameFallback: () => editorSchemaFieldNameFallback,
+    emptyGraphDraftContract: () => emptyGraphDraftContract,
     enumValueAddPatch: () => enumValueAddPatch,
     enumValueCommitPatch: () => enumValueCommitPatch,
     enumValueDeletePatch: () => enumValueDeletePatch,
@@ -124,6 +135,7 @@ var MobKitFlowCore = (() => {
     firstSupportedOption: () => firstSupportedOption,
     flowRegistryViewForState: () => flowRegistryViewForState,
     flowRegistryViewFromSchema: () => flowRegistryViewFromSchema,
+    flowStepTemplate: () => flowStepTemplate,
     forkContextAllowed: () => forkContextAllowed,
     forkContextOptions: () => forkContextOptions,
     graphAddMenuCloseProjection: () => graphAddMenuCloseProjection,
@@ -145,6 +157,7 @@ var MobKitFlowCore = (() => {
     inlineSkillRealmIdFromOperationResult: () => inlineSkillRealmIdFromOperationResult,
     inputParamFieldControlState: () => inputParamFieldControlState,
     inputParamName: () => inputParamName,
+    inputStepDraft: () => inputStepDraft,
     jsonEquivalent: () => jsonEquivalent,
     launchBudgetFixedLimitPatch: () => launchBudgetFixedLimitPatch,
     launchBudgetKindPatch: () => launchBudgetKindPatch,
@@ -173,9 +186,17 @@ var MobKitFlowCore = (() => {
     memberToolAccessState: () => memberToolAccessState,
     memberToolRemovePatch: () => memberToolRemovePatch,
     mobBackendDefaultOptions: () => mobBackendDefaultOptions,
+    mobDefaultsFromSchema: () => mobDefaultsFromSchema,
     mobDefinitionUnsupportedOptionLabel: () => mobDefinitionUnsupportedOptionLabel,
     mobDefinitionUnsupportedOptionReason: () => mobDefinitionUnsupportedOptionReason,
     mobKitBudgetSplitPolicy: () => mobKitBudgetSplitPolicy,
+    mobRoleWiringAddPatch: () => mobRoleWiringAddPatch,
+    mobRoleWiringDeletePatch: () => mobRoleWiringDeletePatch,
+    mobRoleWiringEditorState: () => mobRoleWiringEditorState,
+    mobRoleWiringSourcePatch: () => mobRoleWiringSourcePatch,
+    mobRoleWiringTargetPatch: () => mobRoleWiringTargetPatch,
+    mobRoleWiringUpdatePatch: () => mobRoleWiringUpdatePatch,
+    mobSettingsForUi: () => mobSettingsForUi,
     newFlowViewForState: () => newFlowViewForState,
     newFlowViewFromSchema: () => newFlowViewFromSchema,
     normalizeBudgetSplitPolicy: () => normalizeBudgetSplitPolicy,
@@ -184,11 +205,14 @@ var MobKitFlowCore = (() => {
     normalizeForkContext: () => normalizeForkContext,
     normalizeLaunchMode: () => normalizeLaunchMode,
     normalizeMaxInlinePeerNotifications: () => normalizeMaxInlinePeerNotifications,
+    normalizeMobSettings: () => normalizeMobSettings,
     normalizeOptionalObject: () => normalizeOptionalObject,
     normalizeOutputFormat: () => normalizeOutputFormat,
     normalizePositiveInteger: () => normalizePositiveInteger,
     normalizeProfileBackend: () => normalizeProfileBackend,
     normalizeProviderParams: () => normalizeProviderParams,
+    normalizeRoleWiring: () => normalizeRoleWiring,
+    normalizeRoleWiringForOptions: () => normalizeRoleWiringForOptions,
     normalizeSchemaLikeFieldPatch: () => normalizeSchemaLikeFieldPatch,
     normalizeSkillId: () => normalizeSkillId,
     normalizeStepToolScopeList: () => normalizeStepToolScopeList,
@@ -197,6 +221,8 @@ var MobKitFlowCore = (() => {
     normalizedEdgeCondition: () => normalizedEdgeCondition,
     numberOrNull: () => numberOrNull,
     operationErrorText: () => operationErrorText,
+    outputFormatAllowed: () => outputFormatAllowed,
+    outputFormatOptions: () => outputFormatOptions,
     profileBackendOptions: () => profileBackendOptions,
     profileBindingOptions: () => profileBindingOptions,
     profileBindingRestriction: () => profileBindingRestriction,
@@ -204,8 +230,10 @@ var MobKitFlowCore = (() => {
     realmBackendOptions: () => realmBackendOptions,
     repeatConditionFromEdge: () => repeatConditionFromEdge,
     repeatIterationInputOptions: () => repeatIterationInputOptions,
+    reserveFlowBranchId: () => reserveFlowBranchId,
     roleAccentColor: () => roleAccentColor,
     roleAccentStyle: () => roleAccentStyle,
+    roleWiringOptionValues: () => roleWiringOptionValues,
     rpcMethod: () => rpcMethod,
     rpcPath: () => rpcPath,
     runtimeModeDeploySurfaceAllowed: () => runtimeModeDeploySurfaceAllowed,
@@ -242,6 +270,7 @@ var MobKitFlowCore = (() => {
     trustPolicyOptions: () => trustPolicyOptions,
     tweaksControlState: () => tweaksControlState,
     uniqueEnumValue: () => uniqueEnumValue,
+    uniqueFlowStepId: () => uniqueFlowStepId,
     uniqueInputParamName: () => uniqueInputParamName,
     uniqueSchemaFieldName: () => uniqueSchemaFieldName,
     validMemberToolIds: () => validMemberToolIds,
@@ -1793,6 +1822,14 @@ var MobKitFlowCore = (() => {
     }
     return [];
   }
+  function collectFlowStepIds(steps, out = /* @__PURE__ */ new Set()) {
+    for (const step of steps || []) {
+      const id = String(step?.id || "").trim();
+      if (id) out.add(id);
+      for (const lane of childLanes(step || {})) collectFlowStepIds(lane.steps, out);
+    }
+    return out;
+  }
 
   // ../packages/flow-editor-core/src/flow/launch-modes.ts
   function hasAuthoringLaunchMode(source) {
@@ -2779,6 +2816,13 @@ var MobKitFlowCore = (() => {
     }
   }
 
+  // ../packages/flow-editor-core/src/editors/basic-editor.ts
+  function basicBranchDefaultLabel(index, basicView = null) {
+    const view = basicEditorViewState(basicView);
+    const prefix = view.branchConditionRowTitlePrefix;
+    return [prefix, String(index || 1)].filter(Boolean).join(" ");
+  }
+
   // ../packages/flow-editor-core/src/schema/field-edit.ts
   function conditionViewFromSchema(schema) {
     const view = schema?.mob_definition?.editor_condition_view;
@@ -3095,33 +3139,6 @@ var MobKitFlowCore = (() => {
     };
   }
 
-  // ../packages/flow-editor-core/src/drafts/mob-settings.ts
-  function editorSchemaDraftField(rawField) {
-    if (!rawField || typeof rawField !== "object") return null;
-    const name = schemaFieldName(rawField.name, "");
-    if (!name) return null;
-    return {
-      name,
-      required: rawField.required === true,
-      description: String(rawField.description || ""),
-      enumValues: Array.isArray(rawField.enumValues) ? rawField.enumValues.map((value) => String(value || "").trim()).filter(Boolean) : []
-    };
-  }
-  function editorSchemaDraftContract(contract) {
-    const draft = contract?.mob_definition?.editor_schema_draft;
-    if (!draft || typeof draft !== "object") return null;
-    const schemaIdPrefix = String(draft.schema_id_prefix || "").trim();
-    const schemaFieldType = contractDefaultValue(contract, "schema_field_type");
-    const initialField = editorSchemaDraftField(draft.initial_field);
-    const addedField = editorSchemaDraftField(draft.added_field);
-    if (!schemaIdPrefix || !schemaFieldType || !initialField || !addedField) return null;
-    return { schemaIdPrefix, schemaFieldType, initialField, addedField };
-  }
-  function editorSchemaFieldNameFallback(contract) {
-    const draft = editorSchemaDraftContract(contract);
-    return draft?.addedField?.name || draft?.initialField?.name || "field";
-  }
-
   // ../packages/flow-editor-core/src/shared/constants.ts
   var SCHEMA_VERSION = "0.1.0";
   var RPC_METHODS = {
@@ -3198,6 +3215,342 @@ var MobKitFlowCore = (() => {
   var MOB_SETTINGS_PATCH_KEYS = new Set(Object.keys(EMPTY_MOB_SETTINGS));
   var GRAPH_NODE_W = 200;
   var GRAPH_NODE_H = 156;
+
+  // ../packages/flow-editor-core/src/drafts/mob-settings.ts
+  function editorSchemaDraftField(rawField) {
+    if (!rawField || typeof rawField !== "object") return null;
+    const name = schemaFieldName(rawField.name, "");
+    if (!name) return null;
+    return {
+      name,
+      required: rawField.required === true,
+      description: String(rawField.description || ""),
+      enumValues: Array.isArray(rawField.enumValues) ? rawField.enumValues.map((value) => String(value || "").trim()).filter(Boolean) : []
+    };
+  }
+  function editorSchemaDraftContract(contract) {
+    const draft = contract?.mob_definition?.editor_schema_draft;
+    if (!draft || typeof draft !== "object") return null;
+    const schemaIdPrefix = String(draft.schema_id_prefix || "").trim();
+    const schemaFieldType = contractDefaultValue(contract, "schema_field_type");
+    const initialField = editorSchemaDraftField(draft.initial_field);
+    const addedField = editorSchemaDraftField(draft.added_field);
+    if (!schemaIdPrefix || !schemaFieldType || !initialField || !addedField) return null;
+    return { schemaIdPrefix, schemaFieldType, initialField, addedField };
+  }
+  function editorInputParamDraftContract(contract) {
+    const draft = contract?.mob_definition?.editor_input_param_draft;
+    if (!draft || typeof draft !== "object") return null;
+    const schemaFieldType = contractDefaultValue(contract, "schema_field_type");
+    const addedField = editorSchemaDraftField(draft.added_field);
+    if (!schemaFieldType || !addedField) return null;
+    return { schemaFieldType, addedField };
+  }
+  function editorInputStepDraftContract(contract) {
+    const draft = contract?.mob_definition?.editor_input_step_draft;
+    const step = draft?.default_step;
+    if (!step || typeof step !== "object") return null;
+    const idPrefix = String(step.id || "").trim();
+    if (!idPrefix) return null;
+    return {
+      idPrefix,
+      task: String(step.task || ""),
+      fields: String(step.fields || ""),
+      inputParams: Array.isArray(step.inputParams) ? JSON.parse(JSON.stringify(step.inputParams)) : []
+    };
+  }
+  function inputStepDraft(contract, flow) {
+    const draft = editorInputStepDraftContract(contract);
+    return {
+      id: uniqueFlowStepId(draft?.idPrefix || "input", flow),
+      type: "input",
+      task: draft?.task || "",
+      fields: draft?.fields || "",
+      inputParams: Array.isArray(draft?.inputParams) ? JSON.parse(JSON.stringify(draft.inputParams)) : []
+    };
+  }
+  function editorSchemaFieldNameFallback(contract) {
+    const draft = editorSchemaDraftContract(contract);
+    return draft?.addedField?.name || draft?.initialField?.name || "field";
+  }
+  function editorInputParamNameFallback(contract) {
+    return editorInputParamDraftContract(contract)?.addedField?.name || "param";
+  }
+  function editorGraphDraftContract(contract) {
+    const draft = contract?.mob_definition?.editor_graph_draft;
+    if (!draft || typeof draft !== "object") return null;
+    const parallelLaneLabels = Array.isArray(draft.parallel_lane_labels) ? draft.parallel_lane_labels.map((label) => String(label || "").trim()).filter(Boolean) : [];
+    const out = {
+      branchGateLabel: String(draft.branch_gate_label || "").trim(),
+      branchConditionLaneLabel: String(draft.branch_condition_lane_label || "").trim(),
+      branchFallbackLaneLabel: String(draft.branch_fallback_lane_label || "").trim(),
+      branchJoinLabel: String(draft.branch_join_label || "").trim(),
+      fallbackEdgeLabel: String(draft.fallback_edge_label || "").trim(),
+      parallelLaneLabels,
+      parallelEdgeLabel: String(draft.parallel_edge_label || "").trim(),
+      reworkEdgeLabel: String(draft.rework_edge_label || "").trim(),
+      terminalEdgeLabelPrefix: String(draft.terminal_edge_label_prefix || ""),
+      joinLabelPrefix: String(draft.join_label_prefix || ""),
+      joinQuorumLabelPrefix: String(draft.join_quorum_label_prefix || ""),
+      branchFrameLabelPrefix: String(draft.branch_frame_label_prefix || ""),
+      branchFrameSingularSuffix: String(draft.branch_frame_singular_suffix || ""),
+      branchFramePluralSuffix: String(draft.branch_frame_plural_suffix || ""),
+      parallelFrameLabelPrefix: String(draft.parallel_frame_label_prefix || ""),
+      parallelFrameJoinInfix: String(draft.parallel_frame_join_infix || ""),
+      parallelMissingDispatchLabel: String(draft.parallel_missing_dispatch_label || "").trim(),
+      parallelMissingCollectionLabel: String(draft.parallel_missing_collection_label || "").trim(),
+      repeatFrameLabelPrefix: String(draft.repeat_frame_label_prefix || ""),
+      repeatMaxIterationsPrefix: String(draft.repeat_max_iterations_prefix || ""),
+      repeatMissingMaxIterationsLabel: String(draft.repeat_missing_max_iterations_label || "").trim(),
+      repeatEdgeUntilPrefix: String(draft.repeat_edge_until_prefix || ""),
+      repeatEdgeUntilFallback: String(draft.repeat_edge_until_fallback || "").trim()
+    };
+    if (!out.branchGateLabel || !out.branchConditionLaneLabel || !out.branchFallbackLaneLabel || !out.branchJoinLabel || !out.fallbackEdgeLabel || out.parallelLaneLabels.length < 2 || !out.parallelEdgeLabel || !out.reworkEdgeLabel || !out.terminalEdgeLabelPrefix || !out.joinLabelPrefix || !out.joinQuorumLabelPrefix || !out.branchFrameLabelPrefix || !out.branchFrameSingularSuffix || !out.branchFramePluralSuffix || !out.parallelFrameLabelPrefix || !out.parallelFrameJoinInfix || !out.parallelMissingDispatchLabel || !out.parallelMissingCollectionLabel || !out.repeatFrameLabelPrefix || !out.repeatMaxIterationsPrefix || !out.repeatMissingMaxIterationsLabel || !out.repeatEdgeUntilPrefix || !out.repeatEdgeUntilFallback) {
+      return null;
+    }
+    return out;
+  }
+  function emptyGraphDraftContract() {
+    return {
+      branchGateLabel: "",
+      branchConditionLaneLabel: "",
+      branchFallbackLaneLabel: "",
+      branchJoinLabel: "",
+      fallbackEdgeLabel: "",
+      parallelLaneLabels: [],
+      parallelEdgeLabel: "",
+      reworkEdgeLabel: "",
+      terminalEdgeLabelPrefix: "",
+      joinLabelPrefix: "",
+      joinQuorumLabelPrefix: "",
+      branchFrameLabelPrefix: "",
+      branchFrameSingularSuffix: "",
+      branchFramePluralSuffix: "",
+      parallelFrameLabelPrefix: "",
+      parallelFrameJoinInfix: "",
+      parallelMissingDispatchLabel: "",
+      parallelMissingCollectionLabel: "",
+      repeatFrameLabelPrefix: "",
+      repeatMaxIterationsPrefix: "",
+      repeatMissingMaxIterationsLabel: "",
+      repeatEdgeUntilPrefix: "",
+      repeatEdgeUntilFallback: ""
+    };
+  }
+  function agentNavigationProjection(memberId = null) {
+    const id = String(memberId || "").trim();
+    return {
+      view: "agents",
+      addAt: null,
+      selection: id ? { kind: "agent", id } : null
+    };
+  }
+  function flowStepTemplate(pick, contract, options = {}) {
+    const kind = String(pick?.kind || "").trim();
+    const id = uniqueFlowStepId("s", options.flow);
+    const branchIds = collectFlowBranchIds(options.flow?.steps || []);
+    const dependencyMode = contractDefaultValue(contract, "dependency_mode");
+    if (!dependencyMode) return null;
+    const stepTypes = contractStringValues(contract?.mob_definition?.editor_flow_step_types);
+    if (kind === "member") {
+      return {
+        id,
+        type: "member",
+        role: String(pick?.id || "").trim(),
+        instruction: "",
+        dependsMode: dependencyMode
+      };
+    }
+    if (!stepTypes.includes(kind)) return null;
+    if (kind === "branch") {
+      return {
+        id,
+        type: "branch",
+        controllerRole: "",
+        branches: [{ id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(1, options.basicView), condition: "", steps: [] }],
+        fallback: [],
+        dependsMode: dependencyMode
+      };
+    }
+    if (kind === "parallel") {
+      const dispatch = contractDefaultValue(contract, "dispatch_mode");
+      const collection = contractDefaultValue(contract, "collection_policy");
+      if (!dispatch || !collection) return null;
+      return {
+        id,
+        type: "parallel",
+        controllerRole: "",
+        dispatch,
+        collection,
+        branches: [
+          { id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(1, options.basicView), steps: [] },
+          { id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(2, options.basicView), steps: [] }
+        ],
+        dependsMode: dependencyMode
+      };
+    }
+    if (kind === "repeat") {
+      return { id, type: "repeat", loopId: "", until: "", maxIterations: null, iterationInput: "", steps: [] };
+    }
+    return null;
+  }
+  function uniqueFlowStepId(prefix, flow) {
+    const stem = slug(prefix, "s");
+    const base = `${stem}_1`;
+    const used = collectFlowStepIds(flow?.steps || []);
+    if (!used.has(base)) return base;
+    let index = 2;
+    while (used.has(`${stem}_${index}`)) index += 1;
+    return `${stem}_${index}`;
+  }
+  function reserveFlowBranchId(prefix, used) {
+    const stem = slug(prefix, "br");
+    const base = `${stem}_1`;
+    const ids = used instanceof Set ? used : /* @__PURE__ */ new Set();
+    if (!ids.has(base)) {
+      ids.add(base);
+      return base;
+    }
+    let index = 2;
+    while (ids.has(`${stem}_${index}`)) index += 1;
+    const id = `${stem}_${index}`;
+    ids.add(id);
+    return id;
+  }
+  function collectFlowBranchIds(steps, out = /* @__PURE__ */ new Set()) {
+    for (const step of steps || []) {
+      if (step?.type === "branch" || step?.type === "parallel") {
+        for (const branch of step.branches || []) {
+          const id = String(branch?.id || "").trim();
+          if (id) out.add(id);
+          collectFlowBranchIds(branch?.steps || [], out);
+        }
+      }
+      if (step?.type === "branch") collectFlowBranchIds(step.fallback || [], out);
+      if (step?.type === "repeat") collectFlowBranchIds(step.steps || [], out);
+    }
+    return out;
+  }
+  function outputFormatOptions(contract, currentFormat) {
+    return simpleContractOptions(
+      contract?.mob_definition?.step_output_formats,
+      currentFormat || contractDefaultValue(contract, "step_output_format"),
+      {
+        json: "json \u2014 parse terminal output as JSON",
+        text: "text \u2014 preserve terminal text"
+      },
+      "mob_definition.step_output_formats"
+    );
+  }
+  function outputFormatAllowed(contract, format) {
+    const value = normalizeOutputFormat(format);
+    if (!value) return true;
+    const formats = Array.isArray(contract?.mob_definition?.step_output_formats) ? contract.mob_definition.step_output_formats.map(normalizeOutputFormat) : [];
+    return formats.includes(value);
+  }
+  function normalizeMobSettings(settings) {
+    const source = settings && typeof settings === "object" ? settings : {};
+    const advancedSource = source.advanced && typeof source.advanced === "object" ? source.advanced : {};
+    const roleWiring = normalizeRoleWiring(source.roleWiring || source.role_wiring);
+    return {
+      ...EMPTY_MOB_SETTINGS,
+      orchestrator: String(source.orchestrator || source.orchestratorProfile || source.orchestrator_profile || "").trim(),
+      autoWireOrchestrator: !!(source.autoWireOrchestrator ?? source.auto_wire_orchestrator),
+      roleWiring,
+      backendDefault: normalizeProfileBackend(source.backendDefault || source.backend_default || source.backend?.default) || "",
+      externalAddressBase: String(source.externalAddressBase || source.external_address_base || source.backend?.external?.address_base || "").trim(),
+      advanced: {
+        topology: normalizeOptionalObject(advancedSource.topology || source.topology),
+        supervisor: normalizeOptionalObject(advancedSource.supervisor || source.supervisor),
+        limits: normalizeOptionalObject(advancedSource.limits || source.limits),
+        spawnPolicy: normalizeOptionalObject(advancedSource.spawnPolicy || advancedSource.spawn_policy || source.spawnPolicy || source.spawn_policy),
+        eventRouter: normalizeOptionalObject(advancedSource.eventRouter || advancedSource.event_router || source.eventRouter || source.event_router)
+      }
+    };
+  }
+  function normalizeRoleWiring(value) {
+    if (!Array.isArray(value)) return [];
+    return value.map((rule) => ({
+      a: String(rule?.a || "").trim(),
+      b: String(rule?.b || "").trim()
+    })).filter((rule) => rule.a && rule.b);
+  }
+  function mobRoleWiringEditorState(value, profileOptions, settingsView = null) {
+    const view = settingsViewForState(settingsView);
+    const options = Array.isArray(profileOptions) ? profileOptions : [];
+    const wiring = normalizeRoleWiring(value);
+    return {
+      label: view.roleWiringLabel,
+      countLabel: String(wiring.length),
+      addLabel: view.roleWiringAddLabel,
+      addDisabled: !options.length,
+      options,
+      wiring
+    };
+  }
+  function roleWiringOptionValues(profileOptions) {
+    return (Array.isArray(profileOptions) ? profileOptions : []).map((option) => String(option?.value || option || "").trim()).filter(Boolean);
+  }
+  function normalizeRoleWiringForOptions(wiring, profileOptions) {
+    const allowed = new Set(roleWiringOptionValues(profileOptions));
+    if (!allowed.size) return [];
+    return normalizeRoleWiring(wiring).filter((rule) => allowed.has(rule.a) && allowed.has(rule.b));
+  }
+  function mobRoleWiringUpdatePatch(wiring, index, patch, profileOptions) {
+    const rules = normalizeRoleWiring(wiring);
+    const ruleIndex = Number(index);
+    if (!Number.isInteger(ruleIndex) || ruleIndex < 0 || ruleIndex >= rules.length) return rules;
+    return normalizeRoleWiringForOptions(
+      rules.map((rule, i) => i === ruleIndex ? { ...rule, ...patch || {} } : rule),
+      profileOptions
+    );
+  }
+  function mobRoleWiringSourcePatch(wiring, index, rawValue, profileOptions) {
+    return mobRoleWiringUpdatePatch(wiring, index, { a: String(rawValue || "").trim() }, profileOptions);
+  }
+  function mobRoleWiringTargetPatch(wiring, index, rawValue, profileOptions) {
+    return mobRoleWiringUpdatePatch(wiring, index, { b: String(rawValue || "").trim() }, profileOptions);
+  }
+  function mobRoleWiringDeletePatch(wiring, index) {
+    const rules = normalizeRoleWiring(wiring);
+    const ruleIndex = Number(index);
+    if (!Number.isInteger(ruleIndex) || ruleIndex < 0 || ruleIndex >= rules.length) return rules;
+    return rules.filter((_, i) => i !== ruleIndex);
+  }
+  function mobRoleWiringAddPatch(wiring, profileOptions) {
+    const rules = normalizeRoleWiring(wiring);
+    const options = roleWiringOptionValues(profileOptions);
+    if (!options.length) return rules;
+    return normalizeRoleWiring([
+      ...rules,
+      { a: options[0], b: options[1] || options[0] }
+    ]);
+  }
+  function advancedMobSettingsEditorState(value, settingsView = null) {
+    const view = settingsViewForState(settingsView);
+    return {
+      label: view.advancedLabel,
+      text: JSON.stringify(value || {}, null, 2)
+    };
+  }
+  function advancedMobSettingsDraftPatch(text, settingsView = null) {
+    const view = settingsViewForState(settingsView);
+    try {
+      const parsed = String(text || "").trim() ? JSON.parse(String(text)) : {};
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { ok: false, error: view.advancedObjectRequiredError, value: null };
+      }
+      return { ok: true, error: "", value: normalizeMobSettings({ advanced: parsed }).advanced };
+    } catch (err) {
+      return { ok: false, error: err?.message || view.advancedInvalidJsonError, value: null };
+    }
+  }
+  function mobSettingsForUi(settings) {
+    return normalizeMobSettings(settings);
+  }
+  function mobDefaultsFromSchema(schema) {
+    return mobSettingsForUi(schema?.mob_definition?.mob_settings?.defaults);
+  }
 
   // ../packages/flow-editor-core/src/rpc/client.ts
   var controllerConfig = {
@@ -3414,16 +3767,20 @@ const {
   SCHEMA_COMMAND_KEYS,
   SCHEMA_VERSION,
   addInlineSkillToRealms,
+  advancedMobSettingsDraftPatch,
+  advancedMobSettingsEditorState,
   agentAccessViewForState,
   agentAccessViewFromSchema,
   agentDetailViewForState,
   agentDetailViewFromSchema,
+  agentNavigationProjection,
   agentViewForState,
   agentViewFromSchema,
   authoringOperationAvailability,
   authoringOperationFromIntent,
   authoringOperationsFromSchema,
   authoringRpcMethodsFromSchema,
+  basicBranchDefaultLabel,
   basicFlowPrimitiveRowsFromSchema,
   basicStepPickerState,
   basicViewFromSchema,
@@ -3434,6 +3791,8 @@ const {
   canonicalBudgetSplitPolicyKind,
   canonicalLaunchModeKind,
   childLanes,
+  collectFlowBranchIds,
+  collectFlowStepIds,
   collectVisualSteps,
   collectionPolicyAllowed,
   collectionPolicyOptions,
@@ -3459,9 +3818,14 @@ const {
   dispatchModeOptions,
   edgeConditionToEditorCond,
   editorFlowPrimitiveOptions,
+  editorGraphDraftContract,
+  editorInputParamDraftContract,
+  editorInputParamNameFallback,
+  editorInputStepDraftContract,
   editorSchemaDraftContract,
   editorSchemaDraftField,
   editorSchemaFieldNameFallback,
+  emptyGraphDraftContract,
   enumValueAddPatch,
   enumValueCommitPatch,
   enumValueDeletePatch,
@@ -3476,6 +3840,7 @@ const {
   firstSupportedOption,
   flowRegistryViewForState,
   flowRegistryViewFromSchema,
+  flowStepTemplate,
   forkContextAllowed,
   forkContextOptions,
   graphAddMenuCloseProjection,
@@ -3497,6 +3862,7 @@ const {
   inlineSkillRealmIdFromOperationResult,
   inputParamFieldControlState,
   inputParamName,
+  inputStepDraft,
   jsonEquivalent,
   launchBudgetFixedLimitPatch,
   launchBudgetKindPatch,
@@ -3525,9 +3891,17 @@ const {
   memberToolAccessState,
   memberToolRemovePatch,
   mobBackendDefaultOptions,
+  mobDefaultsFromSchema,
   mobDefinitionUnsupportedOptionLabel,
   mobDefinitionUnsupportedOptionReason,
   mobKitBudgetSplitPolicy,
+  mobRoleWiringAddPatch,
+  mobRoleWiringDeletePatch,
+  mobRoleWiringEditorState,
+  mobRoleWiringSourcePatch,
+  mobRoleWiringTargetPatch,
+  mobRoleWiringUpdatePatch,
+  mobSettingsForUi,
   newFlowViewForState,
   newFlowViewFromSchema,
   normalizeBudgetSplitPolicy,
@@ -3536,11 +3910,14 @@ const {
   normalizeForkContext,
   normalizeLaunchMode,
   normalizeMaxInlinePeerNotifications,
+  normalizeMobSettings,
   normalizeOptionalObject,
   normalizeOutputFormat,
   normalizePositiveInteger,
   normalizeProfileBackend,
   normalizeProviderParams,
+  normalizeRoleWiring,
+  normalizeRoleWiringForOptions,
   normalizeSchemaLikeFieldPatch,
   normalizeSkillId,
   normalizeStepToolScopeList,
@@ -3549,6 +3926,8 @@ const {
   normalizedEdgeCondition,
   numberOrNull,
   operationErrorText,
+  outputFormatAllowed,
+  outputFormatOptions,
   profileBackendOptions,
   profileBindingOptions,
   profileBindingRestriction,
@@ -3556,8 +3935,10 @@ const {
   realmBackendOptions,
   repeatConditionFromEdge,
   repeatIterationInputOptions,
+  reserveFlowBranchId,
   roleAccentColor,
   roleAccentStyle,
+  roleWiringOptionValues,
   rpcMethod,
   rpcPath,
   runtimeModeDeploySurfaceAllowed,
@@ -3594,6 +3975,7 @@ const {
   trustPolicyOptions,
   tweaksControlState,
   uniqueEnumValue,
+  uniqueFlowStepId,
   uniqueInputParamName,
   uniqueSchemaFieldName,
   validMemberToolIds,
@@ -4551,15 +4933,6 @@ const {
       }
     }
     return { ok: true, error: "" };
-  }
-
-  function collectFlowStepIds(steps, out = new Set()) {
-    for (const step of steps || []) {
-      const id = String(step?.id || "").trim();
-      if (id) out.add(id);
-      for (const lane of childLanes(step || {})) collectFlowStepIds(lane.steps, out);
-    }
-    return out;
   }
 
   function flowStepById(steps, id) {
@@ -6644,12 +7017,6 @@ const {
     };
     if (step?.type !== "parallel") nextBranch.condition = "";
     return { branches: [...branches, nextBranch] };
-  }
-
-  function basicBranchDefaultLabel(index, basicView = null) {
-    const view = basicEditorViewState(basicView);
-    const prefix = view.branchConditionRowTitlePrefix;
-    return [prefix, String(index || 1)].filter(Boolean).join(" ");
   }
 
   function basicConditionLabel(cond, options = [], config = {}) {
@@ -9723,358 +10090,6 @@ const {
     return flowDraftIdFromSpec({
       name,
     }, existingRows);
-  }
-
-  function editorInputParamDraftContract(contract) {
-    const draft = contract?.mob_definition?.editor_input_param_draft;
-    if (!draft || typeof draft !== "object") return null;
-    const schemaFieldType = contractDefaultValue(contract, "schema_field_type");
-    const addedField = editorSchemaDraftField(draft.added_field);
-    if (!schemaFieldType || !addedField) return null;
-    return { schemaFieldType, addedField };
-  }
-
-  function editorInputStepDraftContract(contract) {
-    const draft = contract?.mob_definition?.editor_input_step_draft;
-    const step = draft?.default_step;
-    if (!step || typeof step !== "object") return null;
-    const idPrefix = String(step.id || "").trim();
-    if (!idPrefix) return null;
-    return {
-      idPrefix,
-      task: String(step.task || ""),
-      fields: String(step.fields || ""),
-      inputParams: Array.isArray(step.inputParams) ? JSON.parse(JSON.stringify(step.inputParams)) : [],
-    };
-  }
-
-  function inputStepDraft(contract, flow) {
-    const draft = editorInputStepDraftContract(contract);
-    return {
-      id: uniqueFlowStepId(draft?.idPrefix || "input", flow),
-      type: "input",
-      task: draft?.task || "",
-      fields: draft?.fields || "",
-      inputParams: Array.isArray(draft?.inputParams) ? JSON.parse(JSON.stringify(draft.inputParams)) : [],
-    };
-  }
-
-  function editorInputParamNameFallback(contract) {
-    return editorInputParamDraftContract(contract)?.addedField?.name || "param";
-  }
-
-  function editorGraphDraftContract(contract) {
-    const draft = contract?.mob_definition?.editor_graph_draft;
-    if (!draft || typeof draft !== "object") return null;
-    const parallelLaneLabels = Array.isArray(draft.parallel_lane_labels)
-      ? draft.parallel_lane_labels.map((label) => String(label || "").trim()).filter(Boolean)
-      : [];
-    const out = {
-      branchGateLabel: String(draft.branch_gate_label || "").trim(),
-      branchConditionLaneLabel: String(draft.branch_condition_lane_label || "").trim(),
-      branchFallbackLaneLabel: String(draft.branch_fallback_lane_label || "").trim(),
-      branchJoinLabel: String(draft.branch_join_label || "").trim(),
-      fallbackEdgeLabel: String(draft.fallback_edge_label || "").trim(),
-      parallelLaneLabels,
-      parallelEdgeLabel: String(draft.parallel_edge_label || "").trim(),
-      reworkEdgeLabel: String(draft.rework_edge_label || "").trim(),
-      terminalEdgeLabelPrefix: String(draft.terminal_edge_label_prefix || ""),
-      joinLabelPrefix: String(draft.join_label_prefix || ""),
-      joinQuorumLabelPrefix: String(draft.join_quorum_label_prefix || ""),
-      branchFrameLabelPrefix: String(draft.branch_frame_label_prefix || ""),
-      branchFrameSingularSuffix: String(draft.branch_frame_singular_suffix || ""),
-      branchFramePluralSuffix: String(draft.branch_frame_plural_suffix || ""),
-      parallelFrameLabelPrefix: String(draft.parallel_frame_label_prefix || ""),
-      parallelFrameJoinInfix: String(draft.parallel_frame_join_infix || ""),
-      parallelMissingDispatchLabel: String(draft.parallel_missing_dispatch_label || "").trim(),
-      parallelMissingCollectionLabel: String(draft.parallel_missing_collection_label || "").trim(),
-      repeatFrameLabelPrefix: String(draft.repeat_frame_label_prefix || ""),
-      repeatMaxIterationsPrefix: String(draft.repeat_max_iterations_prefix || ""),
-      repeatMissingMaxIterationsLabel: String(draft.repeat_missing_max_iterations_label || "").trim(),
-      repeatEdgeUntilPrefix: String(draft.repeat_edge_until_prefix || ""),
-      repeatEdgeUntilFallback: String(draft.repeat_edge_until_fallback || "").trim(),
-    };
-    if (!out.branchGateLabel || !out.branchConditionLaneLabel || !out.branchFallbackLaneLabel
-      || !out.branchJoinLabel || !out.fallbackEdgeLabel || out.parallelLaneLabels.length < 2
-      || !out.parallelEdgeLabel || !out.reworkEdgeLabel || !out.terminalEdgeLabelPrefix
-      || !out.joinLabelPrefix || !out.joinQuorumLabelPrefix || !out.branchFrameLabelPrefix || !out.branchFrameSingularSuffix
-      || !out.branchFramePluralSuffix || !out.parallelFrameLabelPrefix || !out.parallelFrameJoinInfix
-      || !out.parallelMissingDispatchLabel || !out.parallelMissingCollectionLabel
-      || !out.repeatFrameLabelPrefix || !out.repeatMaxIterationsPrefix
-      || !out.repeatMissingMaxIterationsLabel || !out.repeatEdgeUntilPrefix
-      || !out.repeatEdgeUntilFallback) {
-      return null;
-    }
-    return out;
-  }
-
-  function emptyGraphDraftContract() {
-    return {
-      branchGateLabel: "",
-      branchConditionLaneLabel: "",
-      branchFallbackLaneLabel: "",
-      branchJoinLabel: "",
-      fallbackEdgeLabel: "",
-      parallelLaneLabels: [],
-      parallelEdgeLabel: "",
-      reworkEdgeLabel: "",
-      terminalEdgeLabelPrefix: "",
-      joinLabelPrefix: "",
-      joinQuorumLabelPrefix: "",
-      branchFrameLabelPrefix: "",
-      branchFrameSingularSuffix: "",
-      branchFramePluralSuffix: "",
-      parallelFrameLabelPrefix: "",
-      parallelFrameJoinInfix: "",
-      parallelMissingDispatchLabel: "",
-      parallelMissingCollectionLabel: "",
-      repeatFrameLabelPrefix: "",
-      repeatMaxIterationsPrefix: "",
-      repeatMissingMaxIterationsLabel: "",
-      repeatEdgeUntilPrefix: "",
-      repeatEdgeUntilFallback: "",
-    };
-  }
-
-  function agentNavigationProjection(memberId = null) {
-    const id = String(memberId || "").trim();
-    return {
-      view: "agents",
-      addAt: null,
-      selection: id ? { kind: "agent", id } : null,
-    };
-  }
-
-  function flowStepTemplate(pick, contract, options = {}) {
-    const kind = String(pick?.kind || "").trim();
-    const id = uniqueFlowStepId("s", options.flow);
-    const branchIds = collectFlowBranchIds(options.flow?.steps || []);
-    const dependencyMode = contractDefaultValue(contract, "dependency_mode");
-    if (!dependencyMode) return null;
-    const stepTypes = contractStringValues(contract?.mob_definition?.editor_flow_step_types);
-    if (kind === "member") {
-      return {
-        id,
-        type: "member",
-        role: String(pick?.id || "").trim(),
-        instruction: "",
-        dependsMode: dependencyMode,
-      };
-    }
-    if (!stepTypes.includes(kind)) return null;
-    if (kind === "branch") {
-      return {
-        id,
-        type: "branch",
-        controllerRole: "",
-        branches: [{ id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(1, options.basicView), condition: "", steps: [] }],
-        fallback: [],
-        dependsMode: dependencyMode,
-      };
-    }
-    if (kind === "parallel") {
-      const dispatch = contractDefaultValue(contract, "dispatch_mode");
-      const collection = contractDefaultValue(contract, "collection_policy");
-      if (!dispatch || !collection) return null;
-      return {
-        id,
-        type: "parallel",
-        controllerRole: "",
-        dispatch,
-        collection,
-        branches: [
-          { id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(1, options.basicView), steps: [] },
-          { id: reserveFlowBranchId("br", branchIds), label: basicBranchDefaultLabel(2, options.basicView), steps: [] },
-        ],
-        dependsMode: dependencyMode,
-      };
-    }
-    if (kind === "repeat") {
-      return { id, type: "repeat", loopId: "", until: "", maxIterations: null, iterationInput: "", steps: [] };
-    }
-    return null;
-  }
-
-  function uniqueFlowStepId(prefix, flow) {
-    const stem = slug(prefix, "s");
-    const base = `${stem}_1`;
-    const used = collectFlowStepIds(flow?.steps || []);
-    if (!used.has(base)) return base;
-    let index = 2;
-    while (used.has(`${stem}_${index}`)) index += 1;
-    return `${stem}_${index}`;
-  }
-
-  function reserveFlowBranchId(prefix, used) {
-    const stem = slug(prefix, "br");
-    const base = `${stem}_1`;
-    const ids = used instanceof Set ? used : new Set();
-    if (!ids.has(base)) {
-      ids.add(base);
-      return base;
-    }
-    let index = 2;
-    while (ids.has(`${stem}_${index}`)) index += 1;
-    const id = `${stem}_${index}`;
-    ids.add(id);
-    return id;
-  }
-
-  function collectFlowBranchIds(steps, out = new Set()) {
-    for (const step of steps || []) {
-      if (step?.type === "branch" || step?.type === "parallel") {
-        for (const branch of step.branches || []) {
-          const id = String(branch?.id || "").trim();
-          if (id) out.add(id);
-          collectFlowBranchIds(branch?.steps || [], out);
-        }
-      }
-      if (step?.type === "branch") collectFlowBranchIds(step.fallback || [], out);
-      if (step?.type === "repeat") collectFlowBranchIds(step.steps || [], out);
-    }
-    return out;
-  }
-
-  function outputFormatOptions(contract, currentFormat) {
-    return simpleContractOptions(
-      contract?.mob_definition?.step_output_formats,
-      currentFormat || contractDefaultValue(contract, "step_output_format"),
-      {
-        json: "json — parse terminal output as JSON",
-        text: "text — preserve terminal text",
-      },
-      "mob_definition.step_output_formats"
-    );
-  }
-
-  function outputFormatAllowed(contract, format) {
-    const value = normalizeOutputFormat(format);
-    if (!value) return true;
-    const formats = Array.isArray(contract?.mob_definition?.step_output_formats)
-      ? contract.mob_definition.step_output_formats.map(normalizeOutputFormat)
-      : [];
-    return formats.includes(value);
-  }
-
-  function normalizeMobSettings(settings) {
-    const source = settings && typeof settings === "object" ? settings : {};
-    const advancedSource = source.advanced && typeof source.advanced === "object" ? source.advanced : {};
-    const roleWiring = normalizeRoleWiring(source.roleWiring || source.role_wiring);
-    return {
-      ...EMPTY_MOB_SETTINGS,
-      orchestrator: String(source.orchestrator || source.orchestratorProfile || source.orchestrator_profile || "").trim(),
-      autoWireOrchestrator: !!(source.autoWireOrchestrator ?? source.auto_wire_orchestrator),
-      roleWiring,
-      backendDefault: normalizeProfileBackend(source.backendDefault || source.backend_default || source.backend?.default) || "",
-      externalAddressBase: String(source.externalAddressBase || source.external_address_base || source.backend?.external?.address_base || "").trim(),
-      advanced: {
-        topology: normalizeOptionalObject(advancedSource.topology || source.topology),
-        supervisor: normalizeOptionalObject(advancedSource.supervisor || source.supervisor),
-        limits: normalizeOptionalObject(advancedSource.limits || source.limits),
-        spawnPolicy: normalizeOptionalObject(advancedSource.spawnPolicy || advancedSource.spawn_policy || source.spawnPolicy || source.spawn_policy),
-        eventRouter: normalizeOptionalObject(advancedSource.eventRouter || advancedSource.event_router || source.eventRouter || source.event_router),
-      },
-    };
-  }
-
-  function normalizeRoleWiring(value) {
-    if (!Array.isArray(value)) return [];
-    return value
-      .map((rule) => ({
-        a: String(rule?.a || "").trim(),
-        b: String(rule?.b || "").trim(),
-      }))
-      .filter((rule) => rule.a && rule.b);
-  }
-
-  function mobRoleWiringEditorState(value, profileOptions, settingsView = null) {
-    const view = settingsViewForState(settingsView);
-    const options = Array.isArray(profileOptions) ? profileOptions : [];
-    const wiring = normalizeRoleWiring(value);
-    return {
-      label: view.roleWiringLabel,
-      countLabel: String(wiring.length),
-      addLabel: view.roleWiringAddLabel,
-      addDisabled: !options.length,
-      options,
-      wiring,
-    };
-  }
-
-  function roleWiringOptionValues(profileOptions) {
-    return (Array.isArray(profileOptions) ? profileOptions : [])
-      .map((option) => String(option?.value || option || "").trim())
-      .filter(Boolean);
-  }
-
-  function normalizeRoleWiringForOptions(wiring, profileOptions) {
-    const allowed = new Set(roleWiringOptionValues(profileOptions));
-    if (!allowed.size) return [];
-    return normalizeRoleWiring(wiring).filter((rule) => allowed.has(rule.a) && allowed.has(rule.b));
-  }
-
-  function mobRoleWiringUpdatePatch(wiring, index, patch, profileOptions) {
-    const rules = normalizeRoleWiring(wiring);
-    const ruleIndex = Number(index);
-    if (!Number.isInteger(ruleIndex) || ruleIndex < 0 || ruleIndex >= rules.length) return rules;
-    return normalizeRoleWiringForOptions(
-      rules.map((rule, i) => i === ruleIndex ? { ...rule, ...(patch || {}) } : rule),
-      profileOptions,
-    );
-  }
-
-  function mobRoleWiringSourcePatch(wiring, index, rawValue, profileOptions) {
-    return mobRoleWiringUpdatePatch(wiring, index, { a: String(rawValue || "").trim() }, profileOptions);
-  }
-
-  function mobRoleWiringTargetPatch(wiring, index, rawValue, profileOptions) {
-    return mobRoleWiringUpdatePatch(wiring, index, { b: String(rawValue || "").trim() }, profileOptions);
-  }
-
-  function mobRoleWiringDeletePatch(wiring, index) {
-    const rules = normalizeRoleWiring(wiring);
-    const ruleIndex = Number(index);
-    if (!Number.isInteger(ruleIndex) || ruleIndex < 0 || ruleIndex >= rules.length) return rules;
-    return rules.filter((_, i) => i !== ruleIndex);
-  }
-
-  function mobRoleWiringAddPatch(wiring, profileOptions) {
-    const rules = normalizeRoleWiring(wiring);
-    const options = roleWiringOptionValues(profileOptions);
-    if (!options.length) return rules;
-    return normalizeRoleWiring([
-      ...rules,
-      { a: options[0], b: options[1] || options[0] },
-    ]);
-  }
-
-  function advancedMobSettingsEditorState(value, settingsView = null) {
-    const view = settingsViewForState(settingsView);
-    return {
-      label: view.advancedLabel,
-      text: JSON.stringify(value || {}, null, 2),
-    };
-  }
-
-  function advancedMobSettingsDraftPatch(text, settingsView = null) {
-    const view = settingsViewForState(settingsView);
-    try {
-      const parsed = String(text || "").trim() ? JSON.parse(String(text)) : {};
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        return { ok: false, error: view.advancedObjectRequiredError, value: null };
-      }
-      return { ok: true, error: "", value: normalizeMobSettings({ advanced: parsed }).advanced };
-    } catch (err) {
-      return { ok: false, error: err?.message || view.advancedInvalidJsonError, value: null };
-    }
-  }
-
-  function mobSettingsForUi(settings) {
-    return normalizeMobSettings(settings);
-  }
-
-  function mobDefaultsFromSchema(schema) {
-    return mobSettingsForUi(schema?.mob_definition?.mob_settings?.defaults);
   }
 
   function diagnosticsToRows(validation) {
