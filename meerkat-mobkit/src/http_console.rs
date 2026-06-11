@@ -1447,7 +1447,7 @@ fn timeline_event_identity(event: &ConsoleTimelineEvent) -> Option<&str> {
 // ABAC enforcement for console surfaces
 // ---------------------------------------------------------------------------
 
-const ACCESS_DENIED_RPC_CODE: i64 = -32030;
+pub(crate) const ACCESS_DENIED_RPC_CODE: i64 = -32030;
 
 fn retain_visible_timeline_frames(page: &mut ConsoleTimelineWindowPage, view: Option<&AccessView>) {
     let Some(view) = view.filter(|view| view.enforced()) else {

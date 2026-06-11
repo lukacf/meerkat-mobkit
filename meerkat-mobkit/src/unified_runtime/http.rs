@@ -96,6 +96,7 @@ impl UnifiedRuntime {
             .merge(protected_flow_editor_router_with_runtime_catalog(
                 flow_editor_decisions,
                 flow_editor_runtime_catalog,
+                access.clone(),
             ))
             .merge(self.build_console_json_router_with_policy(decisions, visibility_policy))
             .merge(agent_events_sse_router_with_access_and_priming(

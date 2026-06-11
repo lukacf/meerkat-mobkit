@@ -25,6 +25,8 @@ There are no roles. Every check evaluates the caller's attributes (subject, grou
 | `gating.view` / `gating.decide` | Read and decide approval gates |
 | `mob.observe` | Subscribe to whole-mob raw event streams |
 | `runtime.admin` | Routing tables, labels, wiring, reconcile |
+| `mobpack.author` | Author mobpacks in the Flow Editor: drafts, authoring operations, validation, source rendering, export/import, authoring catalogs |
+| `mobpack.deploy` | Execute a mobpack deploy on the host (`rkat mob deploy`); also unlocks the editor's deploy affordances |
 | `access.admin` | Read and edit this configuration |
 
 - **Rule** — matches principals (`subjects`, `groups`), actions (exact, `agent.*`, or `*`), and resources (`agents`, `roles`, `match_labels`). Resource selectors AND together; values within a list OR together. Empty selectors leave a dimension unconstrained.

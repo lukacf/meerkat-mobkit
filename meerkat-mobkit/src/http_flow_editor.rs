@@ -7,6 +7,8 @@ use axum::{
 };
 use serde_json::Value;
 
+use crate::access::{ACTION_MOBPACK_AUTHOR, ACTION_MOBPACK_DEPLOY, AccessController, AccessView};
+use crate::http_console::ACCESS_DENIED_RPC_CODE;
 use crate::http_sse::sse_access_context;
 use crate::mobpack::MobpackRuntimeCatalogState;
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
@@ -52,10 +54,12 @@ pub fn protected_flow_editor_router(decisions: RuntimeDecisionState) -> Router {
 pub(crate) fn protected_flow_editor_router_with_runtime_catalog(
     decisions: RuntimeDecisionState,
     runtime_catalog: MobpackRuntimeCatalogState,
+    access: Option<AccessController>,
 ) -> Router {
     flow_editor_frontend_router::<()>().merge(flow_editor_rpc_router_with_runtime_catalog(
         decisions,
         Some(runtime_catalog),
+        access,
     ))
 }
 
@@ -98,18 +102,20 @@ where
 }
 
 pub fn flow_editor_rpc_router_with_decisions(decisions: RuntimeDecisionState) -> Router {
-    flow_editor_rpc_router_with_runtime_catalog(decisions, None)
+    flow_editor_rpc_router_with_runtime_catalog(decisions, None, None)
 }
 
 fn flow_editor_rpc_router_with_runtime_catalog(
     decisions: RuntimeDecisionState,
     runtime_catalog: Option<MobpackRuntimeCatalogState>,
+    access: Option<AccessController>,
 ) -> Router {
     Router::new()
         .route("/flow-editor/rpc", post(protected_flow_editor_rpc_handler))
         .with_state(FlowEditorRpcState {
             decisions,
             runtime_catalog,
+            access,
         })
 }
 
@@ -212,6 +218,7 @@ fn flow_editor_rpc_handler_with_policy(
 struct FlowEditorRpcState {
     decisions: RuntimeDecisionState,
     runtime_catalog: Option<MobpackRuntimeCatalogState>,
+    access: Option<AccessController>,
 }
 
 #[derive(Clone, Copy)]
@@ -242,31 +249,96 @@ async fn protected_flow_editor_rpc_handler(
             );
         }
     };
-    if sse_access_context(Some(&state.decisions), None, &headers, &uri).is_err() {
+    let access_view = match sse_access_context(
+        Some(&state.decisions),
+        state.access.as_ref(),
+        &headers,
+        &uri,
+    ) {
+        Ok(view) => view,
+        Err(()) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json::<Value>(serde_json::json!({
+                    "jsonrpc": JSONRPC_VERSION,
+                    "id": parsed_request.id.unwrap_or(Value::Null),
+                    "error": {
+                        "code": -32600,
+                        "message": "unauthorized: flow editor rpc requires a valid auth token",
+                    }
+                })),
+            );
+        }
+    };
+    if let Some(error) = flow_editor_rpc_access_violation(access_view.as_ref(), &parsed_request) {
         return (
-            StatusCode::UNAUTHORIZED,
+            StatusCode::OK,
             Json::<Value>(serde_json::json!({
                 "jsonrpc": JSONRPC_VERSION,
                 "id": parsed_request.id.unwrap_or(Value::Null),
-                "error": {
-                    "code": -32600,
-                    "message": "unauthorized: flow editor rpc requires a valid auth token",
-                }
+                "error": error,
             })),
         );
     }
+    // Intersect capability advertisements with the caller's ABAC grants so
+    // the editor does not surface deploy affordances the caller can never
+    // use; per-call enforcement above remains authoritative.
+    let deploy_grant = access_view
+        .as_ref()
+        .filter(|view| view.enforced())
+        .is_none_or(|view| view.may_perform_anywhere(ACTION_MOBPACK_DEPLOY));
     let response = handle_flow_editor_rpc_with_auth(
         parsed_request,
         FlowEditorAuthReport {
             authenticated: true,
             mode: "reference_app",
             reason: "reference app Flow Editor authoring server",
-            host_mutation_allowed: true,
-            deploy_execute_allowed: true,
+            host_mutation_allowed: deploy_grant,
+            deploy_execute_allowed: deploy_grant,
         },
         state.runtime_catalog.as_ref(),
     );
     (StatusCode::OK, Json::<Value>(response))
+}
+
+/// Map a flow-editor RPC method to the ABAC action it requires. Mirrors the
+/// console's `console_rpc_access_requirement`: `mobkit/capabilities` stays
+/// open (it only describes the method surface), every mobpack-authoring
+/// method requires `mobpack.author`, and a deploy with `execute: true`
+/// requires `mobpack.deploy` instead.
+fn flow_editor_rpc_access_requirement(method: &str, params: &Value) -> Option<&'static str> {
+    if method == "mobkit/capabilities" {
+        return None;
+    }
+    if !crate::rpc::MOBPACK_AUTHORING_METHODS.contains(&method) {
+        // Unknown methods fall through to the dispatcher's method-not-found.
+        return None;
+    }
+    if method == "mobkit/mobpacks/deploy"
+        && params
+            .get("execute")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return Some(ACTION_MOBPACK_DEPLOY);
+    }
+    Some(ACTION_MOBPACK_AUTHOR)
+}
+
+fn flow_editor_rpc_access_violation(
+    view: Option<&AccessView>,
+    request: &JsonRpcRequest,
+) -> Option<Value> {
+    let view = view.filter(|view| view.enforced())?;
+    let action = flow_editor_rpc_access_requirement(request.method.as_str(), &request.params)?;
+    if view.allows(action) {
+        return None;
+    }
+    Some(serde_json::json!({
+        "code": ACCESS_DENIED_RPC_CODE,
+        "message": format!("access denied: {action}"),
+        "data": { "kind": "access_denied", "action": action },
+    }))
 }
 
 pub fn handle_flow_editor_rpc(request: JsonRpcRequest) -> Value {
@@ -459,6 +531,140 @@ mod tests {
 
         assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
     }
+
+    fn authoring_access_controller(rules: Vec<crate::access::AccessRule>) -> AccessController {
+        AccessController::new(crate::access::AccessControlConfig {
+            enabled: true,
+            admins: vec!["root@example.test".to_string()],
+            groups: std::collections::BTreeMap::new(),
+            rules,
+        })
+        .expect("valid access config")
+    }
+
+    fn allow_everyone(id: &str, actions: &[&str]) -> crate::access::AccessRule {
+        crate::access::AccessRule {
+            id: id.to_string(),
+            actions: actions.iter().map(ToString::to_string).collect(),
+            ..crate::access::AccessRule::default()
+        }
+    }
+
+    fn open_decision_state() -> crate::runtime::RuntimeDecisionState {
+        crate::runtime::RuntimeDecisionState {
+            bigquery: crate::decisions::BigQueryNaming {
+                dataset: "flow_editor_dataset".to_string(),
+                table: "flow_editor_table".to_string(),
+            },
+            modules: vec![],
+            auth: crate::decisions::AuthPolicy::default(),
+            trusted_oidc: crate::runtime::TrustedOidcRuntimeConfig {
+                discovery_json: r#"{"issuer":"https://noop.example.com"}"#.to_string(),
+                jwks_json: r#"{"keys":[]}"#.to_string(),
+                audience: "flow-editor-tests".to_string(),
+            },
+            console: crate::decisions::ConsolePolicy {
+                require_app_auth: false,
+                ..crate::decisions::ConsolePolicy::default()
+            },
+            ops: crate::decisions::RuntimeOpsPolicy::default(),
+            release_metadata: crate::decisions::ReleaseMetadata {
+                targets: vec!["crates.io".to_string()],
+                support_matrix: "lts".to_string(),
+            },
+        }
+    }
+
+    async fn protected_rpc_response(access: Option<AccessController>, body: Value) -> Value {
+        let router =
+            super::flow_editor_rpc_router_with_runtime_catalog(open_decision_state(), None, access);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/flow-editor/rpc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("rpc response");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("json body")
+    }
+
+    fn rpc_body(method: &str, params: Value) -> Value {
+        json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+    }
+
+    #[tokio::test]
+    async fn access_control_denies_authoring_without_a_mobpack_author_grant() {
+        let access = authoring_access_controller(Vec::new());
+        let response =
+            protected_rpc_response(Some(access), rpc_body("mobkit/mobpacks/schema", json!({})))
+                .await;
+        assert_eq!(response["error"]["code"], json!(ACCESS_DENIED_RPC_CODE));
+        assert_eq!(response["error"]["data"]["action"], json!("mobpack.author"));
+    }
+
+    #[tokio::test]
+    async fn access_control_allows_authoring_with_a_mobpack_author_grant() {
+        let access =
+            authoring_access_controller(vec![allow_everyone("authors", &["mobpack.author"])]);
+        let response =
+            protected_rpc_response(Some(access), rpc_body("mobkit/mobpacks/schema", json!({})))
+                .await;
+        assert!(response["error"].is_null(), "{response:#?}");
+        assert!(response["result"].is_object(), "{response:#?}");
+    }
+
+    #[tokio::test]
+    async fn access_control_requires_mobpack_deploy_for_deploy_execute() {
+        let access =
+            authoring_access_controller(vec![allow_everyone("authors", &["mobpack.author"])]);
+        let response = protected_rpc_response(
+            Some(access),
+            rpc_body("mobkit/mobpacks/deploy", json!({ "execute": true })),
+        )
+        .await;
+        assert_eq!(response["error"]["code"], json!(ACCESS_DENIED_RPC_CODE));
+        assert_eq!(response["error"]["data"]["action"], json!("mobpack.deploy"));
+    }
+
+    #[tokio::test]
+    async fn access_control_capabilities_intersect_deploy_grants() {
+        let access =
+            authoring_access_controller(vec![allow_everyone("authors", &["mobpack.author"])]);
+        let response =
+            protected_rpc_response(Some(access), rpc_body("mobkit/capabilities", Value::Null))
+                .await;
+        let capabilities = &response["result"]["authoring_capabilities"];
+        assert_eq!(capabilities["deploy_execute_allowed"], json!(false));
+        assert_eq!(capabilities["host_mutation_allowed"], json!(false));
+
+        let access = authoring_access_controller(vec![allow_everyone(
+            "operators",
+            &["mobpack.author", "mobpack.deploy"],
+        )]);
+        let response =
+            protected_rpc_response(Some(access), rpc_body("mobkit/capabilities", Value::Null))
+                .await;
+        let capabilities = &response["result"]["authoring_capabilities"];
+        assert_eq!(capabilities["deploy_execute_allowed"], json!(true));
+        assert_eq!(capabilities["host_mutation_allowed"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn access_control_disabled_leaves_authoring_open() {
+        let response =
+            protected_rpc_response(None, rpc_body("mobkit/mobpacks/schema", json!({}))).await;
+        assert!(response["error"].is_null(), "{response:#?}");
+    }
+
+    use super::AccessController;
+    use crate::http_console::ACCESS_DENIED_RPC_CODE;
 
     #[test]
     fn flow_editor_frontend_router_merges_with_console_frontend_router() {
