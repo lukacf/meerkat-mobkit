@@ -1494,6 +1494,26 @@ assert.match(controller, /function topRailNavigationTransition/, "controller pla
 assert(!/setView\(|view === ["']editor["'] \? ["']flows["'] : ["']editor["']/.test(topRailBlock), "TopRail renderer must not assemble view transitions locally");
 assert.match(app, /<TopRail[\s\S]*railState=\{shellState\}/, "Top rail must receive the shared controller-projected shell state");
 assert.match(app, /<TopRail[\s\S]*onNavigate=\{handleTopRailNavigation\}/, "Top rail must emit semantic navigation targets to the app shell");
+// Embedding contract: deep-link intents parse once through the controller
+// plane, embedded chrome is a body-class flag driven by the boot intent, and
+// host events flow through the controller-projected payload to both the
+// window and (when framed) the parent.
+assert.match(app, /const BOOT_INTENT = MobKitFlowController\.bootIntentFromQuery\(window\.location\.search\);/, "app shell must parse the deep-link boot intent exactly once from location.search through the controller plane");
+assert.match(controller, /function bootIntentFromQuery/, "controller plane must own deep-link boot intent parsing");
+assert.match(app, /document\.body\.classList\.toggle\("is-embedded", BOOT_INTENT\.embedded\)/, "embedded hosts own the chrome: the boot intent must drive the body class flag");
+assert.match(styles, /body\.is-embedded \.brand,\s*body\.is-embedded \.theme-toggle \{ display: none; \}/, "embedded mode must hide the brand block and the theme toggle via the body flag");
+assert.match(app, /if \(!bootIntentPending\.current \|\| !canCreateAuthoring\) return;[\s\S]{0,80}bootIntentPending\.current = false;/, "the boot intent must apply exactly once, after MobKit schema hydration");
+assert.match(app, /MobKitFlowController\.flowRegistrySelectionState\(flows, BOOT_INTENT\.id\)/, "?open boot intents must hydrate registry rows through the controller selection projection");
+assert.match(app, /MobKitFlowController\.bootIntentOpenFailureOutcome\(BOOT_INTENT, \{ errorView: catalogs\.errorView \}\)/, "missing ?open rows must surface the schema-labelled standard failure sheet");
+assert.match(controller, /function bootIntentOpenFailureOutcome/, "controller plane must own the ?open failure outcome");
+assert.match(app, /setCreating\(MobKitFlowController\.newFlowInitialState\(\{\s*blankTemplate: catalogs\.blankMobpack,\s*template: BOOT_INTENT\.template,\s*templates,\s*\}\)\)/, "?intent=new boot intents must open the NEW MOB modal with the controller-validated template preselect");
+assert.match(mobpackRust, /"boot_open_missing_head":\s*"Mob not found"/, "MobKit error view contract must label the deep-link open failure");
+assert.match(app, /function emitHostEvent\(kind, detail\) \{[\s\S]*?MobKitFlowController\.hostEventPayload\(kind, detail\);[\s\S]*?window\.dispatchEvent\(new CustomEvent\(payload\.type, \{ detail: payload \}\)\);[\s\S]*?if \(window\.parent !== window\) \{[\s\S]*?window\.parent\.postMessage\(payload, "\*"\);/, "host events must dispatch both the window CustomEvent and the parent postMessage from the controller-built payload");
+assert.match(controller, /function hostEventPayload/, "controller plane must own the host event payload protocol");
+assert.match(app, /emitHostEvent\("created", \{ id: row\.id, stage: row\.stage, ok: true \}\)/, "successful creates must notify the embedding host");
+assert.match(app, /emitHostEvent\("saved", \{ id: result\.row\.id, stage: result\.row\.stage, ok: true \}\)/, "successful registry saves must notify the embedding host");
+assert.match(app, /if \(execute\) emitHostEvent\("deployed", \{ id: currentFlowId, stage: outcome\.stage, ok: outcome\.stage === "deployed" \}\)/, "execute deploys must notify the embedding host with the deploy outcome");
+assert(!/mobkit-flow-editor:(created|saved|deployed)/.test(app), "the host event type strings are controller-plane wire protocol, not shell literals");
 assert.match(app, /MobKitFlowController\.themeToggleTransition\(t\.theme\)/, "Top rail theme toggles must be routed through the controller plane");
 assert.match(controller, /function themeToggleTransition/, "controller plane must own theme toggle transitions");
 assert(!/setTweak\(["']theme["'],\s*t\.theme === ["']dark["'] \? ["']light["'] : ["']dark["']\)/.test(app), "app shell must not compute the next top-rail theme locally");

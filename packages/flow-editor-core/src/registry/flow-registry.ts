@@ -544,11 +544,20 @@ export function newFlowTemplateOptions(templates = [], { canCreateBlank = false,
   return options;
 }
 
-export function newFlowInitialState({ blankTemplate = null } = {}) {
+// options.template is the optional deep-link preselect
+// (?intent=new&template=<id>): known ids — the blank template or any row in
+// options.templates — win; unknown ids fall back to the blank template.
+export function newFlowInitialState({ blankTemplate = null, template = "", templates = [] } = {}) {
   const hasBlankDocument = !!blankTemplate?.document;
+  const fallback = hasBlankDocument ? String(blankTemplate.id || "") : "";
+  const requested = String(template || "").trim();
+  const known = !!requested && (
+    requested === fallback
+    || (Array.isArray(templates) ? templates : []).some((row) => String(row?.id || "") === requested)
+  );
   return {
     name: "",
-    template: hasBlankDocument ? String(blankTemplate.id || "") : "",
+    template: known ? requested : fallback,
   };
 }
 

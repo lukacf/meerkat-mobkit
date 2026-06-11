@@ -118,6 +118,8 @@ function allowedCssDelta(sign, line) {
     /Breadcrumb quick-switcher/,
     /Settings section/,
     /empty tab strip/,
+    /Embedded host chrome/,
+    /is-embedded/,
   ];
   if (shared.some((pattern) => pattern.test(text))) return true;
   if (sign === "+") {

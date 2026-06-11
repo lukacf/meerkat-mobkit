@@ -391,6 +391,10 @@ body {
 .mob-status--env .glyph { display: none; }
 .theme-toggle { font-family: var(--font-mono); text-transform: none; letter-spacing: 0.02em; }
 
+/* Embedded host chrome (?embedded=1): the host owns brand + theme. */
+body.is-embedded .brand,
+body.is-embedded .theme-toggle { display: none; }
+
 .crumbs {
   display: flex; gap: 0; align-items: center;
   padding: 0 14px;

@@ -126,6 +126,25 @@ On ABAC-enabled runtimes the Flow Editor RPC plane enforces the mobpack actions 
 
 The standalone binary is a token-less local tool: it binds `127.0.0.1` by default, there is no principal to evaluate, and `--allow-host-deploy` is the only deploy gate.
 
+## Embedding
+
+Hosts drive the editor with deep-link query parameters and listen for lifecycle events.
+
+| Query parameter | Effect |
+|-----------------|--------|
+| `?open=<id>` | Open that library row (draft or runtime projection) straight into the FLOW section; an unknown id lands in the library with the standard failure sheet |
+| `?intent=new` | Land in the library with the NEW MOB modal open |
+| `?intent=new&template=<id>` | Same, with that template preselected (unknown ids fall back to Blank) |
+| `?embedded=1` | Hide the brand block and theme toggle — the host owns the chrome |
+
+After every successful create, registry save (autosave round-trips included), and execute deploy, the editor dispatches a window `CustomEvent` (named by `type`, payload in `detail`) and — when framed — a `window.parent.postMessage` with the same payload:
+
+```json
+{ "type": "mobkit-flow-editor:created", "id": "f_review_mob", "stage": "draft", "ok": true }
+```
+
+`type` is `mobkit-flow-editor:created` / `:saved` / `:deployed`; `ok` is `false` only on a `deployed` event whose execute round-trip did not deploy. The iframe-drawer pattern for hosts like the MobKit console: "Add flow mob" opens an iframe at `/flow-editor?intent=new&embedded=1`, the host listens for `created` / `deployed` messages, then closes the drawer and refreshes its own registry view.
+
 ## Development
 
 The editor frontend is split across three workspaces:
@@ -150,7 +169,7 @@ make test-flow-editor-rkat         # live export/import checks against rkat mob 
 make test-flow-editor-rkat-deploy  # live checks including rkat mob deploy
 ```
 
-`npm run typecheck` covers both packages and the shell; `test/package-boundaries.test.cjs` keeps `@flow-editor-core` window/React/DOM-free and `@flow-editor-components` network-free; `test/controller-export-keys.test.cjs` pins the facade's 380-key manifest.
+`npm run typecheck` covers both packages and the shell; `test/package-boundaries.test.cjs` keeps `@flow-editor-core` window/React/DOM-free and `@flow-editor-components` network-free; `test/controller-export-keys.test.cjs` pins the facade's 384-key manifest.
 
 ## See also
 

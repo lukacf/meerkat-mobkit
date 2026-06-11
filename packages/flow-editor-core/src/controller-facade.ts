@@ -381,6 +381,8 @@ import { RPC_METHODS, SCHEMA_VERSION } from "./shared/constants";
 import { normalizeProviderParams } from "./shared/normalize";
 import {
   apiOverlayClearTransition,
+  bootIntentFromQuery,
+  bootIntentOpenFailureOutcome,
   criticalErrorOutcome,
   deployErrorOutcome,
   deployOutcome,
@@ -392,6 +394,7 @@ import {
   editorModeTransition,
   exportErrorOutcome,
   exportOutcome,
+  hostEventPayload,
   importErrorOutcome,
   sourceErrorOutcome,
   themeToggleTransition,
@@ -732,6 +735,8 @@ export function createMobKitFlowController({ includeTestExports } = {}) {
     deployPlanTraceState,
     topRailState,
     topRailNavigationTransition,
+    bootIntentFromQuery,
+    hostEventPayload,
     editorModeTransition,
     themeToggleTransition,
     validationOutcome,
@@ -748,6 +753,7 @@ export function createMobKitFlowController({ includeTestExports } = {}) {
     validationErrorOutcome,
     exportErrorOutcome,
     importErrorOutcome,
+    bootIntentOpenFailureOutcome,
     sourceDocumentFromSourceResult,
     exportDownloadPayload,
     sourceProjectionClearTransition,

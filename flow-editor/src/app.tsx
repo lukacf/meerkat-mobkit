@@ -39,6 +39,11 @@ import {
 const MobKitFlowController: any = createMobKitFlowController({ includeTestExports: false });
 window.MobKitFlowController = MobKitFlowController;
 
+// Deep-link boot intent, parsed exactly once from the query string. The
+// embedding contract (?open=<id>, ?intent=new[&template=<id>], ?embedded=1)
+// is documented in docs/guides/flow-editor.mdx.
+const BOOT_INTENT = MobKitFlowController.bootIntentFromQuery(window.location.search);
+
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "edgeStyle": "text",
   "density": "comfortable",
@@ -290,6 +295,12 @@ function App() {
     document.documentElement.dataset.ccVariant = "rams";
     document.documentElement.dataset.ccTheme = t.theme || "light";
   }, [t.theme]);
+
+  // Embedded hosts (?embedded=1) own the chrome: the body flag hides the
+  // brand block and the theme toggle (see styles.css).
+  React.useEffect(() => {
+    document.body.classList.toggle("is-embedded", BOOT_INTENT.embedded);
+  }, []);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -732,6 +743,7 @@ function App() {
       .then((result) => {
         if (result?.row) {
           setFlows((rows) => MobKitFlowController.flowRegistryUpsertRowPatch(rows, result.row));
+          emitHostEvent("saved", { id: result.row.id, stage: result.row.stage, ok: true });
         }
       })
       .catch((error) => {
@@ -1053,6 +1065,7 @@ function App() {
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
       applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+      if (execute) emitHostEvent("deployed", { id: currentFlowId, stage: outcome.stage, ok: outcome.stage === "deployed" });
     } catch (error) {
       if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
       const outcome = MobKitFlowController.deployErrorOutcome(error, { execute, errorView: catalogs.errorView });
@@ -1161,6 +1174,32 @@ function App() {
     }
     return false;
   };
+
+  // Apply the deep-link boot intent once the authoring contract and the
+  // library rows have hydrated: ?open=<id> opens that row into the FLOW
+  // section (a missing row keeps the library up under the standard failure
+  // sheet), ?intent=new opens the NEW MOB modal with an optional preselected
+  // template. The default intent is the library itself, which is already
+  // home.
+  const bootIntentPending = React.useRef(BOOT_INTENT.kind !== "library");
+  React.useEffect(() => {
+    if (!bootIntentPending.current || !canCreateAuthoring) return;
+    bootIntentPending.current = false;
+    if (BOOT_INTENT.kind === "new") {
+      setCreating(MobKitFlowController.newFlowInitialState({
+        blankTemplate: catalogs.blankMobpack,
+        template: BOOT_INTENT.template,
+        templates,
+      }));
+      return;
+    }
+    const selection = MobKitFlowController.flowRegistrySelectionState(flows, BOOT_INTENT.id);
+    if (openFlowRegistrySelection(selection)) return;
+    const outcome = MobKitFlowController.bootIntentOpenFailureOutcome(BOOT_INTENT, { errorView: catalogs.errorView });
+    setValidationResults(outcome.validationRows);
+    setStage(outcome.stage);
+    applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+  }, [canCreateAuthoring, flows, templates, catalogs]);
 
   const handleImportFile = async (event) => {
     const file = event.target.files?.[0];
@@ -1393,6 +1432,7 @@ function App() {
                   openEditor: true,
                 },
               );
+              emitHostEvent("created", { id: row.id, stage: row.stage, ok: true });
               setCreating(null);
             } catch (error) {
               const outcome = MobKitFlowController.importErrorOutcome(error, { filename: "mobkit/mobpacks/create", errorView: catalogs.errorView });
@@ -1417,6 +1457,19 @@ function rpcUrlFromShell() {
   const meta = document.querySelector('meta[name="mobkit-base-url"]');
   const base = (meta?.getAttribute("content") || "").trim().replace(/\/+$/, "");
   return `${base}/flow-editor/rpc`;
+}
+
+// Host integration: every successful create / registry save / execute deploy
+// notifies the embedding host twice with the same controller-built payload
+// ({ type, id, stage, ok }) — a window CustomEvent for same-document
+// listeners and a parent postMessage for iframe hosts.
+function emitHostEvent(kind, detail) {
+  const payload = MobKitFlowController.hostEventPayload(kind, detail);
+  if (!payload) return;
+  window.dispatchEvent(new CustomEvent(payload.type, { detail: payload }));
+  if (window.parent !== window) {
+    window.parent.postMessage(payload, "*");
+  }
 }
 
 function downloadExportResult(result) {

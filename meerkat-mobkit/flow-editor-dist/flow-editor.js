@@ -1267,6 +1267,8 @@
       authoringOperationMissingDocumentError: String(view.authoring_operation_missing_document_error || "").trim(),
       exportFailedHead: String(view.export_failed_head || "").trim(),
       importFailedHead: String(view.import_failed_head || "").trim(),
+      bootOpenMissingHead: String(view.boot_open_missing_head || "").trim(),
+      bootOpenMissingMeta: String(view.boot_open_missing_meta || "").trim(),
       missingEditorFlowHead: String(view.missing_editor_flow_head || "").trim(),
       missingEditorFlowSub: String(view.missing_editor_flow_sub || "").trim(),
       missingEditorFlowMeta: String(view.missing_editor_flow_meta || "").trim()
@@ -1292,6 +1294,8 @@
       authoringOperationMissingDocumentError: String(view?.authoringOperationMissingDocumentError || ""),
       exportFailedHead: String(view?.exportFailedHead || ""),
       importFailedHead: String(view?.importFailedHead || ""),
+      bootOpenMissingHead: String(view?.bootOpenMissingHead || ""),
+      bootOpenMissingMeta: String(view?.bootOpenMissingMeta || ""),
       missingEditorFlowHead: String(view?.missingEditorFlowHead || ""),
       missingEditorFlowSub: String(view?.missingEditorFlowSub || ""),
       missingEditorFlowMeta: String(view?.missingEditorFlowMeta || "")
@@ -7956,11 +7960,14 @@ ${JSON.stringify(document2)}`;
     }
     return options;
   }
-  function newFlowInitialState({ blankTemplate = null } = {}) {
+  function newFlowInitialState({ blankTemplate = null, template = "", templates = [] } = {}) {
     const hasBlankDocument = !!blankTemplate?.document;
+    const fallback = hasBlankDocument ? String(blankTemplate.id || "") : "";
+    const requested = String(template || "").trim();
+    const known = !!requested && (requested === fallback || (Array.isArray(templates) ? templates : []).some((row) => String(row?.id || "") === requested));
     return {
       name: "",
-      template: hasBlankDocument ? String(blankTemplate.id || "") : ""
+      template: known ? requested : fallback
     };
   }
   function newFlowModalState(state = {}, templateOptions = [], newFlowView = null) {
@@ -8419,6 +8426,26 @@ ${JSON.stringify(document2)}`;
         return null;
     }
   }
+  function bootIntentFromQuery(search) {
+    const params = new URLSearchParams(typeof search === "string" ? search : "");
+    const embedded = params.get("embedded") === "1";
+    const openId = String(params.get("open") || "").trim();
+    if (openId) return { kind: "open", id: openId, embedded };
+    if (String(params.get("intent") || "").trim() === "new") {
+      return { kind: "new", template: String(params.get("template") || "").trim(), embedded };
+    }
+    return { kind: "library", embedded };
+  }
+  function hostEventPayload(kind, { id, stage, ok } = {}) {
+    const eventKind = String(kind || "");
+    if (eventKind !== "created" && eventKind !== "saved" && eventKind !== "deployed") return null;
+    return {
+      type: `mobkit-flow-editor:${eventKind}`,
+      id: String(id || ""),
+      stage: String(stage || ""),
+      ok: ok === true
+    };
+  }
   function editorModeTransition(target) {
     const editorMode = String(target || "");
     if (editorMode !== "basic" && editorMode !== "advanced") return null;
@@ -8557,6 +8584,15 @@ ${JSON.stringify(document2)}`;
       head: view.importFailedHead,
       error,
       meta: options.filename || "",
+      errorView: view
+    });
+  }
+  function bootIntentOpenFailureOutcome(intent, options = {}) {
+    const view = errorViewForState(options.errorView);
+    return criticalErrorOutcome({
+      head: view.bootOpenMissingHead,
+      error: String(intent?.id || ""),
+      meta: view.bootOpenMissingMeta,
       errorView: view
     });
   }
@@ -10688,6 +10724,8 @@ ${JSON.stringify(document2)}`;
       deployPlanTraceState,
       topRailState,
       topRailNavigationTransition,
+      bootIntentFromQuery,
+      hostEventPayload,
       editorModeTransition,
       themeToggleTransition,
       validationOutcome,
@@ -10704,6 +10742,7 @@ ${JSON.stringify(document2)}`;
       validationErrorOutcome,
       exportErrorOutcome,
       importErrorOutcome,
+      bootIntentOpenFailureOutcome,
       sourceDocumentFromSourceResult,
       exportDownloadPayload,
       sourceProjectionClearTransition,
@@ -12875,6 +12914,7 @@ ${JSON.stringify(document2)}`;
       init_src2();
       var MobKitFlowController = createMobKitFlowController({ includeTestExports: false });
       window.MobKitFlowController = MobKitFlowController;
+      var BOOT_INTENT = MobKitFlowController.bootIntentFromQuery(window.location.search);
       var TWEAK_DEFAULTS = (
         /*EDITMODE-BEGIN*/
         {
@@ -13097,6 +13137,9 @@ ${JSON.stringify(document2)}`;
           document.documentElement.dataset.ccVariant = "rams";
           document.documentElement.dataset.ccTheme = t.theme || "light";
         }, [t.theme]);
+        React.useEffect(() => {
+          document.body.classList.toggle("is-embedded", BOOT_INTENT.embedded);
+        }, []);
         React.useEffect(() => {
           let cancelled = false;
           const abort = new AbortController();
@@ -13505,6 +13548,7 @@ ${JSON.stringify(document2)}`;
           MobKitFlowController.saveDocument(rowPatch).then((result) => {
             if (result?.row) {
               setFlows((rows) => MobKitFlowController.flowRegistryUpsertRowPatch(rows, result.row));
+              emitHostEvent("saved", { id: result.row.id, stage: result.row.stage, ok: true });
             }
           }).catch((error) => {
             if (MobKitFlowController.isDraftGuardConflictError(error)) {
@@ -13808,6 +13852,7 @@ ${JSON.stringify(document2)}`;
             setValidationResults(outcome.validationRows);
             setStage(outcome.stage);
             applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+            if (execute) emitHostEvent("deployed", { id: currentFlowId, stage: outcome.stage, ok: outcome.stage === "deployed" });
           } catch (error) {
             if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
             const outcome = MobKitFlowController.deployErrorOutcome(error, { execute, errorView: catalogs.errorView });
@@ -13911,6 +13956,25 @@ ${JSON.stringify(document2)}`;
           }
           return false;
         };
+        const bootIntentPending = React.useRef(BOOT_INTENT.kind !== "library");
+        React.useEffect(() => {
+          if (!bootIntentPending.current || !canCreateAuthoring) return;
+          bootIntentPending.current = false;
+          if (BOOT_INTENT.kind === "new") {
+            setCreating(MobKitFlowController.newFlowInitialState({
+              blankTemplate: catalogs.blankMobpack,
+              template: BOOT_INTENT.template,
+              templates
+            }));
+            return;
+          }
+          const selection2 = MobKitFlowController.flowRegistrySelectionState(flows, BOOT_INTENT.id);
+          if (openFlowRegistrySelection(selection2)) return;
+          const outcome = MobKitFlowController.bootIntentOpenFailureOutcome(BOOT_INTENT, { errorView: catalogs.errorView });
+          setValidationResults(outcome.validationRows);
+          setStage(outcome.stage);
+          applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
+        }, [canCreateAuthoring, flows, templates, catalogs]);
         const handleImportFile = async (event) => {
           const file = event.target.files?.[0];
           event.target.value = "";
@@ -14137,6 +14201,7 @@ ${JSON.stringify(document2)}`;
                     openEditor: true
                   }
                 );
+                emitHostEvent("created", { id: row.id, stage: row.stage, ok: true });
                 setCreating(null);
               } catch (error) {
                 const outcome = MobKitFlowController.importErrorOutcome(error, { filename: "mobkit/mobpacks/create", errorView: catalogs.errorView });
@@ -14154,6 +14219,14 @@ ${JSON.stringify(document2)}`;
         const meta = document.querySelector('meta[name="mobkit-base-url"]');
         const base = (meta?.getAttribute("content") || "").trim().replace(/\/+$/, "");
         return `${base}/flow-editor/rpc`;
+      }
+      function emitHostEvent(kind, detail) {
+        const payload = MobKitFlowController.hostEventPayload(kind, detail);
+        if (!payload) return;
+        window.dispatchEvent(new CustomEvent(payload.type, { detail: payload }));
+        if (window.parent !== window) {
+          window.parent.postMessage(payload, "*");
+        }
       }
       function downloadExportResult(result) {
         const download = MobKitFlowController.exportDownloadPayload(result);

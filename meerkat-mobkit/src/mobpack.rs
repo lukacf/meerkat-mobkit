@@ -1883,6 +1883,8 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         "authoring_operation_missing_document_error": "MobKit authoring operation did not return a document",
         "export_failed_head": "Export failed",
         "import_failed_head": "Import failed",
+        "boot_open_missing_head": "Mob not found",
+        "boot_open_missing_meta": "flow-editor?open",
         "missing_editor_flow_head": "Imported mobpack is missing a MobKit editor flow",
         "missing_editor_flow_sub": "mobkit/mobpacks/import did not return document.flow.steps",
         "missing_editor_flow_meta": "missing_editor_flow"
@@ -31358,6 +31360,14 @@ depends_on_mode = "all"
         assert_eq!(
             mob_definition["editor_error_view"]["missing_editor_flow_meta"],
             json!("missing_editor_flow")
+        );
+        assert_eq!(
+            mob_definition["editor_error_view"]["boot_open_missing_head"],
+            json!("Mob not found")
+        );
+        assert_eq!(
+            mob_definition["editor_error_view"]["boot_open_missing_meta"],
+            json!("flow-editor?open")
         );
         assert_eq!(
             mob_definition["editor_agent_view"]["agents_heading"],

@@ -420,6 +420,8 @@ const TEST_ERROR_VIEW_SCHEMA = {
   authoring_operation_missing_document_error: "MobKit authoring operation did not return a document",
   export_failed_head: "Export failed",
   import_failed_head: "Import failed",
+  boot_open_missing_head: "Mob not found",
+  boot_open_missing_meta: "flow-editor?open",
   missing_editor_flow_head: "Imported mobpack is missing a MobKit editor flow",
   missing_editor_flow_sub: "mobkit/mobpacks/import did not return document.flow.steps",
   missing_editor_flow_meta: "missing_editor_flow",
@@ -446,6 +448,8 @@ const TEST_ERROR_VIEW = {
   authoringOperationMissingDocumentError: "MobKit authoring operation did not return a document",
   exportFailedHead: "Export failed",
   importFailedHead: "Import failed",
+  bootOpenMissingHead: "Mob not found",
+  bootOpenMissingMeta: "flow-editor?open",
   missingEditorFlowHead: "Imported mobpack is missing a MobKit editor flow",
   missingEditorFlowSub: "mobkit/mobpacks/import did not return document.flow.steps",
   missingEditorFlowMeta: "missing_editor_flow",
@@ -708,6 +712,30 @@ assert.deepEqual(controller.themeToggleTransition("dark"), { field: "theme", val
 assert.deepEqual(controller.themeToggleTransition("light"), { field: "theme", value: "dark" });
 assert.deepEqual(controller.themeToggleTransition(""), { field: "theme", value: "dark" });
 
+// Deep-link boot intents parse once from location.search: ?open wins over
+// ?intent, unknown intents land in the library, blank/whitespace open ids
+// are no intent at all, and ?embedded=1 flags host-owned chrome everywhere.
+assert.deepEqual(controller.bootIntentFromQuery("?open=f_review_mob"), { kind: "open", id: "f_review_mob", embedded: false });
+assert.deepEqual(controller.bootIntentFromQuery("?open=f_review_mob&embedded=1"), { kind: "open", id: "f_review_mob", embedded: true });
+assert.deepEqual(controller.bootIntentFromQuery("?open=f_x&intent=new"), { kind: "open", id: "f_x", embedded: false });
+assert.deepEqual(controller.bootIntentFromQuery("?intent=new"), { kind: "new", template: "", embedded: false });
+assert.deepEqual(controller.bootIntentFromQuery("?intent=new&template=docs&embedded=1"), { kind: "new", template: "docs", embedded: true });
+assert.deepEqual(controller.bootIntentFromQuery("?intent=edit"), { kind: "library", embedded: false });
+assert.deepEqual(controller.bootIntentFromQuery("?embedded=1"), { kind: "library", embedded: true });
+assert.deepEqual(controller.bootIntentFromQuery("?embedded=true"), { kind: "library", embedded: false });
+assert.deepEqual(controller.bootIntentFromQuery("?open=%20%20"), { kind: "library", embedded: false });
+assert.deepEqual(controller.bootIntentFromQuery(""), { kind: "library", embedded: false });
+assert.deepEqual(controller.bootIntentFromQuery(undefined), { kind: "library", embedded: false });
+
+// Host integration payloads: protocol-typed, minimal ({ type, id, stage,
+// ok }), and null for kinds outside the documented event set.
+assert.deepEqual(controller.hostEventPayload("created", { id: "f_a", stage: "draft", ok: true }), { type: "mobkit-flow-editor:created", id: "f_a", stage: "draft", ok: true });
+assert.deepEqual(controller.hostEventPayload("saved", { id: "f_a", stage: "valid", ok: true }), { type: "mobkit-flow-editor:saved", id: "f_a", stage: "valid", ok: true });
+assert.deepEqual(controller.hostEventPayload("deployed", { id: "f_a", stage: "draft", ok: false }), { type: "mobkit-flow-editor:deployed", id: "f_a", stage: "draft", ok: false });
+assert.deepEqual(controller.hostEventPayload("deployed", {}), { type: "mobkit-flow-editor:deployed", id: "", stage: "", ok: false });
+assert.equal(controller.hostEventPayload("opened", { id: "f_a" }), null);
+assert.equal(controller.hostEventPayload("", { id: "f_a" }), null);
+
 assert.equal(controller.buildBlankDocument, undefined, "blank mobpack documents must come from MobKit schema, not a local builder");
 
 const schemaBlankMobpack = controller.blankMobpackFromCatalogs({
@@ -821,6 +849,23 @@ assert.deepEqual(controller.newFlowInitialState({ blankTemplate: { id: "missing-
   name: "",
   template: "",
 });
+// Deep-link template preselect (?intent=new&template=<id>): known ids win,
+// unknown ids fall back to the blank template.
+assert.deepEqual(controller.newFlowInitialState({
+  blankTemplate: schemaBlankMobpack,
+  template: "docs",
+  templates: [{ id: "docs", name: "Docs" }],
+}), { name: "", template: "docs" });
+assert.deepEqual(controller.newFlowInitialState({
+  blankTemplate: schemaBlankMobpack,
+  template: "missing",
+  templates: [{ id: "docs", name: "Docs" }],
+}), { name: "", template: "blank" });
+assert.deepEqual(controller.newFlowInitialState({
+  blankTemplate: schemaBlankMobpack,
+  template: "blank",
+  templates: [],
+}), { name: "", template: "blank" });
 assert.deepEqual(controller.newFlowModalState({
   name: "New Mob",
   template: "docs",
@@ -6679,6 +6724,18 @@ assert.deepEqual(controller.importErrorOutcome(new Error("bad archive"), { filen
   head: "Import failed",
   sub: "bad archive",
   meta: "bad.mobpack",
+});
+// The ?open=<missing id> boot intent surfaces the standard failure sheet
+// with schema-backed labels and the requested id as the detail row.
+assert.deepEqual(controller.bootIntentOpenFailureOutcome({ kind: "open", id: "f_missing", embedded: false }, { errorView: hydratedCatalogs.errorView }), {
+  validationRows: [{
+    kind: "crit",
+    glyph: "!",
+    head: "Mob not found",
+    sub: "f_missing",
+    meta: "flow-editor?open",
+  }],
+  stage: "draft",
 });
 assert.deepEqual(controller.deployErrorOutcome(new Error("no plan"), {
   execute: false,

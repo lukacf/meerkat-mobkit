@@ -167,6 +167,38 @@ export function topRailNavigationTransition(currentView, target, context = {}) {
   }
 }
 
+// Deep-link boot intent over location.search, parsed exactly once by the
+// shell at module scope. ?open=<registry-row-id> hydrates that row into the
+// FLOW section, ?intent=new opens the library's NEW MOB modal (with an
+// optional ?template=<id> preselection), anything else is the library
+// itself. ?embedded=1 marks host-owned chrome on any intent.
+export function bootIntentFromQuery(search) {
+  const params = new URLSearchParams(typeof search === "string" ? search : "");
+  const embedded = params.get("embedded") === "1";
+  const openId = String(params.get("open") || "").trim();
+  if (openId) return { kind: "open", id: openId, embedded };
+  if (String(params.get("intent") || "").trim() === "new") {
+    return { kind: "new", template: String(params.get("template") || "").trim(), embedded };
+  }
+  return { kind: "library", embedded };
+}
+
+// Host integration event payloads: the shell dispatches one window
+// CustomEvent plus one parent postMessage per successful create / registry
+// save / execute deploy, both carrying exactly this payload. The type
+// strings are wire protocol for embedding hosts (documented in
+// docs/guides/flow-editor.mdx), not user-facing copy.
+export function hostEventPayload(kind, { id, stage, ok } = {}) {
+  const eventKind = String(kind || "");
+  if (eventKind !== "created" && eventKind !== "saved" && eventKind !== "deployed") return null;
+  return {
+    type: `mobkit-flow-editor:${eventKind}`,
+    id: String(id || ""),
+    stage: String(stage || ""),
+    ok: ok === true,
+  };
+}
+
 export function editorModeTransition(target) {
   const editorMode = String(target || "");
   if (editorMode !== "basic" && editorMode !== "advanced") return null;
@@ -326,6 +358,19 @@ export function importErrorOutcome(error, options = {}) {
     head: view.importFailedHead,
     error,
     meta: options.filename || "",
+    errorView: view,
+  });
+}
+
+// The standard failure surface for a ?open=<id> boot intent whose row is
+// not in the registry: the library stays up and the validation sheet
+// carries this row.
+export function bootIntentOpenFailureOutcome(intent, options = {}) {
+  const view = errorViewForState(options.errorView);
+  return criticalErrorOutcome({
+    head: view.bootOpenMissingHead,
+    error: String(intent?.id || ""),
+    meta: view.bootOpenMissingMeta,
     errorView: view,
   });
 }
