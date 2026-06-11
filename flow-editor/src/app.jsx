@@ -501,9 +501,7 @@ function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
         e.preventDefault();
-        showAuthoringFailure({
-          error: catalogs.errorView.authoringOperationUnavailableError || "MobKit authoring operation history is unavailable",
-        }, authoringFailureHead(e.shiftKey ? "redo" : "undo"));
+        handleHistoryStep(e.shiftKey ? "redo" : "undo");
       }
       if (e.key === "Escape") {
         clearSelection(); closeGraphAddMenu();
@@ -540,6 +538,43 @@ function App() {
       const id = result?.selection?.id;
       if (id) selectInstance(id);
     }).catch((error) => showAuthoringFailure(error, authoringFailureHead("graph_node_insert")));
+  };
+
+  // MobKit-owned undo/redo: the draft store keeps bounded document history
+  // recorded by its own saves; stepping returns the restored row, which
+  // hydrates like any other registry selection.
+  const handleHistoryStep = async (direction) => {
+    if (!currentFlowId) return;
+    setApiBusy(true);
+    try {
+      const stepper = direction === "redo"
+        ? window.MobKitFlowController.redoDocument
+        : window.MobKitFlowController.undoDocument;
+      let result;
+      try {
+        result = await stepper({ id: currentFlowId, ...currentDraftGuard() });
+      } catch (error) {
+        if (!window.MobKitFlowController.isDraftGuardConflictError(error)) throw error;
+        // An in-flight autosave just bumped the revision; the store is still
+        // the single writer of history, so step it without the stale guard.
+        result = await stepper({ id: currentFlowId });
+      }
+      if (!result?.stepped || !result?.row?.document) return;
+      setFlows((rows) => window.MobKitFlowController.flowRegistryUpsertRowPatch(rows, result.row));
+      hydrateMobpackDocument(
+        { document: result.row.document, validation: result.row.validation || null },
+        {
+          id: result.row.id,
+          flowRow: result.row,
+          addToRegistry: false,
+          openEditor: false,
+        },
+      );
+    } catch (error) {
+      showAuthoringFailure(error, authoringFailureHead(direction));
+    } finally {
+      setApiBusy(false);
+    }
   };
 
   const handleAgentNavigation = (id) => {

@@ -2670,6 +2670,8 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
             "create": "mobkit/mobpacks/create",
             "save": "mobkit/mobpacks/save",
             "delete": "mobkit/mobpacks/delete",
+            "undo": "mobkit/mobpacks/undo",
+            "redo": "mobkit/mobpacks/redo",
             "apply_operation": "mobkit/mobpacks/apply_operation",
             "graph_projection": "mobkit/mobpacks/graph_projection",
             "graph_to_flow": "mobkit/mobpacks/graph_to_flow",
@@ -4092,6 +4094,11 @@ pub fn create_mobpack_draft(params: &Value) -> Result<Value, String> {
     });
     rows.insert(id, row.clone());
     write_mobpack_draft_store(&path, &rows)?;
+    // The create response keeps the freshly cloned editor document (no
+    // artifact re-import); only the store-internal history fields are
+    // projected to can_undo/can_redo.
+    let mut row = row;
+    strip_draft_history_fields(&mut row);
     Ok(json!({
         "source": "mobkit/mobpacks/create",
         "store_path": path,
@@ -4104,8 +4111,29 @@ fn sorted_mobpack_draft_rows(rows: &BTreeMap<String, Value>) -> Vec<Value> {
     rows.values().map(normalize_mobpack_draft_row).collect()
 }
 
+/// History snapshots stay in the store; outgoing rows only advertise
+/// whether MobKit can step.
+fn strip_draft_history_fields(row: &mut Value) {
+    let Some(object) = row.as_object_mut() else {
+        return;
+    };
+    let can_undo = object
+        .get("history")
+        .and_then(Value::as_array)
+        .is_some_and(|entries| !entries.is_empty());
+    let can_redo = object
+        .get("future")
+        .and_then(Value::as_array)
+        .is_some_and(|entries| !entries.is_empty());
+    object.remove("history");
+    object.remove("future");
+    object.insert("can_undo".to_string(), json!(can_undo));
+    object.insert("can_redo".to_string(), json!(can_redo));
+}
+
 fn normalize_mobpack_draft_row(row: &Value) -> Value {
     let mut row = row.clone();
+    strip_draft_history_fields(&mut row);
     let Some(artifact) = row.get("artifact") else {
         return row;
     };
@@ -4254,13 +4282,176 @@ pub fn save_mobpack_draft(params: &Value) -> Result<Value, String> {
             ));
         }
     }
-    let row = mobpack_draft_row_from_params(params, current_revision.saturating_add(1))?;
+    let mut row = mobpack_draft_row_from_params(params, current_revision.saturating_add(1))?;
+    attach_draft_history_on_save(existing, &mut row);
     rows.insert(id, row.clone());
     write_mobpack_draft_store(&path, &rows)?;
     let row = normalize_mobpack_draft_row(&row);
     Ok(json!({
         "source": "mobkit/mobpacks/save",
         "store_path": path,
+        "row": row,
+        "rows": sorted_mobpack_draft_rows(&rows),
+    }))
+}
+
+/// Maximum number of undo steps retained per draft in the store.
+const MOBPACK_DRAFT_HISTORY_LIMIT: usize = 25;
+
+/// Carry the MobKit-owned operation history across a save: the previous
+/// document becomes an undo step (bounded), and a changed authoring head
+/// invalidates any redo entries. Saves with an unchanged document keep both
+/// stacks as they are, so undo/redo themselves persist through the autosave
+/// that follows them.
+fn attach_draft_history_on_save(existing: Option<&Value>, row: &mut Value) {
+    let Some(existing) = existing else {
+        return;
+    };
+    let mut history = existing
+        .get("history")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let previous_document = existing.get("document");
+    let document_changed = previous_document.is_some() && previous_document != row.get("document");
+    if !document_changed {
+        row["history"] = Value::Array(history);
+        if let Some(future) = existing.get("future") {
+            row["future"] = future.clone();
+        }
+        return;
+    }
+    if let Some(previous) = previous_document {
+        history.push(previous.clone());
+        if history.len() > MOBPACK_DRAFT_HISTORY_LIMIT {
+            let excess = history.len() - MOBPACK_DRAFT_HISTORY_LIMIT;
+            history.drain(0..excess);
+        }
+    }
+    row["history"] = Value::Array(history);
+}
+
+enum MobpackDraftHistoryStep {
+    Undo,
+    Redo,
+}
+
+pub fn undo_mobpack_draft(params: &Value) -> Result<Value, String> {
+    step_mobpack_draft_history(params, MobpackDraftHistoryStep::Undo)
+}
+
+pub fn redo_mobpack_draft(params: &Value) -> Result<Value, String> {
+    step_mobpack_draft_history(params, MobpackDraftHistoryStep::Redo)
+}
+
+/// MobKit-owned undo/redo over the draft store. The history lives with the
+/// draft (bounded document snapshots the store itself recorded on save), so
+/// the browser never authors restore states; stepping rebuilds the row
+/// through the same canonicalization and validation as a save and bumps the
+/// draft revision.
+fn step_mobpack_draft_history(
+    params: &Value,
+    step: MobpackDraftHistoryStep,
+) -> Result<Value, String> {
+    let (source, head) = match step {
+        MobpackDraftHistoryStep::Undo => ("mobkit/mobpacks/undo", "undo"),
+        MobpackDraftHistoryStep::Redo => ("mobkit/mobpacks/redo", "redo"),
+    };
+    let id = params
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{source} requires id"))?
+        .to_string();
+    let _guard = MOBPACK_DRAFT_STORE_LOCK
+        .lock()
+        .map_err(|_| "mobpack draft store lock poisoned".to_string())?;
+    let path = mobpack_draft_store_path(params);
+    let mut rows = read_mobpack_draft_store(&path)?;
+    let existing = rows
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| format!("mobpack draft not found: {id}"))?;
+    let current_revision = mobpack_draft_revision_from_row(Some(&existing));
+    if let Some(expected_revision) = mobpack_draft_expected_revision(params)
+        && expected_revision != current_revision
+    {
+        return Err(format!(
+            "{source} draft revision conflict for {id}: expected {expected_revision}, found {current_revision}"
+        ));
+    }
+    if let Some(expected_etag) = mobpack_draft_expected_etag(params) {
+        let current_etag = mobpack_draft_etag(&id, current_revision);
+        if expected_etag != current_etag {
+            return Err(format!(
+                "{source} draft etag conflict for {id}: expected {expected_etag}, found {current_etag}"
+            ));
+        }
+    }
+    let mut history = existing
+        .get("history")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut future = existing
+        .get("future")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let current_document = existing.get("document").cloned().unwrap_or(Value::Null);
+    let restored = match step {
+        MobpackDraftHistoryStep::Undo => {
+            let Some(document) = history.pop() else {
+                return Ok(json!({
+                    "source": source,
+                    "store_path": path,
+                    "stepped": false,
+                    "reason": format!("nothing to {head}"),
+                    "row": normalize_mobpack_draft_row(&existing),
+                    "rows": sorted_mobpack_draft_rows(&rows),
+                }));
+            };
+            future.push(current_document);
+            document
+        }
+        MobpackDraftHistoryStep::Redo => {
+            let Some(document) = future.pop() else {
+                return Ok(json!({
+                    "source": source,
+                    "store_path": path,
+                    "stepped": false,
+                    "reason": format!("nothing to {head}"),
+                    "row": normalize_mobpack_draft_row(&existing),
+                    "rows": sorted_mobpack_draft_rows(&rows),
+                }));
+            };
+            history.push(current_document);
+            document
+        }
+    };
+    if future.len() > MOBPACK_DRAFT_HISTORY_LIMIT {
+        let excess = future.len() - MOBPACK_DRAFT_HISTORY_LIMIT;
+        future.drain(0..excess);
+    }
+    let mut row = mobpack_draft_row_from_params(
+        &json!({
+            "id": id,
+            "document": restored,
+            "trigger": existing.get("trigger").and_then(Value::as_str),
+            "source": source,
+        }),
+        current_revision.saturating_add(1),
+    )?;
+    row["history"] = Value::Array(history);
+    row["future"] = Value::Array(future);
+    rows.insert(id, row.clone());
+    write_mobpack_draft_store(&path, &rows)?;
+    let row = normalize_mobpack_draft_row(&row);
+    Ok(json!({
+        "source": source,
+        "store_path": path,
+        "stepped": true,
         "row": row,
         "rows": sorted_mobpack_draft_rows(&rows),
     }))
@@ -27115,6 +27306,109 @@ model = "gpt-5.5"
     }
 
     #[test]
+    fn draft_store_owns_undo_redo_history() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join("drafts.json");
+
+        let created = create_mobpack_draft(&json!({
+            "store_path": store_path,
+            "template": "blank",
+            "name": "History Draft",
+        }))
+        .expect("create draft");
+        let id = created["row"]["id"].as_str().expect("draft id").to_string();
+        let original_task = created["row"]["document"]["flow"]["steps"][0]["task"].clone();
+        assert_eq!(created["row"]["can_undo"], json!(false));
+        assert_eq!(created["row"]["can_redo"], json!(false));
+
+        // Save an edited document: the previous head becomes an undo step.
+        let mut edited = created["row"]["document"].clone();
+        edited["flow"]["steps"][0]["task"] = json!("Edited input task.");
+        let saved = save_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": id,
+            "document": edited,
+        }))
+        .expect("save edited draft");
+        assert_eq!(saved["row"]["can_undo"], json!(true));
+        assert_eq!(saved["row"]["can_redo"], json!(false));
+
+        // Saving an unchanged document must not grow the history.
+        let resaved = save_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": id,
+            "document": saved["row"]["document"].clone(),
+        }))
+        .expect("resave unchanged draft");
+        assert_eq!(resaved["row"]["can_undo"], json!(true));
+
+        let undone = undo_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": id,
+        }))
+        .expect("undo");
+        assert_eq!(undone["stepped"], json!(true));
+        assert_eq!(
+            undone["row"]["document"]["flow"]["steps"][0]["task"],
+            original_task
+        );
+        assert_eq!(undone["row"]["can_undo"], json!(false));
+        assert_eq!(undone["row"]["can_redo"], json!(true));
+        assert!(
+            undone["row"]["revision"].as_u64().expect("revision")
+                > resaved["row"]["revision"].as_u64().expect("revision"),
+            "undo must bump the draft revision"
+        );
+
+        let redone = redo_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": id,
+        }))
+        .expect("redo");
+        assert_eq!(redone["stepped"], json!(true));
+        assert_eq!(
+            redone["row"]["document"]["flow"]["steps"][0]["task"],
+            json!("Edited input task.")
+        );
+        assert_eq!(redone["row"]["can_undo"], json!(true));
+        assert_eq!(redone["row"]["can_redo"], json!(false));
+
+        // A fresh save after undo invalidates the redo branch.
+        let undone_again = undo_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": id,
+        }))
+        .expect("undo again");
+        assert_eq!(undone_again["stepped"], json!(true));
+        let mut diverged = undone_again["row"]["document"].clone();
+        diverged["flow"]["steps"][0]["task"] = json!("Diverged input task.");
+        let diverged_save = save_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": id,
+            "document": diverged,
+        }))
+        .expect("diverging save");
+        assert_eq!(diverged_save["row"]["can_redo"], json!(false));
+
+        // Stepping past the end reports stepped: false without mutating.
+        let exhausted = redo_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": id,
+        }))
+        .expect("redo at head");
+        assert_eq!(exhausted["stepped"], json!(false));
+
+        // Stale revision guards apply to history steps too.
+        let conflict = undo_mobpack_draft(&json!({
+            "store_path": store_path,
+            "id": id,
+            "expected_revision": 1,
+        }))
+        .expect_err("stale undo must conflict");
+        assert!(conflict.contains("draft revision conflict"), "{conflict}");
+    }
+
+    #[test]
     fn graph_projection_rpc_projects_editor_flow_controls() {
         let mut document = valid_document();
         document.members = json!([
@@ -30539,6 +30833,8 @@ depends_on_mode = "all"
             ("create", "mobkit/mobpacks/create"),
             ("save", "mobkit/mobpacks/save"),
             ("delete", "mobkit/mobpacks/delete"),
+            ("undo", "mobkit/mobpacks/undo"),
+            ("redo", "mobkit/mobpacks/redo"),
             ("apply_operation", "mobkit/mobpacks/apply_operation"),
             ("graph_projection", "mobkit/mobpacks/graph_projection"),
             ("graph_to_flow", "mobkit/mobpacks/graph_to_flow"),

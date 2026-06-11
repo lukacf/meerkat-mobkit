@@ -16,6 +16,8 @@
     create: "mobkit/mobpacks/create",
     save: "mobkit/mobpacks/save",
     delete: "mobkit/mobpacks/delete",
+    undo: "mobkit/mobpacks/undo",
+    redo: "mobkit/mobpacks/redo",
     applyOperation: "mobkit/mobpacks/apply_operation",
     graphProjection: "mobkit/mobpacks/graph_projection",
     graphToFlow: "mobkit/mobpacks/graph_to_flow",
@@ -34,6 +36,8 @@
     create: "create",
     save: "save",
     delete: "delete",
+    undo: "undo",
+    redo: "redo",
     applyOperation: "apply_operation",
     graphProjection: "graph_projection",
     graphToFlow: "graph_to_flow",
@@ -8468,6 +8472,28 @@
     return callRpc(rpcMethod("create"), spec || {}, options);
   }
 
+  // MobKit-owned history steps over the draft store: the server restores a
+  // snapshot it recorded itself, so the browser never authors restore state.
+  async function undoDocument(params = {}, options = {}) {
+    return historyStepDocument("undo", params, options);
+  }
+
+  async function redoDocument(params = {}, options = {}) {
+    return historyStepDocument("redo", params, options);
+  }
+
+  async function historyStepDocument(direction, params = {}, options = {}) {
+    const { signal } = options || {};
+    const request = { id: String(params.id || "").trim() };
+    const expectedRevision = params.expected_revision ?? params.expectedRevision;
+    if (expectedRevision !== undefined && expectedRevision !== null && expectedRevision !== "") {
+      request.expected_revision = Number(expectedRevision);
+    }
+    const expectedEtag = String(params.expected_etag ?? params.expectedEtag ?? "").trim();
+    if (expectedEtag) request.expected_etag = expectedEtag;
+    return callRpc(rpcMethod(direction), request, { signal });
+  }
+
   async function saveDocument(row = {}, options = {}) {
     if (flowRegistryRowIsRuntimeProjection(row)) {
       return {
@@ -11668,6 +11694,8 @@
     flowImportedIdFromDocument,
     flowRegistryDraftGuard,
     isDraftGuardConflictError,
+    undoDocument,
+    redoDocument,
     flowRegistryRememberDocumentPatch,
     flowRegistryDocumentPersistence,
     flowRegistryPersistDocumentProjection,

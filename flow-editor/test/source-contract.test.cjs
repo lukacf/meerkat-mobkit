@@ -339,7 +339,11 @@ assert.match(app, /useStudioState\(\{[\s\S]*skillRealms:\s*\[\],[\s\S]*\}, markD
 assert.match(graph, /MobKitFlowController\.studioHistorySnapshotPatch/, "Graph state hook must ask controller plane to snapshot undo history");
 assert.match(graph, /MobKitFlowController\.studioUndoPatch/, "Graph state hook must ask controller plane to compute undo transitions");
 assert.match(graph, /MobKitFlowController\.studioRedoPatch/, "Graph state hook must ask controller plane to compute redo transitions");
-assert.match(app, /if \(\(e\.metaKey \|\| e\.ctrlKey\) && e\.key === "z"\) \{[\s\S]*showAuthoringFailure\(\{[\s\S]*authoringOperationUnavailableError[\s\S]*authoringFailureHead\(e\.shiftKey \? "redo" : "undo"\)/, "app shell must fail closed for undo/redo until MobKit owns operation history");
+assert.match(app, /if \(\(e\.metaKey \|\| e\.ctrlKey\) && e\.key === "z"\) \{[\s\S]{0,120}handleHistoryStep\(e\.shiftKey \? "redo" : "undo"\)/, "app shell undo/redo must step MobKit-owned operation history");
+assert.match(app, /handleHistoryStep = async \(direction\)[\s\S]*MobKitFlowController\.redoDocument[\s\S]*MobKitFlowController\.undoDocument[\s\S]*hydrateMobpackDocument\(/, "undo/redo must hydrate the MobKit-restored draft row instead of local snapshots");
+assert.match(controller, /undo: "mobkit\/mobpacks\/undo",[\s\S]{0,80}redo: "mobkit\/mobpacks\/redo",/, "controller plane must own the MobKit history RPC methods");
+assert.match(mobpackRust, /"mobkit\/mobpacks\/undo" => crate::mobpack::undo_mobpack_draft\(params\)|fn undo_mobpack_draft/, "MobKit must own undo history in the draft store");
+assert.match(mobpackRust, /fn attach_draft_history_on_save/, "MobKit draft saves must record the operation history that undo restores");
 assert(!/const result = e\.shiftKey \? studio\.redo\(\) : studio\.undo\(\);|applyMobKitAuthoringReplacement/.test(app), "app shell must not restore undo/redo with browser-authored snapshots");
 assert(!/applyStudioState|applyStudioState\(next\.state\)/.test(graph), "Graph state hook must not restore undo/redo state locally");
 assert.match(controller, /function studioAddMemberPatch/, "controller plane must own member add semantics");

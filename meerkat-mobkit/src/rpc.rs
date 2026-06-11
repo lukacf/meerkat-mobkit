@@ -74,6 +74,8 @@ pub(crate) const MOBPACK_AUTHORING_METHODS: &[&str] = &[
     "mobkit/mobpacks/create",
     "mobkit/mobpacks/save",
     "mobkit/mobpacks/delete",
+    "mobkit/mobpacks/undo",
+    "mobkit/mobpacks/redo",
     "mobkit/mobpacks/apply_operation",
     "mobkit/mobpacks/graph_projection",
     "mobkit/mobpacks/graph_to_flow",
@@ -266,6 +268,8 @@ pub(crate) fn handle_mobpack_authoring_rpc_with_runtime(
         "mobkit/mobpacks/create" => crate::mobpack::create_mobpack_draft(params),
         "mobkit/mobpacks/save" => crate::mobpack::save_mobpack_draft(params),
         "mobkit/mobpacks/delete" => crate::mobpack::delete_mobpack_draft(params),
+        "mobkit/mobpacks/undo" => crate::mobpack::undo_mobpack_draft(params),
+        "mobkit/mobpacks/redo" => crate::mobpack::redo_mobpack_draft(params),
         "mobkit/mobpacks/apply_operation" => {
             crate::mobpack::apply_mobpack_authoring_operation_with_runtime(params, runtime)
         }
