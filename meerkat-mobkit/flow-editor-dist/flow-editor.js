@@ -11293,6 +11293,12 @@ var MobKitFlowComponents = (() => {
   // ../packages/flow-editor-components/src/index.ts
   var index_exports = {};
   __export(index_exports, {
+    AddNodeMenu: () => AddNodeMenu,
+    DeployPlanTrace: () => DeployPlanTrace,
+    GraphEditor: () => GraphEditor,
+    InlineSourceEditor: () => InlineSourceEditor,
+    Inspector: () => Inspector,
+    SourceDrawer: () => SourceDrawer,
     TweakButton: () => TweakButton,
     TweakColor: () => TweakColor,
     TweakNumber: () => TweakNumber,
@@ -11304,8 +11310,721 @@ var MobKitFlowComponents = (() => {
     TweakText: () => TweakText,
     TweakToggle: () => TweakToggle,
     TweaksPanel: () => TweaksPanel,
+    ValidateSheet: () => ValidateSheet,
+    useStudioState: () => useStudioState,
     useTweaks: () => useTweaks
   });
+
+  // ../packages/flow-editor-components/src/graph/graph.tsx
+  function useStudioState(initial, onDirty, authoring = {}) {
+    const [members, setMembers] = React.useState(initial.members);
+    const [instances, setInstances] = React.useState(initial.instances);
+    const [edges, setEdges] = React.useState(initial.edges);
+    const [frames, setFrames] = React.useState(initial.frames);
+    const [schemas, setSchemas] = React.useState(initial.schemas);
+    const [skillRealms, setSkillRealms] = React.useState(initial.skillRealms || []);
+    const [history, setHistory] = React.useState([]);
+    const [future, setFuture] = React.useState([]);
+    const studioState = React.useCallback(() => ({
+      members,
+      instances,
+      edges,
+      frames,
+      schemas,
+      skillRealms
+    }), [members, instances, edges, frames, schemas, skillRealms]);
+    const snap = React.useCallback(() => {
+      if (onDirty) onDirty();
+      const next = window.MobKitFlowController.studioHistorySnapshotPatch({
+        history,
+        future,
+        state: studioState()
+      });
+      setHistory(next.history);
+      setFuture(next.future);
+    }, [history, future, studioState, onDirty]);
+    const undo = () => {
+      const next = window.MobKitFlowController.studioUndoPatch({ history, future, state: studioState() });
+      if (!next) return;
+      setHistory(next.history);
+      setFuture(next.future);
+      return next;
+    };
+    const redo = () => {
+      const next = window.MobKitFlowController.studioRedoPatch({ history, future, state: studioState() });
+      if (!next) return;
+      setHistory(next.history);
+      setFuture(next.future);
+      return next;
+    };
+    return {
+      members,
+      instances,
+      edges,
+      frames,
+      schemas,
+      skillRealms,
+      setMembers,
+      setInstances,
+      setEdges,
+      setFrames,
+      setSchemas,
+      setSkillRealms,
+      snap,
+      undo,
+      redo,
+      canUndo: !!history.length,
+      canRedo: !!future.length
+    };
+  }
+  function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [], applyAuthoringIntent = null }) {
+    const hostRef = React.useRef(null);
+    const [drag, setDrag] = React.useState(null);
+    const [conn, setConn] = React.useState(null);
+    const [operationError, setOperationError] = React.useState("");
+    const [hoverInId, setHoverInId] = React.useState(null);
+    const [hoverCell, setHoverCell] = React.useState(null);
+    const canvasView = window.MobKitFlowController.graphCanvasViewState(graphView);
+    const modelInstances = window.MobKitFlowController.graphCanvasInstances({ instances: state.instances, graphView: canvasView });
+    const [view, setView] = React.useState({ scale: 1, tx: 0, ty: 0 });
+    const viewRef = React.useRef(view);
+    React.useEffect(() => {
+      viewRef.current = view;
+    }, [view]);
+    const [panDrag, setPanDrag] = React.useState(null);
+    const gridState = window.MobKitFlowController.graphGridState({ instances: modelInstances, gridBase: grid });
+    const g = gridState.grid;
+    const totalW = gridState.totalW;
+    const totalH = gridState.totalH;
+    const applyGraphIntent = async (payload, fallback) => {
+      const fallbackText = fallback || canvasView.authoringOperationFallbackError;
+      if (!applyAuthoringIntent) {
+        const result = { ok: false, error: canvasView.authoringOperationUnavailableError };
+        setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
+        return result;
+      }
+      try {
+        const result = await applyAuthoringIntent(payload);
+        if (result?.ok === false) {
+          setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
+        } else {
+          setOperationError("");
+        }
+        return result;
+      } catch (error) {
+        const result = { ok: false, error: error?.message || String(error || fallbackText) };
+        setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
+        return result;
+      }
+    };
+    const fitToBounds = React.useCallback(() => {
+      const host = hostRef.current;
+      if (!host) return;
+      const r = host.getBoundingClientRect();
+      const scale = Math.min(1, Math.min((r.width - 32) / totalW, (r.height - 32) / totalH));
+      const tx = (r.width - totalW * scale) / 2;
+      const ty = Math.max(8, (r.height - totalH * scale) / 2);
+      setView({ scale, tx, ty });
+    }, [totalW, totalH]);
+    const didFit = React.useRef(false);
+    React.useEffect(() => {
+      if (didFit.current) return;
+      if (hostRef.current?.offsetWidth > 0) {
+        fitToBounds();
+        didFit.current = true;
+      } else {
+        const id = setTimeout(() => {
+          fitToBounds();
+          didFit.current = true;
+        }, 50);
+        return () => clearTimeout(id);
+      }
+    }, [fitToBounds]);
+    const screenToWorld = (sx, sy) => {
+      const r = hostRef.current.getBoundingClientRect();
+      const v = viewRef.current;
+      return { x: (sx - r.left - v.tx) / v.scale, y: (sy - r.top - v.ty) / v.scale };
+    };
+    const zoomAt = (factor, sx, sy) => {
+      const v = viewRef.current;
+      const r = hostRef.current.getBoundingClientRect();
+      const cx = sx - r.left;
+      const cy = sy - r.top;
+      const next = Math.max(0.3, Math.min(2.5, v.scale * factor));
+      const k = next / v.scale;
+      setView({
+        scale: next,
+        tx: cx - (cx - v.tx) * k,
+        ty: cy - (cy - v.ty) * k
+      });
+    };
+    const onNodeDown = (e, inst) => {
+      if (e.target.classList.contains("port")) return;
+      e.stopPropagation();
+      selectInstance(inst.id);
+      const w = screenToWorld(e.clientX, e.clientY);
+      const b = window.MobKitFlowController.graphNodeBox(g, inst);
+      setDrag({ instId: inst.id, dx: w.x - b.x, dy: w.y - b.y, origCol: inst.col, origRow: inst.row });
+    };
+    const onPortDown = (e, inst) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const p = window.MobKitFlowController.graphPortOut(g, inst);
+      setConn({ from: p, fromId: inst.id, to: p });
+    };
+    const connectionTargetIdAt = (clientX, clientY, fromId) => {
+      const hit = document.elementFromPoint(clientX, clientY);
+      const direct = hit?.closest?.("[data-inst-id]");
+      if (direct && direct.dataset.instId !== fromId) return direct.dataset.instId;
+      const nodes = Array.from(hostRef.current?.querySelectorAll?.("[data-inst-id]") || []);
+      const target = nodes.find((node) => {
+        if (node.dataset.instId === fromId) return false;
+        const rect = node.getBoundingClientRect();
+        return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+      });
+      return target?.dataset.instId || "";
+    };
+    const onHostMouseDown = (e) => {
+      if (e.button !== 0 && e.button !== 1) return;
+      const target = e.target;
+      if (target === hostRef.current || target.classList?.contains("canvas")) {
+        setPanDrag({ sx: e.clientX, sy: e.clientY, tx0: viewRef.current.tx, ty0: viewRef.current.ty });
+        e.preventDefault();
+      }
+    };
+    const openSourceFromEvent = (e) => {
+      const selector = canvasView.sourceFileActivationSelector;
+      if (!selector) return false;
+      const sourceEl = e.target?.closest?.(selector);
+      if (!sourceEl || !hostRef.current?.contains(sourceEl)) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      onOpenSourceFile?.({
+        id: sourceEl.dataset.sourceId || "",
+        kind: sourceEl.dataset.kind || canvasView.sourceFileNodeKind
+      });
+      return true;
+    };
+    const onHostMouseDownCapture = (e) => {
+      if (e.button !== 0) return;
+      openSourceFromEvent(e);
+    };
+    const onHostKeyDownCapture = (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      openSourceFromEvent(e);
+    };
+    const onHostWheel = (e) => {
+      if (!hostRef.current) return;
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const factor = Math.exp(-e.deltaY * 15e-4);
+        zoomAt(factor, e.clientX, e.clientY);
+      } else {
+        e.preventDefault();
+        setView((v) => ({ ...v, tx: v.tx - e.deltaX, ty: v.ty - e.deltaY }));
+      }
+    };
+    React.useEffect(() => {
+      const el = hostRef.current;
+      if (!el) return;
+      const handler = (e) => onHostWheel(e);
+      el.addEventListener("wheel", handler, { passive: false });
+      return () => el.removeEventListener("wheel", handler);
+    });
+    React.useEffect(() => {
+      const move = (e) => {
+        if (panDrag) {
+          setView((v) => ({ ...v, tx: panDrag.tx0 + (e.clientX - panDrag.sx), ty: panDrag.ty0 + (e.clientY - panDrag.sy) }));
+        }
+        if (drag) {
+          const w = screenToWorld(e.clientX, e.clientY);
+          const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
+          if (cell) setHoverCell(cell);
+        }
+        if (conn) {
+          const w = screenToWorld(e.clientX, e.clientY);
+          setConn((c) => ({ ...c, to: { x: w.x, y: w.y } }));
+          const targetId = connectionTargetIdAt(e.clientX, e.clientY, conn.fromId);
+          if (targetId) setHoverInId(targetId);
+          else setHoverInId(null);
+        }
+      };
+      const up = (e) => {
+        if (drag) {
+          const w = screenToWorld(e.clientX, e.clientY);
+          const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
+          if (cell && (cell.col !== drag.origCol || cell.row !== drag.origRow)) {
+            applyGraphIntent({
+              intent: "graph.moveNode",
+              instanceId: drag.instId,
+              cell,
+              originalCell: { col: drag.origCol, row: drag.origRow }
+            }, "MobKit graph node move failed");
+          }
+          setDrag(null);
+          setHoverCell(null);
+        }
+        if (conn) {
+          const targetId = connectionTargetIdAt(e.clientX, e.clientY, conn.fromId);
+          if (targetId) {
+            applyGraphIntent({
+              intent: "graph.connectNodes",
+              fromId: conn.fromId,
+              toId: targetId
+            }, "MobKit graph connection failed").then((result) => {
+              if (result?.ok === false) return;
+              const id = result?.selection?.id;
+              if (id) selectEdge(id);
+            });
+          }
+          setConn(null);
+          setHoverInId(null);
+        }
+        if (panDrag) setPanDrag(null);
+      };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+      return () => {
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+      };
+    });
+    const fit = view;
+    const cellRows = window.MobKitFlowController.graphCellCanvasRows({ grid: g, instances: modelInstances, hoverCell });
+    const headerRows = window.MobKitFlowController.graphGridHeaderCanvasRows({ grid: g });
+    const cells = cellRows.map((row) => /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        key: row.key,
+        className: row.className,
+        style: row.style,
+        onMouseDown: (e) => e.stopPropagation(),
+        onClick: (e) => {
+          e.stopPropagation();
+          if (!row.occupied) onRequestAdd(row.col, row.row);
+        }
+      },
+      row.addVisible && /* @__PURE__ */ React.createElement("div", { className: "cell__add" }, /* @__PURE__ */ React.createElement("span", { className: "cell__plus" }, "+"))
+    ));
+    const colHeads = headerRows.columns.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.key, className: row.className, style: row.style }, row.label));
+    const rowHeads = headerRows.rows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.key, className: row.className, style: row.style }, row.label));
+    const frameEls = state.frames.map((fr) => {
+      const frameState = window.MobKitFlowController.graphFrameCanvasState({ frame: fr, grid: g });
+      return /* @__PURE__ */ React.createElement(React.Fragment, { key: frameState.id }, /* @__PURE__ */ React.createElement("div", { className: "frame", style: frameState.frameStyle }), /* @__PURE__ */ React.createElement("div", { className: "frame-label", style: frameState.labelStyle }, frameState.label));
+    });
+    const edgeEls = state.edges.map((edge) => {
+      const fi = state.instances.find((i) => i.id === edge.from);
+      const ti = state.instances.find((i) => i.id === edge.to);
+      if (!fi || !ti) return null;
+      const a = window.MobKitFlowController.graphPortOut(g, fi), b = window.MobKitFlowController.graphPortIn(g, ti);
+      const d = window.MobKitFlowController.graphEdgePath(a, b);
+      const mid = window.MobKitFlowController.graphEdgeMidpoint(a, b);
+      const isActive = activeStepId === edge.from;
+      const isSelected = selection.kind === "edge" && selection.id === edge.id;
+      const edgeState = window.MobKitFlowController.graphEdgeCanvasState({
+        edge,
+        to: ti,
+        active: isActive,
+        selected: isSelected,
+        edgeStyle,
+        contract,
+        graphView: canvasView
+      });
+      let labelEl;
+      if (edgeState.mode === "icons") {
+        labelEl = /* @__PURE__ */ React.createElement("g", { transform: `translate(${mid.x}, ${mid.y})` }, /* @__PURE__ */ React.createElement("rect", { x: -9, y: -9, width: 18, height: 16, className: "edge-label-bg" }), /* @__PURE__ */ React.createElement("text", { textAnchor: "middle", y: 4, className: edgeState.iconLabelClass }, edgeState.iconGlyph));
+      } else if (edgeState.mode === "colored") {
+        labelEl = /* @__PURE__ */ React.createElement("g", { transform: `translate(${mid.x}, ${mid.y})` }, /* @__PURE__ */ React.createElement("rect", { x: -edgeState.labelWidth / 2, y: -8, width: edgeState.labelWidth, height: 14, className: "edge-label-bg" }), /* @__PURE__ */ React.createElement("text", { textAnchor: "middle", y: 3, className: "edge-label", style: { fill: edgeState.labelFill } }, edgeState.labelText));
+      } else {
+        labelEl = /* @__PURE__ */ React.createElement("g", { transform: `translate(${mid.x}, ${mid.y})` }, /* @__PURE__ */ React.createElement("rect", { x: -edgeState.labelWidth / 2, y: -8, width: edgeState.labelWidth, height: 14, className: "edge-label-bg" }), /* @__PURE__ */ React.createElement("text", { textAnchor: "middle", y: 3, className: edgeState.textLabelClass }, edgeState.labelText));
+      }
+      return /* @__PURE__ */ React.createElement("g", { key: edge.id, className: "edge", "data-edge-id": edge.id, "data-edge-from": edge.from, "data-edge-to": edge.to, onClick: (e) => {
+        e.stopPropagation();
+        selectEdge(edge.id);
+      } }, /* @__PURE__ */ React.createElement("path", { d, className: "edge-hit" }), /* @__PURE__ */ React.createElement("path", { d, className: edgeState.lineClass, markerEnd: edgeState.markerEnd }), labelEl);
+    });
+    const canvasAdornments = window.MobKitFlowController.graphCanvasAdornments({ instances: state.instances, graphView: canvasView });
+    const adornmentEls = canvasAdornments.map((adornment) => /* @__PURE__ */ React.createElement(
+      SourceFileAdornmentView,
+      {
+        key: adornment.id,
+        g,
+        adornment,
+        adornmentState: window.MobKitFlowController.graphSourceFileAdornmentCanvasState({ adornment, graphView: canvasView })
+      }
+    ));
+    const nodeEls = modelInstances.map((inst) => {
+      if (inst.isGate) {
+        return /* @__PURE__ */ React.createElement(
+          GateView,
+          {
+            key: inst.id,
+            g,
+            inst,
+            selected: selection.kind === "instance" && selection.id === inst.id,
+            activeStep: activeStepId === inst.id,
+            hoverIn: hoverInId === inst.id,
+            onMouseDown: onNodeDown,
+            onPortDown,
+            portDragTitle: canvasView.portDragTitle,
+            state,
+            contract,
+            graphView: canvasView
+          }
+        );
+      }
+      return /* @__PURE__ */ React.createElement(
+        NodeView,
+        {
+          key: inst.id,
+          g,
+          inst,
+          nodeState: window.MobKitFlowController.graphNodeCanvasState({ inst, members: state.members, density, graphView: canvasView, toolCatalog }),
+          selected: selection.kind === "instance" && selection.id === inst.id,
+          memberHighlight: memberFocus && inst.memberId === memberFocus,
+          memberDim: !!memberFocus && inst.memberId !== memberFocus && !inst.isTerminal,
+          activeStep: activeStepId === inst.id,
+          hoverIn: hoverInId === inst.id,
+          onMouseDown: onNodeDown,
+          onPortDown,
+          portDragTitle: canvasView.portDragTitle
+        }
+      );
+    });
+    return /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        ref: hostRef,
+        className: "canvas-host" + (memberFocus ? " is-member-focus" : "") + (panDrag ? " is-panning" : ""),
+        onMouseDownCapture: onHostMouseDownCapture,
+        onKeyDownCapture: onHostKeyDownCapture,
+        onMouseDown: onHostMouseDown,
+        onClick: (e) => {
+          if (e.target === hostRef.current || e.target.classList?.contains("canvas")) clearSelection();
+        }
+      },
+      /* @__PURE__ */ React.createElement("div", { className: "canvas", style: { width: totalW, height: totalH, transform: `translate(${fit.tx}px, ${fit.ty}px) scale(${fit.scale})`, transformOrigin: "0 0" } }, colHeads, rowHeads, frameEls, cells, /* @__PURE__ */ React.createElement("svg", { className: "edges-svg", width: totalW, height: totalH }, /* @__PURE__ */ React.createElement("defs", null, /* @__PURE__ */ React.createElement("marker", { id: "arr", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--ink)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-red", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--danger)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-acc", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--accent)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-dim", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--subtle)" }))), edgeEls, conn && /* @__PURE__ */ React.createElement("path", { d: window.MobKitFlowController.graphEdgePath(conn.from, conn.to), className: "edge-line is-ghost", markerEnd: "url(#arr-acc)" })), adornmentEls, nodeEls),
+      operationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, operationError),
+      /* @__PURE__ */ React.createElement("div", { className: "zoom-controls", onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", title: canvasView.zoomOutTitle, onClick: () => {
+        const r = hostRef.current.getBoundingClientRect();
+        zoomAt(1 / 1.2, r.left + r.width / 2, r.top + r.height / 2);
+      } }, "\u2212"), /* @__PURE__ */ React.createElement("button", { className: "zoom-btn zoom-btn--pct", title: canvasView.fitTitle, onClick: fitToBounds }, Math.round(view.scale * 100), "%"), /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", title: canvasView.zoomInTitle, onClick: () => {
+        const r = hostRef.current.getBoundingClientRect();
+        zoomAt(1.2, r.left + r.width / 2, r.top + r.height / 2);
+      } }, "+"))
+    );
+  }
+  function SourceFileAdornmentView({ g, adornment, adornmentState }) {
+    if (adornmentState.hidden) return null;
+    const b = window.MobKitFlowController.graphNodeBox(g, adornment);
+    return /* @__PURE__ */ React.createElement(
+      "a",
+      {
+        href: adornmentState.sourceActivationHash,
+        "data-source-id": adornment.id,
+        className: "source-file-adornment node--source-file",
+        "data-kind": adornmentState.dataKind,
+        role: adornmentState.role,
+        tabIndex: adornmentState.tabIndex,
+        "aria-label": adornmentState.ariaLabel,
+        style: { left: b.x, top: b.y, width: b.w, height: b.h },
+        onMouseDown: (e) => {
+          e.stopPropagation();
+        }
+      },
+      /* @__PURE__ */ React.createElement("span", { className: "source-file__glyph" }, adornmentState.sourceGlyph),
+      /* @__PURE__ */ React.createElement("span", { className: "source-file__label" }, adornmentState.title)
+    );
+  }
+  function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle }) {
+    const b = window.MobKitFlowController.graphNodeBox(g, inst);
+    if (nodeState.isTerminal) {
+      return /* @__PURE__ */ React.createElement(
+        "div",
+        {
+          "data-inst-id": inst.id,
+          className: "node node--term" + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : ""),
+          "data-kind": nodeState.dataKind,
+          role: nodeState.role,
+          tabIndex: nodeState.tabIndex,
+          "aria-label": nodeState.ariaLabel,
+          style: { left: b.x, top: b.y, width: b.w, height: b.h },
+          onMouseDown: (e) => {
+            onMouseDown(e, inst);
+          }
+        },
+        /* @__PURE__ */ React.createElement("div", { className: "node__head" }, /* @__PURE__ */ React.createElement("span", { className: "node__role" }, nodeState.roleLabel)),
+        /* @__PURE__ */ React.createElement("div", { className: "node__body" }, /* @__PURE__ */ React.createElement("div", { className: "node__name" }, nodeState.title), /* @__PURE__ */ React.createElement("div", { className: "node__model" }, nodeState.subtitle))
+      );
+    }
+    if (nodeState.hidden) return null;
+    return /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        "data-inst-id": inst.id,
+        className: "node" + (selected ? " is-selected" : "") + (memberHighlight ? " is-member-highlight" : "") + (memberDim ? " is-member-dim" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : "") + (nodeState.isCompact ? " is-compact" : ""),
+        style: { left: b.x, top: b.y, width: b.w, height: b.h },
+        onMouseDown: (e) => onMouseDown(e, inst)
+      },
+      /* @__PURE__ */ React.createElement("div", { className: "port port-out", onMouseDown: (e) => onPortDown(e, inst), title: portDragTitle }),
+      /* @__PURE__ */ React.createElement("div", { className: "node__head" }, /* @__PURE__ */ React.createElement("span", { className: "node__role" }, nodeState.roleLabel), /* @__PURE__ */ React.createElement("span", { className: "node__idx" }, nodeState.launchLabel)),
+      /* @__PURE__ */ React.createElement("div", { className: "node__body" }, /* @__PURE__ */ React.createElement("div", { className: "node__name" }, nodeState.title), /* @__PURE__ */ React.createElement("div", { className: "node__model" }, nodeState.subtitle)),
+      !nodeState.isCompact && /* @__PURE__ */ React.createElement("div", { className: "node__tools" }, nodeState.toolRows.map((row) => /* @__PURE__ */ React.createElement("span", { key: row.id, className: row.className }, row.id)), nodeState.overflowLabel && /* @__PURE__ */ React.createElement("span", { className: "tag" }, nodeState.overflowLabel))
+    );
+  }
+  function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, state, contract, graphView }) {
+    const b = window.MobKitFlowController.graphNodeBox(g, inst);
+    const gateState = window.MobKitFlowController.graphGateCanvasState({ inst, edges: state.edges, contract, graphView });
+    return /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        "data-inst-id": inst.id,
+        className: "node node--gate gate--" + gateState.gateKind + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : ""),
+        style: { left: b.x, top: b.y, width: b.w, height: b.h },
+        onMouseDown: (e) => onMouseDown(e, inst)
+      },
+      /* @__PURE__ */ React.createElement("div", { className: "port port-out", onMouseDown: (e) => onPortDown(e, inst), title: portDragTitle }),
+      /* @__PURE__ */ React.createElement("span", { className: "gate__glyph" }, gateState.glyph),
+      /* @__PURE__ */ React.createElement("span", { className: "gate__label" }, gateState.sublabel)
+    );
+  }
+
+  // ../packages/flow-editor-components/src/inspector/inspector.tsx
+  function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, deleteGraphEdge = null, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
+    const selectionState = window.MobKitFlowController.graphSelectionState({
+      selection,
+      instances: studio.instances,
+      edges: studio.edges
+    });
+    if (selectionState.kind === "instance") {
+      if (!selectionState.instance) return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
+      return /* @__PURE__ */ React.createElement(InstanceInspector, { studio, flow, inst: selectionState.instance, selectMember, clearSelection, editGraphNode, editGraphEdge, deleteGraphNode, contract, launchView, graphView, conditionView });
+    }
+    if (selectionState.kind === "edge") {
+      if (!selectionState.edge) return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
+      return /* @__PURE__ */ React.createElement(EdgeInspector, { studio, flow, edge: selectionState.edge, clearSelection, editGraphEdge, deleteGraphEdge, contract, graphView, conditionView });
+    }
+    return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
+  }
+  function clearSelectionAfterOperation(result, clearSelection) {
+    if (!result) return;
+    Promise.resolve(result).then((operationResult) => {
+      if (operationResult?.ok === false) return;
+      clearSelection(operationResult?.selection);
+    }).catch(() => {
+    });
+  }
+  function TemplateInspector({ studio, template, templateSeed, templateView }) {
+    const templateState = window.MobKitFlowController.graphTemplateInspectorState({ studio, template, templateSeed, templateView });
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, templateState.templateEyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, templateState.name), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, templateState.repo, " \xB7 ", templateState.version)), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, templateState.summaryTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, templateState.summaryRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, templateState.triggersTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, templateState.triggerRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section section--hint" }, /* @__PURE__ */ React.createElement("div", { className: "hint__title" }, templateState.quickStartTitle), templateState.quickStartRows.map((row) => /* @__PURE__ */ React.createElement("div", { className: "hint__line", key: row.key }, row.parts.map((part) => {
+      if (part.kind === "strong") return /* @__PURE__ */ React.createElement("strong", { key: part.key }, part.text);
+      if (part.kind === "code") return /* @__PURE__ */ React.createElement("code", { key: part.key }, part.text);
+      return /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text);
+    }))))));
+  }
+  function GateInspector({ studio, flow, inst, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, contract, graphView = null, conditionView = null }) {
+    const change = (action, payload = {}) => editGraphNode?.(inst.id, action, payload);
+    const kind = inst.gateKind;
+    const gateState = window.MobKitFlowController.graphGateControlState(inst, {
+      edges: studio.edges,
+      members: studio.members,
+      contract,
+      graphView
+    });
+    const branchRows = kind === "branch" ? window.MobKitFlowController.graphBranchConditionRows({
+      inst,
+      edges: studio.edges,
+      instances: studio.instances,
+      members: studio.members,
+      schemas: studio.schemas,
+      flow,
+      contract,
+      graphView
+    }) : [];
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, gateState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, gateState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, gateState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(deleteGraphNode?.(inst.id), clearSelection) }, gateState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: inst.label, onChange: (e) => change("set_label", { label: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: gateState.gateKind, onChange: (e) => change("set_gate_kind", { gate_kind: e.target.value }) }, gateState.gateKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), gateState.selectedGateKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, gateState.selectedGateKind.reason)), kind === "join" && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.collectionTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: gateState.collection, onChange: (e) => change("set_join_collection", { collection: e.target.value }) }, gateState.collectionOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), gateState.selectedCollection?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, gateState.selectedCollection.reason), gateState.collection === "quorum" && /* @__PURE__ */ React.createElement("div", { className: "row", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "field__input field__input--num",
+        type: "number",
+        min: "1",
+        value: inst.quorum?.n || gateState.incoming.length || 1,
+        onChange: (e) => change("set_join_quorum", { n: e.target.value })
+      }
+    ), /* @__PURE__ */ React.createElement("span", { className: "kv__hint" }, gateState.quorumIncomingLabel)), gateState.collection && gateState.collection !== "all" && /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, gateState.joinMemberLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: inst.controllerRole || "", onChange: (e) => change("set_join_controller_role", { controller_role: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: gateState.joinMemberPlaceholderOption.value }, gateState.joinMemberPlaceholderOption.label), gateState.memberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("div", { className: "kv__hint" }, gateState.joinMemberHint))), kind === "fork" && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.dispatchTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: gateState.dispatch, onChange: (e) => change("set_fork_dispatch", { dispatch: e.target.value }) }, gateState.dispatchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), gateState.selectedDispatch?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, gateState.selectedDispatch.reason), /* @__PURE__ */ React.createElement("div", { className: "kv__hint" }, gateState.dispatchHint)), kind === "branch" && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.conditionsTitle), branchRows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "kv__hint" }, gateState.emptyBranchHint), branchRows.map((row) => {
+      const e = row.edge;
+      const setCondOwner = (instanceId) => editGraphEdge?.(e.id, "set_condition_owner", { owner_instance_id: instanceId });
+      const setCondField = (field) => editGraphEdge?.(e.id, "set_condition_field", { field_name: field });
+      return /* @__PURE__ */ React.createElement("div", { key: e.id, className: "branch-cond-row" }, /* @__PURE__ */ React.createElement("div", { className: "row row--gap" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.modeValue, onChange: (ev) => {
+        editGraphEdge?.(e.id, "set_condition_mode", { mode: ev.target.value, owner_instance_id: row.firstOwnerId });
+      } }, row.modeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("span", { className: "kv__hint" }, row.targetPrefix, " ", row.targetLabel)), row.isCondition && (!row.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, row.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "bld-cond", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.ownerValue, onChange: (ev) => setCondOwner(ev.target.value) }, row.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.fieldValue, onChange: (ev) => setCondField(ev.target.value) }, /* @__PURE__ */ React.createElement("option", { value: row.fieldPlaceholderOption.value }, row.fieldPlaceholderOption.label), row.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: row.operatorValue, onChange: (ev) => editGraphEdge?.(e.id, "set_condition_operator", { operator: ev.target.value }) }, row.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: row.condField, value: e.cond?.val, conditionView, onChange: (val) => editGraphEdge?.(e.id, "set_condition_value", { value: val }) }))));
+    })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.wiringTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, /* @__PURE__ */ React.createElement("dt", null, gateState.incomingLabel), /* @__PURE__ */ React.createElement("dd", null, gateState.incomingCount), /* @__PURE__ */ React.createElement("dt", null, gateState.outgoingLabel), /* @__PURE__ */ React.createElement("dd", null, gateState.outgoingCount)))));
+  }
+  function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, contract, launchView = null, graphView = null, conditionView = null }) {
+    const instanceState = window.MobKitFlowController.graphInstanceControlState({
+      inst,
+      instances: studio.instances,
+      members: studio.members,
+      schemas: studio.schemas,
+      graphView
+    });
+    const member = instanceState.member;
+    if (inst.isGate) {
+      return /* @__PURE__ */ React.createElement(GateInspector, { studio, flow, inst, clearSelection, editGraphNode, editGraphEdge, deleteGraphNode, contract, graphView, conditionView });
+    }
+    if (inst.isTerminal) {
+      const terminalState = window.MobKitFlowController.graphTerminalControlState(inst, contract, graphView);
+      return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, terminalState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, terminalState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, terminalState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(deleteGraphNode?.(inst.id), clearSelection) }, terminalState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: terminalState.labelValue, disabled: true, readOnly: true })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: terminalState.terminalKind, disabled: true }, terminalState.terminalKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), terminalState.selectedTerminalKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, terminalState.selectedTerminalKind.reason)), /* @__PURE__ */ React.createElement("div", { className: "section section--locked" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.authoringLockedTitle), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, terminalState.authoringLockedHint))));
+    }
+    const launchState = window.MobKitFlowController.launchModeControlState(inst, contract, launchView);
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, instanceState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, instanceState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, instanceState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(deleteGraphNode?.(inst.id), clearSelection) }, instanceState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, member && /* @__PURE__ */ React.createElement("div", { className: "section section--member-card" }, /* @__PURE__ */ React.createElement("div", { className: "member-card" }, /* @__PURE__ */ React.createElement("div", { className: "member-card__head" }, /* @__PURE__ */ React.createElement("span", { className: "member-card__role" }, instanceState.memberRoleLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => selectMember(instanceState.memberId) }, instanceState.editMemberLabel)), /* @__PURE__ */ React.createElement("div", { className: "member-card__name" }, instanceState.memberName), /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, instanceState.memberSummaryRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))), /* @__PURE__ */ React.createElement("div", { className: "member-card__hint" }, instanceState.memberHint))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, launchState.graphLaunchTitle), /* @__PURE__ */ React.createElement(
+      "select",
+      {
+        className: "field__select",
+        value: launchState.launchKind,
+        onChange: (e) => {
+          editGraphNode?.(inst.id, "set_launch_kind", { kind: e.target.value, first_fork_source_id: instanceState.firstForkSourceId });
+        }
+      },
+      launchState.launchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
+    ), launchState.selectedLaunchMode?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, launchState.selectedLaunchMode.reason), launchState.launchKind === "Resume" && /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.resumeSessionLabel), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "field__input",
+        value: launchState.launchMode.sessionId || "",
+        placeholder: launchState.resumeSessionPlaceholder,
+        onChange: (e) => editGraphNode?.(inst.id, "set_launch_session", { session_id: e.target.value })
+      }
+    )), launchState.launchKind === "Fork" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.forkSourceLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.launchMode.from || "", onChange: (e) => editGraphNode?.(inst.id, "set_launch_fork_source", { from: e.target.value }) }, instanceState.forkSourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.graphForkContextLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.forkContextValue, onChange: (e) => editGraphNode?.(inst.id, "set_launch_fork_context", { context: e.target.value }) }, launchState.forkContextOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedForkContext?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, launchState.selectedForkContext.reason)), /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.budgetPolicyLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.budgetSplitPolicy.kind, onChange: (e) => editGraphNode?.(inst.id, "set_launch_budget_kind", { budget_kind: e.target.value }) }, launchState.budgetOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), launchState.selectedBudgetPolicy?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, launchState.selectedBudgetPolicy.reason)), launchState.budgetSplitPolicy.kind === "Fixed" && /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.fixedBudgetLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", value: launchState.fixedBudgetValue, onChange: (e) => editGraphNode?.(inst.id, "set_launch_budget_limit", { limit: e.target.value }) }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, instanceState.positionTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, instanceState.positionRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), member && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, instanceState.outputTitle), instanceState.outputSchema && /* @__PURE__ */ React.createElement("ul", { className: "schema-fields" }, instanceState.outputFieldRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, instanceState.outputHint, " ", /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => selectMember(instanceState.memberId) }, instanceState.outputOpenMemberLabel)))));
+  }
+  function GraphCondValue({ field, value, onChange, conditionView = null }) {
+    const control = window.MobKitFlowController.conditionValueControl(field, value, conditionView);
+    if (control.kind === "enum") {
+      return /* @__PURE__ */ React.createElement("select", { className: "field__select", value: control.value, onChange: (e) => onChange(e.target.value) }, control.optionRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.value || "blank", value: row.value }, row.label)));
+    }
+    if (control.kind === "boolean") {
+      return /* @__PURE__ */ React.createElement("select", { className: "field__select", value: control.value, onChange: (e) => onChange(e.target.value) }, control.optionRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.value || "blank", value: row.value }, row.label)));
+    }
+    return /* @__PURE__ */ React.createElement("input", { className: "field__input", placeholder: control.placeholder, value: control.value, onChange: (e) => onChange(e.target.value) });
+  }
+  function EdgeInspector({ studio, flow, edge, clearSelection, editGraphEdge = null, deleteGraphEdge = null, contract, graphView = null, conditionView = null }) {
+    const edgeState = window.MobKitFlowController.graphEdgeInspectorState({
+      edge,
+      instances: studio.instances,
+      members: studio.members,
+      schemas: studio.schemas,
+      flow,
+      contract,
+      graphView
+    });
+    const change = (action, payload = {}) => editGraphEdge?.(edge.id, action, payload);
+    const setEdgeKind = (kind) => change("set_kind", { edge_kind: kind });
+    const setCondOwner = (instanceId) => change("set_condition_owner", { owner_instance_id: instanceId });
+    const setCondField = (field) => change("set_condition_field", { field_name: field });
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, edgeState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, edgeState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, edgeState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(deleteGraphEdge?.(edge.id), clearSelection) }, edgeState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.edgeKind, onChange: (e) => setEdgeKind(e.target.value) }, edgeState.edgeKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), edgeState.selectedEdgeKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.selectedEdgeKind.reason)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: edge.label || "", onChange: (e) => change("set_label", { label: e.target.value }) })), edgeState.isCondition && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.conditionTitle), !edgeState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "cond-row" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.ownerValue, onChange: (e) => setCondOwner(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: edgeState.ownerPlaceholderOption.value }, edgeState.ownerPlaceholderOption.label), edgeState.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.fieldValue, disabled: !edgeState.condOwner, onChange: (e) => setCondField(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, edgeState.fieldPlaceholder), edgeState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", style: { width: 60 }, value: edgeState.operatorValue, onChange: (e) => change("set_condition_operator", { operator: e.target.value }) }, edgeState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: edgeState.condField, value: edge.cond?.val, conditionView, onChange: (val) => change("set_condition_value", { value: val }) }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.fromTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.fromRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.toTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.toRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))))));
+  }
+  function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose, onJumpToAgents }) {
+    const [q, setQ] = React.useState("");
+    React.useEffect(() => {
+      setQ("");
+    }, [at]);
+    if (!at) return null;
+    const menuState = window.MobKitFlowController.graphAddNodeMenuState({ members, contract, query: q, graphView });
+    return /* @__PURE__ */ React.createElement("div", { className: "add-menu", style: { left: at.x, top: at.y }, onClick: (e) => e.stopPropagation(), onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "add-menu__search" }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__search-icon" }, menuState.searchIcon), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "add-menu__search-input",
+        autoFocus: true,
+        placeholder: menuState.searchPlaceholder,
+        value: q,
+        onChange: (e) => setQ(e.target.value),
+        onKeyDown: (e) => {
+          if (e.key === "Escape") onClose();
+        }
+      }
+    ), /* @__PURE__ */ React.createElement("button", { className: "add-menu__x", onClick: onClose, title: menuState.closeTitle }, menuState.closeLabel)), /* @__PURE__ */ React.createElement("div", { className: "add-menu__scroll" }, menuState.hasMembers && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.agentsLabel), menuState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__dot", "data-role": row.role, style: row.dotStyle }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.model))), menuState.hasControls && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.controlsLabel), menuState.controlRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__glyph" }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.meta))), menuState.isEmpty && /* @__PURE__ */ React.createElement("div", { className: "add-menu__empty" }, menuState.emptyLabel)), onJumpToAgents && /* @__PURE__ */ React.createElement("button", { className: "add-menu__foot", onClick: () => onJumpToAgents(null) }, menuState.jumpLabel));
+  }
+
+  // ../packages/flow-editor-components/src/overlays/overlays.tsx
+  function DeployPlanTrace({ open, onClose, onActiveStep, runKey, document: document2, plan, deployView = null }) {
+    const traceState = React.useMemo(
+      () => window.MobKitFlowController.deployPlanTraceState(document2, plan, { deployView }),
+      [document2, plan, deployView]
+    );
+    const [idx, setIdx] = React.useState(0);
+    const bodyRef = React.useRef(null);
+    React.useEffect(() => {
+      if (!open) return;
+      setIdx(0);
+    }, [open, runKey]);
+    React.useEffect(() => {
+      if (!open) {
+        onActiveStep(null);
+        return;
+      }
+      onActiveStep(traceState.steps[idx]?.node || null);
+      if (bodyRef.current) {
+        const el = bodyRef.current.querySelector(`[data-step="${idx}"]`);
+        if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    }, [idx, open, traceState.steps]);
+    if (!open) return null;
+    return /* @__PURE__ */ React.createElement("div", { className: "deploy-plan" }, /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__title" }, /* @__PURE__ */ React.createElement("span", { className: "accent" }, traceState.eyebrow), " \xB7 ", traceState.title), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__sub" }, traceState.subtitle)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx(0) }, traceState.firstLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, traceState.closeLabel))), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__body", ref: bodyRef }, traceState.steps.map((s, i) => /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        key: i,
+        "data-step": i,
+        className: "deploy-plan__step" + (i === idx ? " is-current" : "") + (i > idx ? " is-pending" : "")
+      },
+      /* @__PURE__ */ React.createElement("div", { className: "g" }),
+      /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "head" }, s.head), /* @__PURE__ */ React.createElement("div", { className: "body" }, s.body))
+    ))), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__foot" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { width: "100%" } }, /* @__PURE__ */ React.createElement("span", { className: "muted" }, traceState.packLabel ? `${traceState.packLabel} \xB7 ` : "", traceState.stepLabel, " ", idx + 1, " / ", traceState.steps.length), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.max(0, i - 1)) }, traceState.previousLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.min(traceState.steps.length - 1, i + 1)) }, traceState.nextLabel)))));
+  }
+  function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, results, stage, deployView = null, capabilities = null }) {
+    if (!open) return null;
+    const sheetState = window.MobKitFlowController.validationSheetState(results, { stage, deployView, capabilities });
+    return /* @__PURE__ */ React.createElement("div", { className: "validate" }, /* @__PURE__ */ React.createElement("div", { className: "validate__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, sheetState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, sheetState.title)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onPublish, disabled: sheetState.publishDisabled }, sheetState.publishLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onDeployPlan, disabled: sheetState.deployPlanDisabled }, sheetState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onDeployRun, disabled: sheetState.deployRunDisabled }, sheetState.deployLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, sheetState.closeLabel))), /* @__PURE__ */ React.createElement("div", { className: "validate__body" }, sheetState.rows.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "validate__row is-" + r.kind }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }, r.glyph), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "head" }, r.head), /* @__PURE__ */ React.createElement("div", { className: "sub" }, r.sub)), /* @__PURE__ */ React.createElement("span", { className: "meta" }, r.meta)))));
+  }
+  function SourceCodePanel({ state, busy = false, compact = false, sourceView = null, sourcePath = "" }) {
+    const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact, sourceView, sourcePath });
+    if (editorState.showLoading) {
+      return /* @__PURE__ */ React.createElement("pre", { className: editorState.bodyClass, role: "textbox", "aria-readonly": "true" }, editorState.loadingText);
+    }
+    return /* @__PURE__ */ React.createElement(
+      "pre",
+      {
+        className: editorState.bodyClass,
+        role: "textbox",
+        "aria-readonly": "true",
+        dangerouslySetInnerHTML: { __html: editorState.sourceHtml }
+      }
+    );
+  }
+  function SourceDrawer({ open, onClose, state, sourceView = null }) {
+    const [sourcePath, setSourcePath] = React.useState("");
+    const selectSourcePath = (path) => {
+      const result = window.MobKitFlowController.sourceFileSelectionTransition(state, path, sourcePath);
+      setSourcePath(result.sourcePath);
+    };
+    React.useEffect(() => {
+      setSourcePath("");
+    }, [state]);
+    if (!open) return null;
+    const editorState = window.MobKitFlowController.sourceEditorState(state, { sourceView, sourcePath });
+    return /* @__PURE__ */ React.createElement("div", { className: "source-drawer" }, /* @__PURE__ */ React.createElement("div", { className: "source-drawer__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.drawerEyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => selectSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, sourceView, sourcePath }));
+  }
+  function InlineSourceEditor({ open, onClose, state, busy = false, surface = "basic", sourceView = null }) {
+    const [sourcePath, setSourcePath] = React.useState("");
+    const selectSourcePath = (path) => {
+      const result = window.MobKitFlowController.sourceFileSelectionTransition(state, path, sourcePath);
+      setSourcePath(result.sourcePath);
+    };
+    React.useEffect(() => {
+      setSourcePath("");
+    }, [state]);
+    if (!open) return null;
+    const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true, sourceView, sourcePath });
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-toml bld-toml--" + surface, onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "bld-toml__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", null, editorState.inlineTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list source-file-list--inline" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => selectSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, busy, compact: true, sourceView, sourcePath }));
+  }
 
   // ../packages/flow-editor-components/src/tweaks/tweaks-panel.tsx
   var __TWEAKS_STYLE = `
@@ -11794,745 +12513,16 @@ Object.assign(window, {
   TweakNumber: MobKitFlowComponents.TweakNumber,
   TweakColor: MobKitFlowComponents.TweakColor,
   TweakButton: MobKitFlowComponents.TweakButton,
+  DeployPlanTrace: MobKitFlowComponents.DeployPlanTrace,
+  ValidateSheet: MobKitFlowComponents.ValidateSheet,
+  SourceDrawer: MobKitFlowComponents.SourceDrawer,
+  InlineSourceEditor: MobKitFlowComponents.InlineSourceEditor,
+  Inspector: MobKitFlowComponents.Inspector,
+  AddNodeMenu: MobKitFlowComponents.AddNodeMenu,
+  useStudioState: MobKitFlowComponents.useStudioState,
+  GraphEditor: MobKitFlowComponents.GraphEditor,
 });
 
-
-/* graph.jsx */
-
-{
-function useStudioState(initial, onDirty, authoring = {}) {
-  const [members, setMembers] = React.useState(initial.members);
-  const [instances, setInstances] = React.useState(initial.instances);
-  const [edges, setEdges] = React.useState(initial.edges);
-  const [frames, setFrames] = React.useState(initial.frames);
-  const [schemas, setSchemas] = React.useState(initial.schemas);
-  const [skillRealms, setSkillRealms] = React.useState(initial.skillRealms || []);
-  const [history, setHistory] = React.useState([]);
-  const [future, setFuture] = React.useState([]);
-  const studioState = React.useCallback(() => ({
-    members,
-    instances,
-    edges,
-    frames,
-    schemas,
-    skillRealms
-  }), [members, instances, edges, frames, schemas, skillRealms]);
-  const snap = React.useCallback(() => {
-    if (onDirty) onDirty();
-    const next = window.MobKitFlowController.studioHistorySnapshotPatch({
-      history,
-      future,
-      state: studioState()
-    });
-    setHistory(next.history);
-    setFuture(next.future);
-  }, [history, future, studioState, onDirty]);
-  const undo = () => {
-    const next = window.MobKitFlowController.studioUndoPatch({ history, future, state: studioState() });
-    if (!next) return;
-    setHistory(next.history);
-    setFuture(next.future);
-    return next;
-  };
-  const redo = () => {
-    const next = window.MobKitFlowController.studioRedoPatch({ history, future, state: studioState() });
-    if (!next) return;
-    setHistory(next.history);
-    setFuture(next.future);
-    return next;
-  };
-  return {
-    members,
-    instances,
-    edges,
-    frames,
-    schemas,
-    skillRealms,
-    setMembers,
-    setInstances,
-    setEdges,
-    setFrames,
-    setSchemas,
-    setSkillRealms,
-    snap,
-    undo,
-    redo,
-    canUndo: !!history.length,
-    canRedo: !!future.length
-  };
-}
-function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [], applyAuthoringIntent = null }) {
-  const hostRef = React.useRef(null);
-  const [drag, setDrag] = React.useState(null);
-  const [conn, setConn] = React.useState(null);
-  const [operationError, setOperationError] = React.useState("");
-  const [hoverInId, setHoverInId] = React.useState(null);
-  const [hoverCell, setHoverCell] = React.useState(null);
-  const canvasView = window.MobKitFlowController.graphCanvasViewState(graphView);
-  const modelInstances = window.MobKitFlowController.graphCanvasInstances({ instances: state.instances, graphView: canvasView });
-  const [view, setView] = React.useState({ scale: 1, tx: 0, ty: 0 });
-  const viewRef = React.useRef(view);
-  React.useEffect(() => {
-    viewRef.current = view;
-  }, [view]);
-  const [panDrag, setPanDrag] = React.useState(null);
-  const gridState = window.MobKitFlowController.graphGridState({ instances: modelInstances, gridBase: grid });
-  const g = gridState.grid;
-  const totalW = gridState.totalW;
-  const totalH = gridState.totalH;
-  const applyGraphIntent = async (payload, fallback) => {
-    const fallbackText = fallback || canvasView.authoringOperationFallbackError;
-    if (!applyAuthoringIntent) {
-      const result = { ok: false, error: canvasView.authoringOperationUnavailableError };
-      setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
-      return result;
-    }
-    try {
-      const result = await applyAuthoringIntent(payload);
-      if (result?.ok === false) {
-        setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
-      } else {
-        setOperationError("");
-      }
-      return result;
-    } catch (error) {
-      const result = { ok: false, error: error?.message || String(error || fallbackText) };
-      setOperationError(window.MobKitFlowController.operationErrorText(result, fallbackText));
-      return result;
-    }
-  };
-  const fitToBounds = React.useCallback(() => {
-    const host = hostRef.current;
-    if (!host) return;
-    const r = host.getBoundingClientRect();
-    const scale = Math.min(1, Math.min((r.width - 32) / totalW, (r.height - 32) / totalH));
-    const tx = (r.width - totalW * scale) / 2;
-    const ty = Math.max(8, (r.height - totalH * scale) / 2);
-    setView({ scale, tx, ty });
-  }, [totalW, totalH]);
-  const didFit = React.useRef(false);
-  React.useEffect(() => {
-    if (didFit.current) return;
-    if (hostRef.current?.offsetWidth > 0) {
-      fitToBounds();
-      didFit.current = true;
-    } else {
-      const id = setTimeout(() => {
-        fitToBounds();
-        didFit.current = true;
-      }, 50);
-      return () => clearTimeout(id);
-    }
-  }, [fitToBounds]);
-  const screenToWorld = (sx, sy) => {
-    const r = hostRef.current.getBoundingClientRect();
-    const v = viewRef.current;
-    return { x: (sx - r.left - v.tx) / v.scale, y: (sy - r.top - v.ty) / v.scale };
-  };
-  const zoomAt = (factor, sx, sy) => {
-    const v = viewRef.current;
-    const r = hostRef.current.getBoundingClientRect();
-    const cx = sx - r.left;
-    const cy = sy - r.top;
-    const next = Math.max(0.3, Math.min(2.5, v.scale * factor));
-    const k = next / v.scale;
-    setView({
-      scale: next,
-      tx: cx - (cx - v.tx) * k,
-      ty: cy - (cy - v.ty) * k
-    });
-  };
-  const onNodeDown = (e, inst) => {
-    if (e.target.classList.contains("port")) return;
-    e.stopPropagation();
-    selectInstance(inst.id);
-    const w = screenToWorld(e.clientX, e.clientY);
-    const b = window.MobKitFlowController.graphNodeBox(g, inst);
-    setDrag({ instId: inst.id, dx: w.x - b.x, dy: w.y - b.y, origCol: inst.col, origRow: inst.row });
-  };
-  const onPortDown = (e, inst) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const p = window.MobKitFlowController.graphPortOut(g, inst);
-    setConn({ from: p, fromId: inst.id, to: p });
-  };
-  const connectionTargetIdAt = (clientX, clientY, fromId) => {
-    const hit = document.elementFromPoint(clientX, clientY);
-    const direct = hit?.closest?.("[data-inst-id]");
-    if (direct && direct.dataset.instId !== fromId) return direct.dataset.instId;
-    const nodes = Array.from(hostRef.current?.querySelectorAll?.("[data-inst-id]") || []);
-    const target = nodes.find((node) => {
-      if (node.dataset.instId === fromId) return false;
-      const rect = node.getBoundingClientRect();
-      return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
-    });
-    return target?.dataset.instId || "";
-  };
-  const onHostMouseDown = (e) => {
-    if (e.button !== 0 && e.button !== 1) return;
-    const target = e.target;
-    if (target === hostRef.current || target.classList?.contains("canvas")) {
-      setPanDrag({ sx: e.clientX, sy: e.clientY, tx0: viewRef.current.tx, ty0: viewRef.current.ty });
-      e.preventDefault();
-    }
-  };
-  const openSourceFromEvent = (e) => {
-    const selector = canvasView.sourceFileActivationSelector;
-    if (!selector) return false;
-    const sourceEl = e.target?.closest?.(selector);
-    if (!sourceEl || !hostRef.current?.contains(sourceEl)) return false;
-    e.preventDefault();
-    e.stopPropagation();
-    onOpenSourceFile?.({
-      id: sourceEl.dataset.sourceId || "",
-      kind: sourceEl.dataset.kind || canvasView.sourceFileNodeKind
-    });
-    return true;
-  };
-  const onHostMouseDownCapture = (e) => {
-    if (e.button !== 0) return;
-    openSourceFromEvent(e);
-  };
-  const onHostKeyDownCapture = (e) => {
-    if (e.key !== "Enter" && e.key !== " ") return;
-    openSourceFromEvent(e);
-  };
-  const onHostWheel = (e) => {
-    if (!hostRef.current) return;
-    if (e.ctrlKey || e.metaKey) {
-      e.preventDefault();
-      const factor = Math.exp(-e.deltaY * 15e-4);
-      zoomAt(factor, e.clientX, e.clientY);
-    } else {
-      e.preventDefault();
-      setView((v) => ({ ...v, tx: v.tx - e.deltaX, ty: v.ty - e.deltaY }));
-    }
-  };
-  React.useEffect(() => {
-    const el = hostRef.current;
-    if (!el) return;
-    const handler = (e) => onHostWheel(e);
-    el.addEventListener("wheel", handler, { passive: false });
-    return () => el.removeEventListener("wheel", handler);
-  });
-  React.useEffect(() => {
-    const move = (e) => {
-      if (panDrag) {
-        setView((v) => ({ ...v, tx: panDrag.tx0 + (e.clientX - panDrag.sx), ty: panDrag.ty0 + (e.clientY - panDrag.sy) }));
-      }
-      if (drag) {
-        const w = screenToWorld(e.clientX, e.clientY);
-        const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
-        if (cell) setHoverCell(cell);
-      }
-      if (conn) {
-        const w = screenToWorld(e.clientX, e.clientY);
-        setConn((c) => ({ ...c, to: { x: w.x, y: w.y } }));
-        const targetId = connectionTargetIdAt(e.clientX, e.clientY, conn.fromId);
-        if (targetId) setHoverInId(targetId);
-        else setHoverInId(null);
-      }
-    };
-    const up = (e) => {
-      if (drag) {
-        const w = screenToWorld(e.clientX, e.clientY);
-        const cell = window.MobKitFlowController.graphDragCellAt(g, w, drag);
-        if (cell && (cell.col !== drag.origCol || cell.row !== drag.origRow)) {
-          applyGraphIntent({
-            intent: "graph.moveNode",
-            instanceId: drag.instId,
-            cell,
-            originalCell: { col: drag.origCol, row: drag.origRow }
-          }, "MobKit graph node move failed");
-        }
-        setDrag(null);
-        setHoverCell(null);
-      }
-      if (conn) {
-        const targetId = connectionTargetIdAt(e.clientX, e.clientY, conn.fromId);
-        if (targetId) {
-          applyGraphIntent({
-            intent: "graph.connectNodes",
-            fromId: conn.fromId,
-            toId: targetId
-          }, "MobKit graph connection failed").then((result) => {
-            if (result?.ok === false) return;
-            const id = result?.selection?.id;
-            if (id) selectEdge(id);
-          });
-        }
-        setConn(null);
-        setHoverInId(null);
-      }
-      if (panDrag) setPanDrag(null);
-    };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-    return () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-    };
-  });
-  const fit = view;
-  const cellRows = window.MobKitFlowController.graphCellCanvasRows({ grid: g, instances: modelInstances, hoverCell });
-  const headerRows = window.MobKitFlowController.graphGridHeaderCanvasRows({ grid: g });
-  const cells = cellRows.map((row) => /* @__PURE__ */ React.createElement(
-    "div",
-    {
-      key: row.key,
-      className: row.className,
-      style: row.style,
-      onMouseDown: (e) => e.stopPropagation(),
-      onClick: (e) => {
-        e.stopPropagation();
-        if (!row.occupied) onRequestAdd(row.col, row.row);
-      }
-    },
-    row.addVisible && /* @__PURE__ */ React.createElement("div", { className: "cell__add" }, /* @__PURE__ */ React.createElement("span", { className: "cell__plus" }, "+"))
-  ));
-  const colHeads = headerRows.columns.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.key, className: row.className, style: row.style }, row.label));
-  const rowHeads = headerRows.rows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.key, className: row.className, style: row.style }, row.label));
-  const frameEls = state.frames.map((fr) => {
-    const frameState = window.MobKitFlowController.graphFrameCanvasState({ frame: fr, grid: g });
-    return /* @__PURE__ */ React.createElement(React.Fragment, { key: frameState.id }, /* @__PURE__ */ React.createElement("div", { className: "frame", style: frameState.frameStyle }), /* @__PURE__ */ React.createElement("div", { className: "frame-label", style: frameState.labelStyle }, frameState.label));
-  });
-  const edgeEls = state.edges.map((edge) => {
-    const fi = state.instances.find((i) => i.id === edge.from);
-    const ti = state.instances.find((i) => i.id === edge.to);
-    if (!fi || !ti) return null;
-    const a = window.MobKitFlowController.graphPortOut(g, fi), b = window.MobKitFlowController.graphPortIn(g, ti);
-    const d = window.MobKitFlowController.graphEdgePath(a, b);
-    const mid = window.MobKitFlowController.graphEdgeMidpoint(a, b);
-    const isActive = activeStepId === edge.from;
-    const isSelected = selection.kind === "edge" && selection.id === edge.id;
-    const edgeState = window.MobKitFlowController.graphEdgeCanvasState({
-      edge,
-      to: ti,
-      active: isActive,
-      selected: isSelected,
-      edgeStyle,
-      contract,
-      graphView: canvasView
-    });
-    let labelEl;
-    if (edgeState.mode === "icons") {
-      labelEl = /* @__PURE__ */ React.createElement("g", { transform: `translate(${mid.x}, ${mid.y})` }, /* @__PURE__ */ React.createElement("rect", { x: -9, y: -9, width: 18, height: 16, className: "edge-label-bg" }), /* @__PURE__ */ React.createElement("text", { textAnchor: "middle", y: 4, className: edgeState.iconLabelClass }, edgeState.iconGlyph));
-    } else if (edgeState.mode === "colored") {
-      labelEl = /* @__PURE__ */ React.createElement("g", { transform: `translate(${mid.x}, ${mid.y})` }, /* @__PURE__ */ React.createElement("rect", { x: -edgeState.labelWidth / 2, y: -8, width: edgeState.labelWidth, height: 14, className: "edge-label-bg" }), /* @__PURE__ */ React.createElement("text", { textAnchor: "middle", y: 3, className: "edge-label", style: { fill: edgeState.labelFill } }, edgeState.labelText));
-    } else {
-      labelEl = /* @__PURE__ */ React.createElement("g", { transform: `translate(${mid.x}, ${mid.y})` }, /* @__PURE__ */ React.createElement("rect", { x: -edgeState.labelWidth / 2, y: -8, width: edgeState.labelWidth, height: 14, className: "edge-label-bg" }), /* @__PURE__ */ React.createElement("text", { textAnchor: "middle", y: 3, className: edgeState.textLabelClass }, edgeState.labelText));
-    }
-    return /* @__PURE__ */ React.createElement("g", { key: edge.id, className: "edge", "data-edge-id": edge.id, "data-edge-from": edge.from, "data-edge-to": edge.to, onClick: (e) => {
-      e.stopPropagation();
-      selectEdge(edge.id);
-    } }, /* @__PURE__ */ React.createElement("path", { d, className: "edge-hit" }), /* @__PURE__ */ React.createElement("path", { d, className: edgeState.lineClass, markerEnd: edgeState.markerEnd }), labelEl);
-  });
-  const canvasAdornments = window.MobKitFlowController.graphCanvasAdornments({ instances: state.instances, graphView: canvasView });
-  const adornmentEls = canvasAdornments.map((adornment) => /* @__PURE__ */ React.createElement(
-    SourceFileAdornmentView,
-    {
-      key: adornment.id,
-      g,
-      adornment,
-      adornmentState: window.MobKitFlowController.graphSourceFileAdornmentCanvasState({ adornment, graphView: canvasView })
-    }
-  ));
-  const nodeEls = modelInstances.map((inst) => {
-    if (inst.isGate) {
-      return /* @__PURE__ */ React.createElement(
-        GateView,
-        {
-          key: inst.id,
-          g,
-          inst,
-          selected: selection.kind === "instance" && selection.id === inst.id,
-          activeStep: activeStepId === inst.id,
-          hoverIn: hoverInId === inst.id,
-          onMouseDown: onNodeDown,
-          onPortDown,
-          portDragTitle: canvasView.portDragTitle,
-          state,
-          contract,
-          graphView: canvasView
-        }
-      );
-    }
-    return /* @__PURE__ */ React.createElement(
-      NodeView,
-      {
-        key: inst.id,
-        g,
-        inst,
-        nodeState: window.MobKitFlowController.graphNodeCanvasState({ inst, members: state.members, density, graphView: canvasView, toolCatalog }),
-        selected: selection.kind === "instance" && selection.id === inst.id,
-        memberHighlight: memberFocus && inst.memberId === memberFocus,
-        memberDim: !!memberFocus && inst.memberId !== memberFocus && !inst.isTerminal,
-        activeStep: activeStepId === inst.id,
-        hoverIn: hoverInId === inst.id,
-        onMouseDown: onNodeDown,
-        onPortDown,
-        portDragTitle: canvasView.portDragTitle
-      }
-    );
-  });
-  return /* @__PURE__ */ React.createElement(
-    "div",
-    {
-      ref: hostRef,
-      className: "canvas-host" + (memberFocus ? " is-member-focus" : "") + (panDrag ? " is-panning" : ""),
-      onMouseDownCapture: onHostMouseDownCapture,
-      onKeyDownCapture: onHostKeyDownCapture,
-      onMouseDown: onHostMouseDown,
-      onClick: (e) => {
-        if (e.target === hostRef.current || e.target.classList?.contains("canvas")) clearSelection();
-      }
-    },
-    /* @__PURE__ */ React.createElement("div", { className: "canvas", style: { width: totalW, height: totalH, transform: `translate(${fit.tx}px, ${fit.ty}px) scale(${fit.scale})`, transformOrigin: "0 0" } }, colHeads, rowHeads, frameEls, cells, /* @__PURE__ */ React.createElement("svg", { className: "edges-svg", width: totalW, height: totalH }, /* @__PURE__ */ React.createElement("defs", null, /* @__PURE__ */ React.createElement("marker", { id: "arr", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--ink)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-red", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--danger)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-acc", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--accent)" })), /* @__PURE__ */ React.createElement("marker", { id: "arr-dim", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, /* @__PURE__ */ React.createElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--subtle)" }))), edgeEls, conn && /* @__PURE__ */ React.createElement("path", { d: window.MobKitFlowController.graphEdgePath(conn.from, conn.to), className: "edge-line is-ghost", markerEnd: "url(#arr-acc)" })), adornmentEls, nodeEls),
-    operationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, operationError),
-    /* @__PURE__ */ React.createElement("div", { className: "zoom-controls", onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", title: canvasView.zoomOutTitle, onClick: () => {
-      const r = hostRef.current.getBoundingClientRect();
-      zoomAt(1 / 1.2, r.left + r.width / 2, r.top + r.height / 2);
-    } }, "\u2212"), /* @__PURE__ */ React.createElement("button", { className: "zoom-btn zoom-btn--pct", title: canvasView.fitTitle, onClick: fitToBounds }, Math.round(view.scale * 100), "%"), /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", title: canvasView.zoomInTitle, onClick: () => {
-      const r = hostRef.current.getBoundingClientRect();
-      zoomAt(1.2, r.left + r.width / 2, r.top + r.height / 2);
-    } }, "+"))
-  );
-}
-function SourceFileAdornmentView({ g, adornment, adornmentState }) {
-  if (adornmentState.hidden) return null;
-  const b = window.MobKitFlowController.graphNodeBox(g, adornment);
-  return /* @__PURE__ */ React.createElement(
-    "a",
-    {
-      href: adornmentState.sourceActivationHash,
-      "data-source-id": adornment.id,
-      className: "source-file-adornment node--source-file",
-      "data-kind": adornmentState.dataKind,
-      role: adornmentState.role,
-      tabIndex: adornmentState.tabIndex,
-      "aria-label": adornmentState.ariaLabel,
-      style: { left: b.x, top: b.y, width: b.w, height: b.h },
-      onMouseDown: (e) => {
-        e.stopPropagation();
-      }
-    },
-    /* @__PURE__ */ React.createElement("span", { className: "source-file__glyph" }, adornmentState.sourceGlyph),
-    /* @__PURE__ */ React.createElement("span", { className: "source-file__label" }, adornmentState.title)
-  );
-}
-function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle }) {
-  const b = window.MobKitFlowController.graphNodeBox(g, inst);
-  if (nodeState.isTerminal) {
-    return /* @__PURE__ */ React.createElement(
-      "div",
-      {
-        "data-inst-id": inst.id,
-        className: "node node--term" + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : ""),
-        "data-kind": nodeState.dataKind,
-        role: nodeState.role,
-        tabIndex: nodeState.tabIndex,
-        "aria-label": nodeState.ariaLabel,
-        style: { left: b.x, top: b.y, width: b.w, height: b.h },
-        onMouseDown: (e) => {
-          onMouseDown(e, inst);
-        }
-      },
-      /* @__PURE__ */ React.createElement("div", { className: "node__head" }, /* @__PURE__ */ React.createElement("span", { className: "node__role" }, nodeState.roleLabel)),
-      /* @__PURE__ */ React.createElement("div", { className: "node__body" }, /* @__PURE__ */ React.createElement("div", { className: "node__name" }, nodeState.title), /* @__PURE__ */ React.createElement("div", { className: "node__model" }, nodeState.subtitle))
-    );
-  }
-  if (nodeState.hidden) return null;
-  return /* @__PURE__ */ React.createElement(
-    "div",
-    {
-      "data-inst-id": inst.id,
-      className: "node" + (selected ? " is-selected" : "") + (memberHighlight ? " is-member-highlight" : "") + (memberDim ? " is-member-dim" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : "") + (nodeState.isCompact ? " is-compact" : ""),
-      style: { left: b.x, top: b.y, width: b.w, height: b.h },
-      onMouseDown: (e) => onMouseDown(e, inst)
-    },
-    /* @__PURE__ */ React.createElement("div", { className: "port port-out", onMouseDown: (e) => onPortDown(e, inst), title: portDragTitle }),
-    /* @__PURE__ */ React.createElement("div", { className: "node__head" }, /* @__PURE__ */ React.createElement("span", { className: "node__role" }, nodeState.roleLabel), /* @__PURE__ */ React.createElement("span", { className: "node__idx" }, nodeState.launchLabel)),
-    /* @__PURE__ */ React.createElement("div", { className: "node__body" }, /* @__PURE__ */ React.createElement("div", { className: "node__name" }, nodeState.title), /* @__PURE__ */ React.createElement("div", { className: "node__model" }, nodeState.subtitle)),
-    !nodeState.isCompact && /* @__PURE__ */ React.createElement("div", { className: "node__tools" }, nodeState.toolRows.map((row) => /* @__PURE__ */ React.createElement("span", { key: row.id, className: row.className }, row.id)), nodeState.overflowLabel && /* @__PURE__ */ React.createElement("span", { className: "tag" }, nodeState.overflowLabel))
-  );
-}
-function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, state, contract, graphView }) {
-  const b = window.MobKitFlowController.graphNodeBox(g, inst);
-  const gateState = window.MobKitFlowController.graphGateCanvasState({ inst, edges: state.edges, contract, graphView });
-  return /* @__PURE__ */ React.createElement(
-    "div",
-    {
-      "data-inst-id": inst.id,
-      className: "node node--gate gate--" + gateState.gateKind + (selected ? " is-selected" : "") + (activeStep ? " is-active-step" : "") + (hoverIn ? " is-target" : ""),
-      style: { left: b.x, top: b.y, width: b.w, height: b.h },
-      onMouseDown: (e) => onMouseDown(e, inst)
-    },
-    /* @__PURE__ */ React.createElement("div", { className: "port port-out", onMouseDown: (e) => onPortDown(e, inst), title: portDragTitle }),
-    /* @__PURE__ */ React.createElement("span", { className: "gate__glyph" }, gateState.glyph),
-    /* @__PURE__ */ React.createElement("span", { className: "gate__label" }, gateState.sublabel)
-  );
-}
-function computeFit(vw, vh, tw, th) {
-  const scale = Math.min(1, Math.min((vw - 24) / tw, (vh - 24) / th));
-  const left = (vw - tw * scale) / 2;
-  const top = Math.max(8, (vh - th * scale) / 2);
-  return { scale, left, top };
-}
-window.useStudioState = useStudioState;
-window.GraphEditor = GraphEditor;
-
-}
-
-/* inspector.jsx */
-
-{
-function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, deleteGraphEdge = null, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
-  const selectionState = window.MobKitFlowController.graphSelectionState({
-    selection,
-    instances: studio.instances,
-    edges: studio.edges
-  });
-  if (selectionState.kind === "instance") {
-    if (!selectionState.instance) return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
-    return /* @__PURE__ */ React.createElement(InstanceInspector, { studio, flow, inst: selectionState.instance, selectMember, clearSelection, editGraphNode, editGraphEdge, deleteGraphNode, contract, launchView, graphView, conditionView });
-  }
-  if (selectionState.kind === "edge") {
-    if (!selectionState.edge) return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
-    return /* @__PURE__ */ React.createElement(EdgeInspector, { studio, flow, edge: selectionState.edge, clearSelection, editGraphEdge, deleteGraphEdge, contract, graphView, conditionView });
-  }
-  return /* @__PURE__ */ React.createElement(TemplateInspector, { studio, template, templateSeed, templateView });
-}
-function clearSelectionAfterOperation(result, clearSelection) {
-  if (!result) return;
-  Promise.resolve(result).then((operationResult) => {
-    if (operationResult?.ok === false) return;
-    clearSelection(operationResult?.selection);
-  }).catch(() => {
-  });
-}
-function TemplateInspector({ studio, template, templateSeed, templateView }) {
-  const templateState = window.MobKitFlowController.graphTemplateInspectorState({ studio, template, templateSeed, templateView });
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, templateState.templateEyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, templateState.name), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, templateState.repo, " \xB7 ", templateState.version)), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, templateState.summaryTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, templateState.summaryRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, templateState.triggersTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, templateState.triggerRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section section--hint" }, /* @__PURE__ */ React.createElement("div", { className: "hint__title" }, templateState.quickStartTitle), templateState.quickStartRows.map((row) => /* @__PURE__ */ React.createElement("div", { className: "hint__line", key: row.key }, row.parts.map((part) => {
-    if (part.kind === "strong") return /* @__PURE__ */ React.createElement("strong", { key: part.key }, part.text);
-    if (part.kind === "code") return /* @__PURE__ */ React.createElement("code", { key: part.key }, part.text);
-    return /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text);
-  }))))));
-}
-function GateInspector({ studio, flow, inst, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, contract, graphView = null, conditionView = null }) {
-  const change = (action, payload = {}) => editGraphNode?.(inst.id, action, payload);
-  const kind = inst.gateKind;
-  const gateState = window.MobKitFlowController.graphGateControlState(inst, {
-    edges: studio.edges,
-    members: studio.members,
-    contract,
-    graphView
-  });
-  const branchRows = kind === "branch" ? window.MobKitFlowController.graphBranchConditionRows({
-    inst,
-    edges: studio.edges,
-    instances: studio.instances,
-    members: studio.members,
-    schemas: studio.schemas,
-    flow,
-    contract,
-    graphView
-  }) : [];
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, gateState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, gateState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, gateState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(deleteGraphNode?.(inst.id), clearSelection) }, gateState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: inst.label, onChange: (e) => change("set_label", { label: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: gateState.gateKind, onChange: (e) => change("set_gate_kind", { gate_kind: e.target.value }) }, gateState.gateKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), gateState.selectedGateKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, gateState.selectedGateKind.reason)), kind === "join" && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.collectionTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: gateState.collection, onChange: (e) => change("set_join_collection", { collection: e.target.value }) }, gateState.collectionOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), gateState.selectedCollection?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, gateState.selectedCollection.reason), gateState.collection === "quorum" && /* @__PURE__ */ React.createElement("div", { className: "row", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "field__input field__input--num",
-      type: "number",
-      min: "1",
-      value: inst.quorum?.n || gateState.incoming.length || 1,
-      onChange: (e) => change("set_join_quorum", { n: e.target.value })
-    }
-  ), /* @__PURE__ */ React.createElement("span", { className: "kv__hint" }, gateState.quorumIncomingLabel)), gateState.collection && gateState.collection !== "all" && /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, gateState.joinMemberLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: inst.controllerRole || "", onChange: (e) => change("set_join_controller_role", { controller_role: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: gateState.joinMemberPlaceholderOption.value }, gateState.joinMemberPlaceholderOption.label), gateState.memberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("div", { className: "kv__hint" }, gateState.joinMemberHint))), kind === "fork" && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.dispatchTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: gateState.dispatch, onChange: (e) => change("set_fork_dispatch", { dispatch: e.target.value }) }, gateState.dispatchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), gateState.selectedDispatch?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, gateState.selectedDispatch.reason), /* @__PURE__ */ React.createElement("div", { className: "kv__hint" }, gateState.dispatchHint)), kind === "branch" && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.conditionsTitle), branchRows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "kv__hint" }, gateState.emptyBranchHint), branchRows.map((row) => {
-    const e = row.edge;
-    const setCondOwner = (instanceId) => editGraphEdge?.(e.id, "set_condition_owner", { owner_instance_id: instanceId });
-    const setCondField = (field) => editGraphEdge?.(e.id, "set_condition_field", { field_name: field });
-    return /* @__PURE__ */ React.createElement("div", { key: e.id, className: "branch-cond-row" }, /* @__PURE__ */ React.createElement("div", { className: "row row--gap" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.modeValue, onChange: (ev) => {
-      editGraphEdge?.(e.id, "set_condition_mode", { mode: ev.target.value, owner_instance_id: row.firstOwnerId });
-    } }, row.modeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("span", { className: "kv__hint" }, row.targetPrefix, " ", row.targetLabel)), row.isCondition && (!row.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, row.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "bld-cond", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.ownerValue, onChange: (ev) => setCondOwner(ev.target.value) }, row.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: row.fieldValue, onChange: (ev) => setCondField(ev.target.value) }, /* @__PURE__ */ React.createElement("option", { value: row.fieldPlaceholderOption.value }, row.fieldPlaceholderOption.label), row.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: row.operatorValue, onChange: (ev) => editGraphEdge?.(e.id, "set_condition_operator", { operator: ev.target.value }) }, row.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: row.condField, value: e.cond?.val, conditionView, onChange: (val) => editGraphEdge?.(e.id, "set_condition_value", { value: val }) }))));
-  })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, gateState.wiringTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, /* @__PURE__ */ React.createElement("dt", null, gateState.incomingLabel), /* @__PURE__ */ React.createElement("dd", null, gateState.incomingCount), /* @__PURE__ */ React.createElement("dt", null, gateState.outgoingLabel), /* @__PURE__ */ React.createElement("dd", null, gateState.outgoingCount)))));
-}
-function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, contract, launchView = null, graphView = null, conditionView = null }) {
-  const instanceState = window.MobKitFlowController.graphInstanceControlState({
-    inst,
-    instances: studio.instances,
-    members: studio.members,
-    schemas: studio.schemas,
-    graphView
-  });
-  const member = instanceState.member;
-  if (inst.isGate) {
-    return /* @__PURE__ */ React.createElement(GateInspector, { studio, flow, inst, clearSelection, editGraphNode, editGraphEdge, deleteGraphNode, contract, graphView, conditionView });
-  }
-  if (inst.isTerminal) {
-    const terminalState = window.MobKitFlowController.graphTerminalControlState(inst, contract, graphView);
-    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, terminalState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, terminalState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, terminalState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(deleteGraphNode?.(inst.id), clearSelection) }, terminalState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: terminalState.labelValue, disabled: true, readOnly: true })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: terminalState.terminalKind, disabled: true }, terminalState.terminalKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), terminalState.selectedTerminalKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "kv__hint", style: { color: "var(--warn)" } }, terminalState.selectedTerminalKind.reason)), /* @__PURE__ */ React.createElement("div", { className: "section section--locked" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, terminalState.authoringLockedTitle), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, terminalState.authoringLockedHint))));
-  }
-  const launchState = window.MobKitFlowController.launchModeControlState(inst, contract, launchView);
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, instanceState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, instanceState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, instanceState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(deleteGraphNode?.(inst.id), clearSelection) }, instanceState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, member && /* @__PURE__ */ React.createElement("div", { className: "section section--member-card" }, /* @__PURE__ */ React.createElement("div", { className: "member-card" }, /* @__PURE__ */ React.createElement("div", { className: "member-card__head" }, /* @__PURE__ */ React.createElement("span", { className: "member-card__role" }, instanceState.memberRoleLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => selectMember(instanceState.memberId) }, instanceState.editMemberLabel)), /* @__PURE__ */ React.createElement("div", { className: "member-card__name" }, instanceState.memberName), /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, instanceState.memberSummaryRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))), /* @__PURE__ */ React.createElement("div", { className: "member-card__hint" }, instanceState.memberHint))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, launchState.graphLaunchTitle), /* @__PURE__ */ React.createElement(
-    "select",
-    {
-      className: "field__select",
-      value: launchState.launchKind,
-      onChange: (e) => {
-        editGraphNode?.(inst.id, "set_launch_kind", { kind: e.target.value, first_fork_source_id: instanceState.firstForkSourceId });
-      }
-    },
-    launchState.launchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
-  ), launchState.selectedLaunchMode?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, launchState.selectedLaunchMode.reason), launchState.launchKind === "Resume" && /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.resumeSessionLabel), /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "field__input",
-      value: launchState.launchMode.sessionId || "",
-      placeholder: launchState.resumeSessionPlaceholder,
-      onChange: (e) => editGraphNode?.(inst.id, "set_launch_session", { session_id: e.target.value })
-    }
-  )), launchState.launchKind === "Fork" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.forkSourceLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.launchMode.from || "", onChange: (e) => editGraphNode?.(inst.id, "set_launch_fork_source", { from: e.target.value }) }, instanceState.forkSourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.graphForkContextLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.forkContextValue, onChange: (e) => editGraphNode?.(inst.id, "set_launch_fork_context", { context: e.target.value }) }, launchState.forkContextOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedForkContext?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, launchState.selectedForkContext.reason)), /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.budgetPolicyLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.budgetSplitPolicy.kind, onChange: (e) => editGraphNode?.(inst.id, "set_launch_budget_kind", { budget_kind: e.target.value }) }, launchState.budgetOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), launchState.selectedBudgetPolicy?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, launchState.selectedBudgetPolicy.reason)), launchState.budgetSplitPolicy.kind === "Fixed" && /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.fixedBudgetLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", value: launchState.fixedBudgetValue, onChange: (e) => editGraphNode?.(inst.id, "set_launch_budget_limit", { limit: e.target.value }) }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, instanceState.positionTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, instanceState.positionRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), member && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, instanceState.outputTitle), instanceState.outputSchema && /* @__PURE__ */ React.createElement("ul", { className: "schema-fields" }, instanceState.outputFieldRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, instanceState.outputHint, " ", /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => selectMember(instanceState.memberId) }, instanceState.outputOpenMemberLabel)))));
-}
-function GraphCondValue({ field, value, onChange, conditionView = null }) {
-  const control = window.MobKitFlowController.conditionValueControl(field, value, conditionView);
-  if (control.kind === "enum") {
-    return /* @__PURE__ */ React.createElement("select", { className: "field__select", value: control.value, onChange: (e) => onChange(e.target.value) }, control.optionRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.value || "blank", value: row.value }, row.label)));
-  }
-  if (control.kind === "boolean") {
-    return /* @__PURE__ */ React.createElement("select", { className: "field__select", value: control.value, onChange: (e) => onChange(e.target.value) }, control.optionRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.value || "blank", value: row.value }, row.label)));
-  }
-  return /* @__PURE__ */ React.createElement("input", { className: "field__input", placeholder: control.placeholder, value: control.value, onChange: (e) => onChange(e.target.value) });
-}
-function EdgeInspector({ studio, flow, edge, clearSelection, editGraphEdge = null, deleteGraphEdge = null, contract, graphView = null, conditionView = null }) {
-  const edgeState = window.MobKitFlowController.graphEdgeInspectorState({
-    edge,
-    instances: studio.instances,
-    members: studio.members,
-    schemas: studio.schemas,
-    flow,
-    contract,
-    graphView
-  });
-  const change = (action, payload = {}) => editGraphEdge?.(edge.id, action, payload);
-  const setEdgeKind = (kind) => change("set_kind", { edge_kind: kind });
-  const setCondOwner = (instanceId) => change("set_condition_owner", { owner_instance_id: instanceId });
-  const setCondField = (field) => change("set_condition_field", { field_name: field });
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, edgeState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, edgeState.title), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, edgeState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(deleteGraphEdge?.(edge.id), clearSelection) }, edgeState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.kindTitle), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.edgeKind, onChange: (e) => setEdgeKind(e.target.value) }, edgeState.edgeKindOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), edgeState.selectedEdgeKind?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.selectedEdgeKind.reason)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.labelTitle), /* @__PURE__ */ React.createElement("input", { className: "field__input", value: edge.label || "", onChange: (e) => change("set_label", { label: e.target.value }) })), edgeState.isCondition && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.conditionTitle), !edgeState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, edgeState.noConditionOptionsHint) : /* @__PURE__ */ React.createElement("div", { className: "cond-row" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.ownerValue, onChange: (e) => setCondOwner(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: edgeState.ownerPlaceholderOption.value }, edgeState.ownerPlaceholderOption.label), edgeState.ownerOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: edgeState.fieldValue, disabled: !edgeState.condOwner, onChange: (e) => setCondField(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, edgeState.fieldPlaceholder), edgeState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", style: { width: 60 }, value: edgeState.operatorValue, onChange: (e) => change("set_condition_operator", { operator: e.target.value }) }, edgeState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(GraphCondValue, { field: edgeState.condField, value: edge.cond?.val, conditionView, onChange: (val) => change("set_condition_value", { value: val }) }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.fromTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.fromRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, edgeState.toTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv" }, edgeState.toRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))))));
-}
-function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose, onJumpToAgents }) {
-  const [q, setQ] = React.useState("");
-  React.useEffect(() => {
-    setQ("");
-  }, [at]);
-  if (!at) return null;
-  const menuState = window.MobKitFlowController.graphAddNodeMenuState({ members, contract, query: q, graphView });
-  return /* @__PURE__ */ React.createElement("div", { className: "add-menu", style: { left: at.x, top: at.y }, onClick: (e) => e.stopPropagation(), onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "add-menu__search" }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__search-icon" }, menuState.searchIcon), /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "add-menu__search-input",
-      autoFocus: true,
-      placeholder: menuState.searchPlaceholder,
-      value: q,
-      onChange: (e) => setQ(e.target.value),
-      onKeyDown: (e) => {
-        if (e.key === "Escape") onClose();
-      }
-    }
-  ), /* @__PURE__ */ React.createElement("button", { className: "add-menu__x", onClick: onClose, title: menuState.closeTitle }, menuState.closeLabel)), /* @__PURE__ */ React.createElement("div", { className: "add-menu__scroll" }, menuState.hasMembers && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.agentsLabel), menuState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__dot", "data-role": row.role, style: row.dotStyle }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.model))), menuState.hasControls && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.controlsLabel), menuState.controlRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__glyph" }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.meta))), menuState.isEmpty && /* @__PURE__ */ React.createElement("div", { className: "add-menu__empty" }, menuState.emptyLabel)), onJumpToAgents && /* @__PURE__ */ React.createElement("button", { className: "add-menu__foot", onClick: () => onJumpToAgents(null) }, menuState.jumpLabel));
-}
-window.Inspector = Inspector;
-window.AddNodeMenu = AddNodeMenu;
-
-}
-
-/* overlays.jsx */
-
-{
-function DeployPlanTrace({ open, onClose, onActiveStep, runKey, document, plan, deployView = null }) {
-  const traceState = React.useMemo(
-    () => window.MobKitFlowController.deployPlanTraceState(document, plan, { deployView }),
-    [document, plan, deployView]
-  );
-  const [idx, setIdx] = React.useState(0);
-  const bodyRef = React.useRef(null);
-  React.useEffect(() => {
-    if (!open) return;
-    setIdx(0);
-  }, [open, runKey]);
-  React.useEffect(() => {
-    if (!open) {
-      onActiveStep(null);
-      return;
-    }
-    onActiveStep(traceState.steps[idx]?.node || null);
-    if (bodyRef.current) {
-      const el = bodyRef.current.querySelector(`[data-step="${idx}"]`);
-      if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    }
-  }, [idx, open, traceState.steps]);
-  if (!open) return null;
-  return /* @__PURE__ */ React.createElement("div", { className: "deploy-plan" }, /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__title" }, /* @__PURE__ */ React.createElement("span", { className: "accent" }, traceState.eyebrow), " \xB7 ", traceState.title), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__sub" }, traceState.subtitle)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx(0) }, traceState.firstLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, traceState.closeLabel))), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__body", ref: bodyRef }, traceState.steps.map((s, i) => /* @__PURE__ */ React.createElement(
-    "div",
-    {
-      key: i,
-      "data-step": i,
-      className: "deploy-plan__step" + (i === idx ? " is-current" : "") + (i > idx ? " is-pending" : "")
-    },
-    /* @__PURE__ */ React.createElement("div", { className: "g" }),
-    /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "head" }, s.head), /* @__PURE__ */ React.createElement("div", { className: "body" }, s.body))
-  ))), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__foot" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { width: "100%" } }, /* @__PURE__ */ React.createElement("span", { className: "muted" }, traceState.packLabel ? `${traceState.packLabel} \xB7 ` : "", traceState.stepLabel, " ", idx + 1, " / ", traceState.steps.length), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.max(0, i - 1)) }, traceState.previousLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.min(traceState.steps.length - 1, i + 1)) }, traceState.nextLabel)))));
-}
-function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, results, stage, deployView = null, capabilities = null }) {
-  if (!open) return null;
-  const sheetState = window.MobKitFlowController.validationSheetState(results, { stage, deployView, capabilities });
-  return /* @__PURE__ */ React.createElement("div", { className: "validate" }, /* @__PURE__ */ React.createElement("div", { className: "validate__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, sheetState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, sheetState.title)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onPublish, disabled: sheetState.publishDisabled }, sheetState.publishLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onDeployPlan, disabled: sheetState.deployPlanDisabled }, sheetState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onDeployRun, disabled: sheetState.deployRunDisabled }, sheetState.deployLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, sheetState.closeLabel))), /* @__PURE__ */ React.createElement("div", { className: "validate__body" }, sheetState.rows.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "validate__row is-" + r.kind }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }, r.glyph), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "head" }, r.head), /* @__PURE__ */ React.createElement("div", { className: "sub" }, r.sub)), /* @__PURE__ */ React.createElement("span", { className: "meta" }, r.meta)))));
-}
-function SourceCodePanel({ state, busy = false, compact = false, sourceView = null, sourcePath = "" }) {
-  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact, sourceView, sourcePath });
-  if (editorState.showLoading) {
-    return /* @__PURE__ */ React.createElement("pre", { className: editorState.bodyClass, role: "textbox", "aria-readonly": "true" }, editorState.loadingText);
-  }
-  return /* @__PURE__ */ React.createElement(
-    "pre",
-    {
-      className: editorState.bodyClass,
-      role: "textbox",
-      "aria-readonly": "true",
-      dangerouslySetInnerHTML: { __html: editorState.sourceHtml }
-    }
-  );
-}
-function SourceDrawer({ open, onClose, state, sourceView = null }) {
-  const [sourcePath, setSourcePath] = React.useState("");
-  const selectSourcePath = (path) => {
-    const result = window.MobKitFlowController.sourceFileSelectionTransition(state, path, sourcePath);
-    setSourcePath(result.sourcePath);
-  };
-  React.useEffect(() => {
-    setSourcePath("");
-  }, [state]);
-  if (!open) return null;
-  const editorState = window.MobKitFlowController.sourceEditorState(state, { sourceView, sourcePath });
-  return /* @__PURE__ */ React.createElement("div", { className: "source-drawer" }, /* @__PURE__ */ React.createElement("div", { className: "source-drawer__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.drawerEyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => selectSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, sourceView, sourcePath }));
-}
-function InlineSourceEditor({ open, onClose, state, busy = false, surface = "basic", sourceView = null }) {
-  const [sourcePath, setSourcePath] = React.useState("");
-  const selectSourcePath = (path) => {
-    const result = window.MobKitFlowController.sourceFileSelectionTransition(state, path, sourcePath);
-    setSourcePath(result.sourcePath);
-  };
-  React.useEffect(() => {
-    setSourcePath("");
-  }, [state]);
-  if (!open) return null;
-  const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true, sourceView, sourcePath });
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-toml bld-toml--" + surface, onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "bld-toml__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", null, editorState.inlineTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list source-file-list--inline" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => selectSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, busy, compact: true, sourceView, sourcePath }));
-}
-window.DeployPlanTrace = DeployPlanTrace;
-window.ValidateSheet = ValidateSheet;
-window.SourceDrawer = SourceDrawer;
-window.InlineSourceEditor = InlineSourceEditor;
-
-}
 
 /* agents.jsx */
 

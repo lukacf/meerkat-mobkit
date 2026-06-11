@@ -1,8 +1,7 @@
-/* global React */
 // Studio state hook + GraphEditor.
 // Studio has TWO entities: members (registry) and instances (graph nodes).
 
-function useStudioState(initial, onDirty, authoring = {}) {
+export function useStudioState(initial, onDirty, authoring = {}) {
   const [members, setMembers] = React.useState(initial.members);
   const [instances, setInstances] = React.useState(initial.instances);
   const [edges, setEdges] = React.useState(initial.edges);
@@ -54,7 +53,7 @@ function useStudioState(initial, onDirty, authoring = {}) {
   };
 }
 
-function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [], applyAuthoringIntent = null }) {
+export function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelection, activeStepId, edgeStyle, density, onRequestAdd, onOpenSourceFile, memberFocus, grid, contract, graphView = null, toolCatalog = [], applyAuthoringIntent = null }) {
   const hostRef = React.useRef(null);
   const [drag, setDrag] = React.useState(null);
   const [conn, setConn] = React.useState(null);
@@ -156,10 +155,10 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
     setConn({ from: p, fromId: inst.id, to: p });
   };
   const connectionTargetIdAt = (clientX, clientY, fromId) => {
-    const hit = document.elementFromPoint(clientX, clientY);
+    const hit = document.elementFromPoint(clientX, clientY) as any;
     const direct = hit?.closest?.("[data-inst-id]");
     if (direct && direct.dataset.instId !== fromId) return direct.dataset.instId;
-    const nodes = Array.from(hostRef.current?.querySelectorAll?.("[data-inst-id]") || []);
+    const nodes: any[] = Array.from(hostRef.current?.querySelectorAll?.("[data-inst-id]") || []);
     const target = nodes.find((node) => {
       if (node.dataset.instId === fromId) return false;
       const rect = node.getBoundingClientRect();
@@ -434,7 +433,7 @@ function GraphEditor({ state, selection, selectInstance, selectEdge, clearSelect
   );
 }
 
-function SourceFileAdornmentView({ g, adornment, adornmentState }) {
+function SourceFileAdornmentView({ g, adornment, adornmentState }: any) {
   if (adornmentState.hidden) return null;
   const b = window.MobKitFlowController.graphNodeBox(g, adornment);
   return (
@@ -455,7 +454,7 @@ function SourceFileAdornmentView({ g, adornment, adornmentState }) {
   );
 }
 
-function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle }) {
+function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle }: any) {
   const b = window.MobKitFlowController.graphNodeBox(g, inst);
 
   if (nodeState.isTerminal) {
@@ -507,7 +506,7 @@ function NodeView({ g, inst, nodeState, selected, memberHighlight, memberDim, ac
   );
 }
 
-function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, state, contract, graphView }) {
+function GateView({ g, inst, selected, activeStep, hoverIn, onMouseDown, onPortDown, portDragTitle, state, contract, graphView }: any) {
   const b = window.MobKitFlowController.graphNodeBox(g, inst);
   const gateState = window.MobKitFlowController.graphGateCanvasState({ inst, edges: state.edges, contract, graphView });
 
@@ -530,6 +529,3 @@ function computeFit(vw, vh, tw, th) {
   const top  = Math.max(8, (vh - th * scale) / 2);
   return { scale, left, top };
 }
-
-window.useStudioState = useStudioState;
-window.GraphEditor = GraphEditor;

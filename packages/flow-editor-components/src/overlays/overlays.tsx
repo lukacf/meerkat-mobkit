@@ -1,7 +1,6 @@
-/* global React */
 // Deploy plan trace, validate sheet, source drawer.
 
-function DeployPlanTrace({ open, onClose, onActiveStep, runKey, document, plan, deployView = null }) {
+export function DeployPlanTrace({ open, onClose, onActiveStep, runKey, document, plan, deployView = null }) {
   const traceState = React.useMemo(() =>
     window.MobKitFlowController.deployPlanTraceState(document, plan, { deployView }),
     [document, plan, deployView]);
@@ -64,7 +63,7 @@ function DeployPlanTrace({ open, onClose, onActiveStep, runKey, document, plan, 
   );
 }
 
-function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, results, stage, deployView = null, capabilities = null }) {
+export function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, results, stage, deployView = null, capabilities = null }) {
   if (!open) return null;
   const sheetState = window.MobKitFlowController.validationSheetState(results, { stage, deployView, capabilities });
   return (
@@ -112,7 +111,7 @@ function SourceCodePanel({ state, busy = false, compact = false, sourceView = nu
   );
 }
 
-function SourceDrawer({ open, onClose, state, sourceView = null }) {
+export function SourceDrawer({ open, onClose, state, sourceView = null }) {
   const [sourcePath, setSourcePath] = React.useState("");
   const selectSourcePath = (path) => {
     const result = window.MobKitFlowController.sourceFileSelectionTransition(state, path, sourcePath);
@@ -151,7 +150,7 @@ function SourceDrawer({ open, onClose, state, sourceView = null }) {
   );
 }
 
-function InlineSourceEditor({ open, onClose, state, busy = false, surface = "basic", sourceView = null }) {
+export function InlineSourceEditor({ open, onClose, state, busy = false, surface = "basic", sourceView = null }) {
   const [sourcePath, setSourcePath] = React.useState("");
   const selectSourcePath = (path) => {
     const result = window.MobKitFlowController.sourceFileSelectionTransition(state, path, sourcePath);
@@ -189,8 +188,3 @@ function InlineSourceEditor({ open, onClose, state, busy = false, surface = "bas
     </div>
   );
 }
-
-window.DeployPlanTrace = DeployPlanTrace;
-window.ValidateSheet = ValidateSheet;
-window.SourceDrawer = SourceDrawer;
-window.InlineSourceEditor = InlineSourceEditor;

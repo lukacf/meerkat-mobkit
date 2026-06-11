@@ -9,8 +9,6 @@ const testSrc = (name) => fs.readFileSync(path.join(root, "test", name), "utf8")
 const data = src("data.js");
 const builder = src("builder.jsx");
 const agents = src("agents.jsx");
-const graph = src("graph.jsx");
-const inspector = src("inspector.jsx");
 const app = src("app.jsx");
 const styles = src("styles.css");
 // The controller plane is @flow-editor-core plus the ~10-line controller.js
@@ -37,6 +35,9 @@ const topRailBlock = (app.match(/function TopRail[\s\S]*?\/\/ ── Flows regis
 const componentsSrcDir = path.join(root, "..", "packages", "flow-editor-components", "src");
 const componentsSrc = (name) => fs.readFileSync(path.join(componentsSrcDir, name), "utf8");
 const tweaksPanel = componentsSrc(path.join("tweaks", "tweaks-panel.tsx"));
+const graph = componentsSrc(path.join("graph", "graph.tsx"));
+const inspector = componentsSrc(path.join("inspector", "inspector.tsx"));
+const overlays = componentsSrc(path.join("overlays", "overlays.tsx"));
 const devServer = fs.readFileSync(path.join(root, "dev-server.cjs"), "utf8");
 const makefile = fs.readFileSync(path.join(root, "..", "Makefile"), "utf8");
 const ciWorkflow = fs.readFileSync(path.join(root, "..", ".github", "workflows", "ci.yml"), "utf8");
@@ -95,7 +96,10 @@ const inspectorInstanceBlock = (inspector.match(/function InstanceInspector[\s\S
 const inspectorTerminalBlock = (inspectorInstanceBlock.match(/if \(inst\.isTerminal\) \{[\s\S]*?const launchState =/) || [""])[0];
 const inspectorGraphCondValueBlock = (inspector.match(/function GraphCondValue[\s\S]*?\/\/ ── Edge/) || [""])[0];
 const inspectorEdgeBlock = (inspector.match(/function EdgeInspector[\s\S]*?function AddNodeMenu/) || [""])[0];
-const addNodeMenuBlock = (inspector.match(/function AddNodeMenu[\s\S]*?window\.Inspector/) || [""])[0];
+// Re-anchored in S21: the legacy window.Inspector footer is gone (build.cjs's
+// shell adapter assigns the window globals); AddNodeMenu is the last function
+// in the moved module, so the block scans to end-of-file.
+const addNodeMenuBlock = (inspector.match(/function AddNodeMenu[\s\S]*$/) || [""])[0];
 const tweaksBlock = (app.match(/function Tweaks[\s\S]*?function RoleWiringEditor/) || [""])[0];
 const roleWiringBlock = (app.match(/function RoleWiringEditor[\s\S]*?function AdvancedMobSettingsEditor/) || [""])[0];
 const advancedMobSettingsBlock = (app.match(/function AdvancedMobSettingsEditor[\s\S]*?ReactDOM\.createRoot/) || [""])[0];
@@ -1097,7 +1101,7 @@ assert.match(controller, /columns:\s*view\.columns/, "controller plane must proj
 assert(!/eyebrow:\s*["']FLOWS["']|createLabel:\s*["']\+ NEW FLOW["']|createReadyTitle:\s*["']Create a MobKit mobpack["']|createUnavailableTitle:\s*["']Waiting for MobKit schema["']|label:\s*["']NAME["']|label:\s*["']VERSION["']|label:\s*["']STAGE["']/.test(controller), "controller plane must not keep Flow registry labels or column names as local literals");
 assert(!/flows\.length|disabled=\{!canCreate\}|title=\{canCreate \?|className=\{"flows-list__row"|f\.id === currentFlowId|>FLOWS<\/div>|>\+ NEW FLOW<\/button>|<span>NAME<\/span>|<span>TRIGGER<\/span>|<span>VERSION<\/span>|<span>STAGE<\/span>/.test((app.match(/function FlowsView[\s\S]*?function NewFlowModal/) || [""])[0]), "Flows view must not derive registry title, create affordance, column labels, or current row class locally");
 assert.match(app, /const handleDeployPlanTrace = async \(\) => \{[\s\S]*MobKitFlowController\.deployDocument\(document, \{ execute: false,\s*\.\.\.currentDraftGuard\(\) \}\)[\s\S]*deployPlanTraceReadyTransition\(document,\s*plan\)/, "Plan Trace must render a guarded non-executing MobKit deploy plan, not a local simulation");
-assert(!/DrySim|drySim|drysim/.test(app + "\n" + controller + "\n" + src("overlays.jsx") + "\n" + styles), "Deploy plan trace code must not retain prototype dry-simulation naming");
+assert(!/DrySim|drySim|drysim/.test(app + "\n" + controller + "\n" + overlays + "\n" + styles), "Deploy plan trace code must not retain prototype dry-simulation naming");
 assert.match(controller, /function deployPlanTraceState/, "controller plane must own deploy-plan trace display projection");
 assert.match(controller, /plan\?\.plan_trace[\s\S]*view\.planUnavailableHead[\s\S]*view\.planUnavailableBody/, "controller plane must consume MobKit deploy plan_trace and own the schema-backed unavailable-trace fallback");
 assert.match(controller, /function deployPlanTraceReadyTransition/, "controller plane must own plan trace open/document/plan transitions");
@@ -1108,11 +1112,11 @@ assert.match(controller, /function apiOverlayClearTransition/, "controller plane
 assert.match(app, /const applyApiOverlayPatch = React\.useCallback\(\(patch\) => \{[\s\S]*deployPlanOpen[\s\S]*deployPlanDocument[\s\S]*deployPlanResult[\s\S]*incrementDeployPlanKey[\s\S]*validate/, "app shell may only apply controller-projected API overlay patches");
 assert.match(app, /<DeployPlanTrace[\s\S]*onClose=\{\(\) => applyApiOverlayPatch\(window\.MobKitFlowController\.deployPlanTraceCloseTransition\(\)\)\}/, "Plan Trace close affordance must use controller-projected transition state");
 assert.match(app, /<ValidateSheet[\s\S]*onClose=\{\(\) => applyApiOverlayPatch\(window\.MobKitFlowController\.validationSheetCloseTransition\(\)\)\}/, "Validation sheet close affordance must use controller-projected transition state");
-assert.match(src("overlays.jsx"), /MobKitFlowController\.deployPlanTraceState\(document, plan, \{ deployView \}\)/, "Plan Trace overlay must render controller-projected deploy-plan state from MobKit view chrome");
-assert.match(src("overlays.jsx"), /traceState\.eyebrow/, "Plan Trace overlay header must render through controller state");
-assert.match(src("overlays.jsx"), /traceState\.firstLabel/, "Plan Trace first action label must render through controller state");
-assert.match(src("overlays.jsx"), /traceState\.stepLabel/, "Plan Trace progress label must render through controller state");
-assert(!/plan\?\.plan_trace|plan\?\.command|document\?\.deploy_command|plan\?\.pack_path|mobkit\/mobpacks\/deploy did not return plan_trace|const title = document\?/.test(src("overlays.jsx")), "Plan Trace overlay must not inspect MobKit deploy results or invent fallback labels locally");
+assert.match(overlays, /MobKitFlowController\.deployPlanTraceState\(document, plan, \{ deployView \}\)/, "Plan Trace overlay must render controller-projected deploy-plan state from MobKit view chrome");
+assert.match(overlays, /traceState\.eyebrow/, "Plan Trace overlay header must render through controller state");
+assert.match(overlays, /traceState\.firstLabel/, "Plan Trace first action label must render through controller state");
+assert.match(overlays, /traceState\.stepLabel/, "Plan Trace progress label must render through controller state");
+assert(!/plan\?\.plan_trace|plan\?\.command|document\?\.deploy_command|plan\?\.pack_path|mobkit\/mobpacks\/deploy did not return plan_trace|const title = document\?/.test(overlays), "Plan Trace overlay must not inspect MobKit deploy results or invent fallback labels locally");
 assert(!/result\?\.source \|\| ["']mobkit\/mobpacks\/source["']/.test(controller), "Source drawer must require MobKit source-preview provenance instead of defaulting missing result.source");
 assert.match(controller, /apiSource !== "mobkit\/mobpacks\/source"[\s\S]*source preview expected mobkit\/mobpacks\/source/, "Source drawer projection must reject export-shaped results");
 assert.match(controller, /did not return source_files/, "Source drawer must fail closed when MobKit source preview omits archive member metadata");
@@ -1139,20 +1143,20 @@ assert.match(controllerProjectionTest, /editor_source_view:\s*\{[\s\S]*drawer_ey
   "source editor label/loading copy must be test-covered as MobKit schema data");
 assert(!/SOURCE · mob\.toml|rendering mob\.toml from mobkit\/mobpacks\/(?:source|export)|copyLabel:\s*"copy"|closeLabel:\s*"×"/.test(sourceEditorBlock),
   "source editor projection must not keep local label/loading defaults");
-assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceEditorState\(state, \{ busy, compact, sourceView, sourcePath \}\)/, "source code panel must render controller-projected source state with schema source view");
-assert.match(src("overlays.jsx"), /dangerouslySetInnerHTML=\{\{\s*__html:\s*editorState\.sourceHtml\s*\}\}/, "source code panel must render controller-projected highlighted source HTML");
-assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceEditorState\(state, \{ sourceView, sourcePath \}\)/, "source drawer must render controller-projected source state with schema source view");
-assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceEditorState\(state, \{ busy, compact: true, sourceView, sourcePath \}\)/, "inline source editor must render controller-projected source state with schema source view");
-assert.match(src("overlays.jsx"), /editorState\.fileRows\.map/, "source editor overlays must render controller-projected archive file rows");
-assert.match(src("overlays.jsx"), /MobKitFlowController\.sourceFileSelectionTransition\(state,\s*path,\s*sourcePath\)/, "source editor overlays must select archive files through the controller transition plane");
-assert(!/setSourcePath\(row\.path\)/.test(src("overlays.jsx")), "source editor overlays must not set archive member paths directly from UI rows");
-assert.match(src("overlays.jsx"), /editorState\.drawerEyebrow/, "source drawer header must render through controller state");
-assert.match(src("overlays.jsx"), /editorState\.inlineTitle/, "inline source title must render through controller state");
-assert.match(src("overlays.jsx"), /editorState\.copyLabel/, "source copy action label must render through controller state");
-assert.match(src("overlays.jsx"), /SourceDrawer[\s\S]*disabled=\{editorState\.copyDisabled\}/, "source drawer copy action must share the controller-projected disabled state with inline source editors");
-assert(!/function sourceMeta|state\?\.mob_toml|state\?\.source|state\?\.filename|state\?\.media_type|state\?\.validation\?\.validation_source/.test(src("overlays.jsx")), "source editor overlays must not derive MobKit export/source metadata locally");
-assert(!/function\s+highlightToml|replace\(\s*\/&\/g|toml-comment|toml-table|toml-key/.test(src("overlays.jsx")), "source editor overlays must not parse, escape, or highlight mob.toml locally");
-assert(!/definition\.json|mobkit\/editor\.json|manifest\.toml|mobkit\/mob\.toml/.test(src("overlays.jsx")), "source editor overlays must not hard-code archive file paths");
+assert.match(overlays, /MobKitFlowController\.sourceEditorState\(state, \{ busy, compact, sourceView, sourcePath \}\)/, "source code panel must render controller-projected source state with schema source view");
+assert.match(overlays, /dangerouslySetInnerHTML=\{\{\s*__html:\s*editorState\.sourceHtml\s*\}\}/, "source code panel must render controller-projected highlighted source HTML");
+assert.match(overlays, /MobKitFlowController\.sourceEditorState\(state, \{ sourceView, sourcePath \}\)/, "source drawer must render controller-projected source state with schema source view");
+assert.match(overlays, /MobKitFlowController\.sourceEditorState\(state, \{ busy, compact: true, sourceView, sourcePath \}\)/, "inline source editor must render controller-projected source state with schema source view");
+assert.match(overlays, /editorState\.fileRows\.map/, "source editor overlays must render controller-projected archive file rows");
+assert.match(overlays, /MobKitFlowController\.sourceFileSelectionTransition\(state,\s*path,\s*sourcePath\)/, "source editor overlays must select archive files through the controller transition plane");
+assert(!/setSourcePath\(row\.path\)/.test(overlays), "source editor overlays must not set archive member paths directly from UI rows");
+assert.match(overlays, /editorState\.drawerEyebrow/, "source drawer header must render through controller state");
+assert.match(overlays, /editorState\.inlineTitle/, "inline source title must render through controller state");
+assert.match(overlays, /editorState\.copyLabel/, "source copy action label must render through controller state");
+assert.match(overlays, /SourceDrawer[\s\S]*disabled=\{editorState\.copyDisabled\}/, "source drawer copy action must share the controller-projected disabled state with inline source editors");
+assert(!/function sourceMeta|state\?\.mob_toml|state\?\.source|state\?\.filename|state\?\.media_type|state\?\.validation\?\.validation_source/.test(overlays), "source editor overlays must not derive MobKit export/source metadata locally");
+assert(!/function\s+highlightToml|replace\(\s*\/&\/g|toml-comment|toml-table|toml-key/.test(overlays), "source editor overlays must not parse, escape, or highlight mob.toml locally");
+assert(!/definition\.json|mobkit\/editor\.json|manifest\.toml|mobkit\/mob\.toml/.test(overlays), "source editor overlays must not hard-code archive file paths");
 assert.match(app, /MobKitFlowController\.sourceDocument\(document,\s*currentDraftGuard\(\)\)/, "source-file views must render mob.toml through the guarded MobKit source preview API");
 assert.match(app, /MobKitFlowController\.sourceDocumentFromSourceResult\(document, result, \{\s*sourceView:\s*catalogs\.sourceView,\s*\}\)/, "app shell must project MobKit source-preview results through the controller plane with the schema-backed source-view contract");
 assert.match(controller, /sourceDocument:\s*\{[\s\S]*sourcePath:\s*primarySourceFile\.path[\s\S]*sourceFile:\s*primarySourceFile[\s\S]*sourceFiles:\s*files[\s\S]*sourceDigest[\s\S]*source:\s*apiSource[\s\S]*sourceView,/, "controller-projected source documents must carry the MobKit archive member and source-view contracts");
@@ -1196,7 +1200,7 @@ assert(!/\/mob\\\.toml\/i/.test((controller.match(/function graphNodeCanvasState
 assert.match(graph, /const modelInstances = window\.MobKitFlowController\.graphCanvasInstances\(\{ instances: state\.instances, graphView: canvasView \}\)[\s\S]*graphGridState\(\{ instances: modelInstances[\s\S]*graphCellCanvasRows\(\{ grid: g, instances: modelInstances[\s\S]*const canvasAdornments = window\.MobKitFlowController\.graphCanvasAdornments\(\{ instances: state\.instances, graphView: canvasView \}\)[\s\S]*const nodeEls = modelInstances\.map/, "Graph source-file affordances must render through separate schema-backed adornment state and stay out of model grid/node rows");
 assert.match(graph, /graphSourceFileAdornmentCanvasState\(\{ adornment, graphView: canvasView \}\)/, "Graph mob.toml adornment display must render through schema-backed canvas view state");
 assert.match(graph, /const onHostKeyDownCapture = \(e\) => \{[\s\S]*e\.key !== "Enter" && e\.key !== " "[\s\S]*openSourceFromEvent\(e\)/, "Graph mob.toml terminal must open from keyboard activation as well as pointer activation");
-assert.match(src("overlays.jsx"), /role="textbox"[\s\S]*aria-readonly="true"/, "inline/source TOML surfaces must be read-only editor views");
+assert.match(overlays, /role="textbox"[\s\S]*aria-readonly="true"/, "inline/source TOML surfaces must be read-only editor views");
 assert.match(controller, /function sourceProjectionClearTransition[\s\S]*sourceOpen:\s*false[\s\S]*inlineSourceOpen:\s*false[\s\S]*inlineSourceBusy:\s*false/, "controller plane must own source projection clear transitions");
 assert.match(controller, /function sourceDrawerReadyTransition/, "controller plane must own source drawer ready transitions");
 assert.match(controller, /function inlineSourcePendingTransition/, "controller plane must own inline source pending transitions");
@@ -1235,15 +1239,15 @@ assert.match(controller, /function deployErrorOutcome/, "controller plane must o
 assert.match(controller, /function sourceErrorOutcome/, "controller plane must own source export error diagnostic rows");
 assert.match(controller, /function validationSheetState/, "controller plane must own validation sheet severity counts and action enablement");
 assert.match(app, /<ValidateSheet[\s\S]*results=\{validationResults\}[\s\S]*stage=\{stage\}[\s\S]*capabilities=\{capabilities\}/, "validation sheet deploy actions must be gated by the authoritative authoring stage and MobKit host capabilities");
-assert.match(src("overlays.jsx"), /MobKitFlowController\.validationSheetState\(results, \{ stage, deployView, capabilities \}\)/, "validation sheet must render controller-projected MobKit display row, stage, view, and capability state");
+assert.match(overlays, /MobKitFlowController\.validationSheetState\(results, \{ stage, deployView, capabilities \}\)/, "validation sheet must render controller-projected MobKit display row, stage, view, and capability state");
 assert.match(controller, /function validationSheetState\(results, options = \{\}\)[\s\S]*stage !== "valid"[\s\S]*deployExecuteAllowed = options\.capabilities\?\.authoring_capabilities\?\.deploy_execute_allowed !== false[\s\S]*deployRunDisabled: actionsDisabled \|\| !deployExecuteAllowed/, "controller plane must disable publish/deploy sheet actions unless validation stage is valid and must separately gate host deploy execution through capabilities");
-assert.match(src("overlays.jsx"), /sheetState\.eyebrow/, "validation sheet header must render through controller state");
-assert.match(src("overlays.jsx"), /sheetState\.publishLabel/, "validation sheet publish action label must render through controller state");
-assert.match(src("overlays.jsx"), /sheetState\.deployPlanLabel/, "validation sheet deploy-plan action label must render through controller state");
-assert.match(src("overlays.jsx"), /sheetState\.deployLabel/, "validation sheet deploy action label must render through controller state");
-assert.match(src("overlays.jsx"), /disabled=\{sheetState\.deployRunDisabled\}/, "validation sheet deploy-run button must use controller-projected host execution gating");
-assert(!/results\.filter\(r => r\.kind ===|critCount > 0|okCount|warnCount|critCount/.test(src("overlays.jsx")), "validation sheet must not count MobKit validation severities in JSX");
-assert(!/>DEPLOY PLAN<|>VALIDATE · MobKit<|>PUBLISH<|>DEPLOY<|>SOURCE · mob\.toml<|>mob\.toml<|>copy<|>first<|>×<|>‹<|>›<|step \{idx \+ 1\}/.test(src("overlays.jsx")), "overlay headers, action labels, and progress labels must not be composed locally");
+assert.match(overlays, /sheetState\.eyebrow/, "validation sheet header must render through controller state");
+assert.match(overlays, /sheetState\.publishLabel/, "validation sheet publish action label must render through controller state");
+assert.match(overlays, /sheetState\.deployPlanLabel/, "validation sheet deploy-plan action label must render through controller state");
+assert.match(overlays, /sheetState\.deployLabel/, "validation sheet deploy action label must render through controller state");
+assert.match(overlays, /disabled=\{sheetState\.deployRunDisabled\}/, "validation sheet deploy-run button must use controller-projected host execution gating");
+assert(!/results\.filter\(r => r\.kind ===|critCount > 0|okCount|warnCount|critCount/.test(overlays), "validation sheet must not count MobKit validation severities in JSX");
+assert(!/>DEPLOY PLAN<|>VALIDATE · MobKit<|>PUBLISH<|>DEPLOY<|>SOURCE · mob\.toml<|>mob\.toml<|>copy<|>first<|>×<|>‹<|>›<|step \{idx \+ 1\}/.test(overlays), "overlay headers, action labels, and progress labels must not be composed locally");
 assert.match(controller, /function validationErrorOutcome/, "controller plane must own validation API error diagnostic rows");
 assert.match(controller, /function exportErrorOutcome/, "controller plane must own publish/export error diagnostic rows");
 assert.match(controller, /function importErrorOutcome/, "controller plane must own import error diagnostic rows");
@@ -1292,7 +1296,7 @@ assert.match(app, /const handlePublish = async \(\) => \{[\s\S]*const projected 
 assert.match(app, /const handleDeploy = async \(\{ execute \}\) => \{[\s\S]*const projected = await buildMobKitProjectedDocument\(\);[\s\S]*const document = projected\.document;[\s\S]*requestToken = projected\.requestToken;[\s\S]*MobKitFlowController\.deployDocument\(document, \{ execute,\s*\.\.\.currentDraftGuard\(\) \}\);[\s\S]*if \(!authoringRevisionIsCurrent\(requestToken\)\) return;[\s\S]*persistCurrentOutcome\(outcome\)/, "stale deploy responses must not write validation, stage, or flow-row state after an edit");
 assert.match(app, /flowRegistryPersistDocumentProjection\(flows,[\s\S]*skipIfUnchanged:\s*true,[\s\S]*\},\s*\[[\s\S]*contract,[\s\S]*catalogs\.models,[\s\S]*catalogs\.toolCatalog,[\s\S]*catalogs\.contractMeta\.loaded,[\s\S]*\]\)/, "flow registry auto-persistence must rerun when MobKit contract/model/tool catalog inputs change the deployable document projection");
 assert.match(app, /flowRegistryPersistDocumentProjection\(flows,[\s\S]*document,[\s\S]*skipIfUnchanged:\s*true,[\s\S]*\},\s*\[[\s\S]*authoringDocument,[\s\S]*\]\)/, "flow registry auto-persistence must persist MobKit-returned authoring documents even when UI shards did not change");
-assert(!/state\?\.source\s*\|\|\s*["']mobkit\/mobpacks\/export["']|state\?\.filename\s*\|\|\s*["']mobkit\/mob\.toml["']/.test(src("overlays.jsx")), "source overlays must not invent source provenance labels when export state omits them");
+assert(!/state\?\.source\s*\|\|\s*["']mobkit\/mobpacks\/export["']|state\?\.filename\s*\|\|\s*["']mobkit\/mob\.toml["']/.test(overlays), "source overlays must not invent source provenance labels when export state omits them");
 assert(!/sample\.source\s*\|\|\s*["']mobkit\/sample-mobpack["']/.test(controller), "sample rows must not invent a source label when MobKit omits sample source metadata");
 assert(!/["']mobkit · sample["']/.test(controller), "sample rows must not invent local trigger provenance when MobKit omits sample source metadata");
 assert(!/`sample_\$\{index \+ 1\}`|`sample-\$\{index \+ 1\}`/.test(controller), "sample rows must not synthesize local sample identities when MobKit omits id/name metadata");

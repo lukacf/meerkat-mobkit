@@ -1,4 +1,3 @@
-/* global React */
 // Inspector — context-sensitive panel.
 //
 // Selection modes:
@@ -9,7 +8,7 @@
 // AddNodeMenu lets the user place existing real members. Control-flow rows are
 // projected from the Basic Editor's deployable flow model.
 
-function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, deleteGraphEdge = null, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
+export function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, deleteGraphEdge = null, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
   const selectionState = window.MobKitFlowController.graphSelectionState({
     selection,
     instances: studio.instances,
@@ -526,7 +525,7 @@ function EdgeInspector({ studio, flow, edge, clearSelection, editGraphEdge = nul
 // ── Add-node dialog ────────────────────────────────────────────────
 // In Graph view, you can place existing agents and MobKit flow gates.
 // To define a new agent, jump to the Agents view.
-function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose, onJumpToAgents }) {
+export function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose, onJumpToAgents }) {
   const [q, setQ] = React.useState("");
   React.useEffect(() => { setQ(""); }, [at]);
   if (!at) return null;
@@ -572,6 +571,3 @@ function AddNodeMenu({ at, members, contract, graphView = null, onPick, onClose,
     </div>
   );
 }
-
-window.Inspector = Inspector;
-window.AddNodeMenu = AddNodeMenu;
