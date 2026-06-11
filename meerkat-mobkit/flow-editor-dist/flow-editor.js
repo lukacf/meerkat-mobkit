@@ -85,6 +85,7 @@ var MobKitFlowCore = (() => {
     agentViewFromSchema: () => agentViewFromSchema,
     apiDisplayRows: () => apiDisplayRows,
     apiOverlayClearTransition: () => apiOverlayClearTransition,
+    applyAuthoringOperationDocument: () => applyAuthoringOperationDocument,
     authoringDocumentFromState: () => authoringDocumentFromState,
     authoringFlowForDocument: () => authoringFlowForDocument,
     authoringOperationAvailability: () => authoringOperationAvailability,
@@ -168,11 +169,16 @@ var MobKitFlowCore = (() => {
     contractDefaultValue: () => contractDefaultValue,
     contractStringValues: () => contractStringValues,
     contractValueAllowed: () => contractValueAllowed,
+    createAuthoringOperationRunner: () => createAuthoringOperationRunner,
+    createDocument: () => createDocument,
     criticalErrorOutcome: () => criticalErrorOutcome,
+    deleteDocument: () => deleteDocument,
     dependencyModeAllowed: () => dependencyModeAllowed,
     dependencyModeFromStepSource: () => dependencyModeFromStepSource,
     dependencyModeOptions: () => dependencyModeOptions,
+    deployCommandPreviewForDocument: () => deployCommandPreviewForDocument,
     deployDefaultsFromSchema: () => deployDefaultsFromSchema,
+    deployDocument: () => deployDocument,
     deployErrorOutcome: () => deployErrorOutcome,
     deployOutcome: () => deployOutcome,
     deployPlanTraceCloseTransition: () => deployPlanTraceCloseTransition,
@@ -220,6 +226,7 @@ var MobKitFlowCore = (() => {
     errorViewForState: () => errorViewForState,
     errorViewFromSchema: () => errorViewFromSchema,
     escapeHtml: () => escapeHtml,
+    exportDocument: () => exportDocument,
     exportDownloadPayload: () => exportDownloadPayload,
     exportErrorOutcome: () => exportErrorOutcome,
     exportOutcome: () => exportOutcome,
@@ -286,6 +293,7 @@ var MobKitFlowCore = (() => {
     forkContextOptions: () => forkContextOptions,
     framesForDocument: () => framesForDocument,
     freshLaunchModePreservingBudget: () => freshLaunchModePreservingBudget,
+    getDocument: () => getDocument,
     graphAddMenuCloseProjection: () => graphAddMenuCloseProjection,
     graphAddMenuOpenProjection: () => graphAddMenuOpenProjection,
     graphAddNodeMenuState: () => graphAddNodeMenuState,
@@ -346,6 +354,7 @@ var MobKitFlowCore = (() => {
     graphNodeCanvasState: () => graphNodeCanvasState,
     graphPortIn: () => graphPortIn,
     graphPortOut: () => graphPortOut,
+    graphProjectionDocument: () => graphProjectionDocument,
     graphProjectionEdgeKinds: () => graphProjectionEdgeKinds,
     graphProjectionForDocument: () => graphProjectionForDocument,
     graphProjectionForFlow: () => graphProjectionForFlow,
@@ -370,14 +379,19 @@ var MobKitFlowCore = (() => {
     graphTerminalKindPatch: () => graphTerminalKindPatch,
     graphTerminalPaletteRowsFromSchema: () => graphTerminalPaletteRowsFromSchema,
     graphToFlow: () => graphToFlow,
+    graphToFlowDocument: () => graphToFlowDocument,
     graphToolTagClass: () => graphToolTagClass,
     graphViewFromSchema: () => graphViewFromSchema,
     hasAuthoringLaunchMode: () => hasAuthoringLaunchMode,
     highlightSourceFile: () => highlightSourceFile,
     highlightTomlSource: () => highlightTomlSource,
+    historyStepDocument: () => historyStepDocument,
     hydrateMobpackDocumentState: () => hydrateMobpackDocumentState,
+    importDocument: () => importDocument,
     importErrorOutcome: () => importErrorOutcome,
+    importParamsFromDecodedFile: () => importParamsFromDecodedFile,
     incomingEdges: () => incomingEdges,
+    inferDecodedFileKind: () => inferDecodedFileKind,
     inlineSkillRealmIdFromOperationResult: () => inlineSkillRealmIdFromOperationResult,
     inlineSourceBusyTransition: () => inlineSourceBusyTransition,
     inlineSourcePendingTransition: () => inlineSourcePendingTransition,
@@ -397,6 +411,7 @@ var MobKitFlowCore = (() => {
     inputParamsForStep: () => inputParamsForStep,
     inputStepDraft: () => inputStepDraft,
     instancesForDocument: () => instancesForDocument,
+    isDraftGuardConflictError: () => isDraftGuardConflictError,
     jsonEquivalent: () => jsonEquivalent,
     laneReaches: () => laneReaches,
     launchBudgetFixedLimitPatch: () => launchBudgetFixedLimitPatch,
@@ -417,6 +432,10 @@ var MobKitFlowCore = (() => {
     launchUnsupportedReason: () => launchUnsupportedReason,
     launchViewForState: () => launchViewForState,
     launchViewFromSchema: () => launchViewFromSchema,
+    listDocuments: () => listDocuments,
+    loadCapabilities: () => loadCapabilities,
+    loadCatalogs: () => loadCatalogs,
+    loadSchema: () => loadSchema,
     maxInlinePeerNotificationsPatchValueIsValid: () => maxInlinePeerNotificationsPatchValueIsValid,
     memberBackendPatch: () => memberBackendPatch,
     memberBudgetAffordanceState: () => memberBudgetAffordanceState,
@@ -509,6 +528,7 @@ var MobKitFlowCore = (() => {
     outputFormatAllowed: () => outputFormatAllowed,
     outputFormatOptions: () => outputFormatOptions,
     parallelFrameLabel: () => parallelFrameLabel,
+    parseDecodedJsonImport: () => parseDecodedJsonImport,
     parseEditorConditionText: () => parseEditorConditionText,
     parseGraphConditionVar: () => parseGraphConditionVar,
     parseLegacyInputFields: () => parseLegacyInputFields,
@@ -568,6 +588,7 @@ var MobKitFlowCore = (() => {
     reconcileToolScopeObject: () => reconcileToolScopeObject,
     reconcileToolScopesInStep: () => reconcileToolScopesInStep,
     reconcileToolScopesInSteps: () => reconcileToolScopesInSteps,
+    redoDocument: () => redoDocument,
     renameSchemaDefinition: () => renameSchemaDefinition,
     repeatCondToGraphCond: () => repeatCondToGraphCond,
     repeatConditionFromEdge: () => repeatConditionFromEdge,
@@ -593,6 +614,7 @@ var MobKitFlowCore = (() => {
     sampleFlowsFromCatalogs: () => sampleFlowsFromCatalogs,
     sanitizeFlowStepForDocument: () => sanitizeFlowStepForDocument,
     sanitizeFlowStepsForDocument: () => sanitizeFlowStepsForDocument,
+    saveDocument: () => saveDocument,
     schemaDefinitionAddErrorState: () => schemaDefinitionAddErrorState,
     schemaDescriptionPatch: () => schemaDescriptionPatch,
     schemaEditorControlState: () => schemaEditorControlState,
@@ -626,6 +648,7 @@ var MobKitFlowCore = (() => {
     skillRealmsFromCatalogs: () => skillRealmsFromCatalogs,
     slug: () => slug,
     sourceDefinitionRefRows: () => sourceDefinitionRefRows,
+    sourceDocument: () => sourceDocument,
     sourceDocumentFromSourceResult: () => sourceDocumentFromSourceResult,
     sourceDrawerReadyTransition: () => sourceDrawerReadyTransition,
     sourceEditorState: () => sourceEditorState,
@@ -666,12 +689,14 @@ var MobKitFlowCore = (() => {
     topRailState: () => topRailState,
     trustPolicyOptions: () => trustPolicyOptions,
     tweaksControlState: () => tweaksControlState,
+    undoDocument: () => undoDocument,
     uniqueEnumValue: () => uniqueEnumValue,
     uniqueFlowStepId: () => uniqueFlowStepId,
     uniqueInputParamName: () => uniqueInputParamName,
     uniqueSchemaFieldName: () => uniqueSchemaFieldName,
     validMemberToolIds: () => validMemberToolIds,
     validStepToolSet: () => validStepToolSet,
+    validateDocument: () => validateDocument,
     validateSourceFileMetadata: () => validateSourceFileMetadata,
     validationErrorOutcome: () => validationErrorOutcome,
     validationOutcome: () => validationOutcome,
@@ -9145,10 +9170,10 @@ ${JSON.stringify(document)}`;
       inlineSourceBusy: false
     };
   }
-  function sourceDrawerReadyTransition(sourceDocument) {
+  function sourceDrawerReadyTransition(sourceDocument2) {
     return {
-      sourceOpen: !!sourceDocument,
-      sourceDocument: sourceDocument || null
+      sourceOpen: !!sourceDocument2,
+      sourceDocument: sourceDocument2 || null
     };
   }
   function inlineSourcePendingTransition(surface = "basic") {
@@ -9158,9 +9183,9 @@ ${JSON.stringify(document)}`;
       inlineSourceBusy: true
     };
   }
-  function inlineSourceReadyTransition(sourceDocument) {
+  function inlineSourceReadyTransition(sourceDocument2) {
     return {
-      inlineSourceDocument: sourceDocument || null,
+      inlineSourceDocument: sourceDocument2 || null,
       inlineSourceBusy: false
     };
   }
@@ -9204,25 +9229,25 @@ ${JSON.stringify(document)}`;
     }
     return "";
   }
-  function sourceFileForPath(sourceDocument, path) {
-    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
-    const selectedPath = String(path || sourceDocument?.sourcePath || sourceViewForState(sourceDocument).primarySourcePath || "").trim();
-    return files.find((file) => String(file?.path || "") === selectedPath) || sourceDocument?.sourceFile || files[0] || null;
+  function sourceFileForPath(sourceDocument2, path) {
+    const files = Array.isArray(sourceDocument2?.sourceFiles) ? sourceDocument2.sourceFiles : [];
+    const selectedPath = String(path || sourceDocument2?.sourcePath || sourceViewForState(sourceDocument2).primarySourcePath || "").trim();
+    return files.find((file) => String(file?.path || "") === selectedPath) || sourceDocument2?.sourceFile || files[0] || null;
   }
-  function sourceFileSelectionTransition(sourceDocument, path, currentPath = "") {
-    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
+  function sourceFileSelectionTransition(sourceDocument2, path, currentPath = "") {
+    const files = Array.isArray(sourceDocument2?.sourceFiles) ? sourceDocument2.sourceFiles : [];
     const requestedPath = String(path || "").trim();
     const requestedFile = files.find((file) => String(file?.path || "") === requestedPath) || null;
     if (requestedFile) return { sourcePath: String(requestedFile.path || "") };
-    const currentFile = sourceFileForPath(sourceDocument, currentPath);
+    const currentFile = sourceFileForPath(sourceDocument2, currentPath);
     return { sourcePath: String(currentFile?.path || "") };
   }
   function sourceFileContent(file) {
     return typeof file?.text === "string" ? file.text : "";
   }
-  function sourceFileRows(sourceDocument, selectedPath) {
-    const files = Array.isArray(sourceDocument?.sourceFiles) ? sourceDocument.sourceFiles : [];
-    const activePath = String(selectedPath || sourceDocument?.sourcePath || "").trim();
+  function sourceFileRows(sourceDocument2, selectedPath) {
+    const files = Array.isArray(sourceDocument2?.sourceFiles) ? sourceDocument2.sourceFiles : [];
+    const activePath = String(selectedPath || sourceDocument2?.sourcePath || "").trim();
     return files.filter((file) => String(file?.path || "").trim()).map((file) => {
       const path = String(file.path || "").trim();
       const size = Number(file.size_bytes || 0);
@@ -9245,18 +9270,18 @@ ${JSON.stringify(document)}`;
     if (/\.toml$/i.test(path) || mediaType === "text/toml") return highlightTomlSource(source);
     return escapeHtml(source);
   }
-  function sourceEditorState(sourceDocument, options = {}) {
-    const selectedFile = sourceFileForPath(sourceDocument, options.sourcePath);
+  function sourceEditorState(sourceDocument2, options = {}) {
+    const selectedFile = sourceFileForPath(sourceDocument2, options.sourcePath);
     const source = selectedFile ? sourceFileContent(selectedFile) : "";
-    const view = sourceViewForState(sourceDocument, options.sourceView);
-    const sourcePath = String(selectedFile?.path || sourceDocument?.sourcePath || "").trim();
+    const view = sourceViewForState(sourceDocument2, options.sourceView);
+    const sourcePath = String(selectedFile?.path || sourceDocument2?.sourcePath || "").trim();
     const sourceLabel = [
-      sourceDocument?.source || "",
+      sourceDocument2?.source || "",
       sourcePath,
-      sourceDocument?.filename || "",
-      sourceDocument?.media_type || ""
+      sourceDocument2?.filename || "",
+      sourceDocument2?.media_type || ""
     ].filter(Boolean).join(" \xB7 ");
-    const validationSource = sourceDocument?.validation?.validation_source || "";
+    const validationSource = sourceDocument2?.validation?.validation_source || "";
     const bodyClass = options.compact ? "bld-toml__body" : "source-drawer__body";
     return {
       source,
@@ -9267,7 +9292,7 @@ ${JSON.stringify(document)}`;
       validationSource,
       bodyClass,
       selectedPath: sourcePath,
-      fileRows: sourceFileRows(sourceDocument, sourcePath),
+      fileRows: sourceFileRows(sourceDocument2, sourcePath),
       showLoading: !!options.busy && !source,
       loadingText: view.loadingText,
       copyLabel: view.copyLabel,
@@ -9291,8 +9316,8 @@ ${JSON.stringify(document)}`;
     };
     return out.drawerEyebrow && out.inlineTitle && out.primarySourcePath && out.loadingText && out.copyLabel && out.closeLabel ? out : null;
   }
-  function sourceViewForState(sourceDocument, sourceView) {
-    const view = sourceView && typeof sourceView === "object" ? sourceView : sourceDocument?.sourceView;
+  function sourceViewForState(sourceDocument2, sourceView) {
+    const view = sourceView && typeof sourceView === "object" ? sourceView : sourceDocument2?.sourceView;
     return {
       drawerEyebrow: String(view?.drawerEyebrow || ""),
       inlineTitle: String(view?.inlineTitle || ""),
@@ -10159,6 +10184,244 @@ ${JSON.stringify(document)}`;
     }
   }
 
+  // ../packages/flow-editor-core/src/rpc/doc-ops.ts
+  async function loadSchema(options = {}) {
+    return callRpc(rpcMethod("schema"), {}, options);
+  }
+  async function loadCapabilities(options = {}) {
+    return callRpc("mobkit/capabilities", {}, options);
+  }
+  async function loadCatalogs(options = {}) {
+    return callRpc(rpcMethod("catalogs"), {}, options);
+  }
+  async function validateDocument(document, options = {}) {
+    const { signal, rkatValidate, rkat_validate, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("validate"), {
+      document,
+      rkat_validate: rkatValidate ?? rkat_validate ?? true,
+      ...requestOptions
+    }, { signal });
+  }
+  async function sourceDocument(document, options = {}) {
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("source"), { document, ...requestOptions }, { signal });
+  }
+  async function exportDocument(document, options = {}) {
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("export"), { document, ...requestOptions }, { signal });
+  }
+  async function deployDocument(document, options = {}) {
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("deploy"), { document, ...requestOptions }, { signal });
+  }
+  async function deployCommandPreviewForDocument(document, options = {}) {
+    const { signal, packPath, prompt: optionPrompt, deploySettings, ...requestOptions } = options || {};
+    const sourceDocument2 = document && typeof document === "object" ? document : {};
+    const deploy = normalizeDeploySettings(sourceDocument2.deploy || deploySettings);
+    const prompt = String(optionPrompt || deploy.prompt || "").trim();
+    const request = {
+      document: {
+        ...sourceDocument2,
+        deploy
+      },
+      ...requestOptions
+    };
+    if (String(packPath || "").trim()) request.pack_path = String(packPath).trim();
+    if (prompt) request.prompt = prompt;
+    return callRpc(rpcMethod("deployCommand"), request, { signal });
+  }
+  async function importDocument(params, options = {}) {
+    return callRpc(rpcMethod("import"), params || {}, options);
+  }
+  async function listDocuments(params = {}, options = {}) {
+    return callRpc(rpcMethod("list"), params || {}, options);
+  }
+  async function getDocument(id, params = {}, options = {}) {
+    return callRpc(rpcMethod("get"), { ...params || {}, id }, options);
+  }
+  async function createDocument(spec = {}, options = {}) {
+    return callRpc(rpcMethod("create"), spec || {}, options);
+  }
+  async function undoDocument(params = {}, options = {}) {
+    return historyStepDocument("undo", params, options);
+  }
+  async function redoDocument(params = {}, options = {}) {
+    return historyStepDocument("redo", params, options);
+  }
+  async function historyStepDocument(direction, params = {}, options = {}) {
+    const { signal } = options || {};
+    const request = { id: String(params.id || "").trim() };
+    const expectedRevision = params.expected_revision ?? params.expectedRevision;
+    if (expectedRevision !== void 0 && expectedRevision !== null && expectedRevision !== "") {
+      request.expected_revision = Number(expectedRevision);
+    }
+    const expectedEtag = String(params.expected_etag ?? params.expectedEtag ?? "").trim();
+    if (expectedEtag) request.expected_etag = expectedEtag;
+    return callRpc(rpcMethod(direction), request, { signal });
+  }
+  async function saveDocument(row = {}, options = {}) {
+    if (flowRegistryRowIsRuntimeProjection(row)) {
+      return {
+        ok: false,
+        error: "runtime_projection_read_only",
+        row: null,
+        reason: "Runtime flow projections must be forked into a MobKit draft before saving."
+      };
+    }
+    const document = row.document;
+    const request = {
+      id: row.id || row.currentFlowId,
+      document,
+      validation: row.validation ?? null,
+      stage: row.stage,
+      trigger: row.trigger,
+      source: row.source
+    };
+    const expectedRevision = row.expectedRevision ?? row.expected_revision ?? row.baseRevision ?? row.base_revision ?? row.revision ?? row.draft_revision;
+    if (expectedRevision !== void 0 && expectedRevision !== null && expectedRevision !== "") {
+      request.expected_revision = Number(expectedRevision);
+    }
+    const expectedEtag = row.expectedEtag ?? row.expected_etag ?? row.draft_etag ?? row.etag;
+    if (expectedEtag) {
+      request.expected_etag = String(expectedEtag);
+    }
+    return callRpc(rpcMethod("save"), request, options);
+  }
+  async function deleteDocument(id, params = {}, options = {}) {
+    return callRpc(rpcMethod("delete"), { ...params || {}, id }, options);
+  }
+  async function applyAuthoringOperationDocument(document, operation, options = {}) {
+    const {
+      signal,
+      catalogSnapshot,
+      catalog_snapshot,
+      expectedCatalogSnapshotId,
+      expected_catalog_snapshot_id,
+      ...requestOptions
+    } = options || {};
+    const expectedSnapshotId = String(
+      expectedCatalogSnapshotId ?? expected_catalog_snapshot_id ?? catalogSnapshot?.id ?? catalog_snapshot?.id ?? catalogSnapshot ?? catalog_snapshot ?? ""
+    ).trim();
+    return callRpc(rpcMethod("applyOperation"), {
+      document,
+      operation,
+      ...expectedSnapshotId ? { expected_catalog_snapshot_id: expectedSnapshotId } : {},
+      ...requestOptions
+    }, { signal });
+  }
+  function isDraftGuardConflictError(error) {
+    const message = String(error?.message || error || "");
+    return message.includes("draft revision conflict") || message.includes("draft etag conflict");
+  }
+  function createAuthoringOperationRunner(options = {}) {
+    const hooks = options && typeof options === "object" ? options : {};
+    let queue = Promise.resolve();
+    const runOperation = async (operation, enqueuedRevision) => {
+      if (hooks.isRevisionCurrent && !hooks.isRevisionCurrent(enqueuedRevision)) {
+        return {
+          ok: false,
+          error: hooks.getStaleError?.() || "MobKit authoring operation result is stale"
+        };
+      }
+      const translatedOperation = authoringOperationFromIntent(operation);
+      const availability = authoringOperationAvailability(
+        hooks.getAuthoringOperations?.() || hooks.authoringOperations || {},
+        translatedOperation?.type
+      );
+      if (!availability.supported) return { ok: false, error: availability.error };
+      const requestToken = hooks.getCurrentRevision?.();
+      let document;
+      try {
+        document = hooks.getCurrentDocument?.();
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) };
+      }
+      let result;
+      try {
+        result = await applyAuthoringOperationDocument(document, translatedOperation, {
+          ...hooks.getDraftGuard?.() || {},
+          catalogSnapshot: hooks.getCatalogSnapshot?.()
+        });
+      } catch (error) {
+        if (!isDraftGuardConflictError(error)) throw error;
+        result = await applyAuthoringOperationDocument(document, translatedOperation, {
+          catalogSnapshot: hooks.getCatalogSnapshot?.()
+        });
+      }
+      if (hooks.isRevisionCurrent && !hooks.isRevisionCurrent(requestToken)) {
+        return {
+          ok: false,
+          error: hooks.getStaleError?.() || "MobKit authoring operation result is stale"
+        };
+      }
+      const projection = authoringProjectionFromOperationResult(result, hooks.getProjectionDefaults?.() || {});
+      if (!projection) {
+        return {
+          ok: false,
+          error: hooks.getMissingDocumentError?.() || "MobKit authoring operation did not return a document"
+        };
+      }
+      hooks.beginProjectionSync?.();
+      hooks.applyProjection?.(projection);
+      hooks.markDraft?.();
+      return result;
+    };
+    return (operation) => {
+      const enqueuedRevision = hooks.getCurrentRevision?.();
+      const run = queue.catch(() => null).then(() => runOperation(operation, enqueuedRevision));
+      queue = run.catch(() => null);
+      return run;
+    };
+  }
+  async function graphProjectionDocument(document, options = {}) {
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("graphProjection"), { document, ...requestOptions }, { signal });
+  }
+  async function graphToFlowDocument(document, options = {}) {
+    const { signal, ...requestOptions } = options || {};
+    return callRpc(rpcMethod("graphToFlow"), { document, ...requestOptions }, { signal });
+  }
+  function importParamsFromDecodedFile(input = {}) {
+    const {
+      filename = "",
+      mediaType = "",
+      kind = "",
+      text = "",
+      parsedJson,
+      contentBase64 = ""
+    } = input;
+    const sourceMeta = {
+      source_name: String(filename || ""),
+      source_media_type: String(mediaType || "")
+    };
+    const filenameText = String(filename || "");
+    const mediaTypeText = String(mediaType || "");
+    const sourceKind = String(kind || inferDecodedFileKind(filenameText, mediaTypeText)).toLowerCase();
+    if (sourceKind === "toml") {
+      return { ...sourceMeta, mob_toml: String(text || "") };
+    }
+    if (sourceKind === "json") {
+      const parsed = Object.prototype.hasOwnProperty.call(input, "parsedJson") ? parsedJson : parseDecodedJsonImport(text, filenameText);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? { ...parsed, ...sourceMeta } : { ...sourceMeta, document: parsed };
+    }
+    return { ...sourceMeta, content_base64: String(contentBase64 || "") };
+  }
+  function inferDecodedFileKind(filename, mediaType) {
+    const name = String(filename || "");
+    const type = String(mediaType || "").toLowerCase();
+    if (/\.toml$/i.test(name) || type.includes("toml")) return "toml";
+    if (/\.json$/i.test(name) || type.includes("json")) return "json";
+    return "binary";
+  }
+  function parseDecodedJsonImport(text, filename = "") {
+    try {
+      return JSON.parse(String(text || ""));
+    } catch (error) {
+      const label = String(filename || "JSON import");
+      throw new Error(`${label} is not valid JSON: ${error?.message || error}`);
+    }
+  }
+
   // ../packages/flow-editor-core/src/studio/state.ts
   function directMemberAddValidation(member, members = [], contract = null) {
     if (!member || typeof member !== "object") {
@@ -10632,6 +10895,7 @@ const {
   agentViewFromSchema,
   apiDisplayRows,
   apiOverlayClearTransition,
+  applyAuthoringOperationDocument,
   authoringDocumentFromState,
   authoringFlowForDocument,
   authoringOperationAvailability,
@@ -10715,11 +10979,16 @@ const {
   contractDefaultValue,
   contractStringValues,
   contractValueAllowed,
+  createAuthoringOperationRunner,
+  createDocument,
   criticalErrorOutcome,
+  deleteDocument,
   dependencyModeAllowed,
   dependencyModeFromStepSource,
   dependencyModeOptions,
+  deployCommandPreviewForDocument,
   deployDefaultsFromSchema,
+  deployDocument,
   deployErrorOutcome,
   deployOutcome,
   deployPlanTraceCloseTransition,
@@ -10767,6 +11036,7 @@ const {
   errorViewForState,
   errorViewFromSchema,
   escapeHtml,
+  exportDocument,
   exportDownloadPayload,
   exportErrorOutcome,
   exportOutcome,
@@ -10833,6 +11103,7 @@ const {
   forkContextOptions,
   framesForDocument,
   freshLaunchModePreservingBudget,
+  getDocument,
   graphAddMenuCloseProjection,
   graphAddMenuOpenProjection,
   graphAddNodeMenuState,
@@ -10893,6 +11164,7 @@ const {
   graphNodeCanvasState,
   graphPortIn,
   graphPortOut,
+  graphProjectionDocument,
   graphProjectionEdgeKinds,
   graphProjectionForDocument,
   graphProjectionForFlow,
@@ -10917,14 +11189,19 @@ const {
   graphTerminalKindPatch,
   graphTerminalPaletteRowsFromSchema,
   graphToFlow,
+  graphToFlowDocument,
   graphToolTagClass,
   graphViewFromSchema,
   hasAuthoringLaunchMode,
   highlightSourceFile,
   highlightTomlSource,
+  historyStepDocument,
   hydrateMobpackDocumentState,
+  importDocument,
   importErrorOutcome,
+  importParamsFromDecodedFile,
   incomingEdges,
+  inferDecodedFileKind,
   inlineSkillRealmIdFromOperationResult,
   inlineSourceBusyTransition,
   inlineSourcePendingTransition,
@@ -10944,6 +11221,7 @@ const {
   inputParamsForStep,
   inputStepDraft,
   instancesForDocument,
+  isDraftGuardConflictError,
   jsonEquivalent,
   laneReaches,
   launchBudgetFixedLimitPatch,
@@ -10964,6 +11242,10 @@ const {
   launchUnsupportedReason,
   launchViewForState,
   launchViewFromSchema,
+  listDocuments,
+  loadCapabilities,
+  loadCatalogs,
+  loadSchema,
   maxInlinePeerNotificationsPatchValueIsValid,
   memberBackendPatch,
   memberBudgetAffordanceState,
@@ -11056,6 +11338,7 @@ const {
   outputFormatAllowed,
   outputFormatOptions,
   parallelFrameLabel,
+  parseDecodedJsonImport,
   parseEditorConditionText,
   parseGraphConditionVar,
   parseLegacyInputFields,
@@ -11115,6 +11398,7 @@ const {
   reconcileToolScopeObject,
   reconcileToolScopesInStep,
   reconcileToolScopesInSteps,
+  redoDocument,
   renameSchemaDefinition,
   repeatCondToGraphCond,
   repeatConditionFromEdge,
@@ -11140,6 +11424,7 @@ const {
   sampleFlowsFromCatalogs,
   sanitizeFlowStepForDocument,
   sanitizeFlowStepsForDocument,
+  saveDocument,
   schemaDefinitionAddErrorState,
   schemaDescriptionPatch,
   schemaEditorControlState,
@@ -11173,6 +11458,7 @@ const {
   skillRealmsFromCatalogs,
   slug,
   sourceDefinitionRefRows,
+  sourceDocument,
   sourceDocumentFromSourceResult,
   sourceDrawerReadyTransition,
   sourceEditorState,
@@ -11213,12 +11499,14 @@ const {
   topRailState,
   trustPolicyOptions,
   tweaksControlState,
+  undoDocument,
   uniqueEnumValue,
   uniqueFlowStepId,
   uniqueInputParamName,
   uniqueSchemaFieldName,
   validMemberToolIds,
   validStepToolSet,
+  validateDocument,
   validateSourceFileMetadata,
   validationErrorOutcome,
   validationOutcome,
@@ -11232,283 +11520,6 @@ const {
 // Keeps deployable document generation and API calls outside the visual JSX.
 
 (function () {
-  async function loadSchema(options = {}) {
-    return callRpc(rpcMethod("schema"), {}, options);
-  }
-
-  async function loadCapabilities(options = {}) {
-    return callRpc("mobkit/capabilities", {}, options);
-  }
-
-  async function loadCatalogs(options = {}) {
-    return callRpc(rpcMethod("catalogs"), {}, options);
-  }
-
-  async function validateDocument(document, options = {}) {
-    const { signal, rkatValidate, rkat_validate, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("validate"), {
-      document,
-      rkat_validate: rkatValidate ?? rkat_validate ?? true,
-      ...requestOptions,
-    }, { signal });
-  }
-
-  async function sourceDocument(document, options = {}) {
-    const { signal, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("source"), { document, ...requestOptions }, { signal });
-  }
-
-  async function exportDocument(document, options = {}) {
-    const { signal, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("export"), { document, ...requestOptions }, { signal });
-  }
-
-  async function deployDocument(document, options = {}) {
-    const { signal, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("deploy"), { document, ...requestOptions }, { signal });
-  }
-
-  async function deployCommandPreviewForDocument(document, options = {}) {
-    const { signal, packPath, prompt: optionPrompt, deploySettings, ...requestOptions } = options || {};
-    const sourceDocument = document && typeof document === "object" ? document : {};
-    const deploy = normalizeDeploySettings(sourceDocument.deploy || deploySettings);
-    const prompt = String(optionPrompt || deploy.prompt || "").trim();
-    const request = {
-      document: {
-        ...sourceDocument,
-        deploy,
-      },
-      ...requestOptions,
-    };
-    if (String(packPath || "").trim()) request.pack_path = String(packPath).trim();
-    if (prompt) request.prompt = prompt;
-    return callRpc(rpcMethod("deployCommand"), request, { signal });
-  }
-
-  async function importDocument(params, options = {}) {
-    return callRpc(rpcMethod("import"), params || {}, options);
-  }
-
-  async function listDocuments(params = {}, options = {}) {
-    return callRpc(rpcMethod("list"), params || {}, options);
-  }
-
-  async function getDocument(id, params = {}, options = {}) {
-    return callRpc(rpcMethod("get"), { ...(params || {}), id }, options);
-  }
-
-  async function createDocument(spec = {}, options = {}) {
-    return callRpc(rpcMethod("create"), spec || {}, options);
-  }
-
-  // MobKit-owned history steps over the draft store: the server restores a
-  // snapshot it recorded itself, so the browser never authors restore state.
-  async function undoDocument(params = {}, options = {}) {
-    return historyStepDocument("undo", params, options);
-  }
-
-  async function redoDocument(params = {}, options = {}) {
-    return historyStepDocument("redo", params, options);
-  }
-
-  async function historyStepDocument(direction, params = {}, options = {}) {
-    const { signal } = options || {};
-    const request = { id: String(params.id || "").trim() };
-    const expectedRevision = params.expected_revision ?? params.expectedRevision;
-    if (expectedRevision !== undefined && expectedRevision !== null && expectedRevision !== "") {
-      request.expected_revision = Number(expectedRevision);
-    }
-    const expectedEtag = String(params.expected_etag ?? params.expectedEtag ?? "").trim();
-    if (expectedEtag) request.expected_etag = expectedEtag;
-    return callRpc(rpcMethod(direction), request, { signal });
-  }
-
-  async function saveDocument(row = {}, options = {}) {
-    if (flowRegistryRowIsRuntimeProjection(row)) {
-      return {
-        ok: false,
-        error: "runtime_projection_read_only",
-        row: null,
-        reason: "Runtime flow projections must be forked into a MobKit draft before saving.",
-      };
-    }
-    const document = row.document;
-    const request = {
-      id: row.id || row.currentFlowId,
-      document,
-      validation: row.validation ?? null,
-      stage: row.stage,
-      trigger: row.trigger,
-      source: row.source,
-    };
-    const expectedRevision = row.expectedRevision ?? row.expected_revision ?? row.baseRevision ?? row.base_revision ?? row.revision ?? row.draft_revision;
-    if (expectedRevision !== undefined && expectedRevision !== null && expectedRevision !== "") {
-      request.expected_revision = Number(expectedRevision);
-    }
-    const expectedEtag = row.expectedEtag ?? row.expected_etag ?? row.draft_etag ?? row.etag;
-    if (expectedEtag) {
-      request.expected_etag = String(expectedEtag);
-    }
-    return callRpc(rpcMethod("save"), request, options);
-  }
-
-  async function deleteDocument(id, params = {}, options = {}) {
-    return callRpc(rpcMethod("delete"), { ...(params || {}), id }, options);
-  }
-
-  async function applyAuthoringOperationDocument(document, operation, options = {}) {
-    const {
-      signal,
-      catalogSnapshot,
-      catalog_snapshot,
-      expectedCatalogSnapshotId,
-      expected_catalog_snapshot_id,
-      ...requestOptions
-    } = options || {};
-    const expectedSnapshotId = String(
-      expectedCatalogSnapshotId
-      ?? expected_catalog_snapshot_id
-      ?? catalogSnapshot?.id
-      ?? catalog_snapshot?.id
-      ?? catalogSnapshot
-      ?? catalog_snapshot
-      ?? "",
-    ).trim();
-    return callRpc(rpcMethod("applyOperation"), {
-      document,
-      operation,
-      ...(expectedSnapshotId ? { expected_catalog_snapshot_id: expectedSnapshotId } : {}),
-      ...requestOptions,
-    }, { signal });
-  }
-
-  function isDraftGuardConflictError(error) {
-    const message = String(error?.message || error || "");
-    return message.includes("draft revision conflict") || message.includes("draft etag conflict");
-  }
-
-  function createAuthoringOperationRunner(options = {}) {
-    const hooks = options && typeof options === "object" ? options : {};
-    let queue = Promise.resolve();
-    const runOperation = async (operation, enqueuedRevision) => {
-      if (hooks.isRevisionCurrent && !hooks.isRevisionCurrent(enqueuedRevision)) {
-        return {
-          ok: false,
-          error: hooks.getStaleError?.() || "MobKit authoring operation result is stale",
-        };
-      }
-      const translatedOperation = authoringOperationFromIntent(operation);
-      const availability = authoringOperationAvailability(
-        hooks.getAuthoringOperations?.() || hooks.authoringOperations || {},
-        translatedOperation?.type,
-      );
-      if (!availability.supported) return { ok: false, error: availability.error };
-      const requestToken = hooks.getCurrentRevision?.();
-      let document;
-      try {
-        document = hooks.getCurrentDocument?.();
-      } catch (error) {
-        return { ok: false, error: error?.message || String(error) };
-      }
-      let result;
-      try {
-        result = await applyAuthoringOperationDocument(document, translatedOperation, {
-          ...(hooks.getDraftGuard?.() || {}),
-          catalogSnapshot: hooks.getCatalogSnapshot?.(),
-        });
-      } catch (error) {
-        if (!isDraftGuardConflictError(error)) throw error;
-        // Our own autosave raced this operation and bumped the draft store
-        // revision. The submitted document is still the freshest authoring
-        // state, so retry once without the optimistic store guard; save-time
-        // concurrency control is unaffected.
-        result = await applyAuthoringOperationDocument(document, translatedOperation, {
-          catalogSnapshot: hooks.getCatalogSnapshot?.(),
-        });
-      }
-      if (hooks.isRevisionCurrent && !hooks.isRevisionCurrent(requestToken)) {
-        return {
-          ok: false,
-          error: hooks.getStaleError?.() || "MobKit authoring operation result is stale",
-        };
-      }
-      const projection = authoringProjectionFromOperationResult(result, hooks.getProjectionDefaults?.() || {});
-      if (!projection) {
-        return {
-          ok: false,
-          error: hooks.getMissingDocumentError?.() || "MobKit authoring operation did not return a document",
-        };
-      }
-      hooks.beginProjectionSync?.();
-      hooks.applyProjection?.(projection);
-      hooks.markDraft?.();
-      return result;
-    };
-    return (operation) => {
-      const enqueuedRevision = hooks.getCurrentRevision?.();
-      const run = queue.catch(() => null).then(() => runOperation(operation, enqueuedRevision));
-      queue = run.catch(() => null);
-      return run;
-    };
-  }
-
-  async function graphProjectionDocument(document, options = {}) {
-    const { signal, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("graphProjection"), { document, ...requestOptions }, { signal });
-  }
-
-  async function graphToFlowDocument(document, options = {}) {
-    const { signal, ...requestOptions } = options || {};
-    return callRpc(rpcMethod("graphToFlow"), { document, ...requestOptions }, { signal });
-  }
-
-  function importParamsFromDecodedFile(input = {}) {
-    const {
-      filename = "",
-      mediaType = "",
-      kind = "",
-      text = "",
-      parsedJson,
-      contentBase64 = "",
-    } = input;
-    const sourceMeta = {
-      source_name: String(filename || ""),
-      source_media_type: String(mediaType || ""),
-    };
-    const filenameText = String(filename || "");
-    const mediaTypeText = String(mediaType || "");
-    const sourceKind = String(kind || inferDecodedFileKind(filenameText, mediaTypeText)).toLowerCase();
-    if (sourceKind === "toml") {
-      return { ...sourceMeta, mob_toml: String(text || "") };
-    }
-    if (sourceKind === "json") {
-      const parsed = Object.prototype.hasOwnProperty.call(input, "parsedJson")
-        ? parsedJson
-        : parseDecodedJsonImport(text, filenameText);
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? { ...parsed, ...sourceMeta }
-        : { ...sourceMeta, document: parsed };
-    }
-    return { ...sourceMeta, content_base64: String(contentBase64 || "") };
-  }
-
-  function inferDecodedFileKind(filename, mediaType) {
-    const name = String(filename || "");
-    const type = String(mediaType || "").toLowerCase();
-    if (/\.toml$/i.test(name) || type.includes("toml")) return "toml";
-    if (/\.json$/i.test(name) || type.includes("json")) return "json";
-    return "binary";
-  }
-
-  function parseDecodedJsonImport(text, filename = "") {
-    try {
-      return JSON.parse(String(text || ""));
-    } catch (error) {
-      const label = String(filename || "JSON import");
-      throw new Error(`${label} is not valid JSON: ${error?.message || error}`);
-    }
-  }
-
   const MobKitFlowController = {
     SCHEMA_VERSION,
     RPC_METHODS,

@@ -19,6 +19,7 @@ export * from "./flow/step-tree";
 export * from "./members/patches";
 export * from "./registry/flow-registry";
 export * from "./rpc/client";
+export * from "./rpc/doc-ops";
 export * from "./schema/field-edit";
 export * from "./shared/constants";
 export * from "./shared/normalize";
