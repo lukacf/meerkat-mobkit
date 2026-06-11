@@ -16,26 +16,28 @@
 // cascade patches.
 //
 // Straggler edges go through the lazy _residue-bridge until their home
-// slices land: reconcileConditionFieldAvailability and
-// reconcileSchemaFieldReferences stay in the residue until S8
-// (flow/reconcile) and basicEditorViewState until S11
-// (editors/basic-editor). contractDefaultValue and schemaFieldTypeOptions
-// landed in contract/options.ts in S6 and are imported relatively, like the
-// two facade-internal stragglers no bridge could reach — contractStringValues
-// and editorSchemaFieldNameFallback — which were co-moved into their
-// design-destined homes (contract/options.ts, drafts/mob-settings.ts) in S5.
+// slices land: basicEditorViewState stays in the residue until S11
+// (editors/basic-editor). reconcileConditionFieldAvailability and
+// reconcileSchemaFieldReferences landed in flow/reconcile.ts in S8 and are
+// imported relatively (a runtime-only cycle with reconcile's
+// enumValuesForField import — no module-init cross-calls), like
+// contractDefaultValue and schemaFieldTypeOptions from contract/options.ts
+// in S6 and the two facade-internal stragglers no bridge could reach —
+// contractStringValues and editorSchemaFieldNameFallback — which were
+// co-moved into their design-destined homes (contract/options.ts,
+// drafts/mob-settings.ts) in S5.
 import {
   contractDefaultValue,
   contractStringValues,
   schemaFieldTypeOptions,
 } from "../contract/options";
 import { editorSchemaFieldNameFallback } from "../drafts/mob-settings";
-import { schemaViewForState, viewStringMapFromSchema } from "../views/view-config";
 import {
-  basicEditorViewState,
   reconcileConditionFieldAvailability,
   reconcileSchemaFieldReferences,
-} from "../_residue-bridge";
+} from "../flow/reconcile";
+import { schemaViewForState, viewStringMapFromSchema } from "../views/view-config";
+import { basicEditorViewState } from "../_residue-bridge";
 
 export function conditionViewFromSchema(schema) {
   const view = schema?.mob_definition?.editor_condition_view;

@@ -1,5 +1,5 @@
 // Temporary residue bridge — each wrapper is removed when its home slice
-// lands (S8 flow/reconcile, S11 editors).
+// lands (S11 editors, S17 catalogs/hydration).
 //
 // Package modules normally import each other relatively and never touch
 // window or the facade. The ONE sanctioned exception (extraction-design
@@ -20,13 +20,14 @@
 // - contract/options.ts graph option/menu builders -> graphCanvasViewState,
 //   contract/options.ts graphAddMenuOpenProjection -> graphCellXY
 //   (residue until the S11 editors/graph-editor.ts slice).
-// - schema/field-edit.ts schemaFieldUpdate/Rename/DeleteCascadePatch ->
-//   reconcileConditionFieldAvailability + reconcileSchemaFieldReferences
-//   (residue until the S8 flow/reconcile.ts slice).
+// - flow/reconcile.ts deploy settings reconciliation/patches ->
+//   deploySettingsForUi (residue until the S17 catalogs/hydration.ts slice).
 //
 // The S6 wrappers (contractDefaultValue, schemaFieldTypeOptions) were
-// retired when contract/options.ts landed; importers now use the package
-// module relatively.
+// retired when contract/options.ts landed, and the S8 wrappers
+// (reconcileConditionFieldAvailability, reconcileSchemaFieldReferences)
+// when flow/reconcile.ts landed; importers now use the package modules
+// relatively.
 export function basicEditorViewState(basicView: unknown) {
   return (window as any).MobKitFlowController.basicEditorViewState(basicView);
 }
@@ -39,10 +40,6 @@ export function graphCellXY(grid: unknown, col: unknown, row: unknown) {
   return (window as any).MobKitFlowController.graphCellXY(grid, col, row);
 }
 
-export function reconcileConditionFieldAvailability(spec: unknown) {
-  return (window as any).MobKitFlowController.reconcileConditionFieldAvailability(spec);
-}
-
-export function reconcileSchemaFieldReferences(spec: unknown) {
-  return (window as any).MobKitFlowController.reconcileSchemaFieldReferences(spec);
+export function deploySettingsForUi(deploy: unknown) {
+  return (window as any).MobKitFlowController.deploySettingsForUi(deploy);
 }

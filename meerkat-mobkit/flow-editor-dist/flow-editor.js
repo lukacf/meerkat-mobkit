@@ -85,15 +85,24 @@ var MobKitFlowCore = (() => {
     callRpc: () => callRpc,
     canonicalBudgetSplitPolicyKind: () => canonicalBudgetSplitPolicyKind,
     canonicalLaunchModeKind: () => canonicalLaunchModeKind,
+    catalogValueAllowed: () => catalogValueAllowed,
     childLanes: () => childLanes,
+    clearDeletedLaunchSource: () => clearDeletedLaunchSource,
+    clearDeletedStepCondition: () => clearDeletedStepCondition,
+    clearDeletedStepConditionText: () => clearDeletedStepConditionText,
+    clearUnavailableConditionText: () => clearUnavailableConditionText,
+    clearUnavailableEditorCondition: () => clearUnavailableEditorCondition,
     collectFlowBranchIds: () => collectFlowBranchIds,
     collectFlowStepIds: () => collectFlowStepIds,
     collectVisualSteps: () => collectVisualSteps,
     collectionPolicyAllowed: () => collectionPolicyAllowed,
     collectionPolicyOptions: () => collectionPolicyOptions,
+    conditionFieldValueAvailable: () => conditionFieldValueAvailable,
     conditionOperatorOptions: () => conditionOperatorOptions,
+    conditionTextForPath: () => conditionTextForPath,
     conditionTextFromEdge: () => conditionTextFromEdge,
     conditionValueControl: () => conditionValueControl,
+    conditionValueLiteral: () => conditionValueLiteral,
     conditionViewForState: () => conditionViewForState,
     conditionViewFromSchema: () => conditionViewFromSchema,
     configure: () => configure,
@@ -102,9 +111,12 @@ var MobKitFlowCore = (() => {
     contractDefaultRaw: () => contractDefaultRaw,
     contractDefaultValue: () => contractDefaultValue,
     contractStringValues: () => contractStringValues,
+    contractValueAllowed: () => contractValueAllowed,
     dependencyModeAllowed: () => dependencyModeAllowed,
     dependencyModeOptions: () => dependencyModeOptions,
     deployRuntimeCompatibility: () => deployRuntimeCompatibility,
+    deploySettingsFieldPatch: () => deploySettingsFieldPatch,
+    deploySettingsPatch: () => deploySettingsPatch,
     deploySurfaceOptions: () => deploySurfaceOptions,
     deploySurfaceRuntimeModes: () => deploySurfaceRuntimeModes,
     deployViewForState: () => deployViewForState,
@@ -112,6 +124,8 @@ var MobKitFlowCore = (() => {
     dispatchModeAllowed: () => dispatchModeAllowed,
     dispatchModeOptions: () => dispatchModeOptions,
     edgeConditionToEditorCond: () => edgeConditionToEditorCond,
+    editorConditionFieldAvailable: () => editorConditionFieldAvailable,
+    editorConditionText: () => editorConditionText,
     editorFlowPrimitiveOptions: () => editorFlowPrimitiveOptions,
     editorGraphDraftContract: () => editorGraphDraftContract,
     editorInputParamDraftContract: () => editorInputParamDraftContract,
@@ -133,11 +147,14 @@ var MobKitFlowCore = (() => {
     firstContractValue: () => firstContractValue,
     firstDeploySurfaceRuntimeMode: () => firstDeploySurfaceRuntimeMode,
     firstSupportedOption: () => firstSupportedOption,
+    flowLaunchSourceSet: () => flowLaunchSourceSet,
     flowRegistryViewForState: () => flowRegistryViewForState,
     flowRegistryViewFromSchema: () => flowRegistryViewFromSchema,
+    flowStepSchemaIndex: () => flowStepSchemaIndex,
     flowStepTemplate: () => flowStepTemplate,
     forkContextAllowed: () => forkContextAllowed,
     forkContextOptions: () => forkContextOptions,
+    freshLaunchModePreservingBudget: () => freshLaunchModePreservingBudget,
     graphAddMenuCloseProjection: () => graphAddMenuCloseProjection,
     graphAddMenuOpenProjection: () => graphAddMenuOpenProjection,
     graphAddNodeMenuState: () => graphAddNodeMenuState,
@@ -147,6 +164,7 @@ var MobKitFlowCore = (() => {
     graphGateKindOptions: () => graphGateKindOptions,
     graphGatePaletteRowsFromSchema: () => graphGatePaletteRowsFromSchema,
     graphInstanceIdSet: () => graphInstanceIdSet,
+    graphLaunchSourceSet: () => graphLaunchSourceSet,
     graphTemplateQuickStartRowsFromSchema: () => graphTemplateQuickStartRowsFromSchema,
     graphTemplateViewForState: () => graphTemplateViewForState,
     graphTemplateViewFromSchema: () => graphTemplateViewFromSchema,
@@ -157,6 +175,7 @@ var MobKitFlowCore = (() => {
     inlineSkillRealmIdFromOperationResult: () => inlineSkillRealmIdFromOperationResult,
     inputParamFieldControlState: () => inputParamFieldControlState,
     inputParamName: () => inputParamName,
+    inputParamNameSet: () => inputParamNameSet,
     inputStepDraft: () => inputStepDraft,
     jsonEquivalent: () => jsonEquivalent,
     launchBudgetFixedLimitPatch: () => launchBudgetFixedLimitPatch,
@@ -177,13 +196,28 @@ var MobKitFlowCore = (() => {
     launchUnsupportedReason: () => launchUnsupportedReason,
     launchViewForState: () => launchViewForState,
     launchViewFromSchema: () => launchViewFromSchema,
+    memberBackendPatch: () => memberBackendPatch,
     memberDisplayName: () => memberDisplayName,
+    memberIdSet: () => memberIdSet,
     memberInlineSkillPatch: () => memberInlineSkillPatch,
+    memberMaxInlinePeerNotificationsPatch: () => memberMaxInlinePeerNotificationsPatch,
+    memberModelPatch: () => memberModelPatch,
+    memberNamePatch: () => memberNamePatch,
+    memberProfileBindingPatch: () => memberProfileBindingPatch,
+    memberPromptSkeleton: () => memberPromptSkeleton,
+    memberProviderParamsEditorState: () => memberProviderParamsEditorState,
+    memberProviderParamsPatch: () => memberProviderParamsPatch,
+    memberRealmProfilePatch: () => memberRealmProfilePatch,
+    memberRuntimeModePatch: () => memberRuntimeModePatch,
+    memberSchemaCascadePatch: () => memberSchemaCascadePatch,
+    memberSchemaPatch: () => memberSchemaPatch,
     memberSkillAccessState: () => memberSkillAccessState,
     memberSkillRemovePatch: () => memberSkillRemovePatch,
     memberSkillTogglePatch: () => memberSkillTogglePatch,
+    memberSystemPromptPatch: () => memberSystemPromptPatch,
     memberToolAccessPatch: () => memberToolAccessPatch,
     memberToolAccessState: () => memberToolAccessState,
+    memberToolIndex: () => memberToolIndex,
     memberToolRemovePatch: () => memberToolRemovePatch,
     mobBackendDefaultOptions: () => mobBackendDefaultOptions,
     mobDefaultsFromSchema: () => mobDefaultsFromSchema,
@@ -196,7 +230,9 @@ var MobKitFlowCore = (() => {
     mobRoleWiringSourcePatch: () => mobRoleWiringSourcePatch,
     mobRoleWiringTargetPatch: () => mobRoleWiringTargetPatch,
     mobRoleWiringUpdatePatch: () => mobRoleWiringUpdatePatch,
+    mobSettingsFieldPatch: () => mobSettingsFieldPatch,
     mobSettingsForUi: () => mobSettingsForUi,
+    mobSettingsPatch: () => mobSettingsPatch,
     newFlowViewForState: () => newFlowViewForState,
     newFlowViewFromSchema: () => newFlowViewFromSchema,
     normalizeBudgetSplitPolicy: () => normalizeBudgetSplitPolicy,
@@ -221,16 +257,72 @@ var MobKitFlowCore = (() => {
     normalizedEdgeCondition: () => normalizedEdgeCondition,
     numberOrNull: () => numberOrNull,
     operationErrorText: () => operationErrorText,
+    optionValueAllowed: () => optionValueAllowed,
     outputFormatAllowed: () => outputFormatAllowed,
     outputFormatOptions: () => outputFormatOptions,
+    parseEditorConditionText: () => parseEditorConditionText,
     profileBackendOptions: () => profileBackendOptions,
     profileBindingOptions: () => profileBindingOptions,
     profileBindingRestriction: () => profileBindingRestriction,
     profileName: () => profileName,
+    pruneMissingMemberStep: () => pruneMissingMemberStep,
+    pruneMissingMemberSteps: () => pruneMissingMemberSteps,
     realmBackendOptions: () => realmBackendOptions,
+    reconcileAuthoringForMembers: () => reconcileAuthoringForMembers,
+    reconcileAuthoringWithContract: () => reconcileAuthoringWithContract,
+    reconcileConditionAvailabilityInEdges: () => reconcileConditionAvailabilityInEdges,
+    reconcileConditionAvailabilityInFlow: () => reconcileConditionAvailabilityInFlow,
+    reconcileConditionAvailabilityInStep: () => reconcileConditionAvailabilityInStep,
+    reconcileConditionAvailabilityInSteps: () => reconcileConditionAvailabilityInSteps,
+    reconcileConditionFieldAvailability: () => reconcileConditionFieldAvailability,
+    reconcileControlRoleObject: () => reconcileControlRoleObject,
+    reconcileControlRolesInStep: () => reconcileControlRolesInStep,
+    reconcileControlRolesInSteps: () => reconcileControlRolesInSteps,
+    reconcileDeletedFlowStepReferences: () => reconcileDeletedFlowStepReferences,
+    reconcileDeletedFlowStepReferencesInStep: () => reconcileDeletedFlowStepReferencesInStep,
+    reconcileDeletedFlowStepReferencesInSteps: () => reconcileDeletedFlowStepReferencesInSteps,
+    reconcileDeploySettingsWithContract: () => reconcileDeploySettingsWithContract,
+    reconcileFlowControlRoles: () => reconcileFlowControlRoles,
+    reconcileFlowLaunchSources: () => reconcileFlowLaunchSources,
+    reconcileFlowMemberSchemas: () => reconcileFlowMemberSchemas,
+    reconcileFlowMemberSteps: () => reconcileFlowMemberSteps,
+    reconcileFlowStepToolScopes: () => reconcileFlowStepToolScopes,
+    reconcileGraphControlRoles: () => reconcileGraphControlRoles,
+    reconcileGraphLaunchSources: () => reconcileGraphLaunchSources,
+    reconcileGraphMemberInstances: () => reconcileGraphMemberInstances,
+    reconcileGraphStepToolScopes: () => reconcileGraphStepToolScopes,
+    reconcileInputParamReferences: () => reconcileInputParamReferences,
+    reconcileInputParamReferencesInEdges: () => reconcileInputParamReferencesInEdges,
+    reconcileInputParamReferencesInFlow: () => reconcileInputParamReferencesInFlow,
+    reconcileInputParamReferencesInStep: () => reconcileInputParamReferencesInStep,
+    reconcileInputParamReferencesInSteps: () => reconcileInputParamReferencesInSteps,
+    reconcileLaunchSourceObject: () => reconcileLaunchSourceObject,
+    reconcileLaunchSourcesInStep: () => reconcileLaunchSourcesInStep,
+    reconcileLaunchSourcesInSteps: () => reconcileLaunchSourcesInSteps,
+    reconcileMemberSchemaInStep: () => reconcileMemberSchemaInStep,
+    reconcileMemberSchemaRefs: () => reconcileMemberSchemaRefs,
+    reconcileMemberSchemasInSteps: () => reconcileMemberSchemasInSteps,
+    reconcileMemberSkillRefs: () => reconcileMemberSkillRefs,
+    reconcileMembersWithContract: () => reconcileMembersWithContract,
+    reconcileMobSettingsProfiles: () => reconcileMobSettingsProfiles,
+    reconcileMobSettingsWithContract: () => reconcileMobSettingsWithContract,
+    reconcileSchemaFieldReferences: () => reconcileSchemaFieldReferences,
+    reconcileSchemaFieldReferencesInEdges: () => reconcileSchemaFieldReferencesInEdges,
+    reconcileSchemaFieldReferencesInFlow: () => reconcileSchemaFieldReferencesInFlow,
+    reconcileSchemaFieldReferencesInStep: () => reconcileSchemaFieldReferencesInStep,
+    reconcileSchemaFieldReferencesInSteps: () => reconcileSchemaFieldReferencesInSteps,
+    reconcileStringField: () => reconcileStringField,
+    reconcileToolScopeObject: () => reconcileToolScopeObject,
+    reconcileToolScopesInStep: () => reconcileToolScopesInStep,
+    reconcileToolScopesInSteps: () => reconcileToolScopesInSteps,
+    renameSchemaDefinition: () => renameSchemaDefinition,
     repeatConditionFromEdge: () => repeatConditionFromEdge,
     repeatIterationInputOptions: () => repeatIterationInputOptions,
     reserveFlowBranchId: () => reserveFlowBranchId,
+    rewriteConditionTextReference: () => rewriteConditionTextReference,
+    rewriteEditorCondition: () => rewriteEditorCondition,
+    rewriteInputParamCondition: () => rewriteInputParamCondition,
+    rewriteInputParamConditionText: () => rewriteInputParamConditionText,
     roleAccentColor: () => roleAccentColor,
     roleAccentStyle: () => roleAccentStyle,
     roleWiringOptionValues: () => roleWiringOptionValues,
@@ -242,13 +334,16 @@ var MobKitFlowCore = (() => {
     schemaDescriptionPatch: () => schemaDescriptionPatch,
     schemaFieldDeleteCascadePatch: () => schemaFieldDeleteCascadePatch,
     schemaFieldDeletePatch: () => schemaFieldDeletePatch,
+    schemaFieldForCondition: () => schemaFieldForCondition,
     schemaFieldName: () => schemaFieldName,
+    schemaFieldNameIndex: () => schemaFieldNameIndex,
     schemaFieldRenameCascadePatch: () => schemaFieldRenameCascadePatch,
     schemaFieldRowControlState: () => schemaFieldRowControlState,
     schemaFieldTypeAllowedSet: () => schemaFieldTypeAllowedSet,
     schemaFieldTypeOptions: () => schemaFieldTypeOptions,
     schemaFieldUpdateCascadePatch: () => schemaFieldUpdateCascadePatch,
     schemaFieldUpdatePatch: () => schemaFieldUpdatePatch,
+    schemaHasField: () => schemaHasField,
     schemaLikeFieldDescriptionPatch: () => schemaLikeFieldDescriptionPatch,
     schemaLikeFieldRequiredPatch: () => schemaLikeFieldRequiredPatch,
     schemaLikeFieldTypeControlState: () => schemaLikeFieldTypeControlState,
@@ -260,7 +355,9 @@ var MobKitFlowCore = (() => {
     settingsViewLabelMapFromSchema: () => settingsViewLabelMapFromSchema,
     settingsViewOptionsFromSchema: () => settingsViewOptionsFromSchema,
     simpleContractOptions: () => simpleContractOptions,
+    skillIdSet: () => skillIdSet,
     skillIdsFromRealms: () => skillIdsFromRealms,
+    skillRealmsForDocument: () => skillRealmsForDocument,
     slug: () => slug,
     stepToolScopeAddPatch: () => stepToolScopeAddPatch,
     stepToolScopeRemovePatch: () => stepToolScopeRemovePatch,
@@ -1460,11 +1557,8 @@ var MobKitFlowCore = (() => {
   function graphCellXY(grid, col, row) {
     return window.MobKitFlowController.graphCellXY(grid, col, row);
   }
-  function reconcileConditionFieldAvailability(spec) {
-    return window.MobKitFlowController.reconcileConditionFieldAvailability(spec);
-  }
-  function reconcileSchemaFieldReferences(spec) {
-    return window.MobKitFlowController.reconcileSchemaFieldReferences(spec);
+  function deploySettingsForUi(deploy) {
+    return window.MobKitFlowController.deploySettingsForUi(deploy);
   }
 
   // ../packages/flow-editor-core/src/domain/tool-skill-access.ts
@@ -2823,6 +2917,1293 @@ var MobKitFlowCore = (() => {
     return [prefix, String(index || 1)].filter(Boolean).join(" ");
   }
 
+  // ../packages/flow-editor-core/src/shared/constants.ts
+  var SCHEMA_VERSION = "0.1.0";
+  var RPC_METHODS = {
+    schema: "mobkit/mobpacks/schema",
+    catalogs: "mobkit/mobpacks/catalogs",
+    validate: "mobkit/mobpacks/validate",
+    source: "mobkit/mobpacks/source",
+    export: "mobkit/mobpacks/export",
+    import: "mobkit/mobpacks/import",
+    list: "mobkit/mobpacks/list",
+    get: "mobkit/mobpacks/get",
+    create: "mobkit/mobpacks/create",
+    save: "mobkit/mobpacks/save",
+    delete: "mobkit/mobpacks/delete",
+    undo: "mobkit/mobpacks/undo",
+    redo: "mobkit/mobpacks/redo",
+    applyOperation: "mobkit/mobpacks/apply_operation",
+    graphProjection: "mobkit/mobpacks/graph_projection",
+    graphToFlow: "mobkit/mobpacks/graph_to_flow",
+    deployCommand: "mobkit/mobpacks/deploy_command",
+    deploy: "mobkit/mobpacks/deploy"
+  };
+  var SCHEMA_COMMAND_KEYS = {
+    schema: "schema",
+    catalogs: "catalogs",
+    validate: "validate",
+    source: "source",
+    export: "export",
+    import: "import",
+    list: "list",
+    get: "get",
+    create: "create",
+    save: "save",
+    delete: "delete",
+    undo: "undo",
+    redo: "redo",
+    applyOperation: "apply_operation",
+    graphProjection: "graph_projection",
+    graphToFlow: "graph_to_flow",
+    deployCommand: "deploy_command",
+    deploy: "deploy_rpc"
+  };
+  var EMPTY_DEPLOY_SETTINGS = {
+    command: "",
+    surface: "",
+    trustPolicy: "",
+    model: "",
+    maxDuration: "",
+    maxToolCalls: null,
+    maxTotalTokens: null,
+    isolated: false,
+    realm: "",
+    instance: "",
+    realmBackend: "",
+    contextRoot: "",
+    stateRoot: "",
+    userConfigRoot: "",
+    prompt: ""
+  };
+  var EMPTY_MOB_SETTINGS = {
+    orchestrator: "",
+    autoWireOrchestrator: false,
+    roleWiring: [],
+    backendDefault: "",
+    externalAddressBase: "",
+    advanced: {
+      topology: null,
+      supervisor: null,
+      limits: null,
+      spawnPolicy: null,
+      eventRouter: null
+    }
+  };
+  var MOB_SETTINGS_PATCH_KEYS = new Set(Object.keys(EMPTY_MOB_SETTINGS));
+  var GRAPH_NODE_W = 200;
+  var GRAPH_NODE_H = 156;
+
+  // ../packages/flow-editor-core/src/flow/reconcile.ts
+  function reconcileDeletedFlowStepReferences(flow, deletedId) {
+    if (!flow || typeof flow !== "object") return flow;
+    const target = String(deletedId || "").trim();
+    if (!target) return flow;
+    const steps = reconcileDeletedFlowStepReferencesInSteps(flow.steps || [], target);
+    return steps === flow.steps ? flow : { ...flow, steps };
+  }
+  function reconcileDeletedFlowStepReferencesInSteps(steps, deletedId) {
+    let changed = false;
+    const next = (steps || []).map((step) => {
+      const reconciled = reconcileDeletedFlowStepReferencesInStep(step, deletedId);
+      if (reconciled !== step) changed = true;
+      return reconciled;
+    });
+    return changed ? next : steps;
+  }
+  function reconcileDeletedFlowStepReferencesInStep(step, deletedId) {
+    if (!step || typeof step !== "object") return step;
+    let next = clearDeletedLaunchSource(step, deletedId);
+    if (step.type === "repeat") {
+      const cond = clearDeletedStepCondition(step.cond, deletedId);
+      const until = clearDeletedStepConditionText(step.until, deletedId, cond);
+      const nested = reconcileDeletedFlowStepReferencesInSteps(step.steps || [], deletedId);
+      if (cond !== step.cond || until !== step.until || nested !== step.steps) {
+        next = { ...next, cond, until, steps: nested };
+      }
+    }
+    if (step.type === "branch") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const cond = clearDeletedStepCondition(branch.cond, deletedId);
+        const condition = clearDeletedStepConditionText(branch.condition, deletedId, cond);
+        const branchSteps = reconcileDeletedFlowStepReferencesInSteps(branch.steps || [], deletedId);
+        if (cond === branch.cond && condition === branch.condition && branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, cond, condition, steps: branchSteps };
+      });
+      const fallback = Array.isArray(step.fallback) ? reconcileDeletedFlowStepReferencesInSteps(step.fallback, deletedId) : step.fallback;
+      if (fallback !== step.fallback) changed = true;
+      if (changed) next = { ...next, branches, fallback };
+    }
+    if (step.type === "parallel") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const branchSteps = reconcileDeletedFlowStepReferencesInSteps(branch.steps || [], deletedId);
+        if (branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, steps: branchSteps };
+      });
+      if (changed) next = { ...next, branches };
+    }
+    return next;
+  }
+  function clearDeletedLaunchSource(source, deletedId) {
+    const mode = launchModeFromAuthoringSource(source);
+    if (!mode || mode.kind !== "Fork" || String(mode.from || "").trim() !== deletedId) return source;
+    return {
+      ...source,
+      launchMode: freshLaunchModePreservingBudget(mode)
+    };
+  }
+  function freshLaunchModePreservingBudget(mode) {
+    const budgetSplitPolicy = mode?.budgetSplitPolicy;
+    return budgetSplitPolicy ? { kind: "Fresh", budgetSplitPolicy } : { kind: "Fresh" };
+  }
+  function clearDeletedStepCondition(cond, deletedId) {
+    if (!cond || typeof cond !== "object") return cond;
+    const stepId = String(cond.stepId || cond.step_id || "").trim();
+    if (stepId !== deletedId) return cond;
+    return {};
+  }
+  function clearDeletedStepConditionText(text, deletedId, preferredCond) {
+    if (preferredCond !== void 0) {
+      if (preferredCond && preferredCond.field) return editorConditionText(preferredCond);
+      return "";
+    }
+    if (!text) return text;
+    const parsed = parseEditorConditionText(text);
+    if (!parsed || parsed.namespace === "params" || parsed.stepId !== deletedId) return text;
+    return "";
+  }
+  function reconcileFlowMemberSchemas(flow, members) {
+    if (!flow || typeof flow !== "object") return flow;
+    const memberById = new Map((members || []).map((member) => [member.id, member]));
+    const steps = reconcileMemberSchemasInSteps(flow.steps || [], memberById);
+    return steps === flow.steps ? flow : { ...flow, steps };
+  }
+  function renameSchemaDefinition({ schemas, members, flow } = {}, oldId, newId) {
+    const previousId = String(oldId || "").trim();
+    const nextId = String(newId || "").trim();
+    const sourceSchemas = Array.isArray(schemas) ? schemas : [];
+    const sourceMembers = Array.isArray(members) ? members : [];
+    if (!previousId || !nextId || previousId === nextId) {
+      return { schemas: sourceSchemas, members: sourceMembers, flow, renamed: false, selection: null };
+    }
+    if (sourceSchemas.some((schema) => String(schema?.id || "").trim() === nextId)) {
+      return {
+        schemas: sourceSchemas,
+        members: sourceMembers,
+        flow,
+        renamed: false,
+        selection: null,
+        reason: "duplicate_schema_id"
+      };
+    }
+    let found = false;
+    const nextSchemas = sourceSchemas.map((schema) => {
+      if (String(schema?.id || "").trim() !== previousId) return schema;
+      found = true;
+      return { ...schema, id: nextId };
+    });
+    if (!found) {
+      return {
+        schemas: sourceSchemas,
+        members: sourceMembers,
+        flow,
+        renamed: false,
+        selection: null,
+        reason: "unknown_schema_id"
+      };
+    }
+    const nextMembers = sourceMembers.map(
+      (member) => String(member?.schema || "").trim() === previousId ? { ...member, schema: nextId } : member
+    );
+    return {
+      schemas: nextSchemas,
+      members: nextMembers,
+      flow: reconcileFlowMemberSchemas(flow, nextMembers),
+      renamed: true,
+      selection: { kind: "schema", id: nextId }
+    };
+  }
+  function reconcileFlowMemberSteps(flow, members) {
+    if (!flow || typeof flow !== "object") return flow;
+    const memberIds = memberIdSet(members);
+    const steps = pruneMissingMemberSteps(flow.steps || [], memberIds);
+    return steps === flow.steps ? flow : { ...flow, steps };
+  }
+  function pruneMissingMemberSteps(steps, memberIds) {
+    let changed = false;
+    const next = [];
+    for (const step of steps || []) {
+      const pruned = pruneMissingMemberStep(step, memberIds);
+      if (!pruned) {
+        changed = true;
+        continue;
+      }
+      if (pruned !== step) changed = true;
+      next.push(pruned);
+    }
+    return changed ? next : steps;
+  }
+  function pruneMissingMemberStep(step, memberIds) {
+    if (!step || typeof step !== "object") return step;
+    if (step.type === "member") {
+      const role = String(step.role || "").trim();
+      return role && memberIds.has(role) ? step : null;
+    }
+    if (step.type === "repeat") {
+      const steps = pruneMissingMemberSteps(step.steps || [], memberIds);
+      return steps === step.steps ? step : { ...step, steps };
+    }
+    if (step.type === "branch" || step.type === "parallel") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const branchSteps = pruneMissingMemberSteps(branch?.steps || [], memberIds);
+        if (branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, steps: branchSteps };
+      });
+      const fallback = Array.isArray(step.fallback) ? pruneMissingMemberSteps(step.fallback, memberIds) : step.fallback;
+      if (fallback !== step.fallback) changed = true;
+      return changed ? { ...step, branches, fallback } : step;
+    }
+    return step;
+  }
+  function reconcileFlowControlRoles(flow, members) {
+    if (!flow || typeof flow !== "object") return flow;
+    const memberIds = memberIdSet(members);
+    const steps = reconcileControlRolesInSteps(flow.steps || [], memberIds);
+    return steps === flow.steps ? flow : { ...flow, steps };
+  }
+  function reconcileGraphControlRoles(instances, members) {
+    const memberIds = memberIdSet(members);
+    let changed = false;
+    const next = (instances || []).map((instance) => {
+      const reconciled = reconcileControlRoleObject(instance, memberIds);
+      if (reconciled !== instance) changed = true;
+      return reconciled;
+    });
+    return changed ? next : instances;
+  }
+  function reconcileGraphMemberInstances({ instances, edges }, members) {
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    const sourceEdges = Array.isArray(edges) ? edges : [];
+    const memberIds = memberIdSet(members);
+    const keptIds = /* @__PURE__ */ new Set();
+    let instancesChanged = false;
+    const nextInstances = [];
+    for (const instance of sourceInstances) {
+      const memberId = String(instance?.memberId || "").trim();
+      const keep = !memberId || memberIds.has(memberId);
+      if (!keep) {
+        instancesChanged = true;
+        continue;
+      }
+      const id = String(instance?.id || "").trim();
+      if (id) keptIds.add(id);
+      nextInstances.push(instance);
+    }
+    let edgesChanged = false;
+    const nextEdges = sourceEdges.filter((edge) => {
+      const from = String(edge?.from || "").trim();
+      const to = String(edge?.to || "").trim();
+      const keep = (!from || keptIds.has(from)) && (!to || keptIds.has(to));
+      if (!keep) edgesChanged = true;
+      return keep;
+    });
+    return {
+      instances: instancesChanged ? nextInstances : instances,
+      edges: edgesChanged ? nextEdges : edges
+    };
+  }
+  function reconcileFlowLaunchSources(flow, members) {
+    if (!flow || typeof flow !== "object") return flow;
+    const allowedSources = flowLaunchSourceSet(flow, members);
+    const steps = reconcileLaunchSourcesInSteps(flow.steps || [], allowedSources);
+    return steps === flow.steps ? flow : { ...flow, steps };
+  }
+  function reconcileGraphLaunchSources(instances, members) {
+    const allowedSources = graphLaunchSourceSet(instances, members);
+    let changed = false;
+    const next = (instances || []).map((instance) => {
+      const reconciled = reconcileLaunchSourceObject(instance, allowedSources);
+      if (reconciled !== instance) changed = true;
+      return reconciled;
+    });
+    return changed ? next : instances;
+  }
+  function reconcileFlowStepToolScopes(flow, members) {
+    if (!flow || typeof flow !== "object") return flow;
+    const memberTools = memberToolIndex(members);
+    const steps = reconcileToolScopesInSteps(flow.steps || [], (step) => memberTools.get(step?.role) || /* @__PURE__ */ new Set());
+    return steps === flow.steps ? flow : { ...flow, steps };
+  }
+  function reconcileGraphStepToolScopes(instances, members) {
+    const memberTools = memberToolIndex(members);
+    let changed = false;
+    const next = (instances || []).map((instance) => {
+      if (!instance?.memberId) return instance;
+      const reconciled = reconcileToolScopeObject(instance, memberTools.get(instance.memberId) || /* @__PURE__ */ new Set());
+      if (reconciled !== instance) changed = true;
+      return reconciled;
+    });
+    return changed ? next : instances;
+  }
+  function reconcileAuthoringForMembers({ flow, instances, edges, mobSettings, previousMembers, members } = {}) {
+    const nextMembers = Array.isArray(members) ? members : [];
+    let nextFlow = reconcileFlowMemberSteps(flow, nextMembers);
+    nextFlow = reconcileFlowMemberSchemas(nextFlow, nextMembers);
+    nextFlow = reconcileFlowControlRoles(nextFlow, nextMembers);
+    nextFlow = reconcileFlowLaunchSources(nextFlow, nextMembers);
+    nextFlow = reconcileFlowStepToolScopes(nextFlow, nextMembers);
+    const memberSynced = reconcileGraphMemberInstances({ instances, edges }, nextMembers);
+    let nextInstances = reconcileGraphControlRoles(memberSynced.instances, nextMembers);
+    nextInstances = reconcileGraphLaunchSources(nextInstances, nextMembers);
+    nextInstances = reconcileGraphStepToolScopes(nextInstances, nextMembers);
+    return {
+      flow: nextFlow,
+      instances: nextInstances,
+      edges: memberSynced.edges,
+      mobSettings: reconcileMobSettingsProfiles(mobSettings, previousMembers, nextMembers)
+    };
+  }
+  function reconcileMemberSkillRefs(members, skillRealms, options = {}) {
+    const knownSkills = skillIdSet(skillRealms);
+    if (knownSkills.size === 0 && !options.strictEmpty) return members;
+    let changed = false;
+    const next = (members || []).map((member) => {
+      if (!member || typeof member !== "object") return member;
+      const skills = normalizeStringList(member.skills).filter((skill) => knownSkills.has(skill));
+      if (JSON.stringify(skills) === JSON.stringify(normalizeStringList(member.skills))) return member;
+      changed = true;
+      return { ...member, skills };
+    });
+    return changed ? next : members;
+  }
+  function reconcileMemberSchemaRefs(members, schemas, options = {}) {
+    const knownSchemas = new Set((Array.isArray(schemas) ? schemas : []).map((schema) => String(schema?.id || "").trim()).filter(Boolean));
+    if (knownSchemas.size === 0 && !options.strictEmpty) return members;
+    let changed = false;
+    const next = (members || []).map((member) => {
+      if (!member || typeof member !== "object") return member;
+      const schema = String(member.schema || "").trim();
+      if (!schema || knownSchemas.has(schema)) return member;
+      changed = true;
+      return { ...member, schema: "" };
+    });
+    return changed ? next : members;
+  }
+  function reconcileDeploySettingsWithContract(settings, contract, modelCatalog, options = {}) {
+    const source = deploySettingsForUi(settings);
+    let next = source;
+    const write = (key, value) => {
+      if (next[key] === value) return;
+      if (next === source) next = { ...source };
+      next[key] = value;
+    };
+    const command = String(contract?.deploy_settings?.command || "").trim();
+    if (command) write("command", command);
+    reconcileStringField(next, write, "surface", contract?.deploy_settings?.surfaces);
+    reconcileStringField(next, write, "trustPolicy", contract?.deploy_settings?.trust_policies);
+    reconcileStringField(next, write, "realmBackend", contract?.deploy_settings?.realm_backends);
+    const modelIds = (modelCatalog || []).map((model) => String(model?.id || "").trim()).filter(Boolean);
+    if ((modelIds.length || options.strictEmptyModels) && source.model && !modelIds.includes(source.model)) {
+      write("model", "");
+    }
+    return next === source ? settings : next;
+  }
+  function deploySettingsPatch(settings, patch, options = {}) {
+    const source = deploySettingsForUi(settings);
+    const rawPatch = patch && typeof patch === "object" ? patch : {};
+    const next = { ...source };
+    const command = String(options.contract?.deploy_settings?.command || "").trim();
+    const modelIds = (options.modelCatalog || []).map((model) => String(model?.id || "").trim()).filter(Boolean);
+    for (const [key, value] of Object.entries(rawPatch)) {
+      if (key === "command" && command) {
+        if (String(value || "").trim() === command) next.command = command;
+        continue;
+      }
+      if (key === "surface" && !contractValueAllowed(options.contract?.deploy_settings?.surfaces, value)) continue;
+      if (key === "trustPolicy" && !contractValueAllowed(options.contract?.deploy_settings?.trust_policies, value)) continue;
+      if (key === "realmBackend" && !contractValueAllowed(options.contract?.deploy_settings?.realm_backends, value)) continue;
+      if (key === "model" && !catalogValueAllowed(modelIds, value)) continue;
+      next[key] = value;
+    }
+    return deploySettingsForUi(next);
+  }
+  function deploySettingsFieldPatch(settings, field, value, options = {}) {
+    const key = String(field || "").trim();
+    if (!key) return deploySettingsForUi(settings);
+    return deploySettingsPatch(settings, { [key]: value }, options);
+  }
+  function mobSettingsPatch(settings, patch, options = {}) {
+    const source = normalizeMobSettings(settings);
+    const rawPatch = patch && typeof patch === "object" ? patch : {};
+    const next = { ...source };
+    for (const [key, value] of Object.entries(rawPatch)) {
+      if (!MOB_SETTINGS_PATCH_KEYS.has(key)) continue;
+      if (key === "backendDefault" && !contractValueAllowed(options.contract?.mob_definition?.profile_backends, value, { allowBlank: true })) continue;
+      next[key] = value;
+    }
+    return normalizeMobSettings(next);
+  }
+  function mobSettingsFieldPatch(settings, field, value, options = {}) {
+    const key = String(field || "").trim();
+    if (!key) return normalizeMobSettings(settings);
+    return mobSettingsPatch(settings, { [key]: value }, options);
+  }
+  function reconcileMembersWithContract(members, contract, deploySettings, modelCatalog, toolCatalog, options = {}) {
+    const source = Array.isArray(members) ? members : [];
+    const runtimeModes = contractStringValues(contract?.mob_definition?.runtime_modes);
+    const profileBindings = contractStringValues(contract?.mob_definition?.profile_binding);
+    const profileBackends = contractStringValues(contract?.mob_definition?.profile_backends);
+    const modelIds = (modelCatalog || []).map((model) => String(model?.id || "").trim()).filter(Boolean);
+    const toolIds = (toolCatalog || []).map((tool) => String(tool?.id || "").trim()).filter(Boolean);
+    if (!runtimeModes.length && !profileBindings.length && !profileBackends.length && !modelIds.length && !toolIds.length && !options.strictEmptyModels && !options.strictEmptyTools) {
+      return members;
+    }
+    const surface = String(deploySettings?.surface || "").trim();
+    let changed = false;
+    const next = source.map((member) => {
+      if (!member || typeof member !== "object") return member;
+      let out = member;
+      const write = (key, value) => {
+        if (out[key] === value) return;
+        if (out === member) out = { ...member };
+        out[key] = value;
+      };
+      if (profileBindings.length) {
+        const binding = String(member.profileBinding || member.profile_binding || "").trim();
+        if (binding && !profileBindings.includes(binding)) write("profileBinding", "");
+      }
+      if (runtimeModes.length) {
+        const runtimeMode = String(member.runtimeMode || member.runtime_mode || "").trim();
+        const knownRuntimeMode = runtimeMode && runtimeModes.includes(runtimeMode);
+        if (runtimeMode && !knownRuntimeMode) write("runtimeMode", "");
+        if (knownRuntimeMode && !runtimeModeDeploySurfaceAllowed(contract, surface, runtimeMode)) {
+          const replacement = firstDeploySurfaceRuntimeMode(contract, surface);
+          if (replacement) write("runtimeMode", replacement);
+          else write("runtimeMode", "");
+        }
+      }
+      if (profileBackends.length) {
+        const backend = String(member.backend || "").trim();
+        if (backend && !profileBackends.includes(backend)) write("backend", "");
+      }
+      if (modelIds.length || options.strictEmptyModels) {
+        const model = String(member.model || "").trim();
+        if (model && !modelIds.includes(model)) write("model", "");
+      }
+      if (toolIds.length || options.strictEmptyTools) {
+        const allowedTools = new Set(toolIds);
+        const tools = normalizeStringList(member.tools).filter((tool) => allowedTools.has(tool));
+        if (JSON.stringify(tools) !== JSON.stringify(normalizeStringList(member.tools))) write("tools", tools);
+      }
+      if (out !== member) changed = true;
+      return out;
+    });
+    return changed ? next : members;
+  }
+  function reconcileMobSettingsWithContract(settings, contract) {
+    const source = mobSettingsForUi(settings);
+    const backends = contractStringValues(contract?.mob_definition?.profile_backends);
+    if (!backends.length) return settings;
+    const normalizedChanged = JSON.stringify(source) !== JSON.stringify(settings || {});
+    const backendDefault = String(source.backendDefault || "").trim();
+    if (!backendDefault || backends.includes(backendDefault)) return normalizedChanged ? source : settings;
+    return { ...source, backendDefault: "" };
+  }
+  function reconcileAuthoringWithContract({
+    members,
+    skillRealms,
+    schemas,
+    deploySettings,
+    mobSettings,
+    flow,
+    instances,
+    edges,
+    contract,
+    modelCatalog,
+    toolCatalog,
+    contractLoaded = false
+  } = {}) {
+    const strictEmpty = !!contractLoaded;
+    let nextMembers = reconcileMemberSkillRefs(
+      members,
+      skillRealms,
+      { strictEmpty }
+    );
+    nextMembers = reconcileMemberSchemaRefs(
+      nextMembers,
+      schemas,
+      { strictEmpty }
+    );
+    const nextDeploySettings = reconcileDeploySettingsWithContract(
+      deploySettings,
+      contract,
+      modelCatalog,
+      { strictEmptyModels: strictEmpty }
+    );
+    nextMembers = reconcileMembersWithContract(
+      nextMembers,
+      contract,
+      nextDeploySettings,
+      modelCatalog,
+      toolCatalog,
+      {
+        strictEmptyModels: strictEmpty,
+        strictEmptyTools: strictEmpty
+      }
+    );
+    const authoring = reconcileAuthoringForMembers({
+      flow,
+      instances,
+      edges,
+      mobSettings,
+      previousMembers: members,
+      members: nextMembers
+    });
+    const nextMobSettings = reconcileMobSettingsWithContract(authoring.mobSettings, contract);
+    return {
+      members: nextMembers,
+      deploySettings: nextDeploySettings,
+      flow: authoring.flow,
+      instances: authoring.instances,
+      edges: authoring.edges,
+      mobSettings: nextMobSettings,
+      changed: nextMembers !== members || nextDeploySettings !== deploySettings || authoring.flow !== flow || authoring.instances !== instances || authoring.edges !== edges || nextMobSettings !== mobSettings
+    };
+  }
+  function reconcileStringField(source, write, key, values) {
+    const allowed = contractStringValues(values);
+    if (!allowed.length) return;
+    const value = String(source[key] || "").trim();
+    if (value && !allowed.includes(value)) write(key, "");
+  }
+  function contractValueAllowed(values, raw, { allowBlank = false } = {}) {
+    const value = String(raw || "").trim();
+    if (!value) return allowBlank;
+    const allowed = contractStringValues(values);
+    return allowed.length ? allowed.includes(value) : true;
+  }
+  function catalogValueAllowed(values, raw, { allowBlank = true } = {}) {
+    const value = String(raw || "").trim();
+    if (!value) return allowBlank;
+    const allowed = Array.isArray(values) ? values.map((candidate) => String(candidate || "").trim()).filter(Boolean) : [];
+    return allowed.length ? allowed.includes(value) : true;
+  }
+  function optionValueAllowed(options, raw, { allowBlank = false } = {}) {
+    const value = String(raw || "").trim();
+    if (!value) return allowBlank;
+    const enabled = (Array.isArray(options) ? options : []).filter((option) => option && option.disabled !== true).map((option) => String(option.value || "").trim()).filter(Boolean);
+    return enabled.length ? enabled.includes(value) : true;
+  }
+  function skillIdSet(skillRealms) {
+    const ids = /* @__PURE__ */ new Set();
+    for (const realm of skillRealms || []) {
+      for (const skill of realm?.skills || []) {
+        const id = String(skill?.id || "").trim();
+        if (id) ids.add(id);
+      }
+    }
+    return ids;
+  }
+  function skillRealmsForDocument(members, skillRealms) {
+    const selected = /* @__PURE__ */ new Set();
+    for (const member of members || []) {
+      for (const skill of member?.skills || []) {
+        const id = String(skill || "").trim();
+        if (id) selected.add(id);
+      }
+    }
+    if (!selected.size) return [];
+    const out = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const realm of skillRealms || []) {
+      if (!realm || typeof realm !== "object") continue;
+      const skills = [];
+      for (const skill of realm.skills || []) {
+        const id = String(skill?.id || "").trim();
+        if (!id || !selected.has(id) || seen.has(id)) continue;
+        seen.add(id);
+        skills.push(skill);
+      }
+      if (!skills.length) continue;
+      out.push({
+        ...realm,
+        skills,
+        default: out.length === 0 ? !!realm.default : false
+      });
+    }
+    return out;
+  }
+  function memberToolIndex(members) {
+    return new Map((members || []).filter((member) => member?.id).map((member) => [member.id, new Set(normalizeStringList(member.tools))]));
+  }
+  function reconcileToolScopesInSteps(steps, allowedForStep) {
+    let changed = false;
+    const next = (steps || []).map((step) => {
+      const reconciled = reconcileToolScopesInStep(step, allowedForStep);
+      if (reconciled !== step) changed = true;
+      return reconciled;
+    });
+    return changed ? next : steps;
+  }
+  function reconcileToolScopesInStep(step, allowedForStep) {
+    if (!step || typeof step !== "object") return step;
+    let next = step;
+    if (step.type === "member") {
+      next = reconcileToolScopeObject(step, allowedForStep(step));
+    }
+    if (step.type === "repeat") {
+      const nested = reconcileToolScopesInSteps(step.steps || [], allowedForStep);
+      if (nested !== step.steps) next = { ...next, steps: nested };
+    }
+    if (step.type === "branch" || step.type === "parallel") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const branchSteps = reconcileToolScopesInSteps(branch.steps || [], allowedForStep);
+        if (branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, steps: branchSteps };
+      });
+      const fallback = Array.isArray(step.fallback) ? reconcileToolScopesInSteps(step.fallback, allowedForStep) : step.fallback;
+      if (fallback !== step.fallback) changed = true;
+      if (changed) next = { ...next, branches, fallback };
+    }
+    return next;
+  }
+  function reconcileToolScopeObject(source, allowedTools) {
+    if (!source || typeof source !== "object") return source;
+    const allowed = allowedTools || /* @__PURE__ */ new Set();
+    const allowedToolsList = normalizeStringList(source.allowedTools || source.allowed_tools).filter((tool) => allowed.has(tool));
+    const blockedToolsList = normalizeStringList(source.blockedTools || source.blocked_tools).filter((tool) => allowed.has(tool));
+    const currentAllowed = normalizeStringList(source.allowedTools || source.allowed_tools);
+    const currentBlocked = normalizeStringList(source.blockedTools || source.blocked_tools);
+    if (JSON.stringify(allowedToolsList) === JSON.stringify(currentAllowed) && JSON.stringify(blockedToolsList) === JSON.stringify(currentBlocked) && !("allowed_tools" in source) && !("blocked_tools" in source)) {
+      return source;
+    }
+    const { allowed_tools: _allowedToolsSnake, blocked_tools: _blockedToolsSnake, ...rest } = source;
+    return {
+      ...rest,
+      allowedTools: allowedToolsList,
+      blockedTools: blockedToolsList
+    };
+  }
+  function memberIdSet(members) {
+    return new Set((members || []).map((member) => String(member?.id || "").trim()).filter(Boolean));
+  }
+  function flowLaunchSourceSet(flow, members) {
+    const ids = memberIdSet(members);
+    collectVisualSteps(flow?.steps || [], (step) => {
+      if (step?.type === "member" && step.id) ids.add(String(step.id));
+    });
+    return ids;
+  }
+  function graphLaunchSourceSet(instances, members) {
+    const ids = memberIdSet(members);
+    for (const instance of instances || []) {
+      if (instance?.id && instance.memberId && !instance.isGate && !instance.isTerminal) {
+        ids.add(String(instance.id));
+      }
+    }
+    return ids;
+  }
+  function reconcileLaunchSourcesInSteps(steps, allowedSources) {
+    let changed = false;
+    const next = (steps || []).map((step) => {
+      const reconciled = reconcileLaunchSourcesInStep(step, allowedSources);
+      if (reconciled !== step) changed = true;
+      return reconciled;
+    });
+    return changed ? next : steps;
+  }
+  function reconcileLaunchSourcesInStep(step, allowedSources) {
+    if (!step || typeof step !== "object") return step;
+    let next = reconcileLaunchSourceObject(step, allowedSources);
+    if (step.type === "repeat") {
+      const nested = reconcileLaunchSourcesInSteps(step.steps || [], allowedSources);
+      if (nested !== step.steps) next = { ...next, steps: nested };
+    }
+    if (step.type === "branch" || step.type === "parallel") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const branchSteps = reconcileLaunchSourcesInSteps(branch.steps || [], allowedSources);
+        if (branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, steps: branchSteps };
+      });
+      const fallback = Array.isArray(step.fallback) ? reconcileLaunchSourcesInSteps(step.fallback, allowedSources) : step.fallback;
+      if (fallback !== step.fallback) changed = true;
+      if (changed) next = { ...next, branches, fallback };
+    }
+    return next;
+  }
+  function reconcileLaunchSourceObject(source, allowedSources) {
+    if (!source || typeof source !== "object") return source;
+    const mode = launchModeFromAuthoringSource(source);
+    if (!mode) return source;
+    if (mode.kind !== "Fork" || !mode.from || allowedSources.has(mode.from)) return source;
+    return {
+      ...source,
+      launchMode: freshLaunchModePreservingBudget(mode)
+    };
+  }
+  function reconcileControlRolesInSteps(steps, memberIds) {
+    let changed = false;
+    const next = (steps || []).map((step) => {
+      const reconciled = reconcileControlRolesInStep(step, memberIds);
+      if (reconciled !== step) changed = true;
+      return reconciled;
+    });
+    return changed ? next : steps;
+  }
+  function reconcileControlRolesInStep(step, memberIds) {
+    if (!step || typeof step !== "object") return step;
+    let next = reconcileControlRoleObject(step, memberIds);
+    if (step.type === "repeat") {
+      const nested = reconcileControlRolesInSteps(step.steps || [], memberIds);
+      if (nested !== step.steps) next = { ...next, steps: nested };
+    }
+    if (step.type === "branch" || step.type === "parallel") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const branchSteps = reconcileControlRolesInSteps(branch.steps || [], memberIds);
+        if (branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, steps: branchSteps };
+      });
+      const fallback = Array.isArray(step.fallback) ? reconcileControlRolesInSteps(step.fallback, memberIds) : step.fallback;
+      if (fallback !== step.fallback) changed = true;
+      if (changed) next = { ...next, branches, fallback };
+    }
+    return next;
+  }
+  function reconcileControlRoleObject(source, memberIds) {
+    if (!source || typeof source !== "object") return source;
+    const controllerRole = String(source.controllerRole || source.controllerMemberId || source.controlRole || source.joinRole || "").trim();
+    if (!controllerRole || memberIds.has(controllerRole)) return source;
+    const { controllerRole: _controllerRole, controllerMemberId: _controllerMemberId, controlRole: _controlRole, joinRole: _joinRole, ...rest } = source;
+    return rest;
+  }
+  function reconcileMobSettingsProfiles(settings, previousMembers, members) {
+    const normalized = normalizeMobSettings(settings);
+    const previousById = new Map((previousMembers || []).filter((member) => member?.id).map((member) => [member.id, profileName(member)]));
+    const currentProfiles = new Set((members || []).map(profileName).filter(Boolean));
+    const renameByProfile = /* @__PURE__ */ new Map();
+    for (const member of members || []) {
+      if (!member?.id) continue;
+      const previous = previousById.get(member.id);
+      const current = profileName(member);
+      if (previous && current && previous !== current) renameByProfile.set(previous, current);
+    }
+    const rewriteProfile = (value) => {
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      const renamed = renameByProfile.get(raw) || raw;
+      return currentProfiles.has(renamed) ? renamed : "";
+    };
+    const orchestrator = rewriteProfile(normalized.orchestrator);
+    const roleWiring = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const rule of normalized.roleWiring || []) {
+      const a = rewriteProfile(rule.a);
+      const b = rewriteProfile(rule.b);
+      if (!a || !b) continue;
+      const key = `${a}\0${b}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      roleWiring.push({ a, b });
+    }
+    if (orchestrator === normalized.orchestrator && JSON.stringify(roleWiring) === JSON.stringify(normalized.roleWiring || [])) {
+      return settings;
+    }
+    return {
+      ...normalized,
+      orchestrator,
+      roleWiring
+    };
+  }
+  function reconcileSchemaFieldReferences({ flow, edges, members, instances, schemaId, oldName, newName }) {
+    const schema = String(schemaId || "").trim();
+    const oldField = String(oldName || "").trim();
+    const nextField = String(newName || "").trim();
+    if (!schema || !oldField || oldField === nextField) {
+      return { flow, edges };
+    }
+    const memberSchemaById = new Map((members || []).map((member) => [
+      member.id,
+      String(member.schema || "").trim()
+    ]));
+    const flowStepSchemas = flowStepSchemaIndex(flow?.steps || [], memberSchemaById);
+    const graphStepSchemas = new Map((instances || []).filter((instance) => instance?.id && instance?.memberId).map((instance) => [instance.id, memberSchemaById.get(instance.memberId) || ""]));
+    const reconciledFlow = reconcileSchemaFieldReferencesInFlow(flow, flowStepSchemas, schema, oldField, nextField);
+    const reconciledEdges = reconcileSchemaFieldReferencesInEdges(edges, graphStepSchemas, schema, oldField, nextField);
+    return {
+      flow: reconciledFlow,
+      edges: reconciledEdges
+    };
+  }
+  function reconcileInputParamReferences({ flow, edges, oldName, newName }) {
+    const oldField = String(oldName || "").trim();
+    const nextField = String(newName || "").trim();
+    if (!oldField || oldField === nextField) {
+      return { flow, edges };
+    }
+    return {
+      flow: reconcileInputParamReferencesInFlow(flow, oldField, nextField),
+      edges: reconcileInputParamReferencesInEdges(edges, oldField, nextField)
+    };
+  }
+  function reconcileInputParamReferencesInFlow(flow, oldName, newName) {
+    if (!flow || typeof flow !== "object") return flow;
+    const steps = reconcileInputParamReferencesInSteps(flow.steps || [], oldName, newName);
+    return steps === flow.steps ? flow : { ...flow, steps };
+  }
+  function reconcileInputParamReferencesInSteps(steps, oldName, newName) {
+    let changed = false;
+    const next = (steps || []).map((step) => {
+      const reconciled = reconcileInputParamReferencesInStep(step, oldName, newName);
+      if (reconciled !== step) changed = true;
+      return reconciled;
+    });
+    return changed ? next : steps;
+  }
+  function reconcileInputParamReferencesInStep(step, oldName, newName) {
+    if (!step || typeof step !== "object") return step;
+    if (step.type === "repeat") {
+      const cond = rewriteInputParamCondition(step.cond, oldName, newName);
+      const until = rewriteInputParamConditionText(step.until, oldName, newName, cond);
+      const nested = reconcileInputParamReferencesInSteps(step.steps || [], oldName, newName);
+      if (cond === step.cond && until === step.until && nested === step.steps) return step;
+      return { ...step, cond, until, steps: nested };
+    }
+    if (step.type === "branch") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const cond = rewriteInputParamCondition(branch.cond, oldName, newName);
+        const condition = rewriteInputParamConditionText(branch.condition, oldName, newName, cond);
+        const branchSteps = reconcileInputParamReferencesInSteps(branch.steps || [], oldName, newName);
+        if (cond === branch.cond && condition === branch.condition && branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, cond, condition, steps: branchSteps };
+      });
+      const fallback = Array.isArray(step.fallback) ? reconcileInputParamReferencesInSteps(step.fallback, oldName, newName) : step.fallback;
+      if (fallback !== step.fallback) changed = true;
+      return changed ? { ...step, branches, fallback } : step;
+    }
+    if (step.type === "parallel") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const branchSteps = reconcileInputParamReferencesInSteps(branch.steps || [], oldName, newName);
+        if (branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, steps: branchSteps };
+      });
+      return changed ? { ...step, branches } : step;
+    }
+    return step;
+  }
+  function rewriteInputParamCondition(cond, oldName, newName) {
+    if (!cond || typeof cond !== "object") return cond;
+    const isParam = cond.namespace === "params" || cond.stepId === "params" || cond.step_id === "params";
+    if (!isParam || String(cond.field || "").trim() !== oldName) return cond;
+    if (!newName) return {};
+    return {
+      ...cond,
+      namespace: "params",
+      stepId: "params",
+      field: newName
+    };
+  }
+  function rewriteInputParamConditionText(text, oldName, newName, preferredCond) {
+    if (!text) return text;
+    if (preferredCond && preferredCond.field) return editorConditionText(preferredCond);
+    const parsed = parseEditorConditionText(text);
+    if (!parsed || parsed.namespace !== "params" || parsed.field !== oldName) return text;
+    if (!newName) return "";
+    return editorConditionText({ ...parsed, field: newName });
+  }
+  function reconcileInputParamReferencesInEdges(edges, oldName, newName) {
+    let changed = false;
+    const next = (edges || []).map((edge) => {
+      const condition = normalizedEdgeCondition(edge);
+      const path = String(condition?.path || "").trim();
+      const parts = path.split(".").filter(Boolean);
+      if (parts.length !== 2 || parts[0] !== "params" || parts[1] !== oldName) return edge;
+      changed = true;
+      if (!newName) {
+        return { ...edge, cond: null, label: "" };
+      }
+      const nextPath = `params.${newName}`;
+      const nextCond = { var: nextPath, op: condition.op || "", val: condition.val ?? "" };
+      return {
+        ...edge,
+        cond: nextCond,
+        label: edge.label && edge.label === conditionTextForPath(path, condition) ? conditionTextForPath(nextPath, nextCond) : edge.label
+      };
+    });
+    return changed ? next : edges;
+  }
+  function reconcileConditionFieldAvailability({ flow, edges, members, instances, schemas }) {
+    const schemaFields = schemaFieldNameIndex(schemas);
+    const inputFields = inputParamNameSet(flow);
+    const memberSchemaById = new Map((members || []).map((member) => [
+      member.id,
+      String(member.schema || "").trim()
+    ]));
+    const flowStepSchemas = flowStepSchemaIndex(flow?.steps || [], memberSchemaById);
+    const graphStepSchemas = new Map((instances || []).filter((instance) => instance?.id && instance?.memberId).map((instance) => [instance.id, memberSchemaById.get(instance.memberId) || ""]));
+    return {
+      flow: reconcileConditionAvailabilityInFlow(flow, flowStepSchemas, schemaFields, inputFields),
+      edges: reconcileConditionAvailabilityInEdges(edges, graphStepSchemas, schemaFields, inputFields)
+    };
+  }
+  function schemaFieldNameIndex(schemas) {
+    const out = /* @__PURE__ */ new Map();
+    for (const schema of schemas || []) {
+      const id = String(schema?.id || "").trim();
+      if (!id) continue;
+      const fields = /* @__PURE__ */ new Map();
+      for (const field of schema.fields || []) {
+        const name = String(field?.name || "").trim();
+        if (name) fields.set(name, field);
+      }
+      out.set(id, fields);
+    }
+    return out;
+  }
+  function inputParamNameSet(flow) {
+    const out = /* @__PURE__ */ new Map();
+    collectVisualSteps(flow?.steps || [], (step) => {
+      if (step?.type !== "input") return;
+      for (const param of step.inputParams || []) {
+        const name = String(param?.name || "").trim();
+        if (name) out.set(name, param);
+      }
+    });
+    return out;
+  }
+  function reconcileConditionAvailabilityInFlow(flow, stepSchemas, schemaFields, inputFields) {
+    if (!flow || typeof flow !== "object") return flow;
+    const steps = reconcileConditionAvailabilityInSteps(flow.steps || [], stepSchemas, schemaFields, inputFields);
+    return steps === flow.steps ? flow : { ...flow, steps };
+  }
+  function reconcileConditionAvailabilityInSteps(steps, stepSchemas, schemaFields, inputFields) {
+    let changed = false;
+    const next = (steps || []).map((step) => {
+      const reconciled = reconcileConditionAvailabilityInStep(step, stepSchemas, schemaFields, inputFields);
+      if (reconciled !== step) changed = true;
+      return reconciled;
+    });
+    return changed ? next : steps;
+  }
+  function reconcileConditionAvailabilityInStep(step, stepSchemas, schemaFields, inputFields) {
+    if (!step || typeof step !== "object") return step;
+    if (step.type === "repeat") {
+      const hadCond = !!step.cond;
+      const cond = clearUnavailableEditorCondition(step.cond, stepSchemas, schemaFields, inputFields);
+      const until = clearUnavailableConditionText(step.until, stepSchemas, schemaFields, inputFields, hadCond ? cond : void 0);
+      const nested = reconcileConditionAvailabilityInSteps(step.steps || [], stepSchemas, schemaFields, inputFields);
+      if (cond === step.cond && until === step.until && nested === step.steps) return step;
+      return { ...step, cond, until, steps: nested };
+    }
+    if (step.type === "branch") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const hadCond = !!branch.cond;
+        const cond = clearUnavailableEditorCondition(branch.cond, stepSchemas, schemaFields, inputFields);
+        const condition = clearUnavailableConditionText(branch.condition, stepSchemas, schemaFields, inputFields, hadCond ? cond : void 0);
+        const branchSteps = reconcileConditionAvailabilityInSteps(branch.steps || [], stepSchemas, schemaFields, inputFields);
+        if (cond === branch.cond && condition === branch.condition && branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, cond, condition, steps: branchSteps };
+      });
+      const fallback = Array.isArray(step.fallback) ? reconcileConditionAvailabilityInSteps(step.fallback, stepSchemas, schemaFields, inputFields) : step.fallback;
+      if (fallback !== step.fallback) changed = true;
+      return changed ? { ...step, branches, fallback } : step;
+    }
+    if (step.type === "parallel") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const branchSteps = reconcileConditionAvailabilityInSteps(branch.steps || [], stepSchemas, schemaFields, inputFields);
+        if (branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, steps: branchSteps };
+      });
+      return changed ? { ...step, branches } : step;
+    }
+    return step;
+  }
+  function clearUnavailableEditorCondition(cond, stepSchemas, schemaFields, inputFields) {
+    if (!cond || typeof cond !== "object") return cond;
+    return editorConditionFieldAvailable(cond, stepSchemas, schemaFields, inputFields) ? cond : {};
+  }
+  function clearUnavailableConditionText(text, stepSchemas, schemaFields, inputFields, preferredCond) {
+    if (preferredCond !== void 0) {
+      if (preferredCond && preferredCond.field) return editorConditionText(preferredCond);
+      return "";
+    }
+    if (!text) return text;
+    const parsed = parseEditorConditionText(text);
+    if (!parsed) return text;
+    return editorConditionFieldAvailable(parsed, stepSchemas, schemaFields, inputFields) ? text : "";
+  }
+  function editorConditionFieldAvailable(cond, stepSchemas, schemaFields, inputFields) {
+    if (!cond || typeof cond !== "object") return true;
+    const field = String(cond.field || "").trim();
+    if (!field) return true;
+    if (cond.namespace === "params" || cond.stepId === "params" || cond.step_id === "params") {
+      return conditionFieldValueAvailable(inputFields.get(field), cond);
+    }
+    const stepId = String(cond.stepId || cond.step_id || "").trim();
+    if (!stepId) return true;
+    return conditionFieldValueAvailable(schemaFieldForCondition(schemaFields, stepSchemas.get(stepId), field), cond);
+  }
+  function reconcileConditionAvailabilityInEdges(edges, stepSchemas, schemaFields, inputFields) {
+    let changed = false;
+    const next = (edges || []).map((edge) => {
+      const condition = normalizedEdgeCondition(edge);
+      const path = String(condition?.path || "").trim();
+      const parts = path.split(".").filter(Boolean);
+      let available = true;
+      if (parts.length === 2 && parts[0] === "params") {
+        available = conditionFieldValueAvailable(inputFields.get(parts[1]), condition);
+      } else if (parts.length === 3 && parts[0] === "steps") {
+        available = conditionFieldValueAvailable(schemaFieldForCondition(schemaFields, stepSchemas.get(parts[1]), parts[2]), condition);
+      }
+      if (available) return edge;
+      changed = true;
+      return { ...edge, cond: null, label: "" };
+    });
+    return changed ? next : edges;
+  }
+  function schemaHasField(schemaFields, schemaId, field) {
+    return !!schemaFieldForCondition(schemaFields, schemaId, field);
+  }
+  function schemaFieldForCondition(schemaFields, schemaId, field) {
+    const id = String(schemaId || "").trim();
+    const name = String(field || "").trim();
+    if (!id || !name) return null;
+    const fields = schemaFields.get(id);
+    if (!fields) return null;
+    if (fields instanceof Map) return fields.get(name) || null;
+    return fields.has?.(name) ? { name } : null;
+  }
+  function conditionFieldValueAvailable(field, cond) {
+    if (!field) return false;
+    const type = String(field.type || "").trim();
+    if (type !== "enum") return true;
+    const values = enumValuesForField(field).map(String);
+    if (!values.length) return true;
+    const raw = cond?.val ?? cond?.value;
+    if (raw == null || String(raw).trim() === "") return true;
+    return values.includes(String(raw));
+  }
+  function flowStepSchemaIndex(steps, memberSchemaById, out = /* @__PURE__ */ new Map()) {
+    for (const step of steps || []) {
+      if (!step || typeof step !== "object") continue;
+      if (step.type === "member" && step.id) {
+        out.set(step.id, memberSchemaById.get(step.role) || String(step.schema || "").trim());
+      }
+      if (step.type === "repeat") flowStepSchemaIndex(step.steps || [], memberSchemaById, out);
+      if (step.type === "branch" || step.type === "parallel") {
+        for (const branch of step.branches || []) flowStepSchemaIndex(branch.steps || [], memberSchemaById, out);
+        flowStepSchemaIndex(step.fallback || [], memberSchemaById, out);
+      }
+    }
+    return out;
+  }
+  function reconcileSchemaFieldReferencesInFlow(flow, stepSchemas, schemaId, oldName, newName) {
+    if (!flow || typeof flow !== "object") return flow;
+    const steps = reconcileSchemaFieldReferencesInSteps(flow.steps || [], stepSchemas, schemaId, oldName, newName);
+    return steps === flow.steps ? flow : { ...flow, steps };
+  }
+  function reconcileSchemaFieldReferencesInSteps(steps, stepSchemas, schemaId, oldName, newName) {
+    let changed = false;
+    const next = (steps || []).map((step) => {
+      const reconciled = reconcileSchemaFieldReferencesInStep(step, stepSchemas, schemaId, oldName, newName);
+      if (reconciled !== step) changed = true;
+      return reconciled;
+    });
+    return changed ? next : steps;
+  }
+  function reconcileSchemaFieldReferencesInStep(step, stepSchemas, schemaId, oldName, newName) {
+    if (!step || typeof step !== "object") return step;
+    if (step.type === "repeat") {
+      const cond = rewriteEditorCondition(step.cond, stepSchemas, schemaId, oldName, newName);
+      const until = rewriteConditionTextReference(step.until, stepSchemas, schemaId, oldName, newName);
+      const nested = reconcileSchemaFieldReferencesInSteps(step.steps || [], stepSchemas, schemaId, oldName, newName);
+      if (cond === step.cond && until === step.until && nested === step.steps) return step;
+      return {
+        ...step,
+        cond,
+        until,
+        steps: nested
+      };
+    }
+    if (step.type === "branch") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const cond = rewriteEditorCondition(branch.cond, stepSchemas, schemaId, oldName, newName);
+        const condition = rewriteConditionTextReference(branch.condition, stepSchemas, schemaId, oldName, newName, cond);
+        const branchSteps = reconcileSchemaFieldReferencesInSteps(branch.steps || [], stepSchemas, schemaId, oldName, newName);
+        if (cond === branch.cond && condition === branch.condition && branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, cond, condition, steps: branchSteps };
+      });
+      const fallback = Array.isArray(step.fallback) ? reconcileSchemaFieldReferencesInSteps(step.fallback, stepSchemas, schemaId, oldName, newName) : step.fallback;
+      if (fallback !== step.fallback) changed = true;
+      return changed ? { ...step, branches, fallback } : step;
+    }
+    if (step.type === "parallel") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const branchSteps = reconcileSchemaFieldReferencesInSteps(branch.steps || [], stepSchemas, schemaId, oldName, newName);
+        if (branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, steps: branchSteps };
+      });
+      return changed ? { ...step, branches } : step;
+    }
+    return step;
+  }
+  function rewriteEditorCondition(cond, stepSchemas, schemaId, oldName, newName) {
+    if (!cond || typeof cond !== "object") return cond;
+    if (cond.namespace === "params" || cond.stepId === "params") return cond;
+    const stepId = String(cond.stepId || cond.step_id || "").trim();
+    if (!stepId || stepSchemas.get(stepId) !== schemaId || String(cond.field || "").trim() !== oldName) return cond;
+    if (!newName) return {};
+    const next = { ...cond, field: newName || "", val: newName ? cond.val ?? "" : "" };
+    return next;
+  }
+  function rewriteConditionTextReference(text, stepSchemas, schemaId, oldName, newName, preferredCond) {
+    if (!text) return text;
+    if (preferredCond && preferredCond.field) return editorConditionText(preferredCond);
+    const parsed = parseEditorConditionText(text);
+    if (!parsed || parsed.namespace === "params") return text;
+    if (stepSchemas.get(parsed.stepId) !== schemaId || parsed.field !== oldName) return text;
+    if (!newName) return "";
+    return editorConditionText({ ...parsed, field: newName });
+  }
+  function parseEditorConditionText(text) {
+    const raw = String(text || "").trim();
+    const params = /^params\.([A-Za-z0-9_.-]+)\s*(==|>|<)\s*(.+)$/.exec(raw);
+    if (params) {
+      return {
+        namespace: "params",
+        stepId: "params",
+        field: params[1],
+        op: params[2],
+        val: params[3].trim().replace(/^["']|["']$/g, "")
+      };
+    }
+    const steps = /^steps\.([A-Za-z0-9_.-]+)\.([A-Za-z0-9_.-]+)\s*(==|>|<)\s*(.+)$/.exec(raw);
+    if (!steps) return null;
+    return {
+      namespace: "steps",
+      stepId: steps[1],
+      field: steps[2],
+      op: steps[3],
+      val: steps[4].trim().replace(/^["']|["']$/g, "")
+    };
+  }
+  function editorConditionText(cond) {
+    if (!cond || !cond.stepId || !cond.field) return "";
+    const op = cond.op || cond.operator || "";
+    if (!op) return "";
+    const val = cond.val ?? cond.value ?? "";
+    if (cond.namespace === "params" || cond.stepId === "params") {
+      return `params.${cond.field} ${op} ${JSON.stringify(String(val))}`;
+    }
+    return `steps.${cond.stepId}.${cond.field} ${op} ${JSON.stringify(String(val))}`;
+  }
+  function conditionValueLiteral(value) {
+    return /^(true|false|-?\d+(\.\d+)?)$/.test(String(value ?? "")) ? String(value ?? "") : JSON.stringify(String(value ?? ""));
+  }
+  function reconcileSchemaFieldReferencesInEdges(edges, stepSchemas, schemaId, oldName, newName) {
+    let changed = false;
+    const next = (edges || []).map((edge) => {
+      const condition = normalizedEdgeCondition(edge);
+      const path = String(condition?.path || "").trim();
+      const parts = path.split(".").filter(Boolean);
+      if (parts.length !== 3 || parts[0] !== "steps") return edge;
+      const stepId = parts[1];
+      const field = parts[2];
+      if (stepSchemas.get(stepId) !== schemaId || field !== oldName) return edge;
+      changed = true;
+      if (!newName) {
+        return { ...edge, cond: null, label: "" };
+      }
+      const nextPath = `steps.${stepId}.${newName}`;
+      const nextCond = { var: nextPath, op: condition.op || "", val: condition.val ?? "" };
+      return {
+        ...edge,
+        cond: nextCond,
+        label: edge.label && edge.label === conditionTextForPath(path, condition) ? conditionTextForPath(nextPath, nextCond) : edge.label
+      };
+    });
+    return changed ? next : edges;
+  }
+  function conditionTextForPath(path, condition) {
+    const op = condition.op || "";
+    return op ? `${path} ${op} ${JSON.stringify(String(condition.val ?? ""))}` : "";
+  }
+  function reconcileMemberSchemasInSteps(steps, memberById) {
+    let changed = false;
+    const next = (steps || []).map((step) => {
+      const reconciled = reconcileMemberSchemaInStep(step, memberById);
+      if (reconciled !== step) changed = true;
+      return reconciled;
+    });
+    return changed ? next : steps;
+  }
+  function reconcileMemberSchemaInStep(step, memberById) {
+    if (!step || typeof step !== "object") return step;
+    if (step.type === "member") {
+      const member = memberById.get(step.role);
+      if (!member) return step;
+      const memberSchema = String(member.schema || "").trim();
+      const stepSchema = String(step.schema || "").trim();
+      const expected = String(step.expectedSchemaRef || step.expected_schema_ref || "").trim();
+      if (!memberSchema) {
+        if (!stepSchema && !expected && !("expected_schema_ref" in step)) return step;
+        const { schema, expectedSchemaRef, expected_schema_ref, ...rest } = step;
+        return rest;
+      }
+      let next = step;
+      if (stepSchema !== memberSchema) {
+        next = { ...next, schema: memberSchema };
+        if (expected && stepSchema && expected === `schemas/${stepSchema}.json`) {
+          next.expectedSchemaRef = `schemas/${memberSchema}.json`;
+        }
+      }
+      if ("expected_schema_ref" in next) {
+        const { expected_schema_ref, ...rest } = next;
+        next = rest;
+      }
+      return next;
+    }
+    if (step.type === "repeat") {
+      const nested = reconcileMemberSchemasInSteps(step.steps || [], memberById);
+      return nested === step.steps ? step : { ...step, steps: nested };
+    }
+    if (step.type === "branch" || step.type === "parallel") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const branchSteps = reconcileMemberSchemasInSteps(branch.steps || [], memberById);
+        if (branchSteps !== branch.steps) changed = true;
+        return branchSteps === branch.steps ? branch : { ...branch, steps: branchSteps };
+      });
+      const fallback = Array.isArray(step.fallback) ? reconcileMemberSchemasInSteps(step.fallback, memberById) : step.fallback;
+      if (fallback !== step.fallback) changed = true;
+      return changed ? { ...step, branches, fallback } : step;
+    }
+    return step;
+  }
+
   // ../packages/flow-editor-core/src/schema/field-edit.ts
   function conditionViewFromSchema(schema) {
     const view = schema?.mob_definition?.editor_condition_view;
@@ -3138,83 +4519,6 @@ var MobKitFlowCore = (() => {
       edges: reconciled.edges
     };
   }
-
-  // ../packages/flow-editor-core/src/shared/constants.ts
-  var SCHEMA_VERSION = "0.1.0";
-  var RPC_METHODS = {
-    schema: "mobkit/mobpacks/schema",
-    catalogs: "mobkit/mobpacks/catalogs",
-    validate: "mobkit/mobpacks/validate",
-    source: "mobkit/mobpacks/source",
-    export: "mobkit/mobpacks/export",
-    import: "mobkit/mobpacks/import",
-    list: "mobkit/mobpacks/list",
-    get: "mobkit/mobpacks/get",
-    create: "mobkit/mobpacks/create",
-    save: "mobkit/mobpacks/save",
-    delete: "mobkit/mobpacks/delete",
-    undo: "mobkit/mobpacks/undo",
-    redo: "mobkit/mobpacks/redo",
-    applyOperation: "mobkit/mobpacks/apply_operation",
-    graphProjection: "mobkit/mobpacks/graph_projection",
-    graphToFlow: "mobkit/mobpacks/graph_to_flow",
-    deployCommand: "mobkit/mobpacks/deploy_command",
-    deploy: "mobkit/mobpacks/deploy"
-  };
-  var SCHEMA_COMMAND_KEYS = {
-    schema: "schema",
-    catalogs: "catalogs",
-    validate: "validate",
-    source: "source",
-    export: "export",
-    import: "import",
-    list: "list",
-    get: "get",
-    create: "create",
-    save: "save",
-    delete: "delete",
-    undo: "undo",
-    redo: "redo",
-    applyOperation: "apply_operation",
-    graphProjection: "graph_projection",
-    graphToFlow: "graph_to_flow",
-    deployCommand: "deploy_command",
-    deploy: "deploy_rpc"
-  };
-  var EMPTY_DEPLOY_SETTINGS = {
-    command: "",
-    surface: "",
-    trustPolicy: "",
-    model: "",
-    maxDuration: "",
-    maxToolCalls: null,
-    maxTotalTokens: null,
-    isolated: false,
-    realm: "",
-    instance: "",
-    realmBackend: "",
-    contextRoot: "",
-    stateRoot: "",
-    userConfigRoot: "",
-    prompt: ""
-  };
-  var EMPTY_MOB_SETTINGS = {
-    orchestrator: "",
-    autoWireOrchestrator: false,
-    roleWiring: [],
-    backendDefault: "",
-    externalAddressBase: "",
-    advanced: {
-      topology: null,
-      supervisor: null,
-      limits: null,
-      spawnPolicy: null,
-      eventRouter: null
-    }
-  };
-  var MOB_SETTINGS_PATCH_KEYS = new Set(Object.keys(EMPTY_MOB_SETTINGS));
-  var GRAPH_NODE_W = 200;
-  var GRAPH_NODE_H = 156;
 
   // ../packages/flow-editor-core/src/drafts/mob-settings.ts
   function editorSchemaDraftField(rawField) {
@@ -3552,6 +4856,127 @@ var MobKitFlowCore = (() => {
     return mobSettingsForUi(schema?.mob_definition?.mob_settings?.defaults);
   }
 
+  // ../packages/flow-editor-core/src/members/patches.ts
+  function memberPromptSkeleton(member) {
+    const notes = String(member?.systemPrompt || "").trim();
+    const name = member?.name || "this agent";
+    const intent = notes || `Act as the ${member?.role || "member"} of the mob.`;
+    const lines = [
+      `You are ${name}, a member of a Meerkat mob.`,
+      "",
+      "## Mandate",
+      intent.replace(/\s+/g, " "),
+      "",
+      "## Operating rules",
+      "- Read the shared mob workpad and prior members' output before acting.",
+      "- Do exactly what this step requires \u2014 no more, no less.",
+      member?.schema ? `- Emit a ${member.schema} as your structured output.` : "- Return a concise, well-structured result.",
+      "- Hand off cleanly: state what you did and what the next member needs."
+    ];
+    return lines.join("\n");
+  }
+  function memberNamePatch(rawName) {
+    return { name: String(rawName || "") };
+  }
+  function memberRealmProfilePatch(rawProfile) {
+    return { realmProfile: String(rawProfile || "").trim() };
+  }
+  function memberSystemPromptPatch(rawPrompt) {
+    return { systemPrompt: String(rawPrompt || "") };
+  }
+  function memberProfileBindingPatch(member, rawBinding, contract) {
+    const binding = String(rawBinding || "").trim();
+    if (!optionValueAllowed(profileBindingOptions(contract, binding), binding)) return {};
+    return {
+      profileBinding: binding,
+      realmProfile: binding === "realm_profile" ? String(member?.realmProfile || member?.role || member?.name || "") : ""
+    };
+  }
+  function memberRuntimeModePatch(rawMode, contract, deploySettings) {
+    const runtimeMode = String(rawMode || "").trim();
+    if (!optionValueAllowed(runtimeModeOptions(contract, deploySettings, runtimeMode), runtimeMode)) return {};
+    return { runtimeMode };
+  }
+  function memberModelPatch(rawModel, modelCatalog) {
+    const model = String(rawModel || "").trim();
+    const ids = (modelCatalog || []).map((entry) => String(entry?.id || "").trim()).filter(Boolean);
+    if (!catalogValueAllowed(ids, model, { allowBlank: false })) return {};
+    return { model };
+  }
+  function memberSchemaPatch(rawSchema, schemas) {
+    const schema = String(rawSchema || "").trim();
+    if (Array.isArray(schemas)) {
+      const ids = schemas.map((entry) => String(entry?.id || "").trim()).filter(Boolean);
+      if (schema && !ids.includes(schema)) return {};
+    }
+    return { schema };
+  }
+  function memberSchemaCascadePatch({ memberId, members, flow, edges, instances, schemas } = {}, rawSchema) {
+    const id = String(memberId || "").trim();
+    const list = Array.isArray(members) ? members : [];
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    const current = list.find((member) => String(member?.id || "").trim() === id) || null;
+    if (!current) {
+      return { ok: false, error: "member not found", members: list, flow, edges, instances: sourceInstances, patch: null };
+    }
+    const patch = memberSchemaPatch(rawSchema, schemas);
+    if (!Object.prototype.hasOwnProperty.call(patch, "schema")) {
+      return { ok: false, error: "unknown schema", members: list, flow, edges, instances: sourceInstances, patch: null };
+    }
+    const nextMember = { ...current, ...patch };
+    const nextMembers = list.map((member) => String(member?.id || "").trim() === id ? nextMember : member);
+    const reconciled = reconcileConditionFieldAvailability({
+      flow,
+      edges,
+      members: nextMembers,
+      instances: sourceInstances,
+      schemas
+    });
+    return {
+      ok: true,
+      error: "",
+      patch,
+      member: nextMember,
+      members: nextMembers,
+      flow: reconciled.flow,
+      edges: reconciled.edges,
+      instances: sourceInstances
+    };
+  }
+  function memberBackendPatch(rawBackend, contract) {
+    const backend = String(rawBackend || "").trim();
+    if (!optionValueAllowed(profileBackendOptions(contract, backend, true), backend, { allowBlank: true })) return {};
+    return { backend };
+  }
+  function memberMaxInlinePeerNotificationsPatch(rawValue) {
+    return { maxInlinePeerNotifications: normalizeMaxInlinePeerNotifications(rawValue) };
+  }
+  function memberProviderParamsEditorState(member, agentDetailView = null) {
+    const view = agentDetailViewForState(agentDetailView);
+    return {
+      label: view.providerParamsLabel,
+      text: member?.providerParams ? JSON.stringify(member.providerParams, null, 2) : "",
+      placeholder: view.providerParamsPlaceholder,
+      rows: view.providerParamsRows,
+      invalidJsonLabel: view.providerParamsInvalidJsonLabel
+    };
+  }
+  function memberProviderParamsPatch(rawText, agentDetailView = null) {
+    const view = agentDetailViewForState(agentDetailView);
+    const text = String(rawText || "").trim();
+    if (!text) return { ok: true, patch: { providerParams: null }, error: "" };
+    try {
+      const parsed = JSON.parse(text);
+      const normalized = normalizeProviderParams(parsed);
+      if (!normalized) {
+        return { ok: false, patch: null, error: view.providerParamsObjectRequiredError };
+      }
+      return { ok: true, patch: { providerParams: normalized }, error: "" };
+    } catch (err) {
+      return { ok: false, patch: null, error: err?.message || view.providerParamsInvalidJsonLabel };
+    }
+  }
+
   // ../packages/flow-editor-core/src/rpc/client.ts
   var controllerConfig = {
     rpcUrl: "/flow-editor/rpc",
@@ -3790,15 +5215,24 @@ const {
   callRpc,
   canonicalBudgetSplitPolicyKind,
   canonicalLaunchModeKind,
+  catalogValueAllowed,
   childLanes,
+  clearDeletedLaunchSource,
+  clearDeletedStepCondition,
+  clearDeletedStepConditionText,
+  clearUnavailableConditionText,
+  clearUnavailableEditorCondition,
   collectFlowBranchIds,
   collectFlowStepIds,
   collectVisualSteps,
   collectionPolicyAllowed,
   collectionPolicyOptions,
+  conditionFieldValueAvailable,
   conditionOperatorOptions,
+  conditionTextForPath,
   conditionTextFromEdge,
   conditionValueControl,
+  conditionValueLiteral,
   conditionViewForState,
   conditionViewFromSchema,
   configure,
@@ -3807,9 +5241,12 @@ const {
   contractDefaultRaw,
   contractDefaultValue,
   contractStringValues,
+  contractValueAllowed,
   dependencyModeAllowed,
   dependencyModeOptions,
   deployRuntimeCompatibility,
+  deploySettingsFieldPatch,
+  deploySettingsPatch,
   deploySurfaceOptions,
   deploySurfaceRuntimeModes,
   deployViewForState,
@@ -3817,6 +5254,8 @@ const {
   dispatchModeAllowed,
   dispatchModeOptions,
   edgeConditionToEditorCond,
+  editorConditionFieldAvailable,
+  editorConditionText,
   editorFlowPrimitiveOptions,
   editorGraphDraftContract,
   editorInputParamDraftContract,
@@ -3838,11 +5277,14 @@ const {
   firstContractValue,
   firstDeploySurfaceRuntimeMode,
   firstSupportedOption,
+  flowLaunchSourceSet,
   flowRegistryViewForState,
   flowRegistryViewFromSchema,
+  flowStepSchemaIndex,
   flowStepTemplate,
   forkContextAllowed,
   forkContextOptions,
+  freshLaunchModePreservingBudget,
   graphAddMenuCloseProjection,
   graphAddMenuOpenProjection,
   graphAddNodeMenuState,
@@ -3852,6 +5294,7 @@ const {
   graphGateKindOptions,
   graphGatePaletteRowsFromSchema,
   graphInstanceIdSet,
+  graphLaunchSourceSet,
   graphTemplateQuickStartRowsFromSchema,
   graphTemplateViewForState,
   graphTemplateViewFromSchema,
@@ -3862,6 +5305,7 @@ const {
   inlineSkillRealmIdFromOperationResult,
   inputParamFieldControlState,
   inputParamName,
+  inputParamNameSet,
   inputStepDraft,
   jsonEquivalent,
   launchBudgetFixedLimitPatch,
@@ -3882,13 +5326,28 @@ const {
   launchUnsupportedReason,
   launchViewForState,
   launchViewFromSchema,
+  memberBackendPatch,
   memberDisplayName,
+  memberIdSet,
   memberInlineSkillPatch,
+  memberMaxInlinePeerNotificationsPatch,
+  memberModelPatch,
+  memberNamePatch,
+  memberProfileBindingPatch,
+  memberPromptSkeleton,
+  memberProviderParamsEditorState,
+  memberProviderParamsPatch,
+  memberRealmProfilePatch,
+  memberRuntimeModePatch,
+  memberSchemaCascadePatch,
+  memberSchemaPatch,
   memberSkillAccessState,
   memberSkillRemovePatch,
   memberSkillTogglePatch,
+  memberSystemPromptPatch,
   memberToolAccessPatch,
   memberToolAccessState,
+  memberToolIndex,
   memberToolRemovePatch,
   mobBackendDefaultOptions,
   mobDefaultsFromSchema,
@@ -3901,7 +5360,9 @@ const {
   mobRoleWiringSourcePatch,
   mobRoleWiringTargetPatch,
   mobRoleWiringUpdatePatch,
+  mobSettingsFieldPatch,
   mobSettingsForUi,
+  mobSettingsPatch,
   newFlowViewForState,
   newFlowViewFromSchema,
   normalizeBudgetSplitPolicy,
@@ -3926,16 +5387,72 @@ const {
   normalizedEdgeCondition,
   numberOrNull,
   operationErrorText,
+  optionValueAllowed,
   outputFormatAllowed,
   outputFormatOptions,
+  parseEditorConditionText,
   profileBackendOptions,
   profileBindingOptions,
   profileBindingRestriction,
   profileName,
+  pruneMissingMemberStep,
+  pruneMissingMemberSteps,
   realmBackendOptions,
+  reconcileAuthoringForMembers,
+  reconcileAuthoringWithContract,
+  reconcileConditionAvailabilityInEdges,
+  reconcileConditionAvailabilityInFlow,
+  reconcileConditionAvailabilityInStep,
+  reconcileConditionAvailabilityInSteps,
+  reconcileConditionFieldAvailability,
+  reconcileControlRoleObject,
+  reconcileControlRolesInStep,
+  reconcileControlRolesInSteps,
+  reconcileDeletedFlowStepReferences,
+  reconcileDeletedFlowStepReferencesInStep,
+  reconcileDeletedFlowStepReferencesInSteps,
+  reconcileDeploySettingsWithContract,
+  reconcileFlowControlRoles,
+  reconcileFlowLaunchSources,
+  reconcileFlowMemberSchemas,
+  reconcileFlowMemberSteps,
+  reconcileFlowStepToolScopes,
+  reconcileGraphControlRoles,
+  reconcileGraphLaunchSources,
+  reconcileGraphMemberInstances,
+  reconcileGraphStepToolScopes,
+  reconcileInputParamReferences,
+  reconcileInputParamReferencesInEdges,
+  reconcileInputParamReferencesInFlow,
+  reconcileInputParamReferencesInStep,
+  reconcileInputParamReferencesInSteps,
+  reconcileLaunchSourceObject,
+  reconcileLaunchSourcesInStep,
+  reconcileLaunchSourcesInSteps,
+  reconcileMemberSchemaInStep,
+  reconcileMemberSchemaRefs,
+  reconcileMemberSchemasInSteps,
+  reconcileMemberSkillRefs,
+  reconcileMembersWithContract,
+  reconcileMobSettingsProfiles,
+  reconcileMobSettingsWithContract,
+  reconcileSchemaFieldReferences,
+  reconcileSchemaFieldReferencesInEdges,
+  reconcileSchemaFieldReferencesInFlow,
+  reconcileSchemaFieldReferencesInStep,
+  reconcileSchemaFieldReferencesInSteps,
+  reconcileStringField,
+  reconcileToolScopeObject,
+  reconcileToolScopesInStep,
+  reconcileToolScopesInSteps,
+  renameSchemaDefinition,
   repeatConditionFromEdge,
   repeatIterationInputOptions,
   reserveFlowBranchId,
+  rewriteConditionTextReference,
+  rewriteEditorCondition,
+  rewriteInputParamCondition,
+  rewriteInputParamConditionText,
   roleAccentColor,
   roleAccentStyle,
   roleWiringOptionValues,
@@ -3947,13 +5464,16 @@ const {
   schemaDescriptionPatch,
   schemaFieldDeleteCascadePatch,
   schemaFieldDeletePatch,
+  schemaFieldForCondition,
   schemaFieldName,
+  schemaFieldNameIndex,
   schemaFieldRenameCascadePatch,
   schemaFieldRowControlState,
   schemaFieldTypeAllowedSet,
   schemaFieldTypeOptions,
   schemaFieldUpdateCascadePatch,
   schemaFieldUpdatePatch,
+  schemaHasField,
   schemaLikeFieldDescriptionPatch,
   schemaLikeFieldRequiredPatch,
   schemaLikeFieldTypeControlState,
@@ -3965,7 +5485,9 @@ const {
   settingsViewLabelMapFromSchema,
   settingsViewOptionsFromSchema,
   simpleContractOptions,
+  skillIdSet,
   skillIdsFromRealms,
+  skillRealmsForDocument,
   slug,
   stepToolScopeAddPatch,
   stepToolScopeRemovePatch,
@@ -5029,1279 +6551,6 @@ const {
 
   function emptyAuthoringFlowState() {
     return { name: "", steps: [] };
-  }
-
-  function reconcileDeletedFlowStepReferences(flow, deletedId) {
-    if (!flow || typeof flow !== "object") return flow;
-    const target = String(deletedId || "").trim();
-    if (!target) return flow;
-    const steps = reconcileDeletedFlowStepReferencesInSteps(flow.steps || [], target);
-    return steps === flow.steps ? flow : { ...flow, steps };
-  }
-
-  function reconcileDeletedFlowStepReferencesInSteps(steps, deletedId) {
-    let changed = false;
-    const next = (steps || []).map((step) => {
-      const reconciled = reconcileDeletedFlowStepReferencesInStep(step, deletedId);
-      if (reconciled !== step) changed = true;
-      return reconciled;
-    });
-    return changed ? next : steps;
-  }
-
-  function reconcileDeletedFlowStepReferencesInStep(step, deletedId) {
-    if (!step || typeof step !== "object") return step;
-    let next = clearDeletedLaunchSource(step, deletedId);
-    if (step.type === "repeat") {
-      const cond = clearDeletedStepCondition(step.cond, deletedId);
-      const until = clearDeletedStepConditionText(step.until, deletedId, cond);
-      const nested = reconcileDeletedFlowStepReferencesInSteps(step.steps || [], deletedId);
-      if (cond !== step.cond || until !== step.until || nested !== step.steps) {
-        next = { ...next, cond, until, steps: nested };
-      }
-    }
-    if (step.type === "branch") {
-      let changed = false;
-      const branches = (step.branches || []).map((branch) => {
-        const cond = clearDeletedStepCondition(branch.cond, deletedId);
-        const condition = clearDeletedStepConditionText(branch.condition, deletedId, cond);
-        const branchSteps = reconcileDeletedFlowStepReferencesInSteps(branch.steps || [], deletedId);
-        if (cond === branch.cond && condition === branch.condition && branchSteps === branch.steps) return branch;
-        changed = true;
-        return { ...branch, cond, condition, steps: branchSteps };
-      });
-      const fallback = Array.isArray(step.fallback)
-        ? reconcileDeletedFlowStepReferencesInSteps(step.fallback, deletedId)
-        : step.fallback;
-      if (fallback !== step.fallback) changed = true;
-      if (changed) next = { ...next, branches, fallback };
-    }
-    if (step.type === "parallel") {
-      let changed = false;
-      const branches = (step.branches || []).map((branch) => {
-        const branchSteps = reconcileDeletedFlowStepReferencesInSteps(branch.steps || [], deletedId);
-        if (branchSteps === branch.steps) return branch;
-        changed = true;
-        return { ...branch, steps: branchSteps };
-      });
-      if (changed) next = { ...next, branches };
-    }
-    return next;
-  }
-
-  function clearDeletedLaunchSource(source, deletedId) {
-    const mode = launchModeFromAuthoringSource(source);
-    if (!mode || mode.kind !== "Fork" || String(mode.from || "").trim() !== deletedId) return source;
-    return {
-      ...source,
-      launchMode: freshLaunchModePreservingBudget(mode),
-    };
-  }
-
-  function freshLaunchModePreservingBudget(mode) {
-    const budgetSplitPolicy = mode?.budgetSplitPolicy;
-    return budgetSplitPolicy ? { kind: "Fresh", budgetSplitPolicy } : { kind: "Fresh" };
-  }
-
-  function clearDeletedStepCondition(cond, deletedId) {
-    if (!cond || typeof cond !== "object") return cond;
-    const stepId = String(cond.stepId || cond.step_id || "").trim();
-    if (stepId !== deletedId) return cond;
-    return {};
-  }
-
-  function clearDeletedStepConditionText(text, deletedId, preferredCond) {
-    if (preferredCond !== undefined) {
-      if (preferredCond && preferredCond.field) return editorConditionText(preferredCond);
-      return "";
-    }
-    if (!text) return text;
-    const parsed = parseEditorConditionText(text);
-    if (!parsed || parsed.namespace === "params" || parsed.stepId !== deletedId) return text;
-    return "";
-  }
-
-  function reconcileFlowMemberSchemas(flow, members) {
-    if (!flow || typeof flow !== "object") return flow;
-    const memberById = new Map((members || []).map((member) => [member.id, member]));
-    const steps = reconcileMemberSchemasInSteps(flow.steps || [], memberById);
-    return steps === flow.steps ? flow : { ...flow, steps };
-  }
-
-  function renameSchemaDefinition({ schemas, members, flow } = {}, oldId, newId) {
-    const previousId = String(oldId || "").trim();
-    const nextId = String(newId || "").trim();
-    const sourceSchemas = Array.isArray(schemas) ? schemas : [];
-    const sourceMembers = Array.isArray(members) ? members : [];
-    if (!previousId || !nextId || previousId === nextId) {
-      return { schemas: sourceSchemas, members: sourceMembers, flow, renamed: false, selection: null };
-    }
-    if (sourceSchemas.some((schema) => String(schema?.id || "").trim() === nextId)) {
-      return {
-        schemas: sourceSchemas,
-        members: sourceMembers,
-        flow,
-        renamed: false,
-        selection: null,
-        reason: "duplicate_schema_id",
-      };
-    }
-    let found = false;
-    const nextSchemas = sourceSchemas.map((schema) => {
-      if (String(schema?.id || "").trim() !== previousId) return schema;
-      found = true;
-      return { ...schema, id: nextId };
-    });
-    if (!found) {
-      return {
-        schemas: sourceSchemas,
-        members: sourceMembers,
-        flow,
-        renamed: false,
-        selection: null,
-        reason: "unknown_schema_id",
-      };
-    }
-    const nextMembers = sourceMembers.map((member) =>
-      String(member?.schema || "").trim() === previousId
-        ? { ...member, schema: nextId }
-        : member
-    );
-    return {
-      schemas: nextSchemas,
-      members: nextMembers,
-      flow: reconcileFlowMemberSchemas(flow, nextMembers),
-      renamed: true,
-      selection: { kind: "schema", id: nextId },
-    };
-  }
-
-  function reconcileFlowMemberSteps(flow, members) {
-    if (!flow || typeof flow !== "object") return flow;
-    const memberIds = memberIdSet(members);
-    const steps = pruneMissingMemberSteps(flow.steps || [], memberIds);
-    return steps === flow.steps ? flow : { ...flow, steps };
-  }
-
-  function pruneMissingMemberSteps(steps, memberIds) {
-    let changed = false;
-    const next = [];
-    for (const step of steps || []) {
-      const pruned = pruneMissingMemberStep(step, memberIds);
-      if (!pruned) {
-        changed = true;
-        continue;
-      }
-      if (pruned !== step) changed = true;
-      next.push(pruned);
-    }
-    return changed ? next : steps;
-  }
-
-  function pruneMissingMemberStep(step, memberIds) {
-    // Mirrors MobKit's prune_step_array_for_members: member steps without a
-    // live member are dropped, but containers (repeat/branch/parallel) stay
-    // even when emptied — an empty lane is a legitimate draft state, and the
-    // server keeps it.
-    if (!step || typeof step !== "object") return step;
-    if (step.type === "member") {
-      const role = String(step.role || "").trim();
-      return role && memberIds.has(role) ? step : null;
-    }
-    if (step.type === "repeat") {
-      const steps = pruneMissingMemberSteps(step.steps || [], memberIds);
-      return steps === step.steps ? step : { ...step, steps };
-    }
-    if (step.type === "branch" || step.type === "parallel") {
-      let changed = false;
-      const branches = (step.branches || []).map((branch) => {
-        const branchSteps = pruneMissingMemberSteps(branch?.steps || [], memberIds);
-        if (branchSteps === branch.steps) return branch;
-        changed = true;
-        return { ...branch, steps: branchSteps };
-      });
-      const fallback = Array.isArray(step.fallback)
-        ? pruneMissingMemberSteps(step.fallback, memberIds)
-        : step.fallback;
-      if (fallback !== step.fallback) changed = true;
-      return changed ? { ...step, branches, fallback } : step;
-    }
-    return step;
-  }
-
-  function reconcileFlowControlRoles(flow, members) {
-    if (!flow || typeof flow !== "object") return flow;
-    const memberIds = memberIdSet(members);
-    const steps = reconcileControlRolesInSteps(flow.steps || [], memberIds);
-    return steps === flow.steps ? flow : { ...flow, steps };
-  }
-
-  function reconcileGraphControlRoles(instances, members) {
-    const memberIds = memberIdSet(members);
-    let changed = false;
-    const next = (instances || []).map((instance) => {
-      const reconciled = reconcileControlRoleObject(instance, memberIds);
-      if (reconciled !== instance) changed = true;
-      return reconciled;
-    });
-    return changed ? next : instances;
-  }
-
-  function reconcileGraphMemberInstances({ instances, edges }, members) {
-    const sourceInstances = Array.isArray(instances) ? instances : [];
-    const sourceEdges = Array.isArray(edges) ? edges : [];
-    const memberIds = memberIdSet(members);
-    const keptIds = new Set();
-    let instancesChanged = false;
-    const nextInstances = [];
-    for (const instance of sourceInstances) {
-      const memberId = String(instance?.memberId || "").trim();
-      const keep = !memberId || memberIds.has(memberId);
-      if (!keep) {
-        instancesChanged = true;
-        continue;
-      }
-      const id = String(instance?.id || "").trim();
-      if (id) keptIds.add(id);
-      nextInstances.push(instance);
-    }
-    let edgesChanged = false;
-    const nextEdges = sourceEdges.filter((edge) => {
-      const from = String(edge?.from || "").trim();
-      const to = String(edge?.to || "").trim();
-      const keep = (!from || keptIds.has(from)) && (!to || keptIds.has(to));
-      if (!keep) edgesChanged = true;
-      return keep;
-    });
-    return {
-      instances: instancesChanged ? nextInstances : instances,
-      edges: edgesChanged ? nextEdges : edges,
-    };
-  }
-
-  function reconcileFlowLaunchSources(flow, members) {
-    if (!flow || typeof flow !== "object") return flow;
-    const allowedSources = flowLaunchSourceSet(flow, members);
-    const steps = reconcileLaunchSourcesInSteps(flow.steps || [], allowedSources);
-    return steps === flow.steps ? flow : { ...flow, steps };
-  }
-
-  function reconcileGraphLaunchSources(instances, members) {
-    const allowedSources = graphLaunchSourceSet(instances, members);
-    let changed = false;
-    const next = (instances || []).map((instance) => {
-      const reconciled = reconcileLaunchSourceObject(instance, allowedSources);
-      if (reconciled !== instance) changed = true;
-      return reconciled;
-    });
-    return changed ? next : instances;
-  }
-
-  function reconcileFlowStepToolScopes(flow, members) {
-    if (!flow || typeof flow !== "object") return flow;
-    const memberTools = memberToolIndex(members);
-    const steps = reconcileToolScopesInSteps(flow.steps || [], (step) => memberTools.get(step?.role) || new Set());
-    return steps === flow.steps ? flow : { ...flow, steps };
-  }
-
-  function reconcileGraphStepToolScopes(instances, members) {
-    const memberTools = memberToolIndex(members);
-    let changed = false;
-    const next = (instances || []).map((instance) => {
-      if (!instance?.memberId) return instance;
-      const reconciled = reconcileToolScopeObject(instance, memberTools.get(instance.memberId) || new Set());
-      if (reconciled !== instance) changed = true;
-      return reconciled;
-    });
-    return changed ? next : instances;
-  }
-
-  function reconcileAuthoringForMembers({ flow, instances, edges, mobSettings, previousMembers, members } = {}) {
-    const nextMembers = Array.isArray(members) ? members : [];
-    let nextFlow = reconcileFlowMemberSteps(flow, nextMembers);
-    nextFlow = reconcileFlowMemberSchemas(nextFlow, nextMembers);
-    nextFlow = reconcileFlowControlRoles(nextFlow, nextMembers);
-    nextFlow = reconcileFlowLaunchSources(nextFlow, nextMembers);
-    nextFlow = reconcileFlowStepToolScopes(nextFlow, nextMembers);
-    const memberSynced = reconcileGraphMemberInstances({ instances, edges }, nextMembers);
-    let nextInstances = reconcileGraphControlRoles(memberSynced.instances, nextMembers);
-    nextInstances = reconcileGraphLaunchSources(nextInstances, nextMembers);
-    nextInstances = reconcileGraphStepToolScopes(nextInstances, nextMembers);
-    return {
-      flow: nextFlow,
-      instances: nextInstances,
-      edges: memberSynced.edges,
-      mobSettings: reconcileMobSettingsProfiles(mobSettings, previousMembers, nextMembers),
-    };
-  }
-
-  function reconcileMemberSkillRefs(members, skillRealms, options = {}) {
-    const knownSkills = skillIdSet(skillRealms);
-    if (knownSkills.size === 0 && !options.strictEmpty) return members;
-    let changed = false;
-    const next = (members || []).map((member) => {
-      if (!member || typeof member !== "object") return member;
-      const skills = normalizeStringList(member.skills).filter((skill) => knownSkills.has(skill));
-      if (JSON.stringify(skills) === JSON.stringify(normalizeStringList(member.skills))) return member;
-      changed = true;
-      return { ...member, skills };
-    });
-    return changed ? next : members;
-  }
-
-  function reconcileMemberSchemaRefs(members, schemas, options = {}) {
-    const knownSchemas = new Set((Array.isArray(schemas) ? schemas : [])
-      .map((schema) => String(schema?.id || "").trim())
-      .filter(Boolean));
-    if (knownSchemas.size === 0 && !options.strictEmpty) return members;
-    let changed = false;
-    const next = (members || []).map((member) => {
-      if (!member || typeof member !== "object") return member;
-      const schema = String(member.schema || "").trim();
-      if (!schema || knownSchemas.has(schema)) return member;
-      changed = true;
-      return { ...member, schema: "" };
-    });
-    return changed ? next : members;
-  }
-
-  function reconcileDeploySettingsWithContract(settings, contract, modelCatalog, options = {}) {
-    const source = deploySettingsForUi(settings);
-    let next = source;
-    const write = (key, value) => {
-      if (next[key] === value) return;
-      if (next === source) next = { ...source };
-      next[key] = value;
-    };
-    const command = String(contract?.deploy_settings?.command || "").trim();
-    if (command) write("command", command);
-    reconcileStringField(next, write, "surface", contract?.deploy_settings?.surfaces);
-    reconcileStringField(next, write, "trustPolicy", contract?.deploy_settings?.trust_policies);
-    reconcileStringField(next, write, "realmBackend", contract?.deploy_settings?.realm_backends);
-    const modelIds = (modelCatalog || [])
-      .map((model) => String(model?.id || "").trim())
-      .filter(Boolean);
-    if ((modelIds.length || options.strictEmptyModels) && source.model && !modelIds.includes(source.model)) {
-      write("model", "");
-    }
-    return next === source ? settings : next;
-  }
-
-  function deploySettingsPatch(settings, patch, options = {}) {
-    const source = deploySettingsForUi(settings);
-    const rawPatch = patch && typeof patch === "object" ? patch : {};
-    const next = { ...source };
-    const command = String(options.contract?.deploy_settings?.command || "").trim();
-    const modelIds = (options.modelCatalog || [])
-      .map((model) => String(model?.id || "").trim())
-      .filter(Boolean);
-    for (const [key, value] of Object.entries(rawPatch)) {
-      if (key === "command" && command) {
-        if (String(value || "").trim() === command) next.command = command;
-        continue;
-      }
-      if (key === "surface" && !contractValueAllowed(options.contract?.deploy_settings?.surfaces, value)) continue;
-      if (key === "trustPolicy" && !contractValueAllowed(options.contract?.deploy_settings?.trust_policies, value)) continue;
-      if (key === "realmBackend" && !contractValueAllowed(options.contract?.deploy_settings?.realm_backends, value)) continue;
-      if (key === "model" && !catalogValueAllowed(modelIds, value)) continue;
-      next[key] = value;
-    }
-    return deploySettingsForUi(next);
-  }
-
-  function deploySettingsFieldPatch(settings, field, value, options = {}) {
-    const key = String(field || "").trim();
-    if (!key) return deploySettingsForUi(settings);
-    return deploySettingsPatch(settings, { [key]: value }, options);
-  }
-
-  function mobSettingsPatch(settings, patch, options = {}) {
-    const source = normalizeMobSettings(settings);
-    const rawPatch = patch && typeof patch === "object" ? patch : {};
-    const next = { ...source };
-    for (const [key, value] of Object.entries(rawPatch)) {
-      if (!MOB_SETTINGS_PATCH_KEYS.has(key)) continue;
-      if (key === "backendDefault" && !contractValueAllowed(options.contract?.mob_definition?.profile_backends, value, { allowBlank: true })) continue;
-      next[key] = value;
-    }
-    return normalizeMobSettings(next);
-  }
-
-  function mobSettingsFieldPatch(settings, field, value, options = {}) {
-    const key = String(field || "").trim();
-    if (!key) return normalizeMobSettings(settings);
-    return mobSettingsPatch(settings, { [key]: value }, options);
-  }
-
-  function reconcileMembersWithContract(members, contract, deploySettings, modelCatalog, toolCatalog, options = {}) {
-    const source = Array.isArray(members) ? members : [];
-    const runtimeModes = contractStringValues(contract?.mob_definition?.runtime_modes);
-    const profileBindings = contractStringValues(contract?.mob_definition?.profile_binding);
-    const profileBackends = contractStringValues(contract?.mob_definition?.profile_backends);
-    const modelIds = (modelCatalog || [])
-      .map((model) => String(model?.id || "").trim())
-      .filter(Boolean);
-    const toolIds = (toolCatalog || [])
-      .map((tool) => String(tool?.id || "").trim())
-      .filter(Boolean);
-    if (!runtimeModes.length && !profileBindings.length && !profileBackends.length && !modelIds.length && !toolIds.length && !options.strictEmptyModels && !options.strictEmptyTools) {
-      return members;
-    }
-    const surface = String(deploySettings?.surface || "").trim();
-    let changed = false;
-    const next = source.map((member) => {
-      if (!member || typeof member !== "object") return member;
-      let out = member;
-      const write = (key, value) => {
-        if (out[key] === value) return;
-        if (out === member) out = { ...member };
-        out[key] = value;
-      };
-      if (profileBindings.length) {
-        const binding = String(member.profileBinding || member.profile_binding || "").trim();
-        if (binding && !profileBindings.includes(binding)) write("profileBinding", "");
-      }
-      if (runtimeModes.length) {
-        const runtimeMode = String(member.runtimeMode || member.runtime_mode || "").trim();
-        const knownRuntimeMode = runtimeMode && runtimeModes.includes(runtimeMode);
-        if (runtimeMode && !knownRuntimeMode) write("runtimeMode", "");
-        if (knownRuntimeMode && !runtimeModeDeploySurfaceAllowed(contract, surface, runtimeMode)) {
-          const replacement = firstDeploySurfaceRuntimeMode(contract, surface);
-          if (replacement) write("runtimeMode", replacement);
-          else write("runtimeMode", "");
-        }
-      }
-      if (profileBackends.length) {
-        const backend = String(member.backend || "").trim();
-        if (backend && !profileBackends.includes(backend)) write("backend", "");
-      }
-      if (modelIds.length || options.strictEmptyModels) {
-        const model = String(member.model || "").trim();
-        if (model && !modelIds.includes(model)) write("model", "");
-      }
-      if (toolIds.length || options.strictEmptyTools) {
-        const allowedTools = new Set(toolIds);
-        const tools = normalizeStringList(member.tools).filter((tool) => allowedTools.has(tool));
-        if (JSON.stringify(tools) !== JSON.stringify(normalizeStringList(member.tools))) write("tools", tools);
-      }
-      if (out !== member) changed = true;
-      return out;
-    });
-    return changed ? next : members;
-  }
-
-  function reconcileMobSettingsWithContract(settings, contract) {
-    const source = mobSettingsForUi(settings);
-    const backends = contractStringValues(contract?.mob_definition?.profile_backends);
-    if (!backends.length) return settings;
-    const normalizedChanged = JSON.stringify(source) !== JSON.stringify(settings || {});
-    const backendDefault = String(source.backendDefault || "").trim();
-    if (!backendDefault || backends.includes(backendDefault)) return normalizedChanged ? source : settings;
-    return { ...source, backendDefault: "" };
-  }
-
-  function reconcileAuthoringWithContract({
-    members,
-    skillRealms,
-    schemas,
-    deploySettings,
-    mobSettings,
-    flow,
-    instances,
-    edges,
-    contract,
-    modelCatalog,
-    toolCatalog,
-    contractLoaded = false,
-  } = {}) {
-    const strictEmpty = !!contractLoaded;
-    let nextMembers = reconcileMemberSkillRefs(
-      members,
-      skillRealms,
-      { strictEmpty },
-    );
-    nextMembers = reconcileMemberSchemaRefs(
-      nextMembers,
-      schemas,
-      { strictEmpty },
-    );
-    const nextDeploySettings = reconcileDeploySettingsWithContract(
-      deploySettings,
-      contract,
-      modelCatalog,
-      { strictEmptyModels: strictEmpty },
-    );
-    nextMembers = reconcileMembersWithContract(
-      nextMembers,
-      contract,
-      nextDeploySettings,
-      modelCatalog,
-      toolCatalog,
-      {
-        strictEmptyModels: strictEmpty,
-        strictEmptyTools: strictEmpty,
-      },
-    );
-    const authoring = reconcileAuthoringForMembers({
-      flow,
-      instances,
-      edges,
-      mobSettings,
-      previousMembers: members,
-      members: nextMembers,
-    });
-    const nextMobSettings = reconcileMobSettingsWithContract(authoring.mobSettings, contract);
-    return {
-      members: nextMembers,
-      deploySettings: nextDeploySettings,
-      flow: authoring.flow,
-      instances: authoring.instances,
-      edges: authoring.edges,
-      mobSettings: nextMobSettings,
-      changed: nextMembers !== members
-        || nextDeploySettings !== deploySettings
-        || authoring.flow !== flow
-        || authoring.instances !== instances
-        || authoring.edges !== edges
-        || nextMobSettings !== mobSettings,
-    };
-  }
-
-  function reconcileStringField(source, write, key, values) {
-    const allowed = contractStringValues(values);
-    if (!allowed.length) return;
-    const value = String(source[key] || "").trim();
-    if (value && !allowed.includes(value)) write(key, "");
-  }
-
-  function contractValueAllowed(values, raw, { allowBlank = false } = {}) {
-    const value = String(raw || "").trim();
-    if (!value) return allowBlank;
-    const allowed = contractStringValues(values);
-    return allowed.length ? allowed.includes(value) : true;
-  }
-
-  function catalogValueAllowed(values, raw, { allowBlank = true } = {}) {
-    const value = String(raw || "").trim();
-    if (!value) return allowBlank;
-    const allowed = Array.isArray(values)
-      ? values.map((candidate) => String(candidate || "").trim()).filter(Boolean)
-      : [];
-    return allowed.length ? allowed.includes(value) : true;
-  }
-
-  function optionValueAllowed(options, raw, { allowBlank = false } = {}) {
-    const value = String(raw || "").trim();
-    if (!value) return allowBlank;
-    const enabled = (Array.isArray(options) ? options : [])
-      .filter((option) => option && option.disabled !== true)
-      .map((option) => String(option.value || "").trim())
-      .filter(Boolean);
-    return enabled.length ? enabled.includes(value) : true;
-  }
-
-  function skillIdSet(skillRealms) {
-    const ids = new Set();
-    for (const realm of skillRealms || []) {
-      for (const skill of realm?.skills || []) {
-        const id = String(skill?.id || "").trim();
-        if (id) ids.add(id);
-      }
-    }
-    return ids;
-  }
-
-  function skillRealmsForDocument(members, skillRealms) {
-    const selected = new Set();
-    for (const member of members || []) {
-      for (const skill of member?.skills || []) {
-        const id = String(skill || "").trim();
-        if (id) selected.add(id);
-      }
-    }
-    if (!selected.size) return [];
-
-    const out = [];
-    const seen = new Set();
-    for (const realm of skillRealms || []) {
-      if (!realm || typeof realm !== "object") continue;
-      const skills = [];
-      for (const skill of realm.skills || []) {
-        const id = String(skill?.id || "").trim();
-        if (!id || !selected.has(id) || seen.has(id)) continue;
-        seen.add(id);
-        skills.push(skill);
-      }
-      if (!skills.length) continue;
-      out.push({
-        ...realm,
-        skills,
-        default: out.length === 0 ? !!realm.default : false,
-      });
-    }
-    return out;
-  }
-
-  function memberToolIndex(members) {
-    return new Map((members || [])
-      .filter((member) => member?.id)
-      .map((member) => [member.id, new Set(normalizeStringList(member.tools))]));
-  }
-
-  function reconcileToolScopesInSteps(steps, allowedForStep) {
-    let changed = false;
-    const next = (steps || []).map((step) => {
-      const reconciled = reconcileToolScopesInStep(step, allowedForStep);
-      if (reconciled !== step) changed = true;
-      return reconciled;
-    });
-    return changed ? next : steps;
-  }
-
-  function reconcileToolScopesInStep(step, allowedForStep) {
-    if (!step || typeof step !== "object") return step;
-    let next = step;
-    if (step.type === "member") {
-      next = reconcileToolScopeObject(step, allowedForStep(step));
-    }
-    if (step.type === "repeat") {
-      const nested = reconcileToolScopesInSteps(step.steps || [], allowedForStep);
-      if (nested !== step.steps) next = { ...next, steps: nested };
-    }
-    if (step.type === "branch" || step.type === "parallel") {
-      let changed = false;
-      const branches = (step.branches || []).map((branch) => {
-        const branchSteps = reconcileToolScopesInSteps(branch.steps || [], allowedForStep);
-        if (branchSteps === branch.steps) return branch;
-        changed = true;
-        return { ...branch, steps: branchSteps };
-      });
-      const fallback = Array.isArray(step.fallback)
-        ? reconcileToolScopesInSteps(step.fallback, allowedForStep)
-        : step.fallback;
-      if (fallback !== step.fallback) changed = true;
-      if (changed) next = { ...next, branches, fallback };
-    }
-    return next;
-  }
-
-  function reconcileToolScopeObject(source, allowedTools) {
-    if (!source || typeof source !== "object") return source;
-    const allowed = allowedTools || new Set();
-    const allowedToolsList = normalizeStringList(source.allowedTools || source.allowed_tools)
-      .filter((tool) => allowed.has(tool));
-    const blockedToolsList = normalizeStringList(source.blockedTools || source.blocked_tools)
-      .filter((tool) => allowed.has(tool));
-    const currentAllowed = normalizeStringList(source.allowedTools || source.allowed_tools);
-    const currentBlocked = normalizeStringList(source.blockedTools || source.blocked_tools);
-    if (
-      JSON.stringify(allowedToolsList) === JSON.stringify(currentAllowed)
-      && JSON.stringify(blockedToolsList) === JSON.stringify(currentBlocked)
-      && !("allowed_tools" in source)
-      && !("blocked_tools" in source)
-    ) {
-      return source;
-    }
-    const { allowed_tools: _allowedToolsSnake, blocked_tools: _blockedToolsSnake, ...rest } = source;
-    return {
-      ...rest,
-      allowedTools: allowedToolsList,
-      blockedTools: blockedToolsList,
-    };
-  }
-
-  function memberIdSet(members) {
-    return new Set((members || []).map((member) => String(member?.id || "").trim()).filter(Boolean));
-  }
-
-  function flowLaunchSourceSet(flow, members) {
-    const ids = memberIdSet(members);
-    collectVisualSteps(flow?.steps || [], (step) => {
-      if (step?.type === "member" && step.id) ids.add(String(step.id));
-    });
-    return ids;
-  }
-
-  function graphLaunchSourceSet(instances, members) {
-    const ids = memberIdSet(members);
-    for (const instance of instances || []) {
-      if (instance?.id && instance.memberId && !instance.isGate && !instance.isTerminal) {
-        ids.add(String(instance.id));
-      }
-    }
-    return ids;
-  }
-
-  function reconcileLaunchSourcesInSteps(steps, allowedSources) {
-    let changed = false;
-    const next = (steps || []).map((step) => {
-      const reconciled = reconcileLaunchSourcesInStep(step, allowedSources);
-      if (reconciled !== step) changed = true;
-      return reconciled;
-    });
-    return changed ? next : steps;
-  }
-
-  function reconcileLaunchSourcesInStep(step, allowedSources) {
-    if (!step || typeof step !== "object") return step;
-    let next = reconcileLaunchSourceObject(step, allowedSources);
-    if (step.type === "repeat") {
-      const nested = reconcileLaunchSourcesInSteps(step.steps || [], allowedSources);
-      if (nested !== step.steps) next = { ...next, steps: nested };
-    }
-    if (step.type === "branch" || step.type === "parallel") {
-      let changed = false;
-      const branches = (step.branches || []).map((branch) => {
-        const branchSteps = reconcileLaunchSourcesInSteps(branch.steps || [], allowedSources);
-        if (branchSteps === branch.steps) return branch;
-        changed = true;
-        return { ...branch, steps: branchSteps };
-      });
-      const fallback = Array.isArray(step.fallback)
-        ? reconcileLaunchSourcesInSteps(step.fallback, allowedSources)
-        : step.fallback;
-      if (fallback !== step.fallback) changed = true;
-      if (changed) next = { ...next, branches, fallback };
-    }
-    return next;
-  }
-
-  function reconcileLaunchSourceObject(source, allowedSources) {
-    if (!source || typeof source !== "object") return source;
-    const mode = launchModeFromAuthoringSource(source);
-    if (!mode) return source;
-    if (mode.kind !== "Fork" || !mode.from || allowedSources.has(mode.from)) return source;
-    return {
-      ...source,
-      launchMode: freshLaunchModePreservingBudget(mode),
-    };
-  }
-
-  function reconcileControlRolesInSteps(steps, memberIds) {
-    let changed = false;
-    const next = (steps || []).map((step) => {
-      const reconciled = reconcileControlRolesInStep(step, memberIds);
-      if (reconciled !== step) changed = true;
-      return reconciled;
-    });
-    return changed ? next : steps;
-  }
-
-  function reconcileControlRolesInStep(step, memberIds) {
-    if (!step || typeof step !== "object") return step;
-    let next = reconcileControlRoleObject(step, memberIds);
-    if (step.type === "repeat") {
-      const nested = reconcileControlRolesInSteps(step.steps || [], memberIds);
-      if (nested !== step.steps) next = { ...next, steps: nested };
-    }
-    if (step.type === "branch" || step.type === "parallel") {
-      let changed = false;
-      const branches = (step.branches || []).map((branch) => {
-        const branchSteps = reconcileControlRolesInSteps(branch.steps || [], memberIds);
-        if (branchSteps === branch.steps) return branch;
-        changed = true;
-        return { ...branch, steps: branchSteps };
-      });
-      const fallback = Array.isArray(step.fallback)
-        ? reconcileControlRolesInSteps(step.fallback, memberIds)
-        : step.fallback;
-      if (fallback !== step.fallback) changed = true;
-      if (changed) next = { ...next, branches, fallback };
-    }
-    return next;
-  }
-
-  function reconcileControlRoleObject(source, memberIds) {
-    if (!source || typeof source !== "object") return source;
-    const controllerRole = String(source.controllerRole || source.controllerMemberId || source.controlRole || source.joinRole || "").trim();
-    if (!controllerRole || memberIds.has(controllerRole)) return source;
-    const { controllerRole: _controllerRole, controllerMemberId: _controllerMemberId, controlRole: _controlRole, joinRole: _joinRole, ...rest } = source;
-    return rest;
-  }
-
-  function reconcileMobSettingsProfiles(settings, previousMembers, members) {
-    const normalized = normalizeMobSettings(settings);
-    const previousById = new Map((previousMembers || [])
-      .filter((member) => member?.id)
-      .map((member) => [member.id, profileName(member)]));
-    const currentProfiles = new Set((members || []).map(profileName).filter(Boolean));
-    const renameByProfile = new Map();
-    for (const member of members || []) {
-      if (!member?.id) continue;
-      const previous = previousById.get(member.id);
-      const current = profileName(member);
-      if (previous && current && previous !== current) renameByProfile.set(previous, current);
-    }
-    const rewriteProfile = (value) => {
-      const raw = String(value || "").trim();
-      if (!raw) return "";
-      const renamed = renameByProfile.get(raw) || raw;
-      return currentProfiles.has(renamed) ? renamed : "";
-    };
-    const orchestrator = rewriteProfile(normalized.orchestrator);
-    const roleWiring = [];
-    const seen = new Set();
-    for (const rule of normalized.roleWiring || []) {
-      const a = rewriteProfile(rule.a);
-      const b = rewriteProfile(rule.b);
-      if (!a || !b) continue;
-      const key = `${a}\u0000${b}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      roleWiring.push({ a, b });
-    }
-    if (
-      orchestrator === normalized.orchestrator
-      && JSON.stringify(roleWiring) === JSON.stringify(normalized.roleWiring || [])
-    ) {
-      return settings;
-    }
-    return {
-      ...normalized,
-      orchestrator,
-      roleWiring,
-    };
-  }
-
-  function reconcileSchemaFieldReferences({ flow, edges, members, instances, schemaId, oldName, newName }) {
-    const schema = String(schemaId || "").trim();
-    const oldField = String(oldName || "").trim();
-    const nextField = String(newName || "").trim();
-    if (!schema || !oldField || oldField === nextField) {
-      return { flow, edges };
-    }
-    const memberSchemaById = new Map((members || []).map((member) => [
-      member.id,
-      String(member.schema || "").trim(),
-    ]));
-    const flowStepSchemas = flowStepSchemaIndex(flow?.steps || [], memberSchemaById);
-    const graphStepSchemas = new Map((instances || [])
-      .filter((instance) => instance?.id && instance?.memberId)
-      .map((instance) => [instance.id, memberSchemaById.get(instance.memberId) || ""]));
-    const reconciledFlow = reconcileSchemaFieldReferencesInFlow(flow, flowStepSchemas, schema, oldField, nextField);
-    const reconciledEdges = reconcileSchemaFieldReferencesInEdges(edges, graphStepSchemas, schema, oldField, nextField);
-    return {
-      flow: reconciledFlow,
-      edges: reconciledEdges,
-    };
-  }
-
-  function reconcileInputParamReferences({ flow, edges, oldName, newName }) {
-    const oldField = String(oldName || "").trim();
-    const nextField = String(newName || "").trim();
-    if (!oldField || oldField === nextField) {
-      return { flow, edges };
-    }
-    return {
-      flow: reconcileInputParamReferencesInFlow(flow, oldField, nextField),
-      edges: reconcileInputParamReferencesInEdges(edges, oldField, nextField),
-    };
-  }
-
-  function reconcileInputParamReferencesInFlow(flow, oldName, newName) {
-    if (!flow || typeof flow !== "object") return flow;
-    const steps = reconcileInputParamReferencesInSteps(flow.steps || [], oldName, newName);
-    return steps === flow.steps ? flow : { ...flow, steps };
-  }
-
-  function reconcileInputParamReferencesInSteps(steps, oldName, newName) {
-    let changed = false;
-    const next = (steps || []).map((step) => {
-      const reconciled = reconcileInputParamReferencesInStep(step, oldName, newName);
-      if (reconciled !== step) changed = true;
-      return reconciled;
-    });
-    return changed ? next : steps;
-  }
-
-  function reconcileInputParamReferencesInStep(step, oldName, newName) {
-    if (!step || typeof step !== "object") return step;
-    if (step.type === "repeat") {
-      const cond = rewriteInputParamCondition(step.cond, oldName, newName);
-      const until = rewriteInputParamConditionText(step.until, oldName, newName, cond);
-      const nested = reconcileInputParamReferencesInSteps(step.steps || [], oldName, newName);
-      if (cond === step.cond && until === step.until && nested === step.steps) return step;
-      return { ...step, cond, until, steps: nested };
-    }
-    if (step.type === "branch") {
-      let changed = false;
-      const branches = (step.branches || []).map((branch) => {
-        const cond = rewriteInputParamCondition(branch.cond, oldName, newName);
-        const condition = rewriteInputParamConditionText(branch.condition, oldName, newName, cond);
-        const branchSteps = reconcileInputParamReferencesInSteps(branch.steps || [], oldName, newName);
-        if (cond === branch.cond && condition === branch.condition && branchSteps === branch.steps) return branch;
-        changed = true;
-        return { ...branch, cond, condition, steps: branchSteps };
-      });
-      const fallback = Array.isArray(step.fallback)
-        ? reconcileInputParamReferencesInSteps(step.fallback, oldName, newName)
-        : step.fallback;
-      if (fallback !== step.fallback) changed = true;
-      return changed ? { ...step, branches, fallback } : step;
-    }
-    if (step.type === "parallel") {
-      let changed = false;
-      const branches = (step.branches || []).map((branch) => {
-        const branchSteps = reconcileInputParamReferencesInSteps(branch.steps || [], oldName, newName);
-        if (branchSteps === branch.steps) return branch;
-        changed = true;
-        return { ...branch, steps: branchSteps };
-      });
-      return changed ? { ...step, branches } : step;
-    }
-    return step;
-  }
-
-  function rewriteInputParamCondition(cond, oldName, newName) {
-    if (!cond || typeof cond !== "object") return cond;
-    const isParam = cond.namespace === "params" || cond.stepId === "params" || cond.step_id === "params";
-    if (!isParam || String(cond.field || "").trim() !== oldName) return cond;
-    if (!newName) return {};
-    return {
-      ...cond,
-      namespace: "params",
-      stepId: "params",
-      field: newName,
-    };
-  }
-
-  function rewriteInputParamConditionText(text, oldName, newName, preferredCond) {
-    if (!text) return text;
-    if (preferredCond && preferredCond.field) return editorConditionText(preferredCond);
-    const parsed = parseEditorConditionText(text);
-    if (!parsed || parsed.namespace !== "params" || parsed.field !== oldName) return text;
-    if (!newName) return "";
-    return editorConditionText({ ...parsed, field: newName });
-  }
-
-  function reconcileInputParamReferencesInEdges(edges, oldName, newName) {
-    let changed = false;
-    const next = (edges || []).map((edge) => {
-      const condition = normalizedEdgeCondition(edge);
-      const path = String(condition?.path || "").trim();
-      const parts = path.split(".").filter(Boolean);
-      if (parts.length !== 2 || parts[0] !== "params" || parts[1] !== oldName) return edge;
-      changed = true;
-      if (!newName) {
-        return { ...edge, cond: null, label: "" };
-      }
-      const nextPath = `params.${newName}`;
-      const nextCond = { var: nextPath, op: condition.op || "", val: condition.val ?? "" };
-      return {
-        ...edge,
-        cond: nextCond,
-        label: edge.label && edge.label === conditionTextForPath(path, condition)
-          ? conditionTextForPath(nextPath, nextCond)
-          : edge.label,
-      };
-    });
-    return changed ? next : edges;
-  }
-
-  function reconcileConditionFieldAvailability({ flow, edges, members, instances, schemas }) {
-    const schemaFields = schemaFieldNameIndex(schemas);
-    const inputFields = inputParamNameSet(flow);
-    const memberSchemaById = new Map((members || []).map((member) => [
-      member.id,
-      String(member.schema || "").trim(),
-    ]));
-    const flowStepSchemas = flowStepSchemaIndex(flow?.steps || [], memberSchemaById);
-    const graphStepSchemas = new Map((instances || [])
-      .filter((instance) => instance?.id && instance?.memberId)
-      .map((instance) => [instance.id, memberSchemaById.get(instance.memberId) || ""]));
-    return {
-      flow: reconcileConditionAvailabilityInFlow(flow, flowStepSchemas, schemaFields, inputFields),
-      edges: reconcileConditionAvailabilityInEdges(edges, graphStepSchemas, schemaFields, inputFields),
-    };
-  }
-
-  function schemaFieldNameIndex(schemas) {
-    const out = new Map();
-    for (const schema of schemas || []) {
-      const id = String(schema?.id || "").trim();
-      if (!id) continue;
-      const fields = new Map();
-      for (const field of schema.fields || []) {
-        const name = String(field?.name || "").trim();
-        if (name) fields.set(name, field);
-      }
-      out.set(id, fields);
-    }
-    return out;
-  }
-
-  function inputParamNameSet(flow) {
-    const out = new Map();
-    collectVisualSteps(flow?.steps || [], (step) => {
-      if (step?.type !== "input") return;
-      for (const param of step.inputParams || []) {
-        const name = String(param?.name || "").trim();
-        if (name) out.set(name, param);
-      }
-    });
-    return out;
-  }
-
-  function reconcileConditionAvailabilityInFlow(flow, stepSchemas, schemaFields, inputFields) {
-    if (!flow || typeof flow !== "object") return flow;
-    const steps = reconcileConditionAvailabilityInSteps(flow.steps || [], stepSchemas, schemaFields, inputFields);
-    return steps === flow.steps ? flow : { ...flow, steps };
-  }
-
-  function reconcileConditionAvailabilityInSteps(steps, stepSchemas, schemaFields, inputFields) {
-    let changed = false;
-    const next = (steps || []).map((step) => {
-      const reconciled = reconcileConditionAvailabilityInStep(step, stepSchemas, schemaFields, inputFields);
-      if (reconciled !== step) changed = true;
-      return reconciled;
-    });
-    return changed ? next : steps;
-  }
-
-  function reconcileConditionAvailabilityInStep(step, stepSchemas, schemaFields, inputFields) {
-    if (!step || typeof step !== "object") return step;
-    if (step.type === "repeat") {
-      const hadCond = !!step.cond;
-      const cond = clearUnavailableEditorCondition(step.cond, stepSchemas, schemaFields, inputFields);
-      const until = clearUnavailableConditionText(step.until, stepSchemas, schemaFields, inputFields, hadCond ? cond : undefined);
-      const nested = reconcileConditionAvailabilityInSteps(step.steps || [], stepSchemas, schemaFields, inputFields);
-      if (cond === step.cond && until === step.until && nested === step.steps) return step;
-      return { ...step, cond, until, steps: nested };
-    }
-    if (step.type === "branch") {
-      let changed = false;
-      const branches = (step.branches || []).map((branch) => {
-        const hadCond = !!branch.cond;
-        const cond = clearUnavailableEditorCondition(branch.cond, stepSchemas, schemaFields, inputFields);
-        const condition = clearUnavailableConditionText(branch.condition, stepSchemas, schemaFields, inputFields, hadCond ? cond : undefined);
-        const branchSteps = reconcileConditionAvailabilityInSteps(branch.steps || [], stepSchemas, schemaFields, inputFields);
-        if (cond === branch.cond && condition === branch.condition && branchSteps === branch.steps) return branch;
-        changed = true;
-        return { ...branch, cond, condition, steps: branchSteps };
-      });
-      const fallback = Array.isArray(step.fallback)
-        ? reconcileConditionAvailabilityInSteps(step.fallback, stepSchemas, schemaFields, inputFields)
-        : step.fallback;
-      if (fallback !== step.fallback) changed = true;
-      return changed ? { ...step, branches, fallback } : step;
-    }
-    if (step.type === "parallel") {
-      let changed = false;
-      const branches = (step.branches || []).map((branch) => {
-        const branchSteps = reconcileConditionAvailabilityInSteps(branch.steps || [], stepSchemas, schemaFields, inputFields);
-        if (branchSteps === branch.steps) return branch;
-        changed = true;
-        return { ...branch, steps: branchSteps };
-      });
-      return changed ? { ...step, branches } : step;
-    }
-    return step;
-  }
-
-  function clearUnavailableEditorCondition(cond, stepSchemas, schemaFields, inputFields) {
-    if (!cond || typeof cond !== "object") return cond;
-    return editorConditionFieldAvailable(cond, stepSchemas, schemaFields, inputFields) ? cond : {};
-  }
-
-  function clearUnavailableConditionText(text, stepSchemas, schemaFields, inputFields, preferredCond) {
-    if (preferredCond !== undefined) {
-      if (preferredCond && preferredCond.field) return editorConditionText(preferredCond);
-      return "";
-    }
-    if (!text) return text;
-    const parsed = parseEditorConditionText(text);
-    if (!parsed) return text;
-    return editorConditionFieldAvailable(parsed, stepSchemas, schemaFields, inputFields) ? text : "";
-  }
-
-  function editorConditionFieldAvailable(cond, stepSchemas, schemaFields, inputFields) {
-    if (!cond || typeof cond !== "object") return true;
-    const field = String(cond.field || "").trim();
-    if (!field) return true;
-    if (cond.namespace === "params" || cond.stepId === "params" || cond.step_id === "params") {
-      return conditionFieldValueAvailable(inputFields.get(field), cond);
-    }
-    const stepId = String(cond.stepId || cond.step_id || "").trim();
-    if (!stepId) return true;
-    return conditionFieldValueAvailable(schemaFieldForCondition(schemaFields, stepSchemas.get(stepId), field), cond);
-  }
-
-  function reconcileConditionAvailabilityInEdges(edges, stepSchemas, schemaFields, inputFields) {
-    let changed = false;
-    const next = (edges || []).map((edge) => {
-      const condition = normalizedEdgeCondition(edge);
-      const path = String(condition?.path || "").trim();
-      const parts = path.split(".").filter(Boolean);
-      let available = true;
-      if (parts.length === 2 && parts[0] === "params") {
-        available = conditionFieldValueAvailable(inputFields.get(parts[1]), condition);
-      } else if (parts.length === 3 && parts[0] === "steps") {
-        available = conditionFieldValueAvailable(schemaFieldForCondition(schemaFields, stepSchemas.get(parts[1]), parts[2]), condition);
-      }
-      if (available) return edge;
-      changed = true;
-      return { ...edge, cond: null, label: "" };
-    });
-    return changed ? next : edges;
-  }
-
-  function schemaHasField(schemaFields, schemaId, field) {
-    return !!schemaFieldForCondition(schemaFields, schemaId, field);
-  }
-
-  function schemaFieldForCondition(schemaFields, schemaId, field) {
-    const id = String(schemaId || "").trim();
-    const name = String(field || "").trim();
-    if (!id || !name) return null;
-    const fields = schemaFields.get(id);
-    if (!fields) return null;
-    if (fields instanceof Map) return fields.get(name) || null;
-    return fields.has?.(name) ? { name } : null;
-  }
-
-  function conditionFieldValueAvailable(field, cond) {
-    if (!field) return false;
-    const type = String(field.type || "").trim();
-    if (type !== "enum") return true;
-    const values = enumValuesForField(field).map(String);
-    if (!values.length) return true;
-    const raw = cond?.val ?? cond?.value;
-    if (raw == null || String(raw).trim() === "") return true;
-    return values.includes(String(raw));
-  }
-
-  function flowStepSchemaIndex(steps, memberSchemaById, out = new Map()) {
-    for (const step of steps || []) {
-      if (!step || typeof step !== "object") continue;
-      if (step.type === "member" && step.id) {
-        out.set(step.id, memberSchemaById.get(step.role) || String(step.schema || "").trim());
-      }
-      if (step.type === "repeat") flowStepSchemaIndex(step.steps || [], memberSchemaById, out);
-      if (step.type === "branch" || step.type === "parallel") {
-        for (const branch of step.branches || []) flowStepSchemaIndex(branch.steps || [], memberSchemaById, out);
-        flowStepSchemaIndex(step.fallback || [], memberSchemaById, out);
-      }
-    }
-    return out;
-  }
-
-  function reconcileSchemaFieldReferencesInFlow(flow, stepSchemas, schemaId, oldName, newName) {
-    if (!flow || typeof flow !== "object") return flow;
-    const steps = reconcileSchemaFieldReferencesInSteps(flow.steps || [], stepSchemas, schemaId, oldName, newName);
-    return steps === flow.steps ? flow : { ...flow, steps };
-  }
-
-  function reconcileSchemaFieldReferencesInSteps(steps, stepSchemas, schemaId, oldName, newName) {
-    let changed = false;
-    const next = (steps || []).map((step) => {
-      const reconciled = reconcileSchemaFieldReferencesInStep(step, stepSchemas, schemaId, oldName, newName);
-      if (reconciled !== step) changed = true;
-      return reconciled;
-    });
-    return changed ? next : steps;
-  }
-
-  function reconcileSchemaFieldReferencesInStep(step, stepSchemas, schemaId, oldName, newName) {
-    if (!step || typeof step !== "object") return step;
-    if (step.type === "repeat") {
-      const cond = rewriteEditorCondition(step.cond, stepSchemas, schemaId, oldName, newName);
-      const until = rewriteConditionTextReference(step.until, stepSchemas, schemaId, oldName, newName);
-      const nested = reconcileSchemaFieldReferencesInSteps(step.steps || [], stepSchemas, schemaId, oldName, newName);
-      if (cond === step.cond && until === step.until && nested === step.steps) return step;
-      return {
-        ...step,
-        cond,
-        until,
-        steps: nested,
-      };
-    }
-    if (step.type === "branch") {
-      let changed = false;
-      const branches = (step.branches || []).map((branch) => {
-        const cond = rewriteEditorCondition(branch.cond, stepSchemas, schemaId, oldName, newName);
-        const condition = rewriteConditionTextReference(branch.condition, stepSchemas, schemaId, oldName, newName, cond);
-        const branchSteps = reconcileSchemaFieldReferencesInSteps(branch.steps || [], stepSchemas, schemaId, oldName, newName);
-        if (cond === branch.cond && condition === branch.condition && branchSteps === branch.steps) return branch;
-        changed = true;
-        return { ...branch, cond, condition, steps: branchSteps };
-      });
-      const fallback = Array.isArray(step.fallback)
-        ? reconcileSchemaFieldReferencesInSteps(step.fallback, stepSchemas, schemaId, oldName, newName)
-        : step.fallback;
-      if (fallback !== step.fallback) changed = true;
-      return changed ? { ...step, branches, fallback } : step;
-    }
-    if (step.type === "parallel") {
-      let changed = false;
-      const branches = (step.branches || []).map((branch) => {
-        const branchSteps = reconcileSchemaFieldReferencesInSteps(branch.steps || [], stepSchemas, schemaId, oldName, newName);
-        if (branchSteps === branch.steps) return branch;
-        changed = true;
-        return { ...branch, steps: branchSteps };
-      });
-      return changed ? { ...step, branches } : step;
-    }
-    return step;
-  }
-
-  function rewriteEditorCondition(cond, stepSchemas, schemaId, oldName, newName) {
-    if (!cond || typeof cond !== "object") return cond;
-    if (cond.namespace === "params" || cond.stepId === "params") return cond;
-    const stepId = String(cond.stepId || cond.step_id || "").trim();
-    if (!stepId || stepSchemas.get(stepId) !== schemaId || String(cond.field || "").trim() !== oldName) return cond;
-    if (!newName) return {};
-    const next = { ...cond, field: newName || "", val: newName ? (cond.val ?? "") : "" };
-    return next;
-  }
-
-  function rewriteConditionTextReference(text, stepSchemas, schemaId, oldName, newName, preferredCond) {
-    if (!text) return text;
-    if (preferredCond && preferredCond.field) return editorConditionText(preferredCond);
-    const parsed = parseEditorConditionText(text);
-    if (!parsed || parsed.namespace === "params") return text;
-    if (stepSchemas.get(parsed.stepId) !== schemaId || parsed.field !== oldName) return text;
-    if (!newName) return "";
-    return editorConditionText({ ...parsed, field: newName });
-  }
-
-  function parseEditorConditionText(text) {
-    const raw = String(text || "").trim();
-    const params = /^params\.([A-Za-z0-9_.-]+)\s*(==|>|<)\s*(.+)$/.exec(raw);
-    if (params) {
-      return {
-        namespace: "params",
-        stepId: "params",
-        field: params[1],
-        op: params[2],
-        val: params[3].trim().replace(/^["']|["']$/g, ""),
-      };
-    }
-    const steps = /^steps\.([A-Za-z0-9_.-]+)\.([A-Za-z0-9_.-]+)\s*(==|>|<)\s*(.+)$/.exec(raw);
-    if (!steps) return null;
-    return {
-      namespace: "steps",
-      stepId: steps[1],
-      field: steps[2],
-      op: steps[3],
-      val: steps[4].trim().replace(/^["']|["']$/g, ""),
-    };
-  }
-
-  function editorConditionText(cond) {
-    if (!cond || !cond.stepId || !cond.field) return "";
-    const op = cond.op || cond.operator || "";
-    if (!op) return "";
-    const val = cond.val ?? cond.value ?? "";
-    if (cond.namespace === "params" || cond.stepId === "params") {
-      return `params.${cond.field} ${op} ${JSON.stringify(String(val))}`;
-    }
-    return `steps.${cond.stepId}.${cond.field} ${op} ${JSON.stringify(String(val))}`;
-  }
-
-  function conditionValueLiteral(value) {
-    return /^(true|false|-?\d+(\.\d+)?)$/.test(String(value ?? ""))
-      ? String(value ?? "")
-      : JSON.stringify(String(value ?? ""));
   }
 
   function directMemberAddValidation(member, members = [], contract = null) {
@@ -7399,33 +7648,6 @@ const {
     return `${member.name || member.role || member.id}.${cond.field} ${op} ${conditionValueLiteral(cond.val ?? cond.value ?? "")}`;
   }
 
-  function reconcileSchemaFieldReferencesInEdges(edges, stepSchemas, schemaId, oldName, newName) {
-    let changed = false;
-    const next = (edges || []).map((edge) => {
-      const condition = normalizedEdgeCondition(edge);
-      const path = String(condition?.path || "").trim();
-      const parts = path.split(".").filter(Boolean);
-      if (parts.length !== 3 || parts[0] !== "steps") return edge;
-      const stepId = parts[1];
-      const field = parts[2];
-      if (stepSchemas.get(stepId) !== schemaId || field !== oldName) return edge;
-      changed = true;
-      if (!newName) {
-        return { ...edge, cond: null, label: "" };
-      }
-      const nextPath = `steps.${stepId}.${newName}`;
-      const nextCond = { var: nextPath, op: condition.op || "", val: condition.val ?? "" };
-      return {
-        ...edge,
-        cond: nextCond,
-        label: edge.label && edge.label === conditionTextForPath(path, condition)
-          ? conditionTextForPath(nextPath, nextCond)
-          : edge.label,
-      };
-    });
-    return changed ? next : edges;
-  }
-
   function graphEdgeConditionPatch(edge, patch = {}, options = {}) {
     const previous = normalizedEdgeCondition(edge);
     const previousText = previous?.path ? conditionTextForPath(previous.path, previous) : "";
@@ -8369,67 +8591,6 @@ const {
     const next = String(dispatch || "").trim();
     if (!dispatchModeAllowed(contract, next)) return {};
     return { dispatch: next, label: next };
-  }
-
-  function conditionTextForPath(path, condition) {
-    const op = condition.op || "";
-    return op ? `${path} ${op} ${JSON.stringify(String(condition.val ?? ""))}` : "";
-  }
-
-  function reconcileMemberSchemasInSteps(steps, memberById) {
-    let changed = false;
-    const next = (steps || []).map((step) => {
-      const reconciled = reconcileMemberSchemaInStep(step, memberById);
-      if (reconciled !== step) changed = true;
-      return reconciled;
-    });
-    return changed ? next : steps;
-  }
-
-  function reconcileMemberSchemaInStep(step, memberById) {
-    if (!step || typeof step !== "object") return step;
-    if (step.type === "member") {
-      const member = memberById.get(step.role);
-      if (!member) return step;
-      const memberSchema = String(member.schema || "").trim();
-      const stepSchema = String(step.schema || "").trim();
-      const expected = String(step.expectedSchemaRef || step.expected_schema_ref || "").trim();
-      if (!memberSchema) {
-        if (!stepSchema && !expected && !("expected_schema_ref" in step)) return step;
-        const { schema, expectedSchemaRef, expected_schema_ref, ...rest } = step;
-        return rest;
-      }
-      let next = step;
-      if (stepSchema !== memberSchema) {
-        next = { ...next, schema: memberSchema };
-        if (expected && stepSchema && expected === `schemas/${stepSchema}.json`) {
-          next.expectedSchemaRef = `schemas/${memberSchema}.json`;
-        }
-      }
-      if ("expected_schema_ref" in next) {
-        const { expected_schema_ref, ...rest } = next;
-        next = rest;
-      }
-      return next;
-    }
-    if (step.type === "repeat") {
-      const nested = reconcileMemberSchemasInSteps(step.steps || [], memberById);
-      return nested === step.steps ? step : { ...step, steps: nested };
-    }
-    if (step.type === "branch" || step.type === "parallel") {
-      let changed = false;
-      const branches = (step.branches || []).map((branch) => {
-        const branchSteps = reconcileMemberSchemasInSteps(branch.steps || [], memberById);
-        if (branchSteps !== branch.steps) changed = true;
-        return branchSteps === branch.steps ? branch : { ...branch, steps: branchSteps };
-      });
-      const fallback = Array.isArray(step.fallback)
-        ? reconcileMemberSchemasInSteps(step.fallback, memberById)
-        : step.fallback;
-      if (fallback !== step.fallback) changed = true;
-      return changed ? { ...step, branches, fallback } : step;
-    }
-    return step;
   }
 
   function buildDocument({ flow, studio, currentFlow, deploySettings, contract }) {
@@ -11277,140 +11438,6 @@ const {
     return value
       .filter((row) => row && typeof row === "object" && !Array.isArray(row))
       .map((row) => JSON.parse(JSON.stringify(row)));
-  }
-
-  function memberPromptSkeleton(member) {
-    const notes = String(member?.systemPrompt || "").trim();
-    const name = member?.name || "this agent";
-    const intent = notes || `Act as the ${member?.role || "member"} of the mob.`;
-    const lines = [
-      `You are ${name}, a member of a Meerkat mob.`,
-      "",
-      "## Mandate",
-      intent.replace(/\s+/g, " "),
-      "",
-      "## Operating rules",
-      "- Read the shared mob workpad and prior members' output before acting.",
-      "- Do exactly what this step requires — no more, no less.",
-      member?.schema ? `- Emit a ${member.schema} as your structured output.` : "- Return a concise, well-structured result.",
-      "- Hand off cleanly: state what you did and what the next member needs.",
-    ];
-    return lines.join("\n");
-  }
-
-  function memberNamePatch(rawName) {
-    return { name: String(rawName || "") };
-  }
-
-  function memberRealmProfilePatch(rawProfile) {
-    return { realmProfile: String(rawProfile || "").trim() };
-  }
-
-  function memberSystemPromptPatch(rawPrompt) {
-    return { systemPrompt: String(rawPrompt || "") };
-  }
-
-  function memberProfileBindingPatch(member, rawBinding, contract) {
-    const binding = String(rawBinding || "").trim();
-    if (!optionValueAllowed(profileBindingOptions(contract, binding), binding)) return {};
-    return {
-      profileBinding: binding,
-      realmProfile: binding === "realm_profile"
-        ? String(member?.realmProfile || member?.role || member?.name || "")
-        : "",
-    };
-  }
-
-  function memberRuntimeModePatch(rawMode, contract, deploySettings) {
-    const runtimeMode = String(rawMode || "").trim();
-    if (!optionValueAllowed(runtimeModeOptions(contract, deploySettings, runtimeMode), runtimeMode)) return {};
-    return { runtimeMode };
-  }
-
-  function memberModelPatch(rawModel, modelCatalog) {
-    const model = String(rawModel || "").trim();
-    const ids = (modelCatalog || []).map((entry) => String(entry?.id || "").trim()).filter(Boolean);
-    if (!catalogValueAllowed(ids, model, { allowBlank: false })) return {};
-    return { model };
-  }
-
-  function memberSchemaPatch(rawSchema, schemas) {
-    const schema = String(rawSchema || "").trim();
-    if (Array.isArray(schemas)) {
-      const ids = schemas.map((entry) => String(entry?.id || "").trim()).filter(Boolean);
-      if (schema && !ids.includes(schema)) return {};
-    }
-    return { schema };
-  }
-
-  function memberSchemaCascadePatch({ memberId, members, flow, edges, instances, schemas } = {}, rawSchema) {
-    const id = String(memberId || "").trim();
-    const list = Array.isArray(members) ? members : [];
-    const sourceInstances = Array.isArray(instances) ? instances : [];
-    const current = list.find((member) => String(member?.id || "").trim() === id) || null;
-    if (!current) {
-      return { ok: false, error: "member not found", members: list, flow, edges, instances: sourceInstances, patch: null };
-    }
-    const patch = memberSchemaPatch(rawSchema, schemas);
-    if (!Object.prototype.hasOwnProperty.call(patch, "schema")) {
-      return { ok: false, error: "unknown schema", members: list, flow, edges, instances: sourceInstances, patch: null };
-    }
-    const nextMember = { ...current, ...patch };
-    const nextMembers = list.map((member) => String(member?.id || "").trim() === id ? nextMember : member);
-    const reconciled = reconcileConditionFieldAvailability({
-      flow,
-      edges,
-      members: nextMembers,
-      instances: sourceInstances,
-      schemas,
-    });
-    return {
-      ok: true,
-      error: "",
-      patch,
-      member: nextMember,
-      members: nextMembers,
-      flow: reconciled.flow,
-      edges: reconciled.edges,
-      instances: sourceInstances,
-    };
-  }
-
-  function memberBackendPatch(rawBackend, contract) {
-    const backend = String(rawBackend || "").trim();
-    if (!optionValueAllowed(profileBackendOptions(contract, backend, true), backend, { allowBlank: true })) return {};
-    return { backend };
-  }
-
-  function memberMaxInlinePeerNotificationsPatch(rawValue) {
-    return { maxInlinePeerNotifications: normalizeMaxInlinePeerNotifications(rawValue) };
-  }
-
-  function memberProviderParamsEditorState(member, agentDetailView = null) {
-    const view = agentDetailViewForState(agentDetailView);
-    return {
-      label: view.providerParamsLabel,
-      text: member?.providerParams ? JSON.stringify(member.providerParams, null, 2) : "",
-      placeholder: view.providerParamsPlaceholder,
-      rows: view.providerParamsRows,
-      invalidJsonLabel: view.providerParamsInvalidJsonLabel,
-    };
-  }
-
-  function memberProviderParamsPatch(rawText, agentDetailView = null) {
-    const view = agentDetailViewForState(agentDetailView);
-    const text = String(rawText || "").trim();
-    if (!text) return { ok: true, patch: { providerParams: null }, error: "" };
-    try {
-      const parsed = JSON.parse(text);
-      const normalized = normalizeProviderParams(parsed);
-      if (!normalized) {
-        return { ok: false, patch: null, error: view.providerParamsObjectRequiredError };
-      }
-      return { ok: true, patch: { providerParams: normalized }, error: "" };
-    } catch (err) {
-      return { ok: false, patch: null, error: err?.message || view.providerParamsInvalidJsonLabel };
-    }
   }
 
   const MobKitFlowController = {
