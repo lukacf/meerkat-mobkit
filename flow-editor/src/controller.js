@@ -3,79 +3,6 @@
 // Keeps deployable document generation and API calls outside the visual JSX.
 
 (function () {
-  const SCHEMA_VERSION = "0.1.0";
-  const RPC_METHODS = {
-    schema: "mobkit/mobpacks/schema",
-    catalogs: "mobkit/mobpacks/catalogs",
-    validate: "mobkit/mobpacks/validate",
-    source: "mobkit/mobpacks/source",
-    export: "mobkit/mobpacks/export",
-    import: "mobkit/mobpacks/import",
-    list: "mobkit/mobpacks/list",
-    get: "mobkit/mobpacks/get",
-    create: "mobkit/mobpacks/create",
-    save: "mobkit/mobpacks/save",
-    delete: "mobkit/mobpacks/delete",
-    undo: "mobkit/mobpacks/undo",
-    redo: "mobkit/mobpacks/redo",
-    applyOperation: "mobkit/mobpacks/apply_operation",
-    graphProjection: "mobkit/mobpacks/graph_projection",
-    graphToFlow: "mobkit/mobpacks/graph_to_flow",
-    deployCommand: "mobkit/mobpacks/deploy_command",
-    deploy: "mobkit/mobpacks/deploy",
-  };
-  const SCHEMA_COMMAND_KEYS = {
-    schema: "schema",
-    catalogs: "catalogs",
-    validate: "validate",
-    source: "source",
-    export: "export",
-    import: "import",
-    list: "list",
-    get: "get",
-    create: "create",
-    save: "save",
-    delete: "delete",
-    undo: "undo",
-    redo: "redo",
-    applyOperation: "apply_operation",
-    graphProjection: "graph_projection",
-    graphToFlow: "graph_to_flow",
-    deployCommand: "deploy_command",
-    deploy: "deploy_rpc",
-  };
-  const EMPTY_DEPLOY_SETTINGS = {
-    command: "",
-    surface: "",
-    trustPolicy: "",
-    model: "",
-    maxDuration: "",
-    maxToolCalls: null,
-    maxTotalTokens: null,
-    isolated: false,
-    realm: "",
-    instance: "",
-    realmBackend: "",
-    contextRoot: "",
-    stateRoot: "",
-    userConfigRoot: "",
-    prompt: "",
-  };
-  const EMPTY_MOB_SETTINGS = {
-    orchestrator: "",
-    autoWireOrchestrator: false,
-    roleWiring: [],
-    backendDefault: "",
-    externalAddressBase: "",
-    advanced: {
-      topology: null,
-      supervisor: null,
-      limits: null,
-      spawnPolicy: null,
-      eventRouter: null,
-    },
-  };
-  const MOB_SETTINGS_PATCH_KEYS = new Set(Object.keys(EMPTY_MOB_SETTINGS));
   const controllerConfig = {
     rpcUrl: "/flow-editor/rpc",
     rpcMethods: { ...RPC_METHODS },
@@ -4981,12 +4908,6 @@
     return changed ? next : edges;
   }
 
-  function graphInstanceIdSet(instances) {
-    return new Set((Array.isArray(instances) ? instances : [])
-      .map((instance) => String(instance?.id || "").trim())
-      .filter(Boolean));
-  }
-
   function graphEdgeValidation(edge, { instances, edges, currentId = "" } = {}) {
     if (!edge || typeof edge !== "object") return { ok: false, error: "edge must be an object" };
     const id = String(edge.id || "").trim();
@@ -6088,9 +6009,6 @@
     return tagClass ? ` ${tagClass}` : "";
   }
 
-  const GRAPH_NODE_W = 200;
-  const GRAPH_NODE_H = 156;
-
   function graphGridState({ instances = [], gridBase = {} } = {}) {
     const baseCols = Math.max(1, Number(gridBase?.cols || 1));
     const baseRows = Math.max(1, Number(gridBase?.rows || 1));
@@ -6882,10 +6800,6 @@
     };
   }
 
-  function jsonEquivalent(a, b) {
-    return JSON.stringify(a) === JSON.stringify(b);
-  }
-
   function authoringProjectionApplyPlan(projection, current = {}) {
     if (!projection || typeof projection !== "object") return { ok: false };
     const studio = current?.studio && typeof current.studio === "object" ? current.studio : {};
@@ -7428,10 +7342,6 @@
     return frames;
   }
 
-  function findMember(members, id) {
-    return (members || []).find((member) => member.id === id) || null;
-  }
-
   function normalizeDeploySettings(settings) {
     const merged = { ...EMPTY_DEPLOY_SETTINGS, ...(settings || {}) };
     const surface = String(merged.surface || "").trim();
@@ -7454,12 +7364,6 @@
       user_config_root: String(merged.userConfigRoot || merged.user_config_root || "").trim(),
       prompt: String(merged.prompt || "").trim(),
     };
-  }
-
-  function numberOrNull(value) {
-    if (value === "" || value === null || value === undefined) return null;
-    const n = Number(value);
-    return Number.isFinite(n) ? n : null;
   }
 
   function graphSignature(instances, edges) {
@@ -9839,12 +9743,6 @@
     return out;
   }
 
-  function graphInstanceIdSet(instances = []) {
-    return new Set((Array.isArray(instances) ? instances : [])
-      .map((instance) => String(instance?.id || "").trim())
-      .filter(Boolean));
-  }
-
   function outputFormatOptions(contract, currentFormat) {
     return simpleContractOptions(
       contract?.mob_definition?.step_output_formats,
@@ -9985,11 +9883,6 @@
 
   function mobDefaultsFromSchema(schema) {
     return mobSettingsForUi(schema?.mob_definition?.mob_settings?.defaults);
-  }
-
-  function normalizeOptionalObject(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    return JSON.parse(JSON.stringify(value));
   }
 
   function diagnosticsToRows(validation) {
@@ -10543,13 +10436,6 @@
       .replace(/^(\s*#.*)$/gm, '<span class="toml-comment">$1</span>')
       .replace(/^(\s*)(\[[^\]]+\])/gm, '$1<span class="toml-table">$2</span>')
       .replace(/^(\s*)([A-Za-z_][\w-]*)(\s*=)/gm, '$1<span class="toml-key">$2</span>$3');
-  }
-
-  function escapeHtml(source) {
-    return String(source || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
   }
 
   function sourceViewFromSchema(schema) {
@@ -11318,42 +11204,6 @@
     } catch (err) {
       return { ok: false, patch: null, error: err?.message || view.providerParamsInvalidJsonLabel };
     }
-  }
-
-  function normalizeProfileBackend(value) {
-    return String(value || "").trim();
-  }
-
-  function normalizeMaxInlinePeerNotifications(value) {
-    if (value === null || value === undefined || value === "") return null;
-    const number = typeof value === "number" ? value : Number(value);
-    if (!Number.isInteger(number) || number < -1) return null;
-    return number;
-  }
-
-  function normalizePositiveInteger(value) {
-    if (value === null || value === undefined || value === "") return null;
-    const number = typeof value === "number" ? value : Number(value);
-    if (!Number.isInteger(number) || number <= 0) return null;
-    return number;
-  }
-
-  function normalizeStringList(value) {
-    const source = Array.isArray(value)
-      ? value
-      : String(value || "").split(",");
-    return source
-      .map((item) => String(item || "").trim())
-      .filter(Boolean);
-  }
-
-  function normalizeOutputFormat(value) {
-    return String(value || "").trim();
-  }
-
-  function normalizeProviderParams(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    return JSON.parse(JSON.stringify(value));
   }
 
   const MobKitFlowController = {

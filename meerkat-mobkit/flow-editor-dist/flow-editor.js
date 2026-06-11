@@ -36,6 +36,10 @@ var MobKitFlowCore = (() => {
   var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;
   var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
   var __copyProps = (to, from, except, desc) => {
     if (from && typeof from === "object" || typeof from === "function") {
       for (let key of __getOwnPropNames(from))
@@ -48,21 +52,32 @@ var MobKitFlowCore = (() => {
 
   // ../packages/flow-editor-core/src/index.ts
   var index_exports = {};
-  return __toCommonJS(index_exports);
-})();
+  __export(index_exports, {
+    EMPTY_DEPLOY_SETTINGS: () => EMPTY_DEPLOY_SETTINGS,
+    EMPTY_MOB_SETTINGS: () => EMPTY_MOB_SETTINGS,
+    GRAPH_NODE_H: () => GRAPH_NODE_H,
+    GRAPH_NODE_W: () => GRAPH_NODE_W,
+    MOB_SETTINGS_PATCH_KEYS: () => MOB_SETTINGS_PATCH_KEYS,
+    RPC_METHODS: () => RPC_METHODS,
+    SCHEMA_COMMAND_KEYS: () => SCHEMA_COMMAND_KEYS,
+    SCHEMA_VERSION: () => SCHEMA_VERSION,
+    escapeHtml: () => escapeHtml,
+    findMember: () => findMember,
+    graphInstanceIdSet: () => graphInstanceIdSet,
+    jsonEquivalent: () => jsonEquivalent,
+    normalizeMaxInlinePeerNotifications: () => normalizeMaxInlinePeerNotifications,
+    normalizeOptionalObject: () => normalizeOptionalObject,
+    normalizeOutputFormat: () => normalizeOutputFormat,
+    normalizePositiveInteger: () => normalizePositiveInteger,
+    normalizeProfileBackend: () => normalizeProfileBackend,
+    normalizeProviderParams: () => normalizeProviderParams,
+    normalizeStringList: () => normalizeStringList,
+    numberOrNull: () => numberOrNull
+  });
 
-window.MobKitFlowCore = MobKitFlowCore;
-
-
-/* controller.js */
-
-/* global window, fetch */
-// MobKit Flow Editor controller plane.
-// Keeps deployable document generation and API calls outside the visual JSX.
-
-(function () {
-  const SCHEMA_VERSION = "0.1.0";
-  const RPC_METHODS = {
+  // ../packages/flow-editor-core/src/shared/constants.ts
+  var SCHEMA_VERSION = "0.1.0";
+  var RPC_METHODS = {
     schema: "mobkit/mobpacks/schema",
     catalogs: "mobkit/mobpacks/catalogs",
     validate: "mobkit/mobpacks/validate",
@@ -80,9 +95,9 @@ window.MobKitFlowCore = MobKitFlowCore;
     graphProjection: "mobkit/mobpacks/graph_projection",
     graphToFlow: "mobkit/mobpacks/graph_to_flow",
     deployCommand: "mobkit/mobpacks/deploy_command",
-    deploy: "mobkit/mobpacks/deploy",
+    deploy: "mobkit/mobpacks/deploy"
   };
-  const SCHEMA_COMMAND_KEYS = {
+  var SCHEMA_COMMAND_KEYS = {
     schema: "schema",
     catalogs: "catalogs",
     validate: "validate",
@@ -100,9 +115,9 @@ window.MobKitFlowCore = MobKitFlowCore;
     graphProjection: "graph_projection",
     graphToFlow: "graph_to_flow",
     deployCommand: "deploy_command",
-    deploy: "deploy_rpc",
+    deploy: "deploy_rpc"
   };
-  const EMPTY_DEPLOY_SETTINGS = {
+  var EMPTY_DEPLOY_SETTINGS = {
     command: "",
     surface: "",
     trustPolicy: "",
@@ -117,9 +132,9 @@ window.MobKitFlowCore = MobKitFlowCore;
     contextRoot: "",
     stateRoot: "",
     userConfigRoot: "",
-    prompt: "",
+    prompt: ""
   };
-  const EMPTY_MOB_SETTINGS = {
+  var EMPTY_MOB_SETTINGS = {
     orchestrator: "",
     autoWireOrchestrator: false,
     roleWiring: [],
@@ -130,10 +145,96 @@ window.MobKitFlowCore = MobKitFlowCore;
       supervisor: null,
       limits: null,
       spawnPolicy: null,
-      eventRouter: null,
-    },
+      eventRouter: null
+    }
   };
-  const MOB_SETTINGS_PATCH_KEYS = new Set(Object.keys(EMPTY_MOB_SETTINGS));
+  var MOB_SETTINGS_PATCH_KEYS = new Set(Object.keys(EMPTY_MOB_SETTINGS));
+  var GRAPH_NODE_W = 200;
+  var GRAPH_NODE_H = 156;
+
+  // ../packages/flow-editor-core/src/shared/normalize.ts
+  function normalizeProfileBackend(value) {
+    return String(value || "").trim();
+  }
+  function normalizeMaxInlinePeerNotifications(value) {
+    if (value === null || value === void 0 || value === "") return null;
+    const number = typeof value === "number" ? value : Number(value);
+    if (!Number.isInteger(number) || number < -1) return null;
+    return number;
+  }
+  function normalizePositiveInteger(value) {
+    if (value === null || value === void 0 || value === "") return null;
+    const number = typeof value === "number" ? value : Number(value);
+    if (!Number.isInteger(number) || number <= 0) return null;
+    return number;
+  }
+  function normalizeStringList(value) {
+    const source = Array.isArray(value) ? value : String(value || "").split(",");
+    return source.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+  function normalizeOutputFormat(value) {
+    return String(value || "").trim();
+  }
+  function normalizeProviderParams(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    return JSON.parse(JSON.stringify(value));
+  }
+  function normalizeOptionalObject(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    return JSON.parse(JSON.stringify(value));
+  }
+  function jsonEquivalent(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  function findMember(members, id) {
+    return (members || []).find((member) => member.id === id) || null;
+  }
+  function numberOrNull(value) {
+    if (value === "" || value === null || value === void 0) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  function escapeHtml(source) {
+    return String(source || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function graphInstanceIdSet(instances = []) {
+    return new Set((Array.isArray(instances) ? instances : []).map((instance) => String(instance?.id || "").trim()).filter(Boolean));
+  }
+  return __toCommonJS(index_exports);
+})();
+
+window.MobKitFlowCore = MobKitFlowCore;
+
+
+/* controller.js */
+
+const {
+  EMPTY_DEPLOY_SETTINGS,
+  EMPTY_MOB_SETTINGS,
+  GRAPH_NODE_H,
+  GRAPH_NODE_W,
+  MOB_SETTINGS_PATCH_KEYS,
+  RPC_METHODS,
+  SCHEMA_COMMAND_KEYS,
+  SCHEMA_VERSION,
+  escapeHtml,
+  findMember,
+  graphInstanceIdSet,
+  jsonEquivalent,
+  normalizeMaxInlinePeerNotifications,
+  normalizeOptionalObject,
+  normalizeOutputFormat,
+  normalizePositiveInteger,
+  normalizeProfileBackend,
+  normalizeProviderParams,
+  normalizeStringList,
+  numberOrNull,
+} = window.MobKitFlowCore;
+/* global window, fetch */
+// MobKit Flow Editor controller plane.
+// Keeps deployable document generation and API calls outside the visual JSX.
+
+(function () {
   const controllerConfig = {
     rpcUrl: "/flow-editor/rpc",
     rpcMethods: { ...RPC_METHODS },
@@ -5039,12 +5140,6 @@ window.MobKitFlowCore = MobKitFlowCore;
     return changed ? next : edges;
   }
 
-  function graphInstanceIdSet(instances) {
-    return new Set((Array.isArray(instances) ? instances : [])
-      .map((instance) => String(instance?.id || "").trim())
-      .filter(Boolean));
-  }
-
   function graphEdgeValidation(edge, { instances, edges, currentId = "" } = {}) {
     if (!edge || typeof edge !== "object") return { ok: false, error: "edge must be an object" };
     const id = String(edge.id || "").trim();
@@ -6146,9 +6241,6 @@ window.MobKitFlowCore = MobKitFlowCore;
     return tagClass ? ` ${tagClass}` : "";
   }
 
-  const GRAPH_NODE_W = 200;
-  const GRAPH_NODE_H = 156;
-
   function graphGridState({ instances = [], gridBase = {} } = {}) {
     const baseCols = Math.max(1, Number(gridBase?.cols || 1));
     const baseRows = Math.max(1, Number(gridBase?.rows || 1));
@@ -6940,10 +7032,6 @@ window.MobKitFlowCore = MobKitFlowCore;
     };
   }
 
-  function jsonEquivalent(a, b) {
-    return JSON.stringify(a) === JSON.stringify(b);
-  }
-
   function authoringProjectionApplyPlan(projection, current = {}) {
     if (!projection || typeof projection !== "object") return { ok: false };
     const studio = current?.studio && typeof current.studio === "object" ? current.studio : {};
@@ -7486,10 +7574,6 @@ window.MobKitFlowCore = MobKitFlowCore;
     return frames;
   }
 
-  function findMember(members, id) {
-    return (members || []).find((member) => member.id === id) || null;
-  }
-
   function normalizeDeploySettings(settings) {
     const merged = { ...EMPTY_DEPLOY_SETTINGS, ...(settings || {}) };
     const surface = String(merged.surface || "").trim();
@@ -7512,12 +7596,6 @@ window.MobKitFlowCore = MobKitFlowCore;
       user_config_root: String(merged.userConfigRoot || merged.user_config_root || "").trim(),
       prompt: String(merged.prompt || "").trim(),
     };
-  }
-
-  function numberOrNull(value) {
-    if (value === "" || value === null || value === undefined) return null;
-    const n = Number(value);
-    return Number.isFinite(n) ? n : null;
   }
 
   function graphSignature(instances, edges) {
@@ -9897,12 +9975,6 @@ window.MobKitFlowCore = MobKitFlowCore;
     return out;
   }
 
-  function graphInstanceIdSet(instances = []) {
-    return new Set((Array.isArray(instances) ? instances : [])
-      .map((instance) => String(instance?.id || "").trim())
-      .filter(Boolean));
-  }
-
   function outputFormatOptions(contract, currentFormat) {
     return simpleContractOptions(
       contract?.mob_definition?.step_output_formats,
@@ -10043,11 +10115,6 @@ window.MobKitFlowCore = MobKitFlowCore;
 
   function mobDefaultsFromSchema(schema) {
     return mobSettingsForUi(schema?.mob_definition?.mob_settings?.defaults);
-  }
-
-  function normalizeOptionalObject(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    return JSON.parse(JSON.stringify(value));
   }
 
   function diagnosticsToRows(validation) {
@@ -10601,13 +10668,6 @@ window.MobKitFlowCore = MobKitFlowCore;
       .replace(/^(\s*#.*)$/gm, '<span class="toml-comment">$1</span>')
       .replace(/^(\s*)(\[[^\]]+\])/gm, '$1<span class="toml-table">$2</span>')
       .replace(/^(\s*)([A-Za-z_][\w-]*)(\s*=)/gm, '$1<span class="toml-key">$2</span>$3');
-  }
-
-  function escapeHtml(source) {
-    return String(source || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
   }
 
   function sourceViewFromSchema(schema) {
@@ -11376,42 +11436,6 @@ window.MobKitFlowCore = MobKitFlowCore;
     } catch (err) {
       return { ok: false, patch: null, error: err?.message || view.providerParamsInvalidJsonLabel };
     }
-  }
-
-  function normalizeProfileBackend(value) {
-    return String(value || "").trim();
-  }
-
-  function normalizeMaxInlinePeerNotifications(value) {
-    if (value === null || value === undefined || value === "") return null;
-    const number = typeof value === "number" ? value : Number(value);
-    if (!Number.isInteger(number) || number < -1) return null;
-    return number;
-  }
-
-  function normalizePositiveInteger(value) {
-    if (value === null || value === undefined || value === "") return null;
-    const number = typeof value === "number" ? value : Number(value);
-    if (!Number.isInteger(number) || number <= 0) return null;
-    return number;
-  }
-
-  function normalizeStringList(value) {
-    const source = Array.isArray(value)
-      ? value
-      : String(value || "").split(",");
-    return source
-      .map((item) => String(item || "").trim())
-      .filter(Boolean);
-  }
-
-  function normalizeOutputFormat(value) {
-    return String(value || "").trim();
-  }
-
-  function normalizeProviderParams(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    return JSON.parse(JSON.stringify(value));
   }
 
   const MobKitFlowController = {
