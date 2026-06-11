@@ -71,6 +71,7 @@ var MobKitFlowCore = (() => {
     agentDefinitionAddErrorState: () => agentDefinitionAddErrorState,
     agentDefinitionCatalogState: () => agentDefinitionCatalogState,
     agentDefinitionOptions: () => agentDefinitionOptions,
+    agentDefinitionsFromCatalogs: () => agentDefinitionsFromCatalogs,
     agentDeleteConfirmationState: () => agentDeleteConfirmationState,
     agentDetailViewForState: () => agentDetailViewForState,
     agentDetailViewFromSchema: () => agentDetailViewFromSchema,
@@ -118,6 +119,7 @@ var MobKitFlowCore = (() => {
     basicStepSelectionTransition: () => basicStepSelectionTransition,
     basicViewFromSchema: () => basicViewFromSchema,
     basicViewPartsFromSchema: () => basicViewPartsFromSchema,
+    blankMobpackFromCatalogs: () => blankMobpackFromCatalogs,
     budgetSplitPolicyAllowed: () => budgetSplitPolicyAllowed,
     budgetSplitPolicyOptions: () => budgetSplitPolicyOptions,
     callRpc: () => callRpc,
@@ -203,9 +205,26 @@ var MobKitFlowCore = (() => {
     firstContractValue: () => firstContractValue,
     firstDeploySurfaceRuntimeMode: () => firstDeploySurfaceRuntimeMode,
     firstSupportedOption: () => firstSupportedOption,
+    flowCatalogBootstrapState: () => flowCatalogBootstrapState,
+    flowDraftIdFromSpec: () => flowDraftIdFromSpec,
     flowLaunchSourceSet: () => flowLaunchSourceSet,
+    flowRegistryAppendRowPatch: () => flowRegistryAppendRowPatch,
+    flowRegistryDocumentPersistence: () => flowRegistryDocumentPersistence,
+    flowRegistryDraftGuard: () => flowRegistryDraftGuard,
+    flowRegistryMarkDraftPatch: () => flowRegistryMarkDraftPatch,
+    flowRegistryPersistDocumentProjection: () => flowRegistryPersistDocumentProjection,
+    flowRegistryPersistOutcomeProjection: () => flowRegistryPersistOutcomeProjection,
+    flowRegistryRememberDocumentPatch: () => flowRegistryRememberDocumentPatch,
+    flowRegistryRowEtag: () => flowRegistryRowEtag,
+    flowRegistryRowFromDocument: () => flowRegistryRowFromDocument,
+    flowRegistryRowIsRuntimeProjection: () => flowRegistryRowIsRuntimeProjection,
+    flowRegistryRowRevision: () => flowRegistryRowRevision,
+    flowRegistryRowsFromBackend: () => flowRegistryRowsFromBackend,
+    flowRegistrySelectionState: () => flowRegistrySelectionState,
+    flowRegistryUpsertRowPatch: () => flowRegistryUpsertRowPatch,
     flowRegistryViewForState: () => flowRegistryViewForState,
     flowRegistryViewFromSchema: () => flowRegistryViewFromSchema,
+    flowRegistryViewState: () => flowRegistryViewState,
     flowStepAllowedToolsPatch: () => flowStepAllowedToolsPatch,
     flowStepBlockedToolsPatch: () => flowStepBlockedToolsPatch,
     flowStepById: () => flowStepById,
@@ -300,6 +319,7 @@ var MobKitFlowCore = (() => {
     graphSourceFileAdornmentCanvasState: () => graphSourceFileAdornmentCanvasState,
     graphTemplateInspectorState: () => graphTemplateInspectorState,
     graphTemplateQuickStartRowsFromSchema: () => graphTemplateQuickStartRowsFromSchema,
+    graphTemplateSeedFromBlankMobpack: () => graphTemplateSeedFromBlankMobpack,
     graphTemplateText: () => graphTemplateText,
     graphTemplateViewForState: () => graphTemplateViewForState,
     graphTemplateViewFromSchema: () => graphTemplateViewFromSchema,
@@ -397,9 +417,18 @@ var MobKitFlowCore = (() => {
     mobSettingsFieldPatch: () => mobSettingsFieldPatch,
     mobSettingsForUi: () => mobSettingsForUi,
     mobSettingsPatch: () => mobSettingsPatch,
+    newFlowInitialState: () => newFlowInitialState,
+    newFlowModalCreateSpec: () => newFlowModalCreateSpec,
+    newFlowModalFieldPatch: () => newFlowModalFieldPatch,
+    newFlowModalPatch: () => newFlowModalPatch,
+    newFlowModalState: () => newFlowModalState,
+    newFlowModalStepPatch: () => newFlowModalStepPatch,
+    newFlowTemplateOptions: () => newFlowTemplateOptions,
     newFlowViewForState: () => newFlowViewForState,
     newFlowViewFromSchema: () => newFlowViewFromSchema,
     normalizeAgentDefinitionRows: () => normalizeAgentDefinitionRows,
+    normalizeAgentDefinitionsFromCatalog: () => normalizeAgentDefinitionsFromCatalog,
+    normalizeAgentSchemaDefinition: () => normalizeAgentSchemaDefinition,
     normalizeBudgetSplitPolicy: () => normalizeBudgetSplitPolicy,
     normalizeCollectionMode: () => normalizeCollectionMode,
     normalizeDispatchMode: () => normalizeDispatchMode,
@@ -500,6 +529,8 @@ var MobKitFlowCore = (() => {
     runtimeModeDeploySurfaceAllowed: () => runtimeModeDeploySurfaceAllowed,
     runtimeModeDeploySurfaceReason: () => runtimeModeDeploySurfaceReason,
     runtimeModeOptions: () => runtimeModeOptions,
+    sampleAgentDefinitionsFromCatalogs: () => sampleAgentDefinitionsFromCatalogs,
+    sampleFlowsFromCatalogs: () => sampleFlowsFromCatalogs,
     schemaDefinitionAddErrorState: () => schemaDefinitionAddErrorState,
     schemaDescriptionPatch: () => schemaDescriptionPatch,
     schemaEditorControlState: () => schemaEditorControlState,
@@ -7003,6 +7034,545 @@ var MobKitFlowCore = (() => {
   }
 
   // ../packages/flow-editor-core/src/registry/flow-registry.ts
+  function sampleFlowsFromCatalogs(schema) {
+    return (schema?.sample_mobpacks || []).filter((sample) => sample && typeof sample === "object" && sample.document).map((sample) => {
+      const source = typeof sample.source === "string" ? sample.source.trim() : "";
+      if (!source) return null;
+      const id = String(sample.id || "").trim();
+      const name = String(sample.name || "").trim();
+      const stage = String(sample.stage || "").trim();
+      if (!id || !name || !stage) return null;
+      return {
+        id,
+        name,
+        version: String(sample.version || sample.document?.schema_version || ""),
+        stage,
+        trigger: String(sample.trigger || source),
+        source,
+        document: sample.document,
+        validation: sample.validation || null,
+        ...sample.deployability ? { deployability: sample.deployability } : {},
+        ...sample.provenance ? { provenance: sample.provenance } : {}
+      };
+    }).filter(Boolean);
+  }
+  function flowCatalogBootstrapState(catalogPayload, options = {}) {
+    const sampleFlows = sampleFlowsFromCatalogs(catalogPayload);
+    const registryFlows = flowRegistryRowsFromBackend(options.registryRows || options.registryResult?.rows);
+    const runtimeFlows = flowRegistryRowsFromBackend(catalogPayload?.runtime_flows);
+    const existingIds = new Set(runtimeFlows.map((row) => row.id));
+    const flows = [
+      ...runtimeFlows,
+      ...registryFlows.filter((row) => !existingIds.has(row.id))
+    ];
+    const first = flows[0] || null;
+    return {
+      templates: sampleFlows,
+      flows,
+      initialHydration: first ? {
+        result: {
+          document: first.document,
+          validation: first.validation ?? null
+        },
+        options: {
+          id: first.id,
+          flowRow: first,
+          addToRegistry: false,
+          openEditor: !!options.openEditor,
+          deployDefaults: options.deployDefaults,
+          mobDefaults: options.mobDefaults
+        }
+      } : null
+    };
+  }
+  function flowRegistryRowsFromBackend(rows = []) {
+    return (Array.isArray(rows) ? rows : []).map((row) => {
+      if (!row || typeof row !== "object" || !row.document) return null;
+      return flowRegistryRowFromDocument({
+        id: row.id,
+        document: row.document,
+        validation: row.validation ?? null,
+        stage: row.stage,
+        trigger: row.trigger,
+        source: row.source,
+        flowRow: row
+      });
+    }).filter(Boolean);
+  }
+  function blankMobpackFromCatalogs(schema) {
+    const blank = schema?.blank_mobpack;
+    if (!blank || typeof blank !== "object" || !blank.document) return null;
+    const source = typeof blank.source === "string" ? blank.source.trim() : "";
+    const id = String(blank.id || "").trim();
+    const name = String(blank.name || "").trim();
+    const stage = String(blank.stage || "").trim();
+    if (!id || !name || !source || !stage) return null;
+    return {
+      id,
+      name,
+      version: String(blank.version || blank.document?.schema_version || ""),
+      stage,
+      trigger: String(blank.trigger || source),
+      source,
+      document: blank.document,
+      validation: blank.validation || null,
+      ...blank.deployability ? { deployability: blank.deployability } : {},
+      ...blank.provenance ? { provenance: blank.provenance } : {}
+    };
+  }
+  function graphTemplateSeedFromBlankMobpack(blankMobpack) {
+    if (!blankMobpack || typeof blankMobpack !== "object") return null;
+    const name = String(blankMobpack.name || "").trim();
+    const repo = String(blankMobpack.source || "").trim();
+    const version = String(blankMobpack.version || "").trim();
+    const trigger = String(blankMobpack.trigger || "").trim();
+    if (!name || !repo || !version) return null;
+    return {
+      name,
+      repo,
+      version,
+      triggers: {
+        labels: trigger ? [trigger] : [],
+        default: false
+      }
+    };
+  }
+  function flowRegistryMarkDraftPatch(rows, currentFlowId) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!currentFlowId) return list;
+    let changed = false;
+    const next = list.map((row) => {
+      if (!row || row.id !== currentFlowId) return row;
+      if (row.stage === "draft" && row.validation == null) return row;
+      changed = true;
+      return { ...row, stage: "draft", validation: null };
+    });
+    return changed ? next : list;
+  }
+  function flowRegistryViewState(rows, currentFlowId, options = {}) {
+    const list = Array.isArray(rows) ? rows : [];
+    const view = flowRegistryViewForState(options.flowRegistryView);
+    const suffix = list.length === 1 ? view.titleSingularSuffix : view.titlePluralSuffix;
+    return {
+      eyebrow: view.eyebrow,
+      title: `${list.length} ${suffix}`.trim(),
+      createLabel: view.createLabel,
+      createDisabled: !options.canCreate,
+      createTitle: options.canCreate ? view.createReadyTitle : view.createUnavailableTitle,
+      columns: view.columns,
+      rows: list.map((row) => {
+        const id = String(row?.id || "");
+        const stage = String(row?.stage || "draft");
+        return {
+          id,
+          className: "flows-list__row" + (id && id === currentFlowId ? " is-current" : ""),
+          name: String(row?.name || ""),
+          trigger: String(row?.trigger || ""),
+          version: String(row?.version || ""),
+          stage
+        };
+      })
+    };
+  }
+  function flowRegistrySelectionState(rows, id) {
+    const selectedId = String(id || "");
+    const row = (Array.isArray(rows) ? rows : []).find((candidate) => candidate?.id === selectedId) || null;
+    if (!row) {
+      return {
+        found: false,
+        id: selectedId,
+        row: null,
+        hasDocument: false,
+        hydration: null,
+        fallback: null
+      };
+    }
+    if (row.document && typeof row.document === "object") {
+      return {
+        found: true,
+        id: selectedId,
+        row,
+        hasDocument: true,
+        hydration: {
+          result: {
+            document: row.document,
+            validation: row.validation ?? null
+          },
+          options: {
+            id: selectedId,
+            flowRow: row,
+            addToRegistry: false
+          }
+        },
+        fallback: null
+      };
+    }
+    return {
+      found: true,
+      id: selectedId,
+      row,
+      hasDocument: false,
+      hydration: null,
+      fallback: null,
+      error: "missing_registry_document"
+    };
+  }
+  function flowRegistryRowFromDocument({
+    id,
+    document,
+    validation = null,
+    stage,
+    trigger = "",
+    source = "",
+    sourceLabel = "",
+    flowRow = null,
+    fallbackName = "",
+    fallbackVersion = ""
+  } = {}) {
+    const rowId = String(id || "").trim();
+    if (!rowId || !document || typeof document !== "object") return null;
+    const name = String(
+      flowRow?.name || document.name || document.flow?.name || document.mob_id || fallbackName
+    );
+    const version = String(flowRow?.version || document.schema_version || fallbackVersion);
+    return {
+      id: rowId,
+      name,
+      version,
+      stage: String(stage || (validation?.ok ? "valid" : "draft")),
+      trigger: String(flowRow?.trigger || trigger || sourceLabel || ""),
+      source: String(flowRow?.source || source || ""),
+      document,
+      validation: validation ?? null,
+      ...flowRow?.registry_source ? { registry_source: String(flowRow.registry_source) } : {},
+      ...flowRow?.document_kind ? { document_kind: String(flowRow.document_kind) } : {},
+      ...flowRow?.runtime_projection === true ? { runtime_projection: true } : {},
+      ...flowRow?.runtime_mob_id ? { runtime_mob_id: String(flowRow.runtime_mob_id) } : {},
+      ...flowRow?.runtime_flow_id ? { runtime_flow_id: String(flowRow.runtime_flow_id) } : {},
+      ...flowRow?.deployability ? { deployability: flowRow.deployability } : {},
+      ...flowRow?.provenance ? { provenance: flowRow.provenance } : {}
+    };
+  }
+  function flowRegistryRowIsRuntimeProjection(row) {
+    return row?.runtime_projection === true || row?.document_kind === "runtime_projection" || row?.source === "mobkit/runtime/flow_projection" || row?.registry_source === "mobkit/runtime/flow_projection";
+  }
+  function flowRegistryRememberDocumentPatch(rows, {
+    currentFlowId,
+    document,
+    validation = null,
+    stage = "draft"
+  } = {}) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!currentFlowId || !document || typeof document !== "object") return list;
+    let changed = false;
+    const next = list.map((row) => {
+      if (!row || row.id !== currentFlowId) return row;
+      changed = true;
+      return {
+        ...row,
+        name: document.name || document.flow?.name || row.name,
+        version: document.schema_version || row.version,
+        stage,
+        document,
+        validation: validation ?? null
+      };
+    });
+    return changed ? next : list;
+  }
+  function flowRegistryRowRevision(row) {
+    const value = row?.revision ?? row?.draft_revision;
+    const revision = Number(value);
+    return Number.isFinite(revision) && revision >= 0 ? revision : null;
+  }
+  function flowRegistryRowEtag(row) {
+    const value = row?.draft_etag ?? row?.etag;
+    return value ? String(value) : "";
+  }
+  function flowRegistryDraftGuard(row, currentFlowId = "") {
+    const id = String(row?.id || currentFlowId || "").trim();
+    const expectedRevision = flowRegistryRowRevision(row);
+    const expectedEtag = flowRegistryRowEtag(row);
+    if (!id || expectedRevision === null) return {};
+    return {
+      id,
+      expected_revision: expectedRevision,
+      ...expectedEtag ? { expected_etag: expectedEtag } : {}
+    };
+  }
+  function flowRegistryDocumentPersistence({
+    currentFlowId,
+    document,
+    validation = null,
+    stage = "draft",
+    previousSignature = "",
+    skipIfUnchanged = false,
+    expectedRevision = null,
+    expectedEtag = ""
+  } = {}) {
+    if (!currentFlowId || !document || typeof document !== "object") {
+      return {
+        ok: false,
+        changed: false,
+        signature: String(previousSignature || ""),
+        rowPatch: null
+      };
+    }
+    const signature = `${currentFlowId}
+${JSON.stringify(document)}`;
+    if (skipIfUnchanged && signature === previousSignature) {
+      return {
+        ok: true,
+        changed: false,
+        signature,
+        rowPatch: null
+      };
+    }
+    const nextStage = validation == null && stage === "published" ? "draft" : stage;
+    return {
+      ok: true,
+      changed: true,
+      signature,
+      rowPatch: {
+        currentFlowId,
+        document,
+        validation,
+        stage: nextStage,
+        ...expectedRevision !== null && expectedRevision !== void 0 ? { expectedRevision } : {},
+        ...expectedEtag ? { expectedEtag } : {}
+      }
+    };
+  }
+  function flowRegistryPersistDocumentProjection(rows, options = {}) {
+    const sourceRows = Array.isArray(rows) ? rows : [];
+    const currentRow = sourceRows.find((row) => row?.id === options.currentFlowId) || null;
+    if (flowRegistryRowIsRuntimeProjection(currentRow)) {
+      return {
+        ok: false,
+        changed: false,
+        reason: "runtime_projection_read_only",
+        signature: String(options.previousSignature || ""),
+        rowPatch: null,
+        rows: sourceRows
+      };
+    }
+    const persistence = flowRegistryDocumentPersistence({
+      expectedRevision: flowRegistryRowRevision(currentRow),
+      expectedEtag: flowRegistryRowEtag(currentRow),
+      ...options
+    });
+    if (!persistence.ok || !persistence.rowPatch) {
+      return {
+        ...persistence,
+        rows: sourceRows
+      };
+    }
+    return {
+      ...persistence,
+      rows: flowRegistryRememberDocumentPatch(sourceRows, persistence.rowPatch)
+    };
+  }
+  function flowRegistryPersistOutcomeProjection(rows, { currentFlowId, outcome, previousSignature = "", skipIfUnchanged = false } = {}) {
+    const sourceOutcome = outcome && typeof outcome === "object" ? outcome : {};
+    const persistence = flowRegistryPersistDocumentProjection(rows, {
+      currentFlowId,
+      document: sourceOutcome.document,
+      validation: sourceOutcome.validation,
+      stage: sourceOutcome.stage,
+      previousSignature,
+      skipIfUnchanged
+    });
+    return {
+      ...sourceOutcome,
+      persistence,
+      rows: persistence.rows,
+      signature: persistence.signature,
+      changed: persistence.changed,
+      ok: persistence.ok
+    };
+  }
+  function flowRegistryAppendRowPatch(rows, row) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!row || typeof row !== "object" || !row.id) return list;
+    return [...list, row];
+  }
+  function flowRegistryUpsertRowPatch(rows, row) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!row || typeof row !== "object" || !row.id) return list;
+    let replaced = false;
+    const next = list.map((candidate) => {
+      if (!candidate || candidate.id !== row.id) return candidate;
+      replaced = true;
+      return row;
+    });
+    return replaced ? next : [...list, row];
+  }
+  function flowDraftIdFromSpec(spec, existingRows = []) {
+    const draftSpec = spec && typeof spec === "object" ? spec : {};
+    const base = slug(draftSpec.name || draftSpec.template || "mobkit_flow", "mobkit_flow");
+    const prefix = base.startsWith("f_") ? base : `f_${base}`;
+    const used = new Set((Array.isArray(existingRows) ? existingRows : []).map((row) => String(row?.id || "").trim()).filter(Boolean));
+    if (!used.has(prefix)) return prefix;
+    let index = 2;
+    while (used.has(`${prefix}_${index}`)) index += 1;
+    return `${prefix}_${index}`;
+  }
+  function newFlowTemplateOptions(templates = [], { canCreateBlank = false, blankTemplate = null } = {}) {
+    const hasBlankDocument = !!blankTemplate?.document;
+    const options = [{
+      id: "blank",
+      label: hasBlankDocument ? String(blankTemplate.name || "") : "Blank",
+      sub: hasBlankDocument ? String(blankTemplate.trigger || blankTemplate.source || "") : "Waiting for MobKit blank mobpack",
+      tier: hasBlankDocument ? String(blankTemplate.stage || "") : "",
+      disabled: !canCreateBlank || !hasBlankDocument
+    }];
+    for (const sample of Array.isArray(templates) ? templates : []) {
+      if (!sample || typeof sample !== "object") continue;
+      const id = String(sample.id || "").trim();
+      const label = String(sample.name || "").trim();
+      if (!id || !label) continue;
+      options.push({
+        id,
+        label,
+        sub: String(sample.trigger || sample.source || ""),
+        tier: String(sample.stage || ""),
+        disabled: false
+      });
+    }
+    return options;
+  }
+  function newFlowInitialState({ blankTemplate = null } = {}) {
+    const hasBlankDocument = !!blankTemplate?.document;
+    return {
+      step: 1,
+      name: "",
+      trigger: hasBlankDocument ? String(blankTemplate.trigger || "") : "",
+      template: hasBlankDocument ? String(blankTemplate.id || "") : ""
+    };
+  }
+  function newFlowModalState(state = {}, templateOptions = [], newFlowView = null) {
+    const view = newFlowViewForState(newFlowView);
+    const step = Number(state.step || 1);
+    const name = String(state.name || "");
+    const trigger = String(state.trigger || "");
+    const template = String(state.template || "");
+    const options = (Array.isArray(templateOptions) ? templateOptions : []).map((option) => {
+      const id = String(option?.id || "");
+      return {
+        id,
+        label: String(option?.label || ""),
+        sub: String(option?.sub || ""),
+        tier: String(option?.tier || ""),
+        disabled: !!option?.disabled,
+        className: "template-card" + (id && id === template ? " is-selected" : "")
+      };
+    });
+    const selectedTemplate = options.find((option) => option.id === template) || null;
+    return {
+      step,
+      eyebrow: view.eyebrowTemplate.replace("{step}", String(step)),
+      closeLabel: view.closeLabel,
+      nameLabel: view.nameLabel,
+      namePlaceholder: view.namePlaceholder,
+      triggerLabel: view.triggerLabel,
+      triggerPlaceholder: view.triggerPlaceholder,
+      startFromLabel: view.startFromLabel,
+      backLabel: view.backLabel,
+      nextLabel: view.nextLabel,
+      createLabel: view.createLabel,
+      name,
+      trigger,
+      template,
+      options,
+      createDisabled: !selectedTemplate || !!selectedTemplate.disabled,
+      nextDisabled: !name.trim()
+    };
+  }
+  function newFlowModalPatch(state = {}, patch = {}) {
+    const source = state && typeof state === "object" ? state : {};
+    const rawPatch = patch && typeof patch === "object" ? patch : {};
+    const next = { ...source, ...rawPatch };
+    const step = Number(next.step || 1);
+    next.step = step === 2 ? 2 : 1;
+    next.name = String(next.name || "");
+    next.trigger = String(next.trigger || "");
+    next.template = String(next.template || "");
+    return next;
+  }
+  function newFlowModalFieldPatch(state = {}, field, value) {
+    const key = String(field || "").trim();
+    if (!key) return newFlowModalPatch(state);
+    if (!["name", "trigger", "template"].includes(key)) return newFlowModalPatch(state);
+    return newFlowModalPatch(state, { [key]: value });
+  }
+  function newFlowModalStepPatch(state = {}, step) {
+    return newFlowModalPatch(state, { step });
+  }
+  function newFlowModalCreateSpec(state = {}) {
+    const source = newFlowModalPatch(state);
+    return {
+      name: source.name,
+      trigger: source.trigger,
+      template: source.template
+    };
+  }
+  function agentDefinitionsFromCatalogs(schema) {
+    const definitions = Array.isArray(schema?.agent_definitions) ? schema.agent_definitions : [];
+    return normalizeAgentDefinitionsFromCatalog(definitions);
+  }
+  function sampleAgentDefinitionsFromCatalogs(schema) {
+    const definitions = Array.isArray(schema?.sample_agent_definitions) ? schema.sample_agent_definitions : [];
+    return normalizeAgentDefinitionsFromCatalog(definitions);
+  }
+  function normalizeAgentDefinitionsFromCatalog(definitions) {
+    return definitions.filter((template) => template && typeof template === "object").filter((template) => String(template.definitionType || template.definition_type || "") === "mobkit/profile-member").filter((template) => String(template.source || "").trim()).filter((template) => String(template.sourceMobpack || template.source_mobpack || "").trim()).filter((template) => String(template.sourceOrigin || template.source_origin || "").trim()).filter((template) => String(template.profileBinding || template.profile_binding || "").trim()).filter((template) => String(template.runtimeMode || template.runtime_mode || "").trim()).filter((template) => String(template.model || "").trim()).map((template) => {
+      const id = String(template.id || "").trim();
+      const role = String(template.role || "").trim();
+      const name = String(template.name || template.label || "").trim();
+      const model = String(template.model || "").trim();
+      const definitionKind = String(template.definitionKind || template.definition_kind || "").trim();
+      const sourceKind = String(template.sourceKind || template.source_kind || "").trim();
+      if (!id || !role || !name) return null;
+      return {
+        id,
+        role,
+        label: String(template.label || name),
+        name,
+        model,
+        schema: String(template.schema || ""),
+        schemaDefinition: normalizeAgentSchemaDefinition(template.schemaDefinition || template.schema_definition),
+        schemaSourceDocumentPath: String(template.schemaSourceDocumentPath || template.schema_source_document_path || ""),
+        skills: Array.isArray(template.skills) ? [...template.skills] : [],
+        skillDefinitions: normalizeAgentDefinitionRows(template.skillDefinitions || template.skill_definitions),
+        tools: Array.isArray(template.tools) ? [...template.tools] : [],
+        toolDefinitions: normalizeAgentDefinitionRows(template.toolDefinitions || template.tool_definitions),
+        profileBinding: String(template.profileBinding || template.profile_binding || ""),
+        realmProfile: String(template.realmProfile || template.realm_profile || ""),
+        runtimeMode: String(template.runtimeMode || template.runtime_mode || ""),
+        externalAddressable: !!template.externalAddressable,
+        backend: normalizeProfileBackend(template.backend),
+        maxInlinePeerNotifications: normalizeMaxInlinePeerNotifications(template.maxInlinePeerNotifications ?? template.max_inline_peer_notifications),
+        systemPrompt: String(template.systemPrompt || template.system_prompt || ""),
+        providerParams: normalizeProviderParams(template.providerParams || template.provider_params),
+        definitionType: String(template.definitionType || template.definition_type),
+        ...definitionKind ? { definitionKind } : {},
+        ...sourceKind ? { sourceKind } : {},
+        source: template.source || "",
+        sourceMobpack: template.sourceMobpack || template.source_mobpack || "",
+        sourceMobpackName: template.sourceMobpackName || template.source_mobpack_name || "",
+        sourceOrigin: template.sourceOrigin || template.source_origin || "",
+        sourceDocumentPath: template.sourceDocumentPath || template.source_document_path || "",
+        ...template.deployability ? { deployability: template.deployability } : {},
+        ...template.provenance ? { provenance: template.provenance } : {}
+      };
+    }).filter(Boolean);
+  }
+  function normalizeAgentSchemaDefinition(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const id = String(value.id || "").trim();
+    const fields = Array.isArray(value.fields) ? value.fields : [];
+    if (!id || !fields.length) return null;
+    return JSON.parse(JSON.stringify(value));
+  }
   function normalizeAgentDefinitionRows(value) {
     if (!Array.isArray(value)) return [];
     return value.filter((row) => row && typeof row === "object" && !Array.isArray(row)).map((row) => JSON.parse(JSON.stringify(row)));
@@ -8731,6 +9301,7 @@ const {
   agentDefinitionAddErrorState,
   agentDefinitionCatalogState,
   agentDefinitionOptions,
+  agentDefinitionsFromCatalogs,
   agentDeleteConfirmationState,
   agentDetailViewForState,
   agentDetailViewFromSchema,
@@ -8778,6 +9349,7 @@ const {
   basicStepSelectionTransition,
   basicViewFromSchema,
   basicViewPartsFromSchema,
+  blankMobpackFromCatalogs,
   budgetSplitPolicyAllowed,
   budgetSplitPolicyOptions,
   callRpc,
@@ -8863,9 +9435,26 @@ const {
   firstContractValue,
   firstDeploySurfaceRuntimeMode,
   firstSupportedOption,
+  flowCatalogBootstrapState,
+  flowDraftIdFromSpec,
   flowLaunchSourceSet,
+  flowRegistryAppendRowPatch,
+  flowRegistryDocumentPersistence,
+  flowRegistryDraftGuard,
+  flowRegistryMarkDraftPatch,
+  flowRegistryPersistDocumentProjection,
+  flowRegistryPersistOutcomeProjection,
+  flowRegistryRememberDocumentPatch,
+  flowRegistryRowEtag,
+  flowRegistryRowFromDocument,
+  flowRegistryRowIsRuntimeProjection,
+  flowRegistryRowRevision,
+  flowRegistryRowsFromBackend,
+  flowRegistrySelectionState,
+  flowRegistryUpsertRowPatch,
   flowRegistryViewForState,
   flowRegistryViewFromSchema,
+  flowRegistryViewState,
   flowStepAllowedToolsPatch,
   flowStepBlockedToolsPatch,
   flowStepById,
@@ -8960,6 +9549,7 @@ const {
   graphSourceFileAdornmentCanvasState,
   graphTemplateInspectorState,
   graphTemplateQuickStartRowsFromSchema,
+  graphTemplateSeedFromBlankMobpack,
   graphTemplateText,
   graphTemplateViewForState,
   graphTemplateViewFromSchema,
@@ -9057,9 +9647,18 @@ const {
   mobSettingsFieldPatch,
   mobSettingsForUi,
   mobSettingsPatch,
+  newFlowInitialState,
+  newFlowModalCreateSpec,
+  newFlowModalFieldPatch,
+  newFlowModalPatch,
+  newFlowModalState,
+  newFlowModalStepPatch,
+  newFlowTemplateOptions,
   newFlowViewForState,
   newFlowViewFromSchema,
   normalizeAgentDefinitionRows,
+  normalizeAgentDefinitionsFromCatalog,
+  normalizeAgentSchemaDefinition,
   normalizeBudgetSplitPolicy,
   normalizeCollectionMode,
   normalizeDispatchMode,
@@ -9160,6 +9759,8 @@ const {
   runtimeModeDeploySurfaceAllowed,
   runtimeModeDeploySurfaceReason,
   runtimeModeOptions,
+  sampleAgentDefinitionsFromCatalogs,
+  sampleFlowsFromCatalogs,
   schemaDefinitionAddErrorState,
   schemaDescriptionPatch,
   schemaEditorControlState,
@@ -10900,603 +11501,6 @@ const {
     return flowDraftIdFromSpec({
       name,
     }, existingRows);
-  }
-
-  function sampleFlowsFromCatalogs(schema) {
-    return (schema?.sample_mobpacks || [])
-      .filter((sample) => sample && typeof sample === "object" && sample.document)
-      .map((sample) => {
-        const source = typeof sample.source === "string" ? sample.source.trim() : "";
-        if (!source) return null;
-        const id = String(sample.id || "").trim();
-        const name = String(sample.name || "").trim();
-        const stage = String(sample.stage || "").trim();
-        if (!id || !name || !stage) return null;
-        return {
-          id,
-          name,
-          version: String(sample.version || sample.document?.schema_version || ""),
-          stage,
-          trigger: String(sample.trigger || source),
-          source,
-          document: sample.document,
-          validation: sample.validation || null,
-          ...(sample.deployability ? { deployability: sample.deployability } : {}),
-          ...(sample.provenance ? { provenance: sample.provenance } : {}),
-        };
-      })
-      .filter(Boolean);
-  }
-
-  function flowCatalogBootstrapState(catalogPayload, options = {}) {
-    const sampleFlows = sampleFlowsFromCatalogs(catalogPayload);
-    const registryFlows = flowRegistryRowsFromBackend(options.registryRows || options.registryResult?.rows);
-    const runtimeFlows = flowRegistryRowsFromBackend(catalogPayload?.runtime_flows);
-    const existingIds = new Set(runtimeFlows.map((row) => row.id));
-    const flows = [
-      ...runtimeFlows,
-      ...registryFlows.filter((row) => !existingIds.has(row.id)),
-    ];
-    const first = flows[0] || null;
-    return {
-      templates: sampleFlows,
-      flows,
-      initialHydration: first
-        ? {
-          result: {
-            document: first.document,
-            validation: first.validation ?? null,
-          },
-          options: {
-            id: first.id,
-            flowRow: first,
-            addToRegistry: false,
-            openEditor: !!options.openEditor,
-            deployDefaults: options.deployDefaults,
-            mobDefaults: options.mobDefaults,
-          },
-        }
-        : null,
-    };
-  }
-
-  function flowRegistryRowsFromBackend(rows = []) {
-    return (Array.isArray(rows) ? rows : [])
-      .map((row) => {
-        if (!row || typeof row !== "object" || !row.document) return null;
-        return flowRegistryRowFromDocument({
-          id: row.id,
-          document: row.document,
-          validation: row.validation ?? null,
-          stage: row.stage,
-          trigger: row.trigger,
-          source: row.source,
-          flowRow: row,
-        });
-      })
-      .filter(Boolean);
-  }
-
-  function blankMobpackFromCatalogs(schema) {
-    const blank = schema?.blank_mobpack;
-    if (!blank || typeof blank !== "object" || !blank.document) return null;
-    const source = typeof blank.source === "string" ? blank.source.trim() : "";
-    const id = String(blank.id || "").trim();
-    const name = String(blank.name || "").trim();
-    const stage = String(blank.stage || "").trim();
-    if (!id || !name || !source || !stage) return null;
-    return {
-      id,
-      name,
-      version: String(blank.version || blank.document?.schema_version || ""),
-      stage,
-      trigger: String(blank.trigger || source),
-      source,
-      document: blank.document,
-      validation: blank.validation || null,
-      ...(blank.deployability ? { deployability: blank.deployability } : {}),
-      ...(blank.provenance ? { provenance: blank.provenance } : {}),
-    };
-  }
-
-  function graphTemplateSeedFromBlankMobpack(blankMobpack) {
-    if (!blankMobpack || typeof blankMobpack !== "object") return null;
-    const name = String(blankMobpack.name || "").trim();
-    const repo = String(blankMobpack.source || "").trim();
-    const version = String(blankMobpack.version || "").trim();
-    const trigger = String(blankMobpack.trigger || "").trim();
-    if (!name || !repo || !version) return null;
-    return {
-      name,
-      repo,
-      version,
-      triggers: {
-        labels: trigger ? [trigger] : [],
-        default: false,
-      },
-    };
-  }
-
-  function flowRegistryMarkDraftPatch(rows, currentFlowId) {
-    const list = Array.isArray(rows) ? rows : [];
-    if (!currentFlowId) return list;
-    let changed = false;
-    const next = list.map((row) => {
-      if (!row || row.id !== currentFlowId) return row;
-      if (row.stage === "draft" && row.validation == null) return row;
-      changed = true;
-      return { ...row, stage: "draft", validation: null };
-    });
-    return changed ? next : list;
-  }
-
-  function flowRegistryViewState(rows, currentFlowId, options = {}) {
-    const list = Array.isArray(rows) ? rows : [];
-    const view = flowRegistryViewForState(options.flowRegistryView);
-    const suffix = list.length === 1 ? view.titleSingularSuffix : view.titlePluralSuffix;
-    return {
-      eyebrow: view.eyebrow,
-      title: `${list.length} ${suffix}`.trim(),
-      createLabel: view.createLabel,
-      createDisabled: !options.canCreate,
-      createTitle: options.canCreate ? view.createReadyTitle : view.createUnavailableTitle,
-      columns: view.columns,
-      rows: list.map((row) => {
-        const id = String(row?.id || "");
-        const stage = String(row?.stage || "draft");
-        return {
-          id,
-          className: "flows-list__row" + (id && id === currentFlowId ? " is-current" : ""),
-          name: String(row?.name || ""),
-          trigger: String(row?.trigger || ""),
-          version: String(row?.version || ""),
-          stage,
-        };
-      }),
-    };
-  }
-
-  function flowRegistrySelectionState(rows, id) {
-    const selectedId = String(id || "");
-    const row = (Array.isArray(rows) ? rows : []).find((candidate) => candidate?.id === selectedId) || null;
-    if (!row) {
-      return {
-        found: false,
-        id: selectedId,
-        row: null,
-        hasDocument: false,
-        hydration: null,
-        fallback: null,
-      };
-    }
-    if (row.document && typeof row.document === "object") {
-      return {
-      found: true,
-      id: selectedId,
-      row,
-      hasDocument: true,
-      hydration: {
-        result: {
-          document: row.document,
-          validation: row.validation ?? null,
-        },
-        options: {
-          id: selectedId,
-          flowRow: row,
-          addToRegistry: false,
-        },
-      },
-      fallback: null,
-    };
-    }
-    return {
-      found: true,
-      id: selectedId,
-      row,
-      hasDocument: false,
-      hydration: null,
-      fallback: null,
-      error: "missing_registry_document",
-    };
-  }
-
-  function flowRegistryRowFromDocument({
-    id,
-    document,
-    validation = null,
-    stage,
-    trigger = "",
-    source = "",
-    sourceLabel = "",
-    flowRow = null,
-    fallbackName = "",
-    fallbackVersion = "",
-  } = {}) {
-    const rowId = String(id || "").trim();
-    if (!rowId || !document || typeof document !== "object") return null;
-    const name = String(
-      flowRow?.name ||
-      document.name ||
-      document.flow?.name ||
-      document.mob_id ||
-      fallbackName
-    );
-    const version = String(flowRow?.version || document.schema_version || fallbackVersion);
-    return {
-      id: rowId,
-      name,
-      version,
-      stage: String(stage || (validation?.ok ? "valid" : "draft")),
-      trigger: String(flowRow?.trigger || trigger || sourceLabel || ""),
-      source: String(flowRow?.source || source || ""),
-      document,
-      validation: validation ?? null,
-      ...(flowRow?.registry_source ? { registry_source: String(flowRow.registry_source) } : {}),
-      ...(flowRow?.document_kind ? { document_kind: String(flowRow.document_kind) } : {}),
-      ...(flowRow?.runtime_projection === true ? { runtime_projection: true } : {}),
-      ...(flowRow?.runtime_mob_id ? { runtime_mob_id: String(flowRow.runtime_mob_id) } : {}),
-      ...(flowRow?.runtime_flow_id ? { runtime_flow_id: String(flowRow.runtime_flow_id) } : {}),
-      ...(flowRow?.deployability ? { deployability: flowRow.deployability } : {}),
-      ...(flowRow?.provenance ? { provenance: flowRow.provenance } : {}),
-    };
-  }
-
-  function flowRegistryRowIsRuntimeProjection(row) {
-    return row?.runtime_projection === true
-      || row?.document_kind === "runtime_projection"
-      || row?.source === "mobkit/runtime/flow_projection"
-      || row?.registry_source === "mobkit/runtime/flow_projection";
-  }
-
-  function flowRegistryRememberDocumentPatch(rows, {
-    currentFlowId,
-    document,
-    validation = null,
-    stage = "draft",
-  } = {}) {
-    const list = Array.isArray(rows) ? rows : [];
-    if (!currentFlowId || !document || typeof document !== "object") return list;
-    let changed = false;
-    const next = list.map((row) => {
-      if (!row || row.id !== currentFlowId) return row;
-      changed = true;
-      return {
-        ...row,
-        name: document.name || document.flow?.name || row.name,
-        version: document.schema_version || row.version,
-        stage,
-        document,
-        validation: validation ?? null,
-      };
-    });
-    return changed ? next : list;
-  }
-
-  function flowRegistryRowRevision(row) {
-    const value = row?.revision ?? row?.draft_revision;
-    const revision = Number(value);
-    return Number.isFinite(revision) && revision >= 0 ? revision : null;
-  }
-
-  function flowRegistryRowEtag(row) {
-    const value = row?.draft_etag ?? row?.etag;
-    return value ? String(value) : "";
-  }
-
-  function flowRegistryDraftGuard(row, currentFlowId = "") {
-    const id = String(row?.id || currentFlowId || "").trim();
-    const expectedRevision = flowRegistryRowRevision(row);
-    const expectedEtag = flowRegistryRowEtag(row);
-    if (!id || expectedRevision === null) return {};
-    return {
-      id,
-      expected_revision: expectedRevision,
-      ...(expectedEtag ? { expected_etag: expectedEtag } : {}),
-    };
-  }
-
-  function flowRegistryDocumentPersistence({
-    currentFlowId,
-    document,
-    validation = null,
-    stage = "draft",
-    previousSignature = "",
-    skipIfUnchanged = false,
-    expectedRevision = null,
-    expectedEtag = "",
-  } = {}) {
-    if (!currentFlowId || !document || typeof document !== "object") {
-      return {
-        ok: false,
-        changed: false,
-        signature: String(previousSignature || ""),
-        rowPatch: null,
-      };
-    }
-    const signature = `${currentFlowId}\n${JSON.stringify(document)}`;
-    if (skipIfUnchanged && signature === previousSignature) {
-      return {
-        ok: true,
-        changed: false,
-        signature,
-        rowPatch: null,
-      };
-    }
-    const nextStage = validation == null && stage === "published" ? "draft" : stage;
-    return {
-      ok: true,
-      changed: true,
-      signature,
-      rowPatch: {
-        currentFlowId,
-        document,
-        validation,
-        stage: nextStage,
-        ...(expectedRevision !== null && expectedRevision !== undefined ? { expectedRevision } : {}),
-        ...(expectedEtag ? { expectedEtag } : {}),
-      },
-    };
-  }
-
-  function flowRegistryPersistDocumentProjection(rows, options = {}) {
-    const sourceRows = Array.isArray(rows) ? rows : [];
-    const currentRow = sourceRows.find((row) => row?.id === options.currentFlowId) || null;
-    if (flowRegistryRowIsRuntimeProjection(currentRow)) {
-      return {
-        ok: false,
-        changed: false,
-        reason: "runtime_projection_read_only",
-        signature: String(options.previousSignature || ""),
-        rowPatch: null,
-        rows: sourceRows,
-      };
-    }
-    const persistence = flowRegistryDocumentPersistence({
-      expectedRevision: flowRegistryRowRevision(currentRow),
-      expectedEtag: flowRegistryRowEtag(currentRow),
-      ...options,
-    });
-    if (!persistence.ok || !persistence.rowPatch) {
-      return {
-        ...persistence,
-        rows: sourceRows,
-      };
-    }
-    return {
-      ...persistence,
-      rows: flowRegistryRememberDocumentPatch(sourceRows, persistence.rowPatch),
-    };
-  }
-
-  function flowRegistryPersistOutcomeProjection(rows, { currentFlowId, outcome, previousSignature = "", skipIfUnchanged = false } = {}) {
-    const sourceOutcome = outcome && typeof outcome === "object" ? outcome : {};
-    const persistence = flowRegistryPersistDocumentProjection(rows, {
-      currentFlowId,
-      document: sourceOutcome.document,
-      validation: sourceOutcome.validation,
-      stage: sourceOutcome.stage,
-      previousSignature,
-      skipIfUnchanged,
-    });
-    return {
-      ...sourceOutcome,
-      persistence,
-      rows: persistence.rows,
-      signature: persistence.signature,
-      changed: persistence.changed,
-      ok: persistence.ok,
-    };
-  }
-
-  function flowRegistryAppendRowPatch(rows, row) {
-    const list = Array.isArray(rows) ? rows : [];
-    if (!row || typeof row !== "object" || !row.id) return list;
-    return [...list, row];
-  }
-
-  function flowRegistryUpsertRowPatch(rows, row) {
-    const list = Array.isArray(rows) ? rows : [];
-    if (!row || typeof row !== "object" || !row.id) return list;
-    let replaced = false;
-    const next = list.map((candidate) => {
-      if (!candidate || candidate.id !== row.id) return candidate;
-      replaced = true;
-      return row;
-    });
-    return replaced ? next : [...list, row];
-  }
-
-  function flowDraftIdFromSpec(spec, existingRows = []) {
-    const draftSpec = spec && typeof spec === "object" ? spec : {};
-    const base = slug(draftSpec.name || draftSpec.template || "mobkit_flow", "mobkit_flow");
-    const prefix = base.startsWith("f_") ? base : `f_${base}`;
-    const used = new Set((Array.isArray(existingRows) ? existingRows : [])
-      .map((row) => String(row?.id || "").trim())
-      .filter(Boolean));
-    if (!used.has(prefix)) return prefix;
-    let index = 2;
-    while (used.has(`${prefix}_${index}`)) index += 1;
-    return `${prefix}_${index}`;
-  }
-
-  function newFlowTemplateOptions(templates = [], { canCreateBlank = false, blankTemplate = null } = {}) {
-    const hasBlankDocument = !!blankTemplate?.document;
-    const options = [{
-      id: "blank",
-      label: hasBlankDocument ? String(blankTemplate.name || "") : "Blank",
-      sub: hasBlankDocument
-        ? String(blankTemplate.trigger || blankTemplate.source || "")
-        : "Waiting for MobKit blank mobpack",
-      tier: hasBlankDocument ? String(blankTemplate.stage || "") : "",
-      disabled: !canCreateBlank || !hasBlankDocument,
-    }];
-    for (const sample of Array.isArray(templates) ? templates : []) {
-      if (!sample || typeof sample !== "object") continue;
-      const id = String(sample.id || "").trim();
-      const label = String(sample.name || "").trim();
-      if (!id || !label) continue;
-      options.push({
-        id,
-        label,
-        sub: String(sample.trigger || sample.source || ""),
-        tier: String(sample.stage || ""),
-        disabled: false,
-      });
-    }
-    return options;
-  }
-
-  function newFlowInitialState({ blankTemplate = null } = {}) {
-    const hasBlankDocument = !!blankTemplate?.document;
-    return {
-      step: 1,
-      name: "",
-      trigger: hasBlankDocument ? String(blankTemplate.trigger || "") : "",
-      template: hasBlankDocument ? String(blankTemplate.id || "") : "",
-    };
-  }
-
-  function newFlowModalState(state = {}, templateOptions = [], newFlowView = null) {
-    const view = newFlowViewForState(newFlowView);
-    const step = Number(state.step || 1);
-    const name = String(state.name || "");
-    const trigger = String(state.trigger || "");
-    const template = String(state.template || "");
-    const options = (Array.isArray(templateOptions) ? templateOptions : []).map((option) => {
-      const id = String(option?.id || "");
-      return {
-        id,
-        label: String(option?.label || ""),
-        sub: String(option?.sub || ""),
-        tier: String(option?.tier || ""),
-        disabled: !!option?.disabled,
-        className: "template-card" + (id && id === template ? " is-selected" : ""),
-      };
-    });
-    const selectedTemplate = options.find((option) => option.id === template) || null;
-    return {
-      step,
-      eyebrow: view.eyebrowTemplate.replace("{step}", String(step)),
-      closeLabel: view.closeLabel,
-      nameLabel: view.nameLabel,
-      namePlaceholder: view.namePlaceholder,
-      triggerLabel: view.triggerLabel,
-      triggerPlaceholder: view.triggerPlaceholder,
-      startFromLabel: view.startFromLabel,
-      backLabel: view.backLabel,
-      nextLabel: view.nextLabel,
-      createLabel: view.createLabel,
-      name,
-      trigger,
-      template,
-      options,
-      createDisabled: !selectedTemplate || !!selectedTemplate.disabled,
-      nextDisabled: !name.trim(),
-    };
-  }
-
-  function newFlowModalPatch(state = {}, patch = {}) {
-    const source = state && typeof state === "object" ? state : {};
-    const rawPatch = patch && typeof patch === "object" ? patch : {};
-    const next = { ...source, ...rawPatch };
-    const step = Number(next.step || 1);
-    next.step = step === 2 ? 2 : 1;
-    next.name = String(next.name || "");
-    next.trigger = String(next.trigger || "");
-    next.template = String(next.template || "");
-    return next;
-  }
-
-  function newFlowModalFieldPatch(state = {}, field, value) {
-    const key = String(field || "").trim();
-    if (!key) return newFlowModalPatch(state);
-    if (!["name", "trigger", "template"].includes(key)) return newFlowModalPatch(state);
-    return newFlowModalPatch(state, { [key]: value });
-  }
-
-  function newFlowModalStepPatch(state = {}, step) {
-    return newFlowModalPatch(state, { step });
-  }
-
-  function newFlowModalCreateSpec(state = {}) {
-    const source = newFlowModalPatch(state);
-    return {
-      name: source.name,
-      trigger: source.trigger,
-      template: source.template,
-    };
-  }
-
-  function agentDefinitionsFromCatalogs(schema) {
-    const definitions = Array.isArray(schema?.agent_definitions) ? schema.agent_definitions : [];
-    return normalizeAgentDefinitionsFromCatalog(definitions);
-  }
-
-  function sampleAgentDefinitionsFromCatalogs(schema) {
-    const definitions = Array.isArray(schema?.sample_agent_definitions) ? schema.sample_agent_definitions : [];
-    return normalizeAgentDefinitionsFromCatalog(definitions);
-  }
-
-  function normalizeAgentDefinitionsFromCatalog(definitions) {
-    return definitions
-      .filter((template) => template && typeof template === "object")
-      .filter((template) => String(template.definitionType || template.definition_type || "") === "mobkit/profile-member")
-      .filter((template) => String(template.source || "").trim())
-      .filter((template) => String(template.sourceMobpack || template.source_mobpack || "").trim())
-      .filter((template) => String(template.sourceOrigin || template.source_origin || "").trim())
-      .filter((template) => String(template.profileBinding || template.profile_binding || "").trim())
-      .filter((template) => String(template.runtimeMode || template.runtime_mode || "").trim())
-      .filter((template) => String(template.model || "").trim())
-      .map((template) => {
-        const id = String(template.id || "").trim();
-        const role = String(template.role || "").trim();
-        const name = String(template.name || template.label || "").trim();
-        const model = String(template.model || "").trim();
-        const definitionKind = String(template.definitionKind || template.definition_kind || "").trim();
-        const sourceKind = String(template.sourceKind || template.source_kind || "").trim();
-        if (!id || !role || !name) return null;
-        return {
-          id,
-          role,
-          label: String(template.label || name),
-          name,
-          model,
-          schema: String(template.schema || ""),
-          schemaDefinition: normalizeAgentSchemaDefinition(template.schemaDefinition || template.schema_definition),
-          schemaSourceDocumentPath: String(template.schemaSourceDocumentPath || template.schema_source_document_path || ""),
-          skills: Array.isArray(template.skills) ? [...template.skills] : [],
-          skillDefinitions: normalizeAgentDefinitionRows(template.skillDefinitions || template.skill_definitions),
-          tools: Array.isArray(template.tools) ? [...template.tools] : [],
-          toolDefinitions: normalizeAgentDefinitionRows(template.toolDefinitions || template.tool_definitions),
-          profileBinding: String(template.profileBinding || template.profile_binding || ""),
-          realmProfile: String(template.realmProfile || template.realm_profile || ""),
-          runtimeMode: String(template.runtimeMode || template.runtime_mode || ""),
-          externalAddressable: !!template.externalAddressable,
-          backend: normalizeProfileBackend(template.backend),
-          maxInlinePeerNotifications: normalizeMaxInlinePeerNotifications(template.maxInlinePeerNotifications ?? template.max_inline_peer_notifications),
-          systemPrompt: String(template.systemPrompt || template.system_prompt || ""),
-          providerParams: normalizeProviderParams(template.providerParams || template.provider_params),
-          definitionType: String(template.definitionType || template.definition_type),
-          ...(definitionKind ? { definitionKind } : {}),
-          ...(sourceKind ? { sourceKind } : {}),
-          source: template.source || "",
-          sourceMobpack: template.sourceMobpack || template.source_mobpack || "",
-          sourceMobpackName: template.sourceMobpackName || template.source_mobpack_name || "",
-          sourceOrigin: template.sourceOrigin || template.source_origin || "",
-          sourceDocumentPath: template.sourceDocumentPath || template.source_document_path || "",
-          ...(template.deployability ? { deployability: template.deployability } : {}),
-          ...(template.provenance ? { provenance: template.provenance } : {}),
-        };
-      })
-      .filter(Boolean);
-  }
-
-  function normalizeAgentSchemaDefinition(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    const id = String(value.id || "").trim();
-    const fields = Array.isArray(value.fields) ? value.fields : [];
-    if (!id || !fields.length) return null;
-    return JSON.parse(JSON.stringify(value));
   }
 
   const MobKitFlowController = {
