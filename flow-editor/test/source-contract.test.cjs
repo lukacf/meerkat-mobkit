@@ -13,9 +13,10 @@ const graph = src("graph.jsx");
 const inspector = src("inspector.jsx");
 const app = src("app.jsx");
 const styles = src("styles.css");
-// The controller plane spans the legacy residue and @flow-editor-core; the
-// concatenation keeps whole-text controller assertions move-invariant while
-// functions migrate package-side.
+// The controller plane is @flow-editor-core plus the ~10-line controller.js
+// bootstrap (S19 end-state: the residue is gone); the concatenation kept
+// whole-text controller assertions move-invariant throughout the migration
+// and now reads only the bootstrap plus the core module files.
 const coreSrcDir = path.join(root, "..", "packages", "flow-editor-core", "src");
 const coreModuleFiles = (function walk(dir) {
   return fs.readdirSync(dir, { withFileTypes: true })
@@ -683,7 +684,13 @@ assert(!/MobKitFlowController\.graphToFlowDocument\(projectionDocument\)[\s\S]*a
 assert(!/setFlow\(\(current\) => window\.MobKitFlowController\.graphToFlow/.test(app), "Graph-to-Basic live projection must not apply local flow state directly");
 assert.doesNotMatch(app, /authoringDocumentFromState\(\{[\s\S]*flow:[\s\S]*studio:[\s\S]*deploySettings:[\s\S]*mobSettings:/, "Mobpack export/deploy must not build authoritative documents from browser Basic, Graph, Agent, deploy, and mob shards");
 assert.match(controller, /function authoringDocumentFromState/, "controller plane must own current editor state to deployable mobpack document projection");
-assert.match(controller, /if \(window\.__MOBKIT_FLOW_CONTROLLER_TEST__\) \{[\s\S]*Object\.assign\(MobKitFlowController,\s*\{[\s\S]*buildDocument,[\s\S]*authoringFlowForDocument,[\s\S]*authoringDocumentFromState/, "legacy shard-to-document assembler must only be exposed to explicit controller unit tests");
+// Re-anchored in S19: the window.__MOBKIT_FLOW_CONTROLLER_TEST__ gate now
+// lives in the controller.js bootstrap (mapped to includeTestExports) and
+// the gated Object.assign moved into controller-facade.ts's
+// createMobKitFlowController; the bootstrap precedes the facade in the
+// concatenation, so the pattern still proves the assembler exports are
+// reachable only through the explicit test flag.
+assert.match(controller, /includeTestExports:\s*!!window\.__MOBKIT_FLOW_CONTROLLER_TEST__[\s\S]*if \(includeTestExports\) \{[\s\S]*Object\.assign\(MobKitFlowController,\s*\{[\s\S]*buildDocument,[\s\S]*authoringFlowForDocument,[\s\S]*authoringDocumentFromState/, "legacy shard-to-document assembler must only be exposed to explicit controller unit tests");
 assert(!/window\.MobKitFlowController = \{[\s\S]*authoringDocumentFromState/.test(controller), "browser controller public API must not expose the shard-to-document assembler");
 assert.match(testSrc("live-rkat-e2e.cjs"), /global\.window = \{ __MOBKIT_FLOW_CONTROLLER_TEST__:\s*true \}/, "live rkat fixture builders must explicitly opt into controller internals instead of depending on browser public exports");
 assert.match(controller, /authoringDocumentFromState[\s\S]*reconcileAuthoringWithContract\(\{[\s\S]*members:\s*sourceStudio\.members,[\s\S]*skillRealms:\s*sourceStudio\.skillRealms,[\s\S]*schemas:\s*sourceStudio\.schemas,[\s\S]*modelCatalog,[\s\S]*toolCatalog,[\s\S]*contractLoaded/, "deployable document projection must run aggregate MobKit contract/catalog reconciliation before export");

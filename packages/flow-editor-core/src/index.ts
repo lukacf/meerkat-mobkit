@@ -3,10 +3,11 @@
 // Pure projection/transition logic extracted from the legacy
 // flow-editor/src/controller.js monolith, module by module. Framework-free:
 // no DOM access at load time, no React. The shell bundles this package as
-// the window.MobKitFlowCore IIFE and the (shrinking) controller residue
-// destructures from it via a build-injected prelude.
+// the window.MobKitFlowCore IIFE and the controller.js bootstrap builds
+// window.MobKitFlowController from createMobKitFlowController.
 export * from "./catalogs/hydration";
 export * from "./contract/options";
+export * from "./controller-facade";
 export * from "./document/build-projection";
 export * from "./domain/tool-skill-access";
 export * from "./drafts/mob-settings";
