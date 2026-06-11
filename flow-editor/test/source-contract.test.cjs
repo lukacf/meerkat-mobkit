@@ -445,7 +445,14 @@ assert(!/const\s+ql\s*=|matchM|members\.filter|graphControlNodes\(contract\)|sho
 assert(!/contractDefaultValue\(contract,\s*["']graph_edge_kind["']\)\s*\|\|\s*["']next["']/.test(controller), "controller graph edge drafts must not invent a local default edge kind");
 assert(!/contractDefaultValue\(contract,\s*["']graph_fanout_edge_kind["']\)\s*\|\|\s*["']fanout["']/.test(controller), "controller graph edge drafts must not invent a local fanout edge kind");
 assert(!/contractDefaultValue\([^)]*["']graph_condition_edge_kind["']\)\s*\|\|\s*["']cond["']/.test(controller), "controller graph edge drafts must not invent a local condition edge kind");
-assert(!/function graphEdgeKey[\s\S]*edge\?\.kind \|\| ["']next["']/.test(controller), "controller graph edge dedupe must not treat missing edge kinds as MobKit next edges");
+// Re-anchored in S11 to the graphEdgeKey function block (landmark pair
+// graphEdgeKey -> instancesForDocument, adjacent in the residue today and
+// co-moving intra-module into document/build-projection.ts in S16): the
+// open-ended tail used to scan everything after graphEdgeKey, which now
+// includes editors/graph-editor.ts — whose graphEdgeCanvasState legitimately
+// renders `edge?.kind || "next"` — appended after the residue by the
+// concatenation helper.
+assert(!/edge\?\.kind \|\| ["']next["']/.test((controller.match(/function graphEdgeKey[\s\S]*?function instancesForDocument/) || [""])[0]), "controller graph edge dedupe must not treat missing edge kinds as MobKit next edges");
 assert.match(inspectorRootBlock, /MobKitFlowController\.graphSelectionState/, "Graph Inspector root must resolve selected instances and edges through the controller plane");
 assert.match(inspectorTemplateBlock, /MobKitFlowController\.graphTemplateInspectorState/, "Graph template inspector must render summary rows through the controller plane");
 assert.match(controller, /mob_definition\?\.editor_graph_template_view/, "controller plane must hydrate Graph template inspector chrome from MobKit schema");
@@ -598,7 +605,14 @@ assert.match(controller, /graphEdgeInspectorState[\s\S]*graphTemplateText\(view\
 assert.match(controller, /graphEdgeInspectorState[\s\S]*graphTemplateText\(view\.graphConditionFieldOptionTemplate/, "Graph edge condition field options must render through schema-backed template state");
 assert(!/eyebrow:\s*`\$\{?(?:GATE|TERMINAL|EDGE)/.test(controller), "Graph gate, terminal, and edge headers must not be hardcoded in controller template strings");
 assert(!/quorumIncomingLabel:\s*`of|label:\s*`\$\{member\.name \|\| member\.id\} ·|title:\s*`\$\{fromMember|fieldPlaceholder:\s*condOwner \? ["']— field —["']/.test(controller), "Graph gate/edge inspector labels must not be assembled as local hardcoded copy");
-assert(!/graphBranchConditionRows[\s\S]*label:\s*`\$\{field\.name\} · \$\{field\.type\}`|graphEdgeInspectorState[\s\S]*label:\s*`\$\{field\.name\} · \$\{field\.type\}`/.test(controller), "Graph condition field option labels must not be hardcoded in controller projections");
+// Re-anchored in S11 to the graph inspector function blocks (landmark pairs
+// graphBranchConditionRows -> graphTerminalControlState and
+// graphEdgeInspectorState -> graphGateKindAllowed, adjacent intra-module in
+// editors/graph-editor.ts): the open-ended scans started at the residue
+// facade's mentions of the graph inspectors, and the concatenation helper
+// now appends basic-editor's basicRepeatControlState — which legitimately
+// renders `${field.name} · ${field.type}` labels — after the facade.
+assert(!/label:\s*`\$\{field\.name\} · \$\{field\.type\}`/.test(((controller.match(/function graphBranchConditionRows[\s\S]*?function graphTerminalControlState/) || [""])[0]) + ((controller.match(/function graphEdgeInspectorState[\s\S]*?function graphGateKindAllowed/) || [""])[0])), "Graph condition field option labels must not be hardcoded in controller projections");
 assert(!/INSTANCE<\/div>|inst\.id\} · cell|inst\.col \+ 1|inst\.row \+ 1|>DELETE<\/button>|EDIT MEMBER →|<dt>model<\/dt>|member\.model|member\.name|Editing the member updates every instance that uses it|>POSITION<\/div>|stage \(col\)|slot \(row\)/.test(inspectorInstanceBlock), "Graph instance inspector must not compose instance header, member summary, or position copy locally");
 assert(!/MEMBER OUTPUT · \{member\.schema \|\| "—"\}|instanceState\.outputFields\.map|<span className="sf__req">req<\/span>|Defined on the member\.|Open member →|member\.schema \|\| "—"/.test(inspectorInstanceBlock), "Graph instance inspector must not compose member-output schema title, rows, required badges, or open-member copy locally");
 assert(!/contractDefaultValue\(contract,\s*["']graph_terminal_kind["']\)|graphTerminalKindOptions\(|terminalKindOptions\.find/.test(inspectorInstanceBlock), "Graph terminal inspector must not assemble terminal kind defaults or options locally");

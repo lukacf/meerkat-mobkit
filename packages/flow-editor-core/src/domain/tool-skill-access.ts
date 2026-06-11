@@ -14,13 +14,12 @@
 // access state projections and patches, step tool-scope state and patches,
 // and inline skill authoring against MobKit skill realms.
 //
-// stepToolScopeState reaches basicEditorViewState, which stays in the
-// controller.js residue until the S11 editors slice — that one edge goes
-// through the lazy _residue-bridge (removed in S11) instead of a relative
-// import.
+// stepToolScopeState reaches basicEditorViewState, which went through the
+// lazy _residue-bridge until editors/basic-editor.ts landed in S11; it is
+// now a relative import (runtime-only — no module-init cross-calls).
+import { basicEditorViewState } from "../editors/basic-editor";
 import { normalizeStringList } from "../shared/normalize";
 import { agentAccessViewForState } from "../views/view-config";
-import { basicEditorViewState } from "../_residue-bridge";
 
 export function slug(value, fallback) {
   const out = String(value || fallback || "mobpack")

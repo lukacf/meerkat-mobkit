@@ -6,9 +6,11 @@
 // the window.MobKitFlowCore IIFE and the (shrinking) controller residue
 // destructures from it via a build-injected prelude.
 export * from "./contract/options";
+export * from "./document/build-projection";
 export * from "./domain/tool-skill-access";
 export * from "./drafts/mob-settings";
 export * from "./editors/basic-editor";
+export * from "./editors/graph-editor";
 export * from "./flow/launch-modes";
 export * from "./flow/reconcile";
 export * from "./flow/step-tree";

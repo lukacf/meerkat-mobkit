@@ -75,13 +75,30 @@ var MobKitFlowCore = (() => {
     authoringOperationFromIntent: () => authoringOperationFromIntent,
     authoringOperationsFromSchema: () => authoringOperationsFromSchema,
     authoringRpcMethodsFromSchema: () => authoringRpcMethodsFromSchema,
+    basicBranchAddPatch: () => basicBranchAddPatch,
+    basicBranchConditionControlState: () => basicBranchConditionControlState,
+    basicBranchConditionPatch: () => basicBranchConditionPatch,
     basicBranchDefaultLabel: () => basicBranchDefaultLabel,
+    basicBranchParallelControlState: () => basicBranchParallelControlState,
     basicCanvasClearTransition: () => basicCanvasClearTransition,
     basicConditionFieldPatch: () => basicConditionFieldPatch,
+    basicConditionFromText: () => basicConditionFromText,
+    basicConditionLabel: () => basicConditionLabel,
     basicConditionOperatorPatch: () => basicConditionOperatorPatch,
+    basicConditionOptions: () => basicConditionOptions,
     basicConditionSourcePatch: () => basicConditionSourcePatch,
+    basicConditionText: () => basicConditionText,
     basicConditionValuePatch: () => basicConditionValuePatch,
+    basicEditorViewState: () => basicEditorViewState,
     basicFlowPrimitiveRowsFromSchema: () => basicFlowPrimitiveRowsFromSchema,
+    basicForkCanvasState: () => basicForkCanvasState,
+    basicInputControlState: () => basicInputControlState,
+    basicMemberStepControlState: () => basicMemberStepControlState,
+    basicRepeatCanvasState: () => basicRepeatCanvasState,
+    basicRepeatControlState: () => basicRepeatControlState,
+    basicRepeatIterationLabel: () => basicRepeatIterationLabel,
+    basicRepeatUntilExpression: () => basicRepeatUntilExpression,
+    basicStepCardState: () => basicStepCardState,
     basicStepPickerCloseTransition: () => basicStepPickerCloseTransition,
     basicStepPickerOpenTransition: () => basicStepPickerOpenTransition,
     basicStepPickerState: () => basicStepPickerState,
@@ -198,26 +215,86 @@ var MobKitFlowCore = (() => {
     graphAddMenuCloseProjection: () => graphAddMenuCloseProjection,
     graphAddMenuOpenProjection: () => graphAddMenuOpenProjection,
     graphAddNodeMenuState: () => graphAddNodeMenuState,
+    graphBranchConditionModePatch: () => graphBranchConditionModePatch,
+    graphBranchConditionRows: () => graphBranchConditionRows,
+    graphCanvasAdornments: () => graphCanvasAdornments,
+    graphCanvasInstances: () => graphCanvasInstances,
+    graphCanvasViewState: () => graphCanvasViewState,
+    graphCellAt: () => graphCellAt,
+    graphCellCanvasRows: () => graphCellCanvasRows,
+    graphCellXY: () => graphCellXY,
+    graphConditionEdgeKindForPatch: () => graphConditionEdgeKindForPatch,
+    graphConditionOptions: () => graphConditionOptions,
+    graphConditionPathForOption: () => graphConditionPathForOption,
+    graphConditionRefForEdge: () => graphConditionRefForEdge,
     graphControlNodes: () => graphControlNodes,
+    graphDragCellAt: () => graphDragCellAt,
+    graphEdgeCanvasState: () => graphEdgeCanvasState,
+    graphEdgeConditionFieldPatch: () => graphEdgeConditionFieldPatch,
+    graphEdgeConditionOperatorPatch: () => graphEdgeConditionOperatorPatch,
+    graphEdgeConditionOwnerPatch: () => graphEdgeConditionOwnerPatch,
+    graphEdgeConditionPatch: () => graphEdgeConditionPatch,
+    graphEdgeConditionValuePatch: () => graphEdgeConditionValuePatch,
+    graphEdgeFallbackPatch: () => graphEdgeFallbackPatch,
+    graphEdgeInspectorState: () => graphEdgeInspectorState,
     graphEdgeKindOptions: () => graphEdgeKindOptions,
+    graphEdgeKindPatch: () => graphEdgeKindPatch,
+    graphEdgeLabelPatch: () => graphEdgeLabelPatch,
+    graphEdgeMidpoint: () => graphEdgeMidpoint,
+    graphEdgePath: () => graphEdgePath,
     graphEdgeValidation: () => graphEdgeValidation,
+    graphFirstConditionPatch: () => graphFirstConditionPatch,
+    graphForkDispatchPatch: () => graphForkDispatchPatch,
+    graphFrameCanvasState: () => graphFrameCanvasState,
     graphFrameKindOptions: () => graphFrameKindOptions,
+    graphGateCanvasState: () => graphGateCanvasState,
+    graphGateControlState: () => graphGateControlState,
+    graphGateKindAllowed: () => graphGateKindAllowed,
     graphGateKindOptions: () => graphGateKindOptions,
+    graphGateKindPatch: () => graphGateKindPatch,
     graphGatePaletteRowsFromSchema: () => graphGatePaletteRowsFromSchema,
+    graphGridHeaderCanvasRows: () => graphGridHeaderCanvasRows,
+    graphGridState: () => graphGridState,
+    graphInstanceControlState: () => graphInstanceControlState,
     graphInstanceIdSet: () => graphInstanceIdSet,
+    graphInstanceLabelPatch: () => graphInstanceLabelPatch,
     graphInstanceValidation: () => graphInstanceValidation,
+    graphJoinCollectionPatch: () => graphJoinCollectionPatch,
+    graphJoinControllerRolePatch: () => graphJoinControllerRolePatch,
+    graphJoinQuorumPatch: () => graphJoinQuorumPatch,
     graphLaunchSourceSet: () => graphLaunchSourceSet,
+    graphNodeBox: () => graphNodeBox,
+    graphNodeCanvasState: () => graphNodeCanvasState,
+    graphPortIn: () => graphPortIn,
+    graphPortOut: () => graphPortOut,
+    graphProjectionEdgeKinds: () => graphProjectionEdgeKinds,
+    graphSelectionProjection: () => graphSelectionProjection,
+    graphSelectionState: () => graphSelectionState,
+    graphSourceFileAdornment: () => graphSourceFileAdornment,
+    graphSourceFileAdornmentCanvasState: () => graphSourceFileAdornmentCanvasState,
+    graphTemplateInspectorState: () => graphTemplateInspectorState,
     graphTemplateQuickStartRowsFromSchema: () => graphTemplateQuickStartRowsFromSchema,
+    graphTemplateText: () => graphTemplateText,
     graphTemplateViewForState: () => graphTemplateViewForState,
     graphTemplateViewFromSchema: () => graphTemplateViewFromSchema,
+    graphTerminalControlState: () => graphTerminalControlState,
+    graphTerminalKindAllowed: () => graphTerminalKindAllowed,
     graphTerminalKindOptions: () => graphTerminalKindOptions,
+    graphTerminalKindPatch: () => graphTerminalKindPatch,
     graphTerminalPaletteRowsFromSchema: () => graphTerminalPaletteRowsFromSchema,
+    graphToolTagClass: () => graphToolTagClass,
     graphViewFromSchema: () => graphViewFromSchema,
     hasAuthoringLaunchMode: () => hasAuthoringLaunchMode,
     inlineSkillRealmIdFromOperationResult: () => inlineSkillRealmIdFromOperationResult,
+    inputParamDeletePatch: () => inputParamDeletePatch,
     inputParamFieldControlState: () => inputParamFieldControlState,
     inputParamName: () => inputParamName,
     inputParamNameSet: () => inputParamNameSet,
+    inputParamOptions: () => inputParamOptions,
+    inputParamRenamePatch: () => inputParamRenamePatch,
+    inputParamSummary: () => inputParamSummary,
+    inputParamUpdatePatch: () => inputParamUpdatePatch,
+    inputParamsForStep: () => inputParamsForStep,
     inputStepDraft: () => inputStepDraft,
     jsonEquivalent: () => jsonEquivalent,
     launchBudgetFixedLimitPatch: () => launchBudgetFixedLimitPatch,
@@ -240,6 +317,8 @@ var MobKitFlowCore = (() => {
     launchViewFromSchema: () => launchViewFromSchema,
     maxInlinePeerNotificationsPatchValueIsValid: () => maxInlinePeerNotificationsPatchValueIsValid,
     memberBackendPatch: () => memberBackendPatch,
+    memberConditionOptionsBefore: () => memberConditionOptionsBefore,
+    memberConditionOptionsBeforeWithMap: () => memberConditionOptionsBeforeWithMap,
     memberDeleteCascadePatch: () => memberDeleteCascadePatch,
     memberDisplayName: () => memberDisplayName,
     memberIdSet: () => memberIdSet,
@@ -308,6 +387,8 @@ var MobKitFlowCore = (() => {
     outputFormatAllowed: () => outputFormatAllowed,
     outputFormatOptions: () => outputFormatOptions,
     parseEditorConditionText: () => parseEditorConditionText,
+    parseGraphConditionVar: () => parseGraphConditionVar,
+    parseLegacyInputFields: () => parseLegacyInputFields,
     profileBackendOptions: () => profileBackendOptions,
     profileBindingOptions: () => profileBindingOptions,
     profileBindingRestriction: () => profileBindingRestriction,
@@ -407,6 +488,7 @@ var MobKitFlowCore = (() => {
     skillIdsFromRealms: () => skillIdsFromRealms,
     skillRealmsForDocument: () => skillRealmsForDocument,
     slug: () => slug,
+    splitLegacyInputFieldLine: () => splitLegacyInputFieldLine,
     stepToolScopeAddPatch: () => stepToolScopeAddPatch,
     stepToolScopeRemovePatch: () => stepToolScopeRemovePatch,
     stepToolScopeState: () => stepToolScopeState,
@@ -1611,365 +1693,770 @@ var MobKitFlowCore = (() => {
     }).filter(Boolean);
   }
 
-  // ../packages/flow-editor-core/src/_residue-bridge.ts
-  function basicEditorViewState(basicView) {
-    return window.MobKitFlowController.basicEditorViewState(basicView);
+  // ../packages/flow-editor-core/src/flow/launch-modes.ts
+  function hasAuthoringLaunchMode(source) {
+    return !!source && typeof source === "object" && ("launchMode" in source || "launch_mode" in source);
   }
-  function graphCanvasViewState(graphView) {
-    return window.MobKitFlowController.graphCanvasViewState(graphView);
+  function launchModeFromAuthoringSource(source, fallback) {
+    const raw = hasAuthoringLaunchMode(source) ? source.launchMode ?? source.launch_mode : hasAuthoringLaunchMode(fallback) ? fallback.launchMode ?? fallback.launch_mode : null;
+    if (!raw || typeof raw !== "object" || !String(raw.kind || "").trim()) return null;
+    return normalizeLaunchMode(raw);
   }
-  function graphCellXY(grid, col, row) {
-    return window.MobKitFlowController.graphCellXY(grid, col, row);
+  function memberDisplayName(members, id) {
+    return ((members || []).find((member) => member.id === id) || {}).name || id;
   }
-  function deploySettingsForUi(deploy) {
-    return window.MobKitFlowController.deploySettingsForUi(deploy);
+  function normalizeLaunchMode(mode) {
+    if (!mode || typeof mode !== "object") return null;
+    const kind = canonicalLaunchModeKind(mode.kind);
+    if (!kind) return null;
+    const rawBudgetSplitPolicy = mode.budgetSplitPolicy ?? mode.budget_split_policy ?? mode.budget;
+    const budgetSplitPolicy = rawBudgetSplitPolicy ? normalizeBudgetSplitPolicy(rawBudgetSplitPolicy) : null;
+    const budgetPatch = budgetSplitPolicy ? { budgetSplitPolicy } : {};
+    if (kind === "Resume") {
+      return {
+        kind: "Resume",
+        sessionId: String(mode.sessionId || mode.session_id || mode.bridgeSessionId || mode.bridge_session_id || "").trim(),
+        ...budgetPatch
+      };
+    }
+    if (kind === "Fork") {
+      return {
+        kind: "Fork",
+        from: String(mode.from || mode.sourceMemberId || mode.source_member_id || "").trim(),
+        context: normalizeForkContext(mode.context || mode.forkContext || mode.fork_context),
+        ...budgetPatch
+      };
+    }
+    return { kind, ...budgetPatch };
   }
-
-  // ../packages/flow-editor-core/src/domain/tool-skill-access.ts
-  function slug(value, fallback) {
-    const out = String(value || fallback || "mobpack").toLowerCase().replace(/[^a-z0-9_ -]+/g, "").trim().replace(/[\s-]+/g, "_").replace(/^_+|_+$/g, "");
-    return out || fallback || "mobpack";
+  function launchModeControlState(source, contract, launchView = null) {
+    const view = launchViewForState(launchView);
+    const authoredLaunchMode = source && typeof source === "object" ? source.launchMode ?? source.launch_mode : null;
+    const defaultLaunchMode = contractDefaultValue(contract, "launch_mode");
+    const launchMode = authoredLaunchMode && typeof authoredLaunchMode === "object" ? authoredLaunchMode : { kind: defaultLaunchMode };
+    const launchKind = canonicalLaunchModeKind(launchMode.kind || defaultLaunchMode);
+    const authoredBudgetSplitPolicy = normalizeBudgetSplitPolicy(
+      launchMode.budgetSplitPolicy || launchMode.budget_split_policy
+    );
+    const defaultBudgetSplitKind = contractDefaultValue(contract, "budget_split_policy");
+    const budgetSplitPolicy = authoredBudgetSplitPolicy || normalizeBudgetSplitPolicy(defaultBudgetSplitKind ? { kind: defaultBudgetSplitKind } : null) || { kind: "" };
+    const budgetLaunchPatch = authoredBudgetSplitPolicy ? { budgetSplitPolicy: authoredBudgetSplitPolicy } : {};
+    const launchOptions = launchModeOptions(contract, launchKind, view);
+    const budgetOptions = budgetSplitPolicyOptions(contract, budgetSplitPolicy.kind, view);
+    const defaultForkContext = contractDefaultValue(contract, "fork_context");
+    const forkContextValue = normalizeForkContext(launchMode.context || defaultForkContext);
+    const forkOptions = forkContextOptions(contract, forkContextValue, view);
+    const fixedLimitValue = budgetSplitPolicy.limit || view.fixedBudgetDefaultValue;
+    return {
+      launchTitle: view.launchTitle,
+      graphLaunchTitle: view.graphLaunchTitle,
+      resumeSessionLabel: view.resumeSessionLabel,
+      resumeSessionPlaceholder: view.resumeSessionPlaceholder,
+      forkSourceLabel: view.forkSourceLabel,
+      forkContextLabel: view.forkContextLabel,
+      graphForkContextLabel: view.graphForkContextLabel,
+      budgetPolicyLabel: view.budgetPolicyLabel,
+      fixedBudgetLabel: view.fixedBudgetLabel,
+      fixedBudgetValue: fixedLimitValue,
+      launchMode,
+      launchKind,
+      defaultLaunchMode,
+      launchOptions,
+      selectedLaunchMode: launchOptions.find((option) => option.value === launchKind),
+      authoredBudgetSplitPolicy,
+      budgetSplitPolicy,
+      budgetLaunchPatch,
+      budgetOptions,
+      selectedBudgetPolicy: budgetOptions.find((option) => option.value === budgetSplitPolicy.kind),
+      defaultForkContext,
+      forkContextValue,
+      forkContextOptions: forkOptions,
+      selectedForkContext: forkOptions.find((option) => option.value === forkContextValue)
+    };
   }
-  function profileName(member) {
-    return slug(member?.name || member?.role || member?.id || "member", "member");
+  function launchModeKindPatch(source, kind, contract, options = {}) {
+    const state = launchModeControlState(source, contract);
+    const nextKind = canonicalLaunchModeKind(kind);
+    if (!launchModeKindAllowed(contract, nextKind)) return {};
+    if (nextKind === "Fork") {
+      return {
+        launchMode: {
+          ...state.launchMode,
+          kind: "Fork",
+          from: options.firstForkSourceId || state.launchMode.from || "",
+          context: state.launchMode.context || state.defaultForkContext,
+          ...state.budgetLaunchPatch
+        }
+      };
+    }
+    if (nextKind === "Resume") {
+      return {
+        launchMode: {
+          ...state.launchMode,
+          kind: "Resume",
+          sessionId: state.launchMode.sessionId || "",
+          ...state.budgetLaunchPatch
+        }
+      };
+    }
+    return { launchMode: { kind: nextKind, ...state.budgetLaunchPatch } };
   }
-  function normalizeToolRef(raw, catalog) {
-    const id = String(raw || "").trim();
-    if (!id) return "";
-    const entries = Array.isArray(catalog) ? catalog : [];
-    const entry = (entries || []).find((tool) => tool.id === id);
-    if (entry && toolCatalogEntryAvailable(entry)) return id;
-    return "";
+  function launchModeMergePatch(source, patch, contract) {
+    const state = launchModeControlState(source, contract);
+    const nextPatch = patch && typeof patch === "object" ? { ...patch } : {};
+    if ("kind" in nextPatch) {
+      const kind = canonicalLaunchModeKind(nextPatch.kind);
+      if (!launchModeKindAllowed(contract, kind)) return {};
+      nextPatch.kind = kind;
+    }
+    if ("context" in nextPatch) {
+      const context = normalizeForkContext(nextPatch.context);
+      if (!forkContextAllowed(contract, context)) return {};
+      nextPatch.context = context;
+    }
+    return { launchMode: { ...state.launchMode, ...nextPatch } };
   }
-  function toolCatalogEntryAvailability(tool) {
-    const availability = tool?.runtimeAvailability || tool?.runtime_availability || null;
-    return availability && typeof availability === "object" ? availability : null;
+  function launchModeSessionPatch(source, sessionId, contract) {
+    return launchModeMergePatch(source, { sessionId: String(sessionId || "") }, contract);
   }
-  function toolCatalogEntryAvailable(tool) {
-    const availability = toolCatalogEntryAvailability(tool);
-    return availability?.available === false ? false : true;
+  function launchSourceAllowed(sourceOptions, from) {
+    const value = String(from || "").trim();
+    if (!value) return true;
+    return (Array.isArray(sourceOptions) ? sourceOptions : []).some((option) => String(option?.value || option?.id || "").trim() === value);
   }
-  function normalizeSkillId(raw) {
-    return String(raw || "").trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, ".").replace(/^[._-]+|[._-]+$/g, "").replace(/\.{2,}/g, ".");
+  function launchModeForkSourcePatch(source, from, contract, options = {}) {
+    const value = String(from || "").trim();
+    if (!launchSourceAllowed(options.sourceOptions, value)) return {};
+    return launchModeMergePatch(source, { from: value }, contract);
   }
-  function skillIdsFromRealms(realms) {
-    const ids = /* @__PURE__ */ new Set();
-    for (const realm of realms || []) {
-      for (const skill of realm?.skills || []) {
-        if (skill?.id) ids.add(String(skill.id));
+  function launchModeForkContextPatch(source, context, contract) {
+    return launchModeMergePatch(source, { context }, contract);
+  }
+  function launchModeBudgetPatch(source, patch, contract) {
+    const state = launchModeControlState(source, contract);
+    if (patch && typeof patch === "object" && "kind" in patch) {
+      const requestedKind = canonicalBudgetSplitPolicyKind(patch.kind);
+      if (!budgetSplitPolicyAllowed(contract, requestedKind)) return {};
+    }
+    const nextPolicy = normalizeBudgetSplitPolicy({ ...state.budgetSplitPolicy, ...patch });
+    if (!nextPolicy || !budgetSplitPolicyAllowed(contract, nextPolicy.kind)) return {};
+    return {
+      launchMode: {
+        ...state.launchMode,
+        budgetSplitPolicy: nextPolicy
       }
-    }
-    return ids;
+    };
   }
-  function addInlineSkillToRealms(realms, spec = {}, accessView = null) {
-    const view = agentAccessViewForState(accessView);
-    const nextRealms = JSON.parse(JSON.stringify(realms || []));
-    const label = String(spec.label || spec.id || "").trim();
-    if (!label) throw new Error(view.skillInlineMissingLabelError);
-    const content = String(spec.content || "").trim();
-    if (!content) throw new Error(view.skillInlineMissingContentError);
-    const used = skillIdsFromRealms(nextRealms);
-    const explicitId = String(spec.id || "").trim();
-    const identityText = explicitId || label;
-    if (!normalizeSkillId(identityText)) throw new Error(view.skillInlineInvalidIdError);
-    const rawId = explicitId || (label.includes(".") ? label : `mob.${label}`);
-    const baseId = normalizeSkillId(rawId);
-    if (!baseId) throw new Error(view.skillInlineInvalidIdError);
-    let id = baseId;
-    let index = 2;
-    while (used.has(id)) id = `${baseId}.${index++}`;
-    let realm = nextRealms.find((candidate) => candidate?.id === view.inlineSkillRealmId);
-    if (!realm) {
-      realm = {
-        id: view.inlineSkillRealmId,
-        label: view.inlineSkillRealmLabel,
-        source: view.inlineSkillRealmSource,
-        default: nextRealms.length === 0,
-        skills: []
-      };
-      nextRealms.unshift(realm);
-    }
-    if (!Array.isArray(realm.skills)) realm.skills = [];
-    realm.skills.push({
-      id,
-      label,
-      source: view.inlineSkillSource,
-      content,
-      desc: spec.desc || view.inlineSkillDefaultDescription
-    });
-    return { id, skillRealms: nextRealms };
+  function launchBudgetKindPatch(source, kind, contract) {
+    return launchModeBudgetPatch(source, { kind: canonicalBudgetSplitPolicyKind(kind) }, contract);
   }
-  function memberToolAccessPatch(member, raw, toolCatalog, accessView = null) {
-    const view = agentAccessViewForState(accessView);
-    const id = normalizeToolRef(raw, toolCatalog);
-    if (!id) {
+  function launchBudgetFixedLimitPatch(source, limit, contract) {
+    return launchModeBudgetPatch(source, { kind: "Fixed", limit }, contract);
+  }
+  function canonicalLaunchModeKind(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    if (lower === "resume") return "Resume";
+    if (lower === "fork") return "Fork";
+    if (lower === "fresh") return "Fresh";
+    return raw;
+  }
+  function launchModeKindAllowed(contract, kind) {
+    const canonicalKind = canonicalLaunchModeKind(kind);
+    if (!canonicalKind) return false;
+    const contractModes = Array.isArray(contract?.mob_definition?.launch_modes) ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind) : [];
+    return contractModes.includes(canonicalKind);
+  }
+  function normalizeForkContext(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    if (raw === "FullHistory") return "full_history";
+    if (raw === "LastMessages") return "last_messages";
+    return raw;
+  }
+  function forkContextAllowed(contract, context) {
+    const normalized = normalizeForkContext(context);
+    if (!normalized) return false;
+    const contexts = Array.isArray(contract?.mob_definition?.fork_contexts) ? contract.mob_definition.fork_contexts.map(normalizeForkContext) : [];
+    return contexts.includes(normalized);
+  }
+  function launchOptionLabel(labels, value, view, contractLabel) {
+    return labels?.[value] || `${value}${view.unsupportedLabelSeparator}${contractLabel}`;
+  }
+  function launchUnsupportedReason(view, contractLabel) {
+    return `${view.unsupportedReasonPrefix}${contractLabel}${view.unsupportedReasonSuffix}`;
+  }
+  function launchModeOptions(contract, currentKind, launchView = null) {
+    const view = launchViewForState(launchView);
+    const contractModes = Array.isArray(contract?.mob_definition?.launch_modes) && contract.mob_definition.launch_modes.length ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind) : [];
+    const modes = [...contractModes];
+    const currentSource = currentKind || contractDefaultValue(contract, "launch_mode");
+    const current = currentSource ? canonicalLaunchModeKind(currentSource) : "";
+    if (current && !modes.includes(current)) modes.push(current);
+    return modes.map((mode) => {
+      const supported = contractModes.includes(mode);
       return {
-        ok: false,
-        id: "",
-        error: raw ? view.toolInvalidError : "",
-        patch: null
-      };
-    }
-    const tools = normalizeStringList(member?.tools);
-    if (tools.includes(id)) {
-      return { ok: true, id, alreadySelected: true, patch: null };
-    }
-    return { ok: true, id, alreadySelected: false, patch: { tools: [...tools, id] } };
-  }
-  function memberToolRemovePatch(member, toolId) {
-    const id = String(toolId || "").trim();
-    if (!id) return { ok: false, id: "", patch: null };
-    const tools = normalizeStringList(member?.tools);
-    return { ok: true, id, patch: { tools: tools.filter((candidate) => candidate !== id) } };
-  }
-  function memberToolAccessState(member, toolCatalog = [], accessView = null) {
-    const view = agentAccessViewForState(accessView);
-    const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
-    const metaById = new Map(catalog.map((tool) => [String(tool.id), tool]));
-    const selectedTools = normalizeStringList(member?.tools);
-    const selectedSet = new Set(selectedTools);
-    const catalogSet = new Set(catalog.map((tool) => String(tool.id)));
-    const toolRow = (id) => {
-      const meta = metaById.get(id) || null;
-      const unavailable = !catalogSet.has(id);
-      const runtimeAvailability = toolCatalogEntryAvailability(meta);
-      const runtimeUnavailable = runtimeAvailability?.available === false;
-      const reason = unavailable ? view.toolInvalidError : runtimeUnavailable ? runtimeAvailability.reason || view.toolInvalidError : "";
-      return {
-        id,
-        name: id,
-        unavailable: unavailable || runtimeUnavailable,
-        reason,
-        description: reason || meta?.desc || view.toolMissingDescription,
-        meta,
-        runtimeAvailability,
-        className: `tool-row${unavailable || runtimeUnavailable ? " tool-row--invalid" : ""}`,
-        removeLabel: view.toolRemoveLabel
-      };
-    };
-    const addableRow = (tool) => {
-      const id = String(tool.id);
-      const label = tool.label || id;
-      const desc = tool.desc || id;
-      return {
-        id,
-        value: id,
-        label,
-        description: desc,
-        optionLabel: `${label} \u2014 ${desc}`,
-        disabled: !toolCatalogEntryAvailable(tool),
-        meta: tool
-      };
-    };
-    return {
-      selectedTools,
-      title: view.toolTitle,
-      hint: view.toolHint,
-      rows: selectedTools.map(toolRow),
-      addableRows: catalog.filter((tool) => !selectedSet.has(String(tool.id))).map(addableRow),
-      addSelectValue: "",
-      addSelectPlaceholder: view.toolAddSelectPlaceholder,
-      sourceLabel: view.toolSourceLabel,
-      sourcePlaceholder: view.toolSourcePlaceholder,
-      addButtonLabel: view.toolAddButtonLabel,
-      emptyToolError: view.toolEmptyError,
-      authoringOperationUnavailableError: view.authoringOperationUnavailableError
-    };
-  }
-  function stepToolScopeState({ member, selected, mode = "member", toolCatalog = [], basicView = null } = {}) {
-    const view = basicEditorViewState(basicView);
-    const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
-    const catalogIds = Array.from(new Set(catalog.map((tool) => String(tool.id).trim()).filter(Boolean)));
-    const selectedTools = Array.from(new Set(normalizeStringList(selected)));
-    const memberToolIds = validMemberToolIds(member, catalogIds);
-    const validToolIds = mode === "catalog" ? catalogIds : memberToolIds;
-    const validToolSet = new Set(validToolIds);
-    const addable = validToolIds.filter((id) => !selectedTools.includes(id));
-    const metaById = new Map(catalog.map((tool) => [String(tool.id), tool]));
-    const rowFor = (id) => {
-      const meta = metaById.get(id) || null;
-      const unavailable = !validToolSet.has(id);
-      const reason = unavailable ? mode === "catalog" ? view.toolScopeNotInCatalogReason : view.toolScopeNotEnabledReason : "";
-      return {
-        id,
-        name: id,
-        meta,
-        unavailable,
-        reason,
-        className: `tool-row${unavailable ? " tool-row--invalid" : ""}`,
-        description: unavailable ? reason : meta?.desc || view.toolScopeToolDescriptionFallback,
-        removeLabel: view.toolScopeRemoveLabel
-      };
-    };
-    const optionFor = (id) => {
-      const meta = metaById.get(id) || null;
-      const label = meta?.label || id;
-      const desc = meta?.desc || id;
-      return {
-        id,
-        value: id,
-        label,
-        description: desc,
-        optionLabel: `${label} \u2014 ${desc}`,
-        meta
-      };
-    };
-    return {
-      selectedTools,
-      addable,
-      addableRows: addable.map(optionFor),
-      rows: selectedTools.map(rowFor),
-      addSelectValue: "",
-      addSelectPlaceholder: mode === "member" && !member ? view.toolScopeSelectMemberPlaceholder : mode === "catalog" ? view.toolScopeBlockCatalogPlaceholder : view.toolScopeAddProfilePlaceholder,
-      disabled: mode === "member" && !member || addable.length === 0
-    };
-  }
-  function validMemberToolIds(member, catalogIds) {
-    const catalogIdSet = new Set(catalogIds || []);
-    return Array.from(new Set(normalizeStringList(member?.tools).filter((id) => catalogIdSet.has(id))));
-  }
-  function validStepToolSet({ member, mode = "member", toolCatalog = [] } = {}) {
-    const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
-    const catalogIds = Array.from(new Set(catalog.map((tool) => String(tool.id).trim()).filter(Boolean)));
-    if (mode === "catalog") return new Set(catalogIds);
-    return new Set(validMemberToolIds(member, catalogIds));
-  }
-  function normalizeStepToolScopeList(tools, options = {}) {
-    const validTools = validStepToolSet(options);
-    return Array.from(new Set(normalizeStringList(tools).filter((tool) => validTools.has(tool))));
-  }
-  function stepToolScopeAddPatch(selected, raw, options = {}) {
-    const id = String(raw || "").trim();
-    const field = options.field || "allowedTools";
-    if (!id) return { ok: false, id: "", patch: null };
-    const state = stepToolScopeState({ ...options, selected });
-    if (!state.addable.includes(id)) {
-      return { ok: false, id, patch: null };
-    }
-    return {
-      ok: true,
-      id,
-      patch: { [field]: [...state.selectedTools, id] }
-    };
-  }
-  function stepToolScopeRemovePatch(selected, raw, options = {}) {
-    const id = String(raw || "").trim();
-    const field = options.field || "allowedTools";
-    if (!id) return { ok: false, id: "", patch: null };
-    const selectedTools = Array.from(new Set(normalizeStringList(selected)));
-    return {
-      ok: true,
-      id,
-      patch: { [field]: selectedTools.filter((candidate) => candidate !== id) }
-    };
-  }
-  function memberSkillTogglePatch(member, skillId, skillRealms = []) {
-    const id = String(skillId || "").trim();
-    if (!id) return { ok: false, id: "", patch: null };
-    const skills = normalizeStringList(member?.skills);
-    const selected = skills.includes(id);
-    if (!selected && !skillIdsFromRealms(skillRealms).has(id)) {
-      return { ok: false, id, patch: null };
-    }
-    return {
-      ok: true,
-      id,
-      selected: !selected,
-      patch: { skills: selected ? skills.filter((candidate) => candidate !== id) : [...skills, id] }
-    };
-  }
-  function memberSkillRemovePatch(member, skillId) {
-    const id = String(skillId || "").trim();
-    if (!id) return { ok: false, id: "", patch: null };
-    const skills = normalizeStringList(member?.skills);
-    return { ok: true, id, patch: { skills: skills.filter((candidate) => candidate !== id) } };
-  }
-  function memberInlineSkillPatch(member, realms, spec = {}, accessView = null) {
-    const view = agentAccessViewForState(accessView);
-    const result = addInlineSkillToRealms(realms, spec, accessView);
-    const skills = normalizeStringList(member?.skills);
-    return {
-      ...result,
-      realmId: view.inlineSkillRealmId,
-      patch: { skills: skills.includes(result.id) ? skills : [...skills, result.id] }
-    };
-  }
-  function memberSkillAccessState({ member, skillRealms, realmId = "", inlineOpen = false, accessView = null } = {}) {
-    const view = agentAccessViewForState(accessView);
-    const realms = Array.isArray(skillRealms) ? skillRealms.filter((realm) => realm?.id) : [];
-    const defaultRealm = realms.find((realm) => realm.default) || realms[0] || null;
-    const selectedRealm = realms.find((realm) => realm.id === realmId) || defaultRealm;
-    const selectedSkillIds = normalizeStringList(member?.skills);
-    const selectedSet = new Set(selectedSkillIds);
-    const byId = /* @__PURE__ */ new Map();
-    for (const sourceRealm of realms) {
-      for (const skill of sourceRealm.skills || []) {
-        const id = String(skill?.id || "").trim();
-        if (!id || byId.has(id)) continue;
-        byId.set(id, { ...skill, id, realm: sourceRealm });
-      }
-    }
-    const skillRows = (selectedRealm?.skills || []).filter((skill) => String(skill?.id || "").trim()).map((skill) => {
-      const id = String(skill.id).trim();
-      const selected = selectedSet.has(id);
-      return {
-        id,
-        selected,
-        className: `skill-row${selected ? " is-on" : ""}`,
-        checkLabel: selected ? view.skillSelectedCheckLabel : "",
-        name: id,
-        desc: skill.desc || skill.path || skill.source || view.skillDefaultDescription,
-        skill
+        value: mode,
+        label: launchOptionLabel(view.launchModeLabels, mode, view, view.launchModesContractLabel),
+        disabled: !supported,
+        reason: supported ? "" : launchUnsupportedReason(view, view.launchModesContractLabel)
       };
     });
-    const selectedOutsideRealm = selectedSkillIds.map((id) => byId.get(id)).filter((skill) => skill && skill.realm?.id !== selectedRealm?.id).map((skill) => ({
-      id: skill.id,
-      realmId: skill.realm?.id || "",
-      realmLabel: skill.realm?.label || skill.realm?.id || "",
-      className: "skill-chip",
-      title: skill.realm?.label || skill.realm?.id || "",
-      label: skill.id,
-      detail: skill.realm?.label || skill.realm?.id || "",
-      removeLabel: view.skillRemoveLabel
-    }));
-    const unavailableSelected = selectedSkillIds.filter((id) => !byId.has(id)).map((id) => ({
-      id,
-      className: "skill-chip is-invalid",
-      label: id,
-      removeLabel: view.skillRemoveLabel
-    }));
-    return {
-      sectionTitle: view.skillSectionTitle,
-      inlineToggleLabel: inlineOpen ? view.skillInlineCancelLabel : view.skillInlineOpenLabel,
-      hint: view.skillHint,
-      inlineLabelPlaceholder: view.skillInlineLabelPlaceholder,
-      inlineContentRows: view.skillInlineContentRows,
-      inlineContentPlaceholder: view.skillInlineContentPlaceholder,
-      inlineCreateHint: view.skillInlineCreateHint,
-      inlineAddLabel: view.skillInlineAddLabel,
-      inlineErrorFallback: view.skillInlineErrorFallback,
-      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
-      noRealmsMessage: view.skillNoRealmsMessage,
-      realmLabel: view.skillRealmLabel,
-      hasRealms: realms.length > 0,
-      realmId: selectedRealm?.id || "",
-      realmOptions: realms.map((realm) => ({
-        id: realm.id,
-        label: `${realm.label || realm.id}${realm.default ? view.skillDefaultRealmSuffix : ""}`
-      })),
-      skillRows,
-      selectedOutsideRealm,
-      unavailableSelected,
-      unavailableHeading: view.skillUnavailableHeading,
-      outsideRealmHeading: view.skillOutsideRealmHeading
-    };
+  }
+  function normalizeDispatchMode(mode) {
+    return String(mode || "").trim();
+  }
+  function dispatchModeOptions(contract, currentMode) {
+    const contractLabel = "dispatch_modes";
+    const contractModes = Array.isArray(contract?.mob_definition?.dispatch_modes) && contract.mob_definition.dispatch_modes.length ? contract.mob_definition.dispatch_modes.map(String) : [];
+    const modes = [...contractModes];
+    const current = String(currentMode || contractDefaultValue(contract, "dispatch_mode") || "").trim();
+    if (!modes.includes(current)) modes.push(current);
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.dispatch_mode_labels);
+    return modes.map((mode) => {
+      const supported = contractModes.includes(mode);
+      return {
+        value: mode,
+        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
+        disabled: !supported,
+        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
+      };
+    });
+  }
+  function dispatchModeAllowed(contract, mode) {
+    const value = String(mode || "").trim();
+    if (!value) return true;
+    const contractModes = Array.isArray(contract?.mob_definition?.dispatch_modes) ? contract.mob_definition.dispatch_modes.map(String) : [];
+    return contractModes.includes(value);
+  }
+  function normalizeCollectionMode(policy) {
+    const raw = typeof policy === "object" && policy ? String(policy.type || "").trim() : String(policy || "").trim();
+    return raw;
+  }
+  function dependencyModeOptions(contract, currentMode) {
+    const contractLabel = "dependency_modes";
+    const contractModes = Array.isArray(contract?.mob_definition?.dependency_modes) && contract.mob_definition.dependency_modes.length ? contract.mob_definition.dependency_modes.map(String) : [];
+    const modes = [...contractModes];
+    const current = String(currentMode || contractDefaultValue(contract, "dependency_mode") || "").trim();
+    if (!modes.includes(current)) modes.push(current);
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.dependency_mode_labels);
+    return modes.map((mode) => {
+      const supported = contractModes.includes(mode);
+      return {
+        value: mode,
+        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
+        disabled: !supported,
+        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
+      };
+    });
+  }
+  function dependencyModeAllowed(contract, mode) {
+    const value = String(mode || "").trim();
+    if (!value) return true;
+    const contractModes = Array.isArray(contract?.mob_definition?.dependency_modes) ? contract.mob_definition.dependency_modes.map(String) : [];
+    return contractModes.includes(value);
+  }
+  function collectionPolicyOptions(contract, currentPolicy) {
+    const contractLabel = "collection_policies";
+    const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies) && contract.mob_definition.collection_policies.length ? contract.mob_definition.collection_policies.map(String) : [];
+    const policies = [...contractPolicies];
+    const current = String(currentPolicy || contractDefaultValue(contract, "collection_policy") || "").trim();
+    if (!policies.includes(current)) policies.push(current);
+    const labels = viewStringMapFromSchema(contract?.mob_definition?.collection_policy_labels);
+    return policies.map((policy) => {
+      const supported = contractPolicies.includes(policy);
+      return {
+        value: policy,
+        label: labels[policy] || mobDefinitionUnsupportedOptionLabel(contract, policy, contractLabel),
+        disabled: !supported,
+        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
+      };
+    });
+  }
+  function mobDefinitionUnsupportedOptionLabel(contract, value, contractLabel) {
+    const separator = String(contract?.mob_definition?.option_unsupported_label_separator || " ");
+    return `${value}${separator}${contractLabel}`;
+  }
+  function mobDefinitionUnsupportedOptionReason(contract, contractLabel) {
+    const prefix = String(contract?.mob_definition?.option_unsupported_reason_prefix || "");
+    const suffix = String(contract?.mob_definition?.option_unsupported_reason_suffix || "");
+    return `${prefix}${contractLabel}${suffix}`;
+  }
+  function collectionPolicyAllowed(contract, policy) {
+    const value = String(policy || "").trim();
+    if (!value) return true;
+    const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies) ? contract.mob_definition.collection_policies.map(String) : [];
+    return contractPolicies.includes(value);
+  }
+  function normalizeBudgetSplitPolicy(policy) {
+    if (!policy || typeof policy !== "object") return null;
+    const rawKind = String(policy.kind || policy.type || "").trim();
+    if (!rawKind) return null;
+    const kind = canonicalBudgetSplitPolicyKind(rawKind);
+    if (kind === "Fixed") {
+      const limit = numberOrNull(policy?.limit ?? policy?.value ?? policy?.tokens);
+      return { kind: "Fixed", limit: limit && limit > 0 ? limit : 4096 };
+    }
+    return { kind };
+  }
+  function canonicalBudgetSplitPolicyKind(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    if (lower === "fixed") return "Fixed";
+    if (lower === "proportional") return "Proportional";
+    if (lower === "remaining") return "Remaining";
+    if (lower === "equal") return "Equal";
+    return raw;
+  }
+  function budgetSplitPolicyAllowed(contract, kind) {
+    const canonicalKind = canonicalBudgetSplitPolicyKind(kind);
+    if (!canonicalKind) return false;
+    const policies = Array.isArray(contract?.mob_definition?.budget_split_policies) ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind) : [];
+    return policies.includes(canonicalKind);
+  }
+  function budgetSplitPolicyOptions(contract, currentKind, launchView = null) {
+    const view = launchViewForState(launchView);
+    const contractPolicies = Array.isArray(contract?.mob_definition?.budget_split_policies) && contract.mob_definition.budget_split_policies.length ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind) : [];
+    const policies = [...contractPolicies];
+    const currentSource = currentKind || contractDefaultValue(contract, "budget_split_policy");
+    const current = currentSource ? canonicalBudgetSplitPolicyKind(currentSource) : "";
+    if (current && !policies.includes(current)) policies.push(current);
+    return policies.map((policy) => {
+      const supported = contractPolicies.includes(policy);
+      return {
+        value: policy,
+        label: launchOptionLabel(view.budgetSplitPolicyLabels, policy, view, view.budgetSplitPoliciesContractLabel),
+        disabled: !supported,
+        reason: supported ? "" : launchUnsupportedReason(view, view.budgetSplitPoliciesContractLabel)
+      };
+    });
+  }
+  function mobKitBudgetSplitPolicy(policy) {
+    const normalized = normalizeBudgetSplitPolicy(policy);
+    if (!normalized) return null;
+    if (normalized.kind === "Fixed") return { type: "fixed", value: normalized.limit || 4096 };
+    return { type: normalized.kind.replace(/[A-Z]/g, (ch, index) => `${index ? "_" : ""}${ch.toLowerCase()}`) };
+  }
+  function launchModesFromFlow(flow, members) {
+    const out = [];
+    collectVisualSteps(flow?.steps || [], (step) => {
+      if (step.type !== "member") return;
+      const member = findMember(members, step.role);
+      const launchMode = launchModeFromAuthoringSource(step);
+      const row = {
+        step_id: step.id,
+        member_id: step.role || "",
+        profile: profileName(member || { id: step.role }),
+        launch_mode: launchMode
+      };
+      if (launchMode?.budgetSplitPolicy) {
+        const budgetSplitPolicy = mobKitBudgetSplitPolicy(launchMode.budgetSplitPolicy);
+        if (budgetSplitPolicy) row.budget_split_policy = budgetSplitPolicy;
+      }
+      out.push(row);
+    });
+    return out;
+  }
+  function conditionTextFromEdge(edge, fallback) {
+    if (!edge) return fallback;
+    const condition = normalizedEdgeCondition(edge);
+    if (condition?.path) {
+      if (condition.val === void 0 || condition.val === null || String(condition.val).trim() === "") return fallback;
+      const value = condition.val;
+      if (!condition.op) return fallback;
+      return `${condition.path} ${condition.op} ${JSON.stringify(value)}`;
+    }
+    return edge.label || fallback;
+  }
+  function edgeConditionToEditorCond(edge) {
+    const condition = normalizedEdgeCondition(edge);
+    const rawVar = String(condition?.path || "").trim();
+    const op = String(condition?.op || "").trim();
+    const val = condition?.val === void 0 || condition?.val === null ? "" : String(condition.val);
+    if (!rawVar || !op || !val) return null;
+    const parts = rawVar.split(".").filter(Boolean);
+    if (parts.length === 2 && parts[0] === "params") {
+      return {
+        namespace: "params",
+        stepId: "params",
+        field: parts[1],
+        op,
+        val
+      };
+    }
+    if (parts.length === 3 && parts[0] === "steps") {
+      return {
+        namespace: "steps",
+        stepId: parts[1],
+        field: parts[2],
+        op,
+        val
+      };
+    }
+    return null;
+  }
+  function repeatConditionFromEdge(edge, stepId) {
+    const condition = normalizedEdgeCondition(edge);
+    if (condition?.path) {
+      const parts = String(condition.path).split(".").filter(Boolean);
+      const field = parts.pop() || "";
+      const op = String(condition.op || "").trim();
+      const val = condition.val === void 0 || condition.val === null ? "" : String(condition.val).trim();
+      if (!field || !op || !val) return null;
+      return { stepId, field, op, val };
+    }
+    const label = String(edge?.label || "");
+    const match = /([A-Za-z0-9_.-]+)\s*(==|>|<)\s*['"]?([^'"]+)['"]?/.exec(label);
+    if (match) {
+      return { stepId, field: match[1].split(".").pop(), op: match[2], val: match[3] };
+    }
+    return null;
+  }
+  function normalizedEdgeCondition(edge) {
+    const cond = edge?.cond || {};
+    const op = String(cond.op || cond.operator || "").trim();
+    const val = cond.val ?? cond.value;
+    if (cond.var || cond.path || cond.source) {
+      return {
+        path: String(cond.var || cond.path || cond.source || "").trim(),
+        op,
+        val
+      };
+    }
+    const namespace = String(cond.namespace || "").trim();
+    const stepId = String(cond.stepId || cond.step_id || "").trim();
+    const field = String(cond.field || "").trim();
+    if (field && (namespace === "params" || stepId === "params")) {
+      return { path: `params.${field}`, op, val };
+    }
+    if (field && stepId) {
+      return { path: `steps.${stepId}.${field}`, op, val };
+    }
+    return null;
+  }
+  function collectVisualSteps(steps, visit) {
+    for (const step of steps || []) {
+      visit(step);
+      for (const lane of childLanes(step)) collectVisualSteps(lane.steps, visit);
+    }
   }
 
-  // ../packages/flow-editor-core/src/editors/basic-editor.ts
-  function basicBranchDefaultLabel(index, basicView = null) {
+  // ../packages/flow-editor-core/src/schema/field-edit.ts
+  function conditionViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_condition_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      emptyValueLabel: String(view.empty_value_label || "").trim(),
+      textValuePlaceholder: String(view.text_value_placeholder || "").trim()
+    };
+    return Object.values(out).every(Boolean) ? out : null;
+  }
+  function conditionViewForState(conditionView) {
+    const view = conditionView && typeof conditionView === "object" ? conditionView : null;
+    return {
+      emptyValueLabel: String(view?.emptyValueLabel || ""),
+      textValuePlaceholder: String(view?.textValuePlaceholder || "")
+    };
+  }
+  function errorViewFromSchema(schema) {
+    const view = schema?.mob_definition?.editor_error_view;
+    if (!view || typeof view !== "object") return null;
+    const out = {
+      criticalGlyph: String(view.critical_glyph || "").trim(),
+      genericErrorHead: String(view.generic_error_head || "").trim(),
+      deployFailedHead: String(view.deploy_failed_head || "").trim(),
+      deployPlanFailedHead: String(view.deploy_plan_failed_head || "").trim(),
+      deployErrorMeta: String(view.deploy_error_meta || "").trim(),
+      sourceFailedHead: String(view.source_failed_head || "").trim(),
+      sourceErrorMeta: String(view.source_error_meta || "").trim(),
+      validationApiFailedHead: String(view.validation_api_failed_head || "").trim(),
+      rpcErrorMeta: String(view.rpc_error_meta || "").trim(),
+      authoringOperationFailedHead: String(view.authoring_operation_failed_head || "").trim(),
+      authoringOperationMeta: String(view.authoring_operation_meta || "").trim(),
+      authoringOperationFallbackHeads: viewStringMapFromSchema(view.authoring_operation_fallback_heads),
+      authoringOperationStaleError: String(view.authoring_operation_stale_error || "").trim(),
+      authoringOperationMissingDocumentError: String(view.authoring_operation_missing_document_error || "").trim(),
+      exportFailedHead: String(view.export_failed_head || "").trim(),
+      importFailedHead: String(view.import_failed_head || "").trim(),
+      missingEditorFlowHead: String(view.missing_editor_flow_head || "").trim(),
+      missingEditorFlowSub: String(view.missing_editor_flow_sub || "").trim(),
+      missingEditorFlowMeta: String(view.missing_editor_flow_meta || "").trim()
+    };
+    return Object.values(out).every(Boolean) ? out : null;
+  }
+  function errorViewForState(errorView) {
+    const view = errorView && typeof errorView === "object" ? errorView : null;
+    return {
+      criticalGlyph: String(view?.criticalGlyph || ""),
+      genericErrorHead: String(view?.genericErrorHead || ""),
+      deployFailedHead: String(view?.deployFailedHead || ""),
+      deployPlanFailedHead: String(view?.deployPlanFailedHead || ""),
+      deployErrorMeta: String(view?.deployErrorMeta || ""),
+      sourceFailedHead: String(view?.sourceFailedHead || ""),
+      sourceErrorMeta: String(view?.sourceErrorMeta || ""),
+      validationApiFailedHead: String(view?.validationApiFailedHead || ""),
+      rpcErrorMeta: String(view?.rpcErrorMeta || ""),
+      authoringOperationFailedHead: String(view?.authoringOperationFailedHead || ""),
+      authoringOperationMeta: String(view?.authoringOperationMeta || ""),
+      authoringOperationFallbackHeads: view?.authoringOperationFallbackHeads && typeof view.authoringOperationFallbackHeads === "object" ? view.authoringOperationFallbackHeads : {},
+      authoringOperationStaleError: String(view?.authoringOperationStaleError || ""),
+      authoringOperationMissingDocumentError: String(view?.authoringOperationMissingDocumentError || ""),
+      exportFailedHead: String(view?.exportFailedHead || ""),
+      importFailedHead: String(view?.importFailedHead || ""),
+      missingEditorFlowHead: String(view?.missingEditorFlowHead || ""),
+      missingEditorFlowSub: String(view?.missingEditorFlowSub || ""),
+      missingEditorFlowMeta: String(view?.missingEditorFlowMeta || "")
+    };
+  }
+  function conditionValueControl(field, rawValue = "", conditionView = null) {
+    const view = conditionViewForState(conditionView);
+    const type = String(field?.type || "").trim();
+    const value = rawValue == null ? "" : String(rawValue);
+    const optionRows = (values) => [
+      { value: "", label: view.emptyValueLabel },
+      ...values.map((candidate) => ({ value: candidate, label: candidate }))
+    ];
+    if (type === "enum" && Array.isArray(field?.enumValues) && field.enumValues.length) {
+      const values = field.enumValues.map(String);
+      return { kind: "enum", values, value, optionRows: optionRows(values), placeholder: "" };
+    }
+    if (type === "boolean" || type === "bool") {
+      const values = ["true", "false"];
+      return { kind: "boolean", values, value, optionRows: optionRows(values), placeholder: "" };
+    }
+    return { kind: "text", values: [], value, optionRows: [], placeholder: view.textValuePlaceholder };
+  }
+  function inputParamName(raw, fallback = "field") {
+    return String(raw || fallback).trim().replace(/[^A-Za-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").replace(/^[0-9]/, "_$&") || fallback;
+  }
+  function uniqueInputParamName(params, raw, currentId = null, fallback = "param") {
+    const base = inputParamName(raw, fallback);
+    const taken = new Set((params || []).filter((param) => param?.id !== currentId).map((param) => String(param?.name || "").trim()).filter(Boolean));
+    if (!taken.has(base)) return base;
+    let i = 2;
+    while (taken.has(`${base}_${i}`)) i += 1;
+    return `${base}_${i}`;
+  }
+  function schemaFieldName(raw, fallback = "field") {
+    return inputParamName(raw, fallback);
+  }
+  function uniqueSchemaFieldName(fields, raw, currentId = null, fallback = "field") {
+    const base = schemaFieldName(raw, fallback);
+    const taken = new Set((fields || []).filter((field) => field?.id !== currentId).map((field) => String(field?.name || "").trim()).filter(Boolean));
+    if (!taken.has(base)) return base;
+    let i = 2;
+    while (taken.has(`${base}_${i}`)) i += 1;
+    return `${base}_${i}`;
+  }
+  function schemaDescriptionPatch(rawDescription) {
+    return { description: String(rawDescription || "") };
+  }
+  function enumValuesForField(field) {
+    return Array.isArray(field?.enumValues) ? field.enumValues : [];
+  }
+  function uniqueEnumValue(values, raw, index = null) {
+    const base = String(raw || "value").trim() || "value";
+    const taken = new Set((Array.isArray(values) ? values : []).filter((_, i2) => i2 !== index).map((value) => String(value || "").trim()).filter(Boolean));
+    if (!taken.has(base)) return base;
+    let i = 2;
+    while (taken.has(`${base}_${i}`)) i += 1;
+    return `${base}_${i}`;
+  }
+  function schemaFieldTypeAllowedSet(contract) {
+    return new Set(contractStringValues(contract?.mob_definition?.editor_schema_field_types));
+  }
+  function schemaLikeFieldTypePatch(field, rawType, contract) {
+    const type = String(rawType || "").trim();
+    const allowedTypes = schemaFieldTypeAllowedSet(contract);
+    if (!type || !allowedTypes.has(type)) {
+      return {};
+    }
+    const values = enumValuesForField(field);
+    return {
+      type,
+      enumValues: type === "enum" ? values.length ? values : ["value"] : []
+    };
+  }
+  function schemaLikeFieldRequiredPatch(rawValue) {
+    return { required: !!rawValue };
+  }
+  function schemaLikeFieldDescriptionPatch(rawValue) {
+    return { description: String(rawValue ?? "") };
+  }
+  function normalizeSchemaLikeFieldPatch(current, patch = {}, contract) {
+    const source = current && typeof current === "object" ? current : {};
+    const rawPatch = patch && typeof patch === "object" ? patch : {};
+    let nextPatch = { ...rawPatch };
+    if ("type" in nextPatch) {
+      const typePatch = schemaLikeFieldTypePatch(source, nextPatch.type, contract);
+      delete nextPatch.type;
+      delete nextPatch.enumValues;
+      nextPatch = { ...nextPatch, ...typePatch };
+    }
+    if ("enumValues" in nextPatch) {
+      const type = String(nextPatch.type || source.type || "").trim();
+      nextPatch.enumValues = type === "enum" ? enumValuesForField(nextPatch).map((value) => String(value || "").trim()).filter(Boolean) : [];
+    }
+    return nextPatch;
+  }
+  function schemaLikeFieldTypeControlState(field, contract) {
+    const defaultType = contractDefaultValue(contract, "schema_field_type");
+    const type = String(field?.type || defaultType || "").trim();
+    const typeOptions = schemaFieldTypeOptions(contract, type);
+    return {
+      type,
+      typeOptions,
+      selectedType: typeOptions.find((option) => option.value === type) || null
+    };
+  }
+  function schemaFieldRowControlState(field, contract, schemaView = null, overrides = {}) {
+    const view = schemaViewForState(schemaView);
+    const typeState = schemaLikeFieldTypeControlState(field, contract);
+    return {
+      namePlaceholder: overrides.namePlaceholder || view.fieldNamePlaceholder,
+      descriptionPlaceholder: overrides.descriptionPlaceholder || view.fieldDescriptionPlaceholder,
+      removeTitle: overrides.removeTitle || view.fieldRemoveTitle,
+      enumLabel: overrides.enumLabel || view.fieldEnumLabel,
+      enumAddLabel: overrides.enumAddLabel || view.fieldEnumAddLabel,
+      enumAddValue: overrides.enumAddValue || view.fieldEnumAddValue,
+      enumValues: enumValuesForField(field),
+      typeState
+    };
+  }
+  function inputParamFieldControlState(param, contract, basicView = null) {
     const view = basicEditorViewState(basicView);
-    const prefix = view.branchConditionRowTitlePrefix;
-    return [prefix, String(index || 1)].filter(Boolean).join(" ");
+    return schemaFieldRowControlState(param, contract, null, {
+      namePlaceholder: view.inputParamNamePlaceholder,
+      descriptionPlaceholder: view.inputParamDescriptionPlaceholder,
+      removeTitle: view.inputParamRemoveTitle,
+      enumLabel: view.inputParamEnumLabel,
+      enumAddLabel: view.inputParamEnumAddLabel,
+      enumAddValue: view.inputParamEnumAddValue
+    });
+  }
+  function enumValueDraftPatch(field, index, rawValue) {
+    const values = enumValuesForField(field);
+    const i = Number(index);
+    if (!Number.isInteger(i) || i < 0 || i >= values.length) return { enumValues: values };
+    const next = [...values];
+    next[i] = String(rawValue ?? "");
+    return { enumValues: next };
+  }
+  function enumValueCommitPatch(field, index, rawValue) {
+    const values = enumValuesForField(field);
+    const i = Number(index);
+    if (!Number.isInteger(i) || i < 0 || i >= values.length) return { enumValues: values };
+    const next = [...values];
+    next[i] = uniqueEnumValue(values, rawValue, i);
+    return { enumValues: next };
+  }
+  function enumValueDeletePatch(field, index) {
+    const values = enumValuesForField(field);
+    const i = Number(index);
+    if (!Number.isInteger(i) || i < 0 || i >= values.length) return { enumValues: values };
+    return { enumValues: values.filter((_, j) => j !== i) };
+  }
+  function enumValueAddPatch(field, rawValue = "value") {
+    const values = enumValuesForField(field);
+    return { enumValues: [...values, uniqueEnumValue(values, rawValue)] };
+  }
+  function schemaFieldUpdatePatch(schema, fieldId, patch = {}, contract) {
+    const fields = Array.isArray(schema?.fields) ? schema.fields : [];
+    const current = fields.find((field) => field?.id === fieldId) || null;
+    if (!current) return { fields };
+    const normalized = normalizeSchemaLikeFieldPatch(current, patch, contract);
+    if (Object.prototype.hasOwnProperty.call(normalized, "name")) {
+      normalized.name = uniqueSchemaFieldName(fields, normalized.name, fieldId, editorSchemaFieldNameFallback(contract));
+    }
+    return { fields: fields.map((field) => field?.id === fieldId ? { ...field, ...normalized } : field) };
+  }
+  function schemaFieldUpdateCascadePatch({ schema, schemas, flow, edges, members, instances } = {}, fieldId, patch = {}, contract) {
+    const currentSchemaId = String(schema?.id || "").trim();
+    const updatePatch = schemaFieldUpdatePatch(schema, fieldId, patch, contract);
+    const nextSchema = { ...schema || {}, ...updatePatch };
+    const list = Array.isArray(schemas) ? schemas : [];
+    const nextSchemas = currentSchemaId ? list.map((candidate) => candidate?.id === currentSchemaId ? nextSchema : candidate) : list;
+    const reconciled = reconcileConditionFieldAvailability({
+      flow,
+      edges,
+      members,
+      instances,
+      schemas: nextSchemas
+    });
+    return {
+      patch: updatePatch,
+      schema: nextSchema,
+      schemas: nextSchemas,
+      flow: reconciled.flow,
+      edges: reconciled.edges
+    };
+  }
+  function schemaFieldRenameCascadePatch({ schema, schemas, flow, edges, members, instances } = {}, fieldId, rawName, oldName, contract) {
+    const currentSchemaId = String(schema?.id || "").trim();
+    const updatePatch = schemaFieldUpdatePatch(schema, fieldId, { name: rawName }, contract);
+    const nextSchema = { ...schema || {}, ...updatePatch };
+    const list = Array.isArray(schemas) ? schemas : [];
+    const nextSchemas = currentSchemaId ? list.map((candidate) => candidate?.id === currentSchemaId ? nextSchema : candidate) : list;
+    const nextField = (nextSchema.fields || []).find((field) => field?.id === fieldId) || null;
+    const previousName = String(oldName || "").trim();
+    const nextName = String(nextField?.name || "").trim();
+    const reconciled = previousName && previousName !== nextName ? reconcileSchemaFieldReferences({
+      flow,
+      edges,
+      members,
+      instances,
+      schemaId: currentSchemaId,
+      oldName: previousName,
+      newName: nextName
+    }) : { flow, edges };
+    return {
+      patch: updatePatch,
+      schema: nextSchema,
+      schemas: nextSchemas,
+      flow: reconciled.flow,
+      edges: reconciled.edges
+    };
+  }
+  function schemaFieldDeletePatch(schema, fieldId) {
+    const fields = Array.isArray(schema?.fields) ? schema.fields : [];
+    const removed = fields.find((field) => field?.id === fieldId) || null;
+    return { removed, patch: { fields: fields.filter((field) => field?.id !== fieldId) } };
+  }
+  function schemaFieldDeleteCascadePatch({ schema, schemas, flow, edges, members, instances } = {}, fieldId) {
+    const deleteResult = schemaFieldDeletePatch(schema, fieldId);
+    const currentSchemaId = String(schema?.id || "").trim();
+    if (!currentSchemaId) {
+      return {
+        removed: deleteResult.removed,
+        patch: deleteResult.patch,
+        schemas: Array.isArray(schemas) ? schemas : [],
+        flow,
+        edges
+      };
+    }
+    const list = Array.isArray(schemas) ? schemas : [];
+    const nextSchema = { ...schema || {}, ...deleteResult.patch };
+    const nextSchemas = list.map((candidate) => candidate?.id === currentSchemaId ? nextSchema : candidate);
+    const removedName = String(deleteResult.removed?.name || "").trim();
+    const reconciled = removedName ? reconcileSchemaFieldReferences({
+      flow,
+      edges,
+      members,
+      instances,
+      schemaId: currentSchemaId,
+      oldName: removedName,
+      newName: ""
+    }) : { flow, edges };
+    return {
+      removed: deleteResult.removed,
+      patch: deleteResult.patch,
+      schema: nextSchema,
+      schemas: nextSchemas,
+      flow: reconciled.flow,
+      edges: reconciled.edges
+    };
   }
 
   // ../packages/flow-editor-core/src/shared/constants.ts
@@ -2048,6 +2535,11 @@ var MobKitFlowCore = (() => {
   var MOB_SETTINGS_PATCH_KEYS = new Set(Object.keys(EMPTY_MOB_SETTINGS));
   var GRAPH_NODE_W = 200;
   var GRAPH_NODE_H = 156;
+
+  // ../packages/flow-editor-core/src/_residue-bridge.ts
+  function deploySettingsForUi(deploy) {
+    return window.MobKitFlowController.deploySettingsForUi(deploy);
+  }
 
   // ../packages/flow-editor-core/src/flow/reconcile.ts
   function reconcileDeletedFlowStepReferences(flow, deletedId) {
@@ -3259,320 +3751,307 @@ var MobKitFlowCore = (() => {
     return step;
   }
 
-  // ../packages/flow-editor-core/src/schema/field-edit.ts
-  function conditionViewFromSchema(schema) {
-    const view = schema?.mob_definition?.editor_condition_view;
-    if (!view || typeof view !== "object") return null;
-    const out = {
-      emptyValueLabel: String(view.empty_value_label || "").trim(),
-      textValuePlaceholder: String(view.text_value_placeholder || "").trim()
-    };
-    return Object.values(out).every(Boolean) ? out : null;
-  }
-  function conditionViewForState(conditionView) {
-    const view = conditionView && typeof conditionView === "object" ? conditionView : null;
-    return {
-      emptyValueLabel: String(view?.emptyValueLabel || ""),
-      textValuePlaceholder: String(view?.textValuePlaceholder || "")
-    };
-  }
-  function errorViewFromSchema(schema) {
-    const view = schema?.mob_definition?.editor_error_view;
-    if (!view || typeof view !== "object") return null;
-    const out = {
-      criticalGlyph: String(view.critical_glyph || "").trim(),
-      genericErrorHead: String(view.generic_error_head || "").trim(),
-      deployFailedHead: String(view.deploy_failed_head || "").trim(),
-      deployPlanFailedHead: String(view.deploy_plan_failed_head || "").trim(),
-      deployErrorMeta: String(view.deploy_error_meta || "").trim(),
-      sourceFailedHead: String(view.source_failed_head || "").trim(),
-      sourceErrorMeta: String(view.source_error_meta || "").trim(),
-      validationApiFailedHead: String(view.validation_api_failed_head || "").trim(),
-      rpcErrorMeta: String(view.rpc_error_meta || "").trim(),
-      authoringOperationFailedHead: String(view.authoring_operation_failed_head || "").trim(),
-      authoringOperationMeta: String(view.authoring_operation_meta || "").trim(),
-      authoringOperationFallbackHeads: viewStringMapFromSchema(view.authoring_operation_fallback_heads),
-      authoringOperationStaleError: String(view.authoring_operation_stale_error || "").trim(),
-      authoringOperationMissingDocumentError: String(view.authoring_operation_missing_document_error || "").trim(),
-      exportFailedHead: String(view.export_failed_head || "").trim(),
-      importFailedHead: String(view.import_failed_head || "").trim(),
-      missingEditorFlowHead: String(view.missing_editor_flow_head || "").trim(),
-      missingEditorFlowSub: String(view.missing_editor_flow_sub || "").trim(),
-      missingEditorFlowMeta: String(view.missing_editor_flow_meta || "").trim()
-    };
-    return Object.values(out).every(Boolean) ? out : null;
-  }
-  function errorViewForState(errorView) {
-    const view = errorView && typeof errorView === "object" ? errorView : null;
-    return {
-      criticalGlyph: String(view?.criticalGlyph || ""),
-      genericErrorHead: String(view?.genericErrorHead || ""),
-      deployFailedHead: String(view?.deployFailedHead || ""),
-      deployPlanFailedHead: String(view?.deployPlanFailedHead || ""),
-      deployErrorMeta: String(view?.deployErrorMeta || ""),
-      sourceFailedHead: String(view?.sourceFailedHead || ""),
-      sourceErrorMeta: String(view?.sourceErrorMeta || ""),
-      validationApiFailedHead: String(view?.validationApiFailedHead || ""),
-      rpcErrorMeta: String(view?.rpcErrorMeta || ""),
-      authoringOperationFailedHead: String(view?.authoringOperationFailedHead || ""),
-      authoringOperationMeta: String(view?.authoringOperationMeta || ""),
-      authoringOperationFallbackHeads: view?.authoringOperationFallbackHeads && typeof view.authoringOperationFallbackHeads === "object" ? view.authoringOperationFallbackHeads : {},
-      authoringOperationStaleError: String(view?.authoringOperationStaleError || ""),
-      authoringOperationMissingDocumentError: String(view?.authoringOperationMissingDocumentError || ""),
-      exportFailedHead: String(view?.exportFailedHead || ""),
-      importFailedHead: String(view?.importFailedHead || ""),
-      missingEditorFlowHead: String(view?.missingEditorFlowHead || ""),
-      missingEditorFlowSub: String(view?.missingEditorFlowSub || ""),
-      missingEditorFlowMeta: String(view?.missingEditorFlowMeta || "")
-    };
-  }
-  function conditionValueControl(field, rawValue = "", conditionView = null) {
-    const view = conditionViewForState(conditionView);
-    const type = String(field?.type || "").trim();
-    const value = rawValue == null ? "" : String(rawValue);
-    const optionRows = (values) => [
-      { value: "", label: view.emptyValueLabel },
-      ...values.map((candidate) => ({ value: candidate, label: candidate }))
-    ];
-    if (type === "enum" && Array.isArray(field?.enumValues) && field.enumValues.length) {
-      const values = field.enumValues.map(String);
-      return { kind: "enum", values, value, optionRows: optionRows(values), placeholder: "" };
+  // ../packages/flow-editor-core/src/flow/step-tree.ts
+  function childLanes(step) {
+    if (!step) return [];
+    if (step.type === "repeat") return [{ id: "body", steps: step.steps || [] }];
+    if (step.type === "branch") {
+      return [
+        ...(step.branches || []).map((branch) => ({ id: branch.id, steps: branch.steps || [] })),
+        { id: "fallback", steps: step.fallback || [] }
+      ];
     }
-    if (type === "boolean" || type === "bool") {
-      const values = ["true", "false"];
-      return { kind: "boolean", values, value, optionRows: optionRows(values), placeholder: "" };
+    if (step.type === "parallel") {
+      return (step.branches || []).map((branch) => ({ id: branch.id, steps: branch.steps || [] }));
     }
-    return { kind: "text", values: [], value, optionRows: [], placeholder: view.textValuePlaceholder };
+    return [];
   }
-  function inputParamName(raw, fallback = "field") {
-    return String(raw || fallback).trim().replace(/[^A-Za-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").replace(/^[0-9]/, "_$&") || fallback;
-  }
-  function uniqueInputParamName(params, raw, currentId = null, fallback = "param") {
-    const base = inputParamName(raw, fallback);
-    const taken = new Set((params || []).filter((param) => param?.id !== currentId).map((param) => String(param?.name || "").trim()).filter(Boolean));
-    if (!taken.has(base)) return base;
-    let i = 2;
-    while (taken.has(`${base}_${i}`)) i += 1;
-    return `${base}_${i}`;
-  }
-  function schemaFieldName(raw, fallback = "field") {
-    return inputParamName(raw, fallback);
-  }
-  function uniqueSchemaFieldName(fields, raw, currentId = null, fallback = "field") {
-    const base = schemaFieldName(raw, fallback);
-    const taken = new Set((fields || []).filter((field) => field?.id !== currentId).map((field) => String(field?.name || "").trim()).filter(Boolean));
-    if (!taken.has(base)) return base;
-    let i = 2;
-    while (taken.has(`${base}_${i}`)) i += 1;
-    return `${base}_${i}`;
-  }
-  function schemaDescriptionPatch(rawDescription) {
-    return { description: String(rawDescription || "") };
-  }
-  function enumValuesForField(field) {
-    return Array.isArray(field?.enumValues) ? field.enumValues : [];
-  }
-  function uniqueEnumValue(values, raw, index = null) {
-    const base = String(raw || "value").trim() || "value";
-    const taken = new Set((Array.isArray(values) ? values : []).filter((_, i2) => i2 !== index).map((value) => String(value || "").trim()).filter(Boolean));
-    if (!taken.has(base)) return base;
-    let i = 2;
-    while (taken.has(`${base}_${i}`)) i += 1;
-    return `${base}_${i}`;
-  }
-  function schemaFieldTypeAllowedSet(contract) {
-    return new Set(contractStringValues(contract?.mob_definition?.editor_schema_field_types));
-  }
-  function schemaLikeFieldTypePatch(field, rawType, contract) {
-    const type = String(rawType || "").trim();
-    const allowedTypes = schemaFieldTypeAllowedSet(contract);
-    if (!type || !allowedTypes.has(type)) {
-      return {};
+  function collectFlowMemberSteps(steps, out = []) {
+    for (const step of steps || []) {
+      if (step?.type === "member") out.push(step);
+      for (const lane of childLanes(step || {})) collectFlowMemberSteps(lane.steps, out);
     }
-    const values = enumValuesForField(field);
-    return {
-      type,
-      enumValues: type === "enum" ? values.length ? values : ["value"] : []
-    };
+    return out;
   }
-  function schemaLikeFieldRequiredPatch(rawValue) {
-    return { required: !!rawValue };
-  }
-  function schemaLikeFieldDescriptionPatch(rawValue) {
-    return { description: String(rawValue ?? "") };
-  }
-  function normalizeSchemaLikeFieldPatch(current, patch = {}, contract) {
-    const source = current && typeof current === "object" ? current : {};
-    const rawPatch = patch && typeof patch === "object" ? patch : {};
-    let nextPatch = { ...rawPatch };
-    if ("type" in nextPatch) {
-      const typePatch = schemaLikeFieldTypePatch(source, nextPatch.type, contract);
-      delete nextPatch.type;
-      delete nextPatch.enumValues;
-      nextPatch = { ...nextPatch, ...typePatch };
-    }
-    if ("enumValues" in nextPatch) {
-      const type = String(nextPatch.type || source.type || "").trim();
-      nextPatch.enumValues = type === "enum" ? enumValuesForField(nextPatch).map((value) => String(value || "").trim()).filter(Boolean) : [];
-    }
-    return nextPatch;
-  }
-  function schemaLikeFieldTypeControlState(field, contract) {
-    const defaultType = contractDefaultValue(contract, "schema_field_type");
-    const type = String(field?.type || defaultType || "").trim();
-    const typeOptions = schemaFieldTypeOptions(contract, type);
-    return {
-      type,
-      typeOptions,
-      selectedType: typeOptions.find((option) => option.value === type) || null
-    };
-  }
-  function schemaFieldRowControlState(field, contract, schemaView = null, overrides = {}) {
-    const view = schemaViewForState(schemaView);
-    const typeState = schemaLikeFieldTypeControlState(field, contract);
-    return {
-      namePlaceholder: overrides.namePlaceholder || view.fieldNamePlaceholder,
-      descriptionPlaceholder: overrides.descriptionPlaceholder || view.fieldDescriptionPlaceholder,
-      removeTitle: overrides.removeTitle || view.fieldRemoveTitle,
-      enumLabel: overrides.enumLabel || view.fieldEnumLabel,
-      enumAddLabel: overrides.enumAddLabel || view.fieldEnumAddLabel,
-      enumAddValue: overrides.enumAddValue || view.fieldEnumAddValue,
-      enumValues: enumValuesForField(field),
-      typeState
-    };
-  }
-  function inputParamFieldControlState(param, contract, basicView = null) {
-    const view = basicEditorViewState(basicView);
-    return schemaFieldRowControlState(param, contract, null, {
-      namePlaceholder: view.inputParamNamePlaceholder,
-      descriptionPlaceholder: view.inputParamDescriptionPlaceholder,
-      removeTitle: view.inputParamRemoveTitle,
-      enumLabel: view.inputParamEnumLabel,
-      enumAddLabel: view.inputParamEnumAddLabel,
-      enumAddValue: view.inputParamEnumAddValue
+  function flowStepUpdatePatch(flow, id, patch = {}, options = {}) {
+    let accepted = false;
+    const steps = flowStepMap(flow?.steps || [], id, (step) => {
+      const nextStep = { ...step, ...patch && typeof patch === "object" ? patch : {} };
+      const validation = flowStepValidation(nextStep, { flow, members: options.members, currentId: step.id });
+      if (!validation.ok) return step;
+      accepted = true;
+      return nextStep;
     });
+    if (!accepted) return flow || {};
+    return { ...flow || {}, steps };
   }
-  function enumValueDraftPatch(field, index, rawValue) {
-    const values = enumValuesForField(field);
-    const i = Number(index);
-    if (!Number.isInteger(i) || i < 0 || i >= values.length) return { enumValues: values };
-    const next = [...values];
-    next[i] = String(rawValue ?? "");
-    return { enumValues: next };
+  function flowStepInsertPatch(flow, laneRef, newStep, options = {}) {
+    const validation = flowStepValidation(newStep, { flow, members: options.members });
+    if (!validation.ok) return flow || {};
+    const steps = flowStepInsertIntoLane(flow?.steps || [], laneRef || {}, newStep);
+    return { ...flow || {}, steps };
   }
-  function enumValueCommitPatch(field, index, rawValue) {
-    const values = enumValuesForField(field);
-    const i = Number(index);
-    if (!Number.isInteger(i) || i < 0 || i >= values.length) return { enumValues: values };
-    const next = [...values];
-    next[i] = uniqueEnumValue(values, rawValue, i);
-    return { enumValues: next };
-  }
-  function enumValueDeletePatch(field, index) {
-    const values = enumValuesForField(field);
-    const i = Number(index);
-    if (!Number.isInteger(i) || i < 0 || i >= values.length) return { enumValues: values };
-    return { enumValues: values.filter((_, j) => j !== i) };
-  }
-  function enumValueAddPatch(field, rawValue = "value") {
-    const values = enumValuesForField(field);
-    return { enumValues: [...values, uniqueEnumValue(values, rawValue)] };
-  }
-  function schemaFieldUpdatePatch(schema, fieldId, patch = {}, contract) {
-    const fields = Array.isArray(schema?.fields) ? schema.fields : [];
-    const current = fields.find((field) => field?.id === fieldId) || null;
-    if (!current) return { fields };
-    const normalized = normalizeSchemaLikeFieldPatch(current, patch, contract);
-    if (Object.prototype.hasOwnProperty.call(normalized, "name")) {
-      normalized.name = uniqueSchemaFieldName(fields, normalized.name, fieldId, editorSchemaFieldNameFallback(contract));
-    }
-    return { fields: fields.map((field) => field?.id === fieldId ? { ...field, ...normalized } : field) };
-  }
-  function schemaFieldUpdateCascadePatch({ schema, schemas, flow, edges, members, instances } = {}, fieldId, patch = {}, contract) {
-    const currentSchemaId = String(schema?.id || "").trim();
-    const updatePatch = schemaFieldUpdatePatch(schema, fieldId, patch, contract);
-    const nextSchema = { ...schema || {}, ...updatePatch };
-    const list = Array.isArray(schemas) ? schemas : [];
-    const nextSchemas = currentSchemaId ? list.map((candidate) => candidate?.id === currentSchemaId ? nextSchema : candidate) : list;
-    const reconciled = reconcileConditionFieldAvailability({
-      flow,
-      edges,
-      members,
-      instances,
-      schemas: nextSchemas
-    });
-    return {
-      patch: updatePatch,
-      schema: nextSchema,
-      schemas: nextSchemas,
-      flow: reconciled.flow,
-      edges: reconciled.edges
-    };
-  }
-  function schemaFieldRenameCascadePatch({ schema, schemas, flow, edges, members, instances } = {}, fieldId, rawName, oldName, contract) {
-    const currentSchemaId = String(schema?.id || "").trim();
-    const updatePatch = schemaFieldUpdatePatch(schema, fieldId, { name: rawName }, contract);
-    const nextSchema = { ...schema || {}, ...updatePatch };
-    const list = Array.isArray(schemas) ? schemas : [];
-    const nextSchemas = currentSchemaId ? list.map((candidate) => candidate?.id === currentSchemaId ? nextSchema : candidate) : list;
-    const nextField = (nextSchema.fields || []).find((field) => field?.id === fieldId) || null;
-    const previousName = String(oldName || "").trim();
-    const nextName = String(nextField?.name || "").trim();
-    const reconciled = previousName && previousName !== nextName ? reconcileSchemaFieldReferences({
-      flow,
-      edges,
-      members,
-      instances,
-      schemaId: currentSchemaId,
-      oldName: previousName,
-      newName: nextName
-    }) : { flow, edges };
-    return {
-      patch: updatePatch,
-      schema: nextSchema,
-      schemas: nextSchemas,
-      flow: reconciled.flow,
-      edges: reconciled.edges
-    };
-  }
-  function schemaFieldDeletePatch(schema, fieldId) {
-    const fields = Array.isArray(schema?.fields) ? schema.fields : [];
-    const removed = fields.find((field) => field?.id === fieldId) || null;
-    return { removed, patch: { fields: fields.filter((field) => field?.id !== fieldId) } };
-  }
-  function schemaFieldDeleteCascadePatch({ schema, schemas, flow, edges, members, instances } = {}, fieldId) {
-    const deleteResult = schemaFieldDeletePatch(schema, fieldId);
-    const currentSchemaId = String(schema?.id || "").trim();
-    if (!currentSchemaId) {
+  function flowStepInsertTransition(flow, laneRef, newStep, options = {}) {
+    const validation = flowStepValidation(newStep, { flow, members: options.members });
+    if (!validation.ok) {
       return {
-        removed: deleteResult.removed,
-        patch: deleteResult.patch,
-        schemas: Array.isArray(schemas) ? schemas : [],
-        flow,
-        edges
+        ok: false,
+        error: validation.error || "",
+        flow: flow || {},
+        selection: null,
+        picker: { open: false }
       };
     }
-    const list = Array.isArray(schemas) ? schemas : [];
-    const nextSchema = { ...schema || {}, ...deleteResult.patch };
-    const nextSchemas = list.map((candidate) => candidate?.id === currentSchemaId ? nextSchema : candidate);
-    const removedName = String(deleteResult.removed?.name || "").trim();
-    const reconciled = removedName ? reconcileSchemaFieldReferences({
-      flow,
-      edges,
-      members,
-      instances,
-      schemaId: currentSchemaId,
-      oldName: removedName,
-      newName: ""
-    }) : { flow, edges };
     return {
-      removed: deleteResult.removed,
-      patch: deleteResult.patch,
-      schema: nextSchema,
-      schemas: nextSchemas,
-      flow: reconciled.flow,
-      edges: reconciled.edges
+      ok: true,
+      error: "",
+      flow: flowStepInsertPatch(flow, laneRef, newStep, options),
+      selection: newStep.id,
+      picker: { open: false }
     };
+  }
+  function flowStepDeletePatch(flow, id) {
+    const target = String(id || "").trim();
+    const steps = flowStepRemoveFromTree(flow?.steps || [], target);
+    const nextFlow = { ...flow || {}, steps };
+    return target ? reconcileDeletedFlowStepReferences(nextFlow, target) : nextFlow;
+  }
+  function flowStepDeleteTransition(flow, id) {
+    return {
+      flow: flowStepDeletePatch(flow, id),
+      selection: null,
+      picker: { open: false }
+    };
+  }
+  function basicStepPickerOpenTransition(laneRef) {
+    return { picker: { open: true, at: laneRef || null } };
+  }
+  function basicStepPickerCloseTransition() {
+    return { picker: { open: false } };
+  }
+  function basicCanvasClearTransition() {
+    return { selection: null, picker: { open: false } };
+  }
+  function basicStepSelectionTransition(id) {
+    const selection = String(id || "").trim() || null;
+    return { selection, picker: { open: false } };
+  }
+  function flowStepTaskPatch(rawTask) {
+    return { task: String(rawTask || "") };
+  }
+  function flowStepInstructionPatch(rawInstruction) {
+    return { instruction: String(rawInstruction || "") };
+  }
+  function flowStepQuorumPatch(rawValue) {
+    return { quorum: normalizePositiveInteger(rawValue) };
+  }
+  function flowStepTimeoutPatch(rawValue) {
+    return { timeoutMs: normalizePositiveInteger(rawValue) };
+  }
+  function flowStepMaxIterationsPatch(rawValue) {
+    return { maxIterations: normalizePositiveInteger(rawValue) };
+  }
+  function flowStepLoopIdPatch(rawLoopId) {
+    return { loopId: String(rawLoopId || "").trim() };
+  }
+  function flowStepRepeatConditionPatch(step, patch = {}) {
+    const currentCond = step?.cond && typeof step.cond === "object" && !Array.isArray(step.cond) ? step.cond : {};
+    return { cond: { ...currentCond, ...patch } };
+  }
+  function basicConditionSourcePatch(conditionOptions, rawStepId, options = {}) {
+    const stepId = String(rawStepId || "").trim();
+    const rows = Array.isArray(conditionOptions) ? conditionOptions : [];
+    if (stepId && !rows.some((candidate) => String(candidate?.stepId || "").trim() === stepId)) {
+      return {};
+    }
+    const selected = rows.find((candidate) => String(candidate?.stepId || "").trim() === stepId);
+    const patch = { stepId, field: "" };
+    if (options.includeNamespace) {
+      patch.namespace = String(selected?.namespace || options.defaultNamespace || "steps").trim();
+    }
+    return patch;
+  }
+  function basicConditionFieldPatch(rawField, fieldOptions) {
+    const field = String(rawField || "").trim();
+    const rows = Array.isArray(fieldOptions) ? fieldOptions : [];
+    if (rows.length && field && !rows.some((option) => String(option?.value || option?.field?.name || "").trim() === field)) {
+      return {};
+    }
+    return { field };
+  }
+  function basicConditionOperatorPatch(rawOperator, contract) {
+    const op = String(rawOperator || "").trim();
+    if (contract && op && !conditionOperatorOptions(contract, op).some((option) => option.value === op && !option.disabled)) {
+      return {};
+    }
+    return { op };
+  }
+  function basicConditionValuePatch(rawValue) {
+    return { val: rawValue ?? "" };
+  }
+  function flowStepIterationInputPatch(rawMode, contract) {
+    const iterationInput = String(rawMode || "").trim();
+    if (!optionValueAllowed(repeatIterationInputOptions(contract, iterationInput), iterationInput, { allowBlank: true })) return {};
+    return { iterationInput };
+  }
+  function memberRoleAllowed(members, rawRole) {
+    const role = String(rawRole || "").trim();
+    if (!role) return true;
+    return memberIdSet(members).has(role);
+  }
+  function flowStepControllerRolePatch(rawRole, members) {
+    const controllerRole = String(rawRole || "").trim();
+    return memberRoleAllowed(members, controllerRole) ? { controllerRole } : {};
+  }
+  function flowStepMemberRolePatch(rawRole, members) {
+    const role = String(rawRole || "").trim();
+    return memberRoleAllowed(members, role) ? { role } : {};
+  }
+  function flowStepDispatchModePatch(rawMode, contract) {
+    const mode = String(rawMode || "").trim();
+    return dispatchModeAllowed(contract, mode) ? { dispatchMode: mode } : {};
+  }
+  function flowStepParallelDispatchPatch(rawMode, contract) {
+    const mode = String(rawMode || "").trim();
+    return dispatchModeAllowed(contract, mode) ? { dispatch: mode } : {};
+  }
+  function flowStepCollectionPatch(rawPolicy, contract) {
+    const policy = String(rawPolicy || "").trim();
+    return collectionPolicyAllowed(contract, policy) ? { collection: policy } : {};
+  }
+  function flowStepDependencyModePatch(rawMode, contract) {
+    const mode = String(rawMode || "").trim();
+    return dependencyModeAllowed(contract, mode) ? { dependsMode: mode } : {};
+  }
+  function flowStepOutputFormatPatch(rawFormat, contract) {
+    const format = normalizeOutputFormat(rawFormat);
+    return outputFormatAllowed(contract, format) ? { outputFormat: format } : {};
+  }
+  function flowStepAllowedToolsPatch(tools, options = {}) {
+    return { allowedTools: normalizeStepToolScopeList(tools, { ...options, mode: "member" }) };
+  }
+  function flowStepBlockedToolsPatch(tools, options = {}) {
+    return { blockedTools: normalizeStepToolScopeList(tools, { ...options, mode: "catalog" }) };
+  }
+  function flowStepValidation(step, { flow, members, currentId = "" } = {}) {
+    if (!step || typeof step !== "object") return { ok: false, error: "flow step must be an object" };
+    const id = String(step.id || "").trim();
+    if (!id) return { ok: false, error: "flow step must include id" };
+    const target = String(currentId || "").trim();
+    const ids = collectFlowStepIds(flow?.steps || []);
+    if (ids.has(id) && (!target || id !== target)) {
+      return { ok: false, error: "flow step id already exists" };
+    }
+    if (target && id !== target) {
+      return { ok: false, error: "flow step id changes must use projection reconciliation" };
+    }
+    if (step.type === "member") {
+      const role = String(step.role || "").trim();
+      if (!role) return { ok: false, error: "member flow step must reference a member" };
+      if (Array.isArray(members) && !memberIdSet(members).has(role)) {
+        return { ok: false, error: "member flow step must reference an existing member" };
+      }
+    }
+    return { ok: true, error: "" };
+  }
+  function collectFlowStepIds(steps, out = /* @__PURE__ */ new Set()) {
+    for (const step of steps || []) {
+      const id = String(step?.id || "").trim();
+      if (id) out.add(id);
+      for (const lane of childLanes(step || {})) collectFlowStepIds(lane.steps, out);
+    }
+    return out;
+  }
+  function flowStepById(steps, id) {
+    const target = String(id || "").trim();
+    if (!target) return null;
+    for (const step of steps || []) {
+      if (String(step?.id || "").trim() === target) return step;
+      for (const lane of childLanes(step || {})) {
+        const found = flowStepById(lane.steps || [], target);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+  function flowStepMap(steps, id, fn) {
+    return (steps || []).map((step) => {
+      if (step?.id === id) return fn(step);
+      if (step?.type === "branch") {
+        return {
+          ...step,
+          branches: (step.branches || []).map((branch) => ({ ...branch, steps: flowStepMap(branch.steps || [], id, fn) })),
+          fallback: flowStepMap(step.fallback || [], id, fn)
+        };
+      }
+      if (step?.type === "parallel") {
+        return {
+          ...step,
+          branches: (step.branches || []).map((branch) => ({ ...branch, steps: flowStepMap(branch.steps || [], id, fn) }))
+        };
+      }
+      if (step?.type === "repeat") return { ...step, steps: flowStepMap(step.steps || [], id, fn) };
+      return step;
+    });
+  }
+  function flowStepInsertIntoLane(steps, laneRef, newStep) {
+    if (!newStep) return steps || [];
+    if (laneRef?.lane === "main") {
+      const idx = laneRef.index ?? (steps || []).length;
+      return [...(steps || []).slice(0, idx), newStep, ...(steps || []).slice(idx)];
+    }
+    return (steps || []).map((step) => {
+      if (step?.id !== laneRef?.parentId) {
+        if (step?.type === "branch") {
+          return {
+            ...step,
+            branches: (step.branches || []).map((branch) => ({ ...branch, steps: flowStepInsertIntoLane(branch.steps || [], laneRef, newStep) })),
+            fallback: flowStepInsertIntoLane(step.fallback || [], laneRef, newStep)
+          };
+        }
+        if (step?.type === "parallel") {
+          return {
+            ...step,
+            branches: (step.branches || []).map((branch) => ({ ...branch, steps: flowStepInsertIntoLane(branch.steps || [], laneRef, newStep) }))
+          };
+        }
+        if (step?.type === "repeat") return { ...step, steps: flowStepInsertIntoLane(step.steps || [], laneRef, newStep) };
+        return step;
+      }
+      const at = (arr) => {
+        const lane = arr || [];
+        const idx = laneRef.index ?? lane.length;
+        return [...lane.slice(0, idx), newStep, ...lane.slice(idx)];
+      };
+      if (laneRef.branchId === "body") return { ...step, steps: at(step.steps) };
+      if (laneRef.branchId === "fallback") return { ...step, fallback: at(step.fallback) };
+      return {
+        ...step,
+        branches: (step.branches || []).map((branch) => branch.id === laneRef.branchId ? { ...branch, steps: at(branch.steps) } : branch)
+      };
+    });
+  }
+  function flowStepRemoveFromTree(steps, id) {
+    return (steps || []).filter((step) => step?.id !== id).map((step) => {
+      if (step?.type === "branch") {
+        return {
+          ...step,
+          branches: (step.branches || []).map((branch) => ({ ...branch, steps: flowStepRemoveFromTree(branch.steps || [], id) })),
+          fallback: flowStepRemoveFromTree(step.fallback || [], id)
+        };
+      }
+      if (step?.type === "parallel") {
+        return {
+          ...step,
+          branches: (step.branches || []).map((branch) => ({ ...branch, steps: flowStepRemoveFromTree(branch.steps || [], id) }))
+        };
+      }
+      if (step?.type === "repeat") return { ...step, steps: flowStepRemoveFromTree(step.steps || [], id) };
+      return step;
+    });
+  }
+  function emptyAuthoringFlowState() {
+    return { name: "", steps: [] };
   }
 
   // ../packages/flow-editor-core/src/drafts/mob-settings.ts
@@ -3911,757 +4390,2016 @@ var MobKitFlowCore = (() => {
     return mobSettingsForUi(schema?.mob_definition?.mob_settings?.defaults);
   }
 
-  // ../packages/flow-editor-core/src/flow/step-tree.ts
-  function childLanes(step) {
-    if (!step) return [];
-    if (step.type === "repeat") return [{ id: "body", steps: step.steps || [] }];
-    if (step.type === "branch") {
-      return [
-        ...(step.branches || []).map((branch) => ({ id: branch.id, steps: branch.steps || [] })),
-        { id: "fallback", steps: step.fallback || [] }
-      ];
-    }
-    if (step.type === "parallel") {
-      return (step.branches || []).map((branch) => ({ id: branch.id, steps: branch.steps || [] }));
-    }
-    return [];
+  // ../packages/flow-editor-core/src/editors/basic-editor.ts
+  function basicEditorViewState(basicView) {
+    const view = basicView && typeof basicView === "object" ? basicView : null;
+    return {
+      startLabel: String(view?.startLabel || ""),
+      loopBadge: String(view?.loopBadge || ""),
+      tipsTitle: String(view?.tipsTitle || ""),
+      emptyPanelTitle: String(view?.emptyPanelTitle || ""),
+      emptyPanelSubtitleParts: Array.isArray(view?.emptyPanelSubtitleParts) ? view.emptyPanelSubtitleParts : [],
+      sourceToggleLabel: String(view?.sourceToggleLabel || ""),
+      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
+      authoringOperationFallbackError: String(view?.authoringOperationFallbackError || ""),
+      memberStepPanelTitleFallback: String(view?.memberStepPanelTitleFallback || ""),
+      memberStepPanelSubFallback: String(view?.memberStepPanelSubFallback || ""),
+      memberStepMemberLabel: String(view?.memberStepMemberLabel || ""),
+      memberStepMemberPlaceholder: String(view?.memberStepMemberPlaceholder || ""),
+      memberStepRuntimeDefaultLabel: String(view?.memberStepRuntimeDefaultLabel || ""),
+      memberStepInstructionLabel: String(view?.memberStepInstructionLabel || ""),
+      memberStepInstructionPlaceholder: String(view?.memberStepInstructionPlaceholder || ""),
+      memberStepDispatchLabel: String(view?.memberStepDispatchLabel || ""),
+      memberStepCollectionLabel: String(view?.memberStepCollectionLabel || ""),
+      memberStepQuorumLabel: String(view?.memberStepQuorumLabel || ""),
+      memberStepQuorumPlaceholder: String(view?.memberStepQuorumPlaceholder || ""),
+      memberStepTimeoutLabel: String(view?.memberStepTimeoutLabel || ""),
+      memberStepDependencyLabel: String(view?.memberStepDependencyLabel || ""),
+      memberStepOutputFormatLabel: String(view?.memberStepOutputFormatLabel || ""),
+      memberStepAllowedToolsLabel: String(view?.memberStepAllowedToolsLabel || ""),
+      memberStepAllowedToolsEmptyLabel: String(view?.memberStepAllowedToolsEmptyLabel || ""),
+      memberStepBlockedToolsLabel: String(view?.memberStepBlockedToolsLabel || ""),
+      memberStepBlockedToolsEmptyLabel: String(view?.memberStepBlockedToolsEmptyLabel || ""),
+      memberStepSchemaHintPrefix: String(view?.memberStepSchemaHintPrefix || ""),
+      memberStepSchemaHintToolsPrefix: String(view?.memberStepSchemaHintToolsPrefix || ""),
+      memberStepSchemaHintEmptyToolsLabel: String(view?.memberStepSchemaHintEmptyToolsLabel || ""),
+      toolScopeNotInCatalogReason: String(view?.toolScopeNotInCatalogReason || ""),
+      toolScopeNotEnabledReason: String(view?.toolScopeNotEnabledReason || ""),
+      toolScopeToolDescriptionFallback: String(view?.toolScopeToolDescriptionFallback || ""),
+      toolScopeRemoveLabel: String(view?.toolScopeRemoveLabel || ""),
+      toolScopeSelectMemberPlaceholder: String(view?.toolScopeSelectMemberPlaceholder || ""),
+      toolScopeBlockCatalogPlaceholder: String(view?.toolScopeBlockCatalogPlaceholder || ""),
+      toolScopeAddProfilePlaceholder: String(view?.toolScopeAddProfilePlaceholder || ""),
+      inputPanelIcon: String(view?.inputPanelIcon || ""),
+      inputPanelTitle: String(view?.inputPanelTitle || ""),
+      inputPanelSub: String(view?.inputPanelSub || ""),
+      inputTaskLabel: String(view?.inputTaskLabel || ""),
+      inputTaskPlaceholder: String(view?.inputTaskPlaceholder || ""),
+      inputParamsTitlePrefix: String(view?.inputParamsTitlePrefix || ""),
+      inputAddParamLabel: String(view?.inputAddParamLabel || ""),
+      inputParamSourceLabel: String(view?.inputParamSourceLabel || ""),
+      inputParamHeaderLabels: {
+        name: String(view?.inputParamHeaderLabels?.name || ""),
+        type: String(view?.inputParamHeaderLabels?.type || ""),
+        required: String(view?.inputParamHeaderLabels?.required || ""),
+        description: String(view?.inputParamHeaderLabels?.description || ""),
+        action: String(view?.inputParamHeaderLabels?.action || "")
+      },
+      inputParamNamePlaceholder: String(view?.inputParamNamePlaceholder || ""),
+      inputParamDescriptionPlaceholder: String(view?.inputParamDescriptionPlaceholder || ""),
+      inputParamRemoveTitle: String(view?.inputParamRemoveTitle || ""),
+      inputParamEnumLabel: String(view?.inputParamEnumLabel || ""),
+      inputParamEnumAddLabel: String(view?.inputParamEnumAddLabel || ""),
+      inputParamEnumAddValue: String(view?.inputParamEnumAddValue || ""),
+      inputEmptyParamsParts: Array.isArray(view?.inputEmptyParamsParts) ? view.inputEmptyParamsParts : [],
+      inputTips: Array.isArray(view?.inputTips) ? view.inputTips : [],
+      branchPanelTitle: String(view?.branchPanelTitle || ""),
+      branchPanelSub: String(view?.branchPanelSub || ""),
+      parallelPanelTitle: String(view?.parallelPanelTitle || ""),
+      parallelPanelSub: String(view?.parallelPanelSub || ""),
+      branchRouteMemberLabel: String(view?.branchRouteMemberLabel || ""),
+      parallelJoinMemberLabel: String(view?.parallelJoinMemberLabel || ""),
+      branchControllerPlaceholderLabel: String(view?.branchControllerPlaceholderLabel || ""),
+      branchEmptyControllerHint: String(view?.branchEmptyControllerHint || ""),
+      branchConditionTitle: String(view?.branchConditionTitle || ""),
+      branchConditionIntro: String(view?.branchConditionIntro || ""),
+      branchConditionRowTitlePrefix: String(view?.branchConditionRowTitlePrefix || ""),
+      branchConditionEmptyHint: String(view?.branchConditionEmptyHint || ""),
+      branchConditionSourcePlaceholder: String(view?.branchConditionSourcePlaceholder || ""),
+      branchConditionFieldPlaceholder: String(view?.branchConditionFieldPlaceholder || ""),
+      branchConditionNoSchemaLabel: String(view?.branchConditionNoSchemaLabel || ""),
+      branchConditionPreviewPrefix: String(view?.branchConditionPreviewPrefix || ""),
+      branchConditionPreviewFallback: String(view?.branchConditionPreviewFallback || ""),
+      branchFallbackTitle: String(view?.branchFallbackTitle || ""),
+      branchFallbackHint: String(view?.branchFallbackHint || ""),
+      addBranchLabel: String(view?.addBranchLabel || ""),
+      addParallelBranchLabel: String(view?.addParallelBranchLabel || ""),
+      parallelDispatchLabel: String(view?.parallelDispatchLabel || ""),
+      parallelCollectionLabel: String(view?.parallelCollectionLabel || ""),
+      parallelQuorumLabel: String(view?.parallelQuorumLabel || ""),
+      parallelQuorumPlaceholder: String(view?.parallelQuorumPlaceholder || ""),
+      branchDependencyLabel: String(view?.branchDependencyLabel || ""),
+      repeatPanelTitle: String(view?.repeatPanelTitle || ""),
+      repeatPanelSub: String(view?.repeatPanelSub || ""),
+      repeatLoopIdLabel: String(view?.repeatLoopIdLabel || ""),
+      repeatLoopIdPlaceholder: String(view?.repeatLoopIdPlaceholder || ""),
+      repeatConditionTitle: String(view?.repeatConditionTitle || ""),
+      repeatConditionIntro: String(view?.repeatConditionIntro || ""),
+      repeatEmptyBodyHint: String(view?.repeatEmptyBodyHint || ""),
+      repeatMemberPlaceholderLabel: String(view?.repeatMemberPlaceholderLabel || ""),
+      repeatConditionFieldPlaceholder: String(view?.repeatConditionFieldPlaceholder || ""),
+      repeatConditionNoSchemaLabel: String(view?.repeatConditionNoSchemaLabel || ""),
+      repeatPreviewLabel: String(view?.repeatPreviewLabel || ""),
+      repeatPreviewFallback: String(view?.repeatPreviewFallback || ""),
+      repeatIterationInputLabel: String(view?.repeatIterationInputLabel || ""),
+      repeatMaxIterationsLabel: String(view?.repeatMaxIterationsLabel || ""),
+      repeatMaxIterationsPlaceholder: String(view?.repeatMaxIterationsPlaceholder || ""),
+      repeatTips: Array.isArray(view?.repeatTips) ? view.repeatTips : [],
+      repeatCanvasWhileLabel: String(view?.repeatCanvasWhileLabel || ""),
+      repeatCanvasNotLabel: String(view?.repeatCanvasNotLabel || ""),
+      repeatCanvasMissingMaxIterationsLabel: String(view?.repeatCanvasMissingMaxIterationsLabel || ""),
+      repeatCanvasMaxIterationsPrefix: String(view?.repeatCanvasMaxIterationsPrefix || ""),
+      repeatCanvasLoopBackPrefix: String(view?.repeatCanvasLoopBackPrefix || ""),
+      repeatCanvasExitPrefix: String(view?.repeatCanvasExitPrefix || ""),
+      repeatCanvasExitFallback: String(view?.repeatCanvasExitFallback || ""),
+      repeatIterationRuntimeDefaultLabel: String(view?.repeatIterationRuntimeDefaultLabel || ""),
+      repeatIterationCarryLabel: String(view?.repeatIterationCarryLabel || ""),
+      repeatIterationReuseUnsupportedLabel: String(view?.repeatIterationReuseUnsupportedLabel || ""),
+      repeatIterationFeedsUnsupportedPrefix: String(view?.repeatIterationFeedsUnsupportedPrefix || ""),
+      repeatIterationUnsupportedPrefix: String(view?.repeatIterationUnsupportedPrefix || ""),
+      addStepTitle: String(view?.addStepTitle || ""),
+      inputStepCardTitle: String(view?.inputStepCardTitle || ""),
+      inputStepCardDescFallback: String(view?.inputStepCardDescFallback || ""),
+      branchStepCardTitle: String(view?.branchStepCardTitle || ""),
+      branchStepCardDesc: String(view?.branchStepCardDesc || ""),
+      parallelStepCardTitle: String(view?.parallelStepCardTitle || ""),
+      parallelStepCardDescPrefix: String(view?.parallelStepCardDescPrefix || ""),
+      parallelStepCardCollectionFallback: String(view?.parallelStepCardCollectionFallback || ""),
+      repeatStepCardTitle: String(view?.repeatStepCardTitle || ""),
+      repeatStepCardDescPrefix: String(view?.repeatStepCardDescPrefix || ""),
+      repeatStepCardDescFallback: String(view?.repeatStepCardDescFallback || ""),
+      memberStepCardTitleFallback: String(view?.memberStepCardTitleFallback || ""),
+      pickerKickoffTitle: String(view?.pickerKickoffTitle || ""),
+      pickerKickoffSub: String(view?.pickerKickoffSub || ""),
+      pickerKickoffHint: String(view?.pickerKickoffHint || ""),
+      pickerTitle: String(view?.pickerTitle || ""),
+      pickerSub: String(view?.pickerSub || ""),
+      pickerSearchIcon: String(view?.pickerSearchIcon || ""),
+      pickerSearchPlaceholder: String(view?.pickerSearchPlaceholder || ""),
+      pickerMembersLabel: String(view?.pickerMembersLabel || ""),
+      pickerFlowLabel: String(view?.pickerFlowLabel || ""),
+      pickerEmptyMembersHint: String(view?.pickerEmptyMembersHint || ""),
+      pickerNewBadgeLabel: String(view?.pickerNewBadgeLabel || ""),
+      flowPrimitiveRows: Array.isArray(view?.flowPrimitiveRows) ? view.flowPrimitiveRows : []
+    };
   }
-  function collectFlowMemberSteps(steps, out = []) {
-    for (const step of steps || []) {
-      if (step?.type === "member") out.push(step);
-      for (const lane of childLanes(step || {})) collectFlowMemberSteps(lane.steps, out);
+  function parseLegacyInputFields(text) {
+    return String(text || "").split(/\n/).flatMap(splitLegacyInputFieldLine).map((line) => line.trim()).filter(Boolean).map((line, index) => {
+      const match = /^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(enum\(([^)]+)\)|[A-Za-z0-9_[\]]+)/.exec(line);
+      if (!match) return null;
+      const enumValues = match[3] ? match[3].split("|").join(",").split(",").map((value) => value.trim()).filter(Boolean) : [];
+      return {
+        id: `p${index + 1}`,
+        name: match[1],
+        type: enumValues.length ? "enum" : match[2],
+        required: true,
+        description: "",
+        enumValues
+      };
+    }).filter(Boolean);
+  }
+  function splitLegacyInputFieldLine(line) {
+    const out = [];
+    let start = 0;
+    let depth = 0;
+    const raw = String(line || "");
+    for (let index = 0; index < raw.length; index += 1) {
+      const char = raw[index];
+      if (char === "(") depth += 1;
+      if (char === ")" && depth > 0) depth -= 1;
+      if (char === "," && depth === 0) {
+        out.push(raw.slice(start, index));
+        start = index + 1;
+      }
     }
+    out.push(raw.slice(start));
     return out;
   }
-  function flowStepUpdatePatch(flow, id, patch = {}, options = {}) {
-    let accepted = false;
-    const steps = flowStepMap(flow?.steps || [], id, (step) => {
-      const nextStep = { ...step, ...patch && typeof patch === "object" ? patch : {} };
-      const validation = flowStepValidation(nextStep, { flow, members: options.members, currentId: step.id });
-      if (!validation.ok) return step;
-      accepted = true;
-      return nextStep;
+  function inputParamsForStep(step) {
+    if (Array.isArray(step?.inputParams)) return step.inputParams;
+    return parseLegacyInputFields(step?.fields);
+  }
+  function inputParamSummary(params, contract) {
+    const defaultType = contractDefaultValue(contract, "schema_field_type");
+    return (params || []).map((param) => `${param.name}: ${param.type || defaultType}${param.required ? "" : "?"}`).join(", ");
+  }
+  function inputParamOptions(flow, basicView = null) {
+    const input = (flow?.steps || []).find((step) => step.type === "input");
+    const fields = inputParamsForStep(input);
+    if (!fields.length) return [];
+    const view = basicEditorViewState(basicView);
+    return [{
+      stepId: "params",
+      namespace: "params",
+      label: view.inputParamSourceLabel,
+      fields
+    }];
+  }
+  function basicInputControlState(step, contract, basicView = null) {
+    const params = inputParamsForStep(step);
+    const view = basicEditorViewState(basicView);
+    return {
+      panelIcon: view.inputPanelIcon,
+      panelTitle: view.inputPanelTitle,
+      panelSub: view.inputPanelSub,
+      taskLabel: view.inputTaskLabel,
+      taskPlaceholder: view.inputTaskPlaceholder,
+      params,
+      paramsTitle: `${view.inputParamsTitlePrefix} \xB7 ${params.length}`,
+      addParamLabel: view.inputAddParamLabel,
+      headerRows: [
+        { key: "name", label: view.inputParamHeaderLabels.name, className: "sb-col sb-col--name" },
+        { key: "type", label: view.inputParamHeaderLabels.type, className: "sb-col sb-col--type" },
+        { key: "required", label: view.inputParamHeaderLabels.required, className: "sb-col sb-col--req" },
+        { key: "description", label: view.inputParamHeaderLabels.description, className: "sb-col sb-col--desc" },
+        { key: "actions", label: view.inputParamHeaderLabels.action, className: "sb-col sb-col--act" }
+      ],
+      emptyParamsParts: view.inputEmptyParamsParts,
+      tips: view.inputTips
+    };
+  }
+  function basicConditionOptions(flow, targetId, members, basicView = null) {
+    return [
+      ...inputParamOptions(flow, basicView),
+      ...memberConditionOptionsBefore(flow?.steps || [], targetId, members).out
+    ];
+  }
+  function memberConditionOptionsBefore(steps, targetId, members, out = []) {
+    const memberById = new Map((Array.isArray(members) ? members : []).filter((member) => member?.id).map((member) => [member.id, member]));
+    return memberConditionOptionsBeforeWithMap(steps, targetId, memberById, out);
+  }
+  function memberConditionOptionsBeforeWithMap(steps, targetId, memberById, out = []) {
+    const target = String(targetId || "");
+    for (const step of steps || []) {
+      if (step?.id === target) return { found: true, out };
+      if (step?.type === "member" && step.role) {
+        const member = memberById.get(step.role);
+        if (member) {
+          out.push({
+            stepId: step.id,
+            namespace: "steps",
+            member,
+            label: member.name || member.role || member.id || step.id,
+            fields: []
+          });
+        }
+      }
+      for (const lane of childLanes(step)) {
+        const result = memberConditionOptionsBeforeWithMap(lane.steps, target, memberById, [...out]);
+        if (result.found) return result;
+      }
+    }
+    return { found: false, out };
+  }
+  function parseGraphConditionVar(value) {
+    const text = String(value || "").trim();
+    const params = /^params\.([A-Za-z0-9_.-]+)$/.exec(text);
+    if (params) return { instanceId: "params", field: params[1], namespace: "params" };
+    const match = /^steps\.([A-Za-z0-9_.-]+)\.([A-Za-z0-9_.-]+)$/.exec(text) || /^([A-Za-z0-9_.-]+)\.([A-Za-z0-9_.-]+)$/.exec(text);
+    if (!match) return { instanceId: "", field: "", namespace: "" };
+    return { instanceId: match[1], field: match[2], namespace: "steps" };
+  }
+  function inputParamUpdatePatch(params, id, patch, contract) {
+    const source = Array.isArray(params) ? params : [];
+    const current = source.find((param) => param?.id === id) || null;
+    if (!current) return { inputParams: source, fields: inputParamSummary(source, contract) };
+    const normalized = normalizeSchemaLikeFieldPatch(current, patch, contract);
+    if (Object.prototype.hasOwnProperty.call(normalized, "name")) {
+      normalized.name = uniqueInputParamName(source, normalized.name, id, editorInputParamNameFallback(contract));
+    }
+    const next = source.map((param) => param?.id === id ? { ...param, ...normalized } : param);
+    return { inputParams: next, fields: inputParamSummary(next, contract) };
+  }
+  function inputParamDeletePatch(params, id, contract) {
+    const removed = (params || []).find((param) => param?.id === id) || null;
+    const next = (params || []).filter((param) => param?.id !== id);
+    return { removed, patch: { inputParams: next, fields: inputParamSummary(next, contract) } };
+  }
+  function inputParamRenamePatch(params, id, rawName, contract) {
+    const nextName = uniqueInputParamName(params, rawName, id, editorInputParamNameFallback(contract));
+    const next = (params || []).map((param) => param?.id === id ? { ...param, name: nextName } : param);
+    return { name: nextName, patch: { inputParams: next, fields: inputParamSummary(next, contract) } };
+  }
+  function basicConditionFromText(text) {
+    return parseEditorConditionText(text);
+  }
+  function basicConditionText(cond, options = {}) {
+    if (!cond || !cond.stepId || !cond.field) return "";
+    const op = cond.op || cond.operator || options.defaultOperator || "";
+    if (!op) return "";
+    if (cond.namespace === "params" || cond.stepId === "params") {
+      return `params.${cond.field} ${op} ${conditionValueLiteral(cond.val ?? cond.value ?? "")}`;
+    }
+    return `steps.${cond.stepId}.${cond.field} ${op} ${conditionValueLiteral(cond.val ?? cond.value ?? "")}`;
+  }
+  function basicBranchConditionPatch(step, branchId, patch = {}, contract) {
+    const branches = (step?.branches || []).map((branch) => {
+      if (branch?.id !== branchId) return branch;
+      const defaultOperator = contractDefaultValue(contract, "condition_operator");
+      const cond = {
+        ...branch.cond || basicConditionFromText(branch.condition) || {},
+        ...patch
+      };
+      return {
+        ...branch,
+        cond,
+        condition: basicConditionText(cond, { defaultOperator })
+      };
     });
-    if (!accepted) return flow || {};
-    return { ...flow || {}, steps };
+    return { branches };
   }
-  function flowStepInsertPatch(flow, laneRef, newStep, options = {}) {
-    const validation = flowStepValidation(newStep, { flow, members: options.members });
-    if (!validation.ok) return flow || {};
-    const steps = flowStepInsertIntoLane(flow?.steps || [], laneRef || {}, newStep);
-    return { ...flow || {}, steps };
+  function basicBranchAddPatch(step, options = {}) {
+    const branches = Array.isArray(step?.branches) ? step.branches : [];
+    const branchIds = collectFlowBranchIds(options.flow?.steps || []);
+    for (const branch of branches) {
+      const id = String(branch?.id || "").trim();
+      if (id) branchIds.add(id);
+    }
+    const nextBranch = {
+      id: reserveFlowBranchId("br", branchIds),
+      label: basicBranchDefaultLabel(branches.length + 1, options.basicView),
+      steps: []
+    };
+    if (step?.type !== "parallel") nextBranch.condition = "";
+    return { branches: [...branches, nextBranch] };
   }
-  function flowStepInsertTransition(flow, laneRef, newStep, options = {}) {
-    const validation = flowStepValidation(newStep, { flow, members: options.members });
-    if (!validation.ok) {
+  function basicBranchDefaultLabel(index, basicView = null) {
+    const view = basicEditorViewState(basicView);
+    const prefix = view.branchConditionRowTitlePrefix;
+    return [prefix, String(index || 1)].filter(Boolean).join(" ");
+  }
+  function basicConditionLabel(cond, options = [], config = {}) {
+    if (!cond || !cond.stepId || !cond.field) return String(config.previewFallback || "");
+    const option = (Array.isArray(options) ? options : []).find((candidate) => candidate.stepId === cond.stepId);
+    const label = option?.label || option?.member?.name || cond.stepId;
+    const op = cond.op || cond.operator || config.defaultOperator || "";
+    return `${label}.${cond.field} ${op} ${conditionValueLiteral(cond.val ?? cond.value ?? "")}`;
+  }
+  function basicBranchConditionControlState({ branch, options = [], schemas = [], contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
+    const sourceOptions = Array.isArray(options) ? options : [];
+    const sourceSchemas = Array.isArray(schemas) ? schemas : [];
+    const defaultOperator = contractDefaultValue(contract, "condition_operator");
+    const cond = branch?.cond || basicConditionFromText(branch?.condition) || {};
+    const selected = sourceOptions.find((option) => option.stepId === cond.stepId) || null;
+    const fields = selected?.namespace === "params" ? selected.fields || [] : sourceSchemas.find((candidate) => candidate.id === selected?.member?.schema)?.fields || [];
+    const field = fields.find((candidate) => candidate.name === cond.field) || null;
+    const operatorValue = cond.op || defaultOperator;
+    return {
+      cond,
+      selected,
+      fields,
+      field,
+      sourceOptions: sourceOptions.map((option) => ({
+        value: option.stepId,
+        label: option.label || option.member?.name || option.stepId,
+        option
+      })),
+      fieldOptions: fields.map((candidate) => ({
+        value: candidate.name,
+        label: `${candidate.name} \xB7 ${candidate.type}`,
+        field: candidate
+      })),
+      rowTitle: `${view.branchConditionRowTitlePrefix} ${Number.isFinite(Number(branch?.index)) ? Number(branch.index) + 1 : ""}`.trim(),
+      emptyHint: view.branchConditionEmptyHint,
+      sourcePlaceholder: view.branchConditionSourcePlaceholder,
+      fieldPlaceholder: fields.length ? view.branchConditionFieldPlaceholder : view.branchConditionNoSchemaLabel,
+      defaultOperator,
+      operatorValue,
+      operatorOptions: conditionOperatorOptions(contract, operatorValue),
+      previewPrefix: view.branchConditionPreviewPrefix,
+      previewLabel: basicConditionLabel(cond, sourceOptions, {
+        defaultOperator,
+        previewFallback: view.branchConditionPreviewFallback
+      }),
+      hasConditionOptions: sourceOptions.length > 0
+    };
+  }
+  function basicBranchParallelControlState({ step, flow, members = [], contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
+    const sourceMembers = Array.isArray(members) ? members : [];
+    const isParallel = step?.type === "parallel";
+    const controllerRole = step?.controllerRole || "";
+    const defaultDispatch = contractDefaultValue(contract, "dispatch_mode");
+    const dispatchValue = step?.dispatch || defaultDispatch;
+    const defaultCollection = contractDefaultValue(contract, "collection_policy");
+    const collectionValue = step?.collection || defaultCollection;
+    const defaultDependency = contractDefaultValue(contract, "dependency_mode");
+    const dependencyValue = step?.dependsMode || defaultDependency;
+    const dispatchOptions = dispatchModeOptions(contract, dispatchValue);
+    const collectionOptions = collectionPolicyOptions(contract, collectionValue);
+    const dependencyOptions = dependencyModeOptions(contract, dependencyValue);
+    return {
+      isParallel,
+      panelIcon: isParallel ? "\u2016" : "\u2442",
+      panelTitle: isParallel ? view.parallelPanelTitle : view.branchPanelTitle,
+      panelSub: isParallel ? view.parallelPanelSub : view.branchPanelSub,
+      controllerLabel: isParallel ? view.parallelJoinMemberLabel : view.branchRouteMemberLabel,
+      controllerPlaceholderLabel: view.branchControllerPlaceholderLabel,
+      controllerRole,
+      memberOptions: sourceMembers.map((member) => ({
+        value: member.id,
+        label: `${member.name || member.role || member.id} \xB7 ${member.role || "profile"}`,
+        member
+      })),
+      emptyControllerHint: view.branchEmptyControllerHint,
+      conditionOptions: basicConditionOptions(flow, step?.id, sourceMembers, basicView),
+      branchConditionTitle: view.branchConditionTitle,
+      branchConditionIntro: view.branchConditionIntro,
+      fallbackTitle: view.branchFallbackTitle,
+      fallbackHint: view.branchFallbackHint,
+      addBranchLabel: isParallel ? view.addParallelBranchLabel : view.addBranchLabel,
+      dispatchLabel: view.parallelDispatchLabel,
+      dispatchValue,
+      dispatchOptions,
+      selectedDispatch: dispatchOptions.find((option) => option.value === dispatchValue) || null,
+      collectionLabel: view.parallelCollectionLabel,
+      collectionValue,
+      collectionOptions,
+      selectedCollection: collectionOptions.find((option) => option.value === collectionValue) || null,
+      showQuorum: collectionValue === "quorum",
+      quorumLabel: view.parallelQuorumLabel,
+      quorumPlaceholder: view.parallelQuorumPlaceholder,
+      dependencyLabel: view.branchDependencyLabel,
+      dependencyValue,
+      dependencyOptions,
+      selectedDependency: dependencyOptions.find((option) => option.value === dependencyValue) || null
+    };
+  }
+  function basicForkCanvasState({ step, contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
+    const isParallel = step?.type === "parallel";
+    const collection = step?.collection || contractDefaultValue(contract, "collection_policy");
+    const branches = Array.isArray(step?.branches) ? step.branches : [];
+    const lanes = [
+      ...branches.map((branch) => ({ id: branch.id, label: branch.label, steps: branch.steps || [] })),
+      ...isParallel ? [] : [{ id: "fallback", label: view.branchFallbackTitle, steps: step?.fallback || [] }]
+    ];
+    return {
+      isParallel,
+      className: "bld-fork" + (isParallel ? " bld-fork--parallel" : ""),
+      lanes,
+      showRail: lanes.length > 1,
+      showJoin: isParallel,
+      joinLabel: `\u22C8 join \xB7 ${collection || "\u2014"}`
+    };
+  }
+  function basicRepeatIterationLabel(step, members = [], basicView = null) {
+    const view = basicEditorViewState(basicView);
+    const iterationInput = typeof step?.iterationInput === "string" ? step.iterationInput.trim() : "";
+    if (!iterationInput) return view.repeatIterationRuntimeDefaultLabel;
+    if (iterationInput === "carry") return view.repeatIterationCarryLabel;
+    if (iterationInput === "reuse") return view.repeatIterationReuseUnsupportedLabel;
+    const bodyStep = (Array.isArray(step?.steps) ? step.steps : []).find((candidate) => candidate?.id === iterationInput);
+    const member = (Array.isArray(members) ? members : []).find((candidate) => candidate?.id === bodyStep?.role);
+    return member ? `${view.repeatIterationFeedsUnsupportedPrefix}${member.name}'s output` : `${view.repeatIterationUnsupportedPrefix}${iterationInput}`;
+  }
+  function basicRepeatCanvasState({ step, members = [], contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
+    const defaultOperator = contractDefaultValue(contract, "condition_operator");
+    const repeatUntilExpression = basicRepeatUntilExpression(step, members, { defaultOperator });
+    return {
+      repeatUntilExpression,
+      whileLabel: view.repeatCanvasWhileLabel,
+      notLabel: view.repeatCanvasNotLabel,
+      conditionLabel: repeatUntilExpression || view.repeatPreviewFallback,
+      maxIterationsLabel: step?.maxIterations ? `${view.repeatCanvasMaxIterationsPrefix}${step.maxIterations}` : view.repeatCanvasMissingMaxIterationsLabel,
+      loopBackLabel: `${view.repeatCanvasLoopBackPrefix}${basicRepeatIterationLabel(step, members, basicView)}`,
+      exitLabel: `${view.repeatCanvasExitPrefix}${repeatUntilExpression || view.repeatCanvasExitFallback}`
+    };
+  }
+  function basicStepCardState({ step, members = [], contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
+    const sourceMembers = Array.isArray(members) ? members : [];
+    const member = step?.role ? sourceMembers.find((candidate) => candidate?.id === step.role) || null : null;
+    if (step?.type === "input") {
+      return {
+        icon: "\u25A4",
+        iconTint: "member",
+        title: view.inputStepCardTitle,
+        desc: step?.task ? step.task : view.inputStepCardDescFallback,
+        configured: true,
+        isFlowCard: false
+      };
+    }
+    if (step?.type === "branch") {
+      return {
+        icon: "\u2442",
+        iconTint: "member",
+        title: view.branchStepCardTitle,
+        desc: view.branchStepCardDesc,
+        configured: true,
+        isFlowCard: true
+      };
+    }
+    if (step?.type === "parallel") {
+      const collection = step?.collection || contractDefaultValue(contract, "collection_policy") || view.parallelStepCardCollectionFallback;
+      return {
+        icon: "\u2016",
+        iconTint: "member",
+        title: view.parallelStepCardTitle,
+        desc: `${view.parallelStepCardDescPrefix}${collection}`,
+        configured: true,
+        isFlowCard: true
+      };
+    }
+    if (step?.type === "repeat") {
+      const defaultOperator = contractDefaultValue(contract, "condition_operator");
+      const repeatUntilExpression = basicRepeatUntilExpression(step, sourceMembers, { defaultOperator });
+      return {
+        icon: "\u21BB",
+        iconTint: "member",
+        title: view.repeatStepCardTitle,
+        desc: repeatUntilExpression ? `${view.repeatStepCardDescPrefix}${repeatUntilExpression}` : view.repeatStepCardDescFallback,
+        configured: true,
+        isFlowCard: true
+      };
+    }
+    return {
+      icon: "\u25C6",
+      iconTint: "accent",
+      title: member ? member.name : view.memberStepCardTitleFallback,
+      desc: step?.instruction || (member ? `${member.role} \xB7 ${member.model}` : ""),
+      configured: !!step?.role,
+      isFlowCard: false
+    };
+  }
+  function basicRepeatControlState({ step, members = [], schemas = [], contract, basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
+    const sourceMembers = Array.isArray(members) ? members : [];
+    const sourceSchemas = Array.isArray(schemas) ? schemas : [];
+    const memberById = new Map(sourceMembers.map((member) => [member.id, member]));
+    const bodyMembers = (Array.isArray(step?.steps) ? step.steps : []).filter((candidate) => candidate?.type === "member" && candidate.role).map((candidate) => ({
+      stepId: candidate.id,
+      member: memberById.get(candidate.role) || null
+    })).filter((candidate) => candidate.member);
+    const cond = step?.cond || {};
+    const condMember = bodyMembers.find((candidate) => candidate.stepId === cond.stepId)?.member || null;
+    const condSchema = condMember ? sourceSchemas.find((schema) => schema.id === condMember.schema) || null : null;
+    const fields = condSchema?.fields || [];
+    const condField = fields.find((field) => field.name === cond.field) || null;
+    const defaultOperator = contractDefaultValue(contract, "condition_operator");
+    const operatorValue = cond.op || defaultOperator;
+    const repeatUntilExpression = basicRepeatUntilExpression(step, sourceMembers, { defaultOperator });
+    const iterationInputValue = typeof step?.iterationInput === "string" ? step.iterationInput : "";
+    const iterationInputOptions = [
+      { value: "", label: view.repeatIterationRuntimeDefaultLabel, disabled: false, reason: "" },
+      ...repeatIterationInputOptions(contract, iterationInputValue)
+    ];
+    return {
+      panelIcon: "\u21BB",
+      panelTitle: view.repeatPanelTitle,
+      panelSub: view.repeatPanelSub,
+      loopIdLabel: view.repeatLoopIdLabel,
+      loopIdPlaceholder: view.repeatLoopIdPlaceholder,
+      conditionTitle: view.repeatConditionTitle,
+      conditionIntro: view.repeatConditionIntro,
+      emptyBodyHint: view.repeatEmptyBodyHint,
+      memberPlaceholderLabel: view.repeatMemberPlaceholderLabel,
+      previewLabel: view.repeatPreviewLabel,
+      previewFallback: view.repeatPreviewFallback,
+      iterationInputLabel: view.repeatIterationInputLabel,
+      maxIterationsLabel: view.repeatMaxIterationsLabel,
+      maxIterationsPlaceholder: view.repeatMaxIterationsPlaceholder,
+      tips: view.repeatTips,
+      bodyMembers,
+      bodyMemberOptions: bodyMembers.map((candidate) => ({
+        value: candidate.stepId,
+        label: candidate.member.name,
+        bodyMember: candidate
+      })),
+      hasBodyMembers: bodyMembers.length > 0,
+      cond,
+      condMember,
+      condSchema,
+      fields,
+      condField,
+      fieldOptions: fields.map((field) => ({
+        value: field.name,
+        label: `${field.name} \xB7 ${field.type}`,
+        field
+      })),
+      fieldPlaceholder: condSchema ? view.repeatConditionFieldPlaceholder : view.repeatConditionNoSchemaLabel,
+      defaultOperator,
+      operatorValue,
+      operatorOptions: conditionOperatorOptions(contract, operatorValue),
+      repeatUntilExpression,
+      iterationInputValue,
+      iterationInputOptions,
+      selectedIterationInput: iterationInputOptions.find((option) => option.value === iterationInputValue) || null
+    };
+  }
+  function basicMemberStepControlState({ step, flow, members = [], contract, basicView = null, launchView = null } = {}) {
+    const view = basicEditorViewState(basicView);
+    const sourceMembers = Array.isArray(members) ? members : [];
+    const memberById = new Map(sourceMembers.map((member2) => [member2.id, member2]));
+    const member = step?.role ? memberById.get(step.role) || null : null;
+    const launchState = launchModeControlState(step, contract, launchView);
+    const launchSources = collectFlowMemberSteps(flow?.steps || []).filter((candidate) => candidate.id !== step?.id && candidate.role);
+    const launchSourceOptions = launchSources.map((source) => {
+      const sourceMember = memberById.get(source.role) || null;
+      return {
+        value: source.id,
+        label: `${sourceMember?.name || source.role} \xB7 ${source.id}`,
+        step: source,
+        member: sourceMember
+      };
+    });
+    const runtimeDefault = { value: "", label: view.memberStepRuntimeDefaultLabel, disabled: false, reason: "" };
+    const dispatchValue = typeof step?.dispatchMode === "string" ? step.dispatchMode : "";
+    const collectionValue = typeof step?.collection === "string" ? step.collection : "";
+    const dependencyValue = typeof step?.dependsMode === "string" ? step.dependsMode : "";
+    const outputValue = typeof step?.outputFormat === "string" ? step.outputFormat : "";
+    const dispatchOptions = [runtimeDefault, ...dispatchModeOptions(contract, dispatchValue)];
+    const collectionOptions = [runtimeDefault, ...collectionPolicyOptions(contract, collectionValue)];
+    const dependencyOptions = [runtimeDefault, ...dependencyModeOptions(contract, dependencyValue)];
+    const outputOptions = [runtimeDefault, ...outputFormatOptions(contract, outputValue)];
+    return {
+      member,
+      panelTitle: member ? member.name : view.memberStepPanelTitleFallback,
+      panelSub: member ? `${member.role} \xB7 ${member.model}` : view.memberStepPanelSubFallback,
+      memberFieldLabel: view.memberStepMemberLabel,
+      memberPlaceholderLabel: view.memberStepMemberPlaceholder,
+      memberOptions: sourceMembers.map((candidate) => ({
+        value: candidate.id,
+        label: `${candidate.name} \xB7 ${candidate.role}`,
+        member: candidate
+      })),
+      launchState,
+      launchSources,
+      launchSourceOptions,
+      firstLaunchSourceId: launchSourceOptions[0]?.value || "",
+      instructionLabel: view.memberStepInstructionLabel,
+      instructionPlaceholder: view.memberStepInstructionPlaceholder,
+      dispatchLabel: view.memberStepDispatchLabel,
+      dispatchValue,
+      dispatchOptions,
+      selectedDispatch: dispatchOptions.find((option) => option.value === dispatchValue) || null,
+      collectionLabel: view.memberStepCollectionLabel,
+      collectionValue,
+      collectionOptions,
+      selectedCollection: collectionOptions.find((option) => option.value === collectionValue) || null,
+      quorumLabel: view.memberStepQuorumLabel,
+      quorumPlaceholder: view.memberStepQuorumPlaceholder,
+      timeoutLabel: view.memberStepTimeoutLabel,
+      timeoutPlaceholder: view.memberStepRuntimeDefaultLabel,
+      dependencyLabel: view.memberStepDependencyLabel,
+      dependencyValue,
+      dependencyOptions,
+      selectedDependency: dependencyOptions.find((option) => option.value === dependencyValue) || null,
+      outputFormatLabel: view.memberStepOutputFormatLabel,
+      outputValue,
+      outputOptions,
+      selectedOutput: outputOptions.find((option) => option.value === outputValue) || null,
+      showQuorum: collectionValue === "quorum",
+      allowedToolsLabel: view.memberStepAllowedToolsLabel,
+      allowedToolsEmptyLabel: view.memberStepAllowedToolsEmptyLabel,
+      blockedToolsLabel: view.memberStepBlockedToolsLabel,
+      blockedToolsEmptyLabel: view.memberStepBlockedToolsEmptyLabel,
+      schemaHint: member?.schema ? (() => {
+        const tools = normalizeStringList(member.tools);
+        const toolSummary = tools.join(", ") || view.memberStepSchemaHintEmptyToolsLabel;
+        return {
+          schema: member.schema,
+          tools,
+          toolSummary,
+          parts: [
+            { key: "prefix", text: view.memberStepSchemaHintPrefix },
+            { key: "schema", text: member.schema, kind: "code" },
+            { key: "tools", text: `${view.memberStepSchemaHintToolsPrefix}${toolSummary}` }
+          ]
+        };
+      })() : null
+    };
+  }
+  function basicRepeatUntilExpression(step, members = [], options = {}) {
+    const cond = step?.cond;
+    if (!cond || !cond.stepId || !cond.field) return step?.until || "";
+    const bodyStep = (Array.isArray(step.steps) ? step.steps : []).find((candidate) => candidate?.id === cond.stepId);
+    const member = (Array.isArray(members) ? members : []).find((candidate) => candidate?.id === bodyStep?.role);
+    if (!member) return step?.until || "";
+    const op = cond.op || cond.operator || options.defaultOperator || "";
+    if (!op) return step?.until || "";
+    return `${member.name || member.role || member.id}.${cond.field} ${op} ${conditionValueLiteral(cond.val ?? cond.value ?? "")}`;
+  }
+
+  // ../packages/flow-editor-core/src/domain/tool-skill-access.ts
+  function slug(value, fallback) {
+    const out = String(value || fallback || "mobpack").toLowerCase().replace(/[^a-z0-9_ -]+/g, "").trim().replace(/[\s-]+/g, "_").replace(/^_+|_+$/g, "");
+    return out || fallback || "mobpack";
+  }
+  function profileName(member) {
+    return slug(member?.name || member?.role || member?.id || "member", "member");
+  }
+  function normalizeToolRef(raw, catalog) {
+    const id = String(raw || "").trim();
+    if (!id) return "";
+    const entries = Array.isArray(catalog) ? catalog : [];
+    const entry = (entries || []).find((tool) => tool.id === id);
+    if (entry && toolCatalogEntryAvailable(entry)) return id;
+    return "";
+  }
+  function toolCatalogEntryAvailability(tool) {
+    const availability = tool?.runtimeAvailability || tool?.runtime_availability || null;
+    return availability && typeof availability === "object" ? availability : null;
+  }
+  function toolCatalogEntryAvailable(tool) {
+    const availability = toolCatalogEntryAvailability(tool);
+    return availability?.available === false ? false : true;
+  }
+  function normalizeSkillId(raw) {
+    return String(raw || "").trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, ".").replace(/^[._-]+|[._-]+$/g, "").replace(/\.{2,}/g, ".");
+  }
+  function skillIdsFromRealms(realms) {
+    const ids = /* @__PURE__ */ new Set();
+    for (const realm of realms || []) {
+      for (const skill of realm?.skills || []) {
+        if (skill?.id) ids.add(String(skill.id));
+      }
+    }
+    return ids;
+  }
+  function addInlineSkillToRealms(realms, spec = {}, accessView = null) {
+    const view = agentAccessViewForState(accessView);
+    const nextRealms = JSON.parse(JSON.stringify(realms || []));
+    const label = String(spec.label || spec.id || "").trim();
+    if (!label) throw new Error(view.skillInlineMissingLabelError);
+    const content = String(spec.content || "").trim();
+    if (!content) throw new Error(view.skillInlineMissingContentError);
+    const used = skillIdsFromRealms(nextRealms);
+    const explicitId = String(spec.id || "").trim();
+    const identityText = explicitId || label;
+    if (!normalizeSkillId(identityText)) throw new Error(view.skillInlineInvalidIdError);
+    const rawId = explicitId || (label.includes(".") ? label : `mob.${label}`);
+    const baseId = normalizeSkillId(rawId);
+    if (!baseId) throw new Error(view.skillInlineInvalidIdError);
+    let id = baseId;
+    let index = 2;
+    while (used.has(id)) id = `${baseId}.${index++}`;
+    let realm = nextRealms.find((candidate) => candidate?.id === view.inlineSkillRealmId);
+    if (!realm) {
+      realm = {
+        id: view.inlineSkillRealmId,
+        label: view.inlineSkillRealmLabel,
+        source: view.inlineSkillRealmSource,
+        default: nextRealms.length === 0,
+        skills: []
+      };
+      nextRealms.unshift(realm);
+    }
+    if (!Array.isArray(realm.skills)) realm.skills = [];
+    realm.skills.push({
+      id,
+      label,
+      source: view.inlineSkillSource,
+      content,
+      desc: spec.desc || view.inlineSkillDefaultDescription
+    });
+    return { id, skillRealms: nextRealms };
+  }
+  function memberToolAccessPatch(member, raw, toolCatalog, accessView = null) {
+    const view = agentAccessViewForState(accessView);
+    const id = normalizeToolRef(raw, toolCatalog);
+    if (!id) {
       return {
         ok: false,
-        error: validation.error || "",
-        flow: flow || {},
-        selection: null,
-        picker: { open: false }
+        id: "",
+        error: raw ? view.toolInvalidError : "",
+        patch: null
       };
+    }
+    const tools = normalizeStringList(member?.tools);
+    if (tools.includes(id)) {
+      return { ok: true, id, alreadySelected: true, patch: null };
+    }
+    return { ok: true, id, alreadySelected: false, patch: { tools: [...tools, id] } };
+  }
+  function memberToolRemovePatch(member, toolId) {
+    const id = String(toolId || "").trim();
+    if (!id) return { ok: false, id: "", patch: null };
+    const tools = normalizeStringList(member?.tools);
+    return { ok: true, id, patch: { tools: tools.filter((candidate) => candidate !== id) } };
+  }
+  function memberToolAccessState(member, toolCatalog = [], accessView = null) {
+    const view = agentAccessViewForState(accessView);
+    const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
+    const metaById = new Map(catalog.map((tool) => [String(tool.id), tool]));
+    const selectedTools = normalizeStringList(member?.tools);
+    const selectedSet = new Set(selectedTools);
+    const catalogSet = new Set(catalog.map((tool) => String(tool.id)));
+    const toolRow = (id) => {
+      const meta = metaById.get(id) || null;
+      const unavailable = !catalogSet.has(id);
+      const runtimeAvailability = toolCatalogEntryAvailability(meta);
+      const runtimeUnavailable = runtimeAvailability?.available === false;
+      const reason = unavailable ? view.toolInvalidError : runtimeUnavailable ? runtimeAvailability.reason || view.toolInvalidError : "";
+      return {
+        id,
+        name: id,
+        unavailable: unavailable || runtimeUnavailable,
+        reason,
+        description: reason || meta?.desc || view.toolMissingDescription,
+        meta,
+        runtimeAvailability,
+        className: `tool-row${unavailable || runtimeUnavailable ? " tool-row--invalid" : ""}`,
+        removeLabel: view.toolRemoveLabel
+      };
+    };
+    const addableRow = (tool) => {
+      const id = String(tool.id);
+      const label = tool.label || id;
+      const desc = tool.desc || id;
+      return {
+        id,
+        value: id,
+        label,
+        description: desc,
+        optionLabel: `${label} \u2014 ${desc}`,
+        disabled: !toolCatalogEntryAvailable(tool),
+        meta: tool
+      };
+    };
+    return {
+      selectedTools,
+      title: view.toolTitle,
+      hint: view.toolHint,
+      rows: selectedTools.map(toolRow),
+      addableRows: catalog.filter((tool) => !selectedSet.has(String(tool.id))).map(addableRow),
+      addSelectValue: "",
+      addSelectPlaceholder: view.toolAddSelectPlaceholder,
+      sourceLabel: view.toolSourceLabel,
+      sourcePlaceholder: view.toolSourcePlaceholder,
+      addButtonLabel: view.toolAddButtonLabel,
+      emptyToolError: view.toolEmptyError,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError
+    };
+  }
+  function stepToolScopeState({ member, selected, mode = "member", toolCatalog = [], basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
+    const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
+    const catalogIds = Array.from(new Set(catalog.map((tool) => String(tool.id).trim()).filter(Boolean)));
+    const selectedTools = Array.from(new Set(normalizeStringList(selected)));
+    const memberToolIds = validMemberToolIds(member, catalogIds);
+    const validToolIds = mode === "catalog" ? catalogIds : memberToolIds;
+    const validToolSet = new Set(validToolIds);
+    const addable = validToolIds.filter((id) => !selectedTools.includes(id));
+    const metaById = new Map(catalog.map((tool) => [String(tool.id), tool]));
+    const rowFor = (id) => {
+      const meta = metaById.get(id) || null;
+      const unavailable = !validToolSet.has(id);
+      const reason = unavailable ? mode === "catalog" ? view.toolScopeNotInCatalogReason : view.toolScopeNotEnabledReason : "";
+      return {
+        id,
+        name: id,
+        meta,
+        unavailable,
+        reason,
+        className: `tool-row${unavailable ? " tool-row--invalid" : ""}`,
+        description: unavailable ? reason : meta?.desc || view.toolScopeToolDescriptionFallback,
+        removeLabel: view.toolScopeRemoveLabel
+      };
+    };
+    const optionFor = (id) => {
+      const meta = metaById.get(id) || null;
+      const label = meta?.label || id;
+      const desc = meta?.desc || id;
+      return {
+        id,
+        value: id,
+        label,
+        description: desc,
+        optionLabel: `${label} \u2014 ${desc}`,
+        meta
+      };
+    };
+    return {
+      selectedTools,
+      addable,
+      addableRows: addable.map(optionFor),
+      rows: selectedTools.map(rowFor),
+      addSelectValue: "",
+      addSelectPlaceholder: mode === "member" && !member ? view.toolScopeSelectMemberPlaceholder : mode === "catalog" ? view.toolScopeBlockCatalogPlaceholder : view.toolScopeAddProfilePlaceholder,
+      disabled: mode === "member" && !member || addable.length === 0
+    };
+  }
+  function validMemberToolIds(member, catalogIds) {
+    const catalogIdSet = new Set(catalogIds || []);
+    return Array.from(new Set(normalizeStringList(member?.tools).filter((id) => catalogIdSet.has(id))));
+  }
+  function validStepToolSet({ member, mode = "member", toolCatalog = [] } = {}) {
+    const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
+    const catalogIds = Array.from(new Set(catalog.map((tool) => String(tool.id).trim()).filter(Boolean)));
+    if (mode === "catalog") return new Set(catalogIds);
+    return new Set(validMemberToolIds(member, catalogIds));
+  }
+  function normalizeStepToolScopeList(tools, options = {}) {
+    const validTools = validStepToolSet(options);
+    return Array.from(new Set(normalizeStringList(tools).filter((tool) => validTools.has(tool))));
+  }
+  function stepToolScopeAddPatch(selected, raw, options = {}) {
+    const id = String(raw || "").trim();
+    const field = options.field || "allowedTools";
+    if (!id) return { ok: false, id: "", patch: null };
+    const state = stepToolScopeState({ ...options, selected });
+    if (!state.addable.includes(id)) {
+      return { ok: false, id, patch: null };
     }
     return {
       ok: true,
-      error: "",
-      flow: flowStepInsertPatch(flow, laneRef, newStep, options),
-      selection: newStep.id,
-      picker: { open: false }
+      id,
+      patch: { [field]: [...state.selectedTools, id] }
     };
   }
-  function flowStepDeletePatch(flow, id) {
-    const target = String(id || "").trim();
-    const steps = flowStepRemoveFromTree(flow?.steps || [], target);
-    const nextFlow = { ...flow || {}, steps };
-    return target ? reconcileDeletedFlowStepReferences(nextFlow, target) : nextFlow;
-  }
-  function flowStepDeleteTransition(flow, id) {
+  function stepToolScopeRemovePatch(selected, raw, options = {}) {
+    const id = String(raw || "").trim();
+    const field = options.field || "allowedTools";
+    if (!id) return { ok: false, id: "", patch: null };
+    const selectedTools = Array.from(new Set(normalizeStringList(selected)));
     return {
-      flow: flowStepDeletePatch(flow, id),
-      selection: null,
-      picker: { open: false }
+      ok: true,
+      id,
+      patch: { [field]: selectedTools.filter((candidate) => candidate !== id) }
     };
   }
-  function basicStepPickerOpenTransition(laneRef) {
-    return { picker: { open: true, at: laneRef || null } };
+  function memberSkillTogglePatch(member, skillId, skillRealms = []) {
+    const id = String(skillId || "").trim();
+    if (!id) return { ok: false, id: "", patch: null };
+    const skills = normalizeStringList(member?.skills);
+    const selected = skills.includes(id);
+    if (!selected && !skillIdsFromRealms(skillRealms).has(id)) {
+      return { ok: false, id, patch: null };
+    }
+    return {
+      ok: true,
+      id,
+      selected: !selected,
+      patch: { skills: selected ? skills.filter((candidate) => candidate !== id) : [...skills, id] }
+    };
   }
-  function basicStepPickerCloseTransition() {
-    return { picker: { open: false } };
+  function memberSkillRemovePatch(member, skillId) {
+    const id = String(skillId || "").trim();
+    if (!id) return { ok: false, id: "", patch: null };
+    const skills = normalizeStringList(member?.skills);
+    return { ok: true, id, patch: { skills: skills.filter((candidate) => candidate !== id) } };
   }
-  function basicCanvasClearTransition() {
-    return { selection: null, picker: { open: false } };
+  function memberInlineSkillPatch(member, realms, spec = {}, accessView = null) {
+    const view = agentAccessViewForState(accessView);
+    const result = addInlineSkillToRealms(realms, spec, accessView);
+    const skills = normalizeStringList(member?.skills);
+    return {
+      ...result,
+      realmId: view.inlineSkillRealmId,
+      patch: { skills: skills.includes(result.id) ? skills : [...skills, result.id] }
+    };
   }
-  function basicStepSelectionTransition(id) {
-    const selection = String(id || "").trim() || null;
-    return { selection, picker: { open: false } };
+  function memberSkillAccessState({ member, skillRealms, realmId = "", inlineOpen = false, accessView = null } = {}) {
+    const view = agentAccessViewForState(accessView);
+    const realms = Array.isArray(skillRealms) ? skillRealms.filter((realm) => realm?.id) : [];
+    const defaultRealm = realms.find((realm) => realm.default) || realms[0] || null;
+    const selectedRealm = realms.find((realm) => realm.id === realmId) || defaultRealm;
+    const selectedSkillIds = normalizeStringList(member?.skills);
+    const selectedSet = new Set(selectedSkillIds);
+    const byId = /* @__PURE__ */ new Map();
+    for (const sourceRealm of realms) {
+      for (const skill of sourceRealm.skills || []) {
+        const id = String(skill?.id || "").trim();
+        if (!id || byId.has(id)) continue;
+        byId.set(id, { ...skill, id, realm: sourceRealm });
+      }
+    }
+    const skillRows = (selectedRealm?.skills || []).filter((skill) => String(skill?.id || "").trim()).map((skill) => {
+      const id = String(skill.id).trim();
+      const selected = selectedSet.has(id);
+      return {
+        id,
+        selected,
+        className: `skill-row${selected ? " is-on" : ""}`,
+        checkLabel: selected ? view.skillSelectedCheckLabel : "",
+        name: id,
+        desc: skill.desc || skill.path || skill.source || view.skillDefaultDescription,
+        skill
+      };
+    });
+    const selectedOutsideRealm = selectedSkillIds.map((id) => byId.get(id)).filter((skill) => skill && skill.realm?.id !== selectedRealm?.id).map((skill) => ({
+      id: skill.id,
+      realmId: skill.realm?.id || "",
+      realmLabel: skill.realm?.label || skill.realm?.id || "",
+      className: "skill-chip",
+      title: skill.realm?.label || skill.realm?.id || "",
+      label: skill.id,
+      detail: skill.realm?.label || skill.realm?.id || "",
+      removeLabel: view.skillRemoveLabel
+    }));
+    const unavailableSelected = selectedSkillIds.filter((id) => !byId.has(id)).map((id) => ({
+      id,
+      className: "skill-chip is-invalid",
+      label: id,
+      removeLabel: view.skillRemoveLabel
+    }));
+    return {
+      sectionTitle: view.skillSectionTitle,
+      inlineToggleLabel: inlineOpen ? view.skillInlineCancelLabel : view.skillInlineOpenLabel,
+      hint: view.skillHint,
+      inlineLabelPlaceholder: view.skillInlineLabelPlaceholder,
+      inlineContentRows: view.skillInlineContentRows,
+      inlineContentPlaceholder: view.skillInlineContentPlaceholder,
+      inlineCreateHint: view.skillInlineCreateHint,
+      inlineAddLabel: view.skillInlineAddLabel,
+      inlineErrorFallback: view.skillInlineErrorFallback,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
+      noRealmsMessage: view.skillNoRealmsMessage,
+      realmLabel: view.skillRealmLabel,
+      hasRealms: realms.length > 0,
+      realmId: selectedRealm?.id || "",
+      realmOptions: realms.map((realm) => ({
+        id: realm.id,
+        label: `${realm.label || realm.id}${realm.default ? view.skillDefaultRealmSuffix : ""}`
+      })),
+      skillRows,
+      selectedOutsideRealm,
+      unavailableSelected,
+      unavailableHeading: view.skillUnavailableHeading,
+      outsideRealmHeading: view.skillOutsideRealmHeading
+    };
   }
-  function flowStepTaskPatch(rawTask) {
-    return { task: String(rawTask || "") };
+
+  // ../packages/flow-editor-core/src/document/build-projection.ts
+  function graphProjectionEdgeKinds(contract) {
+    return {
+      defaultKind: contractDefaultValue(contract, "graph_edge_kind"),
+      conditionKind: contractDefaultValue(contract, "graph_condition_edge_kind"),
+      fanoutKind: contractDefaultValue(contract, "graph_fanout_edge_kind")
+    };
   }
-  function flowStepInstructionPatch(rawInstruction) {
-    return { instruction: String(rawInstruction || "") };
+
+  // ../packages/flow-editor-core/src/editors/graph-editor.ts
+  function graphCanvasViewState(graphView) {
+    const view = graphView && typeof graphView === "object" ? graphView : null;
+    return {
+      zoomOutTitle: String(view?.zoomOutTitle || ""),
+      fitTitle: String(view?.fitTitle || ""),
+      zoomInTitle: String(view?.zoomInTitle || ""),
+      portDragTitle: String(view?.portDragTitle || ""),
+      addNodeSearchIcon: String(view?.addNodeSearchIcon || ""),
+      addNodeSearchPlaceholder: String(view?.addNodeSearchPlaceholder || ""),
+      addNodeCloseLabel: String(view?.addNodeCloseLabel || ""),
+      addNodeCloseTitle: String(view?.addNodeCloseTitle || ""),
+      addNodeAgentsLabel: String(view?.addNodeAgentsLabel || ""),
+      addNodeControlsLabel: String(view?.addNodeControlsLabel || ""),
+      addNodeTerminalsLabel: String(view?.addNodeTerminalsLabel || ""),
+      addNodeEmptyPrefix: String(view?.addNodeEmptyPrefix || ""),
+      addNodeEmptySuffix: String(view?.addNodeEmptySuffix || ""),
+      addNodeJumpLabel: String(view?.addNodeJumpLabel || ""),
+      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
+      authoringOperationFallbackError: String(view?.authoringOperationFallbackError || ""),
+      gatePaletteRows: Array.isArray(view?.gatePaletteRows) ? view.gatePaletteRows : [],
+      terminalPaletteRows: Array.isArray(view?.terminalPaletteRows) ? view.terminalPaletteRows : [],
+      gateKindLabels: view?.gateKindLabels && typeof view.gateKindLabels === "object" ? view.gateKindLabels : {},
+      terminalKindLabels: view?.terminalKindLabels && typeof view.terminalKindLabels === "object" ? view.terminalKindLabels : {},
+      frameKindLabels: view?.frameKindLabels && typeof view.frameKindLabels === "object" ? view.frameKindLabels : {},
+      edgeKindLabels: view?.edgeKindLabels && typeof view.edgeKindLabels === "object" ? view.edgeKindLabels : {},
+      inspectorDeleteLabel: String(view?.inspectorDeleteLabel || ""),
+      inspectorLabelTitle: String(view?.inspectorLabelTitle || ""),
+      inspectorKindTitle: String(view?.inspectorKindTitle || ""),
+      inspectorRuntimeDefaultLabel: String(view?.inspectorRuntimeDefaultLabel || ""),
+      instanceEyebrow: String(view?.instanceEyebrow || ""),
+      instanceIdLineTemplate: String(view?.instanceIdLineTemplate || ""),
+      instanceMemberRoleTemplate: String(view?.instanceMemberRoleTemplate || ""),
+      instanceEditMemberLabel: String(view?.instanceEditMemberLabel || ""),
+      instanceModelLabel: String(view?.instanceModelLabel || ""),
+      instanceSchemaLabel: String(view?.instanceSchemaLabel || ""),
+      instanceToolsLabel: String(view?.instanceToolsLabel || ""),
+      instanceMemberHint: String(view?.instanceMemberHint || ""),
+      instancePositionTitle: String(view?.instancePositionTitle || ""),
+      instancePositionStageLabel: String(view?.instancePositionStageLabel || ""),
+      instancePositionSlotLabel: String(view?.instancePositionSlotLabel || ""),
+      instanceOutputTitleTemplate: String(view?.instanceOutputTitleTemplate || ""),
+      instanceOutputRequiredLabel: String(view?.instanceOutputRequiredLabel || ""),
+      instanceOutputHint: String(view?.instanceOutputHint || ""),
+      instanceOutputOpenMemberLabel: String(view?.instanceOutputOpenMemberLabel || ""),
+      gateEyebrowTemplate: String(view?.gateEyebrowTemplate || ""),
+      gateIdLineTemplate: String(view?.gateIdLineTemplate || ""),
+      gateQuorumIncomingTemplate: String(view?.gateQuorumIncomingTemplate || ""),
+      gateMemberOptionTemplate: String(view?.gateMemberOptionTemplate || ""),
+      terminalEyebrowTemplate: String(view?.terminalEyebrowTemplate || ""),
+      terminalIdLineTemplate: String(view?.terminalIdLineTemplate || ""),
+      terminalAuthoringLockedTitle: String(view?.terminalAuthoringLockedTitle || ""),
+      terminalAuthoringLockedHint: String(view?.terminalAuthoringLockedHint || ""),
+      edgeEyebrowTemplate: String(view?.edgeEyebrowTemplate || ""),
+      edgeTitleTemplate: String(view?.edgeTitleTemplate || ""),
+      edgeIdLineTemplate: String(view?.edgeIdLineTemplate || ""),
+      edgeFieldPlaceholder: String(view?.edgeFieldPlaceholder || ""),
+      edgeFieldNoSchemaPlaceholder: String(view?.edgeFieldNoSchemaPlaceholder || ""),
+      gateCollectionTitle: String(view?.gateCollectionTitle || ""),
+      gateJoinMemberLabel: String(view?.gateJoinMemberLabel || ""),
+      gateJoinMemberPlaceholder: String(view?.gateJoinMemberPlaceholder || ""),
+      gateJoinMemberHint: String(view?.gateJoinMemberHint || ""),
+      gateDispatchTitle: String(view?.gateDispatchTitle || ""),
+      gateDispatchHint: String(view?.gateDispatchHint || ""),
+      gateConditionsTitle: String(view?.gateConditionsTitle || ""),
+      gateEmptyBranchHint: String(view?.gateEmptyBranchHint || ""),
+      gateWiringTitle: String(view?.gateWiringTitle || ""),
+      gateIncomingLabel: String(view?.gateIncomingLabel || ""),
+      gateOutgoingLabel: String(view?.gateOutgoingLabel || ""),
+      branchConditionModeConditionLabel: String(view?.branchConditionModeConditionLabel || ""),
+      branchConditionModeFallbackLabel: String(view?.branchConditionModeFallbackLabel || ""),
+      branchConditionTargetPrefix: String(view?.branchConditionTargetPrefix || ""),
+      graphConditionTargetMissingLabel: String(view?.graphConditionTargetMissingLabel || ""),
+      graphConditionOwnerOptionTemplate: String(view?.graphConditionOwnerOptionTemplate || ""),
+      graphConditionFieldOptionTemplate: String(view?.graphConditionFieldOptionTemplate || ""),
+      graphInputParamSourceLabel: String(view?.graphInputParamSourceLabel || ""),
+      sourceFileLabel: String(view?.sourceFileLabel || ""),
+      sourceFileAriaLabel: String(view?.sourceFileAriaLabel || ""),
+      sourceFileGlyph: String(view?.sourceFileGlyph || ""),
+      sourceFileRoleLabel: String(view?.sourceFileRoleLabel || ""),
+      sourceFileNodeId: String(view?.sourceFileNodeId || ""),
+      sourceFileNodeKind: String(view?.sourceFileNodeKind || ""),
+      sourceFileNodeColOffset: Number(view?.sourceFileNodeColOffset || 0),
+      sourceFileNodeRowOffset: Number(view?.sourceFileNodeRowOffset || 0),
+      sourceFileActivationHash: String(view?.sourceFileActivationHash || ""),
+      sourceFileActivationSelector: String(view?.sourceFileActivationSelector || ""),
+      branchConditionFieldPlaceholder: String(view?.branchConditionFieldPlaceholder || ""),
+      branchConditionNoOptionsHint: String(view?.branchConditionNoOptionsHint || ""),
+      edgeConditionTitle: String(view?.edgeConditionTitle || ""),
+      edgeNoConditionOptionsHint: String(view?.edgeNoConditionOptionsHint || ""),
+      edgeOwnerPlaceholder: String(view?.edgeOwnerPlaceholder || ""),
+      edgeFromTitle: String(view?.edgeFromTitle || ""),
+      edgeToTitle: String(view?.edgeToTitle || ""),
+      edgeRowInstanceLabel: String(view?.edgeRowInstanceLabel || ""),
+      edgeRowMemberLabel: String(view?.edgeRowMemberLabel || ""),
+      edgeRowSchemaLabel: String(view?.edgeRowSchemaLabel || ""),
+      edgeRowMissingValue: String(view?.edgeRowMissingValue || ""),
+      edgeTerminalMemberValue: String(view?.edgeTerminalMemberValue || "")
+    };
   }
-  function flowStepQuorumPatch(rawValue) {
-    return { quorum: normalizePositiveInteger(rawValue) };
+  function graphConditionRefForEdge(edge) {
+    const condition = normalizedEdgeCondition(edge);
+    return parseGraphConditionVar(condition?.path || "");
   }
-  function flowStepTimeoutPatch(rawValue) {
-    return { timeoutMs: normalizePositiveInteger(rawValue) };
+  function graphConditionOptions({ instances, members, schemas, edge, flow, graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
+    const graphInstances = Array.isArray(instances) ? instances : [];
+    const byId = new Map(graphInstances.map((inst) => [inst.id, inst]));
+    const memberById = new Map((Array.isArray(members) ? members : []).map((member) => [member.id, member]));
+    const schemaById = new Map((Array.isArray(schemas) ? schemas : []).map((schema) => [schema.id, schema]));
+    const from = byId.get(edge?.from);
+    const to = byId.get(edge?.to);
+    const fromCol = Number(from?.col ?? 0);
+    const toCol = Number(to?.col ?? fromCol);
+    const limitCol = Math.max(fromCol, toCol);
+    const condRef = graphConditionRefForEdge(edge);
+    const params = inputParamsForStep((flow?.steps || []).find((step) => step.type === "input"));
+    const paramFields = params.length ? params : condRef.namespace === "params" && condRef.field ? [{ id: condRef.field, name: condRef.field, type: "string" }] : [];
+    const options = graphInstances.filter((inst) => inst.memberId && !inst.isGate && !inst.isTerminal).filter((inst) => inst.id !== to?.id).filter((inst) => inst.id === from?.id || Number(inst.col ?? 0) <= limitCol).map((inst) => {
+      const member = memberById.get(inst.memberId);
+      const schema = member?.schema ? schemaById.get(member.schema) || null : null;
+      return { inst, member, schema, fields: schema?.fields || [] };
+    }).filter((option) => option.member && option.fields.length > 0).sort((a, b) => Number(a.inst.col || 0) - Number(b.inst.col || 0) || Number(a.inst.row || 0) - Number(b.inst.row || 0));
+    if (paramFields.length) {
+      options.unshift({
+        inst: { id: "params" },
+        member: { name: view.graphInputParamSourceLabel },
+        schema: { id: "params" },
+        fields: paramFields,
+        isParams: true
+      });
+    }
+    return options;
   }
-  function flowStepMaxIterationsPatch(rawValue) {
-    return { maxIterations: normalizePositiveInteger(rawValue) };
+  function graphEdgeConditionPatch(edge, patch = {}, options = {}) {
+    const previous = normalizedEdgeCondition(edge);
+    const previousText = previous?.path ? conditionTextForPath(previous.path, previous) : "";
+    const currentCond = edge?.cond && typeof edge.cond === "object" && !Array.isArray(edge.cond) ? edge.cond : {};
+    const merged = { ...currentCond, ...patch };
+    const normalized = normalizedEdgeCondition({ cond: merged });
+    if (!normalized?.path) {
+      return { cond: { ...merged, var: "" }, label: "" };
+    }
+    const cond = {
+      var: normalized.path,
+      op: normalized.op || options.defaultOperator || "",
+      val: normalized.val ?? ""
+    };
+    const currentLabel = String(edge?.label || "");
+    const shouldReplaceLabel = !!options.forceLabel || !currentLabel || !!previousText && currentLabel === previousText;
+    return {
+      cond,
+      label: shouldReplaceLabel ? conditionTextForPath(cond.var, cond) : edge.label
+    };
   }
-  function flowStepLoopIdPatch(rawLoopId) {
-    return { loopId: String(rawLoopId || "").trim() };
+  function graphEdgeConditionOperatorPatch(edge, rawOperator, options = {}) {
+    const patch = basicConditionOperatorPatch(rawOperator, options.contract);
+    if (!("op" in patch)) return {};
+    return graphEdgeConditionPatch(edge, patch, options);
   }
-  function flowStepRepeatConditionPatch(step, patch = {}) {
-    const currentCond = step?.cond && typeof step.cond === "object" && !Array.isArray(step.cond) ? step.cond : {};
-    return { cond: { ...currentCond, ...patch } };
+  function graphEdgeConditionValuePatch(edge, rawValue, options = {}) {
+    return graphEdgeConditionPatch(edge, basicConditionValuePatch(rawValue), options);
   }
-  function basicConditionSourcePatch(conditionOptions, rawStepId, options = {}) {
-    const stepId = String(rawStepId || "").trim();
+  function graphConditionPathForOption(option, field) {
+    const name = String(field || "").trim();
+    if (!option || !name) return "";
+    const instanceId = String(option?.inst?.id || "").trim();
+    if (!instanceId) return "";
+    if (option.isParams || instanceId === "params") return `params.${name}`;
+    return `steps.${instanceId}.${name}`;
+  }
+  function graphFirstConditionPatch(edge, conditionOptions = [], options = {}) {
     const rows = Array.isArray(conditionOptions) ? conditionOptions : [];
-    if (stepId && !rows.some((candidate) => String(candidate?.stepId || "").trim() === stepId)) {
-      return {};
+    const condRef = graphConditionRefForEdge(edge);
+    const preferredId = String(options.instanceId || condRef.instanceId || "").trim();
+    const owner = rows.find((option) => option?.inst?.id === preferredId) || rows[0];
+    const field = options.field !== void 0 ? String(options.field || "").trim() : String(condRef.field || owner?.fields?.[0]?.name || "").trim();
+    const path = graphConditionPathForOption(owner, field);
+    return path ? { var: path, op: edge?.cond?.op || options.defaultOperator || "", val: edge?.cond?.val ?? "" } : { var: "" };
+  }
+  function graphConditionEdgeKindForPatch(options = {}) {
+    return String(options.conditionKind || contractDefaultValue(options.contract, "graph_condition_edge_kind")).trim();
+  }
+  function graphEdgeConditionOwnerPatch(edge, conditionOptions = [], instanceId, options = {}) {
+    const rows = Array.isArray(conditionOptions) ? conditionOptions : [];
+    const id = String(instanceId || "").trim();
+    if (id && !rows.some((option) => String(option?.inst?.id || "").trim() === id)) return {};
+    const owner = rows.find((option) => option?.inst?.id === instanceId);
+    const firstField = String(owner?.fields?.[0]?.name || "").trim();
+    const conditionPatch = graphFirstConditionPatch(edge, rows, {
+      instanceId,
+      field: firstField,
+      defaultOperator: options.defaultOperator
+    });
+    const patch = graphEdgeConditionPatch(edge, conditionPatch, {
+      defaultOperator: options.defaultOperator,
+      forceLabel: options.forceLabel
+    });
+    return options.includeKind ? { kind: graphConditionEdgeKindForPatch(options), ...patch } : patch;
+  }
+  function graphEdgeConditionFieldPatch(edge, conditionOptions = [], field, options = {}) {
+    const rows = Array.isArray(conditionOptions) ? conditionOptions : [];
+    const condRef = graphConditionRefForEdge(edge);
+    const owner = rows.find((option) => option?.inst?.id === condRef.instanceId) || rows[0];
+    const fieldName = String(field || "").trim();
+    if (fieldName && !(owner?.fields || []).some((candidate) => String(candidate?.name || "").trim() === fieldName)) return {};
+    const conditionPatch = graphFirstConditionPatch(edge, rows, {
+      instanceId: owner?.inst?.id || "",
+      field,
+      defaultOperator: options.defaultOperator
+    });
+    const patch = graphEdgeConditionPatch(edge, conditionPatch, {
+      defaultOperator: options.defaultOperator,
+      forceLabel: options.forceLabel
+    });
+    return options.includeKind ? { kind: graphConditionEdgeKindForPatch(options), ...patch } : patch;
+  }
+  function graphEdgeKindPatch(edge, nextKind, options = {}) {
+    const kind = String(nextKind || "").trim();
+    const conditionKind = graphConditionEdgeKindForPatch(options);
+    if (kind !== conditionKind) {
+      const previous = normalizedEdgeCondition(edge);
+      const previousText = previous?.path ? conditionTextForPath(previous.path, previous) : "";
+      const currentLabel = String(edge?.label || "");
+      return {
+        kind,
+        cond: null,
+        label: previousText && currentLabel === previousText ? "" : currentLabel
+      };
     }
-    const selected = rows.find((candidate) => String(candidate?.stepId || "").trim() === stepId);
-    const patch = { stepId, field: "" };
-    if (options.includeNamespace) {
-      patch.namespace = String(selected?.namespace || options.defaultNamespace || "steps").trim();
+    return {
+      kind: conditionKind,
+      ...graphEdgeConditionPatch(edge, options.conditionPatch || {}, {
+        defaultOperator: options.defaultOperator,
+        forceLabel: options.forceLabel
+      })
+    };
+  }
+  function graphEdgeFallbackPatch(edge, contract) {
+    const kind = contractDefaultValue(contract, "graph_edge_kind");
+    const draft = editorGraphDraftContract(contract);
+    if (!kind || !draft) return null;
+    return { kind, label: draft.fallbackEdgeLabel, cond: null };
+  }
+  function graphBranchConditionModePatch(edge, mode, options = {}) {
+    const value = String(mode || "").trim();
+    if (value === "fallback") return graphEdgeFallbackPatch(edge, options.contract);
+    const conditionKind = graphConditionEdgeKindForPatch(options);
+    if (value !== conditionKind) return {};
+    return graphEdgeConditionOwnerPatch(edge, options.conditionOptions, options.firstOwnerId, {
+      defaultOperator: options.defaultOperator,
+      forceLabel: true,
+      includeKind: true,
+      contract: options.contract,
+      conditionKind
+    });
+  }
+  function graphSelectionState({ selection = {}, instances = [], edges = [] } = {}) {
+    const kind = String(selection?.kind || "");
+    if (kind === "instance") {
+      const instance = (Array.isArray(instances) ? instances : []).find((candidate) => candidate.id === selection.id) || null;
+      return { kind, instance, edge: null, missing: !instance };
     }
-    return patch;
-  }
-  function basicConditionFieldPatch(rawField, fieldOptions) {
-    const field = String(rawField || "").trim();
-    const rows = Array.isArray(fieldOptions) ? fieldOptions : [];
-    if (rows.length && field && !rows.some((option) => String(option?.value || option?.field?.name || "").trim() === field)) {
-      return {};
+    if (kind === "edge") {
+      const edge = (Array.isArray(edges) ? edges : []).find((candidate) => candidate.id === selection.id) || null;
+      return { kind, instance: null, edge, missing: !edge };
     }
-    return { field };
+    return { kind: "", instance: null, edge: null, missing: false };
   }
-  function basicConditionOperatorPatch(rawOperator, contract) {
-    const op = String(rawOperator || "").trim();
-    if (contract && op && !conditionOperatorOptions(contract, op).some((option) => option.value === op && !option.disabled)) {
-      return {};
+  function graphSelectionProjection(kind, id) {
+    const selectionKind = String(kind || "").trim();
+    const selectionId = String(id || "").trim();
+    if (!selectionId || selectionKind !== "instance" && selectionKind !== "edge") return { kind: null, id: null };
+    return { kind: selectionKind, id: selectionId };
+  }
+  function graphTemplateInspectorState({ studio = {}, template = null, templateSeed = null, templateView = null } = {}) {
+    const seed = templateSeed && typeof templateSeed === "object" ? templateSeed : {};
+    const view = graphTemplateViewForState(templateView);
+    const members = Array.isArray(studio.members) ? studio.members : [];
+    const instances = Array.isArray(studio.instances) ? studio.instances : [];
+    const edges = Array.isArray(studio.edges) ? studio.edges : [];
+    const frames = Array.isArray(studio.frames) ? studio.frames : [];
+    const triggerLabel = template?.trigger || (Array.isArray(seed.triggers?.labels) ? seed.triggers.labels.join(", ") : "");
+    const labels = triggerLabel ? [triggerLabel] : [];
+    const placedMembers = new Set(instances.filter((instance) => instance?.memberId).map((instance) => instance.memberId)).size;
+    const memberSummary = view.summaryMembersValueTemplate.replaceAll("{placed}", String(placedMembers)).replaceAll("{total}", String(members.length));
+    return {
+      name: template?.name || seed.name || "",
+      repo: template?.repo || seed.repo || "",
+      version: template?.version || seed.version || "",
+      templateEyebrow: view.templateEyebrow,
+      summaryTitle: view.summaryTitle,
+      triggersTitle: view.triggersTitle,
+      quickStartTitle: view.quickStartTitle,
+      quickStartRows: view.quickStartRows,
+      triggers: {
+        labels,
+        default: !!template?.defaultTrigger
+      },
+      triggerRows: [
+        { key: "labels", label: view.triggerLabelsLabel, value: labels.join(", ") },
+        {
+          key: "default",
+          label: view.triggerDefaultLabel,
+          value: template?.defaultTrigger ? view.defaultYesLabel : view.defaultNoLabel
+        }
+      ],
+      summaryRows: [
+        { key: "members", label: view.summaryMembersLabel, value: memberSummary },
+        { key: "instances", label: view.summaryInstancesLabel, value: instances.filter((instance) => !instance?.isTerminal).length },
+        { key: "terminals", label: view.summaryTerminalsLabel, value: instances.filter((instance) => instance?.isTerminal).length },
+        { key: "edges", label: view.summaryEdgesLabel, value: edges.length },
+        { key: "frames", label: view.summaryFramesLabel, value: frames.length }
+      ]
+    };
+  }
+  function graphInstanceControlState({ inst, instances = [], members = [], schemas = [], graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
+    const sourceMembers = Array.isArray(members) ? members : [];
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    const member = inst?.memberId ? sourceMembers.find((candidate) => candidate.id === inst.memberId) || null : null;
+    const id = String(inst?.id || "");
+    const col = Number.isFinite(Number(inst?.col)) ? Number(inst.col) + 1 : 1;
+    const row = Number.isFinite(Number(inst?.row)) ? Number(inst.row) + 1 : 1;
+    const outputSchema = member?.schema ? (Array.isArray(schemas) ? schemas : []).find((schema) => schema.id === member.schema) || null : null;
+    const outputFields = Array.isArray(outputSchema?.fields) ? outputSchema.fields : [];
+    const outputFieldRows = outputFields.map((field) => ({
+      id: field.id,
+      name: field.name,
+      type: field.type,
+      required: !!field.required,
+      requiredLabel: field.required ? view.instanceOutputRequiredLabel : ""
+    }));
+    const tools = normalizeStringList(member?.tools);
+    const memberToolSummary = tools.length ? `${tools.length} \xB7 ${tools.slice(0, 3).join(", ")}${tools.length > 3 ? "\u2026" : ""}` : "0";
+    const forkSourceOptions = sourceInstances.filter((candidate) => !candidate?.isTerminal && candidate.id !== inst?.id).map((candidate) => {
+      const sourceMember = candidate?.memberId ? sourceMembers.find((memberCandidate) => memberCandidate.id === candidate.memberId) || null : null;
+      return {
+        value: candidate.id,
+        label: `${sourceMember?.name || candidate.id} \xB7 ${candidate.id}`,
+        instance: candidate,
+        member: sourceMember
+      };
+    });
+    return {
+      member,
+      memberId: member?.id || "",
+      eyebrow: view.instanceEyebrow,
+      title: member ? member.name : view.edgeRowMissingValue,
+      idLine: graphTemplateText(view.instanceIdLineTemplate, { id, col, row }),
+      deleteLabel: view.inspectorDeleteLabel,
+      memberTitle: member ? member.name : view.edgeRowMissingValue,
+      memberRoleLabel: member ? graphTemplateText(view.instanceMemberRoleTemplate, { role: member.role || "" }) : "",
+      editMemberLabel: view.instanceEditMemberLabel,
+      memberName: member?.name || "",
+      memberSchemaLabel: member?.schema || view.edgeRowMissingValue,
+      memberToolSummary,
+      memberSummaryRows: [
+        { key: "model", label: view.instanceModelLabel, value: member?.model || view.edgeRowMissingValue },
+        { key: "schema", label: view.instanceSchemaLabel, value: member?.schema || view.edgeRowMissingValue },
+        { key: "tools", label: view.instanceToolsLabel, value: memberToolSummary }
+      ],
+      memberHint: view.instanceMemberHint,
+      positionTitle: view.instancePositionTitle,
+      positionRows: [
+        { key: "stage", label: view.instancePositionStageLabel, value: col },
+        { key: "slot", label: view.instancePositionSlotLabel, value: row }
+      ],
+      outputSchema,
+      outputFields,
+      outputTitle: graphTemplateText(view.instanceOutputTitleTemplate, { schema: member?.schema || view.edgeRowMissingValue }),
+      outputFieldRows,
+      outputHint: view.instanceOutputHint,
+      outputOpenMemberLabel: view.instanceOutputOpenMemberLabel,
+      forkSourceOptions,
+      firstForkSourceId: forkSourceOptions[0]?.value || ""
+    };
+  }
+  function graphTemplateText(template, values = {}) {
+    let out = String(template || "");
+    for (const [key, value] of Object.entries(values || {})) {
+      out = out.replaceAll(`{${key}}`, String(value ?? ""));
     }
-    return { op };
+    return out;
   }
-  function basicConditionValuePatch(rawValue) {
-    return { val: rawValue ?? "" };
+  function graphToolTagClass(toolId, toolCatalog = []) {
+    const id = String(toolId || "");
+    const tool = (Array.isArray(toolCatalog) ? toolCatalog : []).find((candidate) => String(candidate?.id || "") === id) || null;
+    const tagClass = String(tool?.tagClass || tool?.tag_class || tool?.raw?.tag_class || "").trim();
+    return tagClass ? ` ${tagClass}` : "";
   }
-  function flowStepIterationInputPatch(rawMode, contract) {
-    const iterationInput = String(rawMode || "").trim();
-    if (!optionValueAllowed(repeatIterationInputOptions(contract, iterationInput), iterationInput, { allowBlank: true })) return {};
-    return { iterationInput };
+  function graphGridState({ instances = [], gridBase = {} } = {}) {
+    const baseCols = Math.max(1, Number(gridBase?.cols || 1));
+    const baseRows = Math.max(1, Number(gridBase?.rows || 1));
+    let maxCol = baseCols - 1;
+    let maxRow = baseRows - 1;
+    for (const instance of Array.isArray(instances) ? instances : []) {
+      const col = Number(instance?.col);
+      const row = Number(instance?.row);
+      if (Number.isFinite(col) && col > maxCol) maxCol = col;
+      if (Number.isFinite(row) && row > maxRow) maxRow = row;
+    }
+    const grid = {
+      ...gridBase,
+      cols: maxCol + 2,
+      rows: maxRow + 2
+    };
+    const totalW = Number(grid.padX || 0) * 2 + Number(grid.cols || 0) * Number(grid.cellW || 0) + Math.max(0, Number(grid.cols || 0) - 1) * Number(grid.gapX || 0);
+    const totalH = Number(grid.padY || 0) * 2 + Number(grid.rows || 0) * Number(grid.cellH || 0) + Math.max(0, Number(grid.rows || 0) - 1) * Number(grid.gapY || 0);
+    return { grid, totalW, totalH };
   }
-  function memberRoleAllowed(members, rawRole) {
-    const role = String(rawRole || "").trim();
-    if (!role) return true;
-    return memberIdSet(members).has(role);
+  function graphCellXY(grid, col, row) {
+    return {
+      x: Number(grid?.padX || 0) + Number(col || 0) * (Number(grid?.cellW || 0) + Number(grid?.gapX || 0)),
+      y: Number(grid?.padY || 0) + Number(row || 0) * (Number(grid?.cellH || 0) + Number(grid?.gapY || 0))
+    };
   }
-  function flowStepControllerRolePatch(rawRole, members) {
+  function graphNodeBox(grid, inst) {
+    const { x, y } = graphCellXY(grid, inst?.col, inst?.row);
+    if (inst?.isSourceFile) {
+      const sw = 210;
+      const sh = 58;
+      return {
+        x: x + (Number(grid?.cellW || 0) - sw) / 2,
+        y: y + (Number(grid?.cellH || 0) - sh) / 2,
+        w: sw,
+        h: sh
+      };
+    }
+    if (inst?.isGate) {
+      const gw = 156;
+      const gh = 56;
+      return {
+        x: x + (Number(grid?.cellW || 0) - gw) / 2,
+        y: y + (Number(grid?.cellH || 0) - gh) / 2,
+        w: gw,
+        h: gh
+      };
+    }
+    return {
+      x: x + (Number(grid?.cellW || 0) - GRAPH_NODE_W) / 2,
+      y: y + (Number(grid?.cellH || 0) - GRAPH_NODE_H) / 2,
+      w: GRAPH_NODE_W,
+      h: GRAPH_NODE_H
+    };
+  }
+  function graphPortOut(grid, inst) {
+    const box = graphNodeBox(grid, inst);
+    return { x: box.x + box.w, y: box.y + box.h / 2 };
+  }
+  function graphPortIn(grid, inst) {
+    const box = graphNodeBox(grid, inst);
+    return { x: box.x, y: box.y + box.h / 2 };
+  }
+  function graphEdgePath(a, b) {
+    if (b.x < a.x - 20) {
+      const dropY = Math.max(a.y, b.y) + 90;
+      const dx2 = 60;
+      return `M ${a.x} ${a.y} C ${a.x + dx2} ${a.y}, ${a.x + dx2} ${dropY}, ${a.x} ${dropY} L ${b.x} ${dropY} C ${b.x - dx2} ${dropY}, ${b.x - dx2} ${b.y}, ${b.x} ${b.y}`;
+    }
+    const dx = Math.max(40, (b.x - a.x) * 0.5);
+    return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
+  }
+  function graphEdgeMidpoint(a, b) {
+    if (b.x < a.x - 20) return { x: (a.x + b.x) / 2, y: Math.max(a.y, b.y) + 90 };
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 6 };
+  }
+  function graphCellAt(grid, x, y) {
+    const col = Math.floor((Number(x || 0) - Number(grid?.padX || 0) + Number(grid?.gapX || 0) / 2) / (Number(grid?.cellW || 0) + Number(grid?.gapX || 0)));
+    const row = Math.floor((Number(y || 0) - Number(grid?.padY || 0) + Number(grid?.gapY || 0) / 2) / (Number(grid?.cellH || 0) + Number(grid?.gapY || 0)));
+    if (col < 0 || col >= Number(grid?.cols || 0) || row < 0 || row >= Number(grid?.rows || 0)) return null;
+    return { col, row };
+  }
+  function graphDragCellAt(grid, world, drag) {
+    const cx = Number(world?.x || 0) - Number(drag?.dx || 0) + GRAPH_NODE_W / 2;
+    const cy = Number(world?.y || 0) - Number(drag?.dy || 0) + GRAPH_NODE_H / 2;
+    return graphCellAt(grid, cx, cy);
+  }
+  function graphCellCanvasRows({ grid, instances = [], hoverCell = null } = {}) {
+    const occupied = /* @__PURE__ */ new Set();
+    for (const instance of Array.isArray(instances) ? instances : []) {
+      occupied.add(`${instance?.col}:${instance?.row}`);
+    }
+    const cols = Math.max(0, Number(grid?.cols || 0));
+    const rows = Math.max(0, Number(grid?.rows || 0));
+    const out = [];
+    for (let col = 0; col < cols; col++) {
+      for (let row = 0; row < rows; row++) {
+        const cellOccupied = occupied.has(`${col}:${row}`);
+        const hovered = Number(hoverCell?.col) === col && Number(hoverCell?.row) === row;
+        const { x, y } = graphCellXY(grid, col, row);
+        out.push({
+          key: `cell-${col}-${row}`,
+          col,
+          row,
+          occupied: cellOccupied,
+          addVisible: !cellOccupied,
+          className: "cell" + (cellOccupied ? " is-occupied" : "") + (hovered ? " is-hover" : ""),
+          style: { left: x, top: y, width: Number(grid?.cellW || 0), height: Number(grid?.cellH || 0) }
+        });
+      }
+    }
+    return out;
+  }
+  function graphGridHeaderCanvasRows({ grid } = {}) {
+    const cols = Math.max(0, Number(grid?.cols || 0));
+    const rows = Math.max(0, Number(grid?.rows || 0));
+    const columns = [];
+    const rowHeaders = [];
+    for (let col = 0; col < cols; col++) {
+      const { x } = graphCellXY(grid, col, 0);
+      columns.push({
+        key: `col-${col}`,
+        label: String(col + 1).padStart(2, "0"),
+        className: "grid-head grid-head--col",
+        style: { left: x, top: 28, width: Number(grid?.cellW || 0) }
+      });
+    }
+    for (let row = 0; row < rows; row++) {
+      const { y } = graphCellXY(grid, 0, row);
+      rowHeaders.push({
+        key: `row-${row}`,
+        label: String.fromCharCode(65 + row),
+        className: "grid-head grid-head--row",
+        style: { left: 14, top: y + Number(grid?.cellH || 0) / 2 - 8 }
+      });
+    }
+    return { columns, rows: rowHeaders };
+  }
+  function graphNodeCanvasState({ inst, members = [], density = "", graphView = null, toolCatalog = [] } = {}) {
+    const view = graphCanvasViewState(graphView);
+    const isCompact = density === "compact";
+    if (inst?.isTerminal) {
+      return {
+        hidden: false,
+        isTerminal: true,
+        isSourceFile: false,
+        dataKind: inst.kind,
+        role: void 0,
+        tabIndex: void 0,
+        ariaLabel: void 0,
+        sourceGlyph: "",
+        sourceActivationHash: "",
+        sourceActivationSelector: "",
+        roleLabel: `terminal \xB7 ${inst.kind}`,
+        title: inst.label,
+        subtitle: inst.kind
+      };
+    }
+    const member = inst?.memberId ? (Array.isArray(members) ? members : []).find((candidate) => candidate.id === inst.memberId) || null : null;
+    if (!member) return { hidden: true, isTerminal: false, isCompact };
+    const tools = normalizeStringList(member.tools);
+    const visibleTools = tools.slice(0, isCompact ? 3 : 6);
+    return {
+      hidden: false,
+      isTerminal: false,
+      isCompact,
+      roleLabel: member.role,
+      launchLabel: inst?.launchMode?.kind?.toLowerCase() || "\u2014",
+      title: member.name,
+      subtitle: member.model,
+      toolRows: visibleTools.map((tool) => ({
+        id: tool,
+        className: "tag" + graphToolTagClass(tool, toolCatalog)
+      })),
+      overflowLabel: tools.length > visibleTools.length ? `+${tools.length - visibleTools.length}` : ""
+    };
+  }
+  function graphFrameCanvasState({ frame, grid } = {}) {
+    const cell = (col, row) => ({
+      x: Number(grid?.padX || 0) + Number(col || 0) * (Number(grid?.cellW || 0) + Number(grid?.gapX || 0)),
+      y: Number(grid?.padY || 0) + Number(row || 0) * (Number(grid?.cellH || 0) + Number(grid?.gapY || 0))
+    });
+    const rows = Math.max(1, Number(grid?.rows || 1));
+    const cellW = Number(grid?.cellW || 0);
+    const cellH = Number(grid?.cellH || 0);
+    const startCol = Number.isFinite(Number(frame?.colStart)) ? Number(frame.colStart) : 0;
+    const endCol = Number.isFinite(Number(frame?.colEnd)) ? Number(frame.colEnd) : startCol;
+    const start = cell(startCol, 0);
+    const end = cell(endCol, rows - 1);
+    const x = start.x - 14;
+    const y = start.y - 18;
+    const width = end.x + cellW - x + 14;
+    const height = end.y + cellH - y + 18;
+    return {
+      id: String(frame?.id || ""),
+      label: String(frame?.label || ""),
+      frameStyle: { left: x, top: y, width, height },
+      labelStyle: { left: x + 12, top: y - 10 }
+    };
+  }
+  function graphSourceFileAdornment({ instances = [], graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
+    if (!view.sourceFileNodeId || !view.sourceFileNodeKind || !view.sourceFileLabel) return null;
+    const sourceInstances = graphCanvasInstances({ instances, graphView });
+    const positioned = sourceInstances.filter((instance) => Number.isFinite(Number(instance?.col)) && Number.isFinite(Number(instance?.row)));
+    const minCol = positioned.length ? Math.min(...positioned.map((instance) => Number(instance.col))) : 0;
+    const minRow = positioned.length ? Math.min(...positioned.map((instance) => Number(instance.row))) : 0;
+    return {
+      id: view.sourceFileNodeId,
+      isSourceFile: true,
+      isGraphAdornment: true,
+      adornmentKind: "source_file",
+      kind: view.sourceFileNodeKind,
+      label: view.sourceFileLabel,
+      col: minCol + view.sourceFileNodeColOffset,
+      row: minRow + view.sourceFileNodeRowOffset
+    };
+  }
+  function graphCanvasInstances({ instances = [], graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
+    return (Array.isArray(instances) ? instances : []).filter((instance) => {
+      if (!instance || typeof instance !== "object") return false;
+      if (instance.isGraphAdornment || instance.isSourceFile) return false;
+      return String(instance.id || "") !== view.sourceFileNodeId;
+    });
+  }
+  function graphCanvasAdornments({ instances = [], graphView = null } = {}) {
+    const sourceFileAdornment = graphSourceFileAdornment({ instances, graphView });
+    return sourceFileAdornment ? [sourceFileAdornment] : [];
+  }
+  function graphSourceFileAdornmentCanvasState({ adornment = null, graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
+    return {
+      hidden: !adornment,
+      isSourceFile: true,
+      role: "button",
+      tabIndex: 0,
+      dataKind: String(adornment?.kind || view.sourceFileNodeKind || ""),
+      ariaLabel: view.sourceFileAriaLabel,
+      sourceGlyph: view.sourceFileGlyph,
+      sourceActivationHash: view.sourceFileActivationHash,
+      sourceActivationSelector: view.sourceFileActivationSelector,
+      roleLabel: view.sourceFileRoleLabel,
+      title: String(adornment?.label || view.sourceFileLabel || "")
+    };
+  }
+  function graphGateCanvasState({ inst, edges = [], contract = null, graphView = null } = {}) {
+    const gateKind = String(inst?.gateKind || "");
+    const draft = editorGraphDraftContract(contract) || emptyGraphDraftContract();
+    const view = graphCanvasViewState(graphView);
+    const glyph = view.gatePaletteRows.find((row) => row.id === gateKind)?.glyph || "";
+    let sublabel = inst?.label || gateKind;
+    if (gateKind === "join" && inst?.collection === "quorum" && inst?.quorum) {
+      const incoming = (Array.isArray(edges) ? edges : []).filter((edge) => edge.to === inst?.id).length;
+      sublabel = `${draft.joinQuorumLabelPrefix}${inst.quorum.n}/${incoming || inst.quorum.m}`;
+    } else if (gateKind === "join" && inst?.collection) {
+      sublabel = `${draft.joinLabelPrefix}${inst.collection}`;
+    }
+    return { glyph, sublabel, gateKind };
+  }
+  function graphEdgeCanvasState({ edge, to, active = false, selected = false, edgeStyle = "", contract = null, graphView = null } = {}) {
+    const kind = String(edge?.kind || "next").trim();
+    const terminalTarget = !!to?.isTerminal;
+    const view = graphCanvasViewState(graphView);
+    const labelText = String(edge?.label || view.edgeKindLabels[kind] || "");
+    const edgeKinds = graphProjectionEdgeKinds(contract);
+    const isCondition = kind === edgeKinds.conditionKind;
+    const isFanout = kind === edgeKinds.fanoutKind;
+    const mode = edgeStyle === "icons" ? "icons" : edgeStyle === "colored" ? "colored" : "text";
+    return {
+      kind,
+      mode,
+      labelText,
+      labelWidth: labelText.length * 6 + 12,
+      iconGlyph: isCondition ? "?" : isFanout ? "\u2016" : terminalTarget ? "\u25A0" : "\u2192",
+      labelFill: isCondition ? "var(--danger)" : isFanout ? "var(--accent)" : terminalTarget ? "var(--muted)" : "var(--ok)",
+      iconLabelClass: "edge-label" + (isCondition ? " is-cond" : ""),
+      textLabelClass: "edge-label" + (isCondition ? " is-cond" : "") + (active ? " is-active" : "") + (selected ? " is-selected" : ""),
+      lineClass: "edge-line" + (isCondition ? " is-cond" : "") + (isFanout ? " is-fanout" : "") + (terminalTarget ? " is-term" : "") + (active ? " is-active" : "") + (selected ? " is-selected" : ""),
+      markerEnd: selected || active ? "url(#arr-acc)" : isCondition ? "url(#arr-red)" : isFanout ? "url(#arr-acc)" : terminalTarget ? "url(#arr-dim)" : "url(#arr)"
+    };
+  }
+  function graphGateControlState(inst, { edges, members, contract, graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
+    const incoming = (edges || []).filter((edge) => edge.to === inst?.id);
+    const outgoing = (edges || []).filter((edge) => edge.from === inst?.id);
+    const defaultGateKind = contractDefaultValue(contract, "graph_gate_kind");
+    const gateKind = String(inst?.gateKind || defaultGateKind || "").trim();
+    const gateKindOptions = graphGateKindOptions(contract, gateKind, graphView);
+    const collection = String(inst?.collection || (inst?.quorum?.n ? "quorum" : "")).trim();
+    const collectionOptions = [
+      { value: "", label: view.inspectorRuntimeDefaultLabel, disabled: false, reason: "" },
+      ...collectionPolicyOptions(contract, collection)
+    ];
+    const dispatch = String(inst?.dispatch || inst?.dispatchMode || "").trim();
+    const dispatchOptions = [
+      { value: "", label: view.inspectorRuntimeDefaultLabel, disabled: false, reason: "" },
+      ...dispatchModeOptions(contract, dispatch)
+    ];
+    const col = Number(inst?.col ?? 0);
+    const row = Number(inst?.row ?? 0);
+    return {
+      incoming,
+      outgoing,
+      eyebrow: graphTemplateText(view.gateEyebrowTemplate, { kind: gateKind }),
+      title: String(inst?.label || ""),
+      idLine: graphTemplateText(view.gateIdLineTemplate, { id: inst?.id || "", col: col + 1, row: row + 1 }),
+      deleteLabel: view.inspectorDeleteLabel,
+      labelTitle: view.inspectorLabelTitle,
+      kindTitle: view.inspectorKindTitle,
+      gateKind,
+      gateKindOptions,
+      selectedGateKind: gateKindOptions.find((option) => option.value === gateKind),
+      collectionTitle: view.gateCollectionTitle,
+      collection,
+      collectionOptions,
+      selectedCollection: collectionOptions.find((option) => option.value === collection),
+      quorumIncomingLabel: graphTemplateText(view.gateQuorumIncomingTemplate, { count: incoming.length }),
+      joinMemberLabel: view.gateJoinMemberLabel,
+      joinMemberPlaceholderOption: { value: "", label: view.gateJoinMemberPlaceholder },
+      joinMemberHint: view.gateJoinMemberHint,
+      dispatchTitle: view.gateDispatchTitle,
+      dispatch,
+      dispatchOptions,
+      selectedDispatch: dispatchOptions.find((option) => option.value === dispatch),
+      dispatchHint: view.gateDispatchHint,
+      conditionsTitle: view.gateConditionsTitle,
+      emptyBranchHint: view.gateEmptyBranchHint,
+      wiringTitle: view.gateWiringTitle,
+      incomingLabel: view.gateIncomingLabel,
+      outgoingLabel: view.gateOutgoingLabel,
+      firstMemberId: (members || []).find((member) => member?.id)?.id || "",
+      memberOptions: (Array.isArray(members) ? members : []).filter((member) => member?.id).map((member) => ({
+        value: member.id,
+        label: graphTemplateText(view.gateMemberOptionTemplate, {
+          id: member.id,
+          name: member.name || member.id,
+          role: member.role || "profile"
+        }),
+        member
+      })),
+      incomingCount: incoming.length,
+      outgoingCount: outgoing.length
+    };
+  }
+  function graphBranchConditionRows({ inst, edges = [], instances = [], members = [], schemas = [], flow, contract, graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
+    const sourceEdges = Array.isArray(edges) ? edges : [];
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    const sourceMembers = Array.isArray(members) ? members : [];
+    const instanceById = new Map(sourceInstances.map((candidate) => [candidate.id, candidate]));
+    const memberById = new Map(sourceMembers.map((candidate) => [candidate.id, candidate]));
+    const defaultOperator = contractDefaultValue(contract, "condition_operator");
+    const conditionKind = contractDefaultValue(contract, "graph_condition_edge_kind");
+    return sourceEdges.filter((edge) => edge?.from === inst?.id).map((edge) => {
+      const target = instanceById.get(edge.to) || null;
+      const targetMember = target?.memberId ? memberById.get(target.memberId) || null : null;
+      const condRef = graphConditionRefForEdge(edge);
+      const conditionOptions = graphConditionOptions({
+        instances: sourceInstances,
+        members: sourceMembers,
+        schemas,
+        edge,
+        flow,
+        graphView
+      });
+      const condOwner = conditionOptions.find((option) => option.inst.id === condRef.instanceId) || null;
+      const fields = condOwner?.fields || conditionOptions[0]?.fields || [];
+      const condField = fields.find((field) => field.name === condRef.field) || null;
+      const operatorValue = edge?.cond?.op || defaultOperator;
+      const isCondition = !!conditionKind && edge?.kind === conditionKind;
+      return {
+        edge,
+        isCondition,
+        conditionEdgeKind: conditionKind,
+        modeValue: isCondition ? conditionKind : "fallback",
+        modeOptions: [
+          ...conditionKind ? [{ value: conditionKind, label: view.branchConditionModeConditionLabel }] : [],
+          { value: "fallback", label: view.branchConditionModeFallbackLabel }
+        ],
+        targetPrefix: view.branchConditionTargetPrefix,
+        target,
+        targetLabel: target?.isTerminal ? target.label : targetMember?.name || target?.label || view.graphConditionTargetMissingLabel,
+        condRef,
+        conditionOptions,
+        ownerOptions: conditionOptions.map((option) => ({
+          value: option.inst.id,
+          label: graphTemplateText(view.graphConditionOwnerOptionTemplate, {
+            id: option.inst.id,
+            name: option.member.name
+          }),
+          option
+        })),
+        ownerValue: condRef.instanceId || conditionOptions[0]?.inst.id || "",
+        firstOwnerId: conditionOptions[0]?.inst.id || "",
+        fields,
+        fieldOptions: fields.map((field) => ({
+          value: field.name,
+          label: graphTemplateText(view.graphConditionFieldOptionTemplate, {
+            id: field.id || field.name,
+            name: field.name,
+            type: field.type
+          }),
+          field
+        })),
+        fieldValue: condRef.field || "",
+        fieldPlaceholderOption: { value: "", label: view.branchConditionFieldPlaceholder },
+        condField,
+        defaultOperator,
+        operatorValue,
+        operatorOptions: conditionOperatorOptions(contract, operatorValue),
+        hasConditionOptions: conditionOptions.length > 0,
+        noConditionOptionsHint: view.branchConditionNoOptionsHint
+      };
+    });
+  }
+  function graphTerminalControlState(inst, contract, graphView = null) {
+    const view = graphCanvasViewState(graphView);
+    const defaultTerminalKind = contractDefaultValue(contract, "graph_terminal_kind");
+    const terminalKind = String(inst?.kind || defaultTerminalKind || "").trim();
+    const terminalKindOptions = graphTerminalKindOptions(contract, terminalKind, graphView);
+    const id = String(inst?.id || "");
+    const labelValue = String(inst?.label || "");
+    const col = Number.isFinite(Number(inst?.col)) ? Number(inst.col) + 1 : 1;
+    const row = Number.isFinite(Number(inst?.row)) ? Number(inst.row) + 1 : 1;
+    return {
+      eyebrow: graphTemplateText(view.terminalEyebrowTemplate, { kind: terminalKind }),
+      title: labelValue,
+      idLine: graphTemplateText(view.terminalIdLineTemplate, { id, col, row }),
+      deleteLabel: view.inspectorDeleteLabel,
+      labelTitle: view.inspectorLabelTitle,
+      labelValue,
+      kindTitle: view.inspectorKindTitle,
+      terminalKind,
+      terminalKindOptions,
+      selectedTerminalKind: terminalKindOptions.find((option) => option.value === terminalKind) || null,
+      authoringLockedTitle: view.terminalAuthoringLockedTitle,
+      authoringLockedHint: view.terminalAuthoringLockedHint,
+      editable: false
+    };
+  }
+  function graphEdgeInspectorState({ edge, instances = [], members = [], schemas = [], flow, contract, graphView = null } = {}) {
+    const view = graphCanvasViewState(graphView);
+    const sourceInstances = Array.isArray(instances) ? instances : [];
+    const sourceMembers = Array.isArray(members) ? members : [];
+    const instanceById = new Map(sourceInstances.map((candidate) => [candidate.id, candidate]));
+    const memberById = new Map(sourceMembers.map((candidate) => [candidate.id, candidate]));
+    const fromInstance = instanceById.get(edge?.from) || null;
+    const toInstance = instanceById.get(edge?.to) || null;
+    const fromMember = fromInstance?.memberId ? memberById.get(fromInstance.memberId) || null : null;
+    const toMember = toInstance?.memberId ? memberById.get(toInstance.memberId) || null : null;
+    const condRef = graphConditionRefForEdge(edge);
+    const conditionOptions = graphConditionOptions({
+      instances: sourceInstances,
+      members: sourceMembers,
+      schemas,
+      edge,
+      flow,
+      graphView
+    });
+    const condOwner = conditionOptions.find((option) => option.inst.id === condRef.instanceId) || null;
+    const fields = condOwner?.fields || conditionOptions[0]?.fields || [];
+    const condField = fields.find((field) => field.name === condRef.field) || null;
+    const defaultOperator = contractDefaultValue(contract, "condition_operator");
+    const operatorValue = edge?.cond?.op || defaultOperator;
+    const defaultEdgeKind = contractDefaultValue(contract, "graph_edge_kind");
+    const conditionKind = contractDefaultValue(contract, "graph_condition_edge_kind");
+    const edgeKind = String(edge?.kind || defaultEdgeKind || "").trim();
+    const edgeKindOptions = graphEdgeKindOptions(contract, edgeKind, graphView);
+    const isCondition = !!conditionKind && edgeKind === conditionKind;
+    return {
+      edge,
+      fromInstance,
+      toInstance,
+      fromMember,
+      toMember,
+      eyebrow: graphTemplateText(view.edgeEyebrowTemplate, { kind: edgeKind }),
+      title: graphTemplateText(view.edgeTitleTemplate, {
+        from: fromMember?.name || fromInstance?.label || view.edgeRowMissingValue,
+        to: toMember?.name || toInstance?.label || view.edgeRowMissingValue
+      }),
+      idLine: graphTemplateText(view.edgeIdLineTemplate, { id: edge?.id || "" }),
+      deleteLabel: view.inspectorDeleteLabel,
+      kindTitle: view.inspectorKindTitle,
+      labelTitle: view.inspectorLabelTitle,
+      conditionTitle: view.edgeConditionTitle,
+      noConditionOptionsHint: view.edgeNoConditionOptionsHint,
+      ownerPlaceholderOption: { value: "", label: view.edgeOwnerPlaceholder },
+      fromTitle: view.edgeFromTitle,
+      toTitle: view.edgeToTitle,
+      fromRows: [
+        { key: "instance", label: view.edgeRowInstanceLabel, value: fromInstance?.id || "" },
+        { key: "member", label: view.edgeRowMemberLabel, value: fromMember?.name || view.edgeRowMissingValue },
+        { key: "schema", label: view.edgeRowSchemaLabel, value: fromMember?.schema || view.edgeRowMissingValue }
+      ],
+      toRows: [
+        { key: "instance", label: view.edgeRowInstanceLabel, value: toInstance?.id || "" },
+        { key: "member", label: view.edgeRowMemberLabel, value: toMember?.name || (toInstance?.isTerminal ? view.edgeTerminalMemberValue : view.edgeRowMissingValue) },
+        { key: "schema", label: view.edgeRowSchemaLabel, value: toMember?.schema || view.edgeRowMissingValue }
+      ],
+      condRef,
+      conditionOptions,
+      condOwner,
+      condField,
+      ownerOptions: conditionOptions.map((option) => ({
+        value: option.inst.id,
+        label: graphTemplateText(view.graphConditionOwnerOptionTemplate, {
+          id: option.inst.id,
+          name: option.member.name
+        }),
+        option
+      })),
+      ownerValue: condRef.instanceId || "",
+      fields,
+      fieldOptions: fields.map((field) => ({
+        value: field.name,
+        label: graphTemplateText(view.graphConditionFieldOptionTemplate, {
+          id: field.id || field.name,
+          name: field.name,
+          type: field.type
+        }),
+        field
+      })),
+      fieldValue: condRef.field || "",
+      fieldPlaceholder: condOwner ? view.edgeFieldPlaceholder : view.edgeFieldNoSchemaPlaceholder,
+      defaultOperator,
+      operatorValue,
+      operatorOptions: conditionOperatorOptions(contract, operatorValue),
+      defaultEdgeKind,
+      edgeKind,
+      isCondition,
+      conditionEdgeKind: conditionKind,
+      edgeKindOptions,
+      selectedEdgeKind: edgeKindOptions.find((option) => option.value === edgeKind) || null,
+      conditionPatch: graphFirstConditionPatch(edge, conditionOptions, { defaultOperator }),
+      hasConditionOptions: conditionOptions.length > 0
+    };
+  }
+  function graphGateKindAllowed(contract, kind) {
+    return contractStringValues(contract?.mob_definition?.graph_gate_kinds).includes(String(kind || "").trim());
+  }
+  function graphTerminalKindAllowed(contract, kind) {
+    return contractStringValues(contract?.mob_definition?.graph_terminal_kinds).includes(String(kind || "").trim());
+  }
+  function graphGateKindPatch(rawKind, contract) {
+    const gateKind = String(rawKind || "").trim();
+    return graphGateKindAllowed(contract, gateKind) ? { gateKind } : {};
+  }
+  function graphInstanceLabelPatch(rawLabel) {
+    return { label: String(rawLabel || "") };
+  }
+  function graphEdgeLabelPatch(rawLabel) {
+    return { label: String(rawLabel || "") };
+  }
+  function graphTerminalKindPatch(rawKind, contract) {
+    const kind = String(rawKind || "").trim();
+    return graphTerminalKindAllowed(contract, kind) ? { kind } : {};
+  }
+  function graphJoinCollectionPatch(inst, collection, { incomingCount = 0, firstMemberId = "", contract } = {}) {
+    const next = String(collection || "").trim();
+    if (!collectionPolicyAllowed(contract, next)) return {};
+    const draft = editorGraphDraftContract(contract) || emptyGraphDraftContract();
+    const count = Math.max(1, Number(incomingCount) || 0);
+    return {
+      collection: next,
+      label: `${draft.joinLabelPrefix}${next || draft.parallelMissingCollectionLabel}`,
+      quorum: next === "quorum" ? { ...inst?.quorum || {}, n: inst?.quorum?.n || count, m: count } : null,
+      controllerRole: next && next !== "all" ? inst?.controllerRole || firstMemberId || "" : ""
+    };
+  }
+  function graphJoinQuorumPatch(inst, n, incomingCount = 0) {
+    return {
+      quorum: {
+        ...inst?.quorum || {},
+        n: Number(n) || 1,
+        m: Math.max(1, Number(incomingCount) || 0)
+      }
+    };
+  }
+  function graphJoinControllerRolePatch(rawRole, members) {
     const controllerRole = String(rawRole || "").trim();
     return memberRoleAllowed(members, controllerRole) ? { controllerRole } : {};
   }
-  function flowStepMemberRolePatch(rawRole, members) {
-    const role = String(rawRole || "").trim();
-    return memberRoleAllowed(members, role) ? { role } : {};
-  }
-  function flowStepDispatchModePatch(rawMode, contract) {
-    const mode = String(rawMode || "").trim();
-    return dispatchModeAllowed(contract, mode) ? { dispatchMode: mode } : {};
-  }
-  function flowStepParallelDispatchPatch(rawMode, contract) {
-    const mode = String(rawMode || "").trim();
-    return dispatchModeAllowed(contract, mode) ? { dispatch: mode } : {};
-  }
-  function flowStepCollectionPatch(rawPolicy, contract) {
-    const policy = String(rawPolicy || "").trim();
-    return collectionPolicyAllowed(contract, policy) ? { collection: policy } : {};
-  }
-  function flowStepDependencyModePatch(rawMode, contract) {
-    const mode = String(rawMode || "").trim();
-    return dependencyModeAllowed(contract, mode) ? { dependsMode: mode } : {};
-  }
-  function flowStepOutputFormatPatch(rawFormat, contract) {
-    const format = normalizeOutputFormat(rawFormat);
-    return outputFormatAllowed(contract, format) ? { outputFormat: format } : {};
-  }
-  function flowStepAllowedToolsPatch(tools, options = {}) {
-    return { allowedTools: normalizeStepToolScopeList(tools, { ...options, mode: "member" }) };
-  }
-  function flowStepBlockedToolsPatch(tools, options = {}) {
-    return { blockedTools: normalizeStepToolScopeList(tools, { ...options, mode: "catalog" }) };
-  }
-  function flowStepValidation(step, { flow, members, currentId = "" } = {}) {
-    if (!step || typeof step !== "object") return { ok: false, error: "flow step must be an object" };
-    const id = String(step.id || "").trim();
-    if (!id) return { ok: false, error: "flow step must include id" };
-    const target = String(currentId || "").trim();
-    const ids = collectFlowStepIds(flow?.steps || []);
-    if (ids.has(id) && (!target || id !== target)) {
-      return { ok: false, error: "flow step id already exists" };
-    }
-    if (target && id !== target) {
-      return { ok: false, error: "flow step id changes must use projection reconciliation" };
-    }
-    if (step.type === "member") {
-      const role = String(step.role || "").trim();
-      if (!role) return { ok: false, error: "member flow step must reference a member" };
-      if (Array.isArray(members) && !memberIdSet(members).has(role)) {
-        return { ok: false, error: "member flow step must reference an existing member" };
-      }
-    }
-    return { ok: true, error: "" };
-  }
-  function collectFlowStepIds(steps, out = /* @__PURE__ */ new Set()) {
-    for (const step of steps || []) {
-      const id = String(step?.id || "").trim();
-      if (id) out.add(id);
-      for (const lane of childLanes(step || {})) collectFlowStepIds(lane.steps, out);
-    }
-    return out;
-  }
-  function flowStepById(steps, id) {
-    const target = String(id || "").trim();
-    if (!target) return null;
-    for (const step of steps || []) {
-      if (String(step?.id || "").trim() === target) return step;
-      for (const lane of childLanes(step || {})) {
-        const found = flowStepById(lane.steps || [], target);
-        if (found) return found;
-      }
-    }
-    return null;
-  }
-  function flowStepMap(steps, id, fn) {
-    return (steps || []).map((step) => {
-      if (step?.id === id) return fn(step);
-      if (step?.type === "branch") {
-        return {
-          ...step,
-          branches: (step.branches || []).map((branch) => ({ ...branch, steps: flowStepMap(branch.steps || [], id, fn) })),
-          fallback: flowStepMap(step.fallback || [], id, fn)
-        };
-      }
-      if (step?.type === "parallel") {
-        return {
-          ...step,
-          branches: (step.branches || []).map((branch) => ({ ...branch, steps: flowStepMap(branch.steps || [], id, fn) }))
-        };
-      }
-      if (step?.type === "repeat") return { ...step, steps: flowStepMap(step.steps || [], id, fn) };
-      return step;
-    });
-  }
-  function flowStepInsertIntoLane(steps, laneRef, newStep) {
-    if (!newStep) return steps || [];
-    if (laneRef?.lane === "main") {
-      const idx = laneRef.index ?? (steps || []).length;
-      return [...(steps || []).slice(0, idx), newStep, ...(steps || []).slice(idx)];
-    }
-    return (steps || []).map((step) => {
-      if (step?.id !== laneRef?.parentId) {
-        if (step?.type === "branch") {
-          return {
-            ...step,
-            branches: (step.branches || []).map((branch) => ({ ...branch, steps: flowStepInsertIntoLane(branch.steps || [], laneRef, newStep) })),
-            fallback: flowStepInsertIntoLane(step.fallback || [], laneRef, newStep)
-          };
-        }
-        if (step?.type === "parallel") {
-          return {
-            ...step,
-            branches: (step.branches || []).map((branch) => ({ ...branch, steps: flowStepInsertIntoLane(branch.steps || [], laneRef, newStep) }))
-          };
-        }
-        if (step?.type === "repeat") return { ...step, steps: flowStepInsertIntoLane(step.steps || [], laneRef, newStep) };
-        return step;
-      }
-      const at = (arr) => {
-        const lane = arr || [];
-        const idx = laneRef.index ?? lane.length;
-        return [...lane.slice(0, idx), newStep, ...lane.slice(idx)];
-      };
-      if (laneRef.branchId === "body") return { ...step, steps: at(step.steps) };
-      if (laneRef.branchId === "fallback") return { ...step, fallback: at(step.fallback) };
-      return {
-        ...step,
-        branches: (step.branches || []).map((branch) => branch.id === laneRef.branchId ? { ...branch, steps: at(branch.steps) } : branch)
-      };
-    });
-  }
-  function flowStepRemoveFromTree(steps, id) {
-    return (steps || []).filter((step) => step?.id !== id).map((step) => {
-      if (step?.type === "branch") {
-        return {
-          ...step,
-          branches: (step.branches || []).map((branch) => ({ ...branch, steps: flowStepRemoveFromTree(branch.steps || [], id) })),
-          fallback: flowStepRemoveFromTree(step.fallback || [], id)
-        };
-      }
-      if (step?.type === "parallel") {
-        return {
-          ...step,
-          branches: (step.branches || []).map((branch) => ({ ...branch, steps: flowStepRemoveFromTree(branch.steps || [], id) }))
-        };
-      }
-      if (step?.type === "repeat") return { ...step, steps: flowStepRemoveFromTree(step.steps || [], id) };
-      return step;
-    });
-  }
-  function emptyAuthoringFlowState() {
-    return { name: "", steps: [] };
-  }
-
-  // ../packages/flow-editor-core/src/flow/launch-modes.ts
-  function hasAuthoringLaunchMode(source) {
-    return !!source && typeof source === "object" && ("launchMode" in source || "launch_mode" in source);
-  }
-  function launchModeFromAuthoringSource(source, fallback) {
-    const raw = hasAuthoringLaunchMode(source) ? source.launchMode ?? source.launch_mode : hasAuthoringLaunchMode(fallback) ? fallback.launchMode ?? fallback.launch_mode : null;
-    if (!raw || typeof raw !== "object" || !String(raw.kind || "").trim()) return null;
-    return normalizeLaunchMode(raw);
-  }
-  function memberDisplayName(members, id) {
-    return ((members || []).find((member) => member.id === id) || {}).name || id;
-  }
-  function normalizeLaunchMode(mode) {
-    if (!mode || typeof mode !== "object") return null;
-    const kind = canonicalLaunchModeKind(mode.kind);
-    if (!kind) return null;
-    const rawBudgetSplitPolicy = mode.budgetSplitPolicy ?? mode.budget_split_policy ?? mode.budget;
-    const budgetSplitPolicy = rawBudgetSplitPolicy ? normalizeBudgetSplitPolicy(rawBudgetSplitPolicy) : null;
-    const budgetPatch = budgetSplitPolicy ? { budgetSplitPolicy } : {};
-    if (kind === "Resume") {
-      return {
-        kind: "Resume",
-        sessionId: String(mode.sessionId || mode.session_id || mode.bridgeSessionId || mode.bridge_session_id || "").trim(),
-        ...budgetPatch
-      };
-    }
-    if (kind === "Fork") {
-      return {
-        kind: "Fork",
-        from: String(mode.from || mode.sourceMemberId || mode.source_member_id || "").trim(),
-        context: normalizeForkContext(mode.context || mode.forkContext || mode.fork_context),
-        ...budgetPatch
-      };
-    }
-    return { kind, ...budgetPatch };
-  }
-  function launchModeControlState(source, contract, launchView = null) {
-    const view = launchViewForState(launchView);
-    const authoredLaunchMode = source && typeof source === "object" ? source.launchMode ?? source.launch_mode : null;
-    const defaultLaunchMode = contractDefaultValue(contract, "launch_mode");
-    const launchMode = authoredLaunchMode && typeof authoredLaunchMode === "object" ? authoredLaunchMode : { kind: defaultLaunchMode };
-    const launchKind = canonicalLaunchModeKind(launchMode.kind || defaultLaunchMode);
-    const authoredBudgetSplitPolicy = normalizeBudgetSplitPolicy(
-      launchMode.budgetSplitPolicy || launchMode.budget_split_policy
-    );
-    const defaultBudgetSplitKind = contractDefaultValue(contract, "budget_split_policy");
-    const budgetSplitPolicy = authoredBudgetSplitPolicy || normalizeBudgetSplitPolicy(defaultBudgetSplitKind ? { kind: defaultBudgetSplitKind } : null) || { kind: "" };
-    const budgetLaunchPatch = authoredBudgetSplitPolicy ? { budgetSplitPolicy: authoredBudgetSplitPolicy } : {};
-    const launchOptions = launchModeOptions(contract, launchKind, view);
-    const budgetOptions = budgetSplitPolicyOptions(contract, budgetSplitPolicy.kind, view);
-    const defaultForkContext = contractDefaultValue(contract, "fork_context");
-    const forkContextValue = normalizeForkContext(launchMode.context || defaultForkContext);
-    const forkOptions = forkContextOptions(contract, forkContextValue, view);
-    const fixedLimitValue = budgetSplitPolicy.limit || view.fixedBudgetDefaultValue;
-    return {
-      launchTitle: view.launchTitle,
-      graphLaunchTitle: view.graphLaunchTitle,
-      resumeSessionLabel: view.resumeSessionLabel,
-      resumeSessionPlaceholder: view.resumeSessionPlaceholder,
-      forkSourceLabel: view.forkSourceLabel,
-      forkContextLabel: view.forkContextLabel,
-      graphForkContextLabel: view.graphForkContextLabel,
-      budgetPolicyLabel: view.budgetPolicyLabel,
-      fixedBudgetLabel: view.fixedBudgetLabel,
-      fixedBudgetValue: fixedLimitValue,
-      launchMode,
-      launchKind,
-      defaultLaunchMode,
-      launchOptions,
-      selectedLaunchMode: launchOptions.find((option) => option.value === launchKind),
-      authoredBudgetSplitPolicy,
-      budgetSplitPolicy,
-      budgetLaunchPatch,
-      budgetOptions,
-      selectedBudgetPolicy: budgetOptions.find((option) => option.value === budgetSplitPolicy.kind),
-      defaultForkContext,
-      forkContextValue,
-      forkContextOptions: forkOptions,
-      selectedForkContext: forkOptions.find((option) => option.value === forkContextValue)
-    };
-  }
-  function launchModeKindPatch(source, kind, contract, options = {}) {
-    const state = launchModeControlState(source, contract);
-    const nextKind = canonicalLaunchModeKind(kind);
-    if (!launchModeKindAllowed(contract, nextKind)) return {};
-    if (nextKind === "Fork") {
-      return {
-        launchMode: {
-          ...state.launchMode,
-          kind: "Fork",
-          from: options.firstForkSourceId || state.launchMode.from || "",
-          context: state.launchMode.context || state.defaultForkContext,
-          ...state.budgetLaunchPatch
-        }
-      };
-    }
-    if (nextKind === "Resume") {
-      return {
-        launchMode: {
-          ...state.launchMode,
-          kind: "Resume",
-          sessionId: state.launchMode.sessionId || "",
-          ...state.budgetLaunchPatch
-        }
-      };
-    }
-    return { launchMode: { kind: nextKind, ...state.budgetLaunchPatch } };
-  }
-  function launchModeMergePatch(source, patch, contract) {
-    const state = launchModeControlState(source, contract);
-    const nextPatch = patch && typeof patch === "object" ? { ...patch } : {};
-    if ("kind" in nextPatch) {
-      const kind = canonicalLaunchModeKind(nextPatch.kind);
-      if (!launchModeKindAllowed(contract, kind)) return {};
-      nextPatch.kind = kind;
-    }
-    if ("context" in nextPatch) {
-      const context = normalizeForkContext(nextPatch.context);
-      if (!forkContextAllowed(contract, context)) return {};
-      nextPatch.context = context;
-    }
-    return { launchMode: { ...state.launchMode, ...nextPatch } };
-  }
-  function launchModeSessionPatch(source, sessionId, contract) {
-    return launchModeMergePatch(source, { sessionId: String(sessionId || "") }, contract);
-  }
-  function launchSourceAllowed(sourceOptions, from) {
-    const value = String(from || "").trim();
-    if (!value) return true;
-    return (Array.isArray(sourceOptions) ? sourceOptions : []).some((option) => String(option?.value || option?.id || "").trim() === value);
-  }
-  function launchModeForkSourcePatch(source, from, contract, options = {}) {
-    const value = String(from || "").trim();
-    if (!launchSourceAllowed(options.sourceOptions, value)) return {};
-    return launchModeMergePatch(source, { from: value }, contract);
-  }
-  function launchModeForkContextPatch(source, context, contract) {
-    return launchModeMergePatch(source, { context }, contract);
-  }
-  function launchModeBudgetPatch(source, patch, contract) {
-    const state = launchModeControlState(source, contract);
-    if (patch && typeof patch === "object" && "kind" in patch) {
-      const requestedKind = canonicalBudgetSplitPolicyKind(patch.kind);
-      if (!budgetSplitPolicyAllowed(contract, requestedKind)) return {};
-    }
-    const nextPolicy = normalizeBudgetSplitPolicy({ ...state.budgetSplitPolicy, ...patch });
-    if (!nextPolicy || !budgetSplitPolicyAllowed(contract, nextPolicy.kind)) return {};
-    return {
-      launchMode: {
-        ...state.launchMode,
-        budgetSplitPolicy: nextPolicy
-      }
-    };
-  }
-  function launchBudgetKindPatch(source, kind, contract) {
-    return launchModeBudgetPatch(source, { kind: canonicalBudgetSplitPolicyKind(kind) }, contract);
-  }
-  function launchBudgetFixedLimitPatch(source, limit, contract) {
-    return launchModeBudgetPatch(source, { kind: "Fixed", limit }, contract);
-  }
-  function canonicalLaunchModeKind(value) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    const lower = raw.toLowerCase();
-    if (lower === "resume") return "Resume";
-    if (lower === "fork") return "Fork";
-    if (lower === "fresh") return "Fresh";
-    return raw;
-  }
-  function launchModeKindAllowed(contract, kind) {
-    const canonicalKind = canonicalLaunchModeKind(kind);
-    if (!canonicalKind) return false;
-    const contractModes = Array.isArray(contract?.mob_definition?.launch_modes) ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind) : [];
-    return contractModes.includes(canonicalKind);
-  }
-  function normalizeForkContext(value) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    if (raw === "FullHistory") return "full_history";
-    if (raw === "LastMessages") return "last_messages";
-    return raw;
-  }
-  function forkContextAllowed(contract, context) {
-    const normalized = normalizeForkContext(context);
-    if (!normalized) return false;
-    const contexts = Array.isArray(contract?.mob_definition?.fork_contexts) ? contract.mob_definition.fork_contexts.map(normalizeForkContext) : [];
-    return contexts.includes(normalized);
-  }
-  function launchOptionLabel(labels, value, view, contractLabel) {
-    return labels?.[value] || `${value}${view.unsupportedLabelSeparator}${contractLabel}`;
-  }
-  function launchUnsupportedReason(view, contractLabel) {
-    return `${view.unsupportedReasonPrefix}${contractLabel}${view.unsupportedReasonSuffix}`;
-  }
-  function launchModeOptions(contract, currentKind, launchView = null) {
-    const view = launchViewForState(launchView);
-    const contractModes = Array.isArray(contract?.mob_definition?.launch_modes) && contract.mob_definition.launch_modes.length ? contract.mob_definition.launch_modes.map(canonicalLaunchModeKind) : [];
-    const modes = [...contractModes];
-    const currentSource = currentKind || contractDefaultValue(contract, "launch_mode");
-    const current = currentSource ? canonicalLaunchModeKind(currentSource) : "";
-    if (current && !modes.includes(current)) modes.push(current);
-    return modes.map((mode) => {
-      const supported = contractModes.includes(mode);
-      return {
-        value: mode,
-        label: launchOptionLabel(view.launchModeLabels, mode, view, view.launchModesContractLabel),
-        disabled: !supported,
-        reason: supported ? "" : launchUnsupportedReason(view, view.launchModesContractLabel)
-      };
-    });
-  }
-  function normalizeDispatchMode(mode) {
-    return String(mode || "").trim();
-  }
-  function dispatchModeOptions(contract, currentMode) {
-    const contractLabel = "dispatch_modes";
-    const contractModes = Array.isArray(contract?.mob_definition?.dispatch_modes) && contract.mob_definition.dispatch_modes.length ? contract.mob_definition.dispatch_modes.map(String) : [];
-    const modes = [...contractModes];
-    const current = String(currentMode || contractDefaultValue(contract, "dispatch_mode") || "").trim();
-    if (!modes.includes(current)) modes.push(current);
-    const labels = viewStringMapFromSchema(contract?.mob_definition?.dispatch_mode_labels);
-    return modes.map((mode) => {
-      const supported = contractModes.includes(mode);
-      return {
-        value: mode,
-        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
-        disabled: !supported,
-        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
-      };
-    });
-  }
-  function dispatchModeAllowed(contract, mode) {
-    const value = String(mode || "").trim();
-    if (!value) return true;
-    const contractModes = Array.isArray(contract?.mob_definition?.dispatch_modes) ? contract.mob_definition.dispatch_modes.map(String) : [];
-    return contractModes.includes(value);
-  }
-  function normalizeCollectionMode(policy) {
-    const raw = typeof policy === "object" && policy ? String(policy.type || "").trim() : String(policy || "").trim();
-    return raw;
-  }
-  function dependencyModeOptions(contract, currentMode) {
-    const contractLabel = "dependency_modes";
-    const contractModes = Array.isArray(contract?.mob_definition?.dependency_modes) && contract.mob_definition.dependency_modes.length ? contract.mob_definition.dependency_modes.map(String) : [];
-    const modes = [...contractModes];
-    const current = String(currentMode || contractDefaultValue(contract, "dependency_mode") || "").trim();
-    if (!modes.includes(current)) modes.push(current);
-    const labels = viewStringMapFromSchema(contract?.mob_definition?.dependency_mode_labels);
-    return modes.map((mode) => {
-      const supported = contractModes.includes(mode);
-      return {
-        value: mode,
-        label: labels[mode] || mobDefinitionUnsupportedOptionLabel(contract, mode, contractLabel),
-        disabled: !supported,
-        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
-      };
-    });
-  }
-  function dependencyModeAllowed(contract, mode) {
-    const value = String(mode || "").trim();
-    if (!value) return true;
-    const contractModes = Array.isArray(contract?.mob_definition?.dependency_modes) ? contract.mob_definition.dependency_modes.map(String) : [];
-    return contractModes.includes(value);
-  }
-  function collectionPolicyOptions(contract, currentPolicy) {
-    const contractLabel = "collection_policies";
-    const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies) && contract.mob_definition.collection_policies.length ? contract.mob_definition.collection_policies.map(String) : [];
-    const policies = [...contractPolicies];
-    const current = String(currentPolicy || contractDefaultValue(contract, "collection_policy") || "").trim();
-    if (!policies.includes(current)) policies.push(current);
-    const labels = viewStringMapFromSchema(contract?.mob_definition?.collection_policy_labels);
-    return policies.map((policy) => {
-      const supported = contractPolicies.includes(policy);
-      return {
-        value: policy,
-        label: labels[policy] || mobDefinitionUnsupportedOptionLabel(contract, policy, contractLabel),
-        disabled: !supported,
-        reason: supported ? "" : mobDefinitionUnsupportedOptionReason(contract, contractLabel)
-      };
-    });
-  }
-  function mobDefinitionUnsupportedOptionLabel(contract, value, contractLabel) {
-    const separator = String(contract?.mob_definition?.option_unsupported_label_separator || " ");
-    return `${value}${separator}${contractLabel}`;
-  }
-  function mobDefinitionUnsupportedOptionReason(contract, contractLabel) {
-    const prefix = String(contract?.mob_definition?.option_unsupported_reason_prefix || "");
-    const suffix = String(contract?.mob_definition?.option_unsupported_reason_suffix || "");
-    return `${prefix}${contractLabel}${suffix}`;
-  }
-  function collectionPolicyAllowed(contract, policy) {
-    const value = String(policy || "").trim();
-    if (!value) return true;
-    const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies) ? contract.mob_definition.collection_policies.map(String) : [];
-    return contractPolicies.includes(value);
-  }
-  function normalizeBudgetSplitPolicy(policy) {
-    if (!policy || typeof policy !== "object") return null;
-    const rawKind = String(policy.kind || policy.type || "").trim();
-    if (!rawKind) return null;
-    const kind = canonicalBudgetSplitPolicyKind(rawKind);
-    if (kind === "Fixed") {
-      const limit = numberOrNull(policy?.limit ?? policy?.value ?? policy?.tokens);
-      return { kind: "Fixed", limit: limit && limit > 0 ? limit : 4096 };
-    }
-    return { kind };
-  }
-  function canonicalBudgetSplitPolicyKind(value) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    const lower = raw.toLowerCase();
-    if (lower === "fixed") return "Fixed";
-    if (lower === "proportional") return "Proportional";
-    if (lower === "remaining") return "Remaining";
-    if (lower === "equal") return "Equal";
-    return raw;
-  }
-  function budgetSplitPolicyAllowed(contract, kind) {
-    const canonicalKind = canonicalBudgetSplitPolicyKind(kind);
-    if (!canonicalKind) return false;
-    const policies = Array.isArray(contract?.mob_definition?.budget_split_policies) ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind) : [];
-    return policies.includes(canonicalKind);
-  }
-  function budgetSplitPolicyOptions(contract, currentKind, launchView = null) {
-    const view = launchViewForState(launchView);
-    const contractPolicies = Array.isArray(contract?.mob_definition?.budget_split_policies) && contract.mob_definition.budget_split_policies.length ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind) : [];
-    const policies = [...contractPolicies];
-    const currentSource = currentKind || contractDefaultValue(contract, "budget_split_policy");
-    const current = currentSource ? canonicalBudgetSplitPolicyKind(currentSource) : "";
-    if (current && !policies.includes(current)) policies.push(current);
-    return policies.map((policy) => {
-      const supported = contractPolicies.includes(policy);
-      return {
-        value: policy,
-        label: launchOptionLabel(view.budgetSplitPolicyLabels, policy, view, view.budgetSplitPoliciesContractLabel),
-        disabled: !supported,
-        reason: supported ? "" : launchUnsupportedReason(view, view.budgetSplitPoliciesContractLabel)
-      };
-    });
-  }
-  function mobKitBudgetSplitPolicy(policy) {
-    const normalized = normalizeBudgetSplitPolicy(policy);
-    if (!normalized) return null;
-    if (normalized.kind === "Fixed") return { type: "fixed", value: normalized.limit || 4096 };
-    return { type: normalized.kind.replace(/[A-Z]/g, (ch, index) => `${index ? "_" : ""}${ch.toLowerCase()}`) };
-  }
-  function launchModesFromFlow(flow, members) {
-    const out = [];
-    collectVisualSteps(flow?.steps || [], (step) => {
-      if (step.type !== "member") return;
-      const member = findMember(members, step.role);
-      const launchMode = launchModeFromAuthoringSource(step);
-      const row = {
-        step_id: step.id,
-        member_id: step.role || "",
-        profile: profileName(member || { id: step.role }),
-        launch_mode: launchMode
-      };
-      if (launchMode?.budgetSplitPolicy) {
-        const budgetSplitPolicy = mobKitBudgetSplitPolicy(launchMode.budgetSplitPolicy);
-        if (budgetSplitPolicy) row.budget_split_policy = budgetSplitPolicy;
-      }
-      out.push(row);
-    });
-    return out;
-  }
-  function conditionTextFromEdge(edge, fallback) {
-    if (!edge) return fallback;
-    const condition = normalizedEdgeCondition(edge);
-    if (condition?.path) {
-      if (condition.val === void 0 || condition.val === null || String(condition.val).trim() === "") return fallback;
-      const value = condition.val;
-      if (!condition.op) return fallback;
-      return `${condition.path} ${condition.op} ${JSON.stringify(value)}`;
-    }
-    return edge.label || fallback;
-  }
-  function edgeConditionToEditorCond(edge) {
-    const condition = normalizedEdgeCondition(edge);
-    const rawVar = String(condition?.path || "").trim();
-    const op = String(condition?.op || "").trim();
-    const val = condition?.val === void 0 || condition?.val === null ? "" : String(condition.val);
-    if (!rawVar || !op || !val) return null;
-    const parts = rawVar.split(".").filter(Boolean);
-    if (parts.length === 2 && parts[0] === "params") {
-      return {
-        namespace: "params",
-        stepId: "params",
-        field: parts[1],
-        op,
-        val
-      };
-    }
-    if (parts.length === 3 && parts[0] === "steps") {
-      return {
-        namespace: "steps",
-        stepId: parts[1],
-        field: parts[2],
-        op,
-        val
-      };
-    }
-    return null;
-  }
-  function repeatConditionFromEdge(edge, stepId) {
-    const condition = normalizedEdgeCondition(edge);
-    if (condition?.path) {
-      const parts = String(condition.path).split(".").filter(Boolean);
-      const field = parts.pop() || "";
-      const op = String(condition.op || "").trim();
-      const val = condition.val === void 0 || condition.val === null ? "" : String(condition.val).trim();
-      if (!field || !op || !val) return null;
-      return { stepId, field, op, val };
-    }
-    const label = String(edge?.label || "");
-    const match = /([A-Za-z0-9_.-]+)\s*(==|>|<)\s*['"]?([^'"]+)['"]?/.exec(label);
-    if (match) {
-      return { stepId, field: match[1].split(".").pop(), op: match[2], val: match[3] };
-    }
-    return null;
-  }
-  function normalizedEdgeCondition(edge) {
-    const cond = edge?.cond || {};
-    const op = String(cond.op || cond.operator || "").trim();
-    const val = cond.val ?? cond.value;
-    if (cond.var || cond.path || cond.source) {
-      return {
-        path: String(cond.var || cond.path || cond.source || "").trim(),
-        op,
-        val
-      };
-    }
-    const namespace = String(cond.namespace || "").trim();
-    const stepId = String(cond.stepId || cond.step_id || "").trim();
-    const field = String(cond.field || "").trim();
-    if (field && (namespace === "params" || stepId === "params")) {
-      return { path: `params.${field}`, op, val };
-    }
-    if (field && stepId) {
-      return { path: `steps.${stepId}.${field}`, op, val };
-    }
-    return null;
-  }
-  function collectVisualSteps(steps, visit) {
-    for (const step of steps || []) {
-      visit(step);
-      for (const lane of childLanes(step)) collectVisualSteps(lane.steps, visit);
-    }
+  function graphForkDispatchPatch(_inst, dispatch, contract) {
+    const next = String(dispatch || "").trim();
+    if (!dispatchModeAllowed(contract, next)) return {};
+    return { dispatch: next, label: next };
   }
 
   // ../packages/flow-editor-core/src/contract/options.ts
@@ -5981,13 +7719,30 @@ const {
   authoringOperationFromIntent,
   authoringOperationsFromSchema,
   authoringRpcMethodsFromSchema,
+  basicBranchAddPatch,
+  basicBranchConditionControlState,
+  basicBranchConditionPatch,
   basicBranchDefaultLabel,
+  basicBranchParallelControlState,
   basicCanvasClearTransition,
   basicConditionFieldPatch,
+  basicConditionFromText,
+  basicConditionLabel,
   basicConditionOperatorPatch,
+  basicConditionOptions,
   basicConditionSourcePatch,
+  basicConditionText,
   basicConditionValuePatch,
+  basicEditorViewState,
   basicFlowPrimitiveRowsFromSchema,
+  basicForkCanvasState,
+  basicInputControlState,
+  basicMemberStepControlState,
+  basicRepeatCanvasState,
+  basicRepeatControlState,
+  basicRepeatIterationLabel,
+  basicRepeatUntilExpression,
+  basicStepCardState,
   basicStepPickerCloseTransition,
   basicStepPickerOpenTransition,
   basicStepPickerState,
@@ -6104,26 +7859,86 @@ const {
   graphAddMenuCloseProjection,
   graphAddMenuOpenProjection,
   graphAddNodeMenuState,
+  graphBranchConditionModePatch,
+  graphBranchConditionRows,
+  graphCanvasAdornments,
+  graphCanvasInstances,
+  graphCanvasViewState,
+  graphCellAt,
+  graphCellCanvasRows,
+  graphCellXY,
+  graphConditionEdgeKindForPatch,
+  graphConditionOptions,
+  graphConditionPathForOption,
+  graphConditionRefForEdge,
   graphControlNodes,
+  graphDragCellAt,
+  graphEdgeCanvasState,
+  graphEdgeConditionFieldPatch,
+  graphEdgeConditionOperatorPatch,
+  graphEdgeConditionOwnerPatch,
+  graphEdgeConditionPatch,
+  graphEdgeConditionValuePatch,
+  graphEdgeFallbackPatch,
+  graphEdgeInspectorState,
   graphEdgeKindOptions,
+  graphEdgeKindPatch,
+  graphEdgeLabelPatch,
+  graphEdgeMidpoint,
+  graphEdgePath,
   graphEdgeValidation,
+  graphFirstConditionPatch,
+  graphForkDispatchPatch,
+  graphFrameCanvasState,
   graphFrameKindOptions,
+  graphGateCanvasState,
+  graphGateControlState,
+  graphGateKindAllowed,
   graphGateKindOptions,
+  graphGateKindPatch,
   graphGatePaletteRowsFromSchema,
+  graphGridHeaderCanvasRows,
+  graphGridState,
+  graphInstanceControlState,
   graphInstanceIdSet,
+  graphInstanceLabelPatch,
   graphInstanceValidation,
+  graphJoinCollectionPatch,
+  graphJoinControllerRolePatch,
+  graphJoinQuorumPatch,
   graphLaunchSourceSet,
+  graphNodeBox,
+  graphNodeCanvasState,
+  graphPortIn,
+  graphPortOut,
+  graphProjectionEdgeKinds,
+  graphSelectionProjection,
+  graphSelectionState,
+  graphSourceFileAdornment,
+  graphSourceFileAdornmentCanvasState,
+  graphTemplateInspectorState,
   graphTemplateQuickStartRowsFromSchema,
+  graphTemplateText,
   graphTemplateViewForState,
   graphTemplateViewFromSchema,
+  graphTerminalControlState,
+  graphTerminalKindAllowed,
   graphTerminalKindOptions,
+  graphTerminalKindPatch,
   graphTerminalPaletteRowsFromSchema,
+  graphToolTagClass,
   graphViewFromSchema,
   hasAuthoringLaunchMode,
   inlineSkillRealmIdFromOperationResult,
+  inputParamDeletePatch,
   inputParamFieldControlState,
   inputParamName,
   inputParamNameSet,
+  inputParamOptions,
+  inputParamRenamePatch,
+  inputParamSummary,
+  inputParamUpdatePatch,
+  inputParamsForStep,
   inputStepDraft,
   jsonEquivalent,
   launchBudgetFixedLimitPatch,
@@ -6146,6 +7961,8 @@ const {
   launchViewFromSchema,
   maxInlinePeerNotificationsPatchValueIsValid,
   memberBackendPatch,
+  memberConditionOptionsBefore,
+  memberConditionOptionsBeforeWithMap,
   memberDeleteCascadePatch,
   memberDisplayName,
   memberIdSet,
@@ -6214,6 +8031,8 @@ const {
   outputFormatAllowed,
   outputFormatOptions,
   parseEditorConditionText,
+  parseGraphConditionVar,
+  parseLegacyInputFields,
   profileBackendOptions,
   profileBindingOptions,
   profileBindingRestriction,
@@ -6313,6 +8132,7 @@ const {
   skillIdsFromRealms,
   skillRealmsForDocument,
   slug,
+  splitLegacyInputFieldLine,
   stepToolScopeAddPatch,
   stepToolScopeRemovePatch,
   stepToolScopeState,
@@ -6418,251 +8238,6 @@ const {
       schemaCount: schemaRows.length,
       memberRows,
       schemaRows,
-    };
-  }
-
-  function basicEditorViewState(basicView) {
-    const view = basicView && typeof basicView === "object" ? basicView : null;
-    return {
-      startLabel: String(view?.startLabel || ""),
-      loopBadge: String(view?.loopBadge || ""),
-      tipsTitle: String(view?.tipsTitle || ""),
-      emptyPanelTitle: String(view?.emptyPanelTitle || ""),
-      emptyPanelSubtitleParts: Array.isArray(view?.emptyPanelSubtitleParts)
-        ? view.emptyPanelSubtitleParts
-        : [],
-      sourceToggleLabel: String(view?.sourceToggleLabel || ""),
-      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
-      authoringOperationFallbackError: String(view?.authoringOperationFallbackError || ""),
-      memberStepPanelTitleFallback: String(view?.memberStepPanelTitleFallback || ""),
-      memberStepPanelSubFallback: String(view?.memberStepPanelSubFallback || ""),
-      memberStepMemberLabel: String(view?.memberStepMemberLabel || ""),
-      memberStepMemberPlaceholder: String(view?.memberStepMemberPlaceholder || ""),
-      memberStepRuntimeDefaultLabel: String(view?.memberStepRuntimeDefaultLabel || ""),
-      memberStepInstructionLabel: String(view?.memberStepInstructionLabel || ""),
-      memberStepInstructionPlaceholder: String(view?.memberStepInstructionPlaceholder || ""),
-      memberStepDispatchLabel: String(view?.memberStepDispatchLabel || ""),
-      memberStepCollectionLabel: String(view?.memberStepCollectionLabel || ""),
-      memberStepQuorumLabel: String(view?.memberStepQuorumLabel || ""),
-      memberStepQuorumPlaceholder: String(view?.memberStepQuorumPlaceholder || ""),
-      memberStepTimeoutLabel: String(view?.memberStepTimeoutLabel || ""),
-      memberStepDependencyLabel: String(view?.memberStepDependencyLabel || ""),
-      memberStepOutputFormatLabel: String(view?.memberStepOutputFormatLabel || ""),
-      memberStepAllowedToolsLabel: String(view?.memberStepAllowedToolsLabel || ""),
-      memberStepAllowedToolsEmptyLabel: String(view?.memberStepAllowedToolsEmptyLabel || ""),
-      memberStepBlockedToolsLabel: String(view?.memberStepBlockedToolsLabel || ""),
-      memberStepBlockedToolsEmptyLabel: String(view?.memberStepBlockedToolsEmptyLabel || ""),
-      memberStepSchemaHintPrefix: String(view?.memberStepSchemaHintPrefix || ""),
-      memberStepSchemaHintToolsPrefix: String(view?.memberStepSchemaHintToolsPrefix || ""),
-      memberStepSchemaHintEmptyToolsLabel: String(view?.memberStepSchemaHintEmptyToolsLabel || ""),
-      toolScopeNotInCatalogReason: String(view?.toolScopeNotInCatalogReason || ""),
-      toolScopeNotEnabledReason: String(view?.toolScopeNotEnabledReason || ""),
-      toolScopeToolDescriptionFallback: String(view?.toolScopeToolDescriptionFallback || ""),
-      toolScopeRemoveLabel: String(view?.toolScopeRemoveLabel || ""),
-      toolScopeSelectMemberPlaceholder: String(view?.toolScopeSelectMemberPlaceholder || ""),
-      toolScopeBlockCatalogPlaceholder: String(view?.toolScopeBlockCatalogPlaceholder || ""),
-      toolScopeAddProfilePlaceholder: String(view?.toolScopeAddProfilePlaceholder || ""),
-      inputPanelIcon: String(view?.inputPanelIcon || ""),
-      inputPanelTitle: String(view?.inputPanelTitle || ""),
-      inputPanelSub: String(view?.inputPanelSub || ""),
-      inputTaskLabel: String(view?.inputTaskLabel || ""),
-      inputTaskPlaceholder: String(view?.inputTaskPlaceholder || ""),
-      inputParamsTitlePrefix: String(view?.inputParamsTitlePrefix || ""),
-      inputAddParamLabel: String(view?.inputAddParamLabel || ""),
-      inputParamSourceLabel: String(view?.inputParamSourceLabel || ""),
-      inputParamHeaderLabels: {
-        name: String(view?.inputParamHeaderLabels?.name || ""),
-        type: String(view?.inputParamHeaderLabels?.type || ""),
-        required: String(view?.inputParamHeaderLabels?.required || ""),
-        description: String(view?.inputParamHeaderLabels?.description || ""),
-        action: String(view?.inputParamHeaderLabels?.action || ""),
-      },
-      inputParamNamePlaceholder: String(view?.inputParamNamePlaceholder || ""),
-      inputParamDescriptionPlaceholder: String(view?.inputParamDescriptionPlaceholder || ""),
-      inputParamRemoveTitle: String(view?.inputParamRemoveTitle || ""),
-      inputParamEnumLabel: String(view?.inputParamEnumLabel || ""),
-      inputParamEnumAddLabel: String(view?.inputParamEnumAddLabel || ""),
-      inputParamEnumAddValue: String(view?.inputParamEnumAddValue || ""),
-      inputEmptyParamsParts: Array.isArray(view?.inputEmptyParamsParts) ? view.inputEmptyParamsParts : [],
-      inputTips: Array.isArray(view?.inputTips) ? view.inputTips : [],
-      branchPanelTitle: String(view?.branchPanelTitle || ""),
-      branchPanelSub: String(view?.branchPanelSub || ""),
-      parallelPanelTitle: String(view?.parallelPanelTitle || ""),
-      parallelPanelSub: String(view?.parallelPanelSub || ""),
-      branchRouteMemberLabel: String(view?.branchRouteMemberLabel || ""),
-      parallelJoinMemberLabel: String(view?.parallelJoinMemberLabel || ""),
-      branchControllerPlaceholderLabel: String(view?.branchControllerPlaceholderLabel || ""),
-      branchEmptyControllerHint: String(view?.branchEmptyControllerHint || ""),
-      branchConditionTitle: String(view?.branchConditionTitle || ""),
-      branchConditionIntro: String(view?.branchConditionIntro || ""),
-      branchConditionRowTitlePrefix: String(view?.branchConditionRowTitlePrefix || ""),
-      branchConditionEmptyHint: String(view?.branchConditionEmptyHint || ""),
-      branchConditionSourcePlaceholder: String(view?.branchConditionSourcePlaceholder || ""),
-      branchConditionFieldPlaceholder: String(view?.branchConditionFieldPlaceholder || ""),
-      branchConditionNoSchemaLabel: String(view?.branchConditionNoSchemaLabel || ""),
-      branchConditionPreviewPrefix: String(view?.branchConditionPreviewPrefix || ""),
-      branchConditionPreviewFallback: String(view?.branchConditionPreviewFallback || ""),
-      branchFallbackTitle: String(view?.branchFallbackTitle || ""),
-      branchFallbackHint: String(view?.branchFallbackHint || ""),
-      addBranchLabel: String(view?.addBranchLabel || ""),
-      addParallelBranchLabel: String(view?.addParallelBranchLabel || ""),
-      parallelDispatchLabel: String(view?.parallelDispatchLabel || ""),
-      parallelCollectionLabel: String(view?.parallelCollectionLabel || ""),
-      parallelQuorumLabel: String(view?.parallelQuorumLabel || ""),
-      parallelQuorumPlaceholder: String(view?.parallelQuorumPlaceholder || ""),
-      branchDependencyLabel: String(view?.branchDependencyLabel || ""),
-      repeatPanelTitle: String(view?.repeatPanelTitle || ""),
-      repeatPanelSub: String(view?.repeatPanelSub || ""),
-      repeatLoopIdLabel: String(view?.repeatLoopIdLabel || ""),
-      repeatLoopIdPlaceholder: String(view?.repeatLoopIdPlaceholder || ""),
-      repeatConditionTitle: String(view?.repeatConditionTitle || ""),
-      repeatConditionIntro: String(view?.repeatConditionIntro || ""),
-      repeatEmptyBodyHint: String(view?.repeatEmptyBodyHint || ""),
-      repeatMemberPlaceholderLabel: String(view?.repeatMemberPlaceholderLabel || ""),
-      repeatConditionFieldPlaceholder: String(view?.repeatConditionFieldPlaceholder || ""),
-      repeatConditionNoSchemaLabel: String(view?.repeatConditionNoSchemaLabel || ""),
-      repeatPreviewLabel: String(view?.repeatPreviewLabel || ""),
-      repeatPreviewFallback: String(view?.repeatPreviewFallback || ""),
-      repeatIterationInputLabel: String(view?.repeatIterationInputLabel || ""),
-      repeatMaxIterationsLabel: String(view?.repeatMaxIterationsLabel || ""),
-      repeatMaxIterationsPlaceholder: String(view?.repeatMaxIterationsPlaceholder || ""),
-      repeatTips: Array.isArray(view?.repeatTips) ? view.repeatTips : [],
-      repeatCanvasWhileLabel: String(view?.repeatCanvasWhileLabel || ""),
-      repeatCanvasNotLabel: String(view?.repeatCanvasNotLabel || ""),
-      repeatCanvasMissingMaxIterationsLabel: String(view?.repeatCanvasMissingMaxIterationsLabel || ""),
-      repeatCanvasMaxIterationsPrefix: String(view?.repeatCanvasMaxIterationsPrefix || ""),
-      repeatCanvasLoopBackPrefix: String(view?.repeatCanvasLoopBackPrefix || ""),
-      repeatCanvasExitPrefix: String(view?.repeatCanvasExitPrefix || ""),
-      repeatCanvasExitFallback: String(view?.repeatCanvasExitFallback || ""),
-      repeatIterationRuntimeDefaultLabel: String(view?.repeatIterationRuntimeDefaultLabel || ""),
-      repeatIterationCarryLabel: String(view?.repeatIterationCarryLabel || ""),
-      repeatIterationReuseUnsupportedLabel: String(view?.repeatIterationReuseUnsupportedLabel || ""),
-      repeatIterationFeedsUnsupportedPrefix: String(view?.repeatIterationFeedsUnsupportedPrefix || ""),
-      repeatIterationUnsupportedPrefix: String(view?.repeatIterationUnsupportedPrefix || ""),
-      addStepTitle: String(view?.addStepTitle || ""),
-      inputStepCardTitle: String(view?.inputStepCardTitle || ""),
-      inputStepCardDescFallback: String(view?.inputStepCardDescFallback || ""),
-      branchStepCardTitle: String(view?.branchStepCardTitle || ""),
-      branchStepCardDesc: String(view?.branchStepCardDesc || ""),
-      parallelStepCardTitle: String(view?.parallelStepCardTitle || ""),
-      parallelStepCardDescPrefix: String(view?.parallelStepCardDescPrefix || ""),
-      parallelStepCardCollectionFallback: String(view?.parallelStepCardCollectionFallback || ""),
-      repeatStepCardTitle: String(view?.repeatStepCardTitle || ""),
-      repeatStepCardDescPrefix: String(view?.repeatStepCardDescPrefix || ""),
-      repeatStepCardDescFallback: String(view?.repeatStepCardDescFallback || ""),
-      memberStepCardTitleFallback: String(view?.memberStepCardTitleFallback || ""),
-      pickerKickoffTitle: String(view?.pickerKickoffTitle || ""),
-      pickerKickoffSub: String(view?.pickerKickoffSub || ""),
-      pickerKickoffHint: String(view?.pickerKickoffHint || ""),
-      pickerTitle: String(view?.pickerTitle || ""),
-      pickerSub: String(view?.pickerSub || ""),
-      pickerSearchIcon: String(view?.pickerSearchIcon || ""),
-      pickerSearchPlaceholder: String(view?.pickerSearchPlaceholder || ""),
-      pickerMembersLabel: String(view?.pickerMembersLabel || ""),
-      pickerFlowLabel: String(view?.pickerFlowLabel || ""),
-      pickerEmptyMembersHint: String(view?.pickerEmptyMembersHint || ""),
-      pickerNewBadgeLabel: String(view?.pickerNewBadgeLabel || ""),
-      flowPrimitiveRows: Array.isArray(view?.flowPrimitiveRows) ? view.flowPrimitiveRows : [],
-    };
-  }
-
-  function graphCanvasViewState(graphView) {
-    const view = graphView && typeof graphView === "object" ? graphView : null;
-    return {
-      zoomOutTitle: String(view?.zoomOutTitle || ""),
-      fitTitle: String(view?.fitTitle || ""),
-      zoomInTitle: String(view?.zoomInTitle || ""),
-      portDragTitle: String(view?.portDragTitle || ""),
-      addNodeSearchIcon: String(view?.addNodeSearchIcon || ""),
-      addNodeSearchPlaceholder: String(view?.addNodeSearchPlaceholder || ""),
-      addNodeCloseLabel: String(view?.addNodeCloseLabel || ""),
-      addNodeCloseTitle: String(view?.addNodeCloseTitle || ""),
-      addNodeAgentsLabel: String(view?.addNodeAgentsLabel || ""),
-      addNodeControlsLabel: String(view?.addNodeControlsLabel || ""),
-      addNodeTerminalsLabel: String(view?.addNodeTerminalsLabel || ""),
-      addNodeEmptyPrefix: String(view?.addNodeEmptyPrefix || ""),
-      addNodeEmptySuffix: String(view?.addNodeEmptySuffix || ""),
-      addNodeJumpLabel: String(view?.addNodeJumpLabel || ""),
-      authoringOperationUnavailableError: String(view?.authoringOperationUnavailableError || ""),
-      authoringOperationFallbackError: String(view?.authoringOperationFallbackError || ""),
-      gatePaletteRows: Array.isArray(view?.gatePaletteRows) ? view.gatePaletteRows : [],
-      terminalPaletteRows: Array.isArray(view?.terminalPaletteRows) ? view.terminalPaletteRows : [],
-      gateKindLabels: view?.gateKindLabels && typeof view.gateKindLabels === "object" ? view.gateKindLabels : {},
-      terminalKindLabels: view?.terminalKindLabels && typeof view.terminalKindLabels === "object" ? view.terminalKindLabels : {},
-      frameKindLabels: view?.frameKindLabels && typeof view.frameKindLabels === "object" ? view.frameKindLabels : {},
-      edgeKindLabels: view?.edgeKindLabels && typeof view.edgeKindLabels === "object" ? view.edgeKindLabels : {},
-      inspectorDeleteLabel: String(view?.inspectorDeleteLabel || ""),
-      inspectorLabelTitle: String(view?.inspectorLabelTitle || ""),
-      inspectorKindTitle: String(view?.inspectorKindTitle || ""),
-      inspectorRuntimeDefaultLabel: String(view?.inspectorRuntimeDefaultLabel || ""),
-      instanceEyebrow: String(view?.instanceEyebrow || ""),
-      instanceIdLineTemplate: String(view?.instanceIdLineTemplate || ""),
-      instanceMemberRoleTemplate: String(view?.instanceMemberRoleTemplate || ""),
-      instanceEditMemberLabel: String(view?.instanceEditMemberLabel || ""),
-      instanceModelLabel: String(view?.instanceModelLabel || ""),
-      instanceSchemaLabel: String(view?.instanceSchemaLabel || ""),
-      instanceToolsLabel: String(view?.instanceToolsLabel || ""),
-      instanceMemberHint: String(view?.instanceMemberHint || ""),
-      instancePositionTitle: String(view?.instancePositionTitle || ""),
-      instancePositionStageLabel: String(view?.instancePositionStageLabel || ""),
-      instancePositionSlotLabel: String(view?.instancePositionSlotLabel || ""),
-      instanceOutputTitleTemplate: String(view?.instanceOutputTitleTemplate || ""),
-      instanceOutputRequiredLabel: String(view?.instanceOutputRequiredLabel || ""),
-      instanceOutputHint: String(view?.instanceOutputHint || ""),
-      instanceOutputOpenMemberLabel: String(view?.instanceOutputOpenMemberLabel || ""),
-      gateEyebrowTemplate: String(view?.gateEyebrowTemplate || ""),
-      gateIdLineTemplate: String(view?.gateIdLineTemplate || ""),
-      gateQuorumIncomingTemplate: String(view?.gateQuorumIncomingTemplate || ""),
-      gateMemberOptionTemplate: String(view?.gateMemberOptionTemplate || ""),
-      terminalEyebrowTemplate: String(view?.terminalEyebrowTemplate || ""),
-      terminalIdLineTemplate: String(view?.terminalIdLineTemplate || ""),
-      terminalAuthoringLockedTitle: String(view?.terminalAuthoringLockedTitle || ""),
-      terminalAuthoringLockedHint: String(view?.terminalAuthoringLockedHint || ""),
-      edgeEyebrowTemplate: String(view?.edgeEyebrowTemplate || ""),
-      edgeTitleTemplate: String(view?.edgeTitleTemplate || ""),
-      edgeIdLineTemplate: String(view?.edgeIdLineTemplate || ""),
-      edgeFieldPlaceholder: String(view?.edgeFieldPlaceholder || ""),
-      edgeFieldNoSchemaPlaceholder: String(view?.edgeFieldNoSchemaPlaceholder || ""),
-      gateCollectionTitle: String(view?.gateCollectionTitle || ""),
-      gateJoinMemberLabel: String(view?.gateJoinMemberLabel || ""),
-      gateJoinMemberPlaceholder: String(view?.gateJoinMemberPlaceholder || ""),
-      gateJoinMemberHint: String(view?.gateJoinMemberHint || ""),
-      gateDispatchTitle: String(view?.gateDispatchTitle || ""),
-      gateDispatchHint: String(view?.gateDispatchHint || ""),
-      gateConditionsTitle: String(view?.gateConditionsTitle || ""),
-      gateEmptyBranchHint: String(view?.gateEmptyBranchHint || ""),
-      gateWiringTitle: String(view?.gateWiringTitle || ""),
-      gateIncomingLabel: String(view?.gateIncomingLabel || ""),
-      gateOutgoingLabel: String(view?.gateOutgoingLabel || ""),
-      branchConditionModeConditionLabel: String(view?.branchConditionModeConditionLabel || ""),
-      branchConditionModeFallbackLabel: String(view?.branchConditionModeFallbackLabel || ""),
-      branchConditionTargetPrefix: String(view?.branchConditionTargetPrefix || ""),
-      graphConditionTargetMissingLabel: String(view?.graphConditionTargetMissingLabel || ""),
-      graphConditionOwnerOptionTemplate: String(view?.graphConditionOwnerOptionTemplate || ""),
-      graphConditionFieldOptionTemplate: String(view?.graphConditionFieldOptionTemplate || ""),
-      graphInputParamSourceLabel: String(view?.graphInputParamSourceLabel || ""),
-      sourceFileLabel: String(view?.sourceFileLabel || ""),
-      sourceFileAriaLabel: String(view?.sourceFileAriaLabel || ""),
-      sourceFileGlyph: String(view?.sourceFileGlyph || ""),
-      sourceFileRoleLabel: String(view?.sourceFileRoleLabel || ""),
-      sourceFileNodeId: String(view?.sourceFileNodeId || ""),
-      sourceFileNodeKind: String(view?.sourceFileNodeKind || ""),
-      sourceFileNodeColOffset: Number(view?.sourceFileNodeColOffset || 0),
-      sourceFileNodeRowOffset: Number(view?.sourceFileNodeRowOffset || 0),
-      sourceFileActivationHash: String(view?.sourceFileActivationHash || ""),
-      sourceFileActivationSelector: String(view?.sourceFileActivationSelector || ""),
-      branchConditionFieldPlaceholder: String(view?.branchConditionFieldPlaceholder || ""),
-      branchConditionNoOptionsHint: String(view?.branchConditionNoOptionsHint || ""),
-      edgeConditionTitle: String(view?.edgeConditionTitle || ""),
-      edgeNoConditionOptionsHint: String(view?.edgeNoConditionOptionsHint || ""),
-      edgeOwnerPlaceholder: String(view?.edgeOwnerPlaceholder || ""),
-      edgeFromTitle: String(view?.edgeFromTitle || ""),
-      edgeToTitle: String(view?.edgeToTitle || ""),
-      edgeRowInstanceLabel: String(view?.edgeRowInstanceLabel || ""),
-      edgeRowMemberLabel: String(view?.edgeRowMemberLabel || ""),
-      edgeRowSchemaLabel: String(view?.edgeRowSchemaLabel || ""),
-      edgeRowMissingValue: String(view?.edgeRowMissingValue || ""),
-      edgeTerminalMemberValue: String(view?.edgeTerminalMemberValue || ""),
     };
   }
 
@@ -7074,1585 +8649,6 @@ const {
     };
   }
 
-  function parseLegacyInputFields(text) {
-    return String(text || "")
-      .split(/\n/)
-      .flatMap(splitLegacyInputFieldLine)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line, index) => {
-        const match = /^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(enum\(([^)]+)\)|[A-Za-z0-9_[\]]+)/.exec(line);
-        if (!match) return null;
-        const enumValues = match[3]
-          ? match[3].split("|").join(",").split(",").map((value) => value.trim()).filter(Boolean)
-          : [];
-        return {
-          id: `p${index + 1}`,
-          name: match[1],
-          type: enumValues.length ? "enum" : match[2],
-          required: true,
-          description: "",
-          enumValues,
-        };
-      })
-      .filter(Boolean);
-  }
-
-  function splitLegacyInputFieldLine(line) {
-    const out = [];
-    let start = 0;
-    let depth = 0;
-    const raw = String(line || "");
-    for (let index = 0; index < raw.length; index += 1) {
-      const char = raw[index];
-      if (char === "(") depth += 1;
-      if (char === ")" && depth > 0) depth -= 1;
-      if (char === "," && depth === 0) {
-        out.push(raw.slice(start, index));
-        start = index + 1;
-      }
-    }
-    out.push(raw.slice(start));
-    return out;
-  }
-
-  function inputParamsForStep(step) {
-    if (Array.isArray(step?.inputParams)) return step.inputParams;
-    return parseLegacyInputFields(step?.fields);
-  }
-
-  function inputParamSummary(params, contract) {
-    const defaultType = contractDefaultValue(contract, "schema_field_type");
-    return (params || [])
-      .map((param) => `${param.name}: ${param.type || defaultType}${param.required ? "" : "?"}`)
-      .join(", ");
-  }
-
-  function inputParamOptions(flow, basicView = null) {
-    const input = (flow?.steps || []).find((step) => step.type === "input");
-    const fields = inputParamsForStep(input);
-    if (!fields.length) return [];
-    const view = basicEditorViewState(basicView);
-    return [{
-      stepId: "params",
-      namespace: "params",
-      label: view.inputParamSourceLabel,
-      fields,
-    }];
-  }
-
-  function basicInputControlState(step, contract, basicView = null) {
-    const params = inputParamsForStep(step);
-    const view = basicEditorViewState(basicView);
-    return {
-      panelIcon: view.inputPanelIcon,
-      panelTitle: view.inputPanelTitle,
-      panelSub: view.inputPanelSub,
-      taskLabel: view.inputTaskLabel,
-      taskPlaceholder: view.inputTaskPlaceholder,
-      params,
-      paramsTitle: `${view.inputParamsTitlePrefix} · ${params.length}`,
-      addParamLabel: view.inputAddParamLabel,
-      headerRows: [
-        { key: "name", label: view.inputParamHeaderLabels.name, className: "sb-col sb-col--name" },
-        { key: "type", label: view.inputParamHeaderLabels.type, className: "sb-col sb-col--type" },
-        { key: "required", label: view.inputParamHeaderLabels.required, className: "sb-col sb-col--req" },
-        { key: "description", label: view.inputParamHeaderLabels.description, className: "sb-col sb-col--desc" },
-        { key: "actions", label: view.inputParamHeaderLabels.action, className: "sb-col sb-col--act" },
-      ],
-      emptyParamsParts: view.inputEmptyParamsParts,
-      tips: view.inputTips,
-    };
-  }
-
-  function basicConditionOptions(flow, targetId, members, basicView = null) {
-    return [
-      ...inputParamOptions(flow, basicView),
-      ...memberConditionOptionsBefore(flow?.steps || [], targetId, members).out,
-    ];
-  }
-
-  function memberConditionOptionsBefore(steps, targetId, members, out = []) {
-    const memberById = new Map((Array.isArray(members) ? members : [])
-      .filter((member) => member?.id)
-      .map((member) => [member.id, member]));
-    return memberConditionOptionsBeforeWithMap(steps, targetId, memberById, out);
-  }
-
-  function memberConditionOptionsBeforeWithMap(steps, targetId, memberById, out = []) {
-    const target = String(targetId || "");
-    for (const step of steps || []) {
-      if (step?.id === target) return { found: true, out };
-      if (step?.type === "member" && step.role) {
-        const member = memberById.get(step.role);
-        if (member) {
-          out.push({
-            stepId: step.id,
-            namespace: "steps",
-            member,
-            label: member.name || member.role || member.id || step.id,
-            fields: [],
-          });
-        }
-      }
-      for (const lane of childLanes(step)) {
-        const result = memberConditionOptionsBeforeWithMap(lane.steps, target, memberById, [...out]);
-        if (result.found) return result;
-      }
-    }
-    return { found: false, out };
-  }
-
-  function parseGraphConditionVar(value) {
-    const text = String(value || "").trim();
-    const params = /^params\.([A-Za-z0-9_.-]+)$/.exec(text);
-    if (params) return { instanceId: "params", field: params[1], namespace: "params" };
-    const match = /^steps\.([A-Za-z0-9_.-]+)\.([A-Za-z0-9_.-]+)$/.exec(text)
-      || /^([A-Za-z0-9_.-]+)\.([A-Za-z0-9_.-]+)$/.exec(text);
-    if (!match) return { instanceId: "", field: "", namespace: "" };
-    return { instanceId: match[1], field: match[2], namespace: "steps" };
-  }
-
-  function graphConditionRefForEdge(edge) {
-    const condition = normalizedEdgeCondition(edge);
-    return parseGraphConditionVar(condition?.path || "");
-  }
-
-  function graphConditionOptions({ instances, members, schemas, edge, flow, graphView = null } = {}) {
-    const view = graphCanvasViewState(graphView);
-    const graphInstances = Array.isArray(instances) ? instances : [];
-    const byId = new Map(graphInstances.map((inst) => [inst.id, inst]));
-    const memberById = new Map((Array.isArray(members) ? members : []).map((member) => [member.id, member]));
-    const schemaById = new Map((Array.isArray(schemas) ? schemas : []).map((schema) => [schema.id, schema]));
-    const from = byId.get(edge?.from);
-    const to = byId.get(edge?.to);
-    const fromCol = Number(from?.col ?? 0);
-    const toCol = Number(to?.col ?? fromCol);
-    const limitCol = Math.max(fromCol, toCol);
-    const condRef = graphConditionRefForEdge(edge);
-    const params = inputParamsForStep((flow?.steps || []).find((step) => step.type === "input"));
-    const paramFields = params.length ? params : (condRef.namespace === "params" && condRef.field
-      ? [{ id: condRef.field, name: condRef.field, type: "string" }]
-      : []);
-    const options = graphInstances
-      .filter((inst) => inst.memberId && !inst.isGate && !inst.isTerminal)
-      .filter((inst) => inst.id !== to?.id)
-      .filter((inst) => inst.id === from?.id || Number(inst.col ?? 0) <= limitCol)
-      .map((inst) => {
-        const member = memberById.get(inst.memberId);
-        const schema = member?.schema ? schemaById.get(member.schema) || null : null;
-        return { inst, member, schema, fields: schema?.fields || [] };
-      })
-      .filter((option) => option.member && option.fields.length > 0)
-      .sort((a, b) => (Number(a.inst.col || 0) - Number(b.inst.col || 0)) || (Number(a.inst.row || 0) - Number(b.inst.row || 0)));
-    if (paramFields.length) {
-      options.unshift({
-        inst: { id: "params" },
-        member: { name: view.graphInputParamSourceLabel },
-        schema: { id: "params" },
-        fields: paramFields,
-        isParams: true,
-      });
-    }
-    return options;
-  }
-
-  function inputParamUpdatePatch(params, id, patch, contract) {
-    const source = Array.isArray(params) ? params : [];
-    const current = source.find((param) => param?.id === id) || null;
-    if (!current) return { inputParams: source, fields: inputParamSummary(source, contract) };
-    const normalized = normalizeSchemaLikeFieldPatch(current, patch, contract);
-    if (Object.prototype.hasOwnProperty.call(normalized, "name")) {
-      normalized.name = uniqueInputParamName(source, normalized.name, id, editorInputParamNameFallback(contract));
-    }
-    const next = source.map((param) => param?.id === id ? { ...param, ...normalized } : param);
-    return { inputParams: next, fields: inputParamSummary(next, contract) };
-  }
-
-  function inputParamDeletePatch(params, id, contract) {
-    const removed = (params || []).find((param) => param?.id === id) || null;
-    const next = (params || []).filter((param) => param?.id !== id);
-    return { removed, patch: { inputParams: next, fields: inputParamSummary(next, contract) } };
-  }
-
-  function inputParamRenamePatch(params, id, rawName, contract) {
-    const nextName = uniqueInputParamName(params, rawName, id, editorInputParamNameFallback(contract));
-    const next = (params || []).map((param) => param?.id === id ? { ...param, name: nextName } : param);
-    return { name: nextName, patch: { inputParams: next, fields: inputParamSummary(next, contract) } };
-  }
-
-  function basicConditionFromText(text) {
-    return parseEditorConditionText(text);
-  }
-
-  function basicConditionText(cond, options = {}) {
-    if (!cond || !cond.stepId || !cond.field) return "";
-    const op = cond.op || cond.operator || options.defaultOperator || "";
-    if (!op) return "";
-    if (cond.namespace === "params" || cond.stepId === "params") {
-      return `params.${cond.field} ${op} ${conditionValueLiteral(cond.val ?? cond.value ?? "")}`;
-    }
-    return `steps.${cond.stepId}.${cond.field} ${op} ${conditionValueLiteral(cond.val ?? cond.value ?? "")}`;
-  }
-
-  function basicBranchConditionPatch(step, branchId, patch = {}, contract) {
-    const branches = (step?.branches || []).map((branch) => {
-      if (branch?.id !== branchId) return branch;
-      const defaultOperator = contractDefaultValue(contract, "condition_operator");
-      const cond = {
-        ...(branch.cond || basicConditionFromText(branch.condition) || {}),
-        ...patch,
-      };
-      return {
-        ...branch,
-        cond,
-        condition: basicConditionText(cond, { defaultOperator }),
-      };
-    });
-    return { branches };
-  }
-
-  function basicBranchAddPatch(step, options = {}) {
-    const branches = Array.isArray(step?.branches) ? step.branches : [];
-    const branchIds = collectFlowBranchIds(options.flow?.steps || []);
-    for (const branch of branches) {
-      const id = String(branch?.id || "").trim();
-      if (id) branchIds.add(id);
-    }
-    const nextBranch = {
-      id: reserveFlowBranchId("br", branchIds),
-      label: basicBranchDefaultLabel(branches.length + 1, options.basicView),
-      steps: [],
-    };
-    if (step?.type !== "parallel") nextBranch.condition = "";
-    return { branches: [...branches, nextBranch] };
-  }
-
-  function basicConditionLabel(cond, options = [], config = {}) {
-    if (!cond || !cond.stepId || !cond.field) return String(config.previewFallback || "");
-    const option = (Array.isArray(options) ? options : []).find((candidate) => candidate.stepId === cond.stepId);
-    const label = option?.label || option?.member?.name || cond.stepId;
-    const op = cond.op || cond.operator || config.defaultOperator || "";
-    return `${label}.${cond.field} ${op} ${conditionValueLiteral(cond.val ?? cond.value ?? "")}`;
-  }
-
-  function basicBranchConditionControlState({ branch, options = [], schemas = [], contract, basicView = null } = {}) {
-    const view = basicEditorViewState(basicView);
-    const sourceOptions = Array.isArray(options) ? options : [];
-    const sourceSchemas = Array.isArray(schemas) ? schemas : [];
-    const defaultOperator = contractDefaultValue(contract, "condition_operator");
-    const cond = branch?.cond || basicConditionFromText(branch?.condition) || {};
-    const selected = sourceOptions.find((option) => option.stepId === cond.stepId) || null;
-    const fields = selected?.namespace === "params"
-      ? selected.fields || []
-      : ((sourceSchemas.find((candidate) => candidate.id === selected?.member?.schema)?.fields) || []);
-    const field = fields.find((candidate) => candidate.name === cond.field) || null;
-    const operatorValue = cond.op || defaultOperator;
-    return {
-      cond,
-      selected,
-      fields,
-      field,
-      sourceOptions: sourceOptions.map((option) => ({
-        value: option.stepId,
-        label: option.label || option.member?.name || option.stepId,
-        option,
-      })),
-      fieldOptions: fields.map((candidate) => ({
-        value: candidate.name,
-        label: `${candidate.name} · ${candidate.type}`,
-        field: candidate,
-      })),
-      rowTitle: `${view.branchConditionRowTitlePrefix} ${Number.isFinite(Number(branch?.index)) ? Number(branch.index) + 1 : ""}`.trim(),
-      emptyHint: view.branchConditionEmptyHint,
-      sourcePlaceholder: view.branchConditionSourcePlaceholder,
-      fieldPlaceholder: fields.length ? view.branchConditionFieldPlaceholder : view.branchConditionNoSchemaLabel,
-      defaultOperator,
-      operatorValue,
-      operatorOptions: conditionOperatorOptions(contract, operatorValue),
-      previewPrefix: view.branchConditionPreviewPrefix,
-      previewLabel: basicConditionLabel(cond, sourceOptions, {
-        defaultOperator,
-        previewFallback: view.branchConditionPreviewFallback,
-      }),
-      hasConditionOptions: sourceOptions.length > 0,
-    };
-  }
-
-  function basicBranchParallelControlState({ step, flow, members = [], contract, basicView = null } = {}) {
-    const view = basicEditorViewState(basicView);
-    const sourceMembers = Array.isArray(members) ? members : [];
-    const isParallel = step?.type === "parallel";
-    const controllerRole = step?.controllerRole || "";
-    const defaultDispatch = contractDefaultValue(contract, "dispatch_mode");
-    const dispatchValue = step?.dispatch || defaultDispatch;
-    const defaultCollection = contractDefaultValue(contract, "collection_policy");
-    const collectionValue = step?.collection || defaultCollection;
-    const defaultDependency = contractDefaultValue(contract, "dependency_mode");
-    const dependencyValue = step?.dependsMode || defaultDependency;
-    const dispatchOptions = dispatchModeOptions(contract, dispatchValue);
-    const collectionOptions = collectionPolicyOptions(contract, collectionValue);
-    const dependencyOptions = dependencyModeOptions(contract, dependencyValue);
-    return {
-      isParallel,
-      panelIcon: isParallel ? "‖" : "⑂",
-      panelTitle: isParallel ? view.parallelPanelTitle : view.branchPanelTitle,
-      panelSub: isParallel ? view.parallelPanelSub : view.branchPanelSub,
-      controllerLabel: isParallel ? view.parallelJoinMemberLabel : view.branchRouteMemberLabel,
-      controllerPlaceholderLabel: view.branchControllerPlaceholderLabel,
-      controllerRole,
-      memberOptions: sourceMembers.map((member) => ({
-        value: member.id,
-        label: `${member.name || member.role || member.id} · ${member.role || "profile"}`,
-        member,
-      })),
-      emptyControllerHint: view.branchEmptyControllerHint,
-      conditionOptions: basicConditionOptions(flow, step?.id, sourceMembers, basicView),
-      branchConditionTitle: view.branchConditionTitle,
-      branchConditionIntro: view.branchConditionIntro,
-      fallbackTitle: view.branchFallbackTitle,
-      fallbackHint: view.branchFallbackHint,
-      addBranchLabel: isParallel ? view.addParallelBranchLabel : view.addBranchLabel,
-      dispatchLabel: view.parallelDispatchLabel,
-      dispatchValue,
-      dispatchOptions,
-      selectedDispatch: dispatchOptions.find((option) => option.value === dispatchValue) || null,
-      collectionLabel: view.parallelCollectionLabel,
-      collectionValue,
-      collectionOptions,
-      selectedCollection: collectionOptions.find((option) => option.value === collectionValue) || null,
-      showQuorum: collectionValue === "quorum",
-      quorumLabel: view.parallelQuorumLabel,
-      quorumPlaceholder: view.parallelQuorumPlaceholder,
-      dependencyLabel: view.branchDependencyLabel,
-      dependencyValue,
-      dependencyOptions,
-      selectedDependency: dependencyOptions.find((option) => option.value === dependencyValue) || null,
-    };
-  }
-
-  function basicForkCanvasState({ step, contract, basicView = null } = {}) {
-    const view = basicEditorViewState(basicView);
-    const isParallel = step?.type === "parallel";
-    const collection = step?.collection || contractDefaultValue(contract, "collection_policy");
-    const branches = Array.isArray(step?.branches) ? step.branches : [];
-    const lanes = [
-      ...branches.map((branch) => ({ id: branch.id, label: branch.label, steps: branch.steps || [] })),
-      ...(isParallel ? [] : [{ id: "fallback", label: view.branchFallbackTitle, steps: step?.fallback || [] }]),
-    ];
-    return {
-      isParallel,
-      className: "bld-fork" + (isParallel ? " bld-fork--parallel" : ""),
-      lanes,
-      showRail: lanes.length > 1,
-      showJoin: isParallel,
-      joinLabel: `⋈ join · ${collection || "—"}`,
-    };
-  }
-
-  function basicRepeatIterationLabel(step, members = [], basicView = null) {
-    const view = basicEditorViewState(basicView);
-    const iterationInput = typeof step?.iterationInput === "string" ? step.iterationInput.trim() : "";
-    if (!iterationInput) return view.repeatIterationRuntimeDefaultLabel;
-    if (iterationInput === "carry") return view.repeatIterationCarryLabel;
-    if (iterationInput === "reuse") return view.repeatIterationReuseUnsupportedLabel;
-    const bodyStep = (Array.isArray(step?.steps) ? step.steps : []).find((candidate) => candidate?.id === iterationInput);
-    const member = (Array.isArray(members) ? members : []).find((candidate) => candidate?.id === bodyStep?.role);
-    return member
-      ? `${view.repeatIterationFeedsUnsupportedPrefix}${member.name}'s output`
-      : `${view.repeatIterationUnsupportedPrefix}${iterationInput}`;
-  }
-
-  function basicRepeatCanvasState({ step, members = [], contract, basicView = null } = {}) {
-    const view = basicEditorViewState(basicView);
-    const defaultOperator = contractDefaultValue(contract, "condition_operator");
-    const repeatUntilExpression = basicRepeatUntilExpression(step, members, { defaultOperator });
-    return {
-      repeatUntilExpression,
-      whileLabel: view.repeatCanvasWhileLabel,
-      notLabel: view.repeatCanvasNotLabel,
-      conditionLabel: repeatUntilExpression || view.repeatPreviewFallback,
-      maxIterationsLabel: step?.maxIterations
-        ? `${view.repeatCanvasMaxIterationsPrefix}${step.maxIterations}`
-        : view.repeatCanvasMissingMaxIterationsLabel,
-      loopBackLabel: `${view.repeatCanvasLoopBackPrefix}${basicRepeatIterationLabel(step, members, basicView)}`,
-      exitLabel: `${view.repeatCanvasExitPrefix}${repeatUntilExpression || view.repeatCanvasExitFallback}`,
-    };
-  }
-
-  function basicStepCardState({ step, members = [], contract, basicView = null } = {}) {
-    const view = basicEditorViewState(basicView);
-    const sourceMembers = Array.isArray(members) ? members : [];
-    const member = step?.role ? sourceMembers.find((candidate) => candidate?.id === step.role) || null : null;
-    if (step?.type === "input") {
-      return {
-        icon: "▤",
-        iconTint: "member",
-        title: view.inputStepCardTitle,
-        desc: step?.task ? step.task : view.inputStepCardDescFallback,
-        configured: true,
-        isFlowCard: false,
-      };
-    }
-    if (step?.type === "branch") {
-      return {
-        icon: "⑂",
-        iconTint: "member",
-        title: view.branchStepCardTitle,
-        desc: view.branchStepCardDesc,
-        configured: true,
-        isFlowCard: true,
-      };
-    }
-    if (step?.type === "parallel") {
-      const collection = step?.collection || contractDefaultValue(contract, "collection_policy") || view.parallelStepCardCollectionFallback;
-      return {
-        icon: "‖",
-        iconTint: "member",
-        title: view.parallelStepCardTitle,
-        desc: `${view.parallelStepCardDescPrefix}${collection}`,
-        configured: true,
-        isFlowCard: true,
-      };
-    }
-    if (step?.type === "repeat") {
-      const defaultOperator = contractDefaultValue(contract, "condition_operator");
-      const repeatUntilExpression = basicRepeatUntilExpression(step, sourceMembers, { defaultOperator });
-      return {
-        icon: "↻",
-        iconTint: "member",
-        title: view.repeatStepCardTitle,
-        desc: repeatUntilExpression
-          ? `${view.repeatStepCardDescPrefix}${repeatUntilExpression}`
-          : view.repeatStepCardDescFallback,
-        configured: true,
-        isFlowCard: true,
-      };
-    }
-    return {
-      icon: "◆",
-      iconTint: "accent",
-      title: member ? member.name : view.memberStepCardTitleFallback,
-      desc: step?.instruction || (member ? `${member.role} · ${member.model}` : ""),
-      configured: !!step?.role,
-      isFlowCard: false,
-    };
-  }
-
-  function basicRepeatControlState({ step, members = [], schemas = [], contract, basicView = null } = {}) {
-    const view = basicEditorViewState(basicView);
-    const sourceMembers = Array.isArray(members) ? members : [];
-    const sourceSchemas = Array.isArray(schemas) ? schemas : [];
-    const memberById = new Map(sourceMembers.map((member) => [member.id, member]));
-    const bodyMembers = (Array.isArray(step?.steps) ? step.steps : [])
-      .filter((candidate) => candidate?.type === "member" && candidate.role)
-      .map((candidate) => ({
-        stepId: candidate.id,
-        member: memberById.get(candidate.role) || null,
-      }))
-      .filter((candidate) => candidate.member);
-    const cond = step?.cond || {};
-    const condMember = bodyMembers.find((candidate) => candidate.stepId === cond.stepId)?.member || null;
-    const condSchema = condMember
-      ? sourceSchemas.find((schema) => schema.id === condMember.schema) || null
-      : null;
-    const fields = condSchema?.fields || [];
-    const condField = fields.find((field) => field.name === cond.field) || null;
-    const defaultOperator = contractDefaultValue(contract, "condition_operator");
-    const operatorValue = cond.op || defaultOperator;
-    const repeatUntilExpression = basicRepeatUntilExpression(step, sourceMembers, { defaultOperator });
-    const iterationInputValue = typeof step?.iterationInput === "string" ? step.iterationInput : "";
-    const iterationInputOptions = [
-      { value: "", label: view.repeatIterationRuntimeDefaultLabel, disabled: false, reason: "" },
-      ...repeatIterationInputOptions(contract, iterationInputValue),
-    ];
-    return {
-      panelIcon: "↻",
-      panelTitle: view.repeatPanelTitle,
-      panelSub: view.repeatPanelSub,
-      loopIdLabel: view.repeatLoopIdLabel,
-      loopIdPlaceholder: view.repeatLoopIdPlaceholder,
-      conditionTitle: view.repeatConditionTitle,
-      conditionIntro: view.repeatConditionIntro,
-      emptyBodyHint: view.repeatEmptyBodyHint,
-      memberPlaceholderLabel: view.repeatMemberPlaceholderLabel,
-      previewLabel: view.repeatPreviewLabel,
-      previewFallback: view.repeatPreviewFallback,
-      iterationInputLabel: view.repeatIterationInputLabel,
-      maxIterationsLabel: view.repeatMaxIterationsLabel,
-      maxIterationsPlaceholder: view.repeatMaxIterationsPlaceholder,
-      tips: view.repeatTips,
-      bodyMembers,
-      bodyMemberOptions: bodyMembers.map((candidate) => ({
-        value: candidate.stepId,
-        label: candidate.member.name,
-        bodyMember: candidate,
-      })),
-      hasBodyMembers: bodyMembers.length > 0,
-      cond,
-      condMember,
-      condSchema,
-      fields,
-      condField,
-      fieldOptions: fields.map((field) => ({
-        value: field.name,
-        label: `${field.name} · ${field.type}`,
-        field,
-      })),
-      fieldPlaceholder: condSchema ? view.repeatConditionFieldPlaceholder : view.repeatConditionNoSchemaLabel,
-      defaultOperator,
-      operatorValue,
-      operatorOptions: conditionOperatorOptions(contract, operatorValue),
-      repeatUntilExpression,
-      iterationInputValue,
-      iterationInputOptions,
-      selectedIterationInput: iterationInputOptions.find((option) => option.value === iterationInputValue) || null,
-    };
-  }
-
-  function basicMemberStepControlState({ step, flow, members = [], contract, basicView = null, launchView = null } = {}) {
-    const view = basicEditorViewState(basicView);
-    const sourceMembers = Array.isArray(members) ? members : [];
-    const memberById = new Map(sourceMembers.map((member) => [member.id, member]));
-    const member = step?.role ? memberById.get(step.role) || null : null;
-    const launchState = launchModeControlState(step, contract, launchView);
-    const launchSources = collectFlowMemberSteps(flow?.steps || [])
-      .filter((candidate) => candidate.id !== step?.id && candidate.role);
-    const launchSourceOptions = launchSources.map((source) => {
-      const sourceMember = memberById.get(source.role) || null;
-      return {
-        value: source.id,
-        label: `${sourceMember?.name || source.role} · ${source.id}`,
-        step: source,
-        member: sourceMember,
-      };
-    });
-    const runtimeDefault = { value: "", label: view.memberStepRuntimeDefaultLabel, disabled: false, reason: "" };
-    const dispatchValue = typeof step?.dispatchMode === "string" ? step.dispatchMode : "";
-    const collectionValue = typeof step?.collection === "string" ? step.collection : "";
-    const dependencyValue = typeof step?.dependsMode === "string" ? step.dependsMode : "";
-    const outputValue = typeof step?.outputFormat === "string" ? step.outputFormat : "";
-    const dispatchOptions = [runtimeDefault, ...dispatchModeOptions(contract, dispatchValue)];
-    const collectionOptions = [runtimeDefault, ...collectionPolicyOptions(contract, collectionValue)];
-    const dependencyOptions = [runtimeDefault, ...dependencyModeOptions(contract, dependencyValue)];
-    const outputOptions = [runtimeDefault, ...outputFormatOptions(contract, outputValue)];
-    return {
-      member,
-      panelTitle: member ? member.name : view.memberStepPanelTitleFallback,
-      panelSub: member ? `${member.role} · ${member.model}` : view.memberStepPanelSubFallback,
-      memberFieldLabel: view.memberStepMemberLabel,
-      memberPlaceholderLabel: view.memberStepMemberPlaceholder,
-      memberOptions: sourceMembers.map((candidate) => ({
-        value: candidate.id,
-        label: `${candidate.name} · ${candidate.role}`,
-        member: candidate,
-      })),
-      launchState,
-      launchSources,
-      launchSourceOptions,
-      firstLaunchSourceId: launchSourceOptions[0]?.value || "",
-      instructionLabel: view.memberStepInstructionLabel,
-      instructionPlaceholder: view.memberStepInstructionPlaceholder,
-      dispatchLabel: view.memberStepDispatchLabel,
-      dispatchValue,
-      dispatchOptions,
-      selectedDispatch: dispatchOptions.find((option) => option.value === dispatchValue) || null,
-      collectionLabel: view.memberStepCollectionLabel,
-      collectionValue,
-      collectionOptions,
-      selectedCollection: collectionOptions.find((option) => option.value === collectionValue) || null,
-      quorumLabel: view.memberStepQuorumLabel,
-      quorumPlaceholder: view.memberStepQuorumPlaceholder,
-      timeoutLabel: view.memberStepTimeoutLabel,
-      timeoutPlaceholder: view.memberStepRuntimeDefaultLabel,
-      dependencyLabel: view.memberStepDependencyLabel,
-      dependencyValue,
-      dependencyOptions,
-      selectedDependency: dependencyOptions.find((option) => option.value === dependencyValue) || null,
-      outputFormatLabel: view.memberStepOutputFormatLabel,
-      outputValue,
-      outputOptions,
-      selectedOutput: outputOptions.find((option) => option.value === outputValue) || null,
-      showQuorum: collectionValue === "quorum",
-      allowedToolsLabel: view.memberStepAllowedToolsLabel,
-      allowedToolsEmptyLabel: view.memberStepAllowedToolsEmptyLabel,
-      blockedToolsLabel: view.memberStepBlockedToolsLabel,
-      blockedToolsEmptyLabel: view.memberStepBlockedToolsEmptyLabel,
-      schemaHint: member?.schema
-        ? (() => {
-          const tools = normalizeStringList(member.tools);
-          const toolSummary = tools.join(", ") || view.memberStepSchemaHintEmptyToolsLabel;
-          return {
-            schema: member.schema,
-            tools,
-            toolSummary,
-            parts: [
-              { key: "prefix", text: view.memberStepSchemaHintPrefix },
-              { key: "schema", text: member.schema, kind: "code" },
-              { key: "tools", text: `${view.memberStepSchemaHintToolsPrefix}${toolSummary}` },
-            ],
-          };
-        })()
-        : null,
-    };
-  }
-
-  function basicRepeatUntilExpression(step, members = [], options = {}) {
-    const cond = step?.cond;
-    if (!cond || !cond.stepId || !cond.field) return step?.until || "";
-    const bodyStep = (Array.isArray(step.steps) ? step.steps : []).find((candidate) => candidate?.id === cond.stepId);
-    const member = (Array.isArray(members) ? members : []).find((candidate) => candidate?.id === bodyStep?.role);
-    if (!member) return step?.until || "";
-    const op = cond.op || cond.operator || options.defaultOperator || "";
-    if (!op) return step?.until || "";
-    return `${member.name || member.role || member.id}.${cond.field} ${op} ${conditionValueLiteral(cond.val ?? cond.value ?? "")}`;
-  }
-
-  function graphEdgeConditionPatch(edge, patch = {}, options = {}) {
-    const previous = normalizedEdgeCondition(edge);
-    const previousText = previous?.path ? conditionTextForPath(previous.path, previous) : "";
-    const currentCond = edge?.cond && typeof edge.cond === "object" && !Array.isArray(edge.cond)
-      ? edge.cond
-      : {};
-    const merged = { ...currentCond, ...patch };
-    const normalized = normalizedEdgeCondition({ cond: merged });
-    if (!normalized?.path) {
-      return { cond: { ...merged, var: "" }, label: "" };
-    }
-    const cond = {
-      var: normalized.path,
-      op: normalized.op || options.defaultOperator || "",
-      val: normalized.val ?? "",
-    };
-    const currentLabel = String(edge?.label || "");
-    const shouldReplaceLabel = !!options.forceLabel
-      || !currentLabel
-      || (!!previousText && currentLabel === previousText);
-    return {
-      cond,
-      label: shouldReplaceLabel ? conditionTextForPath(cond.var, cond) : edge.label,
-    };
-  }
-
-  function graphEdgeConditionOperatorPatch(edge, rawOperator, options = {}) {
-    const patch = basicConditionOperatorPatch(rawOperator, options.contract);
-    if (!("op" in patch)) return {};
-    return graphEdgeConditionPatch(edge, patch, options);
-  }
-
-  function graphEdgeConditionValuePatch(edge, rawValue, options = {}) {
-    return graphEdgeConditionPatch(edge, basicConditionValuePatch(rawValue), options);
-  }
-
-  function graphConditionPathForOption(option, field) {
-    const name = String(field || "").trim();
-    if (!option || !name) return "";
-    const instanceId = String(option?.inst?.id || "").trim();
-    if (!instanceId) return "";
-    if (option.isParams || instanceId === "params") return `params.${name}`;
-    return `steps.${instanceId}.${name}`;
-  }
-
-  function graphFirstConditionPatch(edge, conditionOptions = [], options = {}) {
-    const rows = Array.isArray(conditionOptions) ? conditionOptions : [];
-    const condRef = graphConditionRefForEdge(edge);
-    const preferredId = String(options.instanceId || condRef.instanceId || "").trim();
-    const owner = rows.find((option) => option?.inst?.id === preferredId) || rows[0];
-    const field = options.field !== undefined
-      ? String(options.field || "").trim()
-      : String(condRef.field || owner?.fields?.[0]?.name || "").trim();
-    const path = graphConditionPathForOption(owner, field);
-    return path
-      ? { var: path, op: edge?.cond?.op || options.defaultOperator || "", val: edge?.cond?.val ?? "" }
-      : { var: "" };
-  }
-
-  function graphConditionEdgeKindForPatch(options = {}) {
-    return String(options.conditionKind || contractDefaultValue(options.contract, "graph_condition_edge_kind")).trim();
-  }
-
-  function graphEdgeConditionOwnerPatch(edge, conditionOptions = [], instanceId, options = {}) {
-    const rows = Array.isArray(conditionOptions) ? conditionOptions : [];
-    const id = String(instanceId || "").trim();
-    if (id && !rows.some((option) => String(option?.inst?.id || "").trim() === id)) return {};
-    const owner = rows.find((option) => option?.inst?.id === instanceId);
-    const firstField = String(owner?.fields?.[0]?.name || "").trim();
-    const conditionPatch = graphFirstConditionPatch(edge, rows, {
-      instanceId,
-      field: firstField,
-      defaultOperator: options.defaultOperator,
-    });
-    const patch = graphEdgeConditionPatch(edge, conditionPatch, {
-      defaultOperator: options.defaultOperator,
-      forceLabel: options.forceLabel,
-    });
-    return options.includeKind ? { kind: graphConditionEdgeKindForPatch(options), ...patch } : patch;
-  }
-
-  function graphEdgeConditionFieldPatch(edge, conditionOptions = [], field, options = {}) {
-    const rows = Array.isArray(conditionOptions) ? conditionOptions : [];
-    const condRef = graphConditionRefForEdge(edge);
-    const owner = rows.find((option) => option?.inst?.id === condRef.instanceId) || rows[0];
-    const fieldName = String(field || "").trim();
-    if (fieldName && !((owner?.fields || []).some((candidate) => String(candidate?.name || "").trim() === fieldName))) return {};
-    const conditionPatch = graphFirstConditionPatch(edge, rows, {
-      instanceId: owner?.inst?.id || "",
-      field,
-      defaultOperator: options.defaultOperator,
-    });
-    const patch = graphEdgeConditionPatch(edge, conditionPatch, {
-      defaultOperator: options.defaultOperator,
-      forceLabel: options.forceLabel,
-    });
-    return options.includeKind ? { kind: graphConditionEdgeKindForPatch(options), ...patch } : patch;
-  }
-
-  function graphEdgeKindPatch(edge, nextKind, options = {}) {
-    const kind = String(nextKind || "").trim();
-    const conditionKind = graphConditionEdgeKindForPatch(options);
-    if (kind !== conditionKind) {
-      const previous = normalizedEdgeCondition(edge);
-      const previousText = previous?.path ? conditionTextForPath(previous.path, previous) : "";
-      const currentLabel = String(edge?.label || "");
-      return {
-        kind,
-        cond: null,
-        label: previousText && currentLabel === previousText ? "" : currentLabel,
-      };
-    }
-    return {
-      kind: conditionKind,
-      ...graphEdgeConditionPatch(edge, options.conditionPatch || {}, {
-        defaultOperator: options.defaultOperator,
-        forceLabel: options.forceLabel,
-      }),
-    };
-  }
-
-  function graphEdgeFallbackPatch(edge, contract) {
-    const kind = contractDefaultValue(contract, "graph_edge_kind");
-    const draft = editorGraphDraftContract(contract);
-    if (!kind || !draft) return null;
-    return { kind, label: draft.fallbackEdgeLabel, cond: null };
-  }
-
-  function graphBranchConditionModePatch(edge, mode, options = {}) {
-    const value = String(mode || "").trim();
-    if (value === "fallback") return graphEdgeFallbackPatch(edge, options.contract);
-    const conditionKind = graphConditionEdgeKindForPatch(options);
-    if (value !== conditionKind) return {};
-    return graphEdgeConditionOwnerPatch(edge, options.conditionOptions, options.firstOwnerId, {
-      defaultOperator: options.defaultOperator,
-      forceLabel: true,
-      includeKind: true,
-      contract: options.contract,
-      conditionKind,
-    });
-  }
-
-  function graphSelectionState({ selection = {}, instances = [], edges = [] } = {}) {
-    const kind = String(selection?.kind || "");
-    if (kind === "instance") {
-      const instance = (Array.isArray(instances) ? instances : []).find((candidate) => candidate.id === selection.id) || null;
-      return { kind, instance, edge: null, missing: !instance };
-    }
-    if (kind === "edge") {
-      const edge = (Array.isArray(edges) ? edges : []).find((candidate) => candidate.id === selection.id) || null;
-      return { kind, instance: null, edge, missing: !edge };
-    }
-    return { kind: "", instance: null, edge: null, missing: false };
-  }
-
-  function graphSelectionProjection(kind, id) {
-    const selectionKind = String(kind || "").trim();
-    const selectionId = String(id || "").trim();
-    if (!selectionId || (selectionKind !== "instance" && selectionKind !== "edge")) return { kind: null, id: null };
-    return { kind: selectionKind, id: selectionId };
-  }
-
-  function graphTemplateInspectorState({ studio = {}, template = null, templateSeed = null, templateView = null } = {}) {
-    const seed = templateSeed && typeof templateSeed === "object" ? templateSeed : {};
-    const view = graphTemplateViewForState(templateView);
-    const members = Array.isArray(studio.members) ? studio.members : [];
-    const instances = Array.isArray(studio.instances) ? studio.instances : [];
-    const edges = Array.isArray(studio.edges) ? studio.edges : [];
-    const frames = Array.isArray(studio.frames) ? studio.frames : [];
-    const triggerLabel = template?.trigger || (Array.isArray(seed.triggers?.labels) ? seed.triggers.labels.join(", ") : "");
-    const labels = triggerLabel ? [triggerLabel] : [];
-    const placedMembers = new Set(instances.filter((instance) => instance?.memberId).map((instance) => instance.memberId)).size;
-    const memberSummary = view.summaryMembersValueTemplate
-      .replaceAll("{placed}", String(placedMembers))
-      .replaceAll("{total}", String(members.length));
-    return {
-      name: template?.name || seed.name || "",
-      repo: template?.repo || seed.repo || "",
-      version: template?.version || seed.version || "",
-      templateEyebrow: view.templateEyebrow,
-      summaryTitle: view.summaryTitle,
-      triggersTitle: view.triggersTitle,
-      quickStartTitle: view.quickStartTitle,
-      quickStartRows: view.quickStartRows,
-      triggers: {
-        labels,
-        default: !!template?.defaultTrigger,
-      },
-      triggerRows: [
-        { key: "labels", label: view.triggerLabelsLabel, value: labels.join(", ") },
-        {
-          key: "default",
-          label: view.triggerDefaultLabel,
-          value: template?.defaultTrigger ? view.defaultYesLabel : view.defaultNoLabel,
-        },
-      ],
-      summaryRows: [
-        { key: "members", label: view.summaryMembersLabel, value: memberSummary },
-        { key: "instances", label: view.summaryInstancesLabel, value: instances.filter((instance) => !instance?.isTerminal).length },
-        { key: "terminals", label: view.summaryTerminalsLabel, value: instances.filter((instance) => instance?.isTerminal).length },
-        { key: "edges", label: view.summaryEdgesLabel, value: edges.length },
-        { key: "frames", label: view.summaryFramesLabel, value: frames.length },
-      ],
-    };
-  }
-
-  function graphInstanceControlState({ inst, instances = [], members = [], schemas = [], graphView = null } = {}) {
-    const view = graphCanvasViewState(graphView);
-    const sourceMembers = Array.isArray(members) ? members : [];
-    const sourceInstances = Array.isArray(instances) ? instances : [];
-    const member = inst?.memberId
-      ? sourceMembers.find((candidate) => candidate.id === inst.memberId) || null
-      : null;
-    const id = String(inst?.id || "");
-    const col = Number.isFinite(Number(inst?.col)) ? Number(inst.col) + 1 : 1;
-    const row = Number.isFinite(Number(inst?.row)) ? Number(inst.row) + 1 : 1;
-    const outputSchema = member?.schema
-      ? (Array.isArray(schemas) ? schemas : []).find((schema) => schema.id === member.schema) || null
-      : null;
-    const outputFields = Array.isArray(outputSchema?.fields) ? outputSchema.fields : [];
-    const outputFieldRows = outputFields.map((field) => ({
-      id: field.id,
-      name: field.name,
-      type: field.type,
-      required: !!field.required,
-      requiredLabel: field.required ? view.instanceOutputRequiredLabel : "",
-    }));
-    const tools = normalizeStringList(member?.tools);
-    const memberToolSummary = tools.length
-      ? `${tools.length} · ${tools.slice(0, 3).join(", ")}${tools.length > 3 ? "…" : ""}`
-      : "0";
-    const forkSourceOptions = sourceInstances
-      .filter((candidate) => !candidate?.isTerminal && candidate.id !== inst?.id)
-      .map((candidate) => {
-        const sourceMember = candidate?.memberId
-          ? sourceMembers.find((memberCandidate) => memberCandidate.id === candidate.memberId) || null
-          : null;
-        return {
-          value: candidate.id,
-          label: `${sourceMember?.name || candidate.id} · ${candidate.id}`,
-          instance: candidate,
-          member: sourceMember,
-        };
-      });
-    return {
-      member,
-      memberId: member?.id || "",
-      eyebrow: view.instanceEyebrow,
-      title: member ? member.name : view.edgeRowMissingValue,
-      idLine: graphTemplateText(view.instanceIdLineTemplate, { id, col, row }),
-      deleteLabel: view.inspectorDeleteLabel,
-      memberTitle: member ? member.name : view.edgeRowMissingValue,
-      memberRoleLabel: member ? graphTemplateText(view.instanceMemberRoleTemplate, { role: member.role || "" }) : "",
-      editMemberLabel: view.instanceEditMemberLabel,
-      memberName: member?.name || "",
-      memberSchemaLabel: member?.schema || view.edgeRowMissingValue,
-      memberToolSummary,
-      memberSummaryRows: [
-        { key: "model", label: view.instanceModelLabel, value: member?.model || view.edgeRowMissingValue },
-        { key: "schema", label: view.instanceSchemaLabel, value: member?.schema || view.edgeRowMissingValue },
-        { key: "tools", label: view.instanceToolsLabel, value: memberToolSummary },
-      ],
-      memberHint: view.instanceMemberHint,
-      positionTitle: view.instancePositionTitle,
-      positionRows: [
-        { key: "stage", label: view.instancePositionStageLabel, value: col },
-        { key: "slot", label: view.instancePositionSlotLabel, value: row },
-      ],
-      outputSchema,
-      outputFields,
-      outputTitle: graphTemplateText(view.instanceOutputTitleTemplate, { schema: member?.schema || view.edgeRowMissingValue }),
-      outputFieldRows,
-      outputHint: view.instanceOutputHint,
-      outputOpenMemberLabel: view.instanceOutputOpenMemberLabel,
-      forkSourceOptions,
-      firstForkSourceId: forkSourceOptions[0]?.value || "",
-    };
-  }
-
-  function graphTemplateText(template, values = {}) {
-    let out = String(template || "");
-    for (const [key, value] of Object.entries(values || {})) {
-      out = out.replaceAll(`{${key}}`, String(value ?? ""));
-    }
-    return out;
-  }
-
-  function graphToolTagClass(toolId, toolCatalog = []) {
-    const id = String(toolId || "");
-    const tool = (Array.isArray(toolCatalog) ? toolCatalog : [])
-      .find((candidate) => String(candidate?.id || "") === id) || null;
-    const tagClass = String(tool?.tagClass || tool?.tag_class || tool?.raw?.tag_class || "").trim();
-    return tagClass ? ` ${tagClass}` : "";
-  }
-
-  function graphGridState({ instances = [], gridBase = {} } = {}) {
-    const baseCols = Math.max(1, Number(gridBase?.cols || 1));
-    const baseRows = Math.max(1, Number(gridBase?.rows || 1));
-    let maxCol = baseCols - 1;
-    let maxRow = baseRows - 1;
-    for (const instance of Array.isArray(instances) ? instances : []) {
-      const col = Number(instance?.col);
-      const row = Number(instance?.row);
-      if (Number.isFinite(col) && col > maxCol) maxCol = col;
-      if (Number.isFinite(row) && row > maxRow) maxRow = row;
-    }
-    const grid = {
-      ...gridBase,
-      cols: maxCol + 2,
-      rows: maxRow + 2,
-    };
-    const totalW = Number(grid.padX || 0) * 2 +
-      Number(grid.cols || 0) * Number(grid.cellW || 0) +
-      Math.max(0, Number(grid.cols || 0) - 1) * Number(grid.gapX || 0);
-    const totalH = Number(grid.padY || 0) * 2 +
-      Number(grid.rows || 0) * Number(grid.cellH || 0) +
-      Math.max(0, Number(grid.rows || 0) - 1) * Number(grid.gapY || 0);
-    return { grid, totalW, totalH };
-  }
-
-  function graphCellXY(grid, col, row) {
-    return {
-      x: Number(grid?.padX || 0) + Number(col || 0) * (Number(grid?.cellW || 0) + Number(grid?.gapX || 0)),
-      y: Number(grid?.padY || 0) + Number(row || 0) * (Number(grid?.cellH || 0) + Number(grid?.gapY || 0)),
-    };
-  }
-
-  function graphNodeBox(grid, inst) {
-    const { x, y } = graphCellXY(grid, inst?.col, inst?.row);
-    if (inst?.isSourceFile) {
-      const sw = 210;
-      const sh = 58;
-      return {
-        x: x + (Number(grid?.cellW || 0) - sw) / 2,
-        y: y + (Number(grid?.cellH || 0) - sh) / 2,
-        w: sw,
-        h: sh,
-      };
-    }
-    if (inst?.isGate) {
-      const gw = 156;
-      const gh = 56;
-      return {
-        x: x + (Number(grid?.cellW || 0) - gw) / 2,
-        y: y + (Number(grid?.cellH || 0) - gh) / 2,
-        w: gw,
-        h: gh,
-      };
-    }
-    return {
-      x: x + (Number(grid?.cellW || 0) - GRAPH_NODE_W) / 2,
-      y: y + (Number(grid?.cellH || 0) - GRAPH_NODE_H) / 2,
-      w: GRAPH_NODE_W,
-      h: GRAPH_NODE_H,
-    };
-  }
-
-  function graphPortOut(grid, inst) {
-    const box = graphNodeBox(grid, inst);
-    return { x: box.x + box.w, y: box.y + box.h / 2 };
-  }
-
-  function graphPortIn(grid, inst) {
-    const box = graphNodeBox(grid, inst);
-    return { x: box.x, y: box.y + box.h / 2 };
-  }
-
-  function graphEdgePath(a, b) {
-    if (b.x < a.x - 20) {
-      const dropY = Math.max(a.y, b.y) + 90;
-      const dx = 60;
-      return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${a.x + dx} ${dropY}, ${a.x} ${dropY} L ${b.x} ${dropY} C ${b.x - dx} ${dropY}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
-    }
-    const dx = Math.max(40, (b.x - a.x) * 0.5);
-    return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
-  }
-
-  function graphEdgeMidpoint(a, b) {
-    if (b.x < a.x - 20) return { x: (a.x + b.x) / 2, y: Math.max(a.y, b.y) + 90 };
-    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 6 };
-  }
-
-  function graphCellAt(grid, x, y) {
-    const col = Math.floor((Number(x || 0) - Number(grid?.padX || 0) + Number(grid?.gapX || 0) / 2) / (Number(grid?.cellW || 0) + Number(grid?.gapX || 0)));
-    const row = Math.floor((Number(y || 0) - Number(grid?.padY || 0) + Number(grid?.gapY || 0) / 2) / (Number(grid?.cellH || 0) + Number(grid?.gapY || 0)));
-    if (col < 0 || col >= Number(grid?.cols || 0) || row < 0 || row >= Number(grid?.rows || 0)) return null;
-    return { col, row };
-  }
-
-  function graphDragCellAt(grid, world, drag) {
-    const cx = Number(world?.x || 0) - Number(drag?.dx || 0) + GRAPH_NODE_W / 2;
-    const cy = Number(world?.y || 0) - Number(drag?.dy || 0) + GRAPH_NODE_H / 2;
-    return graphCellAt(grid, cx, cy);
-  }
-
-  function graphCellCanvasRows({ grid, instances = [], hoverCell = null } = {}) {
-    const occupied = new Set();
-    for (const instance of Array.isArray(instances) ? instances : []) {
-      occupied.add(`${instance?.col}:${instance?.row}`);
-    }
-    const cols = Math.max(0, Number(grid?.cols || 0));
-    const rows = Math.max(0, Number(grid?.rows || 0));
-    const out = [];
-    for (let col = 0; col < cols; col++) {
-      for (let row = 0; row < rows; row++) {
-        const cellOccupied = occupied.has(`${col}:${row}`);
-        const hovered = Number(hoverCell?.col) === col && Number(hoverCell?.row) === row;
-        const { x, y } = graphCellXY(grid, col, row);
-        out.push({
-          key: `cell-${col}-${row}`,
-          col,
-          row,
-          occupied: cellOccupied,
-          addVisible: !cellOccupied,
-          className: "cell" + (cellOccupied ? " is-occupied" : "") + (hovered ? " is-hover" : ""),
-          style: { left: x, top: y, width: Number(grid?.cellW || 0), height: Number(grid?.cellH || 0) },
-        });
-      }
-    }
-    return out;
-  }
-
-  function graphGridHeaderCanvasRows({ grid } = {}) {
-    const cols = Math.max(0, Number(grid?.cols || 0));
-    const rows = Math.max(0, Number(grid?.rows || 0));
-    const columns = [];
-    const rowHeaders = [];
-    for (let col = 0; col < cols; col++) {
-      const { x } = graphCellXY(grid, col, 0);
-      columns.push({
-        key: `col-${col}`,
-        label: String(col + 1).padStart(2, "0"),
-        className: "grid-head grid-head--col",
-        style: { left: x, top: 28, width: Number(grid?.cellW || 0) },
-      });
-    }
-    for (let row = 0; row < rows; row++) {
-      const { y } = graphCellXY(grid, 0, row);
-      rowHeaders.push({
-        key: `row-${row}`,
-        label: String.fromCharCode(65 + row),
-        className: "grid-head grid-head--row",
-        style: { left: 14, top: y + Number(grid?.cellH || 0) / 2 - 8 },
-      });
-    }
-    return { columns, rows: rowHeaders };
-  }
-
-  function graphNodeCanvasState({ inst, members = [], density = "", graphView = null, toolCatalog = [] } = {}) {
-    const view = graphCanvasViewState(graphView);
-    const isCompact = density === "compact";
-    if (inst?.isTerminal) {
-      return {
-        hidden: false,
-        isTerminal: true,
-        isSourceFile: false,
-        dataKind: inst.kind,
-        role: undefined,
-        tabIndex: undefined,
-        ariaLabel: undefined,
-        sourceGlyph: "",
-        sourceActivationHash: "",
-        sourceActivationSelector: "",
-        roleLabel: `terminal · ${inst.kind}`,
-        title: inst.label,
-        subtitle: inst.kind,
-      };
-    }
-    const member = inst?.memberId
-      ? (Array.isArray(members) ? members : []).find((candidate) => candidate.id === inst.memberId) || null
-      : null;
-    if (!member) return { hidden: true, isTerminal: false, isCompact };
-    const tools = normalizeStringList(member.tools);
-    const visibleTools = tools.slice(0, isCompact ? 3 : 6);
-    return {
-      hidden: false,
-      isTerminal: false,
-      isCompact,
-      roleLabel: member.role,
-      launchLabel: inst?.launchMode?.kind?.toLowerCase() || "—",
-      title: member.name,
-      subtitle: member.model,
-      toolRows: visibleTools.map((tool) => ({
-        id: tool,
-        className: "tag" + graphToolTagClass(tool, toolCatalog),
-      })),
-      overflowLabel: tools.length > visibleTools.length ? `+${tools.length - visibleTools.length}` : "",
-    };
-  }
-
-  function graphFrameCanvasState({ frame, grid } = {}) {
-    const cell = (col, row) => ({
-      x: Number(grid?.padX || 0) + Number(col || 0) * (Number(grid?.cellW || 0) + Number(grid?.gapX || 0)),
-      y: Number(grid?.padY || 0) + Number(row || 0) * (Number(grid?.cellH || 0) + Number(grid?.gapY || 0)),
-    });
-    const rows = Math.max(1, Number(grid?.rows || 1));
-    const cellW = Number(grid?.cellW || 0);
-    const cellH = Number(grid?.cellH || 0);
-    const startCol = Number.isFinite(Number(frame?.colStart)) ? Number(frame.colStart) : 0;
-    const endCol = Number.isFinite(Number(frame?.colEnd)) ? Number(frame.colEnd) : startCol;
-    const start = cell(startCol, 0);
-    const end = cell(endCol, rows - 1);
-    const x = start.x - 14;
-    const y = start.y - 18;
-    const width = (end.x + cellW) - x + 14;
-    const height = (end.y + cellH) - y + 18;
-    return {
-      id: String(frame?.id || ""),
-      label: String(frame?.label || ""),
-      frameStyle: { left: x, top: y, width, height },
-      labelStyle: { left: x + 12, top: y - 10 },
-    };
-  }
-
-  function graphSourceFileAdornment({ instances = [], graphView = null } = {}) {
-    const view = graphCanvasViewState(graphView);
-    if (!view.sourceFileNodeId || !view.sourceFileNodeKind || !view.sourceFileLabel) return null;
-    const sourceInstances = graphCanvasInstances({ instances, graphView });
-    const positioned = sourceInstances
-      .filter((instance) => Number.isFinite(Number(instance?.col)) && Number.isFinite(Number(instance?.row)));
-    const minCol = positioned.length
-      ? Math.min(...positioned.map((instance) => Number(instance.col)))
-      : 0;
-    const minRow = positioned.length
-      ? Math.min(...positioned.map((instance) => Number(instance.row)))
-      : 0;
-    return {
-      id: view.sourceFileNodeId,
-      isSourceFile: true,
-      isGraphAdornment: true,
-      adornmentKind: "source_file",
-      kind: view.sourceFileNodeKind,
-      label: view.sourceFileLabel,
-      col: minCol + view.sourceFileNodeColOffset,
-      row: minRow + view.sourceFileNodeRowOffset,
-    };
-  }
-
-  function graphCanvasInstances({ instances = [], graphView = null } = {}) {
-    const view = graphCanvasViewState(graphView);
-    return (Array.isArray(instances) ? instances : [])
-      .filter((instance) => {
-        if (!instance || typeof instance !== "object") return false;
-        if (instance.isGraphAdornment || instance.isSourceFile) return false;
-        return String(instance.id || "") !== view.sourceFileNodeId;
-      });
-  }
-
-  function graphCanvasAdornments({ instances = [], graphView = null } = {}) {
-    const sourceFileAdornment = graphSourceFileAdornment({ instances, graphView });
-    return sourceFileAdornment ? [sourceFileAdornment] : [];
-  }
-
-  function graphSourceFileAdornmentCanvasState({ adornment = null, graphView = null } = {}) {
-    const view = graphCanvasViewState(graphView);
-    return {
-      hidden: !adornment,
-      isSourceFile: true,
-      role: "button",
-      tabIndex: 0,
-      dataKind: String(adornment?.kind || view.sourceFileNodeKind || ""),
-      ariaLabel: view.sourceFileAriaLabel,
-      sourceGlyph: view.sourceFileGlyph,
-      sourceActivationHash: view.sourceFileActivationHash,
-      sourceActivationSelector: view.sourceFileActivationSelector,
-      roleLabel: view.sourceFileRoleLabel,
-      title: String(adornment?.label || view.sourceFileLabel || ""),
-    };
-  }
-
-  function graphGateCanvasState({ inst, edges = [], contract = null, graphView = null } = {}) {
-    const gateKind = String(inst?.gateKind || "");
-    const draft = editorGraphDraftContract(contract) || emptyGraphDraftContract();
-    const view = graphCanvasViewState(graphView);
-    const glyph = view.gatePaletteRows.find((row) => row.id === gateKind)?.glyph || "";
-    let sublabel = inst?.label || gateKind;
-    if (gateKind === "join" && inst?.collection === "quorum" && inst?.quorum) {
-      const incoming = (Array.isArray(edges) ? edges : []).filter((edge) => edge.to === inst?.id).length;
-      sublabel = `${draft.joinQuorumLabelPrefix}${inst.quorum.n}/${incoming || inst.quorum.m}`;
-    } else if (gateKind === "join" && inst?.collection) {
-      sublabel = `${draft.joinLabelPrefix}${inst.collection}`;
-    }
-    return { glyph, sublabel, gateKind };
-  }
-
-  function graphEdgeCanvasState({ edge, to, active = false, selected = false, edgeStyle = "", contract = null, graphView = null } = {}) {
-    const kind = String(edge?.kind || "next").trim();
-    const terminalTarget = !!to?.isTerminal;
-    const view = graphCanvasViewState(graphView);
-    const labelText = String(edge?.label || view.edgeKindLabels[kind] || "");
-    const edgeKinds = graphProjectionEdgeKinds(contract);
-    const isCondition = kind === edgeKinds.conditionKind;
-    const isFanout = kind === edgeKinds.fanoutKind;
-    const mode = edgeStyle === "icons" ? "icons" : edgeStyle === "colored" ? "colored" : "text";
-    return {
-      kind,
-      mode,
-      labelText,
-      labelWidth: labelText.length * 6 + 12,
-      iconGlyph: isCondition ? "?" : isFanout ? "‖" : terminalTarget ? "■" : "→",
-      labelFill: isCondition ? "var(--danger)" : isFanout ? "var(--accent)" : terminalTarget ? "var(--muted)" : "var(--ok)",
-      iconLabelClass: "edge-label" + (isCondition ? " is-cond" : ""),
-      textLabelClass: "edge-label" + (isCondition ? " is-cond" : "") + (active ? " is-active" : "") + (selected ? " is-selected" : ""),
-      lineClass: "edge-line" +
-        (isCondition ? " is-cond" : "") +
-        (isFanout ? " is-fanout" : "") +
-        (terminalTarget ? " is-term" : "") +
-        (active ? " is-active" : "") +
-        (selected ? " is-selected" : ""),
-      markerEnd: selected || active ? "url(#arr-acc)" :
-        isCondition ? "url(#arr-red)" :
-          isFanout ? "url(#arr-acc)" :
-            terminalTarget ? "url(#arr-dim)" :
-              "url(#arr)",
-    };
-  }
-
-  function graphGateControlState(inst, { edges, members, contract, graphView = null } = {}) {
-    const view = graphCanvasViewState(graphView);
-    const incoming = (edges || []).filter((edge) => edge.to === inst?.id);
-    const outgoing = (edges || []).filter((edge) => edge.from === inst?.id);
-    const defaultGateKind = contractDefaultValue(contract, "graph_gate_kind");
-    const gateKind = String(inst?.gateKind || defaultGateKind || "").trim();
-    const gateKindOptions = graphGateKindOptions(contract, gateKind, graphView);
-    const collection = String(inst?.collection || (inst?.quorum?.n ? "quorum" : "")).trim();
-    const collectionOptions = [
-      { value: "", label: view.inspectorRuntimeDefaultLabel, disabled: false, reason: "" },
-      ...collectionPolicyOptions(contract, collection),
-    ];
-    const dispatch = String(inst?.dispatch || inst?.dispatchMode || "").trim();
-    const dispatchOptions = [
-      { value: "", label: view.inspectorRuntimeDefaultLabel, disabled: false, reason: "" },
-      ...dispatchModeOptions(contract, dispatch),
-    ];
-    const col = Number(inst?.col ?? 0);
-    const row = Number(inst?.row ?? 0);
-    return {
-      incoming,
-      outgoing,
-      eyebrow: graphTemplateText(view.gateEyebrowTemplate, { kind: gateKind }),
-      title: String(inst?.label || ""),
-      idLine: graphTemplateText(view.gateIdLineTemplate, { id: inst?.id || "", col: col + 1, row: row + 1 }),
-      deleteLabel: view.inspectorDeleteLabel,
-      labelTitle: view.inspectorLabelTitle,
-      kindTitle: view.inspectorKindTitle,
-      gateKind,
-      gateKindOptions,
-      selectedGateKind: gateKindOptions.find((option) => option.value === gateKind),
-      collectionTitle: view.gateCollectionTitle,
-      collection,
-      collectionOptions,
-      selectedCollection: collectionOptions.find((option) => option.value === collection),
-      quorumIncomingLabel: graphTemplateText(view.gateQuorumIncomingTemplate, { count: incoming.length }),
-      joinMemberLabel: view.gateJoinMemberLabel,
-      joinMemberPlaceholderOption: { value: "", label: view.gateJoinMemberPlaceholder },
-      joinMemberHint: view.gateJoinMemberHint,
-      dispatchTitle: view.gateDispatchTitle,
-      dispatch,
-      dispatchOptions,
-      selectedDispatch: dispatchOptions.find((option) => option.value === dispatch),
-      dispatchHint: view.gateDispatchHint,
-      conditionsTitle: view.gateConditionsTitle,
-      emptyBranchHint: view.gateEmptyBranchHint,
-      wiringTitle: view.gateWiringTitle,
-      incomingLabel: view.gateIncomingLabel,
-      outgoingLabel: view.gateOutgoingLabel,
-      firstMemberId: (members || []).find((member) => member?.id)?.id || "",
-      memberOptions: (Array.isArray(members) ? members : [])
-        .filter((member) => member?.id)
-        .map((member) => ({
-          value: member.id,
-          label: graphTemplateText(view.gateMemberOptionTemplate, {
-            id: member.id,
-            name: member.name || member.id,
-            role: member.role || "profile",
-          }),
-          member,
-        })),
-      incomingCount: incoming.length,
-      outgoingCount: outgoing.length,
-    };
-  }
-
-  function graphBranchConditionRows({ inst, edges = [], instances = [], members = [], schemas = [], flow, contract, graphView = null } = {}) {
-    const view = graphCanvasViewState(graphView);
-    const sourceEdges = Array.isArray(edges) ? edges : [];
-    const sourceInstances = Array.isArray(instances) ? instances : [];
-    const sourceMembers = Array.isArray(members) ? members : [];
-    const instanceById = new Map(sourceInstances.map((candidate) => [candidate.id, candidate]));
-    const memberById = new Map(sourceMembers.map((candidate) => [candidate.id, candidate]));
-    const defaultOperator = contractDefaultValue(contract, "condition_operator");
-    const conditionKind = contractDefaultValue(contract, "graph_condition_edge_kind");
-    return sourceEdges
-      .filter((edge) => edge?.from === inst?.id)
-      .map((edge) => {
-        const target = instanceById.get(edge.to) || null;
-        const targetMember = target?.memberId ? memberById.get(target.memberId) || null : null;
-        const condRef = graphConditionRefForEdge(edge);
-        const conditionOptions = graphConditionOptions({
-          instances: sourceInstances,
-          members: sourceMembers,
-          schemas,
-          edge,
-          flow,
-          graphView,
-        });
-        const condOwner = conditionOptions.find((option) => option.inst.id === condRef.instanceId) || null;
-        const fields = condOwner?.fields || conditionOptions[0]?.fields || [];
-        const condField = fields.find((field) => field.name === condRef.field) || null;
-        const operatorValue = edge?.cond?.op || defaultOperator;
-        const isCondition = !!conditionKind && edge?.kind === conditionKind;
-        return {
-          edge,
-          isCondition,
-          conditionEdgeKind: conditionKind,
-          modeValue: isCondition ? conditionKind : "fallback",
-          modeOptions: [
-            ...(conditionKind ? [{ value: conditionKind, label: view.branchConditionModeConditionLabel }] : []),
-            { value: "fallback", label: view.branchConditionModeFallbackLabel },
-          ],
-          targetPrefix: view.branchConditionTargetPrefix,
-          target,
-          targetLabel: target?.isTerminal
-            ? target.label
-            : (targetMember?.name || target?.label || view.graphConditionTargetMissingLabel),
-          condRef,
-          conditionOptions,
-          ownerOptions: conditionOptions.map((option) => ({
-            value: option.inst.id,
-            label: graphTemplateText(view.graphConditionOwnerOptionTemplate, {
-              id: option.inst.id,
-              name: option.member.name,
-            }),
-            option,
-          })),
-          ownerValue: condRef.instanceId || conditionOptions[0]?.inst.id || "",
-          firstOwnerId: conditionOptions[0]?.inst.id || "",
-          fields,
-          fieldOptions: fields.map((field) => ({
-            value: field.name,
-            label: graphTemplateText(view.graphConditionFieldOptionTemplate, {
-              id: field.id || field.name,
-              name: field.name,
-              type: field.type,
-            }),
-            field,
-          })),
-          fieldValue: condRef.field || "",
-          fieldPlaceholderOption: { value: "", label: view.branchConditionFieldPlaceholder },
-          condField,
-          defaultOperator,
-          operatorValue,
-          operatorOptions: conditionOperatorOptions(contract, operatorValue),
-          hasConditionOptions: conditionOptions.length > 0,
-          noConditionOptionsHint: view.branchConditionNoOptionsHint,
-        };
-      });
-  }
-
-  function graphTerminalControlState(inst, contract, graphView = null) {
-    const view = graphCanvasViewState(graphView);
-    const defaultTerminalKind = contractDefaultValue(contract, "graph_terminal_kind");
-    const terminalKind = String(inst?.kind || defaultTerminalKind || "").trim();
-    const terminalKindOptions = graphTerminalKindOptions(contract, terminalKind, graphView);
-    const id = String(inst?.id || "");
-    const labelValue = String(inst?.label || "");
-    const col = Number.isFinite(Number(inst?.col)) ? Number(inst.col) + 1 : 1;
-    const row = Number.isFinite(Number(inst?.row)) ? Number(inst.row) + 1 : 1;
-    return {
-      eyebrow: graphTemplateText(view.terminalEyebrowTemplate, { kind: terminalKind }),
-      title: labelValue,
-      idLine: graphTemplateText(view.terminalIdLineTemplate, { id, col, row }),
-      deleteLabel: view.inspectorDeleteLabel,
-      labelTitle: view.inspectorLabelTitle,
-      labelValue,
-      kindTitle: view.inspectorKindTitle,
-      terminalKind,
-      terminalKindOptions,
-      selectedTerminalKind: terminalKindOptions.find((option) => option.value === terminalKind) || null,
-      authoringLockedTitle: view.terminalAuthoringLockedTitle,
-      authoringLockedHint: view.terminalAuthoringLockedHint,
-      editable: false,
-    };
-  }
-
-  function graphEdgeInspectorState({ edge, instances = [], members = [], schemas = [], flow, contract, graphView = null } = {}) {
-    const view = graphCanvasViewState(graphView);
-    const sourceInstances = Array.isArray(instances) ? instances : [];
-    const sourceMembers = Array.isArray(members) ? members : [];
-    const instanceById = new Map(sourceInstances.map((candidate) => [candidate.id, candidate]));
-    const memberById = new Map(sourceMembers.map((candidate) => [candidate.id, candidate]));
-    const fromInstance = instanceById.get(edge?.from) || null;
-    const toInstance = instanceById.get(edge?.to) || null;
-    const fromMember = fromInstance?.memberId ? memberById.get(fromInstance.memberId) || null : null;
-    const toMember = toInstance?.memberId ? memberById.get(toInstance.memberId) || null : null;
-    const condRef = graphConditionRefForEdge(edge);
-    const conditionOptions = graphConditionOptions({
-      instances: sourceInstances,
-      members: sourceMembers,
-      schemas,
-      edge,
-      flow,
-      graphView,
-    });
-    const condOwner = conditionOptions.find((option) => option.inst.id === condRef.instanceId) || null;
-    const fields = condOwner?.fields || conditionOptions[0]?.fields || [];
-    const condField = fields.find((field) => field.name === condRef.field) || null;
-    const defaultOperator = contractDefaultValue(contract, "condition_operator");
-    const operatorValue = edge?.cond?.op || defaultOperator;
-    const defaultEdgeKind = contractDefaultValue(contract, "graph_edge_kind");
-    const conditionKind = contractDefaultValue(contract, "graph_condition_edge_kind");
-    const edgeKind = String(edge?.kind || defaultEdgeKind || "").trim();
-    const edgeKindOptions = graphEdgeKindOptions(contract, edgeKind, graphView);
-    const isCondition = !!conditionKind && edgeKind === conditionKind;
-    return {
-      edge,
-      fromInstance,
-      toInstance,
-      fromMember,
-      toMember,
-      eyebrow: graphTemplateText(view.edgeEyebrowTemplate, { kind: edgeKind }),
-      title: graphTemplateText(view.edgeTitleTemplate, {
-        from: fromMember?.name || fromInstance?.label || view.edgeRowMissingValue,
-        to: toMember?.name || toInstance?.label || view.edgeRowMissingValue,
-      }),
-      idLine: graphTemplateText(view.edgeIdLineTemplate, { id: edge?.id || "" }),
-      deleteLabel: view.inspectorDeleteLabel,
-      kindTitle: view.inspectorKindTitle,
-      labelTitle: view.inspectorLabelTitle,
-      conditionTitle: view.edgeConditionTitle,
-      noConditionOptionsHint: view.edgeNoConditionOptionsHint,
-      ownerPlaceholderOption: { value: "", label: view.edgeOwnerPlaceholder },
-      fromTitle: view.edgeFromTitle,
-      toTitle: view.edgeToTitle,
-      fromRows: [
-        { key: "instance", label: view.edgeRowInstanceLabel, value: fromInstance?.id || "" },
-        { key: "member", label: view.edgeRowMemberLabel, value: fromMember?.name || view.edgeRowMissingValue },
-        { key: "schema", label: view.edgeRowSchemaLabel, value: fromMember?.schema || view.edgeRowMissingValue },
-      ],
-      toRows: [
-        { key: "instance", label: view.edgeRowInstanceLabel, value: toInstance?.id || "" },
-        { key: "member", label: view.edgeRowMemberLabel, value: toMember?.name || (toInstance?.isTerminal ? view.edgeTerminalMemberValue : view.edgeRowMissingValue) },
-        { key: "schema", label: view.edgeRowSchemaLabel, value: toMember?.schema || view.edgeRowMissingValue },
-      ],
-      condRef,
-      conditionOptions,
-      condOwner,
-      condField,
-      ownerOptions: conditionOptions.map((option) => ({
-        value: option.inst.id,
-        label: graphTemplateText(view.graphConditionOwnerOptionTemplate, {
-          id: option.inst.id,
-          name: option.member.name,
-        }),
-        option,
-      })),
-      ownerValue: condRef.instanceId || "",
-      fields,
-      fieldOptions: fields.map((field) => ({
-        value: field.name,
-        label: graphTemplateText(view.graphConditionFieldOptionTemplate, {
-          id: field.id || field.name,
-          name: field.name,
-          type: field.type,
-        }),
-        field,
-      })),
-      fieldValue: condRef.field || "",
-      fieldPlaceholder: condOwner ? view.edgeFieldPlaceholder : view.edgeFieldNoSchemaPlaceholder,
-      defaultOperator,
-      operatorValue,
-      operatorOptions: conditionOperatorOptions(contract, operatorValue),
-      defaultEdgeKind,
-      edgeKind,
-      isCondition,
-      conditionEdgeKind: conditionKind,
-      edgeKindOptions,
-      selectedEdgeKind: edgeKindOptions.find((option) => option.value === edgeKind) || null,
-      conditionPatch: graphFirstConditionPatch(edge, conditionOptions, { defaultOperator }),
-      hasConditionOptions: conditionOptions.length > 0,
-    };
-  }
-
-  function graphGateKindAllowed(contract, kind) {
-    return contractStringValues(contract?.mob_definition?.graph_gate_kinds).includes(String(kind || "").trim());
-  }
-
-  function graphTerminalKindAllowed(contract, kind) {
-    return contractStringValues(contract?.mob_definition?.graph_terminal_kinds).includes(String(kind || "").trim());
-  }
-
-  function graphGateKindPatch(rawKind, contract) {
-    const gateKind = String(rawKind || "").trim();
-    return graphGateKindAllowed(contract, gateKind) ? { gateKind } : {};
-  }
-
-  function graphInstanceLabelPatch(rawLabel) {
-    return { label: String(rawLabel || "") };
-  }
-
-  function graphEdgeLabelPatch(rawLabel) {
-    return { label: String(rawLabel || "") };
-  }
-
-  function graphTerminalKindPatch(rawKind, contract) {
-    const kind = String(rawKind || "").trim();
-    return graphTerminalKindAllowed(contract, kind) ? { kind } : {};
-  }
-
-  function graphJoinCollectionPatch(inst, collection, { incomingCount = 0, firstMemberId = "", contract } = {}) {
-    const next = String(collection || "").trim();
-    if (!collectionPolicyAllowed(contract, next)) return {};
-    const draft = editorGraphDraftContract(contract) || emptyGraphDraftContract();
-    const count = Math.max(1, Number(incomingCount) || 0);
-    return {
-      collection: next,
-      label: `${draft.joinLabelPrefix}${next || draft.parallelMissingCollectionLabel}`,
-      quorum: next === "quorum"
-        ? { ...(inst?.quorum || {}), n: inst?.quorum?.n || count, m: count }
-        : null,
-      controllerRole: next && next !== "all" ? (inst?.controllerRole || firstMemberId || "") : "",
-    };
-  }
-
-  function graphJoinQuorumPatch(inst, n, incomingCount = 0) {
-    return {
-      quorum: {
-        ...(inst?.quorum || {}),
-        n: Number(n) || 1,
-        m: Math.max(1, Number(incomingCount) || 0),
-      },
-    };
-  }
-
-  function graphJoinControllerRolePatch(rawRole, members) {
-    const controllerRole = String(rawRole || "").trim();
-    return memberRoleAllowed(members, controllerRole) ? { controllerRole } : {};
-  }
-
-  function graphForkDispatchPatch(_inst, dispatch, contract) {
-    const next = String(dispatch || "").trim();
-    if (!dispatchModeAllowed(contract, next)) return {};
-    return { dispatch: next, label: next };
-  }
-
   function buildDocument({ flow, studio, currentFlow, deploySettings, contract }) {
     const members = studio?.members || [];
     const schemas = studio?.schemas || [];
@@ -8954,14 +8950,6 @@ const {
       allowedTools: canonical.allowedTools,
       blockedTools: canonical.blockedTools,
       outputFormat: canonical.outputFormat,
-    };
-  }
-
-  function graphProjectionEdgeKinds(contract) {
-    return {
-      defaultKind: contractDefaultValue(contract, "graph_edge_kind"),
-      conditionKind: contractDefaultValue(contract, "graph_condition_edge_kind"),
-      fanoutKind: contractDefaultValue(contract, "graph_fanout_edge_kind"),
     };
   }
 

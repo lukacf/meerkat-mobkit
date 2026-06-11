@@ -15,9 +15,11 @@
 // patches and control states, and the schema-field update/rename/delete
 // cascade patches.
 //
-// Straggler edges go through the lazy _residue-bridge until their home
-// slices land: basicEditorViewState stays in the residue until S11
-// (editors/basic-editor). reconcileConditionFieldAvailability and
+// The basicEditorViewState straggler edge went through the lazy
+// _residue-bridge until editors/basic-editor.ts landed in S11; it is now a
+// relative import (a runtime-only cycle with basic-editor's
+// uniqueInputParamName/normalizeSchemaLikeFieldPatch imports — no
+// module-init cross-calls). reconcileConditionFieldAvailability and
 // reconcileSchemaFieldReferences landed in flow/reconcile.ts in S8 and are
 // imported relatively (a runtime-only cycle with reconcile's
 // enumValuesForField import — no module-init cross-calls), like
@@ -32,12 +34,12 @@ import {
   schemaFieldTypeOptions,
 } from "../contract/options";
 import { editorSchemaFieldNameFallback } from "../drafts/mob-settings";
+import { basicEditorViewState } from "../editors/basic-editor";
 import {
   reconcileConditionFieldAvailability,
   reconcileSchemaFieldReferences,
 } from "../flow/reconcile";
 import { schemaViewForState, viewStringMapFromSchema } from "../views/view-config";
-import { basicEditorViewState } from "../_residue-bridge";
 
 export function conditionViewFromSchema(schema) {
   const view = schema?.mob_definition?.editor_condition_view;

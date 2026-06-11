@@ -18,11 +18,14 @@
 //
 // SCC note: contract/options.ts and flow/launch-modes.ts form a
 // runtime-only import cycle (no module-init cross-calls), co-moved in S6
-// per the extraction design. Straggler edges into the residue go through
-// the lazy _residue-bridge until their home slices land: basicEditorViewState
-// until S11 (editors/basic-editor) and graphCanvasViewState/graphCellXY
-// until S11 (editors/graph-editor).
+// per the extraction design. The straggler edges that went through the
+// lazy _residue-bridge (basicEditorViewState, graphCanvasViewState,
+// graphCellXY) became relative imports when the editors modules landed in
+// S11 — runtime-only cycles with the editors' contract/options imports,
+// no module-init cross-calls.
 import { profileName } from "../domain/tool-skill-access";
+import { basicEditorViewState } from "../editors/basic-editor";
+import { graphCanvasViewState, graphCellXY } from "../editors/graph-editor";
 import {
   canonicalBudgetSplitPolicyKind,
   canonicalLaunchModeKind,
@@ -36,11 +39,6 @@ import {
   settingsViewForState,
   viewStringMapFromSchema,
 } from "../views/view-config";
-import {
-  basicEditorViewState,
-  graphCanvasViewState,
-  graphCellXY,
-} from "../_residue-bridge";
 
 export function runtimeModeOptions(contract, deploySettings, currentMode) {
   const modes = Array.isArray(contract?.mob_definition?.runtime_modes) && contract.mob_definition.runtime_modes.length

@@ -1,5 +1,5 @@
 // Temporary residue bridge — each wrapper is removed when its home slice
-// lands (S11 editors, S17 catalogs/hydration).
+// lands (S17 catalogs/hydration).
 //
 // Package modules normally import each other relatively and never touch
 // window or the facade. The ONE sanctioned exception (extraction-design
@@ -12,34 +12,15 @@
 // be a const/function redeclaration SyntaxError.
 //
 // Bridged edges:
-// - domain/tool-skill-access.ts stepToolScopeState -> basicEditorViewState,
-//   schema/field-edit.ts inputParamFieldControlState -> basicEditorViewState,
-//   contract/options.ts basicStepPickerState -> basicEditorViewState,
-//   editors/basic-editor.ts basicBranchDefaultLabel -> basicEditorViewState
-//   (residue until the S11 editors/basic-editor.ts slice).
-// - contract/options.ts graph option/menu builders -> graphCanvasViewState,
-//   contract/options.ts graphAddMenuOpenProjection -> graphCellXY
-//   (residue until the S11 editors/graph-editor.ts slice).
 // - flow/reconcile.ts deploy settings reconciliation/patches ->
 //   deploySettingsForUi (residue until the S17 catalogs/hydration.ts slice).
 //
 // The S6 wrappers (contractDefaultValue, schemaFieldTypeOptions) were
-// retired when contract/options.ts landed, and the S8 wrappers
+// retired when contract/options.ts landed, the S8 wrappers
 // (reconcileConditionFieldAvailability, reconcileSchemaFieldReferences)
-// when flow/reconcile.ts landed; importers now use the package modules
-// relatively.
-export function basicEditorViewState(basicView: unknown) {
-  return (window as any).MobKitFlowController.basicEditorViewState(basicView);
-}
-
-export function graphCanvasViewState(graphView: unknown) {
-  return (window as any).MobKitFlowController.graphCanvasViewState(graphView);
-}
-
-export function graphCellXY(grid: unknown, col: unknown, row: unknown) {
-  return (window as any).MobKitFlowController.graphCellXY(grid, col, row);
-}
-
+// when flow/reconcile.ts landed, and the S11 wrappers (basicEditorViewState,
+// graphCanvasViewState, graphCellXY) when the editors modules landed;
+// importers now use the package modules relatively.
 export function deploySettingsForUi(deploy: unknown) {
   return (window as any).MobKitFlowController.deploySettingsForUi(deploy);
 }
