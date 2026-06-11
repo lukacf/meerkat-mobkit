@@ -139,16 +139,11 @@ export function newFlowViewFromSchema(schema) {
     closeLabel: String(view.close_label || "").trim(),
     nameLabel: String(view.name_label || "").trim(),
     namePlaceholder: String(view.name_placeholder || "").trim(),
-    triggerLabel: String(view.trigger_label || "").trim(),
-    triggerPlaceholder: String(view.trigger_placeholder || "").trim(),
     startFromLabel: String(view.start_from_label || "").trim(),
-    backLabel: String(view.back_label || "").trim(),
-    nextLabel: String(view.next_label || "").trim(),
     createLabel: String(view.create_label || "").trim(),
   };
   return out.eyebrowTemplate && out.closeLabel && out.nameLabel && out.namePlaceholder
-    && out.triggerLabel && out.triggerPlaceholder && out.startFromLabel && out.backLabel
-    && out.nextLabel && out.createLabel
+    && out.startFromLabel && out.createLabel
     ? out
     : null;
 }
@@ -160,11 +155,7 @@ export function newFlowViewForState(newFlowView) {
     closeLabel: String(view?.closeLabel || ""),
     nameLabel: String(view?.nameLabel || ""),
     namePlaceholder: String(view?.namePlaceholder || ""),
-    triggerLabel: String(view?.triggerLabel || ""),
-    triggerPlaceholder: String(view?.triggerPlaceholder || ""),
     startFromLabel: String(view?.startFromLabel || ""),
-    backLabel: String(view?.backLabel || ""),
-    nextLabel: String(view?.nextLabel || ""),
     createLabel: String(view?.createLabel || ""),
   };
 }
@@ -185,10 +176,18 @@ export function flowRegistryViewFromSchema(schema) {
     createLabel: String(view.create_label || "").trim(),
     createReadyTitle: String(view.create_ready_title || "").trim(),
     createUnavailableTitle: String(view.create_unavailable_title || "").trim(),
+    draftsSectionLabel: String(view.drafts_section_label || "").trim(),
+    runtimeSectionLabel: String(view.runtime_section_label || "").trim(),
+    runtimeReadonlyHint: String(view.runtime_readonly_hint || "").trim(),
+    emptyTitle: String(view.empty_title || "").trim(),
+    emptyText: String(view.empty_text || "").trim(),
+    updatedJustNowLabel: String(view.updated_just_now_label || "").trim(),
     columns,
   };
   return out.eyebrow && out.titleSingularSuffix && out.titlePluralSuffix
     && out.createLabel && out.createReadyTitle && out.createUnavailableTitle
+    && out.draftsSectionLabel && out.runtimeSectionLabel && out.runtimeReadonlyHint
+    && out.emptyTitle && out.emptyText && out.updatedJustNowLabel
     && out.columns.length === 4
     ? out
     : null;
@@ -203,6 +202,12 @@ export function flowRegistryViewForState(flowRegistryView) {
     createLabel: String(view?.createLabel || ""),
     createReadyTitle: String(view?.createReadyTitle || ""),
     createUnavailableTitle: String(view?.createUnavailableTitle || ""),
+    draftsSectionLabel: String(view?.draftsSectionLabel || ""),
+    runtimeSectionLabel: String(view?.runtimeSectionLabel || ""),
+    runtimeReadonlyHint: String(view?.runtimeReadonlyHint || ""),
+    emptyTitle: String(view?.emptyTitle || ""),
+    emptyText: String(view?.emptyText || ""),
+    updatedJustNowLabel: String(view?.updatedJustNowLabel || ""),
     columns: Array.isArray(view?.columns)
       ? view.columns.map((column) => ({
         key: String(column?.key || ""),

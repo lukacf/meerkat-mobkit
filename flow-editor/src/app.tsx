@@ -68,7 +68,7 @@ function App() {
   const [flows, setFlows] = React.useState([]);
   const [currentFlowId, setCurrentFlowId] = React.useState("");
   const [templates, setTemplates] = React.useState([]);
-  const [creating, setCreating] = React.useState(null); // { step, name, trigger } | null
+  const [creating, setCreating] = React.useState(null); // { name, template } | null
 
   const [agentSel, setAgentSel] = React.useState(null);
   const [selection, setSelection] = React.useState({ kind: null, id: null });
@@ -312,7 +312,6 @@ function App() {
         if ((!Array.isArray(registryPayload?.rows) || registryPayload.rows.length === 0) && !hasRuntimeRows) {
           registryPayload = await MobKitFlowController.createDocument({
             template: "blank",
-            trigger: "MobKit editor startup draft",
           }, rpcOptions).catch((error) => {
             if (abort.signal.aborted) throw error;
             return registryPayload;
@@ -1531,9 +1530,13 @@ function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, o
   );
 }
 
-// ── Flows registry view ───────────────────────────────────────────
+// ── Mob library view ──────────────────────────────────────────────
 function FlowsView({ flows, currentFlowId, onOpen, onNew, canCreate, flowRegistryView = null }) {
-  const registryState = MobKitFlowController.flowRegistryViewState(flows, currentFlowId, { canCreate, flowRegistryView });
+  const registryState = MobKitFlowController.flowRegistryViewState(flows, currentFlowId, {
+    canCreate,
+    flowRegistryView,
+    nowUnixMs: Date.now(),
+  });
   return (
     <div className="flows-view">
       <div className="flows-view__head">
@@ -1548,27 +1551,38 @@ function FlowsView({ flows, currentFlowId, onOpen, onNew, canCreate, flowRegistr
           onClick={onNew}
         >{registryState.createLabel}</button>
       </div>
-      <div className="flows-list">
-        <div className="flows-list__head">
-          {registryState.columns.map(column => <span key={column.key}>{column.label}</span>)}
+      {registryState.empty && (
+        <div className="flows-view__empty">
+          <div className="flows-view__empty-title">{registryState.empty.title}</div>
+          <div className="flows-view__empty-text">{registryState.empty.text}</div>
         </div>
-        {registryState.rows.map(f => (
-          <button key={f.id} className={f.className} onClick={() => onOpen(f.id)}>
-            <span className="flows-list__name">{f.name}</span>
-            <span className="flows-list__sub">{f.trigger}</span>
-            <span className="flows-list__sub">{f.version}</span>
-            <span className="stage" data-state={f.stage}><span className="glyph" />{f.stage}</span>
-          </button>
-        ))}
-      </div>
+      )}
+      {registryState.sections.map((section) => (
+        <div key={section.key} className="flows-list">
+          <div className="flows-list__section">
+            <span className="flows-list__section-label">{section.label}</span>
+            {section.hint && <span className="flows-list__section-hint">{section.hint}</span>}
+          </div>
+          <div className="flows-list__head">
+            {registryState.columns.map(column => <span key={column.key}>{column.label}</span>)}
+          </div>
+          {section.rows.map(f => (
+            <button key={f.id} className={f.className} onClick={() => onOpen(f.id)}>
+              <span className="flows-list__name">{f.name}</span>
+              <span className="flows-list__sub">{f.description}</span>
+              <span className="flows-list__sub">{f.updated}</span>
+              <span className="stage" data-state={f.stage}><span className="glyph" />{f.stage}</span>
+            </button>
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
 
-// ── New Flow modal (3-step) ───────────────────────────────────────
+// ── New Mob modal (single step: name + template) ─────────────────
 function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlowView = null }) {
   const setField = (field, value) => setState((current) => MobKitFlowController.newFlowModalFieldPatch(current, field, value));
-  const setStep = (step) => setState((current) => MobKitFlowController.newFlowModalStepPatch(current, step));
   const modalState = MobKitFlowController.newFlowModalState(state, templateOptions, newFlowView);
 
   return (
@@ -1578,43 +1592,29 @@ function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlow
           <div className="inspector__eyebrow">{modalState.eyebrow}</div>
           <button className="btn btn--ghost btn--sm" onClick={() => setState(null)}>{modalState.closeLabel}</button>
         </div>
-        {modalState.step === 1 && (
-          <div className="modal__body">
-            <div className="field">
-              <label className="field__label">{modalState.nameLabel}</label>
-              <input className="field__input" autoFocus placeholder={modalState.namePlaceholder} value={modalState.name} onChange={e => setField("name", e.target.value)} />
-            </div>
-            <div className="field">
-              <label className="field__label">{modalState.triggerLabel}</label>
-              <input className="field__input" placeholder={modalState.triggerPlaceholder} value={modalState.trigger} onChange={e => setField("trigger", e.target.value)} />
-            </div>
+        <div className="modal__body">
+          <div className="field">
+            <label className="field__label">{modalState.nameLabel}</label>
+            <input className="field__input" autoFocus placeholder={modalState.namePlaceholder} value={modalState.name} onChange={e => setField("name", e.target.value)} />
           </div>
-        )}
-        {modalState.step === 2 && (
-          <div className="modal__body">
-            <div className="field__label">{modalState.startFromLabel}</div>
-            <div className="template-grid">
-              {modalState.options.map(opt => (
-                <button key={opt.id} className={opt.className} disabled={opt.disabled} onClick={() => setField("template", opt.id)}>
-                  <div className="template-card__tier">{opt.tier}</div>
-                  <div className="template-card__name">{opt.label}</div>
-                  <div className="template-card__sub">{opt.sub}</div>
-                </button>
-              ))}
-            </div>
+          <div className="field__label">{modalState.startFromLabel}</div>
+          <div className="template-grid">
+            {modalState.options.map(opt => (
+              <button key={opt.id} className={opt.className} disabled={opt.disabled} onClick={() => setField("template", opt.id)}>
+                <div className="template-card__tier">{opt.tier}</div>
+                <div className="template-card__name">{opt.label}</div>
+                <div className="template-card__sub">{opt.sub}</div>
+              </button>
+            ))}
           </div>
-        )}
+        </div>
         <div className="modal__foot">
-          {modalState.step > 1 ? <button className="btn btn--ghost btn--sm" onClick={() => setStep(modalState.step - 1)}>{modalState.backLabel}</button> : <span />}
-          {modalState.step < 2 ? (
-            <button className="btn btn--primary btn--sm" disabled={modalState.nextDisabled} onClick={() => setStep(2)}>{modalState.nextLabel}</button>
-          ) : (
-            <button
-              className="btn btn--primary btn--sm"
-              disabled={modalState.createDisabled}
-              onClick={() => onCreate(MobKitFlowController.newFlowModalCreateSpec(modalState))}
-            >{modalState.createLabel}</button>
-          )}
+          <span />
+          <button
+            className="btn btn--primary btn--sm"
+            disabled={modalState.createDisabled}
+            onClick={() => onCreate(MobKitFlowController.newFlowModalCreateSpec(modalState))}
+          >{modalState.createLabel}</button>
         </div>
       </div>
     </div>

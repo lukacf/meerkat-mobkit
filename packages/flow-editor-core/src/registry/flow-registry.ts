@@ -156,10 +156,74 @@ export function flowRegistryMarkDraftPatch(rows, currentFlowId) {
   return changed ? next : list;
 }
 
+// Relative "updated" label for library rows. Pure: the caller supplies the
+// clock (options.nowUnixMs) so projections stay deterministic in tests.
+export function flowRegistryUpdatedLabel(updatedAtUnixMs, nowUnixMs, justNowLabel = "") {
+  const updated = Number(updatedAtUnixMs || 0);
+  const now = Number(nowUnixMs || 0);
+  if (!updated || !now || now < updated) return "";
+  const seconds = Math.floor((now - updated) / 1000);
+  if (seconds < 60) return justNowLabel;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function flowRegistryRowDescription(row) {
+  const flowDescription = row?.document?.flow?.description;
+  if (typeof flowDescription === "string" && flowDescription.trim()) return flowDescription.trim();
+  const rowDescription = row?.description;
+  if (typeof rowDescription === "string" && rowDescription.trim()) return rowDescription.trim();
+  // Projected documents carry their human description as the input step's
+  // task text rather than a flow.description key.
+  const steps = row?.document?.flow?.steps;
+  if (Array.isArray(steps)) {
+    const input = steps.find((step) => step?.type === "input");
+    const task = input?.task;
+    if (typeof task === "string" && task.trim()) return task.trim();
+  }
+  return "";
+}
+
 export function flowRegistryViewState(rows, currentFlowId, options = {}) {
   const list = Array.isArray(rows) ? rows : [];
   const view = flowRegistryViewForState(options.flowRegistryView);
   const suffix = list.length === 1 ? view.titleSingularSuffix : view.titlePluralSuffix;
+  const nowUnixMs = Number(options.nowUnixMs || 0);
+  const projectRow = (row) => {
+    const id = String(row?.id || "");
+    const stage = String(row?.stage || "draft");
+    return {
+      id,
+      className: "flows-list__row" + (id && id === currentFlowId ? " is-current" : ""),
+      name: String(row?.name || ""),
+      description: flowRegistryRowDescription(row),
+      updated: flowRegistryUpdatedLabel(row?.updated_at_unix_ms, nowUnixMs, view.updatedJustNowLabel),
+      stage,
+    };
+  };
+  const draftRows = list.filter((row) => !row?.runtime_projection);
+  const runtimeRows = list.filter((row) => !!row?.runtime_projection);
+  const sections = [];
+  if (draftRows.length || !runtimeRows.length) {
+    sections.push({
+      key: "drafts",
+      label: view.draftsSectionLabel,
+      hint: "",
+      rows: draftRows.map(projectRow),
+    });
+  }
+  if (runtimeRows.length) {
+    sections.push({
+      key: "runtime",
+      label: view.runtimeSectionLabel,
+      hint: view.runtimeReadonlyHint,
+      rows: runtimeRows.map(projectRow),
+    });
+  }
   return {
     eyebrow: view.eyebrow,
     title: `${list.length} ${suffix}`.trim(),
@@ -167,18 +231,8 @@ export function flowRegistryViewState(rows, currentFlowId, options = {}) {
     createDisabled: !options.canCreate,
     createTitle: options.canCreate ? view.createReadyTitle : view.createUnavailableTitle,
     columns: view.columns,
-    rows: list.map((row) => {
-      const id = String(row?.id || "");
-      const stage = String(row?.stage || "draft");
-      return {
-        id,
-        className: "flows-list__row" + (id && id === currentFlowId ? " is-current" : ""),
-        name: String(row?.name || ""),
-        trigger: String(row?.trigger || ""),
-        version: String(row?.version || ""),
-        stage,
-      };
-    }),
+    empty: list.length === 0 ? { title: view.emptyTitle, text: view.emptyText } : null,
+    sections,
   };
 }
 
@@ -257,6 +311,9 @@ export function flowRegistryRowFromDocument({
     source: String(flowRow?.source || source || ""),
     document,
     validation: validation ?? null,
+    ...(Number(flowRow?.updated_at_unix_ms) > 0
+      ? { updated_at_unix_ms: Number(flowRow.updated_at_unix_ms) }
+      : {}),
     ...(flowRow?.registry_source ? { registry_source: String(flowRow.registry_source) } : {}),
     ...(flowRow?.document_kind ? { document_kind: String(flowRow.document_kind) } : {}),
     ...(flowRow?.runtime_projection === true ? { runtime_projection: true } : {}),
@@ -445,13 +502,19 @@ export function flowDraftIdFromSpec(spec, existingRows = []) {
   return `${prefix}_${index}`;
 }
 
+function templateOptionDescription(sample) {
+  const flowDescription = sample?.document?.flow?.description;
+  if (typeof flowDescription === "string" && flowDescription.trim()) return flowDescription.trim();
+  return String(sample?.source || "");
+}
+
 export function newFlowTemplateOptions(templates = [], { canCreateBlank = false, blankTemplate = null } = {}) {
   const hasBlankDocument = !!blankTemplate?.document;
   const options = [{
     id: "blank",
     label: hasBlankDocument ? String(blankTemplate.name || "") : "Blank",
     sub: hasBlankDocument
-      ? String(blankTemplate.trigger || blankTemplate.source || "")
+      ? templateOptionDescription(blankTemplate)
       : "Waiting for MobKit blank mobpack",
     tier: hasBlankDocument ? String(blankTemplate.stage || "") : "",
     disabled: !canCreateBlank || !hasBlankDocument,
@@ -464,7 +527,7 @@ export function newFlowTemplateOptions(templates = [], { canCreateBlank = false,
     options.push({
       id,
       label,
-      sub: String(sample.trigger || sample.source || ""),
+      sub: templateOptionDescription(sample),
       tier: String(sample.stage || ""),
       disabled: false,
     });
@@ -475,18 +538,14 @@ export function newFlowTemplateOptions(templates = [], { canCreateBlank = false,
 export function newFlowInitialState({ blankTemplate = null } = {}) {
   const hasBlankDocument = !!blankTemplate?.document;
   return {
-    step: 1,
     name: "",
-    trigger: hasBlankDocument ? String(blankTemplate.trigger || "") : "",
     template: hasBlankDocument ? String(blankTemplate.id || "") : "",
   };
 }
 
 export function newFlowModalState(state = {}, templateOptions = [], newFlowView = null) {
   const view = newFlowViewForState(newFlowView);
-  const step = Number(state.step || 1);
   const name = String(state.name || "");
-  const trigger = String(state.trigger || "");
   const template = String(state.template || "");
   const options = (Array.isArray(templateOptions) ? templateOptions : []).map((option) => {
     const id = String(option?.id || "");
@@ -501,23 +560,16 @@ export function newFlowModalState(state = {}, templateOptions = [], newFlowView 
   });
   const selectedTemplate = options.find((option) => option.id === template) || null;
   return {
-    step,
-    eyebrow: view.eyebrowTemplate.replace("{step}", String(step)),
+    eyebrow: view.eyebrowTemplate,
     closeLabel: view.closeLabel,
     nameLabel: view.nameLabel,
     namePlaceholder: view.namePlaceholder,
-    triggerLabel: view.triggerLabel,
-    triggerPlaceholder: view.triggerPlaceholder,
     startFromLabel: view.startFromLabel,
-    backLabel: view.backLabel,
-    nextLabel: view.nextLabel,
     createLabel: view.createLabel,
     name,
-    trigger,
     template,
     options,
-    createDisabled: !selectedTemplate || !!selectedTemplate.disabled,
-    nextDisabled: !name.trim(),
+    createDisabled: !name.trim() || !selectedTemplate || !!selectedTemplate.disabled,
   };
 }
 
@@ -525,10 +577,7 @@ export function newFlowModalPatch(state = {}, patch = {}) {
   const source = state && typeof state === "object" ? state : {};
   const rawPatch = patch && typeof patch === "object" ? patch : {};
   const next = { ...source, ...rawPatch };
-  const step = Number(next.step || 1);
-  next.step = step === 2 ? 2 : 1;
   next.name = String(next.name || "");
-  next.trigger = String(next.trigger || "");
   next.template = String(next.template || "");
   return next;
 }
@@ -536,19 +585,14 @@ export function newFlowModalPatch(state = {}, patch = {}) {
 export function newFlowModalFieldPatch(state = {}, field, value) {
   const key = String(field || "").trim();
   if (!key) return newFlowModalPatch(state);
-  if (!["name", "trigger", "template"].includes(key)) return newFlowModalPatch(state);
+  if (!["name", "template"].includes(key)) return newFlowModalPatch(state);
   return newFlowModalPatch(state, { [key]: value });
-}
-
-export function newFlowModalStepPatch(state = {}, step) {
-  return newFlowModalPatch(state, { step });
 }
 
 export function newFlowModalCreateSpec(state = {}) {
   const source = newFlowModalPatch(state);
   return {
     name: source.name,
-    trigger: source.trigger,
     template: source.template,
   };
 }

@@ -209,6 +209,37 @@ hr, .hairline { border: 0; border-top: 1px solid var(--hair); margin: 0; }
   color: var(--ink);
   margin-top: 8px;
 }
+.flows-view__empty {
+  padding: 48px 0;
+  display: grid;
+  gap: 6px;
+}
+.flows-view__empty-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.flows-view__empty-text {
+  font-size: 13px;
+  color: var(--muted);
+}
+.flows-list__section {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 18px 0 8px;
+}
+.flows-list__section-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.flows-list__section-hint {
+  font-size: 12px;
+  color: var(--muted);
+}
 .flows-list { display: flex; flex-direction: column; }
 .flows-list__head {
   display: grid;

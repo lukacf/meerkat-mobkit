@@ -2062,34 +2062,36 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         "skill_outside_realm_heading": "Selected from other realms:"
     });
     let editor_new_flow_view = json!({
-        "eyebrow_template": "NEW FLOW · STEP {step} OF 2",
+        "eyebrow_template": "NEW MOB",
         "close_label": "×",
         "name_label": "Name",
-        "name_placeholder": "docs-only",
-        "trigger_label": "Trigger",
-        "trigger_placeholder": "label · docs",
+        "name_placeholder": "review-mob",
         "start_from_label": "Start from",
-        "back_label": "← BACK",
-        "next_label": "NEXT →",
         "create_label": "CREATE"
     });
     let editor_flow_registry_view = json!({
-        "eyebrow": "FLOWS",
-        "title_singular_suffix": "flow",
-        "title_plural_suffix": "flows",
-        "create_label": "+ NEW FLOW",
-        "create_ready_title": "Create a MobKit mobpack",
+        "eyebrow": "LIBRARY",
+        "title_singular_suffix": "mob",
+        "title_plural_suffix": "mobs",
+        "create_label": "+ NEW MOB",
+        "create_ready_title": "Create a MobKit mob",
         "create_unavailable_title": "Waiting for MobKit schema",
+        "drafts_section_label": "Drafts",
+        "runtime_section_label": "Running",
+        "runtime_readonly_hint": "Runtime flows are read-only projections; open one to fork it into a draft.",
+        "empty_title": "No mobs yet",
+        "empty_text": "Create a mob to start authoring a deployable MobKit flow.",
+        "updated_just_now_label": "just now",
         "columns": [
             { "key": "name", "label": "NAME" },
-            { "key": "trigger", "label": "TRIGGER" },
-            { "key": "version", "label": "VERSION" },
+            { "key": "description", "label": "DESCRIPTION" },
+            { "key": "updated", "label": "UPDATED" },
             { "key": "stage", "label": "STAGE" }
         ]
     });
     let editor_deploy_view = json!({
         "brand_label": "MobKit · Flow Editor",
-        "flows_tab_label": "FLOWS",
+        "flows_tab_label": "MOBS",
         "agents_tab_label": "AGENTS",
         "mob_status_title": "Active mob configuration",
         "mob_file_label": "mob.toml",
@@ -2097,7 +2099,7 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         "api_ready_label": "api ready",
         "api_loading_label": "loading",
         "deploy_prefix_label": "deploy:",
-        "flows_crumb_label": "flows",
+        "flows_crumb_label": "mobs",
         "crumb_separator": "/",
         "plan_trace_label": "PLAN TRACE",
         "import_label": "IMPORT",
@@ -31524,11 +31526,11 @@ depends_on_mode = "all"
         );
         assert_eq!(
             mob_definition["editor_new_flow_view"]["eyebrow_template"],
-            json!("NEW FLOW · STEP {step} OF 2")
+            json!("NEW MOB")
         );
         assert_eq!(
             mob_definition["editor_new_flow_view"]["name_placeholder"],
-            json!("docs-only")
+            json!("review-mob")
         );
         assert_eq!(
             mob_definition["editor_new_flow_view"]["create_label"],
@@ -31536,11 +31538,11 @@ depends_on_mode = "all"
         );
         assert_eq!(
             mob_definition["editor_flow_registry_view"]["eyebrow"],
-            json!("FLOWS")
+            json!("LIBRARY")
         );
         assert_eq!(
             mob_definition["editor_flow_registry_view"]["create_label"],
-            json!("+ NEW FLOW")
+            json!("+ NEW MOB")
         );
         assert_eq!(
             mob_definition["editor_flow_registry_view"]["columns"][3]["label"],

@@ -214,14 +214,10 @@
       closeLabel: String(view.close_label || "").trim(),
       nameLabel: String(view.name_label || "").trim(),
       namePlaceholder: String(view.name_placeholder || "").trim(),
-      triggerLabel: String(view.trigger_label || "").trim(),
-      triggerPlaceholder: String(view.trigger_placeholder || "").trim(),
       startFromLabel: String(view.start_from_label || "").trim(),
-      backLabel: String(view.back_label || "").trim(),
-      nextLabel: String(view.next_label || "").trim(),
       createLabel: String(view.create_label || "").trim()
     };
-    return out.eyebrowTemplate && out.closeLabel && out.nameLabel && out.namePlaceholder && out.triggerLabel && out.triggerPlaceholder && out.startFromLabel && out.backLabel && out.nextLabel && out.createLabel ? out : null;
+    return out.eyebrowTemplate && out.closeLabel && out.nameLabel && out.namePlaceholder && out.startFromLabel && out.createLabel ? out : null;
   }
   function newFlowViewForState(newFlowView) {
     const view = newFlowView && typeof newFlowView === "object" ? newFlowView : null;
@@ -230,11 +226,7 @@
       closeLabel: String(view?.closeLabel || ""),
       nameLabel: String(view?.nameLabel || ""),
       namePlaceholder: String(view?.namePlaceholder || ""),
-      triggerLabel: String(view?.triggerLabel || ""),
-      triggerPlaceholder: String(view?.triggerPlaceholder || ""),
       startFromLabel: String(view?.startFromLabel || ""),
-      backLabel: String(view?.backLabel || ""),
-      nextLabel: String(view?.nextLabel || ""),
       createLabel: String(view?.createLabel || "")
     };
   }
@@ -252,9 +244,15 @@
       createLabel: String(view.create_label || "").trim(),
       createReadyTitle: String(view.create_ready_title || "").trim(),
       createUnavailableTitle: String(view.create_unavailable_title || "").trim(),
+      draftsSectionLabel: String(view.drafts_section_label || "").trim(),
+      runtimeSectionLabel: String(view.runtime_section_label || "").trim(),
+      runtimeReadonlyHint: String(view.runtime_readonly_hint || "").trim(),
+      emptyTitle: String(view.empty_title || "").trim(),
+      emptyText: String(view.empty_text || "").trim(),
+      updatedJustNowLabel: String(view.updated_just_now_label || "").trim(),
       columns
     };
-    return out.eyebrow && out.titleSingularSuffix && out.titlePluralSuffix && out.createLabel && out.createReadyTitle && out.createUnavailableTitle && out.columns.length === 4 ? out : null;
+    return out.eyebrow && out.titleSingularSuffix && out.titlePluralSuffix && out.createLabel && out.createReadyTitle && out.createUnavailableTitle && out.draftsSectionLabel && out.runtimeSectionLabel && out.runtimeReadonlyHint && out.emptyTitle && out.emptyText && out.updatedJustNowLabel && out.columns.length === 4 ? out : null;
   }
   function flowRegistryViewForState(flowRegistryView) {
     const view = flowRegistryView && typeof flowRegistryView === "object" ? flowRegistryView : null;
@@ -265,6 +263,12 @@
       createLabel: String(view?.createLabel || ""),
       createReadyTitle: String(view?.createReadyTitle || ""),
       createUnavailableTitle: String(view?.createUnavailableTitle || ""),
+      draftsSectionLabel: String(view?.draftsSectionLabel || ""),
+      runtimeSectionLabel: String(view?.runtimeSectionLabel || ""),
+      runtimeReadonlyHint: String(view?.runtimeReadonlyHint || ""),
+      emptyTitle: String(view?.emptyTitle || ""),
+      emptyText: String(view?.emptyText || ""),
+      updatedJustNowLabel: String(view?.updatedJustNowLabel || ""),
       columns: Array.isArray(view?.columns) ? view.columns.map((column) => ({
         key: String(column?.key || ""),
         label: String(column?.label || "")
@@ -7626,10 +7630,68 @@ ${kind}` : "";
     });
     return changed ? next : list;
   }
+  function flowRegistryUpdatedLabel(updatedAtUnixMs, nowUnixMs, justNowLabel = "") {
+    const updated = Number(updatedAtUnixMs || 0);
+    const now = Number(nowUnixMs || 0);
+    if (!updated || !now || now < updated) return "";
+    const seconds = Math.floor((now - updated) / 1e3);
+    if (seconds < 60) return justNowLabel;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  }
+  function flowRegistryRowDescription(row) {
+    const flowDescription = row?.document?.flow?.description;
+    if (typeof flowDescription === "string" && flowDescription.trim()) return flowDescription.trim();
+    const rowDescription = row?.description;
+    if (typeof rowDescription === "string" && rowDescription.trim()) return rowDescription.trim();
+    const steps = row?.document?.flow?.steps;
+    if (Array.isArray(steps)) {
+      const input = steps.find((step) => step?.type === "input");
+      const task = input?.task;
+      if (typeof task === "string" && task.trim()) return task.trim();
+    }
+    return "";
+  }
   function flowRegistryViewState(rows, currentFlowId, options = {}) {
     const list = Array.isArray(rows) ? rows : [];
     const view = flowRegistryViewForState(options.flowRegistryView);
     const suffix = list.length === 1 ? view.titleSingularSuffix : view.titlePluralSuffix;
+    const nowUnixMs = Number(options.nowUnixMs || 0);
+    const projectRow = (row) => {
+      const id = String(row?.id || "");
+      const stage = String(row?.stage || "draft");
+      return {
+        id,
+        className: "flows-list__row" + (id && id === currentFlowId ? " is-current" : ""),
+        name: String(row?.name || ""),
+        description: flowRegistryRowDescription(row),
+        updated: flowRegistryUpdatedLabel(row?.updated_at_unix_ms, nowUnixMs, view.updatedJustNowLabel),
+        stage
+      };
+    };
+    const draftRows = list.filter((row) => !row?.runtime_projection);
+    const runtimeRows = list.filter((row) => !!row?.runtime_projection);
+    const sections = [];
+    if (draftRows.length || !runtimeRows.length) {
+      sections.push({
+        key: "drafts",
+        label: view.draftsSectionLabel,
+        hint: "",
+        rows: draftRows.map(projectRow)
+      });
+    }
+    if (runtimeRows.length) {
+      sections.push({
+        key: "runtime",
+        label: view.runtimeSectionLabel,
+        hint: view.runtimeReadonlyHint,
+        rows: runtimeRows.map(projectRow)
+      });
+    }
     return {
       eyebrow: view.eyebrow,
       title: `${list.length} ${suffix}`.trim(),
@@ -7637,18 +7699,8 @@ ${kind}` : "";
       createDisabled: !options.canCreate,
       createTitle: options.canCreate ? view.createReadyTitle : view.createUnavailableTitle,
       columns: view.columns,
-      rows: list.map((row) => {
-        const id = String(row?.id || "");
-        const stage = String(row?.stage || "draft");
-        return {
-          id,
-          className: "flows-list__row" + (id && id === currentFlowId ? " is-current" : ""),
-          name: String(row?.name || ""),
-          trigger: String(row?.trigger || ""),
-          version: String(row?.version || ""),
-          stage
-        };
-      })
+      empty: list.length === 0 ? { title: view.emptyTitle, text: view.emptyText } : null,
+      sections
     };
   }
   function flowRegistrySelectionState(rows, id) {
@@ -7721,6 +7773,7 @@ ${kind}` : "";
       source: String(flowRow?.source || source || ""),
       document: document2,
       validation: validation ?? null,
+      ...Number(flowRow?.updated_at_unix_ms) > 0 ? { updated_at_unix_ms: Number(flowRow.updated_at_unix_ms) } : {},
       ...flowRow?.registry_source ? { registry_source: String(flowRow.registry_source) } : {},
       ...flowRow?.document_kind ? { document_kind: String(flowRow.document_kind) } : {},
       ...flowRow?.runtime_projection === true ? { runtime_projection: true } : {},
@@ -7893,12 +7946,17 @@ ${JSON.stringify(document2)}`;
     while (used.has(`${prefix}_${index}`)) index += 1;
     return `${prefix}_${index}`;
   }
+  function templateOptionDescription(sample) {
+    const flowDescription = sample?.document?.flow?.description;
+    if (typeof flowDescription === "string" && flowDescription.trim()) return flowDescription.trim();
+    return String(sample?.source || "");
+  }
   function newFlowTemplateOptions(templates = [], { canCreateBlank = false, blankTemplate = null } = {}) {
     const hasBlankDocument = !!blankTemplate?.document;
     const options = [{
       id: "blank",
       label: hasBlankDocument ? String(blankTemplate.name || "") : "Blank",
-      sub: hasBlankDocument ? String(blankTemplate.trigger || blankTemplate.source || "") : "Waiting for MobKit blank mobpack",
+      sub: hasBlankDocument ? templateOptionDescription(blankTemplate) : "Waiting for MobKit blank mobpack",
       tier: hasBlankDocument ? String(blankTemplate.stage || "") : "",
       disabled: !canCreateBlank || !hasBlankDocument
     }];
@@ -7910,7 +7968,7 @@ ${JSON.stringify(document2)}`;
       options.push({
         id,
         label,
-        sub: String(sample.trigger || sample.source || ""),
+        sub: templateOptionDescription(sample),
         tier: String(sample.stage || ""),
         disabled: false
       });
@@ -7920,17 +7978,13 @@ ${JSON.stringify(document2)}`;
   function newFlowInitialState({ blankTemplate = null } = {}) {
     const hasBlankDocument = !!blankTemplate?.document;
     return {
-      step: 1,
       name: "",
-      trigger: hasBlankDocument ? String(blankTemplate.trigger || "") : "",
       template: hasBlankDocument ? String(blankTemplate.id || "") : ""
     };
   }
   function newFlowModalState(state = {}, templateOptions = [], newFlowView = null) {
     const view = newFlowViewForState(newFlowView);
-    const step = Number(state.step || 1);
     const name = String(state.name || "");
-    const trigger = String(state.trigger || "");
     const template = String(state.template || "");
     const options = (Array.isArray(templateOptions) ? templateOptions : []).map((option) => {
       const id = String(option?.id || "");
@@ -7945,50 +7999,36 @@ ${JSON.stringify(document2)}`;
     });
     const selectedTemplate = options.find((option) => option.id === template) || null;
     return {
-      step,
-      eyebrow: view.eyebrowTemplate.replace("{step}", String(step)),
+      eyebrow: view.eyebrowTemplate,
       closeLabel: view.closeLabel,
       nameLabel: view.nameLabel,
       namePlaceholder: view.namePlaceholder,
-      triggerLabel: view.triggerLabel,
-      triggerPlaceholder: view.triggerPlaceholder,
       startFromLabel: view.startFromLabel,
-      backLabel: view.backLabel,
-      nextLabel: view.nextLabel,
       createLabel: view.createLabel,
       name,
-      trigger,
       template,
       options,
-      createDisabled: !selectedTemplate || !!selectedTemplate.disabled,
-      nextDisabled: !name.trim()
+      createDisabled: !name.trim() || !selectedTemplate || !!selectedTemplate.disabled
     };
   }
   function newFlowModalPatch(state = {}, patch = {}) {
     const source = state && typeof state === "object" ? state : {};
     const rawPatch = patch && typeof patch === "object" ? patch : {};
     const next = { ...source, ...rawPatch };
-    const step = Number(next.step || 1);
-    next.step = step === 2 ? 2 : 1;
     next.name = String(next.name || "");
-    next.trigger = String(next.trigger || "");
     next.template = String(next.template || "");
     return next;
   }
   function newFlowModalFieldPatch(state = {}, field, value) {
     const key = String(field || "").trim();
     if (!key) return newFlowModalPatch(state);
-    if (!["name", "trigger", "template"].includes(key)) return newFlowModalPatch(state);
+    if (!["name", "template"].includes(key)) return newFlowModalPatch(state);
     return newFlowModalPatch(state, { [key]: value });
-  }
-  function newFlowModalStepPatch(state = {}, step) {
-    return newFlowModalPatch(state, { step });
   }
   function newFlowModalCreateSpec(state = {}) {
     const source = newFlowModalPatch(state);
     return {
       name: source.name,
-      trigger: source.trigger,
       template: source.template
     };
   }
@@ -10697,7 +10737,7 @@ ${JSON.stringify(document2)}`;
       sampleAgentDefinitionsFromCatalogs,
       newFlowModalPatch,
       newFlowModalFieldPatch,
-      newFlowModalStepPatch,
+      flowRegistryUpdatedLabel,
       newFlowModalCreateSpec,
       flowRegistryMarkDraftPatch,
       flowRegistryViewState,
@@ -13337,8 +13377,7 @@ ${JSON.stringify(document2)}`;
             const hasRuntimeRows = Array.isArray(catalogPayload?.runtime_flows) && catalogPayload.runtime_flows.length > 0;
             if ((!Array.isArray(registryPayload?.rows) || registryPayload.rows.length === 0) && !hasRuntimeRows) {
               registryPayload = await MobKitFlowController.createDocument({
-                template: "blank",
-                trigger: "MobKit editor startup draft"
+                template: "blank"
               }, rpcOptions).catch((error) => {
                 if (abort.signal.aborted) throw error;
                 return registryPayload;
@@ -14447,7 +14486,11 @@ ${JSON.stringify(document2)}`;
         )));
       }
       function FlowsView({ flows, currentFlowId, onOpen, onNew, canCreate, flowRegistryView = null }) {
-        const registryState = MobKitFlowController.flowRegistryViewState(flows, currentFlowId, { canCreate, flowRegistryView });
+        const registryState = MobKitFlowController.flowRegistryViewState(flows, currentFlowId, {
+          canCreate,
+          flowRegistryView,
+          nowUnixMs: Date.now()
+        });
         return /* @__PURE__ */ React.createElement("div", { className: "flows-view" }, /* @__PURE__ */ React.createElement("div", { className: "flows-view__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, registryState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "flows-view__title" }, registryState.title)), /* @__PURE__ */ React.createElement(
           "button",
           {
@@ -14457,13 +14500,12 @@ ${JSON.stringify(document2)}`;
             onClick: onNew
           },
           registryState.createLabel
-        )), /* @__PURE__ */ React.createElement("div", { className: "flows-list" }, /* @__PURE__ */ React.createElement("div", { className: "flows-list__head" }, registryState.columns.map((column) => /* @__PURE__ */ React.createElement("span", { key: column.key }, column.label))), registryState.rows.map((f) => /* @__PURE__ */ React.createElement("button", { key: f.id, className: f.className, onClick: () => onOpen(f.id) }, /* @__PURE__ */ React.createElement("span", { className: "flows-list__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "flows-list__sub" }, f.trigger), /* @__PURE__ */ React.createElement("span", { className: "flows-list__sub" }, f.version), /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": f.stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), f.stage)))));
+        )), registryState.empty && /* @__PURE__ */ React.createElement("div", { className: "flows-view__empty" }, /* @__PURE__ */ React.createElement("div", { className: "flows-view__empty-title" }, registryState.empty.title), /* @__PURE__ */ React.createElement("div", { className: "flows-view__empty-text" }, registryState.empty.text)), registryState.sections.map((section) => /* @__PURE__ */ React.createElement("div", { key: section.key, className: "flows-list" }, /* @__PURE__ */ React.createElement("div", { className: "flows-list__section" }, /* @__PURE__ */ React.createElement("span", { className: "flows-list__section-label" }, section.label), section.hint && /* @__PURE__ */ React.createElement("span", { className: "flows-list__section-hint" }, section.hint)), /* @__PURE__ */ React.createElement("div", { className: "flows-list__head" }, registryState.columns.map((column) => /* @__PURE__ */ React.createElement("span", { key: column.key }, column.label))), section.rows.map((f) => /* @__PURE__ */ React.createElement("button", { key: f.id, className: f.className, onClick: () => onOpen(f.id) }, /* @__PURE__ */ React.createElement("span", { className: "flows-list__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "flows-list__sub" }, f.description), /* @__PURE__ */ React.createElement("span", { className: "flows-list__sub" }, f.updated), /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": f.stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), f.stage))))));
       }
       function NewFlowModal({ state, setState, onCreate, templateOptions = [], newFlowView = null }) {
         const setField = (field, value) => setState((current) => MobKitFlowController.newFlowModalFieldPatch(current, field, value));
-        const setStep = (step) => setState((current) => MobKitFlowController.newFlowModalStepPatch(current, step));
         const modalState = MobKitFlowController.newFlowModalState(state, templateOptions, newFlowView);
-        return /* @__PURE__ */ React.createElement("div", { className: "modal-backdrop", onClick: () => setState(null) }, /* @__PURE__ */ React.createElement("div", { className: "modal modal--new", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "modal__head" }, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, modalState.eyebrow), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setState(null) }, modalState.closeLabel)), modalState.step === 1 && /* @__PURE__ */ React.createElement("div", { className: "modal__body" }, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, modalState.nameLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", autoFocus: true, placeholder: modalState.namePlaceholder, value: modalState.name, onChange: (e) => setField("name", e.target.value) })), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, modalState.triggerLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", placeholder: modalState.triggerPlaceholder, value: modalState.trigger, onChange: (e) => setField("trigger", e.target.value) }))), modalState.step === 2 && /* @__PURE__ */ React.createElement("div", { className: "modal__body" }, /* @__PURE__ */ React.createElement("div", { className: "field__label" }, modalState.startFromLabel), /* @__PURE__ */ React.createElement("div", { className: "template-grid" }, modalState.options.map((opt) => /* @__PURE__ */ React.createElement("button", { key: opt.id, className: opt.className, disabled: opt.disabled, onClick: () => setField("template", opt.id) }, /* @__PURE__ */ React.createElement("div", { className: "template-card__tier" }, opt.tier), /* @__PURE__ */ React.createElement("div", { className: "template-card__name" }, opt.label), /* @__PURE__ */ React.createElement("div", { className: "template-card__sub" }, opt.sub))))), /* @__PURE__ */ React.createElement("div", { className: "modal__foot" }, modalState.step > 1 ? /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setStep(modalState.step - 1) }, modalState.backLabel) : /* @__PURE__ */ React.createElement("span", null), modalState.step < 2 ? /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: modalState.nextDisabled, onClick: () => setStep(2) }, modalState.nextLabel) : /* @__PURE__ */ React.createElement(
+        return /* @__PURE__ */ React.createElement("div", { className: "modal-backdrop", onClick: () => setState(null) }, /* @__PURE__ */ React.createElement("div", { className: "modal modal--new", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "modal__head" }, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, modalState.eyebrow), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setState(null) }, modalState.closeLabel)), /* @__PURE__ */ React.createElement("div", { className: "modal__body" }, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, modalState.nameLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", autoFocus: true, placeholder: modalState.namePlaceholder, value: modalState.name, onChange: (e) => setField("name", e.target.value) })), /* @__PURE__ */ React.createElement("div", { className: "field__label" }, modalState.startFromLabel), /* @__PURE__ */ React.createElement("div", { className: "template-grid" }, modalState.options.map((opt) => /* @__PURE__ */ React.createElement("button", { key: opt.id, className: opt.className, disabled: opt.disabled, onClick: () => setField("template", opt.id) }, /* @__PURE__ */ React.createElement("div", { className: "template-card__tier" }, opt.tier), /* @__PURE__ */ React.createElement("div", { className: "template-card__name" }, opt.label), /* @__PURE__ */ React.createElement("div", { className: "template-card__sub" }, opt.sub))))), /* @__PURE__ */ React.createElement("div", { className: "modal__foot" }, /* @__PURE__ */ React.createElement("span", null), /* @__PURE__ */ React.createElement(
           "button",
           {
             className: "btn btn--primary btn--sm",

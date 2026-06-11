@@ -57,7 +57,7 @@ assert.deepEqual(controller.emptyAuthoringFlowState(), {
 });
 const TEST_DEPLOY_VIEW_SCHEMA = {
   brand_label: "MobKit · Flow Editor",
-  flows_tab_label: "FLOWS",
+  flows_tab_label: "MOBS",
   agents_tab_label: "AGENTS",
   mob_status_title: "Active mob configuration",
   mob_file_label: "mob.toml",
@@ -65,7 +65,7 @@ const TEST_DEPLOY_VIEW_SCHEMA = {
   api_ready_label: "api ready",
   api_loading_label: "loading",
   deploy_prefix_label: "deploy:",
-  flows_crumb_label: "flows",
+  flows_crumb_label: "mobs",
   crumb_separator: "/",
   plan_trace_label: "PLAN TRACE",
   import_label: "IMPORT",
@@ -99,7 +99,7 @@ const TEST_DEPLOY_VIEW_SCHEMA = {
 };
 const TEST_DEPLOY_VIEW = {
   brandLabel: "MobKit · Flow Editor",
-  flowsTabLabel: "FLOWS",
+  flowsTabLabel: "MOBS",
   agentsTabLabel: "AGENTS",
   mobStatusTitle: "Active mob configuration",
   mobFileLabel: "mob.toml",
@@ -107,7 +107,7 @@ const TEST_DEPLOY_VIEW = {
   apiReadyLabel: "api ready",
   apiLoadingLabel: "loading",
   deployPrefixLabel: "deploy:",
-  flowsCrumbLabel: "flows",
+  flowsCrumbLabel: "mobs",
   crumbSeparator: "/",
   planTraceLabel: "PLAN TRACE",
   importLabel: "IMPORT",
@@ -461,55 +461,59 @@ const TEST_ERROR_VIEW = {
   missingEditorFlowMeta: "missing_editor_flow",
 };
 const TEST_NEW_FLOW_VIEW_SCHEMA = {
-  eyebrow_template: "CREATE MOB · STEP {step} / 2",
+  eyebrow_template: "NEW MOB",
   close_label: "close",
   name_label: "Mob name",
-  name_placeholder: "sample-mob",
-  trigger_label: "Mob trigger",
-  trigger_placeholder: "label · task",
+  name_placeholder: "review-mob",
   start_from_label: "Template",
-  back_label: "BACK",
-  next_label: "NEXT",
   create_label: "CREATE MOB",
 };
 const TEST_NEW_FLOW_VIEW = {
-  eyebrowTemplate: "CREATE MOB · STEP {step} / 2",
+  eyebrowTemplate: "NEW MOB",
   closeLabel: "close",
   nameLabel: "Mob name",
-  namePlaceholder: "sample-mob",
-  triggerLabel: "Mob trigger",
-  triggerPlaceholder: "label · task",
+  namePlaceholder: "review-mob",
   startFromLabel: "Template",
-  backLabel: "BACK",
-  nextLabel: "NEXT",
   createLabel: "CREATE MOB",
 };
 const TEST_FLOW_REGISTRY_VIEW_SCHEMA = {
-  eyebrow: "MOBS",
+  eyebrow: "LIBRARY",
   title_singular_suffix: "mob",
   title_plural_suffix: "mobs",
-  create_label: "+ CREATE MOB",
-  create_ready_title: "Create a deployable MobKit mobpack",
+  create_label: "+ NEW MOB",
+  create_ready_title: "Create a MobKit mob",
   create_unavailable_title: "MobKit authoring contract unavailable",
+  drafts_section_label: "Drafts",
+  runtime_section_label: "Running",
+  runtime_readonly_hint: "Runtime flows are read-only projections; open one to fork it into a draft.",
+  empty_title: "No mobs yet",
+  empty_text: "Create a mob to start authoring a deployable MobKit flow.",
+  updated_just_now_label: "just now",
   columns: [
-    { key: "name", label: "MOB" },
-    { key: "trigger", label: "TRIGGER" },
-    { key: "version", label: "PACK" },
-    { key: "stage", label: "STATE" },
+    { key: "name", label: "NAME" },
+    { key: "description", label: "DESCRIPTION" },
+    { key: "updated", label: "UPDATED" },
+    { key: "stage", label: "STAGE" },
   ],
 };
 const TEST_FLOW_REGISTRY_VIEW = {
-  eyebrow: "MOBS",
+  eyebrow: "LIBRARY",
   titleSingularSuffix: "mob",
   titlePluralSuffix: "mobs",
-  createLabel: "+ CREATE MOB",
-  createReadyTitle: "Create a deployable MobKit mobpack",
+  createLabel: "+ NEW MOB",
+  createReadyTitle: "Create a MobKit mob",
   createUnavailableTitle: "MobKit authoring contract unavailable",
+  draftsSectionLabel: "Drafts",
+  runtimeSectionLabel: "Running",
+  runtimeReadonlyHint: "Runtime flows are read-only projections; open one to fork it into a draft.",
+  emptyTitle: "No mobs yet",
+  emptyText: "Create a mob to start authoring a deployable MobKit flow.",
+  updatedJustNowLabel: "just now",
   columns: [
-    { key: "name", label: "MOB" },
-    { key: "trigger", label: "TRIGGER" },
-    { key: "version", label: "PACK" },
-    { key: "stage", label: "STATE" },
+    { key: "name", label: "NAME" },
+    { key: "description", label: "DESCRIPTION" },
+    { key: "updated", label: "UPDATED" },
+    { key: "stage", label: "STAGE" },
   ],
 };
 const TEST_SCHEMA = {
@@ -596,7 +600,7 @@ assert.deepEqual(controller.topRailState({
 }), {
   inEditor: false,
   brandLabel: "MobKit · Flow Editor",
-  flowsTabLabel: "FLOWS",
+  flowsTabLabel: "MOBS",
   agentsTabLabel: "AGENTS",
   mobStatusTitle: "Active mob configuration",
   mobFileLabel: "mob.toml",
@@ -604,7 +608,7 @@ assert.deepEqual(controller.topRailState({
   deployPrefixLabel: "deploy:",
   deployCommand: "",
   deploySurface: "",
-  flowsCrumbLabel: "flows",
+  flowsCrumbLabel: "mobs",
   crumbSeparator: "/",
   planTraceLabel: "PLAN TRACE",
   importLabel: "IMPORT",
@@ -634,7 +638,7 @@ assert.deepEqual(controller.topRailState({
 }), {
   inEditor: true,
   brandLabel: "MobKit · Flow Editor",
-  flowsTabLabel: "FLOWS",
+  flowsTabLabel: "MOBS",
   agentsTabLabel: "AGENTS",
   mobStatusTitle: "Active mob configuration",
   mobFileLabel: "mob.toml",
@@ -642,7 +646,7 @@ assert.deepEqual(controller.topRailState({
   deployPrefixLabel: "deploy:",
   deployCommand: "rkat mob deploy",
   deploySurface: "cli",
-  flowsCrumbLabel: "flows",
+  flowsCrumbLabel: "mobs",
   crumbSeparator: "/",
   planTraceLabel: "PLAN TRACE",
   importLabel: "IMPORT",
@@ -739,7 +743,14 @@ assert.equal(controller.blankMobpackFromCatalogs({
 }), null);
 
 assert.deepEqual(controller.newFlowTemplateOptions([
-  { id: "docs", name: "Docs", trigger: "label · docs", stage: "valid", validation: { ok: true } },
+  {
+    id: "docs",
+    name: "Docs",
+    source: "mobkit://samples/docs",
+    stage: "valid",
+    validation: { ok: true },
+    document: { flow: { description: "Reviews documentation changes." } },
+  },
   { id: "needs_source", name: "Needs Source", source: "mobkit://samples/needs-source", stage: "draft", validation: { ok: false } },
   { id: "", name: "Missing Id", validation: { ok: true } },
   { id: "missing_name", name: "", validation: { ok: true } },
@@ -747,14 +758,14 @@ assert.deepEqual(controller.newFlowTemplateOptions([
   {
     id: "blank",
     label: "Blank",
-    sub: "label · small-fix",
+    sub: "mobkit/blank-mobpack",
     tier: "valid",
     disabled: true,
   },
   {
     id: "docs",
     label: "Docs",
-    sub: "label · docs",
+    sub: "Reviews documentation changes.",
     tier: "valid",
     disabled: false,
   },
@@ -789,44 +800,39 @@ assert.equal(controller.newFlowTemplateOptions([], {
   },
 })[0].sub, "");
 assert.deepEqual(controller.newFlowInitialState({ blankTemplate: schemaBlankMobpack }), {
-  step: 1,
   name: "",
-  trigger: "label · small-fix",
   template: "blank",
 });
-assert.deepEqual(controller.newFlowInitialState({ blankTemplate: { id: "missing-document", trigger: "ignored" } }), {
-  step: 1,
+assert.deepEqual(controller.newFlowInitialState({ blankTemplate: { id: "missing-document" } }), {
   name: "",
-  trigger: "",
   template: "",
 });
 assert.deepEqual(controller.newFlowModalState({
-  step: 2,
   name: "New Mob",
-  trigger: "label · docs",
   template: "docs",
 }, controller.newFlowTemplateOptions([
-  { id: "docs", name: "Docs", trigger: "label · docs", stage: "valid", validation: { ok: true } },
+  {
+    id: "docs",
+    name: "Docs",
+    source: "mobkit://samples/docs",
+    stage: "valid",
+    validation: { ok: true },
+    document: { flow: { description: "Reviews documentation changes." } },
+  },
 ], { canCreateBlank: false, blankTemplate: schemaBlankMobpack }), TEST_NEW_FLOW_VIEW), {
-  step: 2,
-  eyebrow: "CREATE MOB · STEP 2 / 2",
+  eyebrow: "NEW MOB",
   closeLabel: "close",
   nameLabel: "Mob name",
-  namePlaceholder: "sample-mob",
-  triggerLabel: "Mob trigger",
-  triggerPlaceholder: "label · task",
+  namePlaceholder: "review-mob",
   startFromLabel: "Template",
-  backLabel: "BACK",
-  nextLabel: "NEXT",
   createLabel: "CREATE MOB",
   name: "New Mob",
-  trigger: "label · docs",
   template: "docs",
   options: [
     {
       id: "blank",
       label: "Blank",
-      sub: "label · small-fix",
+      sub: "mobkit/blank-mobpack",
       tier: "valid",
       disabled: true,
       className: "template-card",
@@ -834,136 +840,227 @@ assert.deepEqual(controller.newFlowModalState({
     {
       id: "docs",
       label: "Docs",
-      sub: "label · docs",
+      sub: "Reviews documentation changes.",
       tier: "valid",
       disabled: false,
       className: "template-card is-selected",
     },
   ],
   createDisabled: false,
-  nextDisabled: false,
 });
-assert.equal(controller.newFlowModalState({ step: 1, name: "   ", template: "blank" }, [
-  { id: "blank", disabled: true },
-]).nextDisabled, true);
-assert.equal(controller.newFlowModalState({ step: 2, name: "Draft", template: "blank" }, [
+assert.equal(controller.newFlowModalState({ name: "   ", template: "blank" }, [
+  { id: "blank", disabled: false },
+], TEST_NEW_FLOW_VIEW).createDisabled, true);
+assert.equal(controller.newFlowModalState({ name: "Draft", template: "blank" }, [
   { id: "blank", disabled: true },
 ]).createDisabled, true);
-assert.equal(controller.newFlowModalState({ step: 2, name: "Draft", template: "" }, [
+assert.equal(controller.newFlowModalState({ name: "Draft", template: "" }, [
   { id: "blank", disabled: false },
 ], TEST_NEW_FLOW_VIEW).createDisabled, true);
-assert.equal(controller.newFlowModalState({ step: 2, name: "Draft", template: "ghost" }, [
+assert.equal(controller.newFlowModalState({ name: "Draft", template: "ghost" }, [
   { id: "blank", disabled: false },
 ], TEST_NEW_FLOW_VIEW).createDisabled, true);
+assert.equal(controller.newFlowModalState({ name: "Draft", template: "blank" }, [
+  { id: "blank", disabled: false },
+], TEST_NEW_FLOW_VIEW).createDisabled, false);
 assert.deepEqual(controller.newFlowModalPatch({
-  step: 2,
   name: "Draft",
-  trigger: "label · docs",
   template: "docs",
-}, { step: 99, name: "Renamed" }), {
-  step: 1,
+}, { name: "Renamed" }), {
   name: "Renamed",
-  trigger: "label · docs",
   template: "docs",
 });
 assert.deepEqual(controller.newFlowModalFieldPatch({
-  step: 1,
   name: "Draft",
-  trigger: "label · docs",
+  template: "blank",
+}, "template", "docs"), {
+  name: "Draft",
+  template: "docs",
+});
+assert.deepEqual(controller.newFlowModalFieldPatch({
+  name: "Draft",
   template: "blank",
 }, "trigger", "label · review"), {
-  step: 1,
   name: "Draft",
-  trigger: "label · review",
   template: "blank",
 });
 assert.deepEqual(controller.newFlowModalFieldPatch({
-  step: 2,
   name: "Draft",
-  trigger: "label · docs",
   template: "blank",
 }, "unsupported", "ignored"), {
-  step: 2,
   name: "Draft",
-  trigger: "label · docs",
   template: "blank",
 });
-assert.deepEqual(controller.newFlowModalStepPatch({
-  step: 1,
-  name: "Draft",
-  trigger: "label · docs",
-  template: "blank",
-}, 2), {
-  step: 2,
-  name: "Draft",
-  trigger: "label · docs",
-  template: "blank",
-});
+assert.equal(controller.newFlowModalStepPatch, undefined, "single-step new-mob modal has no step patch");
 assert.deepEqual(controller.newFlowModalCreateSpec({
-  step: 2,
   name: "Draft",
-  trigger: "label · docs",
   template: "blank",
 }), {
   name: "Draft",
-  trigger: "label · docs",
   template: "blank",
 });
+const REGISTRY_NOW_UNIX_MS = 1750000000000;
 assert.deepEqual(controller.flowRegistryViewState([
-  { id: "f_existing", name: "Existing", trigger: "label · docs", version: "0.1", stage: "valid" },
-  { id: "f_draft", name: "Draft", trigger: "", version: "", stage: "" },
-], "f_existing", { canCreate: false, flowRegistryView: TEST_FLOW_REGISTRY_VIEW }), {
-  eyebrow: "MOBS",
+  {
+    id: "f_existing",
+    name: "Existing",
+    stage: "valid",
+    updated_at_unix_ms: REGISTRY_NOW_UNIX_MS - (5 * 60 * 1000),
+    document: { flow: { description: "Document description wins." } },
+    description: "Row description loses.",
+  },
+  { id: "f_draft", name: "Draft", stage: "" },
+], "f_existing", { canCreate: false, flowRegistryView: TEST_FLOW_REGISTRY_VIEW, nowUnixMs: REGISTRY_NOW_UNIX_MS }), {
+  eyebrow: "LIBRARY",
   title: "2 mobs",
-  createLabel: "+ CREATE MOB",
+  createLabel: "+ NEW MOB",
   createDisabled: true,
   createTitle: "MobKit authoring contract unavailable",
   columns: [
-    { key: "name", label: "MOB" },
-    { key: "trigger", label: "TRIGGER" },
-    { key: "version", label: "PACK" },
-    { key: "stage", label: "STATE" },
+    { key: "name", label: "NAME" },
+    { key: "description", label: "DESCRIPTION" },
+    { key: "updated", label: "UPDATED" },
+    { key: "stage", label: "STAGE" },
   ],
-  rows: [
-    {
-      id: "f_existing",
-      className: "flows-list__row is-current",
-      name: "Existing",
-      trigger: "label · docs",
-      version: "0.1",
-      stage: "valid",
-    },
-    {
+  empty: null,
+  sections: [{
+    key: "drafts",
+    label: "Drafts",
+    hint: "",
+    rows: [
+      {
+        id: "f_existing",
+        className: "flows-list__row is-current",
+        name: "Existing",
+        description: "Document description wins.",
+        updated: "5m ago",
+        stage: "valid",
+      },
+      {
+        id: "f_draft",
+        className: "flows-list__row",
+        name: "Draft",
+        description: "",
+        updated: "",
+        stage: "draft",
+      },
+    ],
+  }],
+});
+assert.deepEqual(controller.flowRegistryViewState([
+  { id: "only", name: "One", description: "Row description fallback.", updated_at_unix_ms: REGISTRY_NOW_UNIX_MS - 30000 },
+], "", { canCreate: true, flowRegistryView: TEST_FLOW_REGISTRY_VIEW, nowUnixMs: REGISTRY_NOW_UNIX_MS }), {
+  eyebrow: "LIBRARY",
+  title: "1 mob",
+  createLabel: "+ NEW MOB",
+  createDisabled: false,
+  createTitle: "Create a MobKit mob",
+  columns: [
+    { key: "name", label: "NAME" },
+    { key: "description", label: "DESCRIPTION" },
+    { key: "updated", label: "UPDATED" },
+    { key: "stage", label: "STAGE" },
+  ],
+  empty: null,
+  sections: [{
+    key: "drafts",
+    label: "Drafts",
+    hint: "",
+    rows: [{
+      id: "only",
+      className: "flows-list__row",
+      name: "One",
+      description: "Row description fallback.",
+      updated: "just now",
+      stage: "draft",
+    }],
+  }],
+});
+// Relative "updated" buckets: caller-supplied clock, deterministic labels.
+assert.equal(controller.flowRegistryUpdatedLabel(REGISTRY_NOW_UNIX_MS - 30000, REGISTRY_NOW_UNIX_MS, "just now"), "just now");
+assert.equal(controller.flowRegistryUpdatedLabel(REGISTRY_NOW_UNIX_MS - 59999, REGISTRY_NOW_UNIX_MS, "just now"), "just now");
+assert.equal(controller.flowRegistryUpdatedLabel(REGISTRY_NOW_UNIX_MS - 60000, REGISTRY_NOW_UNIX_MS, "just now"), "1m ago");
+assert.equal(controller.flowRegistryUpdatedLabel(REGISTRY_NOW_UNIX_MS - (59 * 60 * 1000), REGISTRY_NOW_UNIX_MS, "just now"), "59m ago");
+assert.equal(controller.flowRegistryUpdatedLabel(REGISTRY_NOW_UNIX_MS - (60 * 60 * 1000), REGISTRY_NOW_UNIX_MS, "just now"), "1h ago");
+assert.equal(controller.flowRegistryUpdatedLabel(REGISTRY_NOW_UNIX_MS - (23 * 60 * 60 * 1000), REGISTRY_NOW_UNIX_MS, "just now"), "23h ago");
+assert.equal(controller.flowRegistryUpdatedLabel(REGISTRY_NOW_UNIX_MS - (24 * 60 * 60 * 1000), REGISTRY_NOW_UNIX_MS, "just now"), "1d ago");
+assert.equal(controller.flowRegistryUpdatedLabel(REGISTRY_NOW_UNIX_MS - (9 * 24 * 60 * 60 * 1000), REGISTRY_NOW_UNIX_MS, "just now"), "9d ago");
+assert.equal(controller.flowRegistryUpdatedLabel(0, REGISTRY_NOW_UNIX_MS, "just now"), "");
+assert.equal(controller.flowRegistryUpdatedLabel(undefined, REGISTRY_NOW_UNIX_MS, "just now"), "");
+assert.equal(controller.flowRegistryUpdatedLabel(REGISTRY_NOW_UNIX_MS - 30000, 0, "just now"), "");
+assert.equal(controller.flowRegistryUpdatedLabel(REGISTRY_NOW_UNIX_MS + 30000, REGISTRY_NOW_UNIX_MS, "just now"), "");
+// Sections split: runtime_projection rows land in the read-only runtime section.
+const splitRegistryView = controller.flowRegistryViewState([
+  { id: "f_draft", name: "Draft", stage: "draft", updated_at_unix_ms: REGISTRY_NOW_UNIX_MS - (2 * 60 * 60 * 1000) },
+  {
+    id: "runtime_main",
+    name: "Runtime Main",
+    stage: "valid",
+    runtime_projection: true,
+    document: { flow: { description: "Runtime flow projection." } },
+  },
+], "runtime_main", { canCreate: true, flowRegistryView: TEST_FLOW_REGISTRY_VIEW, nowUnixMs: REGISTRY_NOW_UNIX_MS });
+assert.equal(splitRegistryView.title, "2 mobs");
+assert.equal(splitRegistryView.empty, null);
+assert.deepEqual(splitRegistryView.sections, [
+  {
+    key: "drafts",
+    label: "Drafts",
+    hint: "",
+    rows: [{
       id: "f_draft",
       className: "flows-list__row",
       name: "Draft",
-      trigger: "",
-      version: "",
+      description: "",
+      updated: "2h ago",
       stage: "draft",
-    },
-  ],
-});
-assert.deepEqual(controller.flowRegistryViewState([{ id: "only", name: "One" }], "", { canCreate: true, flowRegistryView: TEST_FLOW_REGISTRY_VIEW }), {
-  eyebrow: "MOBS",
-  title: "1 mob",
-  createLabel: "+ CREATE MOB",
-  createDisabled: false,
-  createTitle: "Create a deployable MobKit mobpack",
-  columns: [
-    { key: "name", label: "MOB" },
-    { key: "trigger", label: "TRIGGER" },
-    { key: "version", label: "PACK" },
-    { key: "stage", label: "STATE" },
-  ],
+    }],
+  },
+  {
+    key: "runtime",
+    label: "Running",
+    hint: "Runtime flows are read-only projections; open one to fork it into a draft.",
+    rows: [{
+      id: "runtime_main",
+      className: "flows-list__row is-current",
+      name: "Runtime Main",
+      description: "Runtime flow projection.",
+      updated: "",
+      stage: "valid",
+    }],
+  },
+]);
+// Runtime-only registries omit the empty drafts section.
+assert.deepEqual(controller.flowRegistryViewState([
+  { id: "runtime_only", name: "Runtime Only", stage: "valid", runtime_projection: true },
+], "", { canCreate: true, flowRegistryView: TEST_FLOW_REGISTRY_VIEW, nowUnixMs: REGISTRY_NOW_UNIX_MS }).sections, [{
+  key: "runtime",
+  label: "Running",
+  hint: "Runtime flows are read-only projections; open one to fork it into a draft.",
   rows: [{
-    id: "only",
+    id: "runtime_only",
     className: "flows-list__row",
-    name: "One",
-    trigger: "",
-    version: "",
-    stage: "draft",
+    name: "Runtime Only",
+    description: "",
+    updated: "",
+    stage: "valid",
   }],
+}]);
+// Empty registry keeps the drafts section and surfaces the empty state.
+const emptyRegistryView = controller.flowRegistryViewState([], "", { canCreate: true, flowRegistryView: TEST_FLOW_REGISTRY_VIEW, nowUnixMs: REGISTRY_NOW_UNIX_MS });
+assert.equal(emptyRegistryView.title, "0 mobs");
+assert.deepEqual(emptyRegistryView.empty, {
+  title: "No mobs yet",
+  text: "Create a mob to start authoring a deployable MobKit flow.",
 });
+assert.deepEqual(emptyRegistryView.sections, [{ key: "drafts", label: "Drafts", hint: "", rows: [] }]);
+// Description derivation: document.flow.description, then row.description, then "".
+const descriptionRows = controller.flowRegistryViewState([
+  { id: "f_doc", name: "Doc", description: "Row fallback.", document: { flow: { description: "  Document first.  " } } },
+  { id: "f_row", name: "Row", description: "  Row fallback.  ", document: { flow: { description: "   " } } },
+  { id: "f_none", name: "None", document: { flow: {} } },
+], "", { canCreate: true, flowRegistryView: TEST_FLOW_REGISTRY_VIEW, nowUnixMs: REGISTRY_NOW_UNIX_MS }).sections[0].rows;
+assert.deepEqual(descriptionRows.map((row) => row.description), ["Document first.", "Row fallback.", ""]);
 
 assert.equal(controller.flowDraftIdFromSpec({ name: "Blank Created" }, [{ id: "f_blank_created" }]), "f_blank_created_2");
 assert.deepEqual(controller.authoringRpcMethodsFromSchema({

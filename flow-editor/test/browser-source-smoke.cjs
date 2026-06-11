@@ -175,7 +175,7 @@ async function main() {
       return Array.from(document.querySelectorAll(".skill-row__name")).some((row) => row.textContent.trim() === "mob.browser.source");
     }, null, { timeout: 10_000 });
 
-    await page.locator("button.viewtab", { hasText: "FLOWS" }).click();
+    await page.locator("button.viewtab", { hasText: "MOBS" }).click();
     await page.locator("button.modetoggle__opt", { hasText: "Basic" }).click();
     await page.locator(".bld-toml-toggle").click();
     const editedSource = page.locator(".bld-toml:visible");
