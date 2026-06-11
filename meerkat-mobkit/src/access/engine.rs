@@ -156,19 +156,6 @@ fn resource_matches(rule: &AccessRule, resource: &AccessResource<'_>) -> bool {
     true
 }
 
-fn rule_matches(
-    rule: &AccessRule,
-    principal: &AccessPrincipal,
-    action: &str,
-    resource: &AccessResource<'_>,
-) -> bool {
-    rule.actions
-        .iter()
-        .any(|pattern| action_matches(pattern, action))
-        && subject_matches(rule, principal)
-        && resource_matches(rule, resource)
-}
-
 /// Evaluate one access check against a configuration.
 ///
 /// Deny-by-default with deny-overrides: a matching deny rule always wins,
@@ -179,6 +166,22 @@ pub fn evaluate_access(
     principal: &AccessPrincipal,
     action: &str,
     resource: &AccessResource<'_>,
+) -> AccessDecision {
+    evaluate_access_lineage(config, principal, action, std::slice::from_ref(resource))
+}
+
+/// Evaluate one access check against an agent and its spawn lineage.
+///
+/// `resources` is the agent followed by its spawn ancestors (parent,
+/// grandparent, ...). A rule applies when it matches *any* resource in the
+/// chain, so permissions granted on a spawning agent extend to the members
+/// it spawned — and a deny anywhere in the lineage denies the descendant
+/// (deny-overrides is preserved across the chain).
+pub(crate) fn evaluate_access_lineage(
+    config: &AccessControlConfig,
+    principal: &AccessPrincipal,
+    action: &str,
+    resources: &[AccessResource<'_>],
 ) -> AccessDecision {
     if !config.enabled {
         return AccessDecision::Allow;
@@ -191,7 +194,15 @@ pub fn evaluate_access(
 
     let mut allowed = false;
     for rule in &config.rules {
-        if !rule_matches(rule, principal, action, resource) {
+        let matches = rule
+            .actions
+            .iter()
+            .any(|pattern| action_matches(pattern, action))
+            && subject_matches(rule, principal)
+            && resources
+                .iter()
+                .any(|resource| resource_matches(rule, resource));
+        if !matches {
             continue;
         }
         match rule.effect {

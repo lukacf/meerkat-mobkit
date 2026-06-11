@@ -10,6 +10,7 @@ pub mod config_convention;
 pub mod console_aggregator;
 pub mod console_config;
 pub mod console_contracts;
+pub(crate) mod console_spawn;
 pub mod contact_directory;
 pub mod decisions;
 pub mod governance;

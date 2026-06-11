@@ -62,6 +62,8 @@ Current HTTP routes to remember:
 
 Console projection is contract-boundary code. Prefer changing `console_aggregator`, `http_console`, `console/src/lib/adapters.ts`, or `packages/console-core` rather than leaking raw runtime text into React components.
 
+Agent-tool spawns (`mob_spawn_member`, `delegate`, `spawn_member`/`spawn_many_members`) project into the console through `meerkat-mobkit/src/console_spawn.rs`: the unified runtime installs a `ConsoleSpawnSink` on the mob runtime at bootstrap, and the `AutoWireParentMobToolDispatcher` (in `mob_handle_runtime.rs`) registers each spawned member's identity + labels (`spawned_by`, `via_tool`, spawn labels) and appends the `initial_message` as a deduped `spawn-kickoff:*` `user_input` console event. Live runtime events resolve to the same chat identity. No console sink → spawn behavior unchanged.
+
 ## Access Control (ABAC)
 
 Optional attribute-based access control for console and SSE surfaces lives in `meerkat-mobkit/src/access/` (model, engine, controller). Deny-by-default with deny-overrides when enabled; `admins` bypass rules; a disabled config (or absent controller) changes nothing.
@@ -72,6 +74,7 @@ Key facts:
 - Actions vocabulary: `agent.view/send/spawn/respawn/retire/reset`, `gating.view/decide`, `mob.observe`, `runtime.admin`, `access.admin`.
 - Enforcement seams: experience filtering + affordance intersection in `runtime/console_ingress.rs` (`handle_console_rest_json_route_with_snapshot_and_access`), RPC gating + result filtering + `mobkit/access/*` admin methods in `http_console.rs` (`console_rpc_access_requirement`, `handle_access_admin_rpc`), SSE gating in `http_sse.rs` (`sse_access_context`).
 - `mob.observe` gates the whole-mob event surfaces (`/mob/events`, `/mobkit/mob_events/stream`, `mobkit/mob_events/query`/`subscribe`) but does NOT override per-agent `agent.view`: events are filtered per source/`agent_identity`, mob-level (unattributed) events flow on `mob.observe` alone. "Observe all" = `mob.observe` + `agent.view` on `*`.
+- Spawn-lineage inheritance: agent-spawned members carry a `spawned_by` console label (recorded by `src/console_spawn.rs`); agent checks walk the member plus its spawn ancestors (`evaluate_access_lineage`, depth 8, cycle-safe), so rules matching the parent also match its spawned members, with deny-overrides preserved across the chain. Lineage is runtime-derived ONLY: `spawned_by`/`via_tool` claims in caller-controlled labels (spawn specs, roster) are stripped at every enforcement seam (`sanitize_unverified_lineage_labels`) — only the in-memory spawn registry may assert them.
 - `/blobs/{id}` is a capability surface (content-addressed `sha256:` ids, deduped across agents, no per-agent ACL) — authn + hash-unguessability, not an `agent.view` boundary.
 - Live config: `AccessController` (std RwLock + revision) persists TOML on every admin mutation; per-request `AccessView` snapshots; agent label/role attributes cached from roster projections so label selectors work on identity-only surfaces.
 - Console UI: `console/src/panels/AccessPanel.tsx`, nav kind `access` appears only when `experience.access.can_administer`.
