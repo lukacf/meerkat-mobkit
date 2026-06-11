@@ -13,7 +13,23 @@ const graph = src("graph.jsx");
 const inspector = src("inspector.jsx");
 const app = src("app.jsx");
 const styles = src("styles.css");
-const controller = src("controller.js");
+// The controller plane spans the legacy residue and @flow-editor-core; the
+// concatenation keeps whole-text controller assertions move-invariant while
+// functions migrate package-side.
+const coreSrcDir = path.join(root, "..", "packages", "flow-editor-core", "src");
+const coreModuleFiles = (function walk(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .flatMap((entry) => {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) return walk(full);
+      return entry.name.endsWith(".ts") ? [full] : [];
+    });
+})(coreSrcDir);
+const controller = [
+  src("controller.js"),
+  ...coreModuleFiles.map((file) => fs.readFileSync(file, "utf8")),
+].join("\n");
 const topRailBlock = (app.match(/function TopRail[\s\S]*?\/\/ ── Flows registry view/) || [""])[0];
 const tweaksPanel = src("tweaks-panel.jsx");
 const devServer = fs.readFileSync(path.join(root, "dev-server.cjs"), "utf8");

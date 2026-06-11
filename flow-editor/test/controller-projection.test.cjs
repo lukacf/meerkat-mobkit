@@ -2,7 +2,10 @@ const assert = require("node:assert/strict");
 
 global.window = { __MOBKIT_FLOW_CONTROLLER_TEST__: true };
 
-require("../src/controller.js");
+// The bundle links @flow-editor-core (window.MobKitFlowCore) with the
+// controller.js residue exactly like the shipped artifact; build it with
+// `node build.cjs --test-bundle`.
+require("../.tmp/controller-under-test.cjs");
 
 const controller = global.window.MobKitFlowController;
 assert.deepEqual(
