@@ -569,8 +569,9 @@
     if (!view || typeof view !== "object") return null;
     const out = {
       brandLabel: String(view.brand_label || "").trim(),
-      flowsTabLabel: String(view.flows_tab_label || "").trim(),
+      flowTabLabel: String(view.flow_tab_label || "").trim(),
       agentsTabLabel: String(view.agents_tab_label || "").trim(),
+      settingsTabLabel: String(view.settings_tab_label || "").trim(),
       mobStatusTitle: String(view.mob_status_title || "").trim(),
       mobFileLabel: String(view.mob_file_label || "").trim(),
       apiErrorLabel: String(view.api_error_label || "").trim(),
@@ -579,6 +580,7 @@
       deployPrefixLabel: String(view.deploy_prefix_label || "").trim(),
       flowsCrumbLabel: String(view.flows_crumb_label || "").trim(),
       crumbSeparator: String(view.crumb_separator || "").trim(),
+      switcherViewAllLabel: String(view.switcher_view_all_label || "").trim(),
       planTraceLabel: String(view.plan_trace_label || "").trim(),
       importLabel: String(view.import_label || "").trim(),
       validateLabel: String(view.validate_label || "").trim(),
@@ -586,8 +588,6 @@
       deployPlanLabel: String(view.deploy_plan_label || "").trim(),
       deployLabel: String(view.deploy_label || "").trim(),
       overflowLabel: String(view.overflow_label || "").trim(),
-      settingsLabel: String(view.settings_label || "").trim(),
-      settingsTitle: String(view.settings_title || "").trim(),
       themeSwitchPrefix: String(view.theme_switch_prefix || "").trim(),
       themeSwitchSuffix: String(view.theme_switch_suffix || "").trim(),
       darkThemeLabel: String(view.dark_theme_label || "").trim(),
@@ -615,8 +615,9 @@
     const view = deployView && typeof deployView === "object" ? deployView : null;
     return {
       brandLabel: String(view?.brandLabel || ""),
-      flowsTabLabel: String(view?.flowsTabLabel || ""),
+      flowTabLabel: String(view?.flowTabLabel || ""),
       agentsTabLabel: String(view?.agentsTabLabel || ""),
+      settingsTabLabel: String(view?.settingsTabLabel || ""),
       mobStatusTitle: String(view?.mobStatusTitle || ""),
       mobFileLabel: String(view?.mobFileLabel || ""),
       apiErrorLabel: String(view?.apiErrorLabel || ""),
@@ -625,6 +626,7 @@
       deployPrefixLabel: String(view?.deployPrefixLabel || ""),
       flowsCrumbLabel: String(view?.flowsCrumbLabel || ""),
       crumbSeparator: String(view?.crumbSeparator || ""),
+      switcherViewAllLabel: String(view?.switcherViewAllLabel || ""),
       planTraceLabel: String(view?.planTraceLabel || ""),
       importLabel: String(view?.importLabel || ""),
       validateLabel: String(view?.validateLabel || ""),
@@ -632,8 +634,6 @@
       deployPlanLabel: String(view?.deployPlanLabel || ""),
       deployLabel: String(view?.deployLabel || ""),
       overflowLabel: String(view?.overflowLabel || ""),
-      settingsLabel: String(view?.settingsLabel || ""),
-      settingsTitle: String(view?.settingsTitle || ""),
       themeSwitchPrefix: String(view?.themeSwitchPrefix || ""),
       themeSwitchSuffix: String(view?.themeSwitchSuffix || ""),
       darkThemeLabel: String(view?.darkThemeLabel || ""),
@@ -676,11 +676,6 @@
     const view = schema?.mob_definition?.editor_settings_view;
     if (!view || typeof view !== "object") return null;
     const out = {
-      panelTitle: String(view.panel_title || "").trim(),
-      panelCloseLabel: String(view.panel_close_label || "").trim(),
-      loadMobTitle: String(view.load_mob_title || "").trim(),
-      loadMobLabel: String(view.load_mob_label || "").trim(),
-      flowStageFallback: String(view.flow_stage_fallback || "").trim(),
       optionSeparator: String(view.option_separator || ""),
       unsupportedLabelSeparator: String(view.unsupported_label_separator || ""),
       unsupportedReasonPrefix: String(view.unsupported_reason_prefix || ""),
@@ -750,11 +745,6 @@
   function settingsViewForState(settingsView) {
     const view = settingsView && typeof settingsView === "object" ? settingsView : null;
     return {
-      panelTitle: String(view?.panelTitle || ""),
-      panelCloseLabel: String(view?.panelCloseLabel || ""),
-      loadMobTitle: String(view?.loadMobTitle || ""),
-      loadMobLabel: String(view?.loadMobLabel || ""),
-      flowStageFallback: String(view?.flowStageFallback || ""),
       optionSeparator: String(view?.optionSeparator || ""),
       unsupportedLabelSeparator: String(view?.unsupportedLabelSeparator || ""),
       unsupportedReasonPrefix: String(view?.unsupportedReasonPrefix || ""),
@@ -6772,7 +6762,6 @@ ${kind}` : "";
     );
   }
   function tweaksControlState({
-    flows = [],
     deploySettings = {},
     mobSettings = {},
     members = [],
@@ -6781,10 +6770,6 @@ ${kind}` : "";
     settingsView = null
   } = {}) {
     const view = settingsViewForState(settingsView);
-    const loadableFlowOptions = (Array.isArray(flows) ? flows : []).filter((flow) => flow?.document).map((flow) => ({
-      value: flow.id,
-      label: `${flow.name}${view.optionSeparator}${flow.stage || flow.source || view.flowStageFallback}`
-    }));
     const profileOptions = [
       { value: "", label: view.profileNoneLabel },
       ...(Array.isArray(members) ? members : []).map((member) => {
@@ -6800,10 +6785,6 @@ ${kind}` : "";
       }))
     ];
     return {
-      panelTitle: view.panelTitle,
-      panelCloseLabel: view.panelCloseLabel,
-      loadMobTitle: view.loadMobTitle,
-      loadMobLabel: view.loadMobLabel,
       canvasTitle: view.canvasTitle,
       edgeStyleLabel: view.edgeStyleLabel,
       edgeStyleOptions: view.edgeStyleOptions,
@@ -6848,7 +6829,6 @@ ${kind}` : "";
       inspectorTitle: view.inspectorTitle,
       inspectorLayoutLabel: view.inspectorLayoutLabel,
       inspectorLayoutOptions: view.inspectorLayoutOptions,
-      loadableFlowOptions,
       profileOptions,
       profileChoices: profileOptions.filter((option) => option.value),
       mobBackendOptions: mobBackendDefaultOptions(contract, mobSettings.backendDefault || ""),
@@ -7546,24 +7526,9 @@ ${kind}` : "";
       ...runtimeFlows,
       ...registryFlows.filter((row) => !existingIds.has(row.id))
     ];
-    const first = flows[0] || null;
     return {
       templates: sampleFlows,
-      flows,
-      initialHydration: first ? {
-        result: {
-          document: first.document,
-          validation: first.validation ?? null
-        },
-        options: {
-          id: first.id,
-          flowRow: first,
-          addToRegistry: false,
-          openEditor: !!options.openEditor,
-          deployDefaults: options.deployDefaults,
-          mobDefaults: options.mobDefaults
-        }
-      } : null
+      flows
     };
   }
   function flowRegistryRowsFromBackend(rows = []) {
@@ -7701,6 +7666,22 @@ ${kind}` : "";
       columns: view.columns,
       empty: list.length === 0 ? { title: view.emptyTitle, text: view.emptyText } : null,
       sections
+    };
+  }
+  function mobSwitcherState(rows, currentFlowId, options = {}) {
+    const view = deployViewForState(options.deployView);
+    const current = String(currentFlowId || "");
+    return {
+      rows: (Array.isArray(rows) ? rows : []).filter((row) => row && row.id && !flowRegistryRowIsRuntimeProjection(row)).map((row) => {
+        const id = String(row.id || "");
+        return {
+          id,
+          name: String(row.name || ""),
+          stage: String(row.stage || ""),
+          className: "crumb-switcher__item" + (id && id === current ? " is-current" : "")
+        };
+      }),
+      viewAllLabel: view.switcherViewAllLabel
     };
   }
   function flowRegistrySelectionState(rows, id) {
@@ -8380,20 +8361,23 @@ ${JSON.stringify(document2)}`;
       nextLabel: view.planNextLabel
     };
   }
-  function topRailState({ contract, deploySettings, stage, view, theme, deployView, capabilities } = {}) {
+  function topRailState({ contract, deploySettings, stage, view, mobOpen, theme, deployView, capabilities } = {}) {
     const shell = deployViewForState(deployView);
-    const inEditor = view === "editor";
     const contractState = contract?.error ? shell.apiErrorLabel : contract ? shell.apiReadyLabel : shell.apiLoadingLabel;
     const deployCommand = contract?.deploy_settings?.command || "";
     const deploySurface = deploySettings?.surface || contract?.deploy_settings?.surfaces?.[0] || "";
     const deployActionsDisabled = stage !== "valid";
     const deployExecuteAllowed = capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
     const nextTheme = theme === "dark" ? "light" : "dark";
+    const open = !!mobOpen;
     return {
-      inEditor,
+      mobOpen: open,
+      sectionTabs: open ? [
+        { target: "flow-tab", view: "editor", label: shell.flowTabLabel, current: view === "editor" },
+        { target: "agents-tab", view: "agents", label: shell.agentsTabLabel, current: view === "agents" },
+        { target: "settings-tab", view: "settings", label: shell.settingsTabLabel, current: view === "settings" }
+      ] : [],
       brandLabel: shell.brandLabel,
-      flowsTabLabel: shell.flowsTabLabel,
-      agentsTabLabel: shell.agentsTabLabel,
       mobStatusTitle: shell.mobStatusTitle,
       mobFileLabel: shell.mobFileLabel,
       contractState,
@@ -8409,8 +8393,6 @@ ${JSON.stringify(document2)}`;
       deployPlanLabel: shell.deployPlanLabel,
       deployLabel: shell.deployLabel,
       overflowLabel: shell.overflowLabel,
-      settingsLabel: shell.settingsLabel,
-      settingsTitle: shell.settingsTitle,
       deployActionsDisabled,
       deployRunDisabled: deployActionsDisabled || !deployExecuteAllowed,
       themeToggleTitle: `${shell.themeSwitchPrefix} ${nextTheme} ${shell.themeSwitchSuffix}`,
@@ -8421,15 +8403,18 @@ ${JSON.stringify(document2)}`;
       graphModeLabel: shell.graphModeLabel
     };
   }
-  function topRailNavigationTransition(currentView, target) {
-    const view = String(currentView || "editor");
+  function topRailNavigationTransition(currentView, target, context = {}) {
+    const view = String(currentView || "library");
+    const mobOpen = !!context.mobOpen;
     switch (String(target || "")) {
-      case "flows-tab":
-        return { view: view === "editor" ? "flows" : "editor" };
+      case "flow-tab":
+        return mobOpen ? { view: "editor" } : null;
       case "agents-tab":
-        return { view: "agents" };
-      case "flows-crumb":
-        return { view: "flows" };
+        return mobOpen ? { view: "agents" } : null;
+      case "settings-tab":
+        return mobOpen ? { view: "settings" } : null;
+      case "library":
+        return view === "library" ? null : { view: "library" };
       default:
         return null;
     }
@@ -10742,6 +10727,7 @@ ${JSON.stringify(document2)}`;
       flowRegistryMarkDraftPatch,
       flowRegistryViewState,
       flowRegistrySelectionState,
+      mobSwitcherState,
       flowRegistryRowFromDocument,
       flowRegistryRowIsRuntimeProjection,
       flowImportedIdFromDocument,
@@ -12731,142 +12717,11 @@ ${JSON.stringify(document2)}`;
     }, []);
     return [values, setTweak];
   }
-  function TweaksPanel({ title = "Tweaks", closeLabel = "Close", noDeckControls = false, children }) {
-    const [open, setOpen] = React.useState(false);
-    const dragRef = React.useRef(null);
-    const hasDeckStage = React.useMemo(
-      () => typeof document !== "undefined" && !!document.querySelector("deck-stage"),
-      []
-    );
-    const [railEnabled, setRailEnabled] = React.useState(
-      () => hasDeckStage && !!document.querySelector("deck-stage")?._railEnabled
-    );
-    React.useEffect(() => {
-      if (!hasDeckStage || railEnabled) return void 0;
-      const onMsg = (e) => {
-        if (e.data && e.data.type === "__omelette_rail_enabled") setRailEnabled(true);
-      };
-      window.addEventListener("message", onMsg);
-      return () => window.removeEventListener("message", onMsg);
-    }, [hasDeckStage, railEnabled]);
-    const [railVisible, setRailVisible] = React.useState(() => {
-      try {
-        return localStorage.getItem("deck-stage.railVisible") !== "0";
-      } catch (e) {
-        return true;
-      }
-    });
-    const toggleRail = (on) => {
-      setRailVisible(on);
-      window.postMessage({ type: "__deck_rail_visible", on }, "*");
-    };
-    const offsetRef = React.useRef({ x: 16, y: 16 });
-    const PAD = 16;
-    const clampToViewport = React.useCallback(() => {
-      const panel = dragRef.current;
-      if (!panel) return;
-      const w = panel.offsetWidth, h = panel.offsetHeight;
-      const maxRight = Math.max(PAD, window.innerWidth - w - PAD);
-      const maxBottom = Math.max(PAD, window.innerHeight - h - PAD);
-      offsetRef.current = {
-        x: Math.min(maxRight, Math.max(PAD, offsetRef.current.x)),
-        y: Math.min(maxBottom, Math.max(PAD, offsetRef.current.y))
-      };
-      panel.style.right = offsetRef.current.x + "px";
-      panel.style.bottom = offsetRef.current.y + "px";
-    }, []);
-    React.useEffect(() => {
-      if (!open) return;
-      clampToViewport();
-      if (typeof ResizeObserver === "undefined") {
-        window.addEventListener("resize", clampToViewport);
-        return () => window.removeEventListener("resize", clampToViewport);
-      }
-      const ro = new ResizeObserver(clampToViewport);
-      ro.observe(document.documentElement);
-      return () => ro.disconnect();
-    }, [open, clampToViewport]);
-    React.useEffect(() => {
-      const onMsg = (e) => {
-        const t = e?.data?.type;
-        if (t === "__activate_edit_mode") setOpen(true);
-        else if (t === "__deactivate_edit_mode") setOpen(false);
-      };
-      const onToggle = () => setOpen((current) => !current);
-      window.addEventListener("message", onMsg);
-      window.addEventListener("mobkit-flow-editor:settings-toggle", onToggle);
-      window.parent.postMessage({ type: "__edit_mode_available" }, "*");
-      return () => {
-        window.removeEventListener("message", onMsg);
-        window.removeEventListener("mobkit-flow-editor:settings-toggle", onToggle);
-      };
-    }, []);
-    const dismiss = () => {
-      setOpen(false);
-      window.parent.postMessage({ type: "__edit_mode_dismissed" }, "*");
-    };
-    const onDragStart = (e) => {
-      const panel = dragRef.current;
-      if (!panel) return;
-      const r = panel.getBoundingClientRect();
-      const sx = e.clientX, sy = e.clientY;
-      const startRight = window.innerWidth - r.right;
-      const startBottom = window.innerHeight - r.bottom;
-      const move = (ev) => {
-        offsetRef.current = {
-          x: startRight - (ev.clientX - sx),
-          y: startBottom - (ev.clientY - sy)
-        };
-        clampToViewport();
-      };
-      const up = () => {
-        window.removeEventListener("mousemove", move);
-        window.removeEventListener("mouseup", up);
-      };
-      window.addEventListener("mousemove", move);
-      window.addEventListener("mouseup", up);
-    };
-    if (!open) return null;
-    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("style", null, __TWEAKS_STYLE), /* @__PURE__ */ React.createElement(
-      "div",
-      {
-        ref: dragRef,
-        className: "twk-panel",
-        "data-noncommentable": "",
-        style: { right: offsetRef.current.x, bottom: offsetRef.current.y }
-      },
-      /* @__PURE__ */ React.createElement("div", { className: "twk-hd", onMouseDown: onDragStart }, /* @__PURE__ */ React.createElement("b", null, title), /* @__PURE__ */ React.createElement(
-        "button",
-        {
-          className: "twk-x",
-          "aria-label": closeLabel,
-          onMouseDown: (e) => e.stopPropagation(),
-          onClick: dismiss
-        },
-        "\u2715"
-      )),
-      /* @__PURE__ */ React.createElement("div", { className: "twk-body" }, children, hasDeckStage && railEnabled && !noDeckControls && /* @__PURE__ */ React.createElement(TweakSection, { label: "Deck" }, /* @__PURE__ */ React.createElement(TweakToggle, { label: "Thumbnail rail", value: railVisible, onChange: toggleRail })))
-    ));
-  }
   function TweakSection({ label, children }) {
     return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "twk-sect" }, label), children);
   }
   function TweakRow({ label, value, children, inline = false }) {
     return /* @__PURE__ */ React.createElement("div", { className: inline ? "twk-row twk-row-h" : "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, label), value != null && /* @__PURE__ */ React.createElement("span", { className: "twk-val" }, value)), children);
-  }
-  function TweakToggle({ label, value, onChange }) {
-    return /* @__PURE__ */ React.createElement("div", { className: "twk-row twk-row-h" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, label)), /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        type: "button",
-        className: "twk-toggle",
-        "data-on": value ? "1" : "0",
-        role: "switch",
-        "aria-checked": !!value,
-        onClick: () => onChange(!value)
-      },
-      /* @__PURE__ */ React.createElement("i", null)
-    ));
   }
   function TweakRadio({ label, value, options, onChange }) {
     const trackRef = React.useRef(null);
@@ -12995,123 +12850,8 @@ ${JSON.stringify(document2)}`;
       }
     ), unit && /* @__PURE__ */ React.createElement("span", { className: "twk-num-unit" }, unit));
   }
-  var __TWEAKS_STYLE;
   var init_tweaks_panel = __esm({
     "../packages/flow-editor-components/src/tweaks/tweaks-panel.tsx"() {
-      __TWEAKS_STYLE = `
-  .twk-panel{position:fixed;right:16px;bottom:16px;z-index:2147483646;width:280px;
-    max-height:calc(100vh - 32px);display:flex;flex-direction:column;
-    transform:scale(var(--dc-inv-zoom,1));transform-origin:bottom right;
-    background:rgba(250,249,247,.78);color:#29261b;
-    -webkit-backdrop-filter:blur(24px) saturate(160%);backdrop-filter:blur(24px) saturate(160%);
-    border:.5px solid rgba(255,255,255,.6);border-radius:14px;
-    box-shadow:0 1px 0 rgba(255,255,255,.5) inset,0 12px 40px rgba(0,0,0,.18);
-    font:11.5px/1.4 ui-sans-serif,system-ui,-apple-system,sans-serif;overflow:hidden}
-  .twk-hd{display:flex;align-items:center;justify-content:space-between;
-    padding:10px 8px 10px 14px;cursor:move;user-select:none}
-  .twk-hd b{font-size:12px;font-weight:600;letter-spacing:.01em}
-  .twk-x{appearance:none;border:0;background:transparent;color:rgba(41,38,27,.55);
-    width:22px;height:22px;border-radius:6px;cursor:default;font-size:13px;line-height:1}
-  .twk-x:hover{background:rgba(0,0,0,.06);color:#29261b}
-  .twk-body{padding:2px 14px 14px;display:flex;flex-direction:column;gap:10px;
-    overflow-y:auto;overflow-x:hidden;min-height:0;
-    scrollbar-width:thin;scrollbar-color:rgba(0,0,0,.15) transparent}
-  .twk-body::-webkit-scrollbar{width:8px}
-  .twk-body::-webkit-scrollbar-track{background:transparent;margin:2px}
-  .twk-body::-webkit-scrollbar-thumb{background:rgba(0,0,0,.15);border-radius:4px;
-    border:2px solid transparent;background-clip:content-box}
-  .twk-body::-webkit-scrollbar-thumb:hover{background:rgba(0,0,0,.25);
-    border:2px solid transparent;background-clip:content-box}
-  .twk-row{display:flex;flex-direction:column;gap:5px}
-  .twk-row-h{flex-direction:row;align-items:center;justify-content:space-between;gap:10px}
-  .twk-lbl{display:flex;justify-content:space-between;align-items:baseline;
-    color:rgba(41,38,27,.72)}
-  .twk-lbl>span:first-child{font-weight:500}
-  .twk-val{color:rgba(41,38,27,.5);font-variant-numeric:tabular-nums}
-
-  .twk-sect{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
-    color:rgba(41,38,27,.45);padding:10px 0 0}
-  .twk-sect:first-child{padding-top:0}
-
-  .twk-field{appearance:none;width:100%;height:26px;padding:0 8px;
-    border:.5px solid rgba(0,0,0,.1);border-radius:7px;
-    background:rgba(255,255,255,.6);color:inherit;font:inherit;outline:none}
-  .twk-field:focus{border-color:rgba(0,0,0,.25);background:rgba(255,255,255,.85)}
-  select.twk-field{padding-right:22px;
-    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='rgba(0,0,0,.5)' d='M0 0h10L5 6z'/></svg>");
-    background-repeat:no-repeat;background-position:right 8px center}
-
-  .twk-slider{appearance:none;-webkit-appearance:none;width:100%;height:4px;margin:6px 0;
-    border-radius:999px;background:rgba(0,0,0,.12);outline:none}
-  .twk-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
-    width:14px;height:14px;border-radius:50%;background:#fff;
-    border:.5px solid rgba(0,0,0,.12);box-shadow:0 1px 3px rgba(0,0,0,.2);cursor:default}
-  .twk-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;
-    background:#fff;border:.5px solid rgba(0,0,0,.12);box-shadow:0 1px 3px rgba(0,0,0,.2);cursor:default}
-
-  .twk-seg{position:relative;display:flex;padding:2px;border-radius:8px;
-    background:rgba(0,0,0,.06);user-select:none}
-  .twk-seg-thumb{position:absolute;top:2px;bottom:2px;border-radius:6px;
-    background:rgba(255,255,255,.9);box-shadow:0 1px 2px rgba(0,0,0,.12);
-    transition:left .15s cubic-bezier(.3,.7,.4,1),width .15s}
-  .twk-seg.dragging .twk-seg-thumb{transition:none}
-  .twk-seg button{appearance:none;position:relative;z-index:1;flex:1;border:0;
-    background:transparent;color:inherit;font:inherit;font-weight:500;min-height:22px;
-    border-radius:6px;cursor:default;padding:4px 6px;line-height:1.2;
-    overflow-wrap:anywhere}
-
-  .twk-toggle{position:relative;width:32px;height:18px;border:0;border-radius:999px;
-    background:rgba(0,0,0,.15);transition:background .15s;cursor:default;padding:0}
-  .twk-toggle[data-on="1"]{background:#34c759}
-  .twk-toggle i{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;
-    background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s}
-  .twk-toggle[data-on="1"] i{transform:translateX(14px)}
-
-  .twk-num{display:flex;align-items:center;height:26px;padding:0 0 0 8px;
-    border:.5px solid rgba(0,0,0,.1);border-radius:7px;background:rgba(255,255,255,.6)}
-  .twk-num-lbl{font-weight:500;color:rgba(41,38,27,.6);cursor:ew-resize;
-    user-select:none;padding-right:8px}
-  .twk-num input{flex:1;min-width:0;height:100%;border:0;background:transparent;
-    font:inherit;font-variant-numeric:tabular-nums;text-align:right;padding:0 8px 0 0;
-    outline:none;color:inherit;-moz-appearance:textfield}
-  .twk-num input::-webkit-inner-spin-button,.twk-num input::-webkit-outer-spin-button{
-    -webkit-appearance:none;margin:0}
-  .twk-num-unit{padding-right:8px;color:rgba(41,38,27,.45)}
-
-  .twk-btn{appearance:none;height:26px;padding:0 12px;border:0;border-radius:7px;
-    background:rgba(0,0,0,.78);color:#fff;font:inherit;font-weight:500;cursor:default}
-  .twk-btn:hover{background:rgba(0,0,0,.88)}
-  .twk-btn.secondary{background:rgba(0,0,0,.06);color:inherit}
-  .twk-btn.secondary:hover{background:rgba(0,0,0,.1)}
-
-  .deploy-command{display:block;max-height:74px;overflow:auto;padding:7px 8px;
-    border:.5px solid rgba(0,0,0,.1);border-radius:7px;background:rgba(255,255,255,.62);
-    color:rgba(41,38,27,.72);font:10.5px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;
-    white-space:pre-wrap;overflow-wrap:anywhere}
-
-  .twk-swatch{appearance:none;-webkit-appearance:none;width:56px;height:22px;
-    border:.5px solid rgba(0,0,0,.1);border-radius:6px;padding:0;cursor:default;
-    background:transparent;flex-shrink:0}
-  .twk-swatch::-webkit-color-swatch-wrapper{padding:0}
-  .twk-swatch::-webkit-color-swatch{border:0;border-radius:5.5px}
-  .twk-swatch::-moz-color-swatch{border:0;border-radius:5.5px}
-
-  .twk-chips{display:flex;gap:6px}
-  .twk-chip{position:relative;appearance:none;flex:1;min-width:0;height:46px;
-    padding:0;border:0;border-radius:6px;overflow:hidden;cursor:default;
-    box-shadow:0 0 0 .5px rgba(0,0,0,.12),0 1px 2px rgba(0,0,0,.06);
-    transition:transform .12s cubic-bezier(.3,.7,.4,1),box-shadow .12s}
-  .twk-chip:hover{transform:translateY(-1px);
-    box-shadow:0 0 0 .5px rgba(0,0,0,.18),0 4px 10px rgba(0,0,0,.12)}
-  .twk-chip[data-on="1"]{box-shadow:0 0 0 1.5px rgba(0,0,0,.85),
-    0 2px 6px rgba(0,0,0,.15)}
-  .twk-chip>span{position:absolute;top:0;bottom:0;right:0;width:34%;
-    display:flex;flex-direction:column;box-shadow:-1px 0 0 rgba(0,0,0,.1)}
-  .twk-chip>span>i{flex:1;box-shadow:0 -1px 0 rgba(0,0,0,.1)}
-  .twk-chip>span>i:first-child{box-shadow:none}
-  .twk-chip svg{position:absolute;top:6px;left:6px;width:13px;height:13px;
-    filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))}
-`;
     }
   });
 
@@ -13155,7 +12895,7 @@ ${JSON.stringify(document2)}`;
         const [authoringDocument, setAuthoringDocument] = React.useState(null);
         const [stepSel, setStepSel] = React.useState(null);
         const [editorMode, setEditorMode] = React.useState("basic");
-        const [view, setView] = React.useState("editor");
+        const [view, setView] = React.useState("library");
         const [flows, setFlows] = React.useState([]);
         const [currentFlowId, setCurrentFlowId] = React.useState("");
         const [templates, setTemplates] = React.useState([]);
@@ -13337,10 +13077,6 @@ ${JSON.stringify(document2)}`;
           setFlow: setAuthoringFlow,
           contract
         });
-        const setAuthoringDeploySettings = React.useCallback((next) => {
-          markDraft();
-          setDeploySettings(next);
-        }, [markDraft]);
         const setAuthoringMobSettings = React.useCallback((next) => {
           markDraft();
           setMobSettings(next);
@@ -13370,19 +13106,10 @@ ${JSON.stringify(document2)}`;
             MobKitFlowController.configureAuthoringMethodsFromSchema(schema);
             const capabilityPayload = await MobKitFlowController.loadCapabilities(rpcOptions);
             const catalogPayload = await MobKitFlowController.loadCatalogs(rpcOptions);
-            let registryPayload = await MobKitFlowController.listDocuments({}, rpcOptions).catch((error) => {
+            const registryPayload = await MobKitFlowController.listDocuments({}, rpcOptions).catch((error) => {
               if (abort.signal.aborted) throw error;
               return { rows: [] };
             });
-            const hasRuntimeRows = Array.isArray(catalogPayload?.runtime_flows) && catalogPayload.runtime_flows.length > 0;
-            if ((!Array.isArray(registryPayload?.rows) || registryPayload.rows.length === 0) && !hasRuntimeRows) {
-              registryPayload = await MobKitFlowController.createDocument({
-                template: "blank"
-              }, rpcOptions).catch((error) => {
-                if (abort.signal.aborted) throw error;
-                return registryPayload;
-              });
-            }
             if (cancelled) return;
             setCapabilities(capabilityPayload);
             const nextCatalogs = MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
@@ -13392,19 +13119,10 @@ ${JSON.stringify(document2)}`;
             contractSkillRealms.current = nextCatalogs.skillRealms;
             studio.setSkillRealms(nextCatalogs.skillRealms);
             const bootstrap = MobKitFlowController.flowCatalogBootstrapState(catalogPayload, {
-              openEditor: view === "editor",
-              deployDefaults: nextCatalogs.deployDefaults,
-              mobDefaults: nextCatalogs.mobDefaults,
               registryResult: registryPayload
             });
             setTemplates(bootstrap.templates);
             setFlows(bootstrap.flows);
-            if (bootstrap.initialHydration) {
-              hydrateMobpackDocument(bootstrap.initialHydration.result, {
-                ...bootstrap.initialHydration.options,
-                contract: schema
-              });
-            }
             setContract(schema);
           }).catch((error) => {
             if (abort.signal.aborted) return;
@@ -13664,7 +13382,7 @@ ${JSON.stringify(document2)}`;
           setAgentSel(next.selection);
         };
         const handleTopRailNavigation = (target) => {
-          const next = MobKitFlowController.topRailNavigationTransition(view, target);
+          const next = MobKitFlowController.topRailNavigationTransition(view, target, { mobOpen: !!currentFlowId });
           if (!next) return;
           setView(next.view);
         };
@@ -14211,7 +13929,8 @@ ${JSON.stringify(document2)}`;
             setApiBusy(false);
           }
         };
-        const shellState = MobKitFlowController.topRailState({ contract, deploySettings, stage, view, theme: t.theme, deployView: catalogs.deployView, capabilities });
+        const shellState = MobKitFlowController.topRailState({ contract, deploySettings, stage, view, mobOpen: !!currentFlowId, theme: t.theme, deployView: catalogs.deployView, capabilities });
+        const switcherState = MobKitFlowController.mobSwitcherState(flows, currentFlowId, { deployView: catalogs.deployView });
         return /* @__PURE__ */ React.createElement("div", { className: "app density--" + t.density + " inspector--" + t.inspectorLayout + " view--" + view }, /* @__PURE__ */ React.createElement(
           TopRail,
           {
@@ -14219,6 +13938,11 @@ ${JSON.stringify(document2)}`;
             view,
             onNavigate: handleTopRailNavigation,
             currentFlowName: currentFlow?.name || "\u2014",
+            switcherState,
+            onOpenMob: (id) => {
+              const selection2 = MobKitFlowController.flowRegistrySelectionState(flows, id);
+              openFlowRegistrySelection(selection2);
+            },
             contract,
             theme: t.theme,
             railState: shellState,
@@ -14230,7 +13954,6 @@ ${JSON.stringify(document2)}`;
             onImport: () => importInputRef.current?.click(),
             onDeployPlanTrace: handleDeployPlanTrace,
             onYaml: handleSource,
-            onToggleSettings: () => window.dispatchEvent(new CustomEvent("mobkit-flow-editor:settings-toggle")),
             deploySettings
           }
         ), /* @__PURE__ */ React.createElement(
@@ -14242,7 +13965,7 @@ ${JSON.stringify(document2)}`;
             style: { display: "none" },
             onChange: handleImportFile
           }
-        ), view === "flows" && /* @__PURE__ */ React.createElement(
+        ), view === "library" && /* @__PURE__ */ React.createElement(
           FlowsView,
           {
             flows,
@@ -14352,6 +14075,20 @@ ${JSON.stringify(document2)}`;
             conditionView: catalogs.conditionView,
             applyAuthoringIntent: applyMobKitAuthoringOperation
           }
+        ), view === "settings" && /* @__PURE__ */ React.createElement(
+          Tweaks,
+          {
+            t,
+            setTweak,
+            deploySettings,
+            mobSettings,
+            members: studio.members,
+            modelCatalog: catalogs.models,
+            contract,
+            deployCommandPreview,
+            settingsView: catalogs.settingsView,
+            applyAuthoringIntent: applyMobKitAuthoringOperation
+          }
         ), view === "agents" && /* @__PURE__ */ React.createElement(
           AgentsView,
           {
@@ -14411,29 +14148,7 @@ ${JSON.stringify(document2)}`;
               }
             }
           }
-        ), /* @__PURE__ */ React.createElement(DeployPlanTrace, { open: deployPlanOpen, onClose: () => applyApiOverlayPatch(MobKitFlowController.deployPlanTraceCloseTransition()), onActiveStep: setActiveStepId, runKey: deployPlanKey, document: deployPlanDocument, plan: deployPlanResult, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(ValidateSheet, { open: validate, onClose: () => applyApiOverlayPatch(MobKitFlowController.validationSheetCloseTransition()), onPublish: handlePublish, onDeployPlan: handleDeployPlan, onDeployRun: handleDeployRun, results: validationResults, stage, deployView: catalogs.deployView, capabilities }), /* @__PURE__ */ React.createElement(SourceDrawer, { open: sourceOpen, onClose: clearSourceProjection, state: sourceDocument2, sourceView: catalogs.sourceView }), /* @__PURE__ */ React.createElement(
-          Tweaks,
-          {
-            t,
-            setTweak,
-            flows,
-            currentFlowId,
-            deploySettings,
-            setDeploySettings: setAuthoringDeploySettings,
-            mobSettings,
-            setMobSettings: setAuthoringMobSettings,
-            members: studio.members,
-            modelCatalog: catalogs.models,
-            contract,
-            deployCommandPreview,
-            settingsView: catalogs.settingsView,
-            applyAuthoringIntent: applyMobKitAuthoringOperation,
-            onLoadFlow: (id) => {
-              const selection2 = MobKitFlowController.flowRegistrySelectionState(flows, id);
-              openFlowRegistrySelection(selection2);
-            }
-          }
-        ));
+        ), /* @__PURE__ */ React.createElement(DeployPlanTrace, { open: deployPlanOpen, onClose: () => applyApiOverlayPatch(MobKitFlowController.deployPlanTraceCloseTransition()), onActiveStep: setActiveStepId, runKey: deployPlanKey, document: deployPlanDocument, plan: deployPlanResult, deployView: catalogs.deployView }), /* @__PURE__ */ React.createElement(ValidateSheet, { open: validate, onClose: () => applyApiOverlayPatch(MobKitFlowController.validationSheetCloseTransition()), onPublish: handlePublish, onDeployPlan: handleDeployPlan, onDeployRun: handleDeployRun, results: validationResults, stage, deployView: catalogs.deployView, capabilities }), /* @__PURE__ */ React.createElement(SourceDrawer, { open: sourceOpen, onClose: clearSourceProjection, state: sourceDocument2, sourceView: catalogs.sourceView }));
       }
       function rpcUrlFromShell() {
         const meta = document.querySelector('meta[name="mobkit-base-url"]');
@@ -14466,8 +14181,18 @@ ${JSON.stringify(document2)}`;
           contentBase64: btoa(binary)
         });
       }
-      function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, onToggleTheme, onToggleSettings, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDeployPlanTrace, onYaml, contract, deploySettings }) {
-        return /* @__PURE__ */ React.createElement("header", { className: "toprail" }, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "dot" }), /* @__PURE__ */ React.createElement("span", null, railState.brandLabel)), /* @__PURE__ */ React.createElement("nav", { className: "viewtabs" }, /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "flows" || view === "editor" ? " is-current" : ""), onClick: () => onNavigate("flows-tab") }, railState.flowsTabLabel), /* @__PURE__ */ React.createElement("button", { className: "viewtab" + (view === "agents" ? " is-current" : ""), onClick: () => onNavigate("agents-tab") }, railState.agentsTabLabel)), /* @__PURE__ */ React.createElement("div", { className: "mob-status", title: railState.mobStatusTitle }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.mobFileLabel), /* @__PURE__ */ React.createElement("span", { className: "env" }, "\xB7 ", railState.contractState)), /* @__PURE__ */ React.createElement("div", { className: "mob-status mob-status--env", title: railState.deployCommand }, /* @__PURE__ */ React.createElement("span", { className: "env" }, railState.deployPrefixLabel), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.deploySurface)), /* @__PURE__ */ React.createElement("nav", { className: "crumbs" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "crumb crumb--link", onClick: () => onNavigate("flows-crumb") }, railState.flowsCrumbLabel), /* @__PURE__ */ React.createElement("span", { className: "crumb crumb--sep" }, railState.crumbSeparator), /* @__PURE__ */ React.createElement("span", { className: "crumb is-current" }, currentFlowName))), /* @__PURE__ */ React.createElement("div", { className: "actions" }, railState.inEditor && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), stage), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onValidate }, railState.validateLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: railState.deployActionsDisabled, onClick: onPublish }, railState.publishLabel), /* @__PURE__ */ React.createElement("details", { className: "actions-menu" }, /* @__PURE__ */ React.createElement("summary", { className: "btn btn--ghost btn--sm actions-menu__summary" }, railState.overflowLabel), /* @__PURE__ */ React.createElement("div", { className: "actions-menu__panel" }, /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onDeployPlanTrace }, railState.planTraceLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onImport }, railState.importLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", disabled: railState.deployActionsDisabled, onClick: onDeployPlan }, railState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item actions-menu__item--primary", disabled: railState.deployRunDisabled, onClick: onDeployRun }, railState.deployLabel)))), /* @__PURE__ */ React.createElement(
+      function TopRail({ stage, view, onNavigate, currentFlowName, switcherState, onOpenMob, theme, railState, onToggleTheme, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDeployPlanTrace, onYaml, contract, deploySettings }) {
+        const closeSwitcher = (event) => {
+          const details = event.currentTarget.closest("details");
+          if (details) details.removeAttribute("open");
+        };
+        return /* @__PURE__ */ React.createElement("header", { className: "toprail" }, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "dot" }), /* @__PURE__ */ React.createElement("span", null, railState.brandLabel)), /* @__PURE__ */ React.createElement("nav", { className: "viewtabs" }, railState.sectionTabs.map((tab) => /* @__PURE__ */ React.createElement("button", { key: tab.target, className: "viewtab" + (tab.current ? " is-current" : ""), onClick: () => onNavigate(tab.target) }, tab.label))), /* @__PURE__ */ React.createElement("div", { className: "mob-status", title: railState.mobStatusTitle }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.mobFileLabel), /* @__PURE__ */ React.createElement("span", { className: "env" }, "\xB7 ", railState.contractState)), /* @__PURE__ */ React.createElement("div", { className: "mob-status mob-status--env", title: railState.deployCommand }, /* @__PURE__ */ React.createElement("span", { className: "env" }, railState.deployPrefixLabel), /* @__PURE__ */ React.createElement("span", { className: "name" }, railState.deploySurface)), /* @__PURE__ */ React.createElement("nav", { className: "crumbs" }, railState.mobOpen && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { className: "crumb crumb--link", onClick: () => onNavigate("library") }, railState.flowsCrumbLabel), /* @__PURE__ */ React.createElement("span", { className: "crumb crumb--sep" }, railState.crumbSeparator), /* @__PURE__ */ React.createElement("details", { className: "crumb-switcher", key: view }, /* @__PURE__ */ React.createElement("summary", { className: "crumb is-current crumb-switcher__summary" }, currentFlowName), /* @__PURE__ */ React.createElement("div", { className: "crumb-switcher__panel" }, switcherState.rows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: row.className, onClick: (event) => {
+          closeSwitcher(event);
+          onOpenMob(row.id);
+        } }, row.name)), /* @__PURE__ */ React.createElement("button", { className: "crumb-switcher__item crumb-switcher__item--all", onClick: (event) => {
+          closeSwitcher(event);
+          onNavigate("library");
+        } }, switcherState.viewAllLabel))))), /* @__PURE__ */ React.createElement("div", { className: "actions" }, railState.mobOpen && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { className: "stage", "data-state": stage }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }), stage), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onValidate }, railState.validateLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", disabled: railState.deployActionsDisabled, onClick: onPublish }, railState.publishLabel), /* @__PURE__ */ React.createElement("details", { className: "actions-menu" }, /* @__PURE__ */ React.createElement("summary", { className: "btn btn--ghost btn--sm actions-menu__summary" }, railState.overflowLabel), /* @__PURE__ */ React.createElement("div", { className: "actions-menu__panel" }, /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onDeployPlanTrace }, railState.planTraceLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", onClick: onImport }, railState.importLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item", disabled: railState.deployActionsDisabled, onClick: onDeployPlan }, railState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "actions-menu__item actions-menu__item--primary", disabled: railState.deployRunDisabled, onClick: onDeployRun }, railState.deployLabel)))), /* @__PURE__ */ React.createElement(
           "button",
           {
             className: "btn btn--ghost btn--sm theme-toggle",
@@ -14475,14 +14200,6 @@ ${JSON.stringify(document2)}`;
             title: railState.themeToggleTitle
           },
           railState.themeToggleLabel
-        ), /* @__PURE__ */ React.createElement(
-          "button",
-          {
-            className: "btn btn--ghost btn--sm settings-toggle",
-            onClick: onToggleSettings,
-            title: railState.settingsTitle
-          },
-          railState.settingsLabel
         )));
       }
       function FlowsView({ flows, currentFlowId, onOpen, onNew, canCreate, flowRegistryView = null }) {
@@ -14518,7 +14235,7 @@ ${JSON.stringify(document2)}`;
       function ModeToggle({ mode, onSelectMode, railState }) {
         return /* @__PURE__ */ React.createElement("div", { className: "modetoggle" }, /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "basic" ? " is-active" : ""), onClick: () => onSelectMode("basic"), title: railState.basicModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "2.2", width: "10", height: "2.2" }), /* @__PURE__ */ React.createElement("rect", { x: "1.5", y: "6.6", width: "10", height: "2.2" })), /* @__PURE__ */ React.createElement("span", null, railState.basicModeLabel)), /* @__PURE__ */ React.createElement("button", { className: "modetoggle__opt" + (mode === "advanced" ? " is-active" : ""), onClick: () => onSelectMode("advanced"), title: railState.graphModeTitle }, /* @__PURE__ */ React.createElement("svg", { width: "13", height: "13", viewBox: "0 0 13 13", fill: "none", stroke: "currentColor", strokeWidth: "1.3" }, /* @__PURE__ */ React.createElement("rect", { x: "1", y: "4.5", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "1", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "8", width: "4", height: "4" }), /* @__PURE__ */ React.createElement("path", { d: "M5 6.5h1.6M6.6 6.5V3h1.4M6.6 6.5V10h1.4" })), /* @__PURE__ */ React.createElement("span", null, railState.graphModeLabel)));
       }
-      function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, applyAuthoringIntent = null, onLoadFlow }) {
+      function Tweaks({ t, setTweak, deploySettings, mobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, applyAuthoringIntent = null }) {
         const setDeployField = (field, value) => {
           if (!applyAuthoringIntent) return;
           applyAuthoringIntent({
@@ -14543,7 +14260,6 @@ ${JSON.stringify(document2)}`;
           });
         };
         const controlState = MobKitFlowController.tweaksControlState({
-          flows,
           deploySettings,
           mobSettings,
           members,
@@ -14551,17 +14267,7 @@ ${JSON.stringify(document2)}`;
           contract,
           settingsView
         });
-        return /* @__PURE__ */ React.createElement(TweaksPanel, { title: controlState.panelTitle, closeLabel: controlState.panelCloseLabel }, /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.loadMobTitle }, /* @__PURE__ */ React.createElement(
-          TweakSelect,
-          {
-            label: controlState.loadMobLabel,
-            value: currentFlowId || "",
-            options: controlState.loadableFlowOptions,
-            onChange: (id) => {
-              onLoadFlow && onLoadFlow(id);
-            }
-          }
-        )), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.canvasTitle }, /* @__PURE__ */ React.createElement(
+        return /* @__PURE__ */ React.createElement("div", { className: "settings-view" }, /* @__PURE__ */ React.createElement("div", { className: "settings-view__groups" }, /* @__PURE__ */ React.createElement("section", { className: "settings-view__group" }, /* @__PURE__ */ React.createElement(TweakSection, { label: controlState.canvasTitle }, /* @__PURE__ */ React.createElement(
           TweakRadio,
           {
             label: controlState.edgeStyleLabel,
@@ -14577,7 +14283,7 @@ ${JSON.stringify(document2)}`;
             onChange: (v) => setTweak("density", v),
             options: controlState.densityOptions
           }
-        )), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.themeTitle }, /* @__PURE__ */ React.createElement(
+        ))), /* @__PURE__ */ React.createElement("section", { className: "settings-view__group" }, /* @__PURE__ */ React.createElement(TweakSection, { label: controlState.themeTitle }, /* @__PURE__ */ React.createElement(
           TweakRadio,
           {
             label: controlState.themeModeLabel,
@@ -14585,7 +14291,15 @@ ${JSON.stringify(document2)}`;
             onChange: (v) => setTweak("theme", v),
             options: controlState.themeModeOptions
           }
-        )), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.mobTitle }, /* @__PURE__ */ React.createElement(
+        ))), /* @__PURE__ */ React.createElement("section", { className: "settings-view__group" }, /* @__PURE__ */ React.createElement(TweakSection, { label: controlState.inspectorTitle }, /* @__PURE__ */ React.createElement(
+          TweakRadio,
+          {
+            label: controlState.inspectorLayoutLabel,
+            value: t.inspectorLayout,
+            onChange: (v) => setTweak("inspectorLayout", v),
+            options: controlState.inspectorLayoutOptions
+          }
+        ))), /* @__PURE__ */ React.createElement("section", { className: "settings-view__group" }, /* @__PURE__ */ React.createElement(TweakSection, { label: controlState.mobTitle }, /* @__PURE__ */ React.createElement(
           TweakSelect,
           {
             label: controlState.orchestratorLabel,
@@ -14624,7 +14338,7 @@ ${JSON.stringify(document2)}`;
             settingsView,
             onChange: (advanced) => setMobField("advanced", advanced)
           }
-        )), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.deployTitle }, /* @__PURE__ */ React.createElement(
+        ))), /* @__PURE__ */ React.createElement("section", { className: "settings-view__group" }, /* @__PURE__ */ React.createElement(TweakSection, { label: controlState.deployTitle }, /* @__PURE__ */ React.createElement(
           TweakSelect,
           {
             label: controlState.surfaceLabel,
@@ -14664,15 +14378,7 @@ ${JSON.stringify(document2)}`;
             onChange: (v) => setDeployField("realmBackend", v),
             options: controlState.realmBackendOptions
           }
-        ), /* @__PURE__ */ React.createElement(TweakText, { label: controlState.promptLabel, value: deploySettings.prompt || "", placeholder: controlState.promptPlaceholder, onChange: (v) => setDeployField("prompt", v) }), /* @__PURE__ */ React.createElement("div", { className: "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, controlState.commandLabel)), /* @__PURE__ */ React.createElement("code", { className: "deploy-command" }, deployCommandPreview || controlState.commandFallback))), /* @__PURE__ */ React.createElement(TweakSection, { title: controlState.inspectorTitle }, /* @__PURE__ */ React.createElement(
-          TweakRadio,
-          {
-            label: controlState.inspectorLayoutLabel,
-            value: t.inspectorLayout,
-            onChange: (v) => setTweak("inspectorLayout", v),
-            options: controlState.inspectorLayoutOptions
-          }
-        )));
+        ), /* @__PURE__ */ React.createElement(TweakText, { label: controlState.promptLabel, value: deploySettings.prompt || "", placeholder: controlState.promptPlaceholder, onChange: (v) => setDeployField("prompt", v) }), /* @__PURE__ */ React.createElement("div", { className: "twk-row" }, /* @__PURE__ */ React.createElement("div", { className: "twk-lbl" }, /* @__PURE__ */ React.createElement("span", null, controlState.commandLabel)), /* @__PURE__ */ React.createElement("code", { className: "deploy-command" }, deployCommandPreview || controlState.commandFallback))))));
       }
       function RoleWiringEditor({ value, profileOptions, settingsView, onAction }) {
         const wiringState = MobKitFlowController.mobRoleWiringEditorState(value, profileOptions, settingsView);

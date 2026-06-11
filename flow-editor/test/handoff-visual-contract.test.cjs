@@ -115,6 +115,9 @@ function allowedCssDelta(sign, line) {
     /No z-index here/,
     /stacking context/,
     /swallow port drags/,
+    /Breadcrumb quick-switcher/,
+    /Settings section/,
+    /empty tab strip/,
   ];
   if (shared.some((pattern) => pattern.test(text))) return true;
   if (sign === "+") {
@@ -161,7 +164,7 @@ const unexpected = styleDiff.filter((line) => {
     if (line.includes("}")) allowedAddedBlock = false;
     return false;
   }
-  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|button\.node|a\.node|\.source-file-adornment|\.node--source-file|\.source-file__|\.source-file-list|\.source-file-row|\.bld-toml--graph|\.agent-editor__confirm|\.agent-runtime|\.actions-menu|\.mob-status|\.toprail|\.brand|\.viewtabs|\.actions|\.stage|\.btn--sm|\.theme-toggle|\.settings-toggle|\.flows-view__empty|\.flows-list__section|\.deploy-plan|\.source-drawer|\.validate|\.builder|\.bld-stage|\.bld-panel)/.test(line)) {
+  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|button\.node|a\.node|\.source-file-adornment|\.node--source-file|\.source-file__|\.source-file-list|\.source-file-row|\.bld-toml--graph|\.agent-editor__confirm|\.agent-runtime|\.actions-menu|\.mob-status|\.toprail|\.brand|\.viewtabs|\.actions|\.stage|\.btn--sm|\.theme-toggle|\.crumb-switcher|\.settings-view|\.flows-view__empty|\.flows-list__section|\.deploy-plan|\.source-drawer|\.validate|\.builder|\.bld-stage|\.bld-panel)/.test(line)) {
     if (!line.includes("}")) allowedAddedBlock = true;
     return false;
   }

@@ -101,20 +101,25 @@ export function deployPlanTraceState(document, plan, options = {}) {
   };
 }
 
-export function topRailState({ contract, deploySettings, stage, view, theme, deployView, capabilities } = {}) {
+export function topRailState({ contract, deploySettings, stage, view, mobOpen, theme, deployView, capabilities } = {}) {
   const shell = deployViewForState(deployView);
-  const inEditor = view === "editor";
   const contractState = contract?.error ? shell.apiErrorLabel : contract ? shell.apiReadyLabel : shell.apiLoadingLabel;
   const deployCommand = contract?.deploy_settings?.command || "";
   const deploySurface = deploySettings?.surface || contract?.deploy_settings?.surfaces?.[0] || "";
   const deployActionsDisabled = stage !== "valid";
   const deployExecuteAllowed = capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
   const nextTheme = theme === "dark" ? "light" : "dark";
+  const open = !!mobOpen;
   return {
-    inEditor,
+    mobOpen: open,
+    sectionTabs: open
+      ? [
+        { target: "flow-tab", view: "editor", label: shell.flowTabLabel, current: view === "editor" },
+        { target: "agents-tab", view: "agents", label: shell.agentsTabLabel, current: view === "agents" },
+        { target: "settings-tab", view: "settings", label: shell.settingsTabLabel, current: view === "settings" },
+      ]
+      : [],
     brandLabel: shell.brandLabel,
-    flowsTabLabel: shell.flowsTabLabel,
-    agentsTabLabel: shell.agentsTabLabel,
     mobStatusTitle: shell.mobStatusTitle,
     mobFileLabel: shell.mobFileLabel,
     contractState,
@@ -130,8 +135,6 @@ export function topRailState({ contract, deploySettings, stage, view, theme, dep
     deployPlanLabel: shell.deployPlanLabel,
     deployLabel: shell.deployLabel,
     overflowLabel: shell.overflowLabel,
-    settingsLabel: shell.settingsLabel,
-    settingsTitle: shell.settingsTitle,
     deployActionsDisabled,
     deployRunDisabled: deployActionsDisabled || !deployExecuteAllowed,
     themeToggleTitle: `${shell.themeSwitchPrefix} ${nextTheme} ${shell.themeSwitchSuffix}`,
@@ -143,15 +146,22 @@ export function topRailState({ contract, deploySettings, stage, view, theme, dep
   };
 }
 
-export function topRailNavigationTransition(currentView, target) {
-  const view = String(currentView || "editor");
+// Real navigation state machine over {library, editor (FLOW), agents,
+// settings}. The library is home; the three section views are only
+// reachable while a mob is open (context.mobOpen). No toggling: each
+// target names its destination.
+export function topRailNavigationTransition(currentView, target, context = {}) {
+  const view = String(currentView || "library");
+  const mobOpen = !!context.mobOpen;
   switch (String(target || "")) {
-    case "flows-tab":
-      return { view: view === "editor" ? "flows" : "editor" };
+    case "flow-tab":
+      return mobOpen ? { view: "editor" } : null;
     case "agents-tab":
-      return { view: "agents" };
-    case "flows-crumb":
-      return { view: "flows" };
+      return mobOpen ? { view: "agents" } : null;
+    case "settings-tab":
+      return mobOpen ? { view: "settings" } : null;
+    case "library":
+      return view === "library" ? null : { view: "library" };
     default:
       return null;
   }

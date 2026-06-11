@@ -28,7 +28,7 @@ const controller = coreModuleFiles
   .map((file) => fs.readFileSync(file, "utf8"))
   .join("\n");
 const buildScript = fs.readFileSync(path.join(root, "build.cjs"), "utf8");
-const topRailBlock = (app.match(/function TopRail[\s\S]*?\/\/ ── Flows registry view/) || [""])[0];
+const topRailBlock = (app.match(/function TopRail[\s\S]*?\/\/ ── Mob library view/) || [""])[0];
 // The view layer migrates per legacy .jsx file into @flow-editor-components
 // (S20-S22); each moved file's assertions re-anchor onto its package module.
 const componentsSrcDir = path.join(root, "..", "packages", "flow-editor-components", "src");
@@ -256,7 +256,9 @@ assert.match(app, /loadSchema\(rpcOptions\)[\s\S]*configureAuthoringMethodsFromS
 assert.match(app, /MobKitFlowController\.loadCapabilities\(rpcOptions\)/, "app shell must hydrate Flow Editor capabilities before enabling host-sensitive actions");
 assert.match(app, /MobKitFlowController\.loadCatalogs\(rpcOptions\)/, "app shell must hydrate dynamic catalogs through mobkit/mobpacks/catalogs");
 assert.match(app, /MobKitFlowController\.listDocuments\(\{\},\s*rpcOptions\)/, "app shell must hydrate saved flow registry rows through mobkit/mobpacks/list");
-assert.match(app, /const hasRuntimeRows = Array\.isArray\(catalogPayload\?\.runtime_flows\) && catalogPayload\.runtime_flows\.length > 0;[\s\S]*if \(\(!Array\.isArray\(registryPayload\?\.rows\) \|\| registryPayload\.rows\.length === 0\) && !hasRuntimeRows\) \{[\s\S]*MobKitFlowController\.createDocument\(\{[\s\S]*template:\s*"blank"[\s\S]*\},\s*rpcOptions\)/, "app shell must create a real MobKit blank draft only when neither saved rows nor runtime flow projections exist");
+const bootEffectBlock = (app.match(/MobKitFlowController\.loadSchema\(rpcOptions\)[\s\S]*?setContract\(schema\);/) || [""])[0];
+assert.match(bootEffectBlock, /MobKitFlowController\.listDocuments\(\{\},\s*rpcOptions\)/, "app startup must list saved MobKit drafts for the library rows");
+assert(!/createDocument|hasRuntimeRows|template:\s*"blank"/.test(bootEffectBlock), "the library is home: app startup must never auto-create a blank draft");
 assert.match(controller, /create:\s*"mobkit\/mobpacks\/create"/, "controller plane must expose the MobKit draft creation RPC");
 assert.match(app, /MobKitFlowController\.createDocument\(spec\)/, "new flow modal must create drafts through MobKit instead of cloning template documents locally");
 assert.match(controller, /async function applyAuthoringOperationDocument\(document,\s*operation,\s*options = \{\}\)[\s\S]*const \{[\s\S]*signal,[\s\S]*catalogSnapshot,[\s\S]*expected_catalog_snapshot_id,[\s\S]*requestOptions[\s\S]*expectedSnapshotId[\s\S]*callRpc\(rpcMethod\("applyOperation"\),\s*\{[\s\S]*document,[\s\S]*operation,[\s\S]*expected_catalog_snapshot_id:\s*expectedSnapshotId[\s\S]*\.\.\.requestOptions[\s\S]*\},\s*\{ signal \}\)/, "controller plane must apply editor mutations through mobkit/mobpacks/apply_operation while carrying draft and catalog snapshot guards");
@@ -1327,9 +1329,11 @@ assert(!/const sourceMeta = \{[\s\S]*source_name|document:\s*parsed|content_base
 assert(!(/JSON\.parse|kind:\s*["'](?:toml|json|binary)["']|\.toml|\.json/.test(importParamsFromFileBlock)), "app import adapter must not infer MobKit import kind or parse JSON locally");
 assert.match(app, /hydrateMobpackDocument\(result,\s*\{\s*existingRows:\s*flows\s*\}\)/, "imported mobpack registry identity must be derived by the controller with current registry rows");
 assert.match(app, /hydrateMobpackDocumentState\(result,\s*\{[\s\S]*existingRows:\s*options\.existingRows/, "app hydration wrapper must forward registry rows into the controller import-id derivation");
-assert.match(app, /const hasRuntimeRows = Array\.isArray\(catalogPayload\?\.runtime_flows\) && catalogPayload\.runtime_flows\.length > 0;[\s\S]*&& !hasRuntimeRows[\s\S]*MobKitFlowController\.createDocument/, "app startup must not create a blank draft when runtime-projected MobKit flows are available");
-assert.match(app, /MobKitFlowController\.flowCatalogBootstrapState\(catalogPayload,\s*\{[\s\S]*deployDefaults:\s*nextCatalogs\.deployDefaults,[\s\S]*mobDefaults:\s*nextCatalogs\.mobDefaults/, "app catalog bootstrap must ask the controller plane for saved registry/template/runtime rows and hydration options");
-assert.match(app, /setTemplates\(bootstrap\.templates\);[\s\S]*setFlows\(bootstrap\.flows\);[\s\S]*hydrateMobpackDocument\(bootstrap\.initialHydration\.result,\s*\{[\s\S]*\.\.\.bootstrap\.initialHydration\.options,[\s\S]*contract:\s*schema/, "app bootstrap must apply controller-projected catalog rows and hydration instead of assembling sample or blank rows locally");
+assert.match(app, /useState\("library"\)/, "the app must launch into the library view");
+assert.equal((app.match(/MobKitFlowController\.createDocument\(/g) || []).length, 1, "MobKit draft creation must exist exactly once, in the new-mob modal");
+assert.match(app, /MobKitFlowController\.flowCatalogBootstrapState\(catalogPayload,\s*\{[\s\S]*registryResult:\s*registryPayload,/, "app catalog bootstrap must ask the controller plane for saved registry/template/runtime rows");
+assert.match(app, /setTemplates\(bootstrap\.templates\);[\s\S]*setFlows\(bootstrap\.flows\);/, "app bootstrap must apply controller-projected catalog rows instead of assembling sample or blank rows locally");
+assert(!/initialHydration/.test(app) && !/initialHydration/.test(controller), "the library is home: bootstrap must not project or apply a startup hydration");
 assert.match(controller, /function flowCatalogBootstrapState\(catalogPayload, options = \{\}\)[\s\S]*const registryFlows = flowRegistryRowsFromBackend\(options\.registryRows \|\| options\.registryResult\?\.rows\);[\s\S]*const runtimeFlows = flowRegistryRowsFromBackend\(catalogPayload\?\.runtime_flows\);[\s\S]*const existingIds = new Set\(runtimeFlows\.map\(\(row\) => row\.id\)\);[\s\S]*\.\.\.runtimeFlows,[\s\S]*\.\.\.registryFlows\.filter/, "controller plane must prefer runtime-projected MobKit flow rows over same-id saved drafts during bootstrap");
 assert.match(controller, /function flowRegistryRowFromDocument[\s\S]*runtime_projection[\s\S]*runtime_mob_id[\s\S]*runtime_flow_id[\s\S]*provenance/, "controller row normalization must preserve runtime projection provenance");
 assert.match(controller, /async function saveDocument\(row = \{\}, options = \{\}\) \{[\s\S]*flowRegistryRowIsRuntimeProjection\(row\)[\s\S]*runtime_projection_read_only[\s\S]*callRpc\(rpcMethod\("save"\)/, "controller save path must reject runtime flow projections before calling mobkit/mobpacks/save");
@@ -1472,14 +1476,20 @@ assert(!/backendDefault\s*\|\|\s*["']session["']|trustPolicy\s*\|\|\s*["']permis
 assert.match(controller, /function topRailState/, "controller plane must own top-rail deploy/API display projection");
 assert.match(controller, /deployCommand = contract\?\.deploy_settings\?\.command \|\| "";/, "Top rail deploy command must stay blank until MobKit schema provides it");
 assert.match(controller, /deploySurface = deploySettings\?\.surface \|\| contract\?\.deploy_settings\?\.surfaces\?\.\[0\] \|\| "";/, "Top rail deploy surface must stay blank until schema-backed settings exist");
-assert.match(app, /MobKitFlowController\.topRailState\(\{ contract, deploySettings, stage, view, theme: t\.theme, deployView: catalogs\.deployView, capabilities \}\)/, "Top rail must render controller-projected deploy/API display state from MobKit view chrome and capabilities");
+assert.match(app, /MobKitFlowController\.topRailState\(\{ contract, deploySettings, stage, view, mobOpen: !!currentFlowId, theme: t\.theme, deployView: catalogs\.deployView, capabilities \}\)/, "Top rail must render controller-projected deploy/API display state from MobKit view chrome and capabilities");
+assert.match(topRailBlock, /railState\.sectionTabs\.map/, "the rail section tabs (FLOW/AGENTS/SETTINGS) must render from the controller-projected tab rows");
+assert(!/railState\.flowsTabLabel|settings-toggle|onToggleSettings|TweaksPanel|mobkit-flow-editor:settings-toggle/.test(app), "the MOBS toggle tab, the floating TweaksPanel, and the settings-toggle CustomEvent wiring are gone from the shell");
+assert.match(topRailBlock, /railState\.mobOpen && \([\s\S]*crumb-switcher[\s\S]*switcherState\.rows\.map/, "the breadcrumb mob switcher must render controller-projected rows only while a mob is open");
+assert.match(app, /MobKitFlowController\.mobSwitcherState\(flows, currentFlowId, \{ deployView: catalogs\.deployView \}\)/, "the mob switcher rows must be projected by the controller plane");
+assert.match(controller, /function mobSwitcherState/, "controller plane must own the breadcrumb switcher projection");
+assert.match(topRailBlock, /switcherState\.viewAllLabel/, "the switcher view-all affordance must use the schema-backed label");
 assert.match(app, /disabled=\{railState\.deployRunDisabled\}/, "Top rail must disable host deploy execution through controller-projected capabilities");
 assert.match(flowEditorBinRust, /--allow-host-deploy/, "standalone Flow Editor must expose explicit opt-in host deploy execution for local rkat mob deploy testing");
 assert.match(flowEditorBinRust, /flow_editor_router_with_host_deploy/, "standalone Flow Editor host deploy opt-in must route through the MobKit RPC policy surface");
 assert.match(flowEditorHttpRust, /standalone_flow_editor_rpc_rejects_host_deploy_execution[\s\S]*"execute": true[\s\S]*json!\(-32602\)/, "Flow Editor RPC must deny host deploy execution by default");
 assert.match(flowEditorHttpRust, /standalone_flow_editor_rpc_executes_host_deploy_when_explicitly_enabled[\s\S]*deploy_execute_allowed:\s*true[\s\S]*"execute": true[\s\S]*flow-editor-rkat-ok/, "Flow Editor RPC must prove explicit opt-in executes rkat mob deploy");
 assert.match(liveRkatE2eTest, /async function validateHostDeployRpc[\s\S]*mobkit\/mobpacks\/deploy[\s\S]*execute:\s*true[\s\S]*rkat mob deploy executed/, "live rkat e2e must prove Flow Editor deploy RPC execution, not only direct CLI deploy");
-assert.match(app, /MobKitFlowController\.topRailNavigationTransition\(view,\s*target\)/, "Top rail navigation must be routed through the controller plane");
+assert.match(app, /MobKitFlowController\.topRailNavigationTransition\(view,\s*target,\s*\{ mobOpen: !!currentFlowId \}\)/, "Top rail navigation must be routed through the controller plane with the open-mob context");
 assert.match(controller, /function topRailNavigationTransition/, "controller plane must own TopRail navigation transitions");
 assert(!/setView\(|view === ["']editor["'] \? ["']flows["'] : ["']editor["']/.test(topRailBlock), "TopRail renderer must not assemble view transitions locally");
 assert.match(app, /<TopRail[\s\S]*railState=\{shellState\}/, "Top rail must receive the shared controller-projected shell state");
@@ -1953,24 +1963,26 @@ assert.match(tweaksBlock, /MobKitFlowController\.tweaksControlState/, "Tweaks co
 assert.match(controller, /mob_definition\?\.editor_settings_view/, "controller plane must hydrate Tweaks/settings chrome from MobKit schema");
 assert.match(app, /<Tweaks[\s\S]*settingsView=\{catalogs\.settingsView\}/, "app shell must inject MobKit Tweaks/settings view state");
 assert.match(tweaksBlock, /tweaksControlState\(\{[\s\S]*settingsView/, "Tweaks controls must pass schema-backed settings view into controller projection");
-assert.match(tweaksBlock, /controlState\.panelTitle/, "Tweaks panel title must render through controller state");
-assert.match(tweaksBlock, /closeLabel=\{controlState\.panelCloseLabel\}/, "Tweaks panel close label must render through controller state");
+// The settings surface is a full page (no floating panel chrome, no
+// load-mob select — the library owns loading).
+assert.match(tweaksBlock, /className="settings-view"/, "settings must render as a full-page section in the main area");
+assert(!/panelTitle|panelCloseLabel|loadMobTitle|loadMobLabel|loadableFlowOptions|onLoadFlow/.test(tweaksBlock), "the settings page must not keep floating-panel chrome or the load-mob select");
 assert.match(tweaksPanel, /aria-label=\{closeLabel\}/, "Tweaks panel close affordance must not compose the aria label locally");
-assert.match(tweaksBlock, /controlState\.loadMobTitle/, "Tweaks section titles must render through controller state");
+assert.match(tweaksBlock, /label=\{controlState\.canvasTitle\}/, "settings section titles must render through controller state");
+assert.match(tweaksBlock, /label=\{controlState\.deployTitle\}/, "settings deploy section title must render through controller state");
 assert.match(tweaksBlock, /controlState\.edgeStyleOptions/, "Tweaks canvas options must render through controller state");
 assert.match(tweaksBlock, /controlState\.externalBasePlaceholder/, "Tweaks Mob settings placeholders must render through controller state");
 assert.match(tweaksBlock, /controlState\.durationPlaceholder/, "Tweaks deploy settings placeholders must render through controller state");
 assert.match(tweaksBlock, /controlState\.toolCallsMax/, "Tweaks numeric deploy bounds must render through controller state");
 assert.match(tweaksBlock, /controlState\.commandFallback/, "Tweaks command fallback must render through controller state");
 assert.match(tweaksBlock, /controlState\.inspectorLayoutOptions/, "Tweaks inspector options must render through controller state");
-assert.match(controller, /panelTitle:\s*view\.panelTitle/, "controller plane must project Tweaks panel title from MobKit settings view");
-assert.match(controller, /panelCloseLabel:\s*view\.panelCloseLabel/, "controller plane must project Tweaks panel close label from MobKit settings view");
+assert.match(controller, /canvasTitle:\s*view\.canvasTitle/, "controller plane must project the settings canvas title from MobKit settings view");
 assert.match(controller, /edgeStyleOptions:\s*view\.edgeStyleOptions/, "controller plane must project Tweaks canvas options from MobKit settings view");
 assert.match(controller, /durationPlaceholder:\s*view\.durationPlaceholder/, "controller plane must project Tweaks deploy placeholder from MobKit settings view");
 assert.match(controller, /roleWiringLabel:\s*String\(view\.role_wiring_label/, "controller plane must hydrate role wiring label from MobKit settings view");
 assert.match(controller, /advancedObjectRequiredError:\s*String\(view\.advanced_object_required_error/, "controller plane must hydrate advanced settings errors from MobKit settings view");
 assert(!/const loadableFlows|const profileOptions|const profileChoices|modelCatalog\s*\|\|\s*\[\]|profileName\(member\)|flows\.filter\(\(flow\) => flow\.document\)/.test(tweaksBlock), "Tweaks controls must not assemble MobKit authoring option state locally");
-assert(!/<TweaksPanel title=["']Tweaks["']|aria-label=["']Close tweaks["']|<TweakSection title=["'](?:Load mob|Canvas|Theme|Mob|Deploy|Inspector)["']|label=["'](?:Mobpack|Edges|Density|Mode|Orchestrator|Auto wire|Default backend|External base|Surface|Trust|Model|Duration|Tool calls|Tokens|Realm|Realm ID|Backend|Prompt|Layout)["']|placeholder=["'](?:http:\/\/127\.0\.0\.1:9000|30s|realm id|Deploy prompt)["']|options=\{\[\{value: ["'](?:text|compact|light|no|isolated|right)["']|min=\{0\}|max=\{(?:999|200000)\}|deployCommandPreview \|\| ["']--["']/.test(tweaksBlock), "Tweaks controls must not compose panel labels, local option sets, placeholders, numeric bounds, or command fallback locally");
+assert(!/<TweaksPanel title=["']Tweaks["']|aria-label=["']Close tweaks["']|<TweakSection (?:title|label)=["'](?:Load mob|Canvas|Theme|Mob|Deploy|Inspector)["']|label=["'](?:Mobpack|Edges|Density|Mode|Orchestrator|Auto wire|Default backend|External base|Surface|Trust|Model|Duration|Tool calls|Tokens|Realm|Realm ID|Backend|Prompt|Layout)["']|placeholder=["'](?:http:\/\/127\.0\.0\.1:9000|30s|realm id|Deploy prompt)["']|options=\{\[\{value: ["'](?:text|compact|light|no|isolated|right)["']|min=\{0\}|max=\{(?:999|200000)\}|deployCommandPreview \|\| ["']--["']/.test(tweaksBlock), "Tweaks controls must not compose panel labels, local option sets, placeholders, numeric bounds, or command fallback locally");
 assert.match(tweaksBlock, /settingsView=\{settingsView\}/, "Tweaks must pass MobKit settings view into nested settings editors");
 assert.match(roleWiringBlock, /onAction && onAction\(\{ action:\s*"set_source",\s*index,\s*value \}\)/, "role wiring source edits must emit typed MobKit action intents");
 assert.match(roleWiringBlock, /onAction && onAction\(\{ action:\s*"set_target",\s*index,\s*value \}\)/, "role wiring target edits must emit typed MobKit action intents");

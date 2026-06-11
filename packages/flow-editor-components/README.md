@@ -12,7 +12,7 @@ document state.
 - `graph/graph.tsx` — `GraphEditor`, `useStudioState` (Flow canvas, undo/redo wiring)
 - `inspector/inspector.tsx` — `Inspector`, `AddNodeMenu`
 - `overlays/overlays.tsx` — `DeployPlanTrace`, `ValidateSheet`, `SourceDrawer`, `InlineSourceEditor`
-- `tweaks/tweaks-panel.tsx` — `TweaksPanel`, `useTweaks`, and the `Tweak*` control family
+- `tweaks/tweaks-panel.tsx` — `TweaksPanel`, `useTweaks`, and the `Tweak*` control family. The shell no longer mounts the floating `TweaksPanel` (its settings render as a full-page SETTINGS section using the `Tweak*` controls directly); the panel stays exported for embedders that want the draggable overlay + edit-mode host protocol.
 - `styles/` — reserved; the CSS stays at `flow-editor/src/{tokens.css,styles.css}` because the designer-handoff visual contract pins those paths
 
 `src/index.ts` is the curated barrel; the exports are a workspace-internal
@@ -32,7 +32,7 @@ the window global that `react-globals.js` provides (ambient declaration in
 
 Components call `window.MobKitFlowController.*` at render/handler time — not
 import time. That global is the runtime contract between the views and
-`@flow-editor-core`'s `createMobKitFlowController` (380-key manifest pinned
+`@flow-editor-core`'s `createMobKitFlowController` (381-key manifest pinned
 by `controller-export-keys.test.cjs`); the shell assigns it once at module
 scope. Views must not import the RPC client or call `fetch` themselves —
 enforced by `flow-editor/test/package-boundaries.test.cjs`.

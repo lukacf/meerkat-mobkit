@@ -24,6 +24,7 @@ import {
   normalizeProviderParams,
 } from "../shared/normalize";
 import {
+  deployViewForState,
   flowRegistryViewForState,
   newFlowViewForState,
 } from "../views/view-config";
@@ -54,6 +55,9 @@ export function sampleFlowsFromCatalogs(schema) {
     .filter(Boolean);
 }
 
+// The library is home: bootstrap only projects the catalog/template and
+// registry rows. Nothing hydrates at startup — opening or creating a mob
+// is the only way into the editor sections.
 export function flowCatalogBootstrapState(catalogPayload, options = {}) {
   const sampleFlows = sampleFlowsFromCatalogs(catalogPayload);
   const registryFlows = flowRegistryRowsFromBackend(options.registryRows || options.registryResult?.rows);
@@ -63,26 +67,9 @@ export function flowCatalogBootstrapState(catalogPayload, options = {}) {
     ...runtimeFlows,
     ...registryFlows.filter((row) => !existingIds.has(row.id)),
   ];
-  const first = flows[0] || null;
   return {
     templates: sampleFlows,
     flows,
-    initialHydration: first
-      ? {
-        result: {
-          document: first.document,
-          validation: first.validation ?? null,
-        },
-        options: {
-          id: first.id,
-          flowRow: first,
-          addToRegistry: false,
-          openEditor: !!options.openEditor,
-          deployDefaults: options.deployDefaults,
-          mobDefaults: options.mobDefaults,
-        },
-      }
-      : null,
   };
 }
 
@@ -233,6 +220,28 @@ export function flowRegistryViewState(rows, currentFlowId, options = {}) {
     columns: view.columns,
     empty: list.length === 0 ? { title: view.emptyTitle, text: view.emptyText } : null,
     sections,
+  };
+}
+
+// Quick-switch dropdown on the breadcrumb mob name: draft registry rows
+// (runtime projections are read-only and stay library-only) plus the
+// schema-labelled "view all" affordance that returns to the library.
+export function mobSwitcherState(rows, currentFlowId, options = {}) {
+  const view = deployViewForState(options.deployView);
+  const current = String(currentFlowId || "");
+  return {
+    rows: (Array.isArray(rows) ? rows : [])
+      .filter((row) => row && row.id && !flowRegistryRowIsRuntimeProjection(row))
+      .map((row) => {
+        const id = String(row.id || "");
+        return {
+          id,
+          name: String(row.name || ""),
+          stage: String(row.stage || ""),
+          className: "crumb-switcher__item" + (id && id === current ? " is-current" : ""),
+        };
+      }),
+    viewAllLabel: view.switcherViewAllLabel,
   };
 }
 

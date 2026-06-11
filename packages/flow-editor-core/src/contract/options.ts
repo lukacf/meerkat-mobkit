@@ -192,7 +192,6 @@ export function mobBackendDefaultOptions(contract, currentBackend) {
 }
 
 export function tweaksControlState({
-  flows = [],
   deploySettings = {},
   mobSettings = {},
   members = [],
@@ -201,12 +200,6 @@ export function tweaksControlState({
   settingsView = null,
 } = {}) {
   const view = settingsViewForState(settingsView);
-  const loadableFlowOptions = (Array.isArray(flows) ? flows : [])
-    .filter((flow) => flow?.document)
-    .map((flow) => ({
-      value: flow.id,
-      label: `${flow.name}${view.optionSeparator}${flow.stage || flow.source || view.flowStageFallback}`,
-    }));
   const profileOptions = [
     { value: "", label: view.profileNoneLabel },
     ...(Array.isArray(members) ? members : []).map((member) => {
@@ -222,10 +215,6 @@ export function tweaksControlState({
     })),
   ];
   return {
-    panelTitle: view.panelTitle,
-    panelCloseLabel: view.panelCloseLabel,
-    loadMobTitle: view.loadMobTitle,
-    loadMobLabel: view.loadMobLabel,
     canvasTitle: view.canvasTitle,
     edgeStyleLabel: view.edgeStyleLabel,
     edgeStyleOptions: view.edgeStyleOptions,
@@ -270,7 +259,6 @@ export function tweaksControlState({
     inspectorTitle: view.inspectorTitle,
     inspectorLayoutLabel: view.inspectorLayoutLabel,
     inspectorLayoutOptions: view.inspectorLayoutOptions,
-    loadableFlowOptions,
     profileOptions,
     profileChoices: profileOptions.filter((option) => option.value),
     mobBackendOptions: mobBackendDefaultOptions(contract, mobSettings.backendDefault || ""),

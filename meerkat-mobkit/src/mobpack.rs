@@ -2091,8 +2091,9 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
     });
     let editor_deploy_view = json!({
         "brand_label": "MobKit · Flow Editor",
-        "flows_tab_label": "MOBS",
+        "flow_tab_label": "FLOW",
         "agents_tab_label": "AGENTS",
+        "settings_tab_label": "SETTINGS",
         "mob_status_title": "Active mob configuration",
         "mob_file_label": "mob.toml",
         "api_error_label": "api error",
@@ -2101,6 +2102,7 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         "deploy_prefix_label": "deploy:",
         "flows_crumb_label": "mobs",
         "crumb_separator": "/",
+        "switcher_view_all_label": "view all mobs",
         "plan_trace_label": "PLAN TRACE",
         "import_label": "IMPORT",
         "validate_label": "VALIDATE",
@@ -2108,8 +2110,6 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         "deploy_plan_label": "DEPLOY PLAN",
         "deploy_label": "DEPLOY",
         "overflow_label": "MORE",
-        "settings_label": "⚙ SETTINGS",
-        "settings_title": "Editor, mob, and deploy settings",
         "theme_switch_prefix": "Switch to",
         "theme_switch_suffix": "mode",
         "dark_theme_label": "☾ dark",
@@ -2132,10 +2132,6 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         "plan_next_label": "›"
     });
     let mut editor_settings_view = json!({
-        "panel_title": "Tweaks",
-        "load_mob_title": "Load mob",
-        "load_mob_label": "Mobpack",
-        "flow_stage_fallback": "draft",
         "option_separator": " · ",
         "canvas_title": "Canvas",
         "edge_style_label": "Edges",
@@ -2193,7 +2189,6 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
     ]);
     editor_settings_view["role_wiring_label"] = json!("Role wiring");
     editor_settings_view["role_wiring_add_label"] = json!("+ rule");
-    editor_settings_view["panel_close_label"] = json!("Close tweaks");
     editor_settings_view["advanced_label"] = json!("Advanced");
     editor_settings_view["advanced_object_required_error"] = json!("object required");
     editor_settings_view["advanced_invalid_json_error"] = json!("invalid JSON");
@@ -31553,6 +31548,18 @@ depends_on_mode = "all"
             json!("MobKit · Flow Editor")
         );
         assert_eq!(
+            mob_definition["editor_deploy_view"]["flow_tab_label"],
+            json!("FLOW")
+        );
+        assert_eq!(
+            mob_definition["editor_deploy_view"]["settings_tab_label"],
+            json!("SETTINGS")
+        );
+        assert_eq!(
+            mob_definition["editor_deploy_view"]["switcher_view_all_label"],
+            json!("view all mobs")
+        );
+        assert_eq!(
             mob_definition["editor_deploy_view"]["deploy_label"],
             json!("DEPLOY")
         );
@@ -31569,12 +31576,12 @@ depends_on_mode = "all"
             json!("mobkit/mobpacks/deploy did not return plan_trace.")
         );
         assert_eq!(
-            mob_definition["editor_settings_view"]["panel_title"],
-            json!("Tweaks")
+            mob_definition["editor_settings_view"]["canvas_title"],
+            json!("Canvas")
         );
         assert_eq!(
-            mob_definition["editor_settings_view"]["panel_close_label"],
-            json!("Close tweaks")
+            mob_definition["editor_settings_view"]["deploy_title"],
+            json!("Deploy")
         );
         assert_eq!(
             mob_definition["editor_settings_view"]["duration_placeholder"],

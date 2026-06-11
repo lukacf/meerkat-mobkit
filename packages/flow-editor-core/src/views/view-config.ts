@@ -546,8 +546,9 @@ export function deployViewFromSchema(schema) {
   if (!view || typeof view !== "object") return null;
   const out = {
     brandLabel: String(view.brand_label || "").trim(),
-    flowsTabLabel: String(view.flows_tab_label || "").trim(),
+    flowTabLabel: String(view.flow_tab_label || "").trim(),
     agentsTabLabel: String(view.agents_tab_label || "").trim(),
+    settingsTabLabel: String(view.settings_tab_label || "").trim(),
     mobStatusTitle: String(view.mob_status_title || "").trim(),
     mobFileLabel: String(view.mob_file_label || "").trim(),
     apiErrorLabel: String(view.api_error_label || "").trim(),
@@ -556,6 +557,7 @@ export function deployViewFromSchema(schema) {
     deployPrefixLabel: String(view.deploy_prefix_label || "").trim(),
     flowsCrumbLabel: String(view.flows_crumb_label || "").trim(),
     crumbSeparator: String(view.crumb_separator || "").trim(),
+    switcherViewAllLabel: String(view.switcher_view_all_label || "").trim(),
     planTraceLabel: String(view.plan_trace_label || "").trim(),
     importLabel: String(view.import_label || "").trim(),
     validateLabel: String(view.validate_label || "").trim(),
@@ -563,8 +565,6 @@ export function deployViewFromSchema(schema) {
     deployPlanLabel: String(view.deploy_plan_label || "").trim(),
     deployLabel: String(view.deploy_label || "").trim(),
     overflowLabel: String(view.overflow_label || "").trim(),
-    settingsLabel: String(view.settings_label || "").trim(),
-    settingsTitle: String(view.settings_title || "").trim(),
     themeSwitchPrefix: String(view.theme_switch_prefix || "").trim(),
     themeSwitchSuffix: String(view.theme_switch_suffix || "").trim(),
     darkThemeLabel: String(view.dark_theme_label || "").trim(),
@@ -593,8 +593,9 @@ export function deployViewForState(deployView) {
   const view = deployView && typeof deployView === "object" ? deployView : null;
   return {
     brandLabel: String(view?.brandLabel || ""),
-    flowsTabLabel: String(view?.flowsTabLabel || ""),
+    flowTabLabel: String(view?.flowTabLabel || ""),
     agentsTabLabel: String(view?.agentsTabLabel || ""),
+    settingsTabLabel: String(view?.settingsTabLabel || ""),
     mobStatusTitle: String(view?.mobStatusTitle || ""),
     mobFileLabel: String(view?.mobFileLabel || ""),
     apiErrorLabel: String(view?.apiErrorLabel || ""),
@@ -603,6 +604,7 @@ export function deployViewForState(deployView) {
     deployPrefixLabel: String(view?.deployPrefixLabel || ""),
     flowsCrumbLabel: String(view?.flowsCrumbLabel || ""),
     crumbSeparator: String(view?.crumbSeparator || ""),
+    switcherViewAllLabel: String(view?.switcherViewAllLabel || ""),
     planTraceLabel: String(view?.planTraceLabel || ""),
     importLabel: String(view?.importLabel || ""),
     validateLabel: String(view?.validateLabel || ""),
@@ -610,8 +612,6 @@ export function deployViewForState(deployView) {
     deployPlanLabel: String(view?.deployPlanLabel || ""),
     deployLabel: String(view?.deployLabel || ""),
     overflowLabel: String(view?.overflowLabel || ""),
-    settingsLabel: String(view?.settingsLabel || ""),
-    settingsTitle: String(view?.settingsTitle || ""),
     themeSwitchPrefix: String(view?.themeSwitchPrefix || ""),
     themeSwitchSuffix: String(view?.themeSwitchSuffix || ""),
     darkThemeLabel: String(view?.darkThemeLabel || ""),
@@ -661,11 +661,6 @@ export function settingsViewFromSchema(schema) {
   const view = schema?.mob_definition?.editor_settings_view;
   if (!view || typeof view !== "object") return null;
   const out = {
-    panelTitle: String(view.panel_title || "").trim(),
-    panelCloseLabel: String(view.panel_close_label || "").trim(),
-    loadMobTitle: String(view.load_mob_title || "").trim(),
-    loadMobLabel: String(view.load_mob_label || "").trim(),
-    flowStageFallback: String(view.flow_stage_fallback || "").trim(),
     optionSeparator: String(view.option_separator || ""),
     unsupportedLabelSeparator: String(view.unsupported_label_separator || ""),
     unsupportedReasonPrefix: String(view.unsupported_reason_prefix || ""),
@@ -739,11 +734,6 @@ export function settingsViewFromSchema(schema) {
 export function settingsViewForState(settingsView) {
   const view = settingsView && typeof settingsView === "object" ? settingsView : null;
   return {
-    panelTitle: String(view?.panelTitle || ""),
-    panelCloseLabel: String(view?.panelCloseLabel || ""),
-    loadMobTitle: String(view?.loadMobTitle || ""),
-    loadMobLabel: String(view?.loadMobLabel || ""),
-    flowStageFallback: String(view?.flowStageFallback || ""),
     optionSeparator: String(view?.optionSeparator || ""),
     unsupportedLabelSeparator: String(view?.unsupportedLabelSeparator || ""),
     unsupportedReasonPrefix: String(view?.unsupportedReasonPrefix || ""),

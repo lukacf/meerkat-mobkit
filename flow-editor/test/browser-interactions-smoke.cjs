@@ -56,6 +56,26 @@ async function chooseFirstRealAgentDefinition(page) {
   await addDefinition.selectOption(value);
 }
 
+// The library is home: the app launches with no open mob, so every smoke
+// creates one through + NEW MOB (name + Blank template) to enter the editor.
+async function createMobThroughLibrary(page, name) {
+  await page.locator(".flows-view").waitFor({ state: "visible", timeout: 10_000 });
+  await page.waitForFunction(() => {
+    const button = document.querySelector(".flows-view__head .btn--primary");
+    return button && !button.disabled;
+  }, null, { timeout: 10_000 });
+  await page.locator(".flows-view__head .btn--primary").click();
+  await page.locator(".modal--new").waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator(".modal--new .field__input").fill(name);
+  await page.locator(".modal--new .template-card").first().click();
+  await page.waitForFunction(() => {
+    const button = document.querySelector(".modal--new .modal__foot .btn--primary");
+    return button && !button.disabled;
+  }, null, { timeout: 10_000 });
+  await page.locator(".modal--new .modal__foot .btn--primary").click();
+  await page.locator(".modetoggle").waitFor({ state: "visible", timeout: 10_000 });
+}
+
 async function chooseFirstGraphMember(page) {
   const implementer = page.locator(".add-menu__row", { hasText: "implementer" }).first();
   if (await implementer.count()) {
@@ -98,6 +118,7 @@ async function main() {
       waitUntil: "domcontentloaded",
     });
     await page.getByText("api ready").waitFor({ timeout: 10_000 });
+    await createMobThroughLibrary(page, "Browser Interaction Mob");
 
     // Member nodes only: structural edits reproject the canvas, which can
     // add or remove synthesized gate instances (fan-out/join) and their

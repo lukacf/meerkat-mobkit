@@ -57,8 +57,9 @@ assert.deepEqual(controller.emptyAuthoringFlowState(), {
 });
 const TEST_DEPLOY_VIEW_SCHEMA = {
   brand_label: "MobKit · Flow Editor",
-  flows_tab_label: "MOBS",
+  flow_tab_label: "FLOW",
   agents_tab_label: "AGENTS",
+  settings_tab_label: "SETTINGS",
   mob_status_title: "Active mob configuration",
   mob_file_label: "mob.toml",
   api_error_label: "api error",
@@ -67,6 +68,7 @@ const TEST_DEPLOY_VIEW_SCHEMA = {
   deploy_prefix_label: "deploy:",
   flows_crumb_label: "mobs",
   crumb_separator: "/",
+  switcher_view_all_label: "view all mobs",
   plan_trace_label: "PLAN TRACE",
   import_label: "IMPORT",
   validate_label: "VALIDATE",
@@ -74,8 +76,6 @@ const TEST_DEPLOY_VIEW_SCHEMA = {
   deploy_plan_label: "DEPLOY PLAN",
   deploy_label: "DEPLOY",
   overflow_label: "MORE",
-  settings_label: "⚙ SETTINGS",
-  settings_title: "Editor, mob, and deploy settings",
   theme_switch_prefix: "Switch to",
   theme_switch_suffix: "mode",
   dark_theme_label: "☾ dark",
@@ -99,8 +99,9 @@ const TEST_DEPLOY_VIEW_SCHEMA = {
 };
 const TEST_DEPLOY_VIEW = {
   brandLabel: "MobKit · Flow Editor",
-  flowsTabLabel: "MOBS",
+  flowTabLabel: "FLOW",
   agentsTabLabel: "AGENTS",
+  settingsTabLabel: "SETTINGS",
   mobStatusTitle: "Active mob configuration",
   mobFileLabel: "mob.toml",
   apiErrorLabel: "api error",
@@ -109,6 +110,7 @@ const TEST_DEPLOY_VIEW = {
   deployPrefixLabel: "deploy:",
   flowsCrumbLabel: "mobs",
   crumbSeparator: "/",
+  switcherViewAllLabel: "view all mobs",
   planTraceLabel: "PLAN TRACE",
   importLabel: "IMPORT",
   validateLabel: "VALIDATE",
@@ -116,8 +118,6 @@ const TEST_DEPLOY_VIEW = {
   deployPlanLabel: "DEPLOY PLAN",
   deployLabel: "DEPLOY",
   overflowLabel: "MORE",
-  settingsLabel: "⚙ SETTINGS",
-  settingsTitle: "Editor, mob, and deploy settings",
   themeSwitchPrefix: "Switch to",
   themeSwitchSuffix: "mode",
   darkThemeLabel: "☾ dark",
@@ -218,11 +218,6 @@ const TEST_AGENT_ACCESS_VIEW = {
   skillOutsideRealmHeading: "Selected from other realms:",
 };
 const TEST_SETTINGS_VIEW_SCHEMA = {
-  panel_title: "Tweaks",
-  panel_close_label: "Close tweaks",
-  load_mob_title: "Load mob",
-  load_mob_label: "Mobpack",
-  flow_stage_fallback: "draft",
   option_separator: " · ",
   unsupported_label_separator: " — not in MobKit ",
   unsupported_reason_prefix: "Unsupported by the MobKit ",
@@ -282,11 +277,6 @@ const TEST_SETTINGS_VIEW_SCHEMA = {
   inspector_layout_options: [{ value: "right", label: "Right" }, { value: "bottom", label: "Bottom" }, { value: "modal", label: "Modal" }],
 };
 const TEST_SETTINGS_VIEW = {
-  panelTitle: "Tweaks",
-  panelCloseLabel: "Close tweaks",
-  loadMobTitle: "Load mob",
-  loadMobLabel: "Mobpack",
-  flowStageFallback: "draft",
   optionSeparator: " · ",
   unsupportedLabelSeparator: " — not in MobKit ",
   unsupportedReasonPrefix: "Unsupported by the MobKit ",
@@ -594,14 +584,14 @@ assert.deepEqual(controller.topRailState({
   contract: null,
   deploySettings: controller.deployDefaultsFromSchema(null),
   stage: "draft",
-  view: "flows",
+  view: "library",
+  mobOpen: false,
   theme: "light",
   deployView: TEST_DEPLOY_VIEW,
 }), {
-  inEditor: false,
+  mobOpen: false,
+  sectionTabs: [],
   brandLabel: "MobKit · Flow Editor",
-  flowsTabLabel: "MOBS",
-  agentsTabLabel: "AGENTS",
   mobStatusTitle: "Active mob configuration",
   mobFileLabel: "mob.toml",
   contractState: "loading",
@@ -617,8 +607,6 @@ assert.deepEqual(controller.topRailState({
   deployPlanLabel: "DEPLOY PLAN",
   deployLabel: "DEPLOY",
   overflowLabel: "MORE",
-  settingsLabel: "⚙ SETTINGS",
-  settingsTitle: "Editor, mob, and deploy settings",
   deployActionsDisabled: true,
   deployRunDisabled: true,
   themeToggleTitle: "Switch to dark mode",
@@ -633,13 +621,17 @@ assert.deepEqual(controller.topRailState({
   deploySettings: testDeploySettings(),
   stage: "valid",
   view: "editor",
+  mobOpen: true,
   theme: "dark",
   deployView: TEST_DEPLOY_VIEW,
 }), {
-  inEditor: true,
+  mobOpen: true,
+  sectionTabs: [
+    { target: "flow-tab", view: "editor", label: "FLOW", current: true },
+    { target: "agents-tab", view: "agents", label: "AGENTS", current: false },
+    { target: "settings-tab", view: "settings", label: "SETTINGS", current: false },
+  ],
   brandLabel: "MobKit · Flow Editor",
-  flowsTabLabel: "MOBS",
-  agentsTabLabel: "AGENTS",
   mobStatusTitle: "Active mob configuration",
   mobFileLabel: "mob.toml",
   contractState: "api ready",
@@ -655,8 +647,6 @@ assert.deepEqual(controller.topRailState({
   deployPlanLabel: "DEPLOY PLAN",
   deployLabel: "DEPLOY",
   overflowLabel: "MORE",
-  settingsLabel: "⚙ SETTINGS",
-  settingsTitle: "Editor, mob, and deploy settings",
   deployActionsDisabled: false,
   deployRunDisabled: false,
   themeToggleTitle: "Switch to light mode",
@@ -666,6 +656,19 @@ assert.deepEqual(controller.topRailState({
   graphModeTitle: "Graph Editor",
   graphModeLabel: "Graph",
 });
+assert.deepEqual(controller.topRailState({
+  contract: TEST_SCHEMA,
+  deploySettings: testDeploySettings(),
+  stage: "draft",
+  view: "settings",
+  mobOpen: true,
+  theme: "light",
+  deployView: TEST_DEPLOY_VIEW,
+}).sectionTabs.map((tab) => [tab.target, tab.view, tab.current]), [
+  ["flow-tab", "editor", false],
+  ["agents-tab", "agents", false],
+  ["settings-tab", "settings", true],
+]);
 assert.equal(controller.topRailState({
   contract: { error: "schema unavailable", deploy_settings: { command: "rkat mob deploy", surfaces: ["cli"] } },
   deploySettings: { surface: "" },
@@ -682,11 +685,22 @@ assert.equal(controller.topRailState({
   deployView: TEST_DEPLOY_VIEW,
   capabilities: { authoring_capabilities: { deploy_execute_allowed: false } },
 }).deployRunDisabled, true);
-assert.deepEqual(controller.topRailNavigationTransition("editor", "flows-tab"), { view: "flows" });
-assert.deepEqual(controller.topRailNavigationTransition("flows", "flows-tab"), { view: "editor" });
-assert.deepEqual(controller.topRailNavigationTransition("agents", "agents-tab"), { view: "agents" });
-assert.deepEqual(controller.topRailNavigationTransition("editor", "flows-crumb"), { view: "flows" });
-assert.equal(controller.topRailNavigationTransition("editor", "missing"), null);
+// The rail is a real state machine over {library, editor (FLOW), agents,
+// settings}: section targets resolve only while a mob is open, "library"
+// always goes home, and there is no toggling.
+assert.deepEqual(controller.topRailNavigationTransition("library", "flow-tab", { mobOpen: true }), { view: "editor" });
+assert.deepEqual(controller.topRailNavigationTransition("editor", "agents-tab", { mobOpen: true }), { view: "agents" });
+assert.deepEqual(controller.topRailNavigationTransition("agents", "settings-tab", { mobOpen: true }), { view: "settings" });
+assert.deepEqual(controller.topRailNavigationTransition("settings", "flow-tab", { mobOpen: true }), { view: "editor" });
+assert.deepEqual(controller.topRailNavigationTransition("editor", "flow-tab", { mobOpen: true }), { view: "editor" });
+assert.equal(controller.topRailNavigationTransition("library", "flow-tab", { mobOpen: false }), null);
+assert.equal(controller.topRailNavigationTransition("library", "agents-tab", { mobOpen: false }), null);
+assert.equal(controller.topRailNavigationTransition("library", "settings-tab", { mobOpen: false }), null);
+assert.deepEqual(controller.topRailNavigationTransition("editor", "library", { mobOpen: true }), { view: "library" });
+assert.deepEqual(controller.topRailNavigationTransition("settings", "library", { mobOpen: true }), { view: "library" });
+assert.equal(controller.topRailNavigationTransition("library", "library", { mobOpen: false }), null);
+assert.equal(controller.topRailNavigationTransition("editor", "missing", { mobOpen: true }), null);
+assert.equal(controller.topRailNavigationTransition("editor", "flows-tab", { mobOpen: true }), null);
 assert.deepEqual(controller.editorModeTransition("basic"), { editorMode: "basic" });
 assert.deepEqual(controller.editorModeTransition("advanced"), { editorMode: "advanced" });
 assert.equal(controller.editorModeTransition("graph"), null);
@@ -3037,14 +3051,10 @@ const bootstrapProjection = controller.flowCatalogBootstrapState({
       validation: { ok: false },
     },
   ],
-}, {
-  openEditor: true,
-  deployDefaults: { surface: "local" },
-  mobDefaults: { backend: "session" },
 });
 assert.deepEqual(bootstrapProjection.templates.map((row) => row.id), ["starter", "second"]);
 assert.deepEqual(bootstrapProjection.flows, []);
-assert.equal(bootstrapProjection.initialHydration, null);
+assert.equal("initialHydration" in bootstrapProjection, false);
 
 const savedRegistryBootstrap = controller.flowCatalogBootstrapState({
   blank_mobpack: {
@@ -3071,8 +3081,10 @@ const savedRegistryBootstrap = controller.flowCatalogBootstrapState({
   },
 });
 assert.deepEqual(savedRegistryBootstrap.flows.map((row) => row.id), ["saved_flow"]);
-assert.equal(savedRegistryBootstrap.initialHydration.result.document.mob_id, "saved_flow");
-assert.equal(savedRegistryBootstrap.initialHydration.options.flowRow.source, "mobkit/mobpacks/save");
+// The library is home: bootstrap projects rows only, never a startup hydration.
+assert.equal("initialHydration" in savedRegistryBootstrap, false);
+assert.equal(savedRegistryBootstrap.flows[0].source, "mobkit/mobpacks/save");
+assert.equal(savedRegistryBootstrap.flows[0].document.mob_id, "saved_flow");
 
 const runtimeRegistryBootstrap = controller.flowCatalogBootstrapState({
   sample_mobpacks: [],
@@ -3095,13 +3107,12 @@ const runtimeRegistryBootstrap = controller.flowCatalogBootstrapState({
   ],
 }, {
   registryResult: { rows: [] },
-  openEditor: true,
 });
 assert.deepEqual(runtimeRegistryBootstrap.flows.map((row) => row.id), ["runtime_live_main"]);
 assert.equal(runtimeRegistryBootstrap.flows[0].source, "mobkit/runtime/flow_projection");
-assert.equal(runtimeRegistryBootstrap.initialHydration.result.document.mob_id, "live-mob");
-assert.equal(runtimeRegistryBootstrap.initialHydration.options.id, "runtime_live_main");
-assert.equal(runtimeRegistryBootstrap.initialHydration.options.flowRow.trigger, "runtime · main");
+assert.equal("initialHydration" in runtimeRegistryBootstrap, false);
+assert.equal(runtimeRegistryBootstrap.flows[0].document.mob_id, "live-mob");
+assert.equal(runtimeRegistryBootstrap.flows[0].trigger, "runtime · main");
 
 const runtimeDedupedBootstrap = controller.flowCatalogBootstrapState({
   sample_mobpacks: [],
@@ -3144,7 +3155,6 @@ assert.deepEqual(runtimeDedupedBootstrap.flows[0].provenance, { catalog: "mobkit
 assert.deepEqual(controller.flowCatalogBootstrapState({ sample_mobpacks: [] }), {
   templates: [],
   flows: [],
-  initialHydration: null,
 });
 
 global.window.treeToGraph = () => {
@@ -4702,11 +4712,6 @@ assert.deepEqual(
   ],
 );
 const tweaksState = controller.tweaksControlState({
-  flows: [
-    { id: "f_draft", name: "Draft Mob", stage: "", source: "", document: { mob_id: "draft" } },
-    { id: "f_empty", name: "No Document", stage: "valid" },
-    { id: "f_valid", name: "Valid Mob", stage: "valid", document: { mob_id: "valid" } },
-  ],
   deploySettings: { surface: "cli", trustPolicy: "permissive", realmBackend: "sqlite" },
   mobSettings: { backendDefault: "session" },
   members: [{ id: "m_reviewer", role: "reviewer", name: "Reviewer" }],
@@ -4723,14 +4728,11 @@ const tweaksState = controller.tweaksControlState({
     },
   },
 });
-assert.deepEqual(tweaksState.loadableFlowOptions, [
-  { value: "f_draft", label: "Draft Mob · draft" },
-  { value: "f_valid", label: "Valid Mob · valid" },
-]);
-assert.equal(tweaksState.panelTitle, "Tweaks");
-assert.equal(tweaksState.panelCloseLabel, "Close tweaks");
-assert.equal(tweaksState.loadMobTitle, "Load mob");
-assert.equal(tweaksState.loadMobLabel, "Mobpack");
+// The load-mob select is gone (the library owns loading); settings state
+// no longer projects panel chrome or loadable rows.
+assert.equal("loadableFlowOptions" in tweaksState, false);
+assert.equal("panelTitle" in tweaksState, false);
+assert.equal("loadMobTitle" in tweaksState, false);
 assert.equal(tweaksState.canvasTitle, "Canvas");
 assert.equal(tweaksState.edgeStyleLabel, "Edges");
 assert.deepEqual(tweaksState.edgeStyleOptions, [
@@ -10395,6 +10397,23 @@ assert.equal(missingSelection.found, false);
 assert.equal(missingSelection.row, null);
 assert.equal(missingSelection.hydration, null);
 assert.equal(missingSelection.fallback, null);
+
+// Breadcrumb quick-switcher: draft registry rows only (runtime projections
+// stay library-only), current row flagged, view-all label from the deploy view.
+const switcherState = controller.mobSwitcherState([
+  { id: "f_existing", name: "Existing", stage: "valid", document: registryDocument },
+  { id: "f_draft", name: "Draft", stage: "draft" },
+  { id: "f_runtime", name: "Runtime", stage: "valid", runtime_projection: true, document: registryDocument },
+  { name: "no id" },
+], "f_draft", { deployView: TEST_DEPLOY_VIEW });
+assert.deepEqual(switcherState, {
+  rows: [
+    { id: "f_existing", name: "Existing", stage: "valid", className: "crumb-switcher__item" },
+    { id: "f_draft", name: "Draft", stage: "draft", className: "crumb-switcher__item is-current" },
+  ],
+  viewAllLabel: "view all mobs",
+});
+assert.deepEqual(controller.mobSwitcherState(null, "", {}), { rows: [], viewAllLabel: "" });
 
 assert.equal(controller.flowImportedIdFromDocument({
   name: "Imported Quality Flow",

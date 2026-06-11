@@ -20,7 +20,6 @@ import {
   TweakSection,
   TweakSelect,
   TweakText,
-  TweaksPanel,
   useStudioState,
   useTweaks,
   ValidateSheet,
@@ -63,8 +62,10 @@ function App() {
   // Editor sub-mode: "basic" (vertical builder) | "advanced" (grid graph).
   const [editorMode, setEditorMode] = React.useState("basic");
 
-  // view: "flows" (registry) | "editor" | "agents"
-  const [view, setView] = React.useState("editor");
+  // view: "library" (home: the mob registry) | "editor" (FLOW section) |
+  // "agents" | "settings". The three section views are tabs of the open
+  // mob; the library is where the app starts and needs no tabs.
+  const [view, setView] = React.useState("library");
   const [flows, setFlows] = React.useState([]);
   const [currentFlowId, setCurrentFlowId] = React.useState("");
   const [templates, setTemplates] = React.useState([]);
@@ -267,10 +268,6 @@ function App() {
     setFlow: setAuthoringFlow,
     contract,
   });
-  const setAuthoringDeploySettings = React.useCallback((next) => {
-    markDraft();
-    setDeploySettings(next);
-  }, [markDraft]);
   const setAuthoringMobSettings = React.useCallback((next) => {
     markDraft();
     setMobSettings(next);
@@ -304,19 +301,13 @@ function App() {
         MobKitFlowController.configureAuthoringMethodsFromSchema(schema);
         const capabilityPayload = await MobKitFlowController.loadCapabilities(rpcOptions);
         const catalogPayload = await MobKitFlowController.loadCatalogs(rpcOptions);
-        let registryPayload = await MobKitFlowController.listDocuments({}, rpcOptions).catch((error) => {
+        // The library is home: list saved drafts for the registry rows and
+        // land there. Nothing is auto-created and nothing hydrates until a
+        // row is opened or a mob is created.
+        const registryPayload = await MobKitFlowController.listDocuments({}, rpcOptions).catch((error) => {
           if (abort.signal.aborted) throw error;
           return { rows: [] };
         });
-        const hasRuntimeRows = Array.isArray(catalogPayload?.runtime_flows) && catalogPayload.runtime_flows.length > 0;
-        if ((!Array.isArray(registryPayload?.rows) || registryPayload.rows.length === 0) && !hasRuntimeRows) {
-          registryPayload = await MobKitFlowController.createDocument({
-            template: "blank",
-          }, rpcOptions).catch((error) => {
-            if (abort.signal.aborted) throw error;
-            return registryPayload;
-          });
-        }
         if (cancelled) return;
         setCapabilities(capabilityPayload);
         const nextCatalogs = MobKitFlowController.mobKitCatalogsFromSchema(schema, CATALOG_BOOT, catalogPayload);
@@ -326,19 +317,10 @@ function App() {
         contractSkillRealms.current = nextCatalogs.skillRealms;
         studio.setSkillRealms(nextCatalogs.skillRealms);
         const bootstrap = MobKitFlowController.flowCatalogBootstrapState(catalogPayload, {
-          openEditor: view === "editor",
-          deployDefaults: nextCatalogs.deployDefaults,
-          mobDefaults: nextCatalogs.mobDefaults,
           registryResult: registryPayload,
         });
         setTemplates(bootstrap.templates);
         setFlows(bootstrap.flows);
-        if (bootstrap.initialHydration) {
-          hydrateMobpackDocument(bootstrap.initialHydration.result, {
-            ...bootstrap.initialHydration.options,
-            contract: schema,
-          });
-        }
         setContract(schema);
       })
       .catch((error) => {
@@ -623,7 +605,7 @@ function App() {
     setAgentSel(next.selection);
   };
   const handleTopRailNavigation = (target) => {
-    const next = MobKitFlowController.topRailNavigationTransition(view, target);
+    const next = MobKitFlowController.topRailNavigationTransition(view, target, { mobOpen: !!currentFlowId });
     if (!next) return;
     setView(next.view);
   };
@@ -1199,7 +1181,8 @@ function App() {
     }
   };
 
-  const shellState = MobKitFlowController.topRailState({ contract, deploySettings, stage, view, theme: t.theme, deployView: catalogs.deployView, capabilities });
+  const shellState = MobKitFlowController.topRailState({ contract, deploySettings, stage, view, mobOpen: !!currentFlowId, theme: t.theme, deployView: catalogs.deployView, capabilities });
+  const switcherState = MobKitFlowController.mobSwitcherState(flows, currentFlowId, { deployView: catalogs.deployView });
 
   return (
     <div className={"app density--" + t.density + " inspector--" + t.inspectorLayout + " view--" + view}>
@@ -1208,6 +1191,11 @@ function App() {
         view={view}
         onNavigate={handleTopRailNavigation}
         currentFlowName={currentFlow?.name || "—"}
+        switcherState={switcherState}
+        onOpenMob={(id) => {
+          const selection = MobKitFlowController.flowRegistrySelectionState(flows, id);
+          openFlowRegistrySelection(selection);
+        }}
         contract={contract}
         theme={t.theme}
         railState={shellState}
@@ -1219,7 +1207,6 @@ function App() {
         onImport={() => importInputRef.current?.click()}
         onDeployPlanTrace={handleDeployPlanTrace}
         onYaml={handleSource}
-        onToggleSettings={() => window.dispatchEvent(new CustomEvent("mobkit-flow-editor:settings-toggle"))}
         deploySettings={deploySettings}
       />
       <input
@@ -1230,7 +1217,7 @@ function App() {
         onChange={handleImportFile}
       />
 
-      {view === "flows" && (
+      {view === "library" && (
         <FlowsView
           flows={flows}
           currentFlowId={currentFlowId}
@@ -1343,6 +1330,21 @@ function App() {
         />
       )}
 
+      {view === "settings" && (
+        <Tweaks
+          t={t}
+          setTweak={setTweak}
+          deploySettings={deploySettings}
+          mobSettings={mobSettings}
+          members={studio.members}
+          modelCatalog={catalogs.models}
+          contract={contract}
+          deployCommandPreview={deployCommandPreview}
+          settingsView={catalogs.settingsView}
+          applyAuthoringIntent={applyMobKitAuthoringOperation}
+        />
+      )}
+
       {view === "agents" && (
         <AgentsView
           studio={mobKitStudio}
@@ -1407,26 +1409,6 @@ function App() {
       <DeployPlanTrace open={deployPlanOpen} onClose={() => applyApiOverlayPatch(MobKitFlowController.deployPlanTraceCloseTransition())} onActiveStep={setActiveStepId} runKey={deployPlanKey} document={deployPlanDocument} plan={deployPlanResult} deployView={catalogs.deployView} />
       <ValidateSheet open={validate} onClose={() => applyApiOverlayPatch(MobKitFlowController.validationSheetCloseTransition())} onPublish={handlePublish} onDeployPlan={handleDeployPlan} onDeployRun={handleDeployRun} results={validationResults} stage={stage} deployView={catalogs.deployView} capabilities={capabilities} />
       <SourceDrawer open={sourceOpen} onClose={clearSourceProjection} state={sourceDocument} sourceView={catalogs.sourceView} />
-      <Tweaks
-        t={t}
-        setTweak={setTweak}
-        flows={flows}
-        currentFlowId={currentFlowId}
-        deploySettings={deploySettings}
-        setDeploySettings={setAuthoringDeploySettings}
-        mobSettings={mobSettings}
-        setMobSettings={setAuthoringMobSettings}
-        members={studio.members}
-        modelCatalog={catalogs.models}
-        contract={contract}
-        deployCommandPreview={deployCommandPreview}
-        settingsView={catalogs.settingsView}
-        applyAuthoringIntent={applyMobKitAuthoringOperation}
-        onLoadFlow={(id) => {
-          const selection = MobKitFlowController.flowRegistrySelectionState(flows, id);
-          openFlowRegistrySelection(selection);
-        }}
-      />
     </div>
   );
 }
@@ -1465,7 +1447,13 @@ async function importParamsFromFile(file) {
   });
 }
 
-function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, onToggleTheme, onToggleSettings, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDeployPlanTrace, onYaml, contract, deploySettings }) {
+function TopRail({ stage, view, onNavigate, currentFlowName, switcherState, onOpenMob, theme, railState, onToggleTheme, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDeployPlanTrace, onYaml, contract, deploySettings }) {
+  // <details> keeps itself open across re-renders; picking a mob (or "view
+  // all") must collapse the switcher the same way a menu choice closes a menu.
+  const closeSwitcher = (event) => {
+    const details = event.currentTarget.closest("details");
+    if (details) details.removeAttribute("open");
+  };
   return (
     <header className="toprail">
       <div className="brand">
@@ -1473,8 +1461,9 @@ function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, o
         <span>{railState.brandLabel}</span>
       </div>
       <nav className="viewtabs">
-        <button className={"viewtab" + (view === "flows" || view === "editor" ? " is-current" : "")} onClick={() => onNavigate("flows-tab")}>{railState.flowsTabLabel}</button>
-        <button className={"viewtab" + (view === "agents" ? " is-current" : "")} onClick={() => onNavigate("agents-tab")}>{railState.agentsTabLabel}</button>
+        {railState.sectionTabs.map((tab) => (
+          <button key={tab.target} className={"viewtab" + (tab.current ? " is-current" : "")} onClick={() => onNavigate(tab.target)}>{tab.label}</button>
+        ))}
       </nav>
       <div className="mob-status" title={railState.mobStatusTitle}>
         <span className="glyph" />
@@ -1486,16 +1475,25 @@ function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, o
         <span className="name">{railState.deploySurface}</span>
       </div>
       <nav className="crumbs">
-        {railState.inEditor && (
+        {railState.mobOpen && (
           <>
-            <button className="crumb crumb--link" onClick={() => onNavigate("flows-crumb")}>{railState.flowsCrumbLabel}</button>
+            <button className="crumb crumb--link" onClick={() => onNavigate("library")}>{railState.flowsCrumbLabel}</button>
             <span className="crumb crumb--sep">{railState.crumbSeparator}</span>
-            <span className="crumb is-current">{currentFlowName}</span>
+            {/* Keyed on the view so navigating sections remounts (closes) the dropdown. */}
+            <details className="crumb-switcher" key={view}>
+              <summary className="crumb is-current crumb-switcher__summary">{currentFlowName}</summary>
+              <div className="crumb-switcher__panel">
+                {switcherState.rows.map((row) => (
+                  <button key={row.id} className={row.className} onClick={(event) => { closeSwitcher(event); onOpenMob(row.id); }}>{row.name}</button>
+                ))}
+                <button className="crumb-switcher__item crumb-switcher__item--all" onClick={(event) => { closeSwitcher(event); onNavigate("library"); }}>{switcherState.viewAllLabel}</button>
+              </div>
+            </details>
           </>
         )}
       </nav>
       <div className="actions">
-        {railState.inEditor && (
+        {railState.mobOpen && (
           <>
             <span className="stage" data-state={stage}><span className="glyph" />{stage}</span>
             <button className="btn btn--ghost btn--sm" onClick={onValidate}>{railState.validateLabel}</button>
@@ -1517,13 +1515,6 @@ function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, o
           title={railState.themeToggleTitle}
         >
           {railState.themeToggleLabel}
-        </button>
-        <button
-          className="btn btn--ghost btn--sm settings-toggle"
-          onClick={onToggleSettings}
-          title={railState.settingsTitle}
-        >
-          {railState.settingsLabel}
         </button>
       </div>
     </header>
@@ -1636,7 +1627,12 @@ function ModeToggle({ mode, onSelectMode, railState }) {
   );
 }
 
-function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDeploySettings, mobSettings, setMobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, applyAuthoringIntent = null, onLoadFlow }) {
+// ── Settings section ──────────────────────────────────────────────
+// Full-page settings surface for the open mob (the SETTINGS rail tab),
+// reusing the generic Tweak* controls from @flow-editor-components. The
+// floating panel shell is gone from this app; the components package
+// still exports it for embedders.
+function Tweaks({ t, setTweak, deploySettings, mobSettings, members = [], modelCatalog = [], contract, deployCommandPreview, settingsView = null, applyAuthoringIntent = null }) {
   const setDeployField = (field, value) => {
     if (!applyAuthoringIntent) return;
     applyAuthoringIntent({
@@ -1661,7 +1657,6 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     });
   };
   const controlState = MobKitFlowController.tweaksControlState({
-    flows,
     deploySettings,
     mobSettings,
     members,
@@ -1670,81 +1665,85 @@ function Tweaks({ t, setTweak, flows = [], currentFlowId, deploySettings, setDep
     settingsView,
   });
   return (
-    <TweaksPanel title={controlState.panelTitle} closeLabel={controlState.panelCloseLabel}>
-      <TweakSection title={controlState.loadMobTitle}>
-        <TweakSelect
-          label={controlState.loadMobLabel}
-          value={currentFlowId || ""}
-          options={controlState.loadableFlowOptions}
-          onChange={(id) => { onLoadFlow && onLoadFlow(id); }}
-        />
-      </TweakSection>
-      <TweakSection title={controlState.canvasTitle}>
-        <TweakRadio label={controlState.edgeStyleLabel} value={t.edgeStyle} onChange={v => setTweak("edgeStyle", v)}
-          options={controlState.edgeStyleOptions} />
-        <TweakRadio label={controlState.densityLabel} value={t.density} onChange={v => setTweak("density", v)}
-          options={controlState.densityOptions} />
-      </TweakSection>
-      <TweakSection title={controlState.themeTitle}>
-        <TweakRadio label={controlState.themeModeLabel} value={t.theme} onChange={v => setTweak("theme", v)}
-          options={controlState.themeModeOptions} />
-      </TweakSection>
-      <TweakSection title={controlState.mobTitle}>
-        <TweakSelect
-          label={controlState.orchestratorLabel}
-          value={mobSettings.orchestrator || ""}
-          options={controlState.profileOptions}
-          onChange={v => setMobField("orchestrator", v)}
-        />
-        <TweakRadio label={controlState.autoWireLabel} value={mobSettings.autoWireOrchestrator ? "yes" : "no"} onChange={v => setMobField("autoWireOrchestrator", v === "yes")}
-          options={controlState.autoWireOptions} />
-        <RoleWiringEditor
-          value={mobSettings.roleWiring || []}
-          profileOptions={controlState.profileChoices}
-          settingsView={settingsView}
-          onAction={editRoleWiring}
-        />
-        <TweakSelect label={controlState.defaultBackendLabel} value={mobSettings.backendDefault || ""} onChange={v => setMobField("backendDefault", v)}
-          options={controlState.mobBackendOptions} />
-        {(mobSettings.backendDefault === "external" || mobSettings.externalAddressBase) && (
-          <TweakText label={controlState.externalBaseLabel} value={mobSettings.externalAddressBase || ""} placeholder={controlState.externalBasePlaceholder} onChange={v => setMobField("externalAddressBase", v)} />
-        )}
-        <AdvancedMobSettingsEditor
-          value={mobSettings.advanced || {}}
-          settingsView={settingsView}
-          onChange={(advanced) => setMobField("advanced", advanced)}
-        />
-      </TweakSection>
-      <TweakSection title={controlState.deployTitle}>
-        <TweakSelect label={controlState.surfaceLabel} value={deploySettings.surface} onChange={v => setDeployField("surface", v)}
-          options={controlState.surfaceOptions} />
-        <TweakSelect label={controlState.trustLabel} value={deploySettings.trustPolicy} onChange={v => setDeployField("trustPolicy", v)}
-          options={controlState.trustOptions} />
-        <TweakSelect
-          label={controlState.modelLabel}
-          value={deploySettings.model || ""}
-          options={controlState.modelOptions}
-          onChange={v => setDeployField("model", v)}
-        />
-        <TweakText label={controlState.durationLabel} value={deploySettings.maxDuration || ""} placeholder={controlState.durationPlaceholder} onChange={v => setDeployField("maxDuration", v)} />
-        <TweakNumber label={controlState.toolCallsLabel} value={deploySettings.maxToolCalls ?? ""} min={controlState.toolCallsMin} max={controlState.toolCallsMax} onChange={v => setDeployField("maxToolCalls", v)} />
-        <TweakNumber label={controlState.tokensLabel} value={deploySettings.maxTotalTokens ?? ""} min={controlState.tokensMin} max={controlState.tokensMax} onChange={v => setDeployField("maxTotalTokens", v)} />
-        <TweakRadio label={controlState.realmLabel} value={deploySettings.isolated ? "isolated" : "shared"} onChange={v => setDeployField("isolated", v === "isolated")}
-          options={controlState.realmOptions} />
-        {!deploySettings.isolated && <TweakText label={controlState.realmIdLabel} value={deploySettings.realm || ""} placeholder={controlState.realmIdPlaceholder} onChange={v => setDeployField("realm", v)} />}
-        <TweakSelect label={controlState.backendLabel} value={deploySettings.realmBackend || ""} onChange={v => setDeployField("realmBackend", v)}
-          options={controlState.realmBackendOptions} />
-        <TweakText label={controlState.promptLabel} value={deploySettings.prompt || ""} placeholder={controlState.promptPlaceholder} onChange={v => setDeployField("prompt", v)} />
-        <div className="twk-row">
-          <div className="twk-lbl"><span>{controlState.commandLabel}</span></div>
-          <code className="deploy-command">{deployCommandPreview || controlState.commandFallback}</code>
-        </div>
-      </TweakSection>
-      <TweakSection title={controlState.inspectorTitle}>
-        <TweakRadio label={controlState.inspectorLayoutLabel} value={t.inspectorLayout} onChange={v => setTweak("inspectorLayout", v)}
-          options={controlState.inspectorLayoutOptions} />
-      </TweakSection>
-    </TweaksPanel>
+    <div className="settings-view">
+      <div className="settings-view__groups">
+        <section className="settings-view__group">
+          <TweakSection label={controlState.canvasTitle}>
+            <TweakRadio label={controlState.edgeStyleLabel} value={t.edgeStyle} onChange={v => setTweak("edgeStyle", v)}
+              options={controlState.edgeStyleOptions} />
+            <TweakRadio label={controlState.densityLabel} value={t.density} onChange={v => setTweak("density", v)}
+              options={controlState.densityOptions} />
+          </TweakSection>
+        </section>
+        <section className="settings-view__group">
+          <TweakSection label={controlState.themeTitle}>
+            <TweakRadio label={controlState.themeModeLabel} value={t.theme} onChange={v => setTweak("theme", v)}
+              options={controlState.themeModeOptions} />
+          </TweakSection>
+        </section>
+        <section className="settings-view__group">
+          <TweakSection label={controlState.inspectorTitle}>
+            <TweakRadio label={controlState.inspectorLayoutLabel} value={t.inspectorLayout} onChange={v => setTweak("inspectorLayout", v)}
+              options={controlState.inspectorLayoutOptions} />
+          </TweakSection>
+        </section>
+        <section className="settings-view__group">
+          <TweakSection label={controlState.mobTitle}>
+            <TweakSelect
+              label={controlState.orchestratorLabel}
+              value={mobSettings.orchestrator || ""}
+              options={controlState.profileOptions}
+              onChange={v => setMobField("orchestrator", v)}
+            />
+            <TweakRadio label={controlState.autoWireLabel} value={mobSettings.autoWireOrchestrator ? "yes" : "no"} onChange={v => setMobField("autoWireOrchestrator", v === "yes")}
+              options={controlState.autoWireOptions} />
+            <RoleWiringEditor
+              value={mobSettings.roleWiring || []}
+              profileOptions={controlState.profileChoices}
+              settingsView={settingsView}
+              onAction={editRoleWiring}
+            />
+            <TweakSelect label={controlState.defaultBackendLabel} value={mobSettings.backendDefault || ""} onChange={v => setMobField("backendDefault", v)}
+              options={controlState.mobBackendOptions} />
+            {(mobSettings.backendDefault === "external" || mobSettings.externalAddressBase) && (
+              <TweakText label={controlState.externalBaseLabel} value={mobSettings.externalAddressBase || ""} placeholder={controlState.externalBasePlaceholder} onChange={v => setMobField("externalAddressBase", v)} />
+            )}
+            <AdvancedMobSettingsEditor
+              value={mobSettings.advanced || {}}
+              settingsView={settingsView}
+              onChange={(advanced) => setMobField("advanced", advanced)}
+            />
+          </TweakSection>
+        </section>
+        <section className="settings-view__group">
+          <TweakSection label={controlState.deployTitle}>
+            <TweakSelect label={controlState.surfaceLabel} value={deploySettings.surface} onChange={v => setDeployField("surface", v)}
+              options={controlState.surfaceOptions} />
+            <TweakSelect label={controlState.trustLabel} value={deploySettings.trustPolicy} onChange={v => setDeployField("trustPolicy", v)}
+              options={controlState.trustOptions} />
+            <TweakSelect
+              label={controlState.modelLabel}
+              value={deploySettings.model || ""}
+              options={controlState.modelOptions}
+              onChange={v => setDeployField("model", v)}
+            />
+            <TweakText label={controlState.durationLabel} value={deploySettings.maxDuration || ""} placeholder={controlState.durationPlaceholder} onChange={v => setDeployField("maxDuration", v)} />
+            <TweakNumber label={controlState.toolCallsLabel} value={deploySettings.maxToolCalls ?? ""} min={controlState.toolCallsMin} max={controlState.toolCallsMax} onChange={v => setDeployField("maxToolCalls", v)} />
+            <TweakNumber label={controlState.tokensLabel} value={deploySettings.maxTotalTokens ?? ""} min={controlState.tokensMin} max={controlState.tokensMax} onChange={v => setDeployField("maxTotalTokens", v)} />
+            <TweakRadio label={controlState.realmLabel} value={deploySettings.isolated ? "isolated" : "shared"} onChange={v => setDeployField("isolated", v === "isolated")}
+              options={controlState.realmOptions} />
+            {!deploySettings.isolated && <TweakText label={controlState.realmIdLabel} value={deploySettings.realm || ""} placeholder={controlState.realmIdPlaceholder} onChange={v => setDeployField("realm", v)} />}
+            <TweakSelect label={controlState.backendLabel} value={deploySettings.realmBackend || ""} onChange={v => setDeployField("realmBackend", v)}
+              options={controlState.realmBackendOptions} />
+            <TweakText label={controlState.promptLabel} value={deploySettings.prompt || ""} placeholder={controlState.promptPlaceholder} onChange={v => setDeployField("prompt", v)} />
+            <div className="twk-row">
+              <div className="twk-lbl"><span>{controlState.commandLabel}</span></div>
+              <code className="deploy-command">{deployCommandPreview || controlState.commandFallback}</code>
+            </div>
+          </TweakSection>
+        </section>
+      </div>
+    </div>
   );
 }
 
