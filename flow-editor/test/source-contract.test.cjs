@@ -7,8 +7,6 @@ const src = (name) => fs.readFileSync(path.join(root, "src", name), "utf8");
 const testSrc = (name) => fs.readFileSync(path.join(root, "test", name), "utf8");
 
 const data = src("data.js");
-const builder = src("builder.jsx");
-const agents = src("agents.jsx");
 const app = src("app.jsx");
 const styles = src("styles.css");
 // The controller plane is @flow-editor-core plus the ~10-line controller.js
@@ -38,6 +36,8 @@ const tweaksPanel = componentsSrc(path.join("tweaks", "tweaks-panel.tsx"));
 const graph = componentsSrc(path.join("graph", "graph.tsx"));
 const inspector = componentsSrc(path.join("inspector", "inspector.tsx"));
 const overlays = componentsSrc(path.join("overlays", "overlays.tsx"));
+const agents = componentsSrc(path.join("agents", "agents.tsx"));
+const builder = componentsSrc(path.join("builder", "builder.tsx"));
 const devServer = fs.readFileSync(path.join(root, "dev-server.cjs"), "utf8");
 const makefile = fs.readFileSync(path.join(root, "..", "Makefile"), "utf8");
 const ciWorkflow = fs.readFileSync(path.join(root, "..", ".github", "workflows", "ci.yml"), "utf8");
@@ -88,7 +88,10 @@ const schemaEditorBlock = (agents.match(/function SchemaEditor[\s\S]*?function S
 const agentsEnumValueChipBlock = (agents.match(/function SchemaEnumValueChip[\s\S]*?function SchemaField/) || [""])[0];
 const agentsSchemaFieldBlock = (agents.match(/function SchemaField[\s\S]*?function ProviderParamsEditor/) || [""])[0];
 const providerParamsBlock = (agents.match(/function ProviderParamsEditor[\s\S]*?\/\/ ── Skill access/) || [""])[0];
-const agentsSkillAccessBlock = (agents.match(/function SkillAccess[\s\S]*?window\.AgentsView/) || [""])[0];
+// Re-anchored in S22: the legacy window.AgentsView footer is gone (build.cjs's
+// shell adapter assigns the window globals); SkillAccess is the last function
+// in the moved module, so the block scans to end-of-file.
+const agentsSkillAccessBlock = (agents.match(/function SkillAccess[\s\S]*$/) || [""])[0];
 const inspectorRootBlock = (inspector.match(/function Inspector[\s\S]*?\/\/ ── Template/) || [""])[0];
 const inspectorTemplateBlock = (inspector.match(/function TemplateInspector[\s\S]*?\/\/ ── Gate/) || [""])[0];
 const inspectorGateBlock = (inspector.match(/function GateInspector[\s\S]*?function InstanceInspector/) || [""])[0];
@@ -115,7 +118,7 @@ const authoringSkillRealmsResponseBlock = (mobpackRust.match(/fn authoring_skill
 
 for (const [name, source] of [
   ["data.js", data],
-  ["builder.jsx", builder],
+  ["builder/builder.tsx", builder],
   ["app.jsx", app],
 ]) {
   assert(!/\bmock\b/i.test(source), `${name} must not carry local mock data paths`);

@@ -1,4 +1,3 @@
-/* global React */
 // BuilderView — linear top→bottom mob flow builder. Emits a mob flow
 // (the [flows.<id>.root] FrameSpec of a mobpack's mob.toml).
 //
@@ -17,6 +16,8 @@
 // right after Input).
 // The vertical START → step → step layout mirrors how a FrameSpec reads
 // top-to-bottom along its depends_on chain.
+
+import { InlineSourceEditor } from "../overlays/overlays";
 
 function CondValue({ field, value, onChange, conditionView = null }) {
   const control = window.MobKitFlowController.conditionValueControl(field, value, conditionView);
@@ -37,7 +38,7 @@ function CondValue({ field, value, onChange, conditionView = null }) {
   return <input className="field__input bld-cond__val" placeholder={control.placeholder} value={control.value} onChange={e => onChange(e.target.value)} />;
 }
 
-function InputEnumValueChip({ field, value, index, onChange }) {
+function InputEnumValueChip({ field, value, index, onChange }: any) {
   const [draftValue, setDraftValue] = React.useState(value || "");
   React.useEffect(() => {
     setDraftValue(value || "");
@@ -59,7 +60,7 @@ function InputEnumValueChip({ field, value, index, onChange }) {
   );
 }
 
-function InputParamField({ param, normalizeName, onRename, onChange, onDelete, contract, basicView = null }) {
+function InputParamField({ param, normalizeName, onRename, onChange, onDelete, contract, basicView = null }: any) {
   const fieldState = window.MobKitFlowController.inputParamFieldControlState(param, contract, basicView);
   const values = fieldState.enumValues;
   const previousNameRef = React.useRef(null);
@@ -121,7 +122,7 @@ function InputParamField({ param, normalizeName, onRename, onChange, onDelete, c
   );
 }
 
-function BranchConditionEditor({ index, branch, options, schemas, onChange, contract, basicView = null, conditionView = null }) {
+function BranchConditionEditor({ index, branch, options, schemas, onChange, contract, basicView = null, conditionView = null }: any) {
   const conditionState = window.MobKitFlowController.basicBranchConditionControlState({
     branch: { ...branch, index },
     options,
@@ -159,7 +160,7 @@ function BranchConditionEditor({ index, branch, options, schemas, onChange, cont
   );
 }
 
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, sourceToggleLabel = "", onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringIntent = null }) {
+export function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, sourceToggleLabel = "", onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringIntent = null }) {
   const members = studio?.members || [];
   const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
   const [selLocal, setSelLocal] = React.useState(null);
@@ -430,7 +431,7 @@ function StepCard({ studio, step, index, selected, onSelect, contract, basicView
   );
 }
 
-function InsertBtn({ onClick, mid, mode, title = "" }) {
+function InsertBtn({ onClick, mid, mode, title = "" }: any) {
   if (mode === "flow") {
     return (
       <div className={"bld-insert bld-insert--conn" + (mid ? " bld-insert--mid" : "")}>
@@ -879,7 +880,7 @@ function ToolScopeEditor({ label, emptyLabel, member, selected, onChange, mode =
   );
 }
 
-function PanelHead({ icon, iconTint, title, sub, onClose, deleteMode }) {
+function PanelHead({ icon, iconTint, title, sub, onClose, deleteMode }: any) {
   return (
     <div className="bld-panel__head">
       <div className="bld-panel__head-main">
@@ -890,7 +891,7 @@ function PanelHead({ icon, iconTint, title, sub, onClose, deleteMode }) {
     </div>
   );
 }
-function Field({ label, children }) {
+function Field({ label, children }: any) {
   return <div className="field" style={{ marginTop: 14 }}><label className="field__label">{label}</label>{children}</div>;
 }
 function PanelTips({ title, items }) {
@@ -932,4 +933,3 @@ function findStep(steps, id) {
   return null;
 }
 
-window.BuilderView = BuilderView;

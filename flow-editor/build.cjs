@@ -32,15 +32,13 @@ const scriptOrder = [
   CORE_SCRIPT,
   "controller.js",
   COMPONENTS_SCRIPT,
-  "agents.jsx",
-  "builder.jsx",
   "app.jsx",
 ];
 
 // The window globals the legacy files assigned (tweaks-panel.jsx's
 // Object.assign(window, ...) footer; the window.X = X footers of
-// overlays.jsx, inspector.jsx, and graph.jsx); grows per slice as each
-// .jsx file moves into @flow-editor-components.
+// overlays.jsx, inspector.jsx, graph.jsx, agents.jsx, and builder.jsx);
+// grows per slice as each .jsx file moves into @flow-editor-components.
 const componentsWindowGlobals = [
   "useTweaks", "TweaksPanel", "TweakSection", "TweakRow",
   "TweakSlider", "TweakToggle", "TweakRadio", "TweakSelect",
@@ -48,6 +46,7 @@ const componentsWindowGlobals = [
   "DeployPlanTrace", "ValidateSheet", "SourceDrawer", "InlineSourceEditor",
   "Inspector", "AddNodeMenu",
   "useStudioState", "GraphEditor",
+  "AgentsView", "BuilderView",
 ];
 
 async function buildCoreIife() {

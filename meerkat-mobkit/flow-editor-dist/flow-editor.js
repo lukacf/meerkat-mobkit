@@ -11294,6 +11294,8 @@ var MobKitFlowComponents = (() => {
   var index_exports = {};
   __export(index_exports, {
     AddNodeMenu: () => AddNodeMenu,
+    AgentsView: () => AgentsView,
+    BuilderView: () => BuilderView,
     DeployPlanTrace: () => DeployPlanTrace,
     GraphEditor: () => GraphEditor,
     InlineSourceEditor: () => InlineSourceEditor,
@@ -11314,6 +11316,1221 @@ var MobKitFlowComponents = (() => {
     useStudioState: () => useStudioState,
     useTweaks: () => useTweaks
   });
+
+  // ../packages/flow-editor-components/src/agents/agents.tsx
+  function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+    return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAgentIntent, toolCatalog, modelCatalog, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent, agentView, agentDetailView, agentAccessView, schemaView })));
+  }
+  function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAgentIntent = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
+    const [schemaAddResult, setSchemaAddResult] = React.useState(null);
+    const listState = window.MobKitFlowController.agentListState({
+      members: studio.members,
+      instances: studio.instances,
+      schemas: studio.schemas,
+      selection: agentSel,
+      agentView
+    });
+    const schemaAddErrorState = window.MobKitFlowController.schemaDefinitionAddErrorState(schemaAddResult, listState.schemaAddFallbackError);
+    return /* @__PURE__ */ React.createElement("aside", { className: "agents-list" }, /* @__PURE__ */ React.createElement("div", { className: "agents-list__head" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__title" }, listState.agentsHeading), /* @__PURE__ */ React.createElement("span", { className: "agents-list__count" }, listState.memberCount)), /* @__PURE__ */ React.createElement("div", { className: "agents-list__scroll" }, listState.memberRows.map((row) => {
+      return /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          key: row.id,
+          className: row.itemClass,
+          onClick: () => setAgentSel(window.MobKitFlowController.agentListSelectionProjection("agent", row.id))
+        },
+        /* @__PURE__ */ React.createElement("span", { className: "agents-list__bullet", "data-role": row.bulletRole, style: row.bulletStyle }, "\u25CF"),
+        /* @__PURE__ */ React.createElement("div", { className: "agents-list__col" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "agents-list__sub" }, row.subLabel)),
+        /* @__PURE__ */ React.createElement("span", { className: row.placedClass }, row.placedLabel)
+      );
+    }), /* @__PURE__ */ React.createElement(AddAgentControl, { studio, setAgentSel, agentDefinitions, applyAgentIntent, contract, deploySettings, toolCatalog, modelCatalog, agentView })), /* @__PURE__ */ React.createElement("div", { className: "agents-list__head agents-list__head--sub" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__title" }, listState.schemasHeading), /* @__PURE__ */ React.createElement("span", { className: "agents-list__count" }, listState.schemaCount)), /* @__PURE__ */ React.createElement("div", { className: "agents-list__scroll" }, listState.schemaRows.map((row) => {
+      return /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          key: row.id,
+          className: row.itemClass,
+          onClick: () => setAgentSel(window.MobKitFlowController.agentListSelectionProjection("schema", row.id))
+        },
+        /* @__PURE__ */ React.createElement("span", { className: "agents-list__bullet", "data-role": row.bulletRole, style: row.bulletStyle }, "\u25A2"),
+        /* @__PURE__ */ React.createElement("div", { className: "agents-list__col" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__name" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "agents-list__sub" }, row.subLabel))
+      );
+    }), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        className: "agents-list__add",
+        onClick: () => {
+          if (!applyAgentIntent) {
+            setSchemaAddResult({ ok: false, error: listState.authoringOperationUnavailableError });
+            return;
+          }
+          setSchemaAddResult(null);
+          applyAgentIntent({ intent: "schema.add" }).then((result) => {
+            if (result?.ok === false) {
+              setSchemaAddResult(result);
+              return;
+            }
+            const selection = result?.selection;
+            setSchemaAddResult(null);
+            if (selection?.kind) setAgentSel(selection);
+          }).catch((error) => {
+            setSchemaAddResult({
+              ok: false,
+              error: error?.message || String(error || listState.schemaAddFallbackError)
+            });
+          });
+        }
+      },
+      listState.addSchemaLabel
+    ), schemaAddErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaAddErrorState.text)));
+  }
+  function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAgentIntent = null, contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
+    const [lastAddResult, setLastAddResult] = React.useState(null);
+    const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
+    const definitionErrorState = window.MobKitFlowController.agentDefinitionAddErrorState(lastAddResult, agentView);
+    const createFromDefinition = async (definitionId) => {
+      if (!applyAgentIntent) {
+        setLastAddResult({ ok: false, error: definitionState.authoringOperationUnavailableError });
+        return;
+      }
+      if (studio.snap) studio.snap();
+      const result = await applyAgentIntent({ intent: "agent.addDefinition", definitionId });
+      setLastAddResult(result);
+      if (!result.ok) return;
+      setAgentSel(result.selection);
+    };
+    if (!definitionState.hasDefinitions) {
+      return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          className: definitionState.controlClass,
+          disabled: true,
+          title: definitionState.title
+        },
+        definitionState.unavailableLabel
+      ), definitionErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, definitionErrorState.text));
+    }
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
+      "select",
+      {
+        className: definitionState.controlClass,
+        value: definitionState.value,
+        title: definitionState.title,
+        onChange: (e) => {
+          const id = e.target.value;
+          if (!id) return;
+          createFromDefinition(id);
+          e.target.value = "";
+        }
+      },
+      /* @__PURE__ */ React.createElement("option", { value: definitionState.placeholderOption.value }, definitionState.placeholderOption.label),
+      definitionState.optionRows.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))
+    ), definitionErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, definitionErrorState.text));
+  }
+  function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+    const selectionState = window.MobKitFlowController.agentSelectionState({
+      selection: agentSel,
+      members: studio.members,
+      schemas: studio.schemas,
+      agentView
+    });
+    if (selectionState.kind === "empty") {
+      return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, /* @__PURE__ */ React.createElement("div", { className: "agents-empty__head" }, selectionState.emptyState.title), selectionState.emptyState.lines.map((line, index) => /* @__PURE__ */ React.createElement("div", { className: "agents-empty__line", key: index }, line)));
+    }
+    if (selectionState.kind === "schema") {
+      if (!selectionState.schema) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingSchemaLabel);
+      return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow, schemaView, applyAgentIntent });
+    }
+    if (!selectionState.member) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingAgentLabel);
+    return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent, agentView, agentDetailView, agentAccessView });
+  }
+  function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null }) {
+    const [memberEditError, setMemberEditError] = React.useState("");
+    const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
+    React.useEffect(() => {
+      setDeleteConfirmOpen(false);
+    }, [member.id]);
+    const mobKitOperationError = (result, fallback) => {
+      return window.MobKitFlowController.operationErrorText(result, fallback);
+    };
+    const editorState = window.MobKitFlowController.agentEditorControlState({
+      member,
+      instances: studio.instances,
+      schemas: studio.schemas,
+      contract,
+      deploySettings,
+      modelCatalog,
+      agentDetailView,
+      agentView
+    });
+    const unavailableError = editorState.authoringOperationUnavailableError;
+    const change = async (patch) => {
+      if (!patch || typeof patch !== "object" || !Object.keys(patch).length) return;
+      if (!applyAgentIntent) {
+        setMemberEditError(unavailableError);
+        return;
+      }
+      try {
+        if (studio.snap) studio.snap();
+        const result = await applyAgentIntent({ intent: "agent.updateMember", memberId: member.id, patch });
+        if (!result?.ok) {
+          setMemberEditError(mobKitOperationError(result, editorState.memberUpdateFallbackError));
+          return;
+        }
+        setMemberEditError("");
+      } catch (error) {
+        setMemberEditError(error?.message || editorState.memberUpdateFallbackError);
+      }
+    };
+    const [toolDraft, setToolDraft] = React.useState("");
+    const [toolDraftError, setToolDraftError] = React.useState("");
+    const [schemaChangeResult, setSchemaChangeResult] = React.useState(null);
+    const toolAccessState = window.MobKitFlowController.memberToolAccessState(member, toolCatalog, agentAccessView);
+    const schemaErrorState = window.MobKitFlowController.memberSchemaChangeErrorState(schemaChangeResult);
+    const addToolAccess = async (raw) => {
+      const toolId = String(raw || "").trim();
+      if (!toolId) {
+        setToolDraftError(toolAccessState.emptyToolError);
+        return;
+      }
+      if (!applyAgentIntent) {
+        setToolDraftError(toolAccessState.authoringOperationUnavailableError);
+        return;
+      }
+      try {
+        if (studio.snap) studio.snap();
+        const result = await applyAgentIntent({ intent: "agent.addTool", memberId: member.id, toolId });
+        if (!result?.ok) {
+          setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
+          return;
+        }
+        setToolDraft("");
+        setToolDraftError("");
+      } catch (error) {
+        setToolDraftError(error?.message || editorState.toolUpdateFallbackError);
+      }
+    };
+    const removeToolAccess = async (toolId) => {
+      if (!applyAgentIntent) {
+        setToolDraftError(toolAccessState.authoringOperationUnavailableError);
+        return;
+      }
+      try {
+        if (studio.snap) studio.snap();
+        const result = await applyAgentIntent({ intent: "agent.removeTool", memberId: member.id, toolId });
+        if (!result?.ok) {
+          setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
+          return;
+        }
+        setToolDraftError("");
+      } catch (error) {
+        setToolDraftError(error?.message || editorState.toolUpdateFallbackError);
+      }
+    };
+    const changeSchema = (rawSchema) => {
+      if (!applyAgentIntent) {
+        setSchemaChangeResult({ ok: false, error: unavailableError });
+        return;
+      }
+      applyAgentIntent({
+        intent: "agent.assignSchema",
+        memberId: member.id,
+        schemaId: rawSchema,
+        selection: { kind: "agent", id: member.id }
+      }).then((result) => {
+        setSchemaChangeResult(result?.ok === false ? result : null);
+      }).catch((error) => {
+        setSchemaChangeResult({ ok: false, error: error?.message || editorState.schemaAssignmentFallbackError });
+      });
+    };
+    const deleteConfirmState = window.MobKitFlowController.agentDeleteConfirmationState(editorState, deleteConfirmOpen);
+    const deleteMember = () => {
+      if (!applyAgentIntent) return;
+      const selection = null;
+      applyAgentIntent({
+        intent: "agent.deleteMember",
+        memberId: member.id,
+        selection
+      }).then((result) => {
+        if (result?.ok === false) return;
+        setAgentSel(selection);
+        setDeleteConfirmOpen(false);
+      }).catch(() => {
+        setDeleteConfirmOpen(false);
+      });
+    };
+    return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.eyebrow), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "agent-editor__title-input",
+        value: member.name,
+        onChange: (e) => change(window.MobKitFlowController.memberNamePatch(e.target.value))
+      }
+    ), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.idLine), memberEditError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, memberEditError)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
+      if (deleteConfirmState.needsConfirmation) {
+        setDeleteConfirmOpen(true);
+        return;
+      }
+      deleteMember();
+    } }, editorState.deleteLabel)), deleteConfirmState.open && /* @__PURE__ */ React.createElement("div", { className: "agent-editor__confirm" }, /* @__PURE__ */ React.createElement("span", null, deleteConfirmState.message), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setDeleteConfirmOpen(false) }, deleteConfirmState.cancelLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: deleteMember }, deleteConfirmState.confirmLabel))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__body" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__cols" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__col" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.identityTitle), editorState.isRealmProfile ? /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.realmProfileLabel), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "field__input field__input--mono",
+        value: member.realmProfile || "",
+        placeholder: editorState.realmProfilePlaceholder,
+        onChange: (e) => change(window.MobKitFlowController.memberRealmProfilePatch(e.target.value))
+      }
+    ), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.realmProfileImportHint)) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.modelLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: member.model, onChange: (e) => change(window.MobKitFlowController.memberModelPatch(e.target.value, modelCatalog)) }, editorState.modelOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))))), !editorState.isRealmProfile && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title section__title--row" }, /* @__PURE__ */ React.createElement("span", null, editorState.systemPromptTitle), /* @__PURE__ */ React.createElement("button", { className: "ghost-btn", onClick: () => change(window.MobKitFlowController.memberSystemPromptPatch(window.MobKitFlowController.memberPromptSkeleton(member))), title: editorState.applySkeletonTitle }, editorState.applySkeletonLabel)), /* @__PURE__ */ React.createElement(
+      "textarea",
+      {
+        className: "field__textarea",
+        rows: 8,
+        value: member.systemPrompt || "",
+        onChange: (e) => change(window.MobKitFlowController.memberSystemPromptPatch(e.target.value)),
+        placeholder: editorState.systemPromptPlaceholder
+      }
+    )), /* @__PURE__ */ React.createElement("details", { className: "section agent-runtime" }, /* @__PURE__ */ React.createElement("summary", { className: "section__title agent-runtime__summary" }, /* @__PURE__ */ React.createElement("span", null, editorState.runtimeSectionTitle)), /* @__PURE__ */ React.createElement("div", { className: "agent-runtime__body" }, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.profileBindingLabel), /* @__PURE__ */ React.createElement(
+      "select",
+      {
+        className: "field__select",
+        value: editorState.profileBinding,
+        onChange: (e) => change(window.MobKitFlowController.memberProfileBindingPatch(member, e.target.value, contract))
+      },
+      editorState.bindingOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
+    ), editorState.selectedBinding?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, editorState.selectedBinding.reason)), !editorState.isRealmProfile && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.runtimeModeLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: editorState.runtimeMode, onChange: (e) => change(window.MobKitFlowController.memberRuntimeModePatch(e.target.value, contract, deploySettings)) }, editorState.runtimeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), editorState.selectedRuntime?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, editorState.selectedRuntime.reason)), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.backendLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: editorState.backendValue, onChange: (e) => change(window.MobKitFlowController.memberBackendPatch(e.target.value, contract)) }, editorState.backendOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value || "default", value: option.value, disabled: option.disabled }, option.label))), editorState.selectedBackend?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, editorState.selectedBackend.reason)), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.inlinePeerNotificationsLabel), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "field__input",
+        type: "number",
+        min: "-1",
+        step: "1",
+        value: member.maxInlinePeerNotifications ?? "",
+        placeholder: editorState.inlinePeerNotificationsPlaceholder,
+        onChange: (e) => change(window.MobKitFlowController.memberMaxInlinePeerNotificationsPatch(e.target.value))
+      }
+    )), /* @__PURE__ */ React.createElement(ProviderParamsEditor, { member, change, agentDetailView })))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.sourceProvenance.title), editorState.sourceProvenance.hasRows ? /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, editorState.sourceProvenance.rows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.label }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))) : /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.sourceProvenance.emptyHint))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__col" }, editorState.isRealmProfile ? /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.realmProfileTitle), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.realmProfileReferenceHintBefore, " ", /* @__PURE__ */ React.createElement("code", null, editorState.realmProfileReferenceLabel), " ", editorState.realmProfileReferenceHintAfter)) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, toolAccessState.title), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginBottom: 8 } }, toolAccessState.hint), toolAccessState.rows.map((row) => {
+      return /* @__PURE__ */ React.createElement("div", { key: row.id, className: row.className }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "name" }, row.name), /* @__PURE__ */ React.createElement("div", { className: "auth" }, row.description)), /* @__PURE__ */ React.createElement("button", { onClick: () => removeToolAccess(row.id) }, row.removeLabel));
+    }), /* @__PURE__ */ React.createElement(
+      "select",
+      {
+        className: "field__select",
+        value: toolAccessState.addSelectValue,
+        onChange: (e) => {
+          const id = e.target.value;
+          if (!id) return;
+          addToolAccess(id);
+        }
+      },
+      /* @__PURE__ */ React.createElement("option", { value: toolAccessState.addSelectValue }, toolAccessState.addSelectPlaceholder),
+      toolAccessState.addableRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.id, value: row.value, disabled: row.disabled }, row.optionLabel))
+    ), /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, toolAccessState.sourceLabel), /* @__PURE__ */ React.createElement("div", { className: "row row--gap" }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "field__input field__input--mono",
+        value: toolDraft,
+        placeholder: toolAccessState.sourcePlaceholder,
+        onChange: (e) => {
+          setToolDraft(e.target.value);
+          setToolDraftError("");
+        },
+        onKeyDown: (e) => {
+          if (e.key === "Enter") addToolAccess(toolDraft);
+        }
+      }
+    ), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => addToolAccess(toolDraft) }, toolAccessState.addButtonLabel)), toolDraftError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, toolDraftError))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.outputSchemaTitle), /* @__PURE__ */ React.createElement(
+      "select",
+      {
+        className: "field__select",
+        value: member.schema || "",
+        onChange: (e) => changeSchema(e.target.value)
+      },
+      editorState.schemaOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value || "none", value: option.value }, option.label))
+    ), schemaErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaErrorState.text), editorState.hasOutputSchema ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("ul", { className: "schema-fields schema-fields--preview" }, editorState.schemaPreviewRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => setAgentSel(editorState.editSchemaSelection) }, editorState.editSchemaLabel)) : /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, editorState.emptySchemaHint)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement(SkillAccess, { studio, member, agentAccessView, applyAgentIntent }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.usageTitle), editorState.placedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.emptyUsageHint), editorState.usageRows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.id, className: "usage-row usage-row--ro" }, /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.cellLabel), /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.laneLabel))))))));
+  }
+  function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null, applyAgentIntent = null }) {
+    const [fieldAddResult, setFieldAddResult] = React.useState(null);
+    const [schemaOperationError, setSchemaOperationError] = React.useState("");
+    React.useEffect(() => setFieldAddResult(null), [schema?.id]);
+    React.useEffect(() => setSchemaOperationError(""), [schema?.id]);
+    const schemaState = window.MobKitFlowController.schemaEditorControlState({
+      schema,
+      members: studio.members,
+      schemaView
+    });
+    const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult, schemaState.fieldAddFallbackError);
+    const applySchemaIntent = async (intentRequest, selection = { kind: "schema", id: schema.id }) => {
+      const fallback = schemaState.schemaOperationFallbackError;
+      if (!applyAgentIntent) {
+        const result = { ok: false, error: schemaState.authoringOperationUnavailableError };
+        setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
+        return result;
+      }
+      try {
+        const result = await applyAgentIntent({ ...intentRequest, selection });
+        if (result?.ok === false) {
+          setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
+        } else {
+          setSchemaOperationError("");
+        }
+        return result;
+      } catch (error) {
+        const result = { ok: false, error: error?.message || String(error || fallback) };
+        setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
+        return result;
+      }
+    };
+    const change = (patch) => {
+      applySchemaIntent({ intent: "schema.update", schemaId: schema.id, patch });
+    };
+    const renameField = (fieldId, oldName, newName) => {
+      applySchemaIntent({ intent: "schema.renameField", schemaId: schema.id, fieldId, oldName, newName });
+    };
+    const updateField = (fieldId, patch) => {
+      applySchemaIntent({ intent: "schema.updateField", schemaId: schema.id, fieldId, patch });
+    };
+    const deleteField = (fieldId) => {
+      applySchemaIntent({ intent: "schema.deleteField", schemaId: schema.id, fieldId });
+    };
+    const addField = () => {
+      if (!applyAgentIntent) {
+        setFieldAddResult({ ok: false, error: schemaState.authoringOperationUnavailableError });
+        return;
+      }
+      setFieldAddResult(null);
+      applyAgentIntent({
+        intent: "schema.addField",
+        schemaId: schema.id,
+        selection: { kind: "schema", id: schema.id }
+      }).then((result) => {
+        if (result?.ok === false) {
+          setFieldAddResult(result);
+          return;
+        }
+        setFieldAddResult(null);
+      }).catch((error) => {
+        setFieldAddResult({
+          ok: false,
+          error: error?.message || String(error || schemaState.fieldAddFallbackError)
+        });
+      });
+    };
+    const deleteSchema = async () => {
+      const selection = { kind: null, id: null };
+      const result = await applySchemaIntent({ intent: "schema.delete", schemaId: schema.id }, selection);
+      if (result?.ok === false) return;
+      setAgentSel(result?.selection || selection);
+    };
+    const renameSchema = async (newId) => {
+      const result = window.MobKitFlowController.renameSchemaDefinition({
+        schemas: studio.schemas,
+        members: studio.members,
+        flow
+      }, schema.id, newId);
+      if (!result.renamed) return;
+      const operationResult = await applySchemaIntent({ intent: "schema.rename", schemaId: schema.id, newId }, result.selection);
+      if (operationResult?.ok === false) return;
+      setAgentSel(operationResult?.selection || result.selection);
+    };
+    return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, schemaState.eyebrow), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "agent-editor__title-input",
+        defaultValue: schema.id,
+        onBlur: (e) => renameSchema(e.target.value),
+        onKeyDown: (e) => {
+          if (e.key === "Enter") e.target.blur();
+        }
+      }
+    ), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, schemaState.usageLabel), schemaOperationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, schemaOperationError)), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        className: "btn btn--ghost btn--sm",
+        disabled: !schemaState.canDelete,
+        title: schemaState.deleteTitle,
+        onClick: deleteSchema
+      },
+      schemaState.deleteLabel
+    ))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, schemaState.descriptionTitle), /* @__PURE__ */ React.createElement(
+      "textarea",
+      {
+        className: "field__textarea",
+        rows: 2,
+        value: schema.description || "",
+        placeholder: schemaState.descriptionPlaceholder,
+        onChange: (e) => change(window.MobKitFlowController.schemaDescriptionPatch(e.target.value))
+      }
+    )), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, schemaState.fieldsTitle), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: addField }, schemaState.addFieldLabel)), fieldAddErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, fieldAddErrorState.text), /* @__PURE__ */ React.createElement("div", { className: "schema-builder" }, /* @__PURE__ */ React.createElement("div", { className: "schema-builder__header" }, /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--name" }, schemaState.headerLabels.name), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--type" }, schemaState.headerLabels.type), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--req" }, schemaState.headerLabels.required), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--desc" }, schemaState.headerLabels.description), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--act" }, schemaState.headerLabels.action)), schemaState.fieldRows.map(({ field: f }) => /* @__PURE__ */ React.createElement(
+      SchemaField,
+      {
+        key: f.id,
+        field: f,
+        normalizeName: (raw) => window.MobKitFlowController.uniqueSchemaFieldName(schema.fields, raw, f.id),
+        onChange: (patch) => updateField(f.id, patch),
+        onRename: (oldName, newName) => renameField(f.id, oldName, newName),
+        onDelete: () => deleteField(f.id),
+        contract,
+        schemaView
+      }
+    )), schemaState.fieldRows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "schema-builder__empty" }, schemaState.emptyFieldsHint))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, schemaState.usedByTitle), schemaState.usedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaState.emptyUsedByHint), schemaState.usedBy.map((row) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: row.id,
+        className: "usage-row",
+        onClick: () => setAgentSel(row.selection)
+      },
+      /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.name),
+      /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.role),
+      /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.model)
+    )))));
+  }
+  function SchemaEnumValueChip({ field, value, index, onChange }) {
+    const [draftValue, setDraftValue] = React.useState(value || "");
+    React.useEffect(() => {
+      setDraftValue(value || "");
+    }, [index, value]);
+    return /* @__PURE__ */ React.createElement("span", { className: "chip" }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "chip__input",
+        value: draftValue,
+        onChange: (e) => setDraftValue(e.target.value),
+        onBlur: (e) => {
+          const patch = window.MobKitFlowController.enumValueCommitPatch(field, index, e.target.value);
+          setDraftValue(patch.enumValues?.[index] || "");
+          onChange(patch);
+        }
+      }
+    ), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        className: "chip__x",
+        onClick: () => onChange(window.MobKitFlowController.enumValueDeletePatch(field, index))
+      },
+      "\xD7"
+    ));
+  }
+  function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contract, schemaView = null }) {
+    const nameBeforeEdit = React.useRef(field.name);
+    const [draftName, setDraftName] = React.useState(field.name || "");
+    React.useEffect(() => {
+      setDraftName(field.name || "");
+    }, [field.id, field.name]);
+    const fieldState = window.MobKitFlowController.schemaFieldRowControlState(field, contract, schemaView);
+    const typeState = fieldState.typeState;
+    const values = fieldState.enumValues;
+    return /* @__PURE__ */ React.createElement("div", { className: "schema-field" }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "sb-input sb-col--name",
+        value: draftName,
+        onFocus: () => {
+          nameBeforeEdit.current = field.name;
+        },
+        onChange: (e) => setDraftName(e.target.value),
+        onBlur: (e) => {
+          const normalized = normalizeName(e.target.value);
+          const previous = String(nameBeforeEdit.current || "").trim();
+          setDraftName(normalized);
+          if (previous && previous !== normalized && onRename) {
+            onRename(previous, normalized);
+            return;
+          }
+          if (!onRename && previous !== normalized) onChange({ name: normalized });
+        },
+        placeholder: fieldState.namePlaceholder
+      }
+    ), /* @__PURE__ */ React.createElement(
+      "select",
+      {
+        className: "sb-select sb-col--type",
+        value: typeState.type,
+        onChange: (e) => {
+          onChange(window.MobKitFlowController.schemaLikeFieldTypePatch(field, e.target.value, contract));
+        }
+      },
+      typeState.typeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
+    ), typeState.selectedType?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, typeState.selectedType.reason), /* @__PURE__ */ React.createElement("label", { className: "sb-col--req sb-checkbox" }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        type: "checkbox",
+        checked: !!field.required,
+        onChange: (e) => onChange(window.MobKitFlowController.schemaLikeFieldRequiredPatch(e.target.checked))
+      }
+    )), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "sb-input sb-col--desc",
+        value: field.description || "",
+        onChange: (e) => onChange(window.MobKitFlowController.schemaLikeFieldDescriptionPatch(e.target.value)),
+        placeholder: fieldState.descriptionPlaceholder
+      }
+    ), /* @__PURE__ */ React.createElement("button", { className: "sb-del", onClick: onDelete, title: fieldState.removeTitle }, "\xD7"), field.type === "enum" && /* @__PURE__ */ React.createElement("div", { className: "sb-enum" }, /* @__PURE__ */ React.createElement("span", { className: "sb-enum__label" }, fieldState.enumLabel), /* @__PURE__ */ React.createElement("div", { className: "sb-enum__chips" }, values.map((v, i) => /* @__PURE__ */ React.createElement(SchemaEnumValueChip, { key: i, field, value: v, index: i, onChange })), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        className: "chip chip--add",
+        onClick: () => onChange(window.MobKitFlowController.enumValueAddPatch(field, fieldState.enumAddValue))
+      },
+      fieldState.enumAddLabel
+    ))));
+  }
+  function ProviderParamsEditor({ member, change, agentDetailView = null }) {
+    const paramsState = window.MobKitFlowController.memberProviderParamsEditorState(member, agentDetailView);
+    const [draft, setDraft] = React.useState(paramsState.text);
+    const [error, setError] = React.useState("");
+    React.useEffect(() => {
+      setDraft(paramsState.text);
+      setError("");
+    }, [member.id, paramsState.text]);
+    const commit = (next) => {
+      setDraft(next);
+      const result = window.MobKitFlowController.memberProviderParamsPatch(next, agentDetailView);
+      if (!result.ok) {
+        setError(result.error || paramsState.invalidJsonLabel);
+        return;
+      }
+      setError("");
+      change(result.patch);
+    };
+    return /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, paramsState.label), /* @__PURE__ */ React.createElement(
+      "textarea",
+      {
+        className: "field__textarea field__textarea--mono",
+        rows: paramsState.rows,
+        value: draft,
+        placeholder: paramsState.placeholder,
+        onChange: (e) => commit(e.target.value)
+      }
+    ), error && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, error));
+  }
+  function SkillAccess({ studio, member, agentAccessView = null, applyAgentIntent = null }) {
+    const realms = studio.skillRealms || [];
+    const initialSkillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, accessView: agentAccessView });
+    const [realmId, setRealmId] = React.useState(initialSkillState.realmId);
+    const [inlineOpen, setInlineOpen] = React.useState(false);
+    const [inlineLabel, setInlineLabel] = React.useState("");
+    const [inlineContent, setInlineContent] = React.useState("");
+    const [inlineError, setInlineError] = React.useState("");
+    const skillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, realmId, inlineOpen, accessView: agentAccessView });
+    React.useEffect(() => {
+      if (skillState.realmId !== realmId) setRealmId(skillState.realmId);
+    }, [skillState.realmId, realmId]);
+    const applySkillIntent = async (intentRequest, fallback = skillState.inlineErrorFallback) => {
+      if (!applyAgentIntent) {
+        setInlineError(fallback);
+        return null;
+      }
+      try {
+        if (studio.snap) studio.snap();
+        const result = await applyAgentIntent({ memberId: member.id, ...intentRequest });
+        if (!result?.ok) {
+          setInlineError(window.MobKitFlowController.operationErrorText(result, fallback));
+          return null;
+        }
+        setInlineError("");
+        return result;
+      } catch (err) {
+        setInlineError(err?.message || fallback);
+        return null;
+      }
+    };
+    const toggle = (sid) => {
+      applySkillIntent({ intent: "agent.toggleSkill", skillId: sid });
+    };
+    const removeSkill = (sid) => {
+      applySkillIntent({ intent: "agent.removeSkill", skillId: sid });
+    };
+    const addInlineSkill = async () => {
+      const result = await applySkillIntent({
+        intent: "agent.createInlineSkill",
+        label: inlineLabel,
+        content: inlineContent
+      }, skillState.inlineErrorFallback);
+      if (result) {
+        const nextRealmId = window.MobKitFlowController.inlineSkillRealmIdFromOperationResult(result);
+        if (nextRealmId) setRealmId(nextRealmId);
+        setInlineLabel("");
+        setInlineContent("");
+        setInlineError("");
+        setInlineOpen(false);
+      }
+    };
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "section__title section__title--row" }, /* @__PURE__ */ React.createElement("span", null, skillState.sectionTitle), /* @__PURE__ */ React.createElement("button", { className: "ghost-btn", onClick: () => setInlineOpen((open) => !open) }, skillState.inlineToggleLabel)), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginBottom: 8 } }, skillState.hint), inlineOpen && /* @__PURE__ */ React.createElement("div", { className: "inline-skill" }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "field__input",
+        value: inlineLabel,
+        placeholder: skillState.inlineLabelPlaceholder,
+        onChange: (e) => {
+          setInlineLabel(e.target.value);
+          setInlineError("");
+        }
+      }
+    ), /* @__PURE__ */ React.createElement(
+      "textarea",
+      {
+        className: "field__textarea field__textarea--mono",
+        rows: skillState.inlineContentRows,
+        value: inlineContent,
+        placeholder: skillState.inlineContentPlaceholder,
+        onChange: (e) => {
+          setInlineContent(e.target.value);
+          setInlineError("");
+        }
+      }
+    ), /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("span", { className: "hint__line" }, skillState.inlineCreateHint), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: addInlineSkill }, skillState.inlineAddLabel)), inlineError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, inlineError)), !skillState.hasRealms ? /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, skillState.noRealmsMessage) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, skillState.realmLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: skillState.realmId, onChange: (e) => setRealmId(e.target.value) }, skillState.realmOptions.map((realm) => /* @__PURE__ */ React.createElement("option", { key: realm.id, value: realm.id }, realm.label)))), /* @__PURE__ */ React.createElement("div", { className: "skill-list" }, skillState.skillRows.map((row) => {
+      return /* @__PURE__ */ React.createElement("button", { key: row.id, className: row.className, onClick: () => toggle(row.id) }, /* @__PURE__ */ React.createElement("span", { className: "skill-row__check" }, row.checkLabel), /* @__PURE__ */ React.createElement("span", { className: "skill-row__text" }, /* @__PURE__ */ React.createElement("span", { className: "skill-row__name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "skill-row__desc" }, row.desc)));
+    }))), skillState.selectedOutsideRealm.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "skill-other" }, /* @__PURE__ */ React.createElement("span", { className: "hint__line" }, skillState.outsideRealmHeading), skillState.selectedOutsideRealm.map((skill) => /* @__PURE__ */ React.createElement("span", { key: skill.id, className: skill.className, title: skill.title }, skill.label, /* @__PURE__ */ React.createElement("em", null, skill.detail), /* @__PURE__ */ React.createElement("button", { onClick: () => removeSkill(skill.id) }, skill.removeLabel)))), skillState.unavailableSelected.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "skill-other" }, /* @__PURE__ */ React.createElement("span", { className: "hint__line", style: { color: "var(--warn)" } }, skillState.unavailableHeading), skillState.unavailableSelected.map((sid) => /* @__PURE__ */ React.createElement("span", { key: sid.id, className: sid.className }, sid.label, /* @__PURE__ */ React.createElement("button", { onClick: () => removeSkill(sid.id) }, sid.removeLabel)))));
+  }
+
+  // ../packages/flow-editor-components/src/overlays/overlays.tsx
+  function DeployPlanTrace({ open, onClose, onActiveStep, runKey, document: document2, plan, deployView = null }) {
+    const traceState = React.useMemo(
+      () => window.MobKitFlowController.deployPlanTraceState(document2, plan, { deployView }),
+      [document2, plan, deployView]
+    );
+    const [idx, setIdx] = React.useState(0);
+    const bodyRef = React.useRef(null);
+    React.useEffect(() => {
+      if (!open) return;
+      setIdx(0);
+    }, [open, runKey]);
+    React.useEffect(() => {
+      if (!open) {
+        onActiveStep(null);
+        return;
+      }
+      onActiveStep(traceState.steps[idx]?.node || null);
+      if (bodyRef.current) {
+        const el = bodyRef.current.querySelector(`[data-step="${idx}"]`);
+        if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    }, [idx, open, traceState.steps]);
+    if (!open) return null;
+    return /* @__PURE__ */ React.createElement("div", { className: "deploy-plan" }, /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__title" }, /* @__PURE__ */ React.createElement("span", { className: "accent" }, traceState.eyebrow), " \xB7 ", traceState.title), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__sub" }, traceState.subtitle)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx(0) }, traceState.firstLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, traceState.closeLabel))), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__body", ref: bodyRef }, traceState.steps.map((s, i) => /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        key: i,
+        "data-step": i,
+        className: "deploy-plan__step" + (i === idx ? " is-current" : "") + (i > idx ? " is-pending" : "")
+      },
+      /* @__PURE__ */ React.createElement("div", { className: "g" }),
+      /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "head" }, s.head), /* @__PURE__ */ React.createElement("div", { className: "body" }, s.body))
+    ))), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__foot" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { width: "100%" } }, /* @__PURE__ */ React.createElement("span", { className: "muted" }, traceState.packLabel ? `${traceState.packLabel} \xB7 ` : "", traceState.stepLabel, " ", idx + 1, " / ", traceState.steps.length), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.max(0, i - 1)) }, traceState.previousLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.min(traceState.steps.length - 1, i + 1)) }, traceState.nextLabel)))));
+  }
+  function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, results, stage, deployView = null, capabilities = null }) {
+    if (!open) return null;
+    const sheetState = window.MobKitFlowController.validationSheetState(results, { stage, deployView, capabilities });
+    return /* @__PURE__ */ React.createElement("div", { className: "validate" }, /* @__PURE__ */ React.createElement("div", { className: "validate__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, sheetState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, sheetState.title)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onPublish, disabled: sheetState.publishDisabled }, sheetState.publishLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onDeployPlan, disabled: sheetState.deployPlanDisabled }, sheetState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onDeployRun, disabled: sheetState.deployRunDisabled }, sheetState.deployLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, sheetState.closeLabel))), /* @__PURE__ */ React.createElement("div", { className: "validate__body" }, sheetState.rows.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "validate__row is-" + r.kind }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }, r.glyph), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "head" }, r.head), /* @__PURE__ */ React.createElement("div", { className: "sub" }, r.sub)), /* @__PURE__ */ React.createElement("span", { className: "meta" }, r.meta)))));
+  }
+  function SourceCodePanel({ state, busy = false, compact = false, sourceView = null, sourcePath = "" }) {
+    const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact, sourceView, sourcePath });
+    if (editorState.showLoading) {
+      return /* @__PURE__ */ React.createElement("pre", { className: editorState.bodyClass, role: "textbox", "aria-readonly": "true" }, editorState.loadingText);
+    }
+    return /* @__PURE__ */ React.createElement(
+      "pre",
+      {
+        className: editorState.bodyClass,
+        role: "textbox",
+        "aria-readonly": "true",
+        dangerouslySetInnerHTML: { __html: editorState.sourceHtml }
+      }
+    );
+  }
+  function SourceDrawer({ open, onClose, state, sourceView = null }) {
+    const [sourcePath, setSourcePath] = React.useState("");
+    const selectSourcePath = (path) => {
+      const result = window.MobKitFlowController.sourceFileSelectionTransition(state, path, sourcePath);
+      setSourcePath(result.sourcePath);
+    };
+    React.useEffect(() => {
+      setSourcePath("");
+    }, [state]);
+    if (!open) return null;
+    const editorState = window.MobKitFlowController.sourceEditorState(state, { sourceView, sourcePath });
+    return /* @__PURE__ */ React.createElement("div", { className: "source-drawer" }, /* @__PURE__ */ React.createElement("div", { className: "source-drawer__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.drawerEyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => selectSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, sourceView, sourcePath }));
+  }
+  function InlineSourceEditor({ open, onClose, state, busy = false, surface = "basic", sourceView = null }) {
+    const [sourcePath, setSourcePath] = React.useState("");
+    const selectSourcePath = (path) => {
+      const result = window.MobKitFlowController.sourceFileSelectionTransition(state, path, sourcePath);
+      setSourcePath(result.sourcePath);
+    };
+    React.useEffect(() => {
+      setSourcePath("");
+    }, [state]);
+    if (!open) return null;
+    const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true, sourceView, sourcePath });
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-toml bld-toml--" + surface, onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "bld-toml__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", null, editorState.inlineTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list source-file-list--inline" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => selectSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, busy, compact: true, sourceView, sourcePath }));
+  }
+
+  // ../packages/flow-editor-components/src/builder/builder.tsx
+  function CondValue({ field, value, onChange, conditionView = null }) {
+    const control = window.MobKitFlowController.conditionValueControl(field, value, conditionView);
+    if (control.kind === "enum") {
+      return /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__val", value: control.value, onChange: (e) => onChange(e.target.value) }, control.optionRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.value || "blank", value: row.value }, row.label)));
+    }
+    if (control.kind === "boolean") {
+      return /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__val", value: control.value, onChange: (e) => onChange(e.target.value) }, control.optionRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.value || "blank", value: row.value }, row.label)));
+    }
+    return /* @__PURE__ */ React.createElement("input", { className: "field__input bld-cond__val", placeholder: control.placeholder, value: control.value, onChange: (e) => onChange(e.target.value) });
+  }
+  function InputEnumValueChip({ field, value, index, onChange }) {
+    const [draftValue, setDraftValue] = React.useState(value || "");
+    React.useEffect(() => {
+      setDraftValue(value || "");
+    }, [index, value]);
+    return /* @__PURE__ */ React.createElement("span", { className: "chip" }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "chip__input",
+        value: draftValue,
+        onChange: (e) => setDraftValue(e.target.value),
+        onBlur: (e) => {
+          const patch = window.MobKitFlowController.enumValueCommitPatch(field, index, e.target.value);
+          setDraftValue(patch.enumValues?.[index] || "");
+          onChange(patch);
+        }
+      }
+    ), /* @__PURE__ */ React.createElement("button", { className: "chip__x", onClick: () => onChange(window.MobKitFlowController.enumValueDeletePatch(field, index)) }, "\xD7"));
+  }
+  function InputParamField({ param, normalizeName, onRename, onChange, onDelete, contract, basicView = null }) {
+    const fieldState = window.MobKitFlowController.inputParamFieldControlState(param, contract, basicView);
+    const values = fieldState.enumValues;
+    const previousNameRef = React.useRef(null);
+    const [draftName, setDraftName] = React.useState(param.name || "");
+    React.useEffect(() => {
+      setDraftName(param.name || "");
+    }, [param.id, param.name]);
+    const typeState = fieldState.typeState;
+    return /* @__PURE__ */ React.createElement("div", { className: "schema-field" }, /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "sb-input sb-col--name",
+        value: draftName,
+        onFocus: () => {
+          previousNameRef.current = param.name || "";
+        },
+        onChange: (e) => setDraftName(e.target.value),
+        onBlur: (e) => {
+          const previousName = previousNameRef.current ?? param.name;
+          previousNameRef.current = null;
+          const normalized = normalizeName(e.target.value);
+          setDraftName(normalized);
+          if (String(previousName || "").trim() !== normalized) onRename?.(normalized, previousName);
+        },
+        placeholder: fieldState.namePlaceholder
+      }
+    ), /* @__PURE__ */ React.createElement(
+      "select",
+      {
+        className: "sb-select sb-col--type",
+        value: typeState.type,
+        onChange: (e) => {
+          onChange(window.MobKitFlowController.schemaLikeFieldTypePatch(param, e.target.value, contract));
+        }
+      },
+      typeState.typeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
+    ), typeState.selectedType?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, typeState.selectedType.reason), /* @__PURE__ */ React.createElement("label", { className: "sb-col--req sb-checkbox" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: param.required !== false, onChange: (e) => onChange(window.MobKitFlowController.schemaLikeFieldRequiredPatch(e.target.checked)) })), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        className: "sb-input sb-col--desc",
+        value: param.description || "",
+        onChange: (e) => onChange(window.MobKitFlowController.schemaLikeFieldDescriptionPatch(e.target.value)),
+        placeholder: fieldState.descriptionPlaceholder
+      }
+    ), /* @__PURE__ */ React.createElement("button", { className: "sb-del", onClick: onDelete, title: fieldState.removeTitle }, "\xD7"), param.type === "enum" && /* @__PURE__ */ React.createElement("div", { className: "sb-enum" }, /* @__PURE__ */ React.createElement("span", { className: "sb-enum__label" }, fieldState.enumLabel), /* @__PURE__ */ React.createElement("div", { className: "sb-enum__chips" }, values.map((value, index) => /* @__PURE__ */ React.createElement(InputEnumValueChip, { key: index, field: param, value, index, onChange })), /* @__PURE__ */ React.createElement("button", { className: "chip chip--add", onClick: () => onChange(window.MobKitFlowController.enumValueAddPatch(param, fieldState.enumAddValue)) }, fieldState.enumAddLabel))));
+  }
+  function BranchConditionEditor({ index, branch, options, schemas, onChange, contract, basicView = null, conditionView = null }) {
+    const conditionState = window.MobKitFlowController.basicBranchConditionControlState({
+      branch: { ...branch, index },
+      options,
+      schemas,
+      contract,
+      basicView
+    });
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card" }, /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card__head" }, conditionState.rowTitle), !conditionState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, conditionState.emptyHint) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bld-cond" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.stepId || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionSourcePatch(options, e.target.value, { includeNamespace: true })) }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.sourcePlaceholder), conditionState.sourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.field || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, conditionState.fieldOptions)), disabled: !conditionState.fields.length }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.fieldPlaceholder), conditionState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: conditionState.operatorValue, onChange: (e) => onChange(window.MobKitFlowController.basicConditionOperatorPatch(e.target.value, contract)) }, conditionState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(CondValue, { field: conditionState.field, value: conditionState.cond.val, conditionView, onChange: (v) => onChange(window.MobKitFlowController.basicConditionValuePatch(v)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-cond__preview" }, conditionState.previewPrefix, " ", /* @__PURE__ */ React.createElement("code", null, conditionState.previewLabel))));
+  }
+  function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, sourceToggleLabel = "", onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringIntent = null }) {
+    const members = studio?.members || [];
+    const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
+    const [selLocal, setSelLocal] = React.useState(null);
+    const flow = flowProp || flowLocal;
+    const setFlow = setFlowProp || setFlowLocal;
+    const sel = selProp !== void 0 ? selProp : selLocal;
+    const setSel = setSelProp || setSelLocal;
+    const [picker, setPicker] = React.useState({ open: false });
+    const [view, setView] = React.useState({ scale: 1, tx: 0, ty: 0 });
+    const [operationError, setOperationError] = React.useState("");
+    const hostRef = React.useRef(null);
+    const panRef = React.useRef(null);
+    const isFlow = mode === "flow";
+    const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
+    const canvasView = Math.abs(view.ty) > 1200 ? { ...view, ty: 0 } : view;
+    const commitFlow = async (intentRequest) => {
+      const fallback = viewState.authoringOperationFallbackError;
+      if (!applyAuthoringIntent) {
+        const result = { ok: false, error: viewState.authoringOperationUnavailableError };
+        setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
+        return result;
+      }
+      try {
+        const result = await applyAuthoringIntent(intentRequest);
+        if (result?.ok === false) {
+          setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
+        } else {
+          setOperationError("");
+        }
+        return result;
+      } catch (error) {
+        const result = {
+          ok: false,
+          error: error?.message || String(error || fallback)
+        };
+        setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
+        return result;
+      }
+    };
+    const update = (requestOrId, patch = {}) => {
+      if (requestOrId && typeof requestOrId === "object") return commitFlow(requestOrId);
+      return commitFlow({ intent: "basic.updateStep", stepId: requestOrId, patch });
+    };
+    const editStep = (id, action, payload = {}) => {
+      return commitFlow({ intent: "basic.editStep", stepId: id, action, payload });
+    };
+    const selStep = findStep(flow.steps, sel);
+    const applyBasicInteraction = (result) => {
+      if (!result) return;
+      if ("selection" in result) setSel(result.selection);
+      if ("picker" in result) setPicker(result.picker);
+    };
+    const insertAt = (laneRef, pick) => {
+      applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition());
+      commitFlow({ intent: "basic.insertStep", pick, laneRef }).then((result) => {
+        if (result?.ok === false) return;
+        const id = result?.selection?.id;
+        if (id) setSel(id);
+      });
+    };
+    const removeStep = (id) => {
+      const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
+      commitFlow({ intent: "basic.deleteStep", stepId: id }).then((operationResult) => {
+        if (operationResult?.ok === false) return;
+        setSel(result.selection);
+        setPicker(result.picker);
+      });
+    };
+    const openPicker = (laneRef) => applyBasicInteraction(window.MobKitFlowController.basicStepPickerOpenTransition(laneRef));
+    const onWheel = (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const fz = Math.exp(-e.deltaY * 15e-4);
+        setView((v) => {
+          const r = hostRef.current.getBoundingClientRect();
+          const cx = e.clientX - r.left, cy = e.clientY - r.top;
+          const next = Math.max(0.4, Math.min(2, v.scale * fz));
+          const k = next / v.scale;
+          return { scale: next, tx: cx - (cx - v.tx) * k, ty: cy - (cy - v.ty) * k };
+        });
+      } else {
+        e.preventDefault();
+        setView((v) => ({ ...v, tx: v.tx - e.deltaX, ty: v.ty - e.deltaY }));
+      }
+    };
+    React.useEffect(() => {
+      const el = hostRef.current;
+      if (!el) return;
+      const h = (e) => onWheel(e);
+      el.addEventListener("wheel", h, { passive: false });
+      return () => el.removeEventListener("wheel", h);
+    });
+    const onHostDown = (e) => {
+      if (e.target === hostRef.current || e.target.classList?.contains("bld-canvas")) {
+        panRef.current = { sx: e.clientX, sy: e.clientY, tx: view.tx, ty: view.ty };
+        const move = (ev) => setView((v) => ({ ...v, tx: panRef.current.tx + (ev.clientX - panRef.current.sx), ty: panRef.current.ty + (ev.clientY - panRef.current.sy) }));
+        const up = () => {
+          window.removeEventListener("mousemove", move);
+          window.removeEventListener("mouseup", up);
+        };
+        window.addEventListener("mousemove", move);
+        window.addEventListener("mouseup", up);
+        applyBasicInteraction(window.MobKitFlowController.basicCanvasClearTransition());
+      }
+    };
+    return /* @__PURE__ */ React.createElement("div", { className: "builder" + (isFlow ? " builder--flow" : "") }, /* @__PURE__ */ React.createElement("div", { className: "bld-stage", ref: hostRef, onMouseDown: onHostDown }, /* @__PURE__ */ React.createElement("div", { className: "bld-canvas", style: { transform: `translate(calc(-50% + ${canvasView.tx}px), ${canvasView.ty}px) scale(${canvasView.scale})` } }, /* @__PURE__ */ React.createElement("div", { className: "bld-start" }, viewState.startLabel), /* @__PURE__ */ React.createElement(
+      Lane,
+      {
+        studio,
+        mode,
+        steps: flow.steps,
+        laneRef: { lane: "main" },
+        sel,
+        contract,
+        basicView,
+        setSel: (id) => applyBasicInteraction(window.MobKitFlowController.basicStepSelectionTransition(id)),
+        openPicker
+      }
+    )), /* @__PURE__ */ React.createElement("button", { className: "bld-toml-toggle", onMouseDown: (e) => e.stopPropagation(), onClick: () => onShowSource && onShowSource() }, sourceToggleLabel || viewState.sourceToggleLabel), /* @__PURE__ */ React.createElement(
+      InlineSourceEditor,
+      {
+        open: sourceOpen,
+        onClose: () => onCloseSource && onCloseSource(),
+        state: sourceDocument,
+        busy: sourceBusy,
+        sourceView
+      }
+    ), /* @__PURE__ */ React.createElement("div", { className: "zoom-controls", onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", onClick: () => setView((v) => ({ ...v, scale: Math.max(0.4, v.scale / 1.2) })) }, "\u2212"), /* @__PURE__ */ React.createElement("button", { className: "zoom-btn zoom-btn--pct", onClick: () => setView({ scale: 1, tx: 0, ty: 0 }) }, Math.round(view.scale * 100), "%"), /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", onClick: () => setView((v) => ({ ...v, scale: Math.min(2, v.scale * 1.2) })) }, "+"))), /* @__PURE__ */ React.createElement("aside", { className: "bld-panel" }, picker.open ? /* @__PURE__ */ React.createElement(
+      StepPicker,
+      {
+        members,
+        isKickoff: picker.at?.lane === "main" && picker.at?.index === 0 && kickoffSlotEmpty(flow),
+        contract,
+        basicView,
+        onPick: (pick) => insertAt(picker.at, pick),
+        onClose: () => applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition())
+      }
+    ) : selStep ? /* @__PURE__ */ React.createElement(React.Fragment, null, operationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)", padding: "0 16px 8px" } }, operationError), /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, setFlow, step: selStep, update, editStep, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, launchView, conditionView })) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
+  }
+  function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract, basicView = null }) {
+    const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-lane" }, steps.map((step, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: step.id }, /* @__PURE__ */ React.createElement(StepCard, { studio, step, index: i, selected: sel === step.id, onSelect: () => setSel(step.id), contract, basicView }), step.type === "branch" || step.type === "parallel" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Fork, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : step.type === "repeat" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(RepeatBody, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) }))), steps.length === 0 && /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: 0 }) }));
+  }
+  function Fork({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
+    const forkState = window.MobKitFlowController.basicForkCanvasState({ step, contract, basicView });
+    const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
+    return /* @__PURE__ */ React.createElement("div", { className: forkState.className }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lanes" }, forkState.lanes.map((l) => /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lane", key: l.id }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__label" }, l.label), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), l.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: l.id, index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: l.steps, laneRef: { lane: "branch", parentId: step.id, branchId: l.id }, sel, setSel, openPicker, contract, basicView }), forkState.isParallel && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" })))), forkState.isParallel ? /* @__PURE__ */ React.createElement(React.Fragment, null, forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail bld-fork__rail--join" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-join" }, forkState.joinLabel)) : (
+      // Branch paths reconverge to a single downstream column so the
+      // following main-lane step connects cleanly (no diagonal jump).
+      forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail bld-fork__rail--join" })
+    ));
+  }
+  function RepeatBody({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
+    const repeatState = window.MobKitFlowController.basicRepeatCanvasState({ step, members: studio?.members || [], contract, basicView });
+    const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-repeat" }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__rail" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__rail-glyph" }, "\u21BB")), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__frame" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__head" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__badge" }, viewState.loopBadge), /* @__PURE__ */ React.createElement("span", { className: "bld-loop__meta" }, repeatState.whileLabel, " ", /* @__PURE__ */ React.createElement("strong", null, repeatState.notLabel), " (", repeatState.conditionLabel, ") \xB7 ", repeatState.maxIterationsLabel)), step.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: "body", index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: step.steps, laneRef: { lane: "branch", parentId: step.id, branchId: "body" }, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__back" }, repeatState.loopBackLabel))), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__exit" }, repeatState.exitLabel));
+  }
+  function StepCard({ studio, step, index, selected, onSelect, contract, basicView = null }) {
+    const cardState = window.MobKitFlowController.basicStepCardState({ step, members: studio?.members || [], contract, basicView });
+    return /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        className: "bld-card" + (selected ? " is-selected" : "") + (!cardState.configured ? " is-empty" : "") + (cardState.isFlowCard ? " bld-card--flow" : ""),
+        onMouseDown: (e) => {
+          e.stopPropagation();
+          onSelect();
+        }
+      },
+      /* @__PURE__ */ React.createElement("div", { className: "bld-card__head" }, /* @__PURE__ */ React.createElement("span", { className: "bld-card__index" }, index, "."), cardState.icon && /* @__PURE__ */ React.createElement("span", { className: "bld-card__icon tint--" + cardState.iconTint }, cardState.icon), /* @__PURE__ */ React.createElement("span", { className: "bld-card__title" }, cardState.title)),
+      cardState.configured ? /* @__PURE__ */ React.createElement("div", { className: "bld-card__body" }, /* @__PURE__ */ React.createElement("span", { className: "bld-card__desc" }, cardState.desc)) : /* @__PURE__ */ React.createElement("div", { className: "bld-card__skeleton" }, /* @__PURE__ */ React.createElement("span", null), /* @__PURE__ */ React.createElement("span", null))
+    );
+  }
+  function InsertBtn({ onClick, mid, mode, title = "" }) {
+    if (mode === "flow") {
+      return /* @__PURE__ */ React.createElement("div", { className: "bld-insert bld-insert--conn" + (mid ? " bld-insert--mid" : "") }, /* @__PURE__ */ React.createElement("div", { className: "bld-insert__line" }), /* @__PURE__ */ React.createElement("span", { className: "bld-insert__dot" }), mid && /* @__PURE__ */ React.createElement("div", { className: "bld-insert__line" }));
+    }
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-insert" + (mid ? " bld-insert--mid" : "") }, /* @__PURE__ */ React.createElement("div", { className: "bld-insert__line" }), /* @__PURE__ */ React.createElement("button", { className: "bld-insert__btn", onMouseDown: (e) => {
+      e.stopPropagation();
+      onClick();
+    }, title }, "+"), mid && /* @__PURE__ */ React.createElement("div", { className: "bld-insert__line" }));
+  }
+  function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView = null }) {
+    const [q, setQ] = React.useState("");
+    const pickerState = window.MobKitFlowController.basicStepPickerState({ members, contract, query: q, isKickoff, basicView });
+    if (pickerState.mode === "kickoff") {
+      return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, pickerState.kickoffHint));
+    }
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-search" }, /* @__PURE__ */ React.createElement("span", { className: "bld-search__icon" }, pickerState.searchIcon), /* @__PURE__ */ React.createElement("input", { className: "bld-search__input", placeholder: pickerState.searchPlaceholder, value: q, onChange: (e) => setQ(e.target.value), autoFocus: true })), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.membersLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.iconTint }, row.icon), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub)))), !pickerState.hasConfiguredMembers && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { padding: "4px 8px" } }, pickerState.emptyMembersHint)), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.flowLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.primitiveRows.map((row) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: row.id,
+        className: "bld-opt",
+        disabled: row.disabled,
+        title: row.disabledReason || void 0,
+        onClick: () => !row.disabled && row.pick && onPick(row.pick)
+      },
+      /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.tint }, row.glyph),
+      /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.label, row.isNew && /* @__PURE__ */ React.createElement("span", { className: "bld-opt__new" }, pickerState.newBadgeLabel)), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub))
+    ))));
+  }
+  function StepInspector({ studio, members, flow, setFlow, step, update, editStep, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null }) {
+    const [paramAddResult, setParamAddResult] = React.useState(null);
+    React.useEffect(() => setParamAddResult(null), [step?.id]);
+    const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
+    if (step.type === "input") {
+      const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
+      const params = inputState.params;
+      const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult, viewState.authoringOperationFallbackError);
+      const applyInputIntent = (intentRequest) => {
+        if (!update) return Promise.resolve({ ok: false, error: viewState.authoringOperationUnavailableError });
+        return update(intentRequest);
+      };
+      const updateParam = (id, patch) => {
+        return applyInputIntent({ intent: "basic.updateInputParam", stepId: step.id, paramId: id, patch });
+      };
+      const deleteParam = (id) => {
+        return applyInputIntent({ intent: "basic.deleteInputParam", stepId: step.id, paramId: id });
+      };
+      const renameParam = (id, rawName, previousName) => {
+        return applyInputIntent({ intent: "basic.renameInputParam", stepId: step.id, paramId: id, newName: rawName, previousName });
+      };
+      const addParam = () => {
+        setParamAddResult(null);
+        applyInputIntent({ intent: "basic.addInputParam", stepId: step.id }).then((result) => {
+          if (result?.ok === false) {
+            setParamAddResult(result);
+            return;
+          }
+          setParamAddResult(null);
+        }).catch((error) => {
+          setParamAddResult({
+            ok: false,
+            error: error?.message || String(error || viewState.authoringOperationFallbackError)
+          });
+        });
+      };
+      return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: inputState.panelIcon, iconTint: "member", title: inputState.panelTitle, sub: inputState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: inputState.taskLabel }, /* @__PURE__ */ React.createElement("textarea", { className: "field__textarea", rows: 3, placeholder: inputState.taskPlaceholder, value: step.task || "", onChange: (e) => editStep(step.id, "set_task", { value: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, inputState.paramsTitle), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: addParam }, inputState.addParamLabel)), paramAddErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, paramAddErrorState.text), /* @__PURE__ */ React.createElement("div", { className: "schema-builder" }, /* @__PURE__ */ React.createElement("div", { className: "schema-builder__header" }, inputState.headerRows.map((row) => /* @__PURE__ */ React.createElement("span", { key: row.key, className: row.className }, row.label))), params.map((param) => /* @__PURE__ */ React.createElement(
+        InputParamField,
+        {
+          key: param.id,
+          param,
+          normalizeName: (raw) => window.MobKitFlowController.uniqueInputParamName(params, raw, param.id),
+          onRename: (raw, previousName) => renameParam(param.id, raw, previousName),
+          onChange: (patch) => updateParam(param.id, patch),
+          onDelete: () => deleteParam(param.id),
+          contract,
+          basicView
+        }
+      )), params.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "schema-builder__empty" }, inputState.emptyParamsParts.map((part) => part.kind === "code" ? /* @__PURE__ */ React.createElement("code", { key: part.key }, part.text) : /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text))))), /* @__PURE__ */ React.createElement(PanelTips, { title: viewState.tipsTitle, items: inputState.tips }));
+    }
+    if (step.type === "branch" || step.type === "parallel") {
+      const branchState = window.MobKitFlowController.basicBranchParallelControlState({
+        step,
+        flow,
+        members: studio?.members || [],
+        contract,
+        basicView
+      });
+      const setBranchCondition = (branch, patch) => {
+        editStep(step.id, "set_branch_condition", { branch_id: branch.id, patch });
+      };
+      const addBranch = () => editStep(step.id, "add_branch");
+      return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: branchState.panelIcon, iconTint: "member", title: branchState.panelTitle, sub: branchState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: branchState.controllerLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: branchState.controllerRole, onChange: (e) => editStep(step.id, "set_controller_role", { role: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, branchState.controllerPlaceholderLabel), branchState.memberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), !branchState.controllerRole && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { marginTop: 8 } }, branchState.emptyControllerHint), !branchState.isParallel && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bld-section-label" }, branchState.branchConditionTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, branchState.branchConditionIntro), step.branches.map((b, i) => /* @__PURE__ */ React.createElement(
+        BranchConditionEditor,
+        {
+          key: b.id,
+          index: i,
+          branch: b,
+          options: branchState.conditionOptions,
+          schemas: studio?.schemas || [],
+          onChange: (patch) => setBranchCondition(b, patch),
+          contract,
+          basicView,
+          conditionView
+        }
+      )), /* @__PURE__ */ React.createElement("button", { className: "bld-add-row", onClick: addBranch }, branchState.addBranchLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card bld-branch-card--fallback" }, /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card__head" }, branchState.fallbackTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, branchState.fallbackHint))), branchState.isParallel && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Field, { label: branchState.dispatchLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: branchState.dispatchValue, onChange: (e) => editStep(step.id, "set_parallel_dispatch", { dispatch: e.target.value }) }, branchState.dispatchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), branchState.selectedDispatch?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, branchState.selectedDispatch.reason), /* @__PURE__ */ React.createElement(Field, { label: branchState.collectionLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: branchState.collectionValue, onChange: (e) => editStep(step.id, "set_collection", { collection: e.target.value }) }, branchState.collectionOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), branchState.selectedCollection?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, branchState.selectedCollection.reason), branchState.showQuorum && /* @__PURE__ */ React.createElement(Field, { label: branchState.quorumLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", value: step.quorum ?? "", placeholder: branchState.quorumPlaceholder, onChange: (e) => editStep(step.id, "set_quorum", { value: e.target.value }) })), /* @__PURE__ */ React.createElement("button", { className: "bld-add-row", onClick: addBranch }, branchState.addBranchLabel)), /* @__PURE__ */ React.createElement(Field, { label: branchState.dependencyLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: branchState.dependencyValue, onChange: (e) => editStep(step.id, "set_dependency_mode", { value: e.target.value }) }, branchState.dependencyOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), branchState.selectedDependency?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, branchState.selectedDependency.reason));
+    }
+    if (step.type === "repeat") {
+      const repeatState = window.MobKitFlowController.basicRepeatControlState({
+        step,
+        members: studio?.members || [],
+        schemas: studio?.schemas || [],
+        contract,
+        basicView
+      });
+      const setCond = (patch) => editStep(step.id, "set_repeat_condition", window.MobKitFlowController.flowStepRepeatConditionPatch(step, patch));
+      return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: repeatState.panelIcon, iconTint: "member", title: repeatState.panelTitle, sub: repeatState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: repeatState.loopIdLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input field__input--mono", value: step.loopId || "", placeholder: repeatState.loopIdPlaceholder, onChange: (e) => editStep(step.id, "set_loop_id", { value: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "bld-section-label", style: { marginTop: 16 } }, repeatState.conditionTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, repeatState.conditionIntro), !repeatState.hasBodyMembers ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { marginTop: 10, color: "var(--warn)" } }, repeatState.emptyBodyHint) : /* @__PURE__ */ React.createElement("div", { className: "bld-cond" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.cond.stepId || "", onChange: (e) => setCond(window.MobKitFlowController.basicConditionSourcePatch(repeatState.bodyMembers, e.target.value)) }, /* @__PURE__ */ React.createElement("option", { value: "" }, repeatState.memberPlaceholderLabel), repeatState.bodyMemberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.cond.field || "", onChange: (e) => setCond(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, repeatState.fieldOptions)), disabled: !repeatState.condSchema }, /* @__PURE__ */ React.createElement("option", { value: "" }, repeatState.fieldPlaceholder), repeatState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: repeatState.operatorValue, onChange: (e) => setCond(window.MobKitFlowController.basicConditionOperatorPatch(e.target.value, contract)) }, repeatState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(CondValue, { field: repeatState.condField, value: repeatState.cond.val, conditionView, onChange: (v) => setCond(window.MobKitFlowController.basicConditionValuePatch(v)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-cond__preview" }, repeatState.previewLabel, " ", /* @__PURE__ */ React.createElement("code", null, repeatState.repeatUntilExpression || repeatState.previewFallback)), /* @__PURE__ */ React.createElement(Field, { label: repeatState.iterationInputLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.iterationInputValue, onChange: (e) => editStep(step.id, "set_iteration_input", { value: e.target.value }) }, repeatState.iterationInputOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), repeatState.selectedIterationInput?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, repeatState.selectedIterationInput.reason), /* @__PURE__ */ React.createElement(Field, { label: repeatState.maxIterationsLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", placeholder: repeatState.maxIterationsPlaceholder, value: step.maxIterations ?? "", onChange: (e) => editStep(step.id, "set_max_iterations", { value: e.target.value }) })), /* @__PURE__ */ React.createElement(PanelTips, { title: viewState.tipsTitle, items: repeatState.tips }));
+    }
+    const memberStepState = window.MobKitFlowController.basicMemberStepControlState({
+      step,
+      flow,
+      members,
+      contract,
+      basicView,
+      launchView
+    });
+    const m = memberStepState.member;
+    const launchState = memberStepState.launchState;
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: "\u25C6", iconTint: "accent", title: memberStepState.panelTitle, sub: memberStepState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.memberFieldLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: step.role || "", onChange: (e) => editStep(step.id, "set_member_role", { role: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, memberStepState.memberPlaceholderLabel), memberStepState.memberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement(Field, { label: launchState.launchTitle }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.launchKind, onChange: (e) => {
+      editStep(step.id, "set_launch_kind", { kind: e.target.value, first_fork_source_id: memberStepState.firstLaunchSourceId });
+    } }, launchState.launchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedLaunchMode?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, launchState.selectedLaunchMode.reason), launchState.launchKind === "Resume" && /* @__PURE__ */ React.createElement(Field, { label: launchState.resumeSessionLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", value: launchState.launchMode.sessionId || "", placeholder: launchState.resumeSessionPlaceholder, onChange: (e) => editStep(step.id, "set_launch_session", { session_id: e.target.value }) })), launchState.launchKind === "Fork" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Field, { label: launchState.forkSourceLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.launchMode.from || "", onChange: (e) => editStep(step.id, "set_launch_fork_source", { from: e.target.value }) }, memberStepState.launchSourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement(Field, { label: launchState.forkContextLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.forkContextValue, onChange: (e) => editStep(step.id, "set_launch_fork_context", { context: e.target.value }) }, launchState.forkContextOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedForkContext?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, launchState.selectedForkContext.reason)), /* @__PURE__ */ React.createElement(Field, { label: launchState.budgetPolicyLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.budgetSplitPolicy.kind, onChange: (e) => editStep(step.id, "set_launch_budget_kind", { budget_kind: e.target.value }) }, launchState.budgetOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedBudgetPolicy?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, launchState.selectedBudgetPolicy.reason), launchState.budgetSplitPolicy.kind === "Fixed" && /* @__PURE__ */ React.createElement(Field, { label: launchState.fixedBudgetLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", value: launchState.fixedBudgetValue, onChange: (e) => editStep(step.id, "set_launch_budget_limit", { limit: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.instructionLabel }, /* @__PURE__ */ React.createElement("textarea", { className: "field__textarea", rows: 4, placeholder: memberStepState.instructionPlaceholder, value: step.instruction || "", onChange: (e) => editStep(step.id, "set_instruction", { value: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.dispatchLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.dispatchValue, onChange: (e) => editStep(step.id, "set_dispatch_mode", { dispatch: e.target.value }) }, memberStepState.dispatchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedDispatch?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedDispatch.reason), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.collectionLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.collectionValue, onChange: (e) => editStep(step.id, "set_collection", { collection: e.target.value }) }, memberStepState.collectionOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedCollection?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedCollection.reason), memberStepState.showQuorum && /* @__PURE__ */ React.createElement(Field, { label: memberStepState.quorumLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", value: step.quorum ?? "", placeholder: memberStepState.quorumPlaceholder, onChange: (e) => editStep(step.id, "set_quorum", { value: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.timeoutLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", placeholder: memberStepState.timeoutPlaceholder, value: step.timeoutMs ?? "", onChange: (e) => editStep(step.id, "set_timeout_ms", { value: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.outputFormatLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.outputValue, onChange: (e) => editStep(step.id, "set_output_format", { value: e.target.value }) }, memberStepState.outputOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedOutput?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedOutput.reason), /* @__PURE__ */ React.createElement(
+      ToolScopeEditor,
+      {
+        label: memberStepState.allowedToolsLabel,
+        emptyLabel: memberStepState.allowedToolsEmptyLabel,
+        member: m,
+        selected: step.allowedTools || [],
+        onChange: (tools) => editStep(step.id, "set_allowed_tools", { tools }),
+        mode: "member",
+        toolCatalog,
+        basicView
+      }
+    ), /* @__PURE__ */ React.createElement(
+      ToolScopeEditor,
+      {
+        label: memberStepState.blockedToolsLabel,
+        emptyLabel: memberStepState.blockedToolsEmptyLabel,
+        member: m,
+        selected: step.blockedTools || [],
+        onChange: (tools) => editStep(step.id, "set_blocked_tools", { tools }),
+        mode: "catalog",
+        toolCatalog,
+        basicView
+      }
+    ), memberStepState.schemaHint && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { marginTop: 10 } }, memberStepState.schemaHint.parts.map((part) => part.kind === "code" ? /* @__PURE__ */ React.createElement("code", { key: part.key }, part.text) : /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text))), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.dependencyLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.dependencyValue, onChange: (e) => editStep(step.id, "set_dependency_mode", { value: e.target.value }) }, memberStepState.dependencyOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedDependency?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedDependency.reason));
+  }
+  function ToolScopeEditor({ label, emptyLabel, member, selected, onChange, mode = "member", toolCatalog = [], basicView = null }) {
+    const field = mode === "catalog" ? "blockedTools" : "allowedTools";
+    const scope = window.MobKitFlowController.stepToolScopeState({ member, selected, mode, toolCatalog, basicView });
+    const remove = (id) => {
+      const result = window.MobKitFlowController.stepToolScopeRemovePatch(selected, id, { field });
+      if (result.patch) onChange(result.patch[field] || []);
+    };
+    const add = (id) => {
+      const result = window.MobKitFlowController.stepToolScopeAddPatch(selected, id, { member, mode, toolCatalog, field, basicView });
+      if (result.patch) onChange(result.patch[field] || []);
+    };
+    return /* @__PURE__ */ React.createElement(Field, { label }, scope.selectedTools.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, emptyLabel) : scope.rows.map((row) => {
+      return /* @__PURE__ */ React.createElement("div", { key: row.id, className: row.className }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "name" }, row.name), /* @__PURE__ */ React.createElement("div", { className: "auth" }, row.description)), /* @__PURE__ */ React.createElement("button", { onClick: () => remove(row.id) }, row.removeLabel));
+    }), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: scope.addSelectValue, disabled: scope.disabled, onChange: (e) => {
+      add(e.target.value);
+      e.target.value = "";
+    } }, /* @__PURE__ */ React.createElement("option", { value: scope.addSelectValue }, scope.addSelectPlaceholder), scope.addableRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.id, value: row.value }, row.optionLabel))));
+  }
+  function PanelHead({ icon, iconTint, title, sub, onClose, deleteMode }) {
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__head" }, /* @__PURE__ */ React.createElement("div", { className: "bld-panel__head-main" }, icon && /* @__PURE__ */ React.createElement("span", { className: "bld-panel__icon tint--" + (iconTint || "muted") }, icon), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "bld-panel__title" }, title), sub && /* @__PURE__ */ React.createElement("div", { className: "bld-panel__sub" }, sub))), /* @__PURE__ */ React.createElement("button", { className: "bld-panel__close", onClick: onClose, title: deleteMode ? "Delete step" : "Close" }, deleteMode ? "\u{1F5D1}" : "\u2715"));
+  }
+  function Field({ label, children }) {
+    return /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 14 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, label), children);
+  }
+  function PanelTips({ title, items }) {
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-tips" }, /* @__PURE__ */ React.createElement("div", { className: "bld-tips__head" }, title), /* @__PURE__ */ React.createElement("ul", null, items.map((t, i) => /* @__PURE__ */ React.createElement("li", { key: i }, t))));
+  }
+  function EmptyPanel({ state }) {
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner bld-panel__empty" }, /* @__PURE__ */ React.createElement("div", { className: "bld-panel__title" }, state.emptyPanelTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-panel__sub" }, state.emptyPanelSubtitleParts.map((part) => {
+      if (part.kind === "code") return /* @__PURE__ */ React.createElement("code", { key: part.key }, part.text);
+      if (part.kind === "strong") return /* @__PURE__ */ React.createElement("strong", { key: part.key }, part.text);
+      return /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text);
+    })));
+  }
+  function kickoffSlotEmpty(flow) {
+    const first = flow.steps[0];
+    return !!first && first.type === "input";
+  }
+  function childLanes(s) {
+    if (s.type === "branch") return [...s.branches, { id: "fallback", steps: s.fallback }];
+    if (s.type === "parallel") return s.branches;
+    if (s.type === "repeat") return [{ id: "body", steps: s.steps, _direct: true }];
+    return [];
+  }
+  function findStep(steps, id) {
+    for (const s of steps) {
+      if (s.id === id) return s;
+      for (const l of childLanes(s)) {
+        const r = findStep(l.steps, id);
+        if (r) return r;
+      }
+    }
+    return null;
+  }
 
   // ../packages/flow-editor-components/src/graph/graph.tsx
   function useStudioState(initial, onDirty, authoring = {}) {
@@ -11944,88 +13161,6 @@ var MobKitFlowComponents = (() => {
     ), /* @__PURE__ */ React.createElement("button", { className: "add-menu__x", onClick: onClose, title: menuState.closeTitle }, menuState.closeLabel)), /* @__PURE__ */ React.createElement("div", { className: "add-menu__scroll" }, menuState.hasMembers && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.agentsLabel), menuState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__dot", "data-role": row.role, style: row.dotStyle }), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.model))), menuState.hasControls && /* @__PURE__ */ React.createElement("div", { className: "add-menu__label" }, menuState.controlsLabel), menuState.controlRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "add-menu__row", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "add-menu__glyph" }, row.glyph), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-name" }, row.label), /* @__PURE__ */ React.createElement("span", { className: "add-menu__row-meta" }, row.meta))), menuState.isEmpty && /* @__PURE__ */ React.createElement("div", { className: "add-menu__empty" }, menuState.emptyLabel)), onJumpToAgents && /* @__PURE__ */ React.createElement("button", { className: "add-menu__foot", onClick: () => onJumpToAgents(null) }, menuState.jumpLabel));
   }
 
-  // ../packages/flow-editor-components/src/overlays/overlays.tsx
-  function DeployPlanTrace({ open, onClose, onActiveStep, runKey, document: document2, plan, deployView = null }) {
-    const traceState = React.useMemo(
-      () => window.MobKitFlowController.deployPlanTraceState(document2, plan, { deployView }),
-      [document2, plan, deployView]
-    );
-    const [idx, setIdx] = React.useState(0);
-    const bodyRef = React.useRef(null);
-    React.useEffect(() => {
-      if (!open) return;
-      setIdx(0);
-    }, [open, runKey]);
-    React.useEffect(() => {
-      if (!open) {
-        onActiveStep(null);
-        return;
-      }
-      onActiveStep(traceState.steps[idx]?.node || null);
-      if (bodyRef.current) {
-        const el = bodyRef.current.querySelector(`[data-step="${idx}"]`);
-        if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      }
-    }, [idx, open, traceState.steps]);
-    if (!open) return null;
-    return /* @__PURE__ */ React.createElement("div", { className: "deploy-plan" }, /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__title" }, /* @__PURE__ */ React.createElement("span", { className: "accent" }, traceState.eyebrow), " \xB7 ", traceState.title), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__sub" }, traceState.subtitle)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx(0) }, traceState.firstLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, traceState.closeLabel))), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__body", ref: bodyRef }, traceState.steps.map((s, i) => /* @__PURE__ */ React.createElement(
-      "div",
-      {
-        key: i,
-        "data-step": i,
-        className: "deploy-plan__step" + (i === idx ? " is-current" : "") + (i > idx ? " is-pending" : "")
-      },
-      /* @__PURE__ */ React.createElement("div", { className: "g" }),
-      /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "head" }, s.head), /* @__PURE__ */ React.createElement("div", { className: "body" }, s.body))
-    ))), /* @__PURE__ */ React.createElement("div", { className: "deploy-plan__foot" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { width: "100%" } }, /* @__PURE__ */ React.createElement("span", { className: "muted" }, traceState.packLabel ? `${traceState.packLabel} \xB7 ` : "", traceState.stepLabel, " ", idx + 1, " / ", traceState.steps.length), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.max(0, i - 1)) }, traceState.previousLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => setIdx((i) => Math.min(traceState.steps.length - 1, i + 1)) }, traceState.nextLabel)))));
-  }
-  function ValidateSheet({ open, onClose, onPublish, onDeployPlan, onDeployRun, results, stage, deployView = null, capabilities = null }) {
-    if (!open) return null;
-    const sheetState = window.MobKitFlowController.validationSheetState(results, { stage, deployView, capabilities });
-    return /* @__PURE__ */ React.createElement("div", { className: "validate" }, /* @__PURE__ */ React.createElement("div", { className: "validate__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, sheetState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, sheetState.title)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onPublish, disabled: sheetState.publishDisabled }, sheetState.publishLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onDeployPlan, disabled: sheetState.deployPlanDisabled }, sheetState.deployPlanLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: onDeployRun, disabled: sheetState.deployRunDisabled }, sheetState.deployLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, sheetState.closeLabel))), /* @__PURE__ */ React.createElement("div", { className: "validate__body" }, sheetState.rows.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "validate__row is-" + r.kind }, /* @__PURE__ */ React.createElement("span", { className: "glyph" }, r.glyph), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "head" }, r.head), /* @__PURE__ */ React.createElement("div", { className: "sub" }, r.sub)), /* @__PURE__ */ React.createElement("span", { className: "meta" }, r.meta)))));
-  }
-  function SourceCodePanel({ state, busy = false, compact = false, sourceView = null, sourcePath = "" }) {
-    const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact, sourceView, sourcePath });
-    if (editorState.showLoading) {
-      return /* @__PURE__ */ React.createElement("pre", { className: editorState.bodyClass, role: "textbox", "aria-readonly": "true" }, editorState.loadingText);
-    }
-    return /* @__PURE__ */ React.createElement(
-      "pre",
-      {
-        className: editorState.bodyClass,
-        role: "textbox",
-        "aria-readonly": "true",
-        dangerouslySetInnerHTML: { __html: editorState.sourceHtml }
-      }
-    );
-  }
-  function SourceDrawer({ open, onClose, state, sourceView = null }) {
-    const [sourcePath, setSourcePath] = React.useState("");
-    const selectSourcePath = (path) => {
-      const result = window.MobKitFlowController.sourceFileSelectionTransition(state, path, sourcePath);
-      setSourcePath(result.sourcePath);
-    };
-    React.useEffect(() => {
-      setSourcePath("");
-    }, [state]);
-    if (!open) return null;
-    const editorState = window.MobKitFlowController.sourceEditorState(state, { sourceView, sourcePath });
-    return /* @__PURE__ */ React.createElement("div", { className: "source-drawer" }, /* @__PURE__ */ React.createElement("div", { className: "source-drawer__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.drawerEyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => selectSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, sourceView, sourcePath }));
-  }
-  function InlineSourceEditor({ open, onClose, state, busy = false, surface = "basic", sourceView = null }) {
-    const [sourcePath, setSourcePath] = React.useState("");
-    const selectSourcePath = (path) => {
-      const result = window.MobKitFlowController.sourceFileSelectionTransition(state, path, sourcePath);
-      setSourcePath(result.sourcePath);
-    };
-    React.useEffect(() => {
-      setSourcePath("");
-    }, [state]);
-    if (!open) return null;
-    const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true, sourceView, sourcePath });
-    return /* @__PURE__ */ React.createElement("div", { className: "bld-toml bld-toml--" + surface, onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { className: "bld-toml__head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", null, editorState.inlineTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.sourceLabel), editorState.validationSource && /* @__PURE__ */ React.createElement("div", { className: "bld-toml__hint" }, editorState.validationSource)), /* @__PURE__ */ React.createElement("div", { className: "row" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn--sm", onClick: () => navigator.clipboard?.writeText(editorState.source), disabled: editorState.copyDisabled }, editorState.copyLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: onClose }, editorState.closeLabel))), editorState.fileRows.length > 1 && /* @__PURE__ */ React.createElement("div", { className: "source-file-list source-file-list--inline" }, editorState.fileRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.path, className: row.className, onClick: () => selectSourcePath(row.path) }, /* @__PURE__ */ React.createElement("span", null, row.label), /* @__PURE__ */ React.createElement("em", null, row.meta)))), /* @__PURE__ */ React.createElement(SourceCodePanel, { state, busy, compact: true, sourceView, sourcePath }));
-  }
-
   // ../packages/flow-editor-components/src/tweaks/tweaks-panel.tsx
   var __TWEAKS_STYLE = `
   .twk-panel{position:fixed;right:16px;bottom:16px;z-index:2147483646;width:280px;
@@ -12521,1151 +13656,10 @@ Object.assign(window, {
   AddNodeMenu: MobKitFlowComponents.AddNodeMenu,
   useStudioState: MobKitFlowComponents.useStudioState,
   GraphEditor: MobKitFlowComponents.GraphEditor,
+  AgentsView: MobKitFlowComponents.AgentsView,
+  BuilderView: MobKitFlowComponents.BuilderView,
 });
 
-
-/* agents.jsx */
-
-{
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "agents-view" }, /* @__PURE__ */ React.createElement(AgentsList, { studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAgentIntent, toolCatalog, modelCatalog, agentView }), /* @__PURE__ */ React.createElement("div", { className: "agents-view__main" }, /* @__PURE__ */ React.createElement(AgentsMain, { studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent, agentView, agentDetailView, agentAccessView, schemaView })));
-}
-function AgentsList({ studio, agentSel, setAgentSel, contract, deploySettings, agentDefinitions, applyAgentIntent = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
-  const [schemaAddResult, setSchemaAddResult] = React.useState(null);
-  const listState = window.MobKitFlowController.agentListState({
-    members: studio.members,
-    instances: studio.instances,
-    schemas: studio.schemas,
-    selection: agentSel,
-    agentView
-  });
-  const schemaAddErrorState = window.MobKitFlowController.schemaDefinitionAddErrorState(schemaAddResult, listState.schemaAddFallbackError);
-  return /* @__PURE__ */ React.createElement("aside", { className: "agents-list" }, /* @__PURE__ */ React.createElement("div", { className: "agents-list__head" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__title" }, listState.agentsHeading), /* @__PURE__ */ React.createElement("span", { className: "agents-list__count" }, listState.memberCount)), /* @__PURE__ */ React.createElement("div", { className: "agents-list__scroll" }, listState.memberRows.map((row) => {
-    return /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        key: row.id,
-        className: row.itemClass,
-        onClick: () => setAgentSel(window.MobKitFlowController.agentListSelectionProjection("agent", row.id))
-      },
-      /* @__PURE__ */ React.createElement("span", { className: "agents-list__bullet", "data-role": row.bulletRole, style: row.bulletStyle }, "\u25CF"),
-      /* @__PURE__ */ React.createElement("div", { className: "agents-list__col" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "agents-list__sub" }, row.subLabel)),
-      /* @__PURE__ */ React.createElement("span", { className: row.placedClass }, row.placedLabel)
-    );
-  }), /* @__PURE__ */ React.createElement(AddAgentControl, { studio, setAgentSel, agentDefinitions, applyAgentIntent, contract, deploySettings, toolCatalog, modelCatalog, agentView })), /* @__PURE__ */ React.createElement("div", { className: "agents-list__head agents-list__head--sub" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__title" }, listState.schemasHeading), /* @__PURE__ */ React.createElement("span", { className: "agents-list__count" }, listState.schemaCount)), /* @__PURE__ */ React.createElement("div", { className: "agents-list__scroll" }, listState.schemaRows.map((row) => {
-    return /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        key: row.id,
-        className: row.itemClass,
-        onClick: () => setAgentSel(window.MobKitFlowController.agentListSelectionProjection("schema", row.id))
-      },
-      /* @__PURE__ */ React.createElement("span", { className: "agents-list__bullet", "data-role": row.bulletRole, style: row.bulletStyle }, "\u25A2"),
-      /* @__PURE__ */ React.createElement("div", { className: "agents-list__col" }, /* @__PURE__ */ React.createElement("span", { className: "agents-list__name" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "agents-list__sub" }, row.subLabel))
-    );
-  }), /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      className: "agents-list__add",
-      onClick: () => {
-        if (!applyAgentIntent) {
-          setSchemaAddResult({ ok: false, error: listState.authoringOperationUnavailableError });
-          return;
-        }
-        setSchemaAddResult(null);
-        applyAgentIntent({ intent: "schema.add" }).then((result) => {
-          if (result?.ok === false) {
-            setSchemaAddResult(result);
-            return;
-          }
-          const selection = result?.selection;
-          setSchemaAddResult(null);
-          if (selection?.kind) setAgentSel(selection);
-        }).catch((error) => {
-          setSchemaAddResult({
-            ok: false,
-            error: error?.message || String(error || listState.schemaAddFallbackError)
-          });
-        });
-      }
-    },
-    listState.addSchemaLabel
-  ), schemaAddErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaAddErrorState.text)));
-}
-function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAgentIntent = null, contract = null, deploySettings = null, toolCatalog = [], modelCatalog = [], agentView = null }) {
-  const [lastAddResult, setLastAddResult] = React.useState(null);
-  const definitionState = window.MobKitFlowController.agentDefinitionAddControlState(agentDefinitions, agentView);
-  const definitionErrorState = window.MobKitFlowController.agentDefinitionAddErrorState(lastAddResult, agentView);
-  const createFromDefinition = async (definitionId) => {
-    if (!applyAgentIntent) {
-      setLastAddResult({ ok: false, error: definitionState.authoringOperationUnavailableError });
-      return;
-    }
-    if (studio.snap) studio.snap();
-    const result = await applyAgentIntent({ intent: "agent.addDefinition", definitionId });
-    setLastAddResult(result);
-    if (!result.ok) return;
-    setAgentSel(result.selection);
-  };
-  if (!definitionState.hasDefinitions) {
-    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        className: definitionState.controlClass,
-        disabled: true,
-        title: definitionState.title
-      },
-      definitionState.unavailableLabel
-    ), definitionErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, definitionErrorState.text));
-  }
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
-    "select",
-    {
-      className: definitionState.controlClass,
-      value: definitionState.value,
-      title: definitionState.title,
-      onChange: (e) => {
-        const id = e.target.value;
-        if (!id) return;
-        createFromDefinition(id);
-        e.target.value = "";
-      }
-    },
-    /* @__PURE__ */ React.createElement("option", { value: definitionState.placeholderOption.value }, definitionState.placeholderOption.label),
-    definitionState.optionRows.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))
-  ), definitionErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, definitionErrorState.text));
-}
-function AgentsMain({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
-  const selectionState = window.MobKitFlowController.agentSelectionState({
-    selection: agentSel,
-    members: studio.members,
-    schemas: studio.schemas,
-    agentView
-  });
-  if (selectionState.kind === "empty") {
-    return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, /* @__PURE__ */ React.createElement("div", { className: "agents-empty__head" }, selectionState.emptyState.title), selectionState.emptyState.lines.map((line, index) => /* @__PURE__ */ React.createElement("div", { className: "agents-empty__line", key: index }, line)));
-  }
-  if (selectionState.kind === "schema") {
-    if (!selectionState.schema) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingSchemaLabel);
-    return /* @__PURE__ */ React.createElement(SchemaEditor, { studio, schema: selectionState.schema, setAgentSel, contract, flow, setFlow, schemaView, applyAgentIntent });
-  }
-  if (!selectionState.member) return /* @__PURE__ */ React.createElement("div", { className: "agents-empty" }, selectionState.missingAgentLabel);
-  return /* @__PURE__ */ React.createElement(AgentEditor, { studio, member: selectionState.member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog, modelCatalog, applyAgentIntent, agentView, agentDetailView, agentAccessView });
-}
-function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null }) {
-  const [memberEditError, setMemberEditError] = React.useState("");
-  const [deleteConfirmOpen, setDeleteConfirmOpen] = React.useState(false);
-  React.useEffect(() => {
-    setDeleteConfirmOpen(false);
-  }, [member.id]);
-  const mobKitOperationError = (result, fallback) => {
-    return window.MobKitFlowController.operationErrorText(result, fallback);
-  };
-  const editorState = window.MobKitFlowController.agentEditorControlState({
-    member,
-    instances: studio.instances,
-    schemas: studio.schemas,
-    contract,
-    deploySettings,
-    modelCatalog,
-    agentDetailView,
-    agentView
-  });
-  const unavailableError = editorState.authoringOperationUnavailableError;
-  const change = async (patch) => {
-    if (!patch || typeof patch !== "object" || !Object.keys(patch).length) return;
-    if (!applyAgentIntent) {
-      setMemberEditError(unavailableError);
-      return;
-    }
-    try {
-      if (studio.snap) studio.snap();
-      const result = await applyAgentIntent({ intent: "agent.updateMember", memberId: member.id, patch });
-      if (!result?.ok) {
-        setMemberEditError(mobKitOperationError(result, editorState.memberUpdateFallbackError));
-        return;
-      }
-      setMemberEditError("");
-    } catch (error) {
-      setMemberEditError(error?.message || editorState.memberUpdateFallbackError);
-    }
-  };
-  const [toolDraft, setToolDraft] = React.useState("");
-  const [toolDraftError, setToolDraftError] = React.useState("");
-  const [schemaChangeResult, setSchemaChangeResult] = React.useState(null);
-  const toolAccessState = window.MobKitFlowController.memberToolAccessState(member, toolCatalog, agentAccessView);
-  const schemaErrorState = window.MobKitFlowController.memberSchemaChangeErrorState(schemaChangeResult);
-  const addToolAccess = async (raw) => {
-    const toolId = String(raw || "").trim();
-    if (!toolId) {
-      setToolDraftError(toolAccessState.emptyToolError);
-      return;
-    }
-    if (!applyAgentIntent) {
-      setToolDraftError(toolAccessState.authoringOperationUnavailableError);
-      return;
-    }
-    try {
-      if (studio.snap) studio.snap();
-      const result = await applyAgentIntent({ intent: "agent.addTool", memberId: member.id, toolId });
-      if (!result?.ok) {
-        setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
-        return;
-      }
-      setToolDraft("");
-      setToolDraftError("");
-    } catch (error) {
-      setToolDraftError(error?.message || editorState.toolUpdateFallbackError);
-    }
-  };
-  const removeToolAccess = async (toolId) => {
-    if (!applyAgentIntent) {
-      setToolDraftError(toolAccessState.authoringOperationUnavailableError);
-      return;
-    }
-    try {
-      if (studio.snap) studio.snap();
-      const result = await applyAgentIntent({ intent: "agent.removeTool", memberId: member.id, toolId });
-      if (!result?.ok) {
-        setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
-        return;
-      }
-      setToolDraftError("");
-    } catch (error) {
-      setToolDraftError(error?.message || editorState.toolUpdateFallbackError);
-    }
-  };
-  const changeSchema = (rawSchema) => {
-    if (!applyAgentIntent) {
-      setSchemaChangeResult({ ok: false, error: unavailableError });
-      return;
-    }
-    applyAgentIntent({
-      intent: "agent.assignSchema",
-      memberId: member.id,
-      schemaId: rawSchema,
-      selection: { kind: "agent", id: member.id }
-    }).then((result) => {
-      setSchemaChangeResult(result?.ok === false ? result : null);
-    }).catch((error) => {
-      setSchemaChangeResult({ ok: false, error: error?.message || editorState.schemaAssignmentFallbackError });
-    });
-  };
-  const deleteConfirmState = window.MobKitFlowController.agentDeleteConfirmationState(editorState, deleteConfirmOpen);
-  const deleteMember = () => {
-    if (!applyAgentIntent) return;
-    const selection = null;
-    applyAgentIntent({
-      intent: "agent.deleteMember",
-      memberId: member.id,
-      selection
-    }).then((result) => {
-      if (result?.ok === false) return;
-      setAgentSel(selection);
-      setDeleteConfirmOpen(false);
-    }).catch(() => {
-      setDeleteConfirmOpen(false);
-    });
-  };
-  return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, editorState.eyebrow), /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "agent-editor__title-input",
-      value: member.name,
-      onChange: (e) => change(window.MobKitFlowController.memberNamePatch(e.target.value))
-    }
-  ), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, editorState.idLine), memberEditError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, memberEditError)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => {
-    if (deleteConfirmState.needsConfirmation) {
-      setDeleteConfirmOpen(true);
-      return;
-    }
-    deleteMember();
-  } }, editorState.deleteLabel)), deleteConfirmState.open && /* @__PURE__ */ React.createElement("div", { className: "agent-editor__confirm" }, /* @__PURE__ */ React.createElement("span", null, deleteConfirmState.message), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => setDeleteConfirmOpen(false) }, deleteConfirmState.cancelLabel), /* @__PURE__ */ React.createElement("button", { className: "btn btn--primary btn--sm", onClick: deleteMember }, deleteConfirmState.confirmLabel))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__body" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__cols" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__col" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.identityTitle), editorState.isRealmProfile ? /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.realmProfileLabel), /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "field__input field__input--mono",
-      value: member.realmProfile || "",
-      placeholder: editorState.realmProfilePlaceholder,
-      onChange: (e) => change(window.MobKitFlowController.memberRealmProfilePatch(e.target.value))
-    }
-  ), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.realmProfileImportHint)) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.modelLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: member.model, onChange: (e) => change(window.MobKitFlowController.memberModelPatch(e.target.value, modelCatalog)) }, editorState.modelOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))))), !editorState.isRealmProfile && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title section__title--row" }, /* @__PURE__ */ React.createElement("span", null, editorState.systemPromptTitle), /* @__PURE__ */ React.createElement("button", { className: "ghost-btn", onClick: () => change(window.MobKitFlowController.memberSystemPromptPatch(window.MobKitFlowController.memberPromptSkeleton(member))), title: editorState.applySkeletonTitle }, editorState.applySkeletonLabel)), /* @__PURE__ */ React.createElement(
-    "textarea",
-    {
-      className: "field__textarea",
-      rows: 8,
-      value: member.systemPrompt || "",
-      onChange: (e) => change(window.MobKitFlowController.memberSystemPromptPatch(e.target.value)),
-      placeholder: editorState.systemPromptPlaceholder
-    }
-  )), /* @__PURE__ */ React.createElement("details", { className: "section agent-runtime" }, /* @__PURE__ */ React.createElement("summary", { className: "section__title agent-runtime__summary" }, /* @__PURE__ */ React.createElement("span", null, editorState.runtimeSectionTitle)), /* @__PURE__ */ React.createElement("div", { className: "agent-runtime__body" }, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.profileBindingLabel), /* @__PURE__ */ React.createElement(
-    "select",
-    {
-      className: "field__select",
-      value: editorState.profileBinding,
-      onChange: (e) => change(window.MobKitFlowController.memberProfileBindingPatch(member, e.target.value, contract))
-    },
-    editorState.bindingOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
-  ), editorState.selectedBinding?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, editorState.selectedBinding.reason)), !editorState.isRealmProfile && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.runtimeModeLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: editorState.runtimeMode, onChange: (e) => change(window.MobKitFlowController.memberRuntimeModePatch(e.target.value, contract, deploySettings)) }, editorState.runtimeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), editorState.selectedRuntime?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, editorState.selectedRuntime.reason)), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.backendLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: editorState.backendValue, onChange: (e) => change(window.MobKitFlowController.memberBackendPatch(e.target.value, contract)) }, editorState.backendOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value || "default", value: option.value, disabled: option.disabled }, option.label))), editorState.selectedBackend?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, editorState.selectedBackend.reason)), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, editorState.inlinePeerNotificationsLabel), /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "field__input",
-      type: "number",
-      min: "-1",
-      step: "1",
-      value: member.maxInlinePeerNotifications ?? "",
-      placeholder: editorState.inlinePeerNotificationsPlaceholder,
-      onChange: (e) => change(window.MobKitFlowController.memberMaxInlinePeerNotificationsPatch(e.target.value))
-    }
-  )), /* @__PURE__ */ React.createElement(ProviderParamsEditor, { member, change, agentDetailView })))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.sourceProvenance.title), editorState.sourceProvenance.hasRows ? /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, editorState.sourceProvenance.rows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.label }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value)))) : /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.sourceProvenance.emptyHint))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__col" }, editorState.isRealmProfile ? /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.realmProfileTitle), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.realmProfileReferenceHintBefore, " ", /* @__PURE__ */ React.createElement("code", null, editorState.realmProfileReferenceLabel), " ", editorState.realmProfileReferenceHintAfter)) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, toolAccessState.title), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginBottom: 8 } }, toolAccessState.hint), toolAccessState.rows.map((row) => {
-    return /* @__PURE__ */ React.createElement("div", { key: row.id, className: row.className }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "name" }, row.name), /* @__PURE__ */ React.createElement("div", { className: "auth" }, row.description)), /* @__PURE__ */ React.createElement("button", { onClick: () => removeToolAccess(row.id) }, row.removeLabel));
-  }), /* @__PURE__ */ React.createElement(
-    "select",
-    {
-      className: "field__select",
-      value: toolAccessState.addSelectValue,
-      onChange: (e) => {
-        const id = e.target.value;
-        if (!id) return;
-        addToolAccess(id);
-      }
-    },
-    /* @__PURE__ */ React.createElement("option", { value: toolAccessState.addSelectValue }, toolAccessState.addSelectPlaceholder),
-    toolAccessState.addableRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.id, value: row.value, disabled: row.disabled }, row.optionLabel))
-  ), /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, toolAccessState.sourceLabel), /* @__PURE__ */ React.createElement("div", { className: "row row--gap" }, /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "field__input field__input--mono",
-      value: toolDraft,
-      placeholder: toolAccessState.sourcePlaceholder,
-      onChange: (e) => {
-        setToolDraft(e.target.value);
-        setToolDraftError("");
-      },
-      onKeyDown: (e) => {
-        if (e.key === "Enter") addToolAccess(toolDraft);
-      }
-    }
-  ), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => addToolAccess(toolDraft) }, toolAccessState.addButtonLabel)), toolDraftError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, toolDraftError))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.outputSchemaTitle), /* @__PURE__ */ React.createElement(
-    "select",
-    {
-      className: "field__select",
-      value: member.schema || "",
-      onChange: (e) => changeSchema(e.target.value)
-    },
-    editorState.schemaOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value || "none", value: option.value }, option.label))
-  ), schemaErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaErrorState.text), editorState.hasOutputSchema ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("ul", { className: "schema-fields schema-fields--preview" }, editorState.schemaPreviewRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => setAgentSel(editorState.editSchemaSelection) }, editorState.editSchemaLabel)) : /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, editorState.emptySchemaHint)), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement(SkillAccess, { studio, member, agentAccessView, applyAgentIntent }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, editorState.usageTitle), editorState.placedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, editorState.emptyUsageHint), editorState.usageRows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row.id, className: "usage-row usage-row--ro" }, /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.id), /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.cellLabel), /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.laneLabel))))))));
-}
-function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, schemaView = null, applyAgentIntent = null }) {
-  const [fieldAddResult, setFieldAddResult] = React.useState(null);
-  const [schemaOperationError, setSchemaOperationError] = React.useState("");
-  React.useEffect(() => setFieldAddResult(null), [schema?.id]);
-  React.useEffect(() => setSchemaOperationError(""), [schema?.id]);
-  const schemaState = window.MobKitFlowController.schemaEditorControlState({
-    schema,
-    members: studio.members,
-    schemaView
-  });
-  const fieldAddErrorState = window.MobKitFlowController.schemaFieldAddErrorState(fieldAddResult, schemaState.fieldAddFallbackError);
-  const applySchemaIntent = async (intentRequest, selection = { kind: "schema", id: schema.id }) => {
-    const fallback = schemaState.schemaOperationFallbackError;
-    if (!applyAgentIntent) {
-      const result = { ok: false, error: schemaState.authoringOperationUnavailableError };
-      setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
-      return result;
-    }
-    try {
-      const result = await applyAgentIntent({ ...intentRequest, selection });
-      if (result?.ok === false) {
-        setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
-      } else {
-        setSchemaOperationError("");
-      }
-      return result;
-    } catch (error) {
-      const result = { ok: false, error: error?.message || String(error || fallback) };
-      setSchemaOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
-      return result;
-    }
-  };
-  const change = (patch) => {
-    applySchemaIntent({ intent: "schema.update", schemaId: schema.id, patch });
-  };
-  const renameField = (fieldId, oldName, newName) => {
-    applySchemaIntent({ intent: "schema.renameField", schemaId: schema.id, fieldId, oldName, newName });
-  };
-  const updateField = (fieldId, patch) => {
-    applySchemaIntent({ intent: "schema.updateField", schemaId: schema.id, fieldId, patch });
-  };
-  const deleteField = (fieldId) => {
-    applySchemaIntent({ intent: "schema.deleteField", schemaId: schema.id, fieldId });
-  };
-  const addField = () => {
-    if (!applyAgentIntent) {
-      setFieldAddResult({ ok: false, error: schemaState.authoringOperationUnavailableError });
-      return;
-    }
-    setFieldAddResult(null);
-    applyAgentIntent({
-      intent: "schema.addField",
-      schemaId: schema.id,
-      selection: { kind: "schema", id: schema.id }
-    }).then((result) => {
-      if (result?.ok === false) {
-        setFieldAddResult(result);
-        return;
-      }
-      setFieldAddResult(null);
-    }).catch((error) => {
-      setFieldAddResult({
-        ok: false,
-        error: error?.message || String(error || schemaState.fieldAddFallbackError)
-      });
-    });
-  };
-  const deleteSchema = async () => {
-    const selection = { kind: null, id: null };
-    const result = await applySchemaIntent({ intent: "schema.delete", schemaId: schema.id }, selection);
-    if (result?.ok === false) return;
-    setAgentSel(result?.selection || selection);
-  };
-  const renameSchema = async (newId) => {
-    const result = window.MobKitFlowController.renameSchemaDefinition({
-      schemas: studio.schemas,
-      members: studio.members,
-      flow
-    }, schema.id, newId);
-    if (!result.renamed) return;
-    const operationResult = await applySchemaIntent({ intent: "schema.rename", schemaId: schema.id, newId }, result.selection);
-    if (operationResult?.ok === false) return;
-    setAgentSel(operationResult?.selection || result.selection);
-  };
-  return /* @__PURE__ */ React.createElement("div", { className: "agent-editor" }, /* @__PURE__ */ React.createElement("div", { className: "agent-editor__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, schemaState.eyebrow), /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "agent-editor__title-input",
-      defaultValue: schema.id,
-      onBlur: (e) => renameSchema(e.target.value),
-      onKeyDown: (e) => {
-        if (e.key === "Enter") e.target.blur();
-      }
-    }
-  ), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, schemaState.usageLabel), schemaOperationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, schemaOperationError)), /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      className: "btn btn--ghost btn--sm",
-      disabled: !schemaState.canDelete,
-      title: schemaState.deleteTitle,
-      onClick: deleteSchema
-    },
-    schemaState.deleteLabel
-  ))), /* @__PURE__ */ React.createElement("div", { className: "agent-editor__body" }, /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, schemaState.descriptionTitle), /* @__PURE__ */ React.createElement(
-    "textarea",
-    {
-      className: "field__textarea",
-      rows: 2,
-      value: schema.description || "",
-      placeholder: schemaState.descriptionPlaceholder,
-      onChange: (e) => change(window.MobKitFlowController.schemaDescriptionPatch(e.target.value))
-    }
-  )), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, schemaState.fieldsTitle), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: addField }, schemaState.addFieldLabel)), fieldAddErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, fieldAddErrorState.text), /* @__PURE__ */ React.createElement("div", { className: "schema-builder" }, /* @__PURE__ */ React.createElement("div", { className: "schema-builder__header" }, /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--name" }, schemaState.headerLabels.name), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--type" }, schemaState.headerLabels.type), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--req" }, schemaState.headerLabels.required), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--desc" }, schemaState.headerLabels.description), /* @__PURE__ */ React.createElement("span", { className: "sb-col sb-col--act" }, schemaState.headerLabels.action)), schemaState.fieldRows.map(({ field: f }) => /* @__PURE__ */ React.createElement(
-    SchemaField,
-    {
-      key: f.id,
-      field: f,
-      normalizeName: (raw) => window.MobKitFlowController.uniqueSchemaFieldName(schema.fields, raw, f.id),
-      onChange: (patch) => updateField(f.id, patch),
-      onRename: (oldName, newName) => renameField(f.id, oldName, newName),
-      onDelete: () => deleteField(f.id),
-      contract,
-      schemaView
-    }
-  )), schemaState.fieldRows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "schema-builder__empty" }, schemaState.emptyFieldsHint))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, schemaState.usedByTitle), schemaState.usedCount === 0 && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, schemaState.emptyUsedByHint), schemaState.usedBy.map((row) => /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      key: row.id,
-      className: "usage-row",
-      onClick: () => setAgentSel(row.selection)
-    },
-    /* @__PURE__ */ React.createElement("span", { className: "usage-row__label" }, row.name),
-    /* @__PURE__ */ React.createElement("span", { className: "usage-row__cell" }, row.role),
-    /* @__PURE__ */ React.createElement("span", { className: "usage-row__lane" }, row.model)
-  )))));
-}
-function SchemaEnumValueChip({ field, value, index, onChange }) {
-  const [draftValue, setDraftValue] = React.useState(value || "");
-  React.useEffect(() => {
-    setDraftValue(value || "");
-  }, [index, value]);
-  return /* @__PURE__ */ React.createElement("span", { className: "chip" }, /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "chip__input",
-      value: draftValue,
-      onChange: (e) => setDraftValue(e.target.value),
-      onBlur: (e) => {
-        const patch = window.MobKitFlowController.enumValueCommitPatch(field, index, e.target.value);
-        setDraftValue(patch.enumValues?.[index] || "");
-        onChange(patch);
-      }
-    }
-  ), /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      className: "chip__x",
-      onClick: () => onChange(window.MobKitFlowController.enumValueDeletePatch(field, index))
-    },
-    "\xD7"
-  ));
-}
-function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contract, schemaView = null }) {
-  const nameBeforeEdit = React.useRef(field.name);
-  const [draftName, setDraftName] = React.useState(field.name || "");
-  React.useEffect(() => {
-    setDraftName(field.name || "");
-  }, [field.id, field.name]);
-  const fieldState = window.MobKitFlowController.schemaFieldRowControlState(field, contract, schemaView);
-  const typeState = fieldState.typeState;
-  const values = fieldState.enumValues;
-  return /* @__PURE__ */ React.createElement("div", { className: "schema-field" }, /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "sb-input sb-col--name",
-      value: draftName,
-      onFocus: () => {
-        nameBeforeEdit.current = field.name;
-      },
-      onChange: (e) => setDraftName(e.target.value),
-      onBlur: (e) => {
-        const normalized = normalizeName(e.target.value);
-        const previous = String(nameBeforeEdit.current || "").trim();
-        setDraftName(normalized);
-        if (previous && previous !== normalized && onRename) {
-          onRename(previous, normalized);
-          return;
-        }
-        if (!onRename && previous !== normalized) onChange({ name: normalized });
-      },
-      placeholder: fieldState.namePlaceholder
-    }
-  ), /* @__PURE__ */ React.createElement(
-    "select",
-    {
-      className: "sb-select sb-col--type",
-      value: typeState.type,
-      onChange: (e) => {
-        onChange(window.MobKitFlowController.schemaLikeFieldTypePatch(field, e.target.value, contract));
-      }
-    },
-    typeState.typeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
-  ), typeState.selectedType?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, typeState.selectedType.reason), /* @__PURE__ */ React.createElement("label", { className: "sb-col--req sb-checkbox" }, /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      type: "checkbox",
-      checked: !!field.required,
-      onChange: (e) => onChange(window.MobKitFlowController.schemaLikeFieldRequiredPatch(e.target.checked))
-    }
-  )), /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "sb-input sb-col--desc",
-      value: field.description || "",
-      onChange: (e) => onChange(window.MobKitFlowController.schemaLikeFieldDescriptionPatch(e.target.value)),
-      placeholder: fieldState.descriptionPlaceholder
-    }
-  ), /* @__PURE__ */ React.createElement("button", { className: "sb-del", onClick: onDelete, title: fieldState.removeTitle }, "\xD7"), field.type === "enum" && /* @__PURE__ */ React.createElement("div", { className: "sb-enum" }, /* @__PURE__ */ React.createElement("span", { className: "sb-enum__label" }, fieldState.enumLabel), /* @__PURE__ */ React.createElement("div", { className: "sb-enum__chips" }, values.map((v, i) => /* @__PURE__ */ React.createElement(SchemaEnumValueChip, { key: i, field, value: v, index: i, onChange })), /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      className: "chip chip--add",
-      onClick: () => onChange(window.MobKitFlowController.enumValueAddPatch(field, fieldState.enumAddValue))
-    },
-    fieldState.enumAddLabel
-  ))));
-}
-function ProviderParamsEditor({ member, change, agentDetailView = null }) {
-  const paramsState = window.MobKitFlowController.memberProviderParamsEditorState(member, agentDetailView);
-  const [draft, setDraft] = React.useState(paramsState.text);
-  const [error, setError] = React.useState("");
-  React.useEffect(() => {
-    setDraft(paramsState.text);
-    setError("");
-  }, [member.id, paramsState.text]);
-  const commit = (next) => {
-    setDraft(next);
-    const result = window.MobKitFlowController.memberProviderParamsPatch(next, agentDetailView);
-    if (!result.ok) {
-      setError(result.error || paramsState.invalidJsonLabel);
-      return;
-    }
-    setError("");
-    change(result.patch);
-  };
-  return /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, paramsState.label), /* @__PURE__ */ React.createElement(
-    "textarea",
-    {
-      className: "field__textarea field__textarea--mono",
-      rows: paramsState.rows,
-      value: draft,
-      placeholder: paramsState.placeholder,
-      onChange: (e) => commit(e.target.value)
-    }
-  ), error && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, error));
-}
-function SkillAccess({ studio, member, agentAccessView = null, applyAgentIntent = null }) {
-  const realms = studio.skillRealms || [];
-  const initialSkillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, accessView: agentAccessView });
-  const [realmId, setRealmId] = React.useState(initialSkillState.realmId);
-  const [inlineOpen, setInlineOpen] = React.useState(false);
-  const [inlineLabel, setInlineLabel] = React.useState("");
-  const [inlineContent, setInlineContent] = React.useState("");
-  const [inlineError, setInlineError] = React.useState("");
-  const skillState = window.MobKitFlowController.memberSkillAccessState({ member, skillRealms: realms, realmId, inlineOpen, accessView: agentAccessView });
-  React.useEffect(() => {
-    if (skillState.realmId !== realmId) setRealmId(skillState.realmId);
-  }, [skillState.realmId, realmId]);
-  const applySkillIntent = async (intentRequest, fallback = skillState.inlineErrorFallback) => {
-    if (!applyAgentIntent) {
-      setInlineError(fallback);
-      return null;
-    }
-    try {
-      if (studio.snap) studio.snap();
-      const result = await applyAgentIntent({ memberId: member.id, ...intentRequest });
-      if (!result?.ok) {
-        setInlineError(window.MobKitFlowController.operationErrorText(result, fallback));
-        return null;
-      }
-      setInlineError("");
-      return result;
-    } catch (err) {
-      setInlineError(err?.message || fallback);
-      return null;
-    }
-  };
-  const toggle = (sid) => {
-    applySkillIntent({ intent: "agent.toggleSkill", skillId: sid });
-  };
-  const removeSkill = (sid) => {
-    applySkillIntent({ intent: "agent.removeSkill", skillId: sid });
-  };
-  const addInlineSkill = async () => {
-    const result = await applySkillIntent({
-      intent: "agent.createInlineSkill",
-      label: inlineLabel,
-      content: inlineContent
-    }, skillState.inlineErrorFallback);
-    if (result) {
-      const nextRealmId = window.MobKitFlowController.inlineSkillRealmIdFromOperationResult(result);
-      if (nextRealmId) setRealmId(nextRealmId);
-      setInlineLabel("");
-      setInlineContent("");
-      setInlineError("");
-      setInlineOpen(false);
-    }
-  };
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "section__title section__title--row" }, /* @__PURE__ */ React.createElement("span", null, skillState.sectionTitle), /* @__PURE__ */ React.createElement("button", { className: "ghost-btn", onClick: () => setInlineOpen((open) => !open) }, skillState.inlineToggleLabel)), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginBottom: 8 } }, skillState.hint), inlineOpen && /* @__PURE__ */ React.createElement("div", { className: "inline-skill" }, /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "field__input",
-      value: inlineLabel,
-      placeholder: skillState.inlineLabelPlaceholder,
-      onChange: (e) => {
-        setInlineLabel(e.target.value);
-        setInlineError("");
-      }
-    }
-  ), /* @__PURE__ */ React.createElement(
-    "textarea",
-    {
-      className: "field__textarea field__textarea--mono",
-      rows: skillState.inlineContentRows,
-      value: inlineContent,
-      placeholder: skillState.inlineContentPlaceholder,
-      onChange: (e) => {
-        setInlineContent(e.target.value);
-        setInlineError("");
-      }
-    }
-  ), /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("span", { className: "hint__line" }, skillState.inlineCreateHint), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: addInlineSkill }, skillState.inlineAddLabel)), inlineError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)" } }, inlineError)), !skillState.hasRealms ? /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, skillState.noRealmsMessage) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, skillState.realmLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: skillState.realmId, onChange: (e) => setRealmId(e.target.value) }, skillState.realmOptions.map((realm) => /* @__PURE__ */ React.createElement("option", { key: realm.id, value: realm.id }, realm.label)))), /* @__PURE__ */ React.createElement("div", { className: "skill-list" }, skillState.skillRows.map((row) => {
-    return /* @__PURE__ */ React.createElement("button", { key: row.id, className: row.className, onClick: () => toggle(row.id) }, /* @__PURE__ */ React.createElement("span", { className: "skill-row__check" }, row.checkLabel), /* @__PURE__ */ React.createElement("span", { className: "skill-row__text" }, /* @__PURE__ */ React.createElement("span", { className: "skill-row__name" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "skill-row__desc" }, row.desc)));
-  }))), skillState.selectedOutsideRealm.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "skill-other" }, /* @__PURE__ */ React.createElement("span", { className: "hint__line" }, skillState.outsideRealmHeading), skillState.selectedOutsideRealm.map((skill) => /* @__PURE__ */ React.createElement("span", { key: skill.id, className: skill.className, title: skill.title }, skill.label, /* @__PURE__ */ React.createElement("em", null, skill.detail), /* @__PURE__ */ React.createElement("button", { onClick: () => removeSkill(skill.id) }, skill.removeLabel)))), skillState.unavailableSelected.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "skill-other" }, /* @__PURE__ */ React.createElement("span", { className: "hint__line", style: { color: "var(--warn)" } }, skillState.unavailableHeading), skillState.unavailableSelected.map((sid) => /* @__PURE__ */ React.createElement("span", { key: sid.id, className: sid.className }, sid.label, /* @__PURE__ */ React.createElement("button", { onClick: () => removeSkill(sid.id) }, sid.removeLabel)))));
-}
-window.AgentsView = AgentsView;
-
-}
-
-/* builder.jsx */
-
-{
-function CondValue({ field, value, onChange, conditionView = null }) {
-  const control = window.MobKitFlowController.conditionValueControl(field, value, conditionView);
-  if (control.kind === "enum") {
-    return /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__val", value: control.value, onChange: (e) => onChange(e.target.value) }, control.optionRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.value || "blank", value: row.value }, row.label)));
-  }
-  if (control.kind === "boolean") {
-    return /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__val", value: control.value, onChange: (e) => onChange(e.target.value) }, control.optionRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.value || "blank", value: row.value }, row.label)));
-  }
-  return /* @__PURE__ */ React.createElement("input", { className: "field__input bld-cond__val", placeholder: control.placeholder, value: control.value, onChange: (e) => onChange(e.target.value) });
-}
-function InputEnumValueChip({ field, value, index, onChange }) {
-  const [draftValue, setDraftValue] = React.useState(value || "");
-  React.useEffect(() => {
-    setDraftValue(value || "");
-  }, [index, value]);
-  return /* @__PURE__ */ React.createElement("span", { className: "chip" }, /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "chip__input",
-      value: draftValue,
-      onChange: (e) => setDraftValue(e.target.value),
-      onBlur: (e) => {
-        const patch = window.MobKitFlowController.enumValueCommitPatch(field, index, e.target.value);
-        setDraftValue(patch.enumValues?.[index] || "");
-        onChange(patch);
-      }
-    }
-  ), /* @__PURE__ */ React.createElement("button", { className: "chip__x", onClick: () => onChange(window.MobKitFlowController.enumValueDeletePatch(field, index)) }, "\xD7"));
-}
-function InputParamField({ param, normalizeName, onRename, onChange, onDelete, contract, basicView = null }) {
-  const fieldState = window.MobKitFlowController.inputParamFieldControlState(param, contract, basicView);
-  const values = fieldState.enumValues;
-  const previousNameRef = React.useRef(null);
-  const [draftName, setDraftName] = React.useState(param.name || "");
-  React.useEffect(() => {
-    setDraftName(param.name || "");
-  }, [param.id, param.name]);
-  const typeState = fieldState.typeState;
-  return /* @__PURE__ */ React.createElement("div", { className: "schema-field" }, /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "sb-input sb-col--name",
-      value: draftName,
-      onFocus: () => {
-        previousNameRef.current = param.name || "";
-      },
-      onChange: (e) => setDraftName(e.target.value),
-      onBlur: (e) => {
-        const previousName = previousNameRef.current ?? param.name;
-        previousNameRef.current = null;
-        const normalized = normalizeName(e.target.value);
-        setDraftName(normalized);
-        if (String(previousName || "").trim() !== normalized) onRename?.(normalized, previousName);
-      },
-      placeholder: fieldState.namePlaceholder
-    }
-  ), /* @__PURE__ */ React.createElement(
-    "select",
-    {
-      className: "sb-select sb-col--type",
-      value: typeState.type,
-      onChange: (e) => {
-        onChange(window.MobKitFlowController.schemaLikeFieldTypePatch(param, e.target.value, contract));
-      }
-    },
-    typeState.typeOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))
-  ), typeState.selectedType?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, typeState.selectedType.reason), /* @__PURE__ */ React.createElement("label", { className: "sb-col--req sb-checkbox" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: param.required !== false, onChange: (e) => onChange(window.MobKitFlowController.schemaLikeFieldRequiredPatch(e.target.checked)) })), /* @__PURE__ */ React.createElement(
-    "input",
-    {
-      className: "sb-input sb-col--desc",
-      value: param.description || "",
-      onChange: (e) => onChange(window.MobKitFlowController.schemaLikeFieldDescriptionPatch(e.target.value)),
-      placeholder: fieldState.descriptionPlaceholder
-    }
-  ), /* @__PURE__ */ React.createElement("button", { className: "sb-del", onClick: onDelete, title: fieldState.removeTitle }, "\xD7"), param.type === "enum" && /* @__PURE__ */ React.createElement("div", { className: "sb-enum" }, /* @__PURE__ */ React.createElement("span", { className: "sb-enum__label" }, fieldState.enumLabel), /* @__PURE__ */ React.createElement("div", { className: "sb-enum__chips" }, values.map((value, index) => /* @__PURE__ */ React.createElement(InputEnumValueChip, { key: index, field: param, value, index, onChange })), /* @__PURE__ */ React.createElement("button", { className: "chip chip--add", onClick: () => onChange(window.MobKitFlowController.enumValueAddPatch(param, fieldState.enumAddValue)) }, fieldState.enumAddLabel))));
-}
-function BranchConditionEditor({ index, branch, options, schemas, onChange, contract, basicView = null, conditionView = null }) {
-  const conditionState = window.MobKitFlowController.basicBranchConditionControlState({
-    branch: { ...branch, index },
-    options,
-    schemas,
-    contract,
-    basicView
-  });
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card" }, /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card__head" }, conditionState.rowTitle), !conditionState.hasConditionOptions ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, conditionState.emptyHint) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bld-cond" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.stepId || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionSourcePatch(options, e.target.value, { includeNamespace: true })) }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.sourcePlaceholder), conditionState.sourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: conditionState.cond.field || "", onChange: (e) => onChange(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, conditionState.fieldOptions)), disabled: !conditionState.fields.length }, /* @__PURE__ */ React.createElement("option", { value: "" }, conditionState.fieldPlaceholder), conditionState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: conditionState.operatorValue, onChange: (e) => onChange(window.MobKitFlowController.basicConditionOperatorPatch(e.target.value, contract)) }, conditionState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(CondValue, { field: conditionState.field, value: conditionState.cond.val, conditionView, onChange: (v) => onChange(window.MobKitFlowController.basicConditionValuePatch(v)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-cond__preview" }, conditionState.previewPrefix, " ", /* @__PURE__ */ React.createElement("code", null, conditionState.previewLabel))));
-}
-function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: setFlowProp, sel: selProp, setSel: setSelProp, onShowSource, sourceOpen = false, sourceDocument = null, sourceBusy = false, sourceToggleLabel = "", onCloseSource, contract, toolCatalog = [], sourceView = null, basicView = null, launchView = null, conditionView = null, applyAuthoringIntent = null }) {
-  const members = studio?.members || [];
-  const [flowLocal, setFlowLocal] = React.useState(() => window.MobKitFlowController.emptyAuthoringFlowState());
-  const [selLocal, setSelLocal] = React.useState(null);
-  const flow = flowProp || flowLocal;
-  const setFlow = setFlowProp || setFlowLocal;
-  const sel = selProp !== void 0 ? selProp : selLocal;
-  const setSel = setSelProp || setSelLocal;
-  const [picker, setPicker] = React.useState({ open: false });
-  const [view, setView] = React.useState({ scale: 1, tx: 0, ty: 0 });
-  const [operationError, setOperationError] = React.useState("");
-  const hostRef = React.useRef(null);
-  const panRef = React.useRef(null);
-  const isFlow = mode === "flow";
-  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
-  const canvasView = Math.abs(view.ty) > 1200 ? { ...view, ty: 0 } : view;
-  const commitFlow = async (intentRequest) => {
-    const fallback = viewState.authoringOperationFallbackError;
-    if (!applyAuthoringIntent) {
-      const result = { ok: false, error: viewState.authoringOperationUnavailableError };
-      setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
-      return result;
-    }
-    try {
-      const result = await applyAuthoringIntent(intentRequest);
-      if (result?.ok === false) {
-        setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
-      } else {
-        setOperationError("");
-      }
-      return result;
-    } catch (error) {
-      const result = {
-        ok: false,
-        error: error?.message || String(error || fallback)
-      };
-      setOperationError(window.MobKitFlowController.operationErrorText(result, fallback));
-      return result;
-    }
-  };
-  const update = (requestOrId, patch = {}) => {
-    if (requestOrId && typeof requestOrId === "object") return commitFlow(requestOrId);
-    return commitFlow({ intent: "basic.updateStep", stepId: requestOrId, patch });
-  };
-  const editStep = (id, action, payload = {}) => {
-    return commitFlow({ intent: "basic.editStep", stepId: id, action, payload });
-  };
-  const selStep = findStep(flow.steps, sel);
-  const applyBasicInteraction = (result) => {
-    if (!result) return;
-    if ("selection" in result) setSel(result.selection);
-    if ("picker" in result) setPicker(result.picker);
-  };
-  const insertAt = (laneRef, pick) => {
-    applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition());
-    commitFlow({ intent: "basic.insertStep", pick, laneRef }).then((result) => {
-      if (result?.ok === false) return;
-      const id = result?.selection?.id;
-      if (id) setSel(id);
-    });
-  };
-  const removeStep = (id) => {
-    const result = window.MobKitFlowController.flowStepDeleteTransition(flow, id);
-    commitFlow({ intent: "basic.deleteStep", stepId: id }).then((operationResult) => {
-      if (operationResult?.ok === false) return;
-      setSel(result.selection);
-      setPicker(result.picker);
-    });
-  };
-  const openPicker = (laneRef) => applyBasicInteraction(window.MobKitFlowController.basicStepPickerOpenTransition(laneRef));
-  const onWheel = (e) => {
-    if (e.ctrlKey || e.metaKey) {
-      e.preventDefault();
-      const fz = Math.exp(-e.deltaY * 15e-4);
-      setView((v) => {
-        const r = hostRef.current.getBoundingClientRect();
-        const cx = e.clientX - r.left, cy = e.clientY - r.top;
-        const next = Math.max(0.4, Math.min(2, v.scale * fz));
-        const k = next / v.scale;
-        return { scale: next, tx: cx - (cx - v.tx) * k, ty: cy - (cy - v.ty) * k };
-      });
-    } else {
-      e.preventDefault();
-      setView((v) => ({ ...v, tx: v.tx - e.deltaX, ty: v.ty - e.deltaY }));
-    }
-  };
-  React.useEffect(() => {
-    const el = hostRef.current;
-    if (!el) return;
-    const h = (e) => onWheel(e);
-    el.addEventListener("wheel", h, { passive: false });
-    return () => el.removeEventListener("wheel", h);
-  });
-  const onHostDown = (e) => {
-    if (e.target === hostRef.current || e.target.classList?.contains("bld-canvas")) {
-      panRef.current = { sx: e.clientX, sy: e.clientY, tx: view.tx, ty: view.ty };
-      const move = (ev) => setView((v) => ({ ...v, tx: panRef.current.tx + (ev.clientX - panRef.current.sx), ty: panRef.current.ty + (ev.clientY - panRef.current.sy) }));
-      const up = () => {
-        window.removeEventListener("mousemove", move);
-        window.removeEventListener("mouseup", up);
-      };
-      window.addEventListener("mousemove", move);
-      window.addEventListener("mouseup", up);
-      applyBasicInteraction(window.MobKitFlowController.basicCanvasClearTransition());
-    }
-  };
-  return /* @__PURE__ */ React.createElement("div", { className: "builder" + (isFlow ? " builder--flow" : "") }, /* @__PURE__ */ React.createElement("div", { className: "bld-stage", ref: hostRef, onMouseDown: onHostDown }, /* @__PURE__ */ React.createElement("div", { className: "bld-canvas", style: { transform: `translate(calc(-50% + ${canvasView.tx}px), ${canvasView.ty}px) scale(${canvasView.scale})` } }, /* @__PURE__ */ React.createElement("div", { className: "bld-start" }, viewState.startLabel), /* @__PURE__ */ React.createElement(
-    Lane,
-    {
-      studio,
-      mode,
-      steps: flow.steps,
-      laneRef: { lane: "main" },
-      sel,
-      contract,
-      basicView,
-      setSel: (id) => applyBasicInteraction(window.MobKitFlowController.basicStepSelectionTransition(id)),
-      openPicker
-    }
-  )), /* @__PURE__ */ React.createElement("button", { className: "bld-toml-toggle", onMouseDown: (e) => e.stopPropagation(), onClick: () => onShowSource && onShowSource() }, sourceToggleLabel || viewState.sourceToggleLabel), /* @__PURE__ */ React.createElement(
-    InlineSourceEditor,
-    {
-      open: sourceOpen,
-      onClose: () => onCloseSource && onCloseSource(),
-      state: sourceDocument,
-      busy: sourceBusy,
-      sourceView
-    }
-  ), /* @__PURE__ */ React.createElement("div", { className: "zoom-controls", onMouseDown: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", onClick: () => setView((v) => ({ ...v, scale: Math.max(0.4, v.scale / 1.2) })) }, "\u2212"), /* @__PURE__ */ React.createElement("button", { className: "zoom-btn zoom-btn--pct", onClick: () => setView({ scale: 1, tx: 0, ty: 0 }) }, Math.round(view.scale * 100), "%"), /* @__PURE__ */ React.createElement("button", { className: "zoom-btn", onClick: () => setView((v) => ({ ...v, scale: Math.min(2, v.scale * 1.2) })) }, "+"))), /* @__PURE__ */ React.createElement("aside", { className: "bld-panel" }, picker.open ? /* @__PURE__ */ React.createElement(
-    StepPicker,
-    {
-      members,
-      isKickoff: picker.at?.lane === "main" && picker.at?.index === 0 && kickoffSlotEmpty(flow),
-      contract,
-      basicView,
-      onPick: (pick) => insertAt(picker.at, pick),
-      onClose: () => applyBasicInteraction(window.MobKitFlowController.basicStepPickerCloseTransition())
-    }
-  ) : selStep ? /* @__PURE__ */ React.createElement(React.Fragment, null, operationError && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--danger)", padding: "0 16px 8px" } }, operationError), /* @__PURE__ */ React.createElement(StepInspector, { studio, members, flow, setFlow, step: selStep, update, editStep, onDelete: () => removeStep(selStep.id), contract, toolCatalog, basicView, launchView, conditionView })) : /* @__PURE__ */ React.createElement(EmptyPanel, { state: viewState })));
-}
-function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract, basicView = null }) {
-  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-lane" }, steps.map((step, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: step.id }, /* @__PURE__ */ React.createElement(StepCard, { studio, step, index: i, selected: sel === step.id, onSelect: () => setSel(step.id), contract, basicView }), step.type === "branch" || step.type === "parallel" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Fork, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : step.type === "repeat" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(RepeatBody, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) }))), steps.length === 0 && /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: 0 }) }));
-}
-function Fork({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
-  const forkState = window.MobKitFlowController.basicForkCanvasState({ step, contract, basicView });
-  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
-  return /* @__PURE__ */ React.createElement("div", { className: forkState.className }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lanes" }, forkState.lanes.map((l) => /* @__PURE__ */ React.createElement("div", { className: "bld-fork__lane", key: l.id }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__label" }, l.label), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" }), l.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: l.id, index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: l.steps, laneRef: { lane: "branch", parentId: step.id, branchId: l.id }, sel, setSel, openPicker, contract, basicView }), forkState.isParallel && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__drop" })))), forkState.isParallel ? /* @__PURE__ */ React.createElement(React.Fragment, null, forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail bld-fork__rail--join" }), /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-join" }, forkState.joinLabel)) : (
-    // Branch paths reconverge to a single downstream column so the
-    // following main-lane step connects cleanly (no diagonal jump).
-    forkState.showRail && /* @__PURE__ */ React.createElement("div", { className: "bld-fork__rail bld-fork__rail--join" })
-  ));
-}
-function RepeatBody({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
-  const repeatState = window.MobKitFlowController.basicRepeatCanvasState({ step, members: studio?.members || [], contract, basicView });
-  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-repeat" }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__rail" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__rail-glyph" }, "\u21BB")), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__frame" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__head" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__badge" }, viewState.loopBadge), /* @__PURE__ */ React.createElement("span", { className: "bld-loop__meta" }, repeatState.whileLabel, " ", /* @__PURE__ */ React.createElement("strong", null, repeatState.notLabel), " (", repeatState.conditionLabel, ") \xB7 ", repeatState.maxIterationsLabel)), step.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: "body", index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: step.steps, laneRef: { lane: "branch", parentId: step.id, branchId: "body" }, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__back" }, repeatState.loopBackLabel))), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__exit" }, repeatState.exitLabel));
-}
-function StepCard({ studio, step, index, selected, onSelect, contract, basicView = null }) {
-  const cardState = window.MobKitFlowController.basicStepCardState({ step, members: studio?.members || [], contract, basicView });
-  return /* @__PURE__ */ React.createElement(
-    "div",
-    {
-      className: "bld-card" + (selected ? " is-selected" : "") + (!cardState.configured ? " is-empty" : "") + (cardState.isFlowCard ? " bld-card--flow" : ""),
-      onMouseDown: (e) => {
-        e.stopPropagation();
-        onSelect();
-      }
-    },
-    /* @__PURE__ */ React.createElement("div", { className: "bld-card__head" }, /* @__PURE__ */ React.createElement("span", { className: "bld-card__index" }, index, "."), cardState.icon && /* @__PURE__ */ React.createElement("span", { className: "bld-card__icon tint--" + cardState.iconTint }, cardState.icon), /* @__PURE__ */ React.createElement("span", { className: "bld-card__title" }, cardState.title)),
-    cardState.configured ? /* @__PURE__ */ React.createElement("div", { className: "bld-card__body" }, /* @__PURE__ */ React.createElement("span", { className: "bld-card__desc" }, cardState.desc)) : /* @__PURE__ */ React.createElement("div", { className: "bld-card__skeleton" }, /* @__PURE__ */ React.createElement("span", null), /* @__PURE__ */ React.createElement("span", null))
-  );
-}
-function InsertBtn({ onClick, mid, mode, title = "" }) {
-  if (mode === "flow") {
-    return /* @__PURE__ */ React.createElement("div", { className: "bld-insert bld-insert--conn" + (mid ? " bld-insert--mid" : "") }, /* @__PURE__ */ React.createElement("div", { className: "bld-insert__line" }), /* @__PURE__ */ React.createElement("span", { className: "bld-insert__dot" }), mid && /* @__PURE__ */ React.createElement("div", { className: "bld-insert__line" }));
-  }
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-insert" + (mid ? " bld-insert--mid" : "") }, /* @__PURE__ */ React.createElement("div", { className: "bld-insert__line" }), /* @__PURE__ */ React.createElement("button", { className: "bld-insert__btn", onMouseDown: (e) => {
-    e.stopPropagation();
-    onClick();
-  }, title }, "+"), mid && /* @__PURE__ */ React.createElement("div", { className: "bld-insert__line" }));
-}
-function StepPicker({ members, isKickoff, contract, onPick, onClose, basicView = null }) {
-  const [q, setQ] = React.useState("");
-  const pickerState = window.MobKitFlowController.basicStepPickerState({ members, contract, query: q, isKickoff, basicView });
-  if (pickerState.mode === "kickoff") {
-    return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, pickerState.kickoffHint));
-  }
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { title: pickerState.title, sub: pickerState.sub, onClose }), /* @__PURE__ */ React.createElement("div", { className: "bld-search" }, /* @__PURE__ */ React.createElement("span", { className: "bld-search__icon" }, pickerState.searchIcon), /* @__PURE__ */ React.createElement("input", { className: "bld-search__input", placeholder: pickerState.searchPlaceholder, value: q, onChange: (e) => setQ(e.target.value), autoFocus: true })), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.membersLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.memberRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "bld-opt", onClick: () => onPick(row.pick) }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.iconTint }, row.icon), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.name), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub)))), !pickerState.hasConfiguredMembers && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { padding: "4px 8px" } }, pickerState.emptyMembersHint)), /* @__PURE__ */ React.createElement("div", { className: "bld-opts__group" }, pickerState.flowLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-opts" }, pickerState.primitiveRows.map((row) => /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      key: row.id,
-      className: "bld-opt",
-      disabled: row.disabled,
-      title: row.disabledReason || void 0,
-      onClick: () => !row.disabled && row.pick && onPick(row.pick)
-    },
-    /* @__PURE__ */ React.createElement("span", { className: "bld-opt__icon tint--" + row.tint }, row.glyph),
-    /* @__PURE__ */ React.createElement("span", { className: "bld-opt__text" }, /* @__PURE__ */ React.createElement("span", { className: "bld-opt__label" }, row.label, row.isNew && /* @__PURE__ */ React.createElement("span", { className: "bld-opt__new" }, pickerState.newBadgeLabel)), /* @__PURE__ */ React.createElement("span", { className: "bld-opt__sub" }, row.sub))
-  ))));
-}
-function StepInspector({ studio, members, flow, setFlow, step, update, editStep, onDelete, contract, toolCatalog, basicView = null, launchView = null, conditionView = null }) {
-  const [paramAddResult, setParamAddResult] = React.useState(null);
-  React.useEffect(() => setParamAddResult(null), [step?.id]);
-  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
-  if (step.type === "input") {
-    const inputState = window.MobKitFlowController.basicInputControlState(step, contract, basicView);
-    const params = inputState.params;
-    const paramAddErrorState = window.MobKitFlowController.inputParamAddErrorState(paramAddResult, viewState.authoringOperationFallbackError);
-    const applyInputIntent = (intentRequest) => {
-      if (!update) return Promise.resolve({ ok: false, error: viewState.authoringOperationUnavailableError });
-      return update(intentRequest);
-    };
-    const updateParam = (id, patch) => {
-      return applyInputIntent({ intent: "basic.updateInputParam", stepId: step.id, paramId: id, patch });
-    };
-    const deleteParam = (id) => {
-      return applyInputIntent({ intent: "basic.deleteInputParam", stepId: step.id, paramId: id });
-    };
-    const renameParam = (id, rawName, previousName) => {
-      return applyInputIntent({ intent: "basic.renameInputParam", stepId: step.id, paramId: id, newName: rawName, previousName });
-    };
-    const addParam = () => {
-      setParamAddResult(null);
-      applyInputIntent({ intent: "basic.addInputParam", stepId: step.id }).then((result) => {
-        if (result?.ok === false) {
-          setParamAddResult(result);
-          return;
-        }
-        setParamAddResult(null);
-      }).catch((error) => {
-        setParamAddResult({
-          ok: false,
-          error: error?.message || String(error || viewState.authoringOperationFallbackError)
-        });
-      });
-    };
-    return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: inputState.panelIcon, iconTint: "member", title: inputState.panelTitle, sub: inputState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: inputState.taskLabel }, /* @__PURE__ */ React.createElement("textarea", { className: "field__textarea", rows: 3, placeholder: inputState.taskPlaceholder, value: step.task || "", onChange: (e) => editStep(step.id, "set_task", { value: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between", style: { marginBottom: 6 } }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, inputState.paramsTitle), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: addParam }, inputState.addParamLabel)), paramAddErrorState.hasError && /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, paramAddErrorState.text), /* @__PURE__ */ React.createElement("div", { className: "schema-builder" }, /* @__PURE__ */ React.createElement("div", { className: "schema-builder__header" }, inputState.headerRows.map((row) => /* @__PURE__ */ React.createElement("span", { key: row.key, className: row.className }, row.label))), params.map((param) => /* @__PURE__ */ React.createElement(
-      InputParamField,
-      {
-        key: param.id,
-        param,
-        normalizeName: (raw) => window.MobKitFlowController.uniqueInputParamName(params, raw, param.id),
-        onRename: (raw, previousName) => renameParam(param.id, raw, previousName),
-        onChange: (patch) => updateParam(param.id, patch),
-        onDelete: () => deleteParam(param.id),
-        contract,
-        basicView
-      }
-    )), params.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "schema-builder__empty" }, inputState.emptyParamsParts.map((part) => part.kind === "code" ? /* @__PURE__ */ React.createElement("code", { key: part.key }, part.text) : /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text))))), /* @__PURE__ */ React.createElement(PanelTips, { title: viewState.tipsTitle, items: inputState.tips }));
-  }
-  if (step.type === "branch" || step.type === "parallel") {
-    const branchState = window.MobKitFlowController.basicBranchParallelControlState({
-      step,
-      flow,
-      members: studio?.members || [],
-      contract,
-      basicView
-    });
-    const setBranchCondition = (branch, patch) => {
-      editStep(step.id, "set_branch_condition", { branch_id: branch.id, patch });
-    };
-    const addBranch = () => editStep(step.id, "add_branch");
-    return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: branchState.panelIcon, iconTint: "member", title: branchState.panelTitle, sub: branchState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: branchState.controllerLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: branchState.controllerRole, onChange: (e) => editStep(step.id, "set_controller_role", { role: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, branchState.controllerPlaceholderLabel), branchState.memberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), !branchState.controllerRole && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { marginTop: 8 } }, branchState.emptyControllerHint), !branchState.isParallel && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "bld-section-label" }, branchState.branchConditionTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, branchState.branchConditionIntro), step.branches.map((b, i) => /* @__PURE__ */ React.createElement(
-      BranchConditionEditor,
-      {
-        key: b.id,
-        index: i,
-        branch: b,
-        options: branchState.conditionOptions,
-        schemas: studio?.schemas || [],
-        onChange: (patch) => setBranchCondition(b, patch),
-        contract,
-        basicView,
-        conditionView
-      }
-    )), /* @__PURE__ */ React.createElement("button", { className: "bld-add-row", onClick: addBranch }, branchState.addBranchLabel), /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card bld-branch-card--fallback" }, /* @__PURE__ */ React.createElement("div", { className: "bld-branch-card__head" }, branchState.fallbackTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, branchState.fallbackHint))), branchState.isParallel && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Field, { label: branchState.dispatchLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: branchState.dispatchValue, onChange: (e) => editStep(step.id, "set_parallel_dispatch", { dispatch: e.target.value }) }, branchState.dispatchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), branchState.selectedDispatch?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, branchState.selectedDispatch.reason), /* @__PURE__ */ React.createElement(Field, { label: branchState.collectionLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: branchState.collectionValue, onChange: (e) => editStep(step.id, "set_collection", { collection: e.target.value }) }, branchState.collectionOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), branchState.selectedCollection?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, branchState.selectedCollection.reason), branchState.showQuorum && /* @__PURE__ */ React.createElement(Field, { label: branchState.quorumLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", value: step.quorum ?? "", placeholder: branchState.quorumPlaceholder, onChange: (e) => editStep(step.id, "set_quorum", { value: e.target.value }) })), /* @__PURE__ */ React.createElement("button", { className: "bld-add-row", onClick: addBranch }, branchState.addBranchLabel)), /* @__PURE__ */ React.createElement(Field, { label: branchState.dependencyLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: branchState.dependencyValue, onChange: (e) => editStep(step.id, "set_dependency_mode", { value: e.target.value }) }, branchState.dependencyOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), branchState.selectedDependency?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, branchState.selectedDependency.reason));
-  }
-  if (step.type === "repeat") {
-    const repeatState = window.MobKitFlowController.basicRepeatControlState({
-      step,
-      members: studio?.members || [],
-      schemas: studio?.schemas || [],
-      contract,
-      basicView
-    });
-    const setCond = (patch) => editStep(step.id, "set_repeat_condition", window.MobKitFlowController.flowStepRepeatConditionPatch(step, patch));
-    return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: repeatState.panelIcon, iconTint: "member", title: repeatState.panelTitle, sub: repeatState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: repeatState.loopIdLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input field__input--mono", value: step.loopId || "", placeholder: repeatState.loopIdPlaceholder, onChange: (e) => editStep(step.id, "set_loop_id", { value: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "bld-section-label", style: { marginTop: 16 } }, repeatState.conditionTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, repeatState.conditionIntro), !repeatState.hasBodyMembers ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { marginTop: 10, color: "var(--warn)" } }, repeatState.emptyBodyHint) : /* @__PURE__ */ React.createElement("div", { className: "bld-cond" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.cond.stepId || "", onChange: (e) => setCond(window.MobKitFlowController.basicConditionSourcePatch(repeatState.bodyMembers, e.target.value)) }, /* @__PURE__ */ React.createElement("option", { value: "" }, repeatState.memberPlaceholderLabel), repeatState.bodyMemberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.cond.field || "", onChange: (e) => setCond(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, repeatState.fieldOptions)), disabled: !repeatState.condSchema }, /* @__PURE__ */ React.createElement("option", { value: "" }, repeatState.fieldPlaceholder), repeatState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: repeatState.operatorValue, onChange: (e) => setCond(window.MobKitFlowController.basicConditionOperatorPatch(e.target.value, contract)) }, repeatState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(CondValue, { field: repeatState.condField, value: repeatState.cond.val, conditionView, onChange: (v) => setCond(window.MobKitFlowController.basicConditionValuePatch(v)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-cond__preview" }, repeatState.previewLabel, " ", /* @__PURE__ */ React.createElement("code", null, repeatState.repeatUntilExpression || repeatState.previewFallback)), /* @__PURE__ */ React.createElement(Field, { label: repeatState.iterationInputLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.iterationInputValue, onChange: (e) => editStep(step.id, "set_iteration_input", { value: e.target.value }) }, repeatState.iterationInputOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), repeatState.selectedIterationInput?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, repeatState.selectedIterationInput.reason), /* @__PURE__ */ React.createElement(Field, { label: repeatState.maxIterationsLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", placeholder: repeatState.maxIterationsPlaceholder, value: step.maxIterations ?? "", onChange: (e) => editStep(step.id, "set_max_iterations", { value: e.target.value }) })), /* @__PURE__ */ React.createElement(PanelTips, { title: viewState.tipsTitle, items: repeatState.tips }));
-  }
-  const memberStepState = window.MobKitFlowController.basicMemberStepControlState({
-    step,
-    flow,
-    members,
-    contract,
-    basicView,
-    launchView
-  });
-  const m = memberStepState.member;
-  const launchState = memberStepState.launchState;
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: "\u25C6", iconTint: "accent", title: memberStepState.panelTitle, sub: memberStepState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.memberFieldLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: step.role || "", onChange: (e) => editStep(step.id, "set_member_role", { role: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, memberStepState.memberPlaceholderLabel), memberStepState.memberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement(Field, { label: launchState.launchTitle }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.launchKind, onChange: (e) => {
-    editStep(step.id, "set_launch_kind", { kind: e.target.value, first_fork_source_id: memberStepState.firstLaunchSourceId });
-  } }, launchState.launchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedLaunchMode?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, launchState.selectedLaunchMode.reason), launchState.launchKind === "Resume" && /* @__PURE__ */ React.createElement(Field, { label: launchState.resumeSessionLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", value: launchState.launchMode.sessionId || "", placeholder: launchState.resumeSessionPlaceholder, onChange: (e) => editStep(step.id, "set_launch_session", { session_id: e.target.value }) })), launchState.launchKind === "Fork" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Field, { label: launchState.forkSourceLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.launchMode.from || "", onChange: (e) => editStep(step.id, "set_launch_fork_source", { from: e.target.value }) }, memberStepState.launchSourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement(Field, { label: launchState.forkContextLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.forkContextValue, onChange: (e) => editStep(step.id, "set_launch_fork_context", { context: e.target.value }) }, launchState.forkContextOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedForkContext?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, launchState.selectedForkContext.reason)), /* @__PURE__ */ React.createElement(Field, { label: launchState.budgetPolicyLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.budgetSplitPolicy.kind, onChange: (e) => editStep(step.id, "set_launch_budget_kind", { budget_kind: e.target.value }) }, launchState.budgetOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedBudgetPolicy?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, launchState.selectedBudgetPolicy.reason), launchState.budgetSplitPolicy.kind === "Fixed" && /* @__PURE__ */ React.createElement(Field, { label: launchState.fixedBudgetLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", value: launchState.fixedBudgetValue, onChange: (e) => editStep(step.id, "set_launch_budget_limit", { limit: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.instructionLabel }, /* @__PURE__ */ React.createElement("textarea", { className: "field__textarea", rows: 4, placeholder: memberStepState.instructionPlaceholder, value: step.instruction || "", onChange: (e) => editStep(step.id, "set_instruction", { value: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.dispatchLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.dispatchValue, onChange: (e) => editStep(step.id, "set_dispatch_mode", { dispatch: e.target.value }) }, memberStepState.dispatchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedDispatch?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedDispatch.reason), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.collectionLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.collectionValue, onChange: (e) => editStep(step.id, "set_collection", { collection: e.target.value }) }, memberStepState.collectionOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedCollection?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedCollection.reason), memberStepState.showQuorum && /* @__PURE__ */ React.createElement(Field, { label: memberStepState.quorumLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", value: step.quorum ?? "", placeholder: memberStepState.quorumPlaceholder, onChange: (e) => editStep(step.id, "set_quorum", { value: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.timeoutLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", placeholder: memberStepState.timeoutPlaceholder, value: step.timeoutMs ?? "", onChange: (e) => editStep(step.id, "set_timeout_ms", { value: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.outputFormatLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.outputValue, onChange: (e) => editStep(step.id, "set_output_format", { value: e.target.value }) }, memberStepState.outputOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedOutput?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedOutput.reason), /* @__PURE__ */ React.createElement(
-    ToolScopeEditor,
-    {
-      label: memberStepState.allowedToolsLabel,
-      emptyLabel: memberStepState.allowedToolsEmptyLabel,
-      member: m,
-      selected: step.allowedTools || [],
-      onChange: (tools) => editStep(step.id, "set_allowed_tools", { tools }),
-      mode: "member",
-      toolCatalog,
-      basicView
-    }
-  ), /* @__PURE__ */ React.createElement(
-    ToolScopeEditor,
-    {
-      label: memberStepState.blockedToolsLabel,
-      emptyLabel: memberStepState.blockedToolsEmptyLabel,
-      member: m,
-      selected: step.blockedTools || [],
-      onChange: (tools) => editStep(step.id, "set_blocked_tools", { tools }),
-      mode: "catalog",
-      toolCatalog,
-      basicView
-    }
-  ), memberStepState.schemaHint && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { marginTop: 10 } }, memberStepState.schemaHint.parts.map((part) => part.kind === "code" ? /* @__PURE__ */ React.createElement("code", { key: part.key }, part.text) : /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text))), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.dependencyLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.dependencyValue, onChange: (e) => editStep(step.id, "set_dependency_mode", { value: e.target.value }) }, memberStepState.dependencyOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedDependency?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedDependency.reason));
-}
-function ToolScopeEditor({ label, emptyLabel, member, selected, onChange, mode = "member", toolCatalog = [], basicView = null }) {
-  const field = mode === "catalog" ? "blockedTools" : "allowedTools";
-  const scope = window.MobKitFlowController.stepToolScopeState({ member, selected, mode, toolCatalog, basicView });
-  const remove = (id) => {
-    const result = window.MobKitFlowController.stepToolScopeRemovePatch(selected, id, { field });
-    if (result.patch) onChange(result.patch[field] || []);
-  };
-  const add = (id) => {
-    const result = window.MobKitFlowController.stepToolScopeAddPatch(selected, id, { member, mode, toolCatalog, field, basicView });
-    if (result.patch) onChange(result.patch[field] || []);
-  };
-  return /* @__PURE__ */ React.createElement(Field, { label }, scope.selectedTools.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, emptyLabel) : scope.rows.map((row) => {
-    return /* @__PURE__ */ React.createElement("div", { key: row.id, className: row.className }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "name" }, row.name), /* @__PURE__ */ React.createElement("div", { className: "auth" }, row.description)), /* @__PURE__ */ React.createElement("button", { onClick: () => remove(row.id) }, row.removeLabel));
-  }), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: scope.addSelectValue, disabled: scope.disabled, onChange: (e) => {
-    add(e.target.value);
-    e.target.value = "";
-  } }, /* @__PURE__ */ React.createElement("option", { value: scope.addSelectValue }, scope.addSelectPlaceholder), scope.addableRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.id, value: row.value }, row.optionLabel))));
-}
-function PanelHead({ icon, iconTint, title, sub, onClose, deleteMode }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__head" }, /* @__PURE__ */ React.createElement("div", { className: "bld-panel__head-main" }, icon && /* @__PURE__ */ React.createElement("span", { className: "bld-panel__icon tint--" + (iconTint || "muted") }, icon), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "bld-panel__title" }, title), sub && /* @__PURE__ */ React.createElement("div", { className: "bld-panel__sub" }, sub))), /* @__PURE__ */ React.createElement("button", { className: "bld-panel__close", onClick: onClose, title: deleteMode ? "Delete step" : "Close" }, deleteMode ? "\u{1F5D1}" : "\u2715"));
-}
-function Field({ label, children }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 14 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, label), children);
-}
-function PanelTips({ title, items }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-tips" }, /* @__PURE__ */ React.createElement("div", { className: "bld-tips__head" }, title), /* @__PURE__ */ React.createElement("ul", null, items.map((t, i) => /* @__PURE__ */ React.createElement("li", { key: i }, t))));
-}
-function EmptyPanel({ state }) {
-  return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner bld-panel__empty" }, /* @__PURE__ */ React.createElement("div", { className: "bld-panel__title" }, state.emptyPanelTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-panel__sub" }, state.emptyPanelSubtitleParts.map((part) => {
-    if (part.kind === "code") return /* @__PURE__ */ React.createElement("code", { key: part.key }, part.text);
-    if (part.kind === "strong") return /* @__PURE__ */ React.createElement("strong", { key: part.key }, part.text);
-    return /* @__PURE__ */ React.createElement(React.Fragment, { key: part.key }, part.text);
-  })));
-}
-function kickoffSlotEmpty(flow) {
-  const first = flow.steps[0];
-  return !!first && first.type === "input";
-}
-function childLanes(s) {
-  if (s.type === "branch") return [...s.branches, { id: "fallback", steps: s.fallback }];
-  if (s.type === "parallel") return s.branches;
-  if (s.type === "repeat") return [{ id: "body", steps: s.steps, _direct: true }];
-  return [];
-}
-function findStep(steps, id) {
-  for (const s of steps) {
-    if (s.id === id) return s;
-    for (const l of childLanes(s)) {
-      const r = findStep(l.steps, id);
-      if (r) return r;
-    }
-  }
-  return null;
-}
-window.BuilderView = BuilderView;
-
-}
 
 /* app.jsx */
 

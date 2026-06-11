@@ -1,4 +1,3 @@
-/* global React */
 // AgentsView — full-pane Agents catalog editor.
 //
 // Two side-by-side stacks:
@@ -16,7 +15,7 @@
 //   { kind: "schema", id }  → SchemaEditor (visual, field-by-field)
 //   null                    → empty hint
 
-function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
+export function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   return (
     <div className="agents-view">
       <AgentsList studio={studio} agentSel={agentSel} setAgentSel={setAgentSel} contract={contract} deploySettings={deploySettings} agentDefinitions={agentDefinitions} applyAgentIntent={applyAgentIntent} toolCatalog={toolCatalog} modelCatalog={modelCatalog} agentView={agentView} />
@@ -758,7 +757,7 @@ function SchemaEditor({ studio, schema, setAgentSel, contract, flow, setFlow, sc
   );
 }
 
-function SchemaEnumValueChip({ field, value, index, onChange }) {
+function SchemaEnumValueChip({ field, value, index, onChange }: any) {
   const [draftValue, setDraftValue] = React.useState(value || "");
   React.useEffect(() => {
     setDraftValue(value || "");
@@ -783,7 +782,7 @@ function SchemaEnumValueChip({ field, value, index, onChange }) {
   );
 }
 
-function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contract, schemaView = null }) {
+function SchemaField({ field, normalizeName, onChange, onRename, onDelete, contract, schemaView = null }: any) {
   const nameBeforeEdit = React.useRef(field.name);
   const [draftName, setDraftName] = React.useState(field.name || "");
   React.useEffect(() => {
@@ -1029,4 +1028,3 @@ function SkillAccess({ studio, member, agentAccessView = null, applyAgentIntent 
   );
 }
 
-window.AgentsView = AgentsView;
