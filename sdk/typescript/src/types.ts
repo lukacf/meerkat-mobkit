@@ -1263,6 +1263,379 @@ export function parseMobpackCatalogsResult(raw: unknown): MobpackCatalogsResult 
   };
 }
 
+// -- Mobpack authoring ------------------------------------------------------
+
+export interface MobpackDiagnostic {
+  readonly severity: string;
+  readonly code: string;
+  readonly message: string;
+  readonly path: string | null;
+}
+
+export function parseMobpackDiagnostic(raw: unknown): MobpackDiagnostic {
+  const d = asRecord(raw);
+  return {
+    severity: String(d.severity ?? ""),
+    code: String(d.code ?? ""),
+    message: String(d.message ?? ""),
+    path: d.path == null ? null : String(d.path),
+  };
+}
+
+export interface MobpackDisplayRow {
+  readonly kind: string;
+  readonly glyph: string;
+  readonly head: string;
+  readonly sub: string;
+  readonly meta: string;
+}
+
+export function parseMobpackDisplayRow(raw: unknown): MobpackDisplayRow {
+  const d = asRecord(raw);
+  return {
+    kind: String(d.kind ?? ""),
+    glyph: String(d.glyph ?? ""),
+    head: String(d.head ?? ""),
+    sub: String(d.sub ?? ""),
+    meta: String(d.meta ?? ""),
+  };
+}
+
+export interface MobpackValidationResult {
+  readonly ok: boolean;
+  readonly diagnostics: readonly MobpackDiagnostic[];
+  readonly displayRows: readonly MobpackDisplayRow[];
+  readonly mobId: string | null;
+  readonly flowIds: readonly string[];
+  readonly validationSource: string;
+  readonly deployCommand: string;
+}
+
+export function parseMobpackValidationResult(
+  raw: unknown,
+): MobpackValidationResult {
+  const d = asRecord(raw);
+  return {
+    ok: Boolean(d.ok),
+    diagnostics: asRecordArray(d.diagnostics).map(parseMobpackDiagnostic),
+    displayRows: asRecordArray(d.display_rows).map(parseMobpackDisplayRow),
+    mobId: d.mob_id == null ? null : String(d.mob_id),
+    flowIds: asStringArray(d.flow_ids),
+    validationSource: String(d.validation_source ?? ""),
+    deployCommand: String(d.deploy_command ?? ""),
+  };
+}
+
+export interface MobpackSourceFile {
+  readonly path: string;
+  readonly mediaType: string;
+  readonly sizeBytes: number;
+  readonly contentBase64: string;
+  readonly sha256: string;
+  readonly text: string | null;
+}
+
+export function parseMobpackSourceFile(raw: unknown): MobpackSourceFile {
+  const d = asRecord(raw);
+  return {
+    path: String(d.path ?? ""),
+    mediaType: String(d.media_type ?? ""),
+    sizeBytes: Number(d.size_bytes ?? 0),
+    contentBase64: String(d.content_base64 ?? ""),
+    sha256: String(d.sha256 ?? ""),
+    text: d.text == null ? null : String(d.text),
+  };
+}
+
+export interface MobpackSourceResult {
+  readonly filename: string;
+  readonly mediaType: string;
+  readonly mobToml: string;
+  readonly sourceFiles: readonly MobpackSourceFile[];
+  readonly validation: MobpackValidationResult;
+  readonly source: string;
+}
+
+export function parseMobpackSourceResult(raw: unknown): MobpackSourceResult {
+  const d = asRecord(raw);
+  return {
+    filename: String(d.filename ?? ""),
+    mediaType: String(d.media_type ?? ""),
+    mobToml: String(d.mob_toml ?? ""),
+    sourceFiles: asRecordArray(d.source_files).map(parseMobpackSourceFile),
+    validation: parseMobpackValidationResult(d.validation),
+    source: String(d.source ?? ""),
+  };
+}
+
+export interface MobpackExportResult {
+  readonly filename: string;
+  readonly mediaType: string;
+  readonly contentBase64: string;
+  readonly mobToml: string;
+  readonly sourceFiles: readonly MobpackSourceFile[];
+  readonly validation: MobpackValidationResult;
+}
+
+export function parseMobpackExportResult(raw: unknown): MobpackExportResult {
+  const d = asRecord(raw);
+  return {
+    filename: String(d.filename ?? ""),
+    mediaType: String(d.media_type ?? ""),
+    contentBase64: String(d.content_base64 ?? ""),
+    mobToml: String(d.mob_toml ?? ""),
+    sourceFiles: asRecordArray(d.source_files).map(parseMobpackSourceFile),
+    validation: parseMobpackValidationResult(d.validation),
+  };
+}
+
+export interface MobpackImportResult {
+  readonly document: Record<string, unknown>;
+  readonly validation: MobpackValidationResult;
+  readonly source: string;
+  readonly sourceLabel: string;
+  readonly sourceMediaType: string;
+}
+
+export function parseMobpackImportResult(raw: unknown): MobpackImportResult {
+  const d = asRecord(raw);
+  return {
+    document: asRecord(d.document),
+    validation: parseMobpackValidationResult(d.validation),
+    source: String(d.source ?? ""),
+    sourceLabel: String(d.source_label ?? ""),
+    sourceMediaType: String(d.source_media_type ?? ""),
+  };
+}
+
+/**
+ * A row from the mobpack draft registry. The `document` and `validation`
+ * payloads are passed through as permissive records — the mobpack document
+ * schema is opaque to the SDK.
+ */
+export interface MobpackDraftRow {
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly stage: string;
+  readonly trigger: string;
+  readonly source: string;
+  readonly revision: number;
+  readonly etag: string;
+  readonly updatedAtUnixMs: number;
+  readonly document: Record<string, unknown>;
+  readonly validation: Record<string, unknown>;
+  readonly canUndo: boolean | null;
+  readonly canRedo: boolean | null;
+}
+
+export function parseMobpackDraftRow(raw: unknown): MobpackDraftRow {
+  const d = asRecord(raw);
+  return {
+    id: String(d.id ?? ""),
+    name: String(d.name ?? ""),
+    version: String(d.version ?? ""),
+    stage: String(d.stage ?? ""),
+    trigger: String(d.trigger ?? ""),
+    source: String(d.source ?? ""),
+    revision: Number(d.revision ?? 0),
+    etag: String(d.etag ?? ""),
+    updatedAtUnixMs: Number(d.updated_at_unix_ms ?? 0),
+    document: asRecord(d.document),
+    validation: asRecord(d.validation),
+    canUndo: d.can_undo == null ? null : Boolean(d.can_undo),
+    canRedo: d.can_redo == null ? null : Boolean(d.can_redo),
+  };
+}
+
+export interface MobpackDraftListResult {
+  readonly source: string;
+  readonly storePath: string | null;
+  readonly runtimeBacked: boolean;
+  readonly rows: readonly MobpackDraftRow[];
+}
+
+export function parseMobpackDraftListResult(
+  raw: unknown,
+): MobpackDraftListResult {
+  const d = asRecord(raw);
+  return {
+    source: String(d.source ?? ""),
+    storePath: d.store_path == null ? null : String(d.store_path),
+    runtimeBacked: Boolean(d.runtime_backed),
+    rows: asRecordArray(d.rows).map(parseMobpackDraftRow),
+  };
+}
+
+export interface MobpackDraftGetResult {
+  readonly source: string;
+  readonly storePath: string | null;
+  readonly runtimeBacked: boolean;
+  readonly row: MobpackDraftRow;
+}
+
+export function parseMobpackDraftGetResult(
+  raw: unknown,
+): MobpackDraftGetResult {
+  const d = asRecord(raw);
+  return {
+    source: String(d.source ?? ""),
+    storePath: d.store_path == null ? null : String(d.store_path),
+    runtimeBacked: Boolean(d.runtime_backed),
+    row: parseMobpackDraftRow(d.row),
+  };
+}
+
+/** Result shape shared by mobkit/mobpacks/create and mobkit/mobpacks/save. */
+export interface MobpackDraftSaveResult {
+  readonly source: string;
+  readonly storePath: string | null;
+  readonly row: MobpackDraftRow;
+  readonly rows: readonly MobpackDraftRow[];
+}
+
+export function parseMobpackDraftSaveResult(
+  raw: unknown,
+): MobpackDraftSaveResult {
+  const d = asRecord(raw);
+  return {
+    source: String(d.source ?? ""),
+    storePath: d.store_path == null ? null : String(d.store_path),
+    row: parseMobpackDraftRow(d.row),
+    rows: asRecordArray(d.rows).map(parseMobpackDraftRow),
+  };
+}
+
+/**
+ * Result shape shared by mobkit/mobpacks/undo and mobkit/mobpacks/redo.
+ * `stepped` is false (with a `reason`) when there is no history or future
+ * entry to step to; the draft is left untouched in that case.
+ */
+export interface MobpackDraftHistoryResult {
+  readonly source: string;
+  readonly storePath: string | null;
+  readonly stepped: boolean;
+  readonly reason: string | null;
+  readonly row: MobpackDraftRow;
+  readonly rows: readonly MobpackDraftRow[];
+}
+
+export function parseMobpackDraftHistoryResult(
+  raw: unknown,
+): MobpackDraftHistoryResult {
+  const d = asRecord(raw);
+  return {
+    source: String(d.source ?? ""),
+    storePath: d.store_path == null ? null : String(d.store_path),
+    stepped: Boolean(d.stepped),
+    reason: d.reason == null ? null : String(d.reason),
+    row: parseMobpackDraftRow(d.row),
+    rows: asRecordArray(d.rows).map(parseMobpackDraftRow),
+  };
+}
+
+export interface MobpackDraftDeleteResult {
+  readonly source: string;
+  readonly storePath: string | null;
+  readonly id: string;
+  readonly deleted: boolean;
+  readonly rows: readonly MobpackDraftRow[];
+}
+
+export function parseMobpackDraftDeleteResult(
+  raw: unknown,
+): MobpackDraftDeleteResult {
+  const d = asRecord(raw);
+  return {
+    source: String(d.source ?? ""),
+    storePath: d.store_path == null ? null : String(d.store_path),
+    id: String(d.id ?? ""),
+    deleted: Boolean(d.deleted),
+    rows: asRecordArray(d.rows).map(parseMobpackDraftRow),
+  };
+}
+
+export interface MobpackApplyOperationResult {
+  readonly source: string;
+  readonly operation: string;
+  readonly ok: boolean;
+  readonly document: Record<string, unknown>;
+  readonly selection: Record<string, unknown> | null;
+  readonly validation: MobpackValidationResult;
+}
+
+export function parseMobpackApplyOperationResult(
+  raw: unknown,
+): MobpackApplyOperationResult {
+  const d = asRecord(raw);
+  return {
+    source: String(d.source ?? ""),
+    operation: String(d.operation ?? ""),
+    ok: Boolean(d.ok),
+    document: asRecord(d.document),
+    selection: d.selection == null ? null : asRecord(d.selection),
+    validation: parseMobpackValidationResult(d.validation),
+  };
+}
+
+export interface MobpackDeployCommandResult {
+  readonly command: string;
+  readonly argv: readonly string[];
+  readonly deployCommand: string;
+  readonly filename: string;
+  readonly validation: MobpackValidationResult;
+  readonly source: string;
+}
+
+export function parseMobpackDeployCommandResult(
+  raw: unknown,
+): MobpackDeployCommandResult {
+  const d = asRecord(raw);
+  return {
+    command: String(d.command ?? ""),
+    argv: asStringArray(d.argv),
+    deployCommand: String(d.deploy_command ?? ""),
+    filename: String(d.filename ?? ""),
+    validation: parseMobpackValidationResult(d.validation),
+    source: String(d.source ?? ""),
+  };
+}
+
+export interface MobpackDeployResult {
+  readonly filename: string;
+  readonly packPath: string;
+  readonly packSha256: string;
+  readonly command: string;
+  readonly argv: readonly string[];
+  readonly planTrace: readonly Record<string, unknown>[];
+  readonly executed: boolean;
+  readonly success: boolean;
+  readonly statusCode: number | null;
+  readonly stdout: string | null;
+  readonly stderr: string | null;
+  readonly validation: MobpackValidationResult;
+  readonly displayRows: readonly MobpackDisplayRow[];
+}
+
+export function parseMobpackDeployResult(raw: unknown): MobpackDeployResult {
+  const d = asRecord(raw);
+  return {
+    filename: String(d.filename ?? ""),
+    packPath: String(d.pack_path ?? ""),
+    packSha256: String(d.pack_sha256 ?? ""),
+    command: String(d.command ?? ""),
+    argv: asStringArray(d.argv),
+    planTrace: asRecordArray(d.plan_trace),
+    executed: Boolean(d.executed),
+    success: Boolean(d.success),
+    statusCode: d.status_code == null ? null : Number(d.status_code),
+    stdout: d.stdout == null ? null : String(d.stdout),
+    stderr: d.stderr == null ? null : String(d.stderr),
+    validation: parseMobpackValidationResult(d.validation),
+    displayRows: asRecordArray(d.display_rows).map(parseMobpackDisplayRow),
+  };
+}
+
 // -- ErrorCategory / ErrorEvent -------------------------------------------
 
 export const ErrorCategory = {

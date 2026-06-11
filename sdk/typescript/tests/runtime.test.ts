@@ -276,6 +276,303 @@ describe("MobHandle Rust gateway parity wrappers", () => {
   });
 });
 
+describe("MobHandle mobpack authoring wrappers", () => {
+  const validationPayload = {
+    ok: true,
+    diagnostics: [],
+    display_rows: [
+      { kind: "ok", glyph: "✓", head: "valid", sub: "", meta: "" },
+    ],
+    mob_id: "demo",
+    flow_ids: ["flow_a"],
+    validation_source: "mobkit/mobpacks/validate",
+    deploy_command: "rkat mob deploy",
+  };
+
+  const draftRowPayload = (revision = 1, canUndo = false, canRedo = false) => ({
+    id: "f_demo",
+    name: "Demo",
+    version: "mobpack.editor.v1",
+    stage: "draft",
+    trigger: "MobKit authoring draft",
+    source: "mobkit/mobpacks/create",
+    revision,
+    etag: `f_demo:${revision}`,
+    updated_at_unix_ms: 1700000000000,
+    document: { mob_id: "demo" },
+    validation: { ok: true },
+    can_undo: canUndo,
+    can_redo: canRedo,
+  });
+
+  function setMobpackResponses(
+    setResponse: (
+      fn: (method: string, params?: Record<string, unknown>) => unknown,
+    ) => void,
+  ): void {
+    const responses: Record<string, unknown> = {
+      "mobkit/mobpacks/validate": validationPayload,
+      "mobkit/mobpacks/source": {
+        filename: "demo.mobpack",
+        media_type: "application/vnd.meerkat.mobpack",
+        mob_toml: '[mob]\nid = "demo"\n',
+        source_files: [
+          {
+            path: "mob.toml",
+            media_type: "text/x-toml",
+            size_bytes: 18,
+            content_base64: "W21vYl0=",
+            sha256: "abc",
+          },
+        ],
+        validation: validationPayload,
+        source: "mobkit/mobpacks/source",
+      },
+      "mobkit/mobpacks/export": {
+        filename: "demo.mobpack",
+        media_type: "application/vnd.meerkat.mobpack",
+        content_base64: "UEsDBA==",
+        mob_toml: '[mob]\nid = "demo"\n',
+        source_files: [],
+        validation: validationPayload,
+      },
+      "mobkit/mobpacks/import": {
+        document: { mob_id: "demo" },
+        validation: validationPayload,
+        source: "mobkit/mobpacks/import:mob.toml",
+        source_label: "demo.toml",
+        source_media_type: "text/x-toml",
+      },
+      "mobkit/mobpacks/list": {
+        source: "mobkit/mobpacks/list",
+        store_path: "/tmp/drafts.json",
+        runtime_backed: false,
+        rows: [draftRowPayload()],
+      },
+      "mobkit/mobpacks/get": {
+        source: "mobkit/mobpacks/get",
+        store_path: "/tmp/drafts.json",
+        runtime_backed: false,
+        row: draftRowPayload(),
+      },
+      "mobkit/mobpacks/create": {
+        source: "mobkit/mobpacks/create",
+        store_path: "/tmp/drafts.json",
+        row: draftRowPayload(),
+        rows: [draftRowPayload()],
+      },
+      "mobkit/mobpacks/save": {
+        source: "mobkit/mobpacks/save",
+        store_path: "/tmp/drafts.json",
+        row: draftRowPayload(2),
+        rows: [draftRowPayload(2)],
+      },
+      "mobkit/mobpacks/undo": {
+        source: "mobkit/mobpacks/undo",
+        store_path: "/tmp/drafts.json",
+        stepped: true,
+        row: draftRowPayload(3, false, true),
+        rows: [draftRowPayload(3, false, true)],
+      },
+      "mobkit/mobpacks/redo": {
+        source: "mobkit/mobpacks/redo",
+        store_path: "/tmp/drafts.json",
+        stepped: false,
+        reason: "nothing to redo",
+        row: draftRowPayload(3, false, true),
+        rows: [draftRowPayload(3, false, true)],
+      },
+      "mobkit/mobpacks/delete": {
+        source: "mobkit/mobpacks/delete",
+        store_path: "/tmp/drafts.json",
+        id: "f_demo",
+        deleted: true,
+        rows: [],
+      },
+      "mobkit/mobpacks/apply_operation": {
+        source: "mobkit/mobpacks/apply_operation",
+        operation: "add_member",
+        ok: true,
+        document: { mob_id: "demo", members: [{ id: "reviewer" }] },
+        selection: { kind: "agent", id: "reviewer" },
+        validation: validationPayload,
+      },
+      "mobkit/mobpacks/deploy_command": {
+        command: "rkat mob deploy demo.mobpack",
+        argv: ["rkat", "mob", "deploy", "demo.mobpack"],
+        deploy_command: "rkat mob deploy",
+        filename: "demo.mobpack",
+        validation: validationPayload,
+        source: "meerkat_mobkit::mobpack::deploy_argv",
+      },
+      "mobkit/mobpacks/deploy": {
+        filename: "demo.mobpack",
+        pack_path: "/tmp/demo.mobpack",
+        pack_sha256: "deadbeef",
+        command: "rkat mob deploy /tmp/demo.mobpack",
+        argv: ["rkat", "mob", "deploy", "/tmp/demo.mobpack"],
+        plan_trace: [{ step: "validate" }],
+        executed: false,
+        success: false,
+        validation: validationPayload,
+        display_rows: [],
+      },
+    };
+    setResponse((method) => responses[method]);
+  }
+
+  it("sends mobpack authoring RPC names with snake_case params", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setMobpackResponses(setResponse);
+    const document = { mob_id: "demo", members: [] };
+
+    const validation = await handle.mobpackValidate(document, true);
+    assert.equal(validation.ok, true);
+    assert.equal(validation.deployCommand, "rkat mob deploy");
+    assert.equal(validation.displayRows[0].kind, "ok");
+    assert.deepEqual(validation.flowIds, ["flow_a"]);
+
+    const source = await handle.mobpackSource(document);
+    assert.equal(source.sourceFiles[0].path, "mob.toml");
+    assert.equal(source.validation.ok, true);
+
+    const exported = await handle.mobpackExport(document);
+    assert.equal(exported.contentBase64, "UEsDBA==");
+    assert.equal(exported.filename, "demo.mobpack");
+
+    const imported = await handle.mobpackImport({
+      mobToml: '[mob]\nid = "demo"\n',
+      sourceName: "demo.toml",
+    });
+    assert.deepEqual(imported.document, { mob_id: "demo" });
+    assert.equal(imported.source, "mobkit/mobpacks/import:mob.toml");
+
+    const listed = await handle.mobpackList();
+    assert.equal(listed.rows[0].id, "f_demo");
+    assert.equal(listed.rows[0].revision, 1);
+    assert.equal(listed.storePath, "/tmp/drafts.json");
+
+    const got = await handle.mobpackGet("f_demo");
+    assert.equal(got.row.etag, "f_demo:1");
+    assert.equal(got.row.stage, "draft");
+
+    const created = await handle.mobpackCreate({
+      template: "blank",
+      name: "Demo",
+    });
+    assert.equal(created.row.id, "f_demo");
+
+    const saved = await handle.mobpackSave("f_demo", document, {
+      stage: "draft",
+      expectedRevision: 1,
+      expectedEtag: "f_demo:1",
+    });
+    assert.equal(saved.row.revision, 2);
+
+    const undone = await handle.mobpackUndo("f_demo", {
+      expectedRevision: 2,
+      expectedEtag: "f_demo:2",
+    });
+    assert.equal(undone.stepped, true);
+    assert.equal(undone.reason, null);
+    assert.equal(undone.row.revision, 3);
+    assert.equal(undone.row.canUndo, false);
+    assert.equal(undone.row.canRedo, true);
+
+    const redone = await handle.mobpackRedo("f_demo");
+    assert.equal(redone.stepped, false);
+    assert.equal(redone.reason, "nothing to redo");
+    assert.equal(redone.row.etag, "f_demo:3");
+
+    const deleted = await handle.mobpackDelete("f_demo", 2);
+    assert.equal(deleted.deleted, true);
+    assert.equal(deleted.id, "f_demo");
+
+    const applied = await handle.mobpackApplyOperation(
+      document,
+      { type: "add_member", member: { id: "reviewer" } },
+      "snap-1",
+    );
+    assert.equal(applied.ok, true);
+    assert.deepEqual(applied.selection, { kind: "agent", id: "reviewer" });
+    assert.equal(applied.validation.ok, true);
+
+    const preview = await handle.mobpackDeployCommand(document);
+    assert.deepEqual(preview.argv, ["rkat", "mob", "deploy", "demo.mobpack"]);
+
+    const deployed = await handle.mobpackDeploy(document, false);
+    assert.equal(deployed.executed, false);
+    assert.equal(deployed.packSha256, "deadbeef");
+
+    assert.deepEqual(calls.map((call) => call.method), [
+      "mobkit/mobpacks/validate",
+      "mobkit/mobpacks/source",
+      "mobkit/mobpacks/export",
+      "mobkit/mobpacks/import",
+      "mobkit/mobpacks/list",
+      "mobkit/mobpacks/get",
+      "mobkit/mobpacks/create",
+      "mobkit/mobpacks/save",
+      "mobkit/mobpacks/undo",
+      "mobkit/mobpacks/redo",
+      "mobkit/mobpacks/delete",
+      "mobkit/mobpacks/apply_operation",
+      "mobkit/mobpacks/deploy_command",
+      "mobkit/mobpacks/deploy",
+    ]);
+    assert.deepEqual(calls[0].params, { document, rkat_validate: true });
+    assert.deepEqual(calls[1].params, { document });
+    assert.deepEqual(calls[2].params, { document });
+    assert.deepEqual(calls[3].params, {
+      mob_toml: '[mob]\nid = "demo"\n',
+      source_name: "demo.toml",
+    });
+    assert.deepEqual(calls[4].params, {});
+    assert.deepEqual(calls[5].params, { id: "f_demo" });
+    assert.deepEqual(calls[6].params, { template: "blank", name: "Demo" });
+    assert.deepEqual(calls[7].params, {
+      id: "f_demo",
+      document,
+      stage: "draft",
+      expected_revision: 1,
+      expected_etag: "f_demo:1",
+    });
+    assert.deepEqual(calls[8].params, {
+      id: "f_demo",
+      expected_revision: 2,
+      expected_etag: "f_demo:2",
+    });
+    assert.deepEqual(calls[9].params, { id: "f_demo" });
+    assert.deepEqual(calls[10].params, { id: "f_demo", expected_revision: 2 });
+    assert.deepEqual(calls[11].params, {
+      document,
+      operation: { type: "add_member", member: { id: "reviewer" } },
+      expected_catalog_snapshot_id: "snap-1",
+    });
+    assert.deepEqual(calls[12].params, { document });
+    assert.deepEqual(calls[13].params, { document, execute: false });
+  });
+
+  it("omits optional params when not provided", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setMobpackResponses(setResponse);
+
+    await handle.mobpackValidate({ mob_id: "demo" });
+    await handle.mobpackCreate();
+    await handle.mobpackDelete("f_demo");
+    await handle.mobpackUndo("f_demo");
+    await handle.mobpackRedo("f_demo");
+    await handle.mobpackDeploy({ mob_id: "demo" });
+
+    assert.deepEqual(calls[0].params, { document: { mob_id: "demo" } });
+    assert.deepEqual(calls[1].params, {});
+    assert.deepEqual(calls[2].params, { id: "f_demo" });
+    assert.deepEqual(calls[3].params, { id: "f_demo" });
+    assert.deepEqual(calls[4].params, { id: "f_demo" });
+    assert.deepEqual(calls[5].params, { document: { mob_id: "demo" } });
+  });
+});
+
 describe("MobHandle.spawn()", () => {
   it("sends mobkit/spawn_member with discovery spec", async () => {
     const { handle, calls, setResponse } = createMockRuntime();

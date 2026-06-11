@@ -86,6 +86,10 @@ The mobpack-authoring methods:
 | `mobkit/mobpacks/deploy_command` | Preview the exact `rkat mob deploy` command |
 | `mobkit/mobpacks/deploy` | Deploy plan, or host execution when `execute: true` |
 
+### SDK access
+
+The same JSON-RPC surface is exposed as typed wrappers in both gateway SDKs: `mobpackCreate` / `mobpackValidate` / `mobpackDeploy` and friends on the TypeScript `MobHandle`, and snake_case equivalents (`mobpack_create`, `mobpack_validate`, `mobpack_deploy`, …) in Python. That makes the full authoring loop — create, edit via `apply_operation`, validate, export, deploy — scriptable without the editor UI, under the same capabilities and access-control gates. See [TypeScript SDK](/sdks/typescript) and [Python SDK](/sdks/python).
+
 ## Authoring model
 
 The top rail switches between **FLOWS** and **AGENTS** views and carries the IMPORT, VALIDATE, PUBLISH, DEPLOY PLAN, DEPLOY, and `⚙ SETTINGS` actions.

@@ -43,6 +43,19 @@ import {
   parseMobpackAgentDefinitionsResult,
   parseMobpackTemplatesResult,
   parseMobpackCatalogsResult,
+  parseMobpackValidationResult,
+  parseMobpackSourceResult,
+  parseMobpackExportResult,
+  parseMobpackImportResult,
+  parseMobpackDraftRow,
+  parseMobpackDraftListResult,
+  parseMobpackDraftGetResult,
+  parseMobpackDraftSaveResult,
+  parseMobpackDraftDeleteResult,
+  parseMobpackDraftHistoryResult,
+  parseMobpackApplyOperationResult,
+  parseMobpackDeployCommandResult,
+  parseMobpackDeployResult,
   eventQueryToDict,
 } from "../dist/index.js";
 
@@ -1238,5 +1251,285 @@ describe("mobpack editor catalog parsers", () => {
     assert.deepEqual(result.skillRealms, [{ id: "mobkit/authoring" }]);
     assert.equal(result.models[0].displayName, "GPT-5");
     assert.equal(result.providerDefaults[0].defaultModelId, "gpt-5");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mobpack authoring
+// ---------------------------------------------------------------------------
+
+describe("mobpack authoring parsers", () => {
+  it("parses validation results with diagnostics and display rows", () => {
+    const validation = parseMobpackValidationResult({
+      ok: false,
+      diagnostics: [
+        {
+          severity: "error",
+          code: "missing_member",
+          message: "no members defined",
+          path: "members",
+        },
+      ],
+      display_rows: [
+        {
+          kind: "crit",
+          glyph: "!",
+          head: "invalid mobpack",
+          sub: "no members defined",
+          meta: "members",
+        },
+      ],
+      mob_id: "demo",
+      flow_ids: ["flow_a"],
+      validation_source: "mobkit/mobpacks/validate",
+      deploy_command: "rkat mob deploy",
+    });
+    assert.equal(validation.ok, false);
+    assert.equal(validation.diagnostics[0].severity, "error");
+    assert.equal(validation.diagnostics[0].code, "missing_member");
+    assert.equal(validation.diagnostics[0].path, "members");
+    assert.equal(validation.displayRows[0].kind, "crit");
+    assert.equal(validation.displayRows[0].glyph, "!");
+    assert.equal(validation.mobId, "demo");
+    assert.deepEqual(validation.flowIds, ["flow_a"]);
+    assert.equal(validation.deployCommand, "rkat mob deploy");
+  });
+
+  it("defaults missing validation fields", () => {
+    const validation = parseMobpackValidationResult({ ok: true });
+    assert.equal(validation.ok, true);
+    assert.deepEqual(validation.diagnostics, []);
+    assert.deepEqual(validation.displayRows, []);
+    assert.equal(validation.mobId, null);
+    assert.deepEqual(validation.flowIds, []);
+  });
+
+  it("parses source and export payloads", () => {
+    const source = parseMobpackSourceResult({
+      filename: "demo.mobpack",
+      media_type: "application/vnd.meerkat.mobpack",
+      mob_toml: "[mob]\n",
+      source_files: [
+        {
+          path: "mob.toml",
+          media_type: "text/x-toml",
+          size_bytes: 7,
+          content_base64: "W21vYl0K",
+          sha256: "abc",
+          text: "[mob]\n",
+        },
+      ],
+      validation: { ok: true },
+      source: "mobkit/mobpacks/source",
+    });
+    assert.equal(source.filename, "demo.mobpack");
+    assert.equal(source.sourceFiles[0].path, "mob.toml");
+    assert.equal(source.sourceFiles[0].sizeBytes, 7);
+    assert.equal(source.sourceFiles[0].text, "[mob]\n");
+    assert.equal(source.validation.ok, true);
+
+    const exported = parseMobpackExportResult({
+      filename: "demo.mobpack",
+      media_type: "application/vnd.meerkat.mobpack",
+      content_base64: "UEsDBA==",
+      mob_toml: "[mob]\n",
+      source_files: [],
+      validation: { ok: true },
+    });
+    assert.equal(exported.contentBase64, "UEsDBA==");
+    assert.equal(exported.mediaType, "application/vnd.meerkat.mobpack");
+    assert.equal(exported.validation.ok, true);
+  });
+
+  it("parses import results", () => {
+    const imported = parseMobpackImportResult({
+      document: { mob_id: "demo" },
+      validation: { ok: true },
+      source: "mobkit/mobpacks/import:archive",
+      source_label: "demo.mobpack",
+      source_media_type: "application/vnd.meerkat.mobpack",
+    });
+    assert.deepEqual(imported.document, { mob_id: "demo" });
+    assert.equal(imported.source, "mobkit/mobpacks/import:archive");
+    assert.equal(imported.sourceLabel, "demo.mobpack");
+  });
+
+  it("parses draft rows and registry results", () => {
+    const rowPayload = {
+      id: "f_demo",
+      name: "Demo",
+      version: "mobpack.editor.v1",
+      stage: "draft",
+      trigger: "MobKit authoring draft",
+      source: "mobkit/mobpacks/create",
+      revision: 3,
+      etag: "f_demo:3",
+      updated_at_unix_ms: 1700000000000,
+      document: { mob_id: "demo" },
+      validation: { ok: true },
+      can_undo: true,
+      can_redo: false,
+    };
+    const row = parseMobpackDraftRow(rowPayload);
+    assert.equal(row.id, "f_demo");
+    assert.equal(row.stage, "draft");
+    assert.equal(row.revision, 3);
+    assert.equal(row.etag, "f_demo:3");
+    assert.deepEqual(row.document, { mob_id: "demo" });
+    assert.deepEqual(row.validation, { ok: true });
+    assert.equal(row.canUndo, true);
+    assert.equal(row.canRedo, false);
+
+    const bareRow = parseMobpackDraftRow({ id: "f_old" });
+    assert.equal(bareRow.canUndo, null);
+    assert.equal(bareRow.canRedo, null);
+
+    const listed = parseMobpackDraftListResult({
+      source: "mobkit/mobpacks/list",
+      store_path: "/tmp/drafts.json",
+      runtime_backed: true,
+      rows: [rowPayload],
+    });
+    assert.equal(listed.storePath, "/tmp/drafts.json");
+    assert.equal(listed.runtimeBacked, true);
+    assert.equal(listed.rows[0].id, "f_demo");
+
+    const got = parseMobpackDraftGetResult({
+      source: "mobkit/mobpacks/get",
+      runtime_backed: true,
+      row: rowPayload,
+    });
+    assert.equal(got.storePath, null);
+    assert.equal(got.row.revision, 3);
+
+    const saved = parseMobpackDraftSaveResult({
+      source: "mobkit/mobpacks/save",
+      store_path: "/tmp/drafts.json",
+      row: rowPayload,
+      rows: [rowPayload],
+    });
+    assert.equal(saved.row.id, "f_demo");
+    assert.equal(saved.rows.length, 1);
+
+    const deleted = parseMobpackDraftDeleteResult({
+      source: "mobkit/mobpacks/delete",
+      store_path: "/tmp/drafts.json",
+      id: "f_demo",
+      deleted: true,
+      rows: [],
+    });
+    assert.equal(deleted.id, "f_demo");
+    assert.equal(deleted.deleted, true);
+    assert.deepEqual(deleted.rows, []);
+  });
+
+  it("parses draft history results for stepped and blocked steps", () => {
+    const rowPayload = {
+      id: "f_demo",
+      name: "Demo",
+      stage: "draft",
+      revision: 4,
+      etag: "f_demo:4",
+      document: { mob_id: "demo" },
+      validation: { ok: true },
+      can_undo: false,
+      can_redo: true,
+    };
+    const stepped = parseMobpackDraftHistoryResult({
+      source: "mobkit/mobpacks/undo",
+      store_path: "/tmp/drafts.json",
+      stepped: true,
+      row: rowPayload,
+      rows: [rowPayload],
+    });
+    assert.equal(stepped.source, "mobkit/mobpacks/undo");
+    assert.equal(stepped.storePath, "/tmp/drafts.json");
+    assert.equal(stepped.stepped, true);
+    assert.equal(stepped.reason, null);
+    assert.equal(stepped.row.revision, 4);
+    assert.equal(stepped.row.canUndo, false);
+    assert.equal(stepped.row.canRedo, true);
+    assert.equal(stepped.rows[0].id, "f_demo");
+
+    const blocked = parseMobpackDraftHistoryResult({
+      source: "mobkit/mobpacks/redo",
+      store_path: "/tmp/drafts.json",
+      stepped: false,
+      reason: "nothing to redo",
+      row: rowPayload,
+      rows: [rowPayload],
+    });
+    assert.equal(blocked.stepped, false);
+    assert.equal(blocked.reason, "nothing to redo");
+    assert.equal(blocked.row.etag, "f_demo:4");
+  });
+
+  it("parses apply-operation results with and without selection", () => {
+    const applied = parseMobpackApplyOperationResult({
+      source: "mobkit/mobpacks/apply_operation",
+      operation: "add_member",
+      ok: true,
+      document: { mob_id: "demo", members: [{ id: "reviewer" }] },
+      selection: { kind: "agent", id: "reviewer" },
+      validation: { ok: true },
+    });
+    assert.equal(applied.operation, "add_member");
+    assert.equal(applied.ok, true);
+    assert.deepEqual(applied.selection, { kind: "agent", id: "reviewer" });
+    assert.equal(applied.validation.ok, true);
+
+    const noSelection = parseMobpackApplyOperationResult({
+      source: "mobkit/mobpacks/apply_operation",
+      operation: "delete_member",
+      ok: true,
+      document: { mob_id: "demo" },
+      selection: null,
+      validation: { ok: true },
+    });
+    assert.equal(noSelection.selection, null);
+  });
+
+  it("parses deploy command and deploy results", () => {
+    const preview = parseMobpackDeployCommandResult({
+      command: "rkat mob deploy demo.mobpack",
+      argv: ["rkat", "mob", "deploy", "demo.mobpack"],
+      deploy_command: "rkat mob deploy",
+      filename: "demo.mobpack",
+      validation: { ok: true },
+      source: "meerkat_mobkit::mobpack::deploy_argv",
+    });
+    assert.equal(preview.command, "rkat mob deploy demo.mobpack");
+    assert.deepEqual(preview.argv, ["rkat", "mob", "deploy", "demo.mobpack"]);
+    assert.equal(preview.deployCommand, "rkat mob deploy");
+
+    const deployed = parseMobpackDeployResult({
+      filename: "demo.mobpack",
+      pack_path: "/tmp/demo.mobpack",
+      pack_sha256: "deadbeef",
+      command: "rkat mob deploy /tmp/demo.mobpack",
+      argv: ["rkat", "mob", "deploy", "/tmp/demo.mobpack"],
+      plan_trace: [{ step: "validate" }],
+      executed: true,
+      success: true,
+      status_code: 0,
+      stdout: "deployed",
+      validation: { ok: true },
+      display_rows: [
+        {
+          kind: "ok",
+          glyph: "✓",
+          head: "deploy executed",
+          sub: "deployed",
+          meta: "/tmp/demo.mobpack",
+        },
+      ],
+    });
+    assert.equal(deployed.executed, true);
+    assert.equal(deployed.success, true);
+    assert.equal(deployed.statusCode, 0);
+    assert.equal(deployed.stdout, "deployed");
+    assert.equal(deployed.stderr, null);
+    assert.deepEqual(deployed.planTrace, [{ step: "validate" }]);
+    assert.equal(deployed.displayRows[0].head, "deploy executed");
   });
 });

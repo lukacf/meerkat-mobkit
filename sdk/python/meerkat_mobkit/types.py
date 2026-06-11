@@ -1039,6 +1039,389 @@ class MobpackCatalogsResult:
         )
 
 
+@dataclass(frozen=True)
+class MobpackDiagnostic:
+    """A single diagnostic emitted by mobpack validation."""
+    severity: str
+    code: str
+    message: str
+    path: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackDiagnostic:
+        return cls(
+            severity=str(data.get("severity", "")),
+            code=str(data.get("code", "")),
+            message=str(data.get("message", "")),
+            path=data.get("path"),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackDisplayRow:
+    """A console-style display row emitted by mobpack validation/deploy."""
+    kind: str
+    glyph: str
+    head: str
+    sub: str
+    meta: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackDisplayRow:
+        return cls(
+            kind=str(data.get("kind", "")),
+            glyph=str(data.get("glyph", "")),
+            head=str(data.get("head", "")),
+            sub=str(data.get("sub", "")),
+            meta=str(data.get("meta", "")),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackValidationResult:
+    """Result of a mobkit/mobpacks/validate RPC call."""
+    ok: bool
+    diagnostics: list[MobpackDiagnostic]
+    display_rows: list[MobpackDisplayRow]
+    flow_ids: list[str]
+    validation_source: str
+    deploy_command: str
+    mob_id: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackValidationResult:
+        return cls(
+            ok=bool(data.get("ok", False)),
+            diagnostics=[
+                MobpackDiagnostic.from_dict(d) for d in data.get("diagnostics", [])
+            ],
+            display_rows=[
+                MobpackDisplayRow.from_dict(r) for r in data.get("display_rows", [])
+            ],
+            flow_ids=list(data.get("flow_ids", [])),
+            validation_source=str(data.get("validation_source", "")),
+            deploy_command=str(data.get("deploy_command", "")),
+            mob_id=data.get("mob_id"),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackSourceFile:
+    """A rendered file inside a mobpack archive."""
+    path: str
+    media_type: str
+    size_bytes: int
+    content_base64: str
+    sha256: str
+    text: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackSourceFile:
+        return cls(
+            path=str(data.get("path", "")),
+            media_type=str(data.get("media_type", "")),
+            size_bytes=_coerce_int(data.get("size_bytes")),
+            content_base64=str(data.get("content_base64", "")),
+            sha256=str(data.get("sha256", "")),
+            text=data.get("text"),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackSourceResult:
+    """Result of a mobkit/mobpacks/source RPC call."""
+    filename: str
+    media_type: str
+    mob_toml: str
+    source_files: list[MobpackSourceFile]
+    validation: MobpackValidationResult
+    source: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackSourceResult:
+        return cls(
+            filename=str(data.get("filename", "")),
+            media_type=str(data.get("media_type", "")),
+            mob_toml=str(data.get("mob_toml", "")),
+            source_files=[
+                MobpackSourceFile.from_dict(f) for f in data.get("source_files", [])
+            ],
+            validation=MobpackValidationResult.from_dict(data.get("validation", {})),
+            source=str(data.get("source", "")),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackExportResult:
+    """Result of a mobkit/mobpacks/export RPC call."""
+    filename: str
+    media_type: str
+    content_base64: str
+    mob_toml: str
+    source_files: list[MobpackSourceFile]
+    validation: MobpackValidationResult
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackExportResult:
+        return cls(
+            filename=str(data.get("filename", "")),
+            media_type=str(data.get("media_type", "")),
+            content_base64=str(data.get("content_base64", "")),
+            mob_toml=str(data.get("mob_toml", "")),
+            source_files=[
+                MobpackSourceFile.from_dict(f) for f in data.get("source_files", [])
+            ],
+            validation=MobpackValidationResult.from_dict(data.get("validation", {})),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackImportResult:
+    """Result of a mobkit/mobpacks/import RPC call."""
+    document: dict[str, Any]
+    validation: MobpackValidationResult
+    source: str
+    source_label: str
+    source_media_type: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackImportResult:
+        return cls(
+            document=dict(data.get("document", {})),
+            validation=MobpackValidationResult.from_dict(data.get("validation", {})),
+            source=str(data.get("source", "")),
+            source_label=str(data.get("source_label", "")),
+            source_media_type=str(data.get("source_media_type", "")),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackDraftRow:
+    """A row from the mobpack draft registry.
+
+    The ``document`` and ``validation`` payloads are passed through as
+    permissive dicts — the mobpack document schema is opaque to the SDK.
+    """
+    id: str
+    name: str
+    version: str
+    stage: str
+    trigger: str
+    source: str
+    revision: int
+    etag: str
+    updated_at_unix_ms: int
+    document: dict[str, Any]
+    validation: dict[str, Any]
+    can_undo: bool | None = None
+    can_redo: bool | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackDraftRow:
+        document = data.get("document")
+        validation = data.get("validation")
+        can_undo = data.get("can_undo")
+        can_redo = data.get("can_redo")
+        return cls(
+            id=str(data.get("id", "")),
+            name=str(data.get("name", "")),
+            version=str(data.get("version", "")),
+            stage=str(data.get("stage", "")),
+            trigger=str(data.get("trigger", "")),
+            source=str(data.get("source", "")),
+            revision=_coerce_int(data.get("revision")),
+            etag=str(data.get("etag", "")),
+            updated_at_unix_ms=_coerce_int(data.get("updated_at_unix_ms")),
+            document=document if isinstance(document, dict) else {},
+            validation=validation if isinstance(validation, dict) else {},
+            can_undo=bool(can_undo) if can_undo is not None else None,
+            can_redo=bool(can_redo) if can_redo is not None else None,
+        )
+
+
+@dataclass(frozen=True)
+class MobpackDraftListResult:
+    """Result of a mobkit/mobpacks/list RPC call."""
+    source: str
+    store_path: str | None
+    runtime_backed: bool
+    rows: list[MobpackDraftRow]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackDraftListResult:
+        return cls(
+            source=str(data.get("source", "")),
+            store_path=data.get("store_path"),
+            runtime_backed=bool(data.get("runtime_backed", False)),
+            rows=[MobpackDraftRow.from_dict(r) for r in data.get("rows", [])],
+        )
+
+
+@dataclass(frozen=True)
+class MobpackDraftGetResult:
+    """Result of a mobkit/mobpacks/get RPC call."""
+    source: str
+    store_path: str | None
+    runtime_backed: bool
+    row: MobpackDraftRow
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackDraftGetResult:
+        return cls(
+            source=str(data.get("source", "")),
+            store_path=data.get("store_path"),
+            runtime_backed=bool(data.get("runtime_backed", False)),
+            row=MobpackDraftRow.from_dict(data.get("row", {})),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackDraftSaveResult:
+    """Result of a mobkit/mobpacks/create or mobkit/mobpacks/save RPC call."""
+    source: str
+    store_path: str | None
+    row: MobpackDraftRow
+    rows: list[MobpackDraftRow]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackDraftSaveResult:
+        return cls(
+            source=str(data.get("source", "")),
+            store_path=data.get("store_path"),
+            row=MobpackDraftRow.from_dict(data.get("row", {})),
+            rows=[MobpackDraftRow.from_dict(r) for r in data.get("rows", [])],
+        )
+
+
+@dataclass(frozen=True)
+class MobpackDraftHistoryResult:
+    """Result of a mobkit/mobpacks/undo or mobkit/mobpacks/redo RPC call.
+
+    ``stepped`` is False (with a ``reason``) when there is no history or
+    future entry to step to; the draft is left untouched in that case.
+    """
+    source: str
+    store_path: str | None
+    stepped: bool
+    row: MobpackDraftRow
+    rows: list[MobpackDraftRow]
+    reason: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackDraftHistoryResult:
+        return cls(
+            source=str(data.get("source", "")),
+            store_path=data.get("store_path"),
+            stepped=bool(data.get("stepped", False)),
+            row=MobpackDraftRow.from_dict(data.get("row", {})),
+            rows=[MobpackDraftRow.from_dict(r) for r in data.get("rows", [])],
+            reason=data.get("reason"),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackDraftDeleteResult:
+    """Result of a mobkit/mobpacks/delete RPC call."""
+    source: str
+    store_path: str | None
+    id: str
+    deleted: bool
+    rows: list[MobpackDraftRow]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackDraftDeleteResult:
+        return cls(
+            source=str(data.get("source", "")),
+            store_path=data.get("store_path"),
+            id=str(data.get("id", "")),
+            deleted=bool(data.get("deleted", False)),
+            rows=[MobpackDraftRow.from_dict(r) for r in data.get("rows", [])],
+        )
+
+
+@dataclass(frozen=True)
+class MobpackApplyOperationResult:
+    """Result of a mobkit/mobpacks/apply_operation RPC call."""
+    source: str
+    operation: str
+    ok: bool
+    document: dict[str, Any]
+    selection: dict[str, Any] | None
+    validation: MobpackValidationResult
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackApplyOperationResult:
+        selection = data.get("selection")
+        return cls(
+            source=str(data.get("source", "")),
+            operation=str(data.get("operation", "")),
+            ok=bool(data.get("ok", False)),
+            document=dict(data.get("document", {})),
+            selection=selection if isinstance(selection, dict) else None,
+            validation=MobpackValidationResult.from_dict(data.get("validation", {})),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackDeployCommandResult:
+    """Result of a mobkit/mobpacks/deploy_command RPC call."""
+    command: str
+    argv: list[str]
+    deploy_command: str
+    filename: str
+    validation: MobpackValidationResult
+    source: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackDeployCommandResult:
+        return cls(
+            command=str(data.get("command", "")),
+            argv=list(data.get("argv", [])),
+            deploy_command=str(data.get("deploy_command", "")),
+            filename=str(data.get("filename", "")),
+            validation=MobpackValidationResult.from_dict(data.get("validation", {})),
+            source=str(data.get("source", "")),
+        )
+
+
+@dataclass(frozen=True)
+class MobpackDeployResult:
+    """Result of a mobkit/mobpacks/deploy RPC call."""
+    filename: str
+    pack_path: str
+    pack_sha256: str
+    command: str
+    argv: list[str]
+    plan_trace: list[dict[str, Any]]
+    executed: bool
+    success: bool
+    validation: MobpackValidationResult
+    display_rows: list[MobpackDisplayRow]
+    status_code: int | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobpackDeployResult:
+        return cls(
+            filename=str(data.get("filename", "")),
+            pack_path=str(data.get("pack_path", "")),
+            pack_sha256=str(data.get("pack_sha256", "")),
+            command=str(data.get("command", "")),
+            argv=list(data.get("argv", [])),
+            plan_trace=list(data.get("plan_trace", [])),
+            executed=bool(data.get("executed", False)),
+            success=bool(data.get("success", False)),
+            validation=MobpackValidationResult.from_dict(data.get("validation", {})),
+            display_rows=[
+                MobpackDisplayRow.from_dict(r) for r in data.get("display_rows", [])
+            ],
+            status_code=data.get("status_code"),
+            stdout=data.get("stdout"),
+            stderr=data.get("stderr"),
+        )
+
+
 class MobMemberStatus(str, Enum):
     """Execution status for a mob member."""
     ACTIVE = "active"

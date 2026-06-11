@@ -134,6 +134,320 @@ async def test_mobpack_editor_catalog_rpc_names():
     ]
 
 
+def _mobpack_validation_payload(ok=True):
+    return {
+        "ok": ok,
+        "diagnostics": [],
+        "display_rows": [{"kind": "ok", "glyph": "✓", "head": "valid", "sub": "", "meta": ""}],
+        "mob_id": "demo",
+        "flow_ids": ["flow_a"],
+        "validation_source": "mobkit/mobpacks/validate",
+        "deploy_command": "rkat mob deploy",
+    }
+
+
+def _mobpack_draft_row_payload(
+    draft_id="f_demo", revision=1, can_undo=False, can_redo=False
+):
+    return {
+        "id": draft_id,
+        "name": "Demo",
+        "version": "mobpack.editor.v1",
+        "stage": "draft",
+        "trigger": "MobKit authoring draft",
+        "source": "mobkit/mobpacks/create",
+        "revision": revision,
+        "etag": f"{draft_id}:{revision}",
+        "updated_at_unix_ms": 1700000000000,
+        "document": {"mob_id": "demo"},
+        "validation": {"ok": True},
+        "can_undo": can_undo,
+        "can_redo": can_redo,
+    }
+
+
+@pytest.mark.asyncio
+async def test_mobpack_authoring_rpc_names_and_params():
+    """Every mobpack authoring wrapper must hit its exact RPC name with
+    snake_case params and parse the typed result."""
+    document = {"mob_id": "demo", "members": []}
+    handle, calls = make_mock_mob_handle({
+        "mobkit/mobpacks/validate": _mobpack_validation_payload(),
+        "mobkit/mobpacks/source": {
+            "filename": "demo.mobpack",
+            "media_type": "application/vnd.meerkat.mobpack",
+            "mob_toml": "[mob]\nid = \"demo\"\n",
+            "source_files": [{
+                "path": "mob.toml",
+                "media_type": "text/x-toml",
+                "size_bytes": 24,
+                "content_base64": "W21vYl0=",
+                "sha256": "abc",
+            }],
+            "validation": _mobpack_validation_payload(),
+            "source": "mobkit/mobpacks/source",
+        },
+        "mobkit/mobpacks/export": {
+            "filename": "demo.mobpack",
+            "media_type": "application/vnd.meerkat.mobpack",
+            "content_base64": "UEsDBA==",
+            "mob_toml": "[mob]\nid = \"demo\"\n",
+            "source_files": [],
+            "validation": _mobpack_validation_payload(),
+        },
+        "mobkit/mobpacks/import": {
+            "document": {"mob_id": "demo"},
+            "validation": _mobpack_validation_payload(),
+            "source": "mobkit/mobpacks/import:mob.toml",
+            "source_label": "demo.toml",
+            "source_media_type": "text/x-toml",
+        },
+        "mobkit/mobpacks/list": {
+            "source": "mobkit/mobpacks/list",
+            "store_path": "/tmp/drafts.json",
+            "runtime_backed": False,
+            "rows": [_mobpack_draft_row_payload()],
+        },
+        "mobkit/mobpacks/get": {
+            "source": "mobkit/mobpacks/get",
+            "store_path": "/tmp/drafts.json",
+            "runtime_backed": False,
+            "row": _mobpack_draft_row_payload(),
+        },
+        "mobkit/mobpacks/create": {
+            "source": "mobkit/mobpacks/create",
+            "store_path": "/tmp/drafts.json",
+            "row": _mobpack_draft_row_payload(),
+            "rows": [_mobpack_draft_row_payload()],
+        },
+        "mobkit/mobpacks/save": {
+            "source": "mobkit/mobpacks/save",
+            "store_path": "/tmp/drafts.json",
+            "row": _mobpack_draft_row_payload(revision=2),
+            "rows": [_mobpack_draft_row_payload(revision=2)],
+        },
+        "mobkit/mobpacks/undo": {
+            "source": "mobkit/mobpacks/undo",
+            "store_path": "/tmp/drafts.json",
+            "stepped": True,
+            "row": _mobpack_draft_row_payload(revision=3, can_undo=False, can_redo=True),
+            "rows": [_mobpack_draft_row_payload(revision=3, can_undo=False, can_redo=True)],
+        },
+        "mobkit/mobpacks/redo": {
+            "source": "mobkit/mobpacks/redo",
+            "store_path": "/tmp/drafts.json",
+            "stepped": True,
+            "row": _mobpack_draft_row_payload(revision=4, can_undo=True, can_redo=False),
+            "rows": [_mobpack_draft_row_payload(revision=4, can_undo=True, can_redo=False)],
+        },
+        "mobkit/mobpacks/delete": {
+            "source": "mobkit/mobpacks/delete",
+            "store_path": "/tmp/drafts.json",
+            "id": "f_demo",
+            "deleted": True,
+            "rows": [],
+        },
+        "mobkit/mobpacks/apply_operation": {
+            "source": "mobkit/mobpacks/apply_operation",
+            "operation": "add_member",
+            "ok": True,
+            "document": {"mob_id": "demo", "members": [{"id": "reviewer"}]},
+            "selection": {"kind": "agent", "id": "reviewer"},
+            "validation": _mobpack_validation_payload(),
+        },
+        "mobkit/mobpacks/deploy_command": {
+            "command": "rkat mob deploy demo.mobpack",
+            "argv": ["rkat", "mob", "deploy", "demo.mobpack"],
+            "deploy_command": "rkat mob deploy",
+            "filename": "demo.mobpack",
+            "validation": _mobpack_validation_payload(),
+            "source": "meerkat_mobkit::mobpack::deploy_argv",
+        },
+        "mobkit/mobpacks/deploy": {
+            "filename": "demo.mobpack",
+            "pack_path": "/tmp/demo.mobpack",
+            "pack_sha256": "deadbeef",
+            "command": "rkat mob deploy /tmp/demo.mobpack",
+            "argv": ["rkat", "mob", "deploy", "/tmp/demo.mobpack"],
+            "plan_trace": [{"step": "validate"}],
+            "executed": False,
+            "success": False,
+            "validation": _mobpack_validation_payload(),
+            "display_rows": [],
+        },
+    })
+
+    validation = await handle.mobpack_validate(document, rkat_validate=True)
+    assert validation.ok is True
+    assert validation.deploy_command == "rkat mob deploy"
+    assert validation.display_rows[0].kind == "ok"
+    assert validation.flow_ids == ["flow_a"]
+
+    source = await handle.mobpack_source(document)
+    assert source.mob_toml.startswith("[mob]")
+    assert source.source_files[0].path == "mob.toml"
+    assert source.validation.ok is True
+
+    export = await handle.mobpack_export(document)
+    assert export.content_base64 == "UEsDBA=="
+    assert export.filename == "demo.mobpack"
+
+    imported = await handle.mobpack_import(
+        mob_toml="[mob]\nid = \"demo\"\n", source_name="demo.toml"
+    )
+    assert imported.document == {"mob_id": "demo"}
+    assert imported.source == "mobkit/mobpacks/import:mob.toml"
+
+    listed = await handle.mobpack_list()
+    assert listed.rows[0].id == "f_demo"
+    assert listed.rows[0].revision == 1
+    assert listed.store_path == "/tmp/drafts.json"
+
+    got = await handle.mobpack_get("f_demo")
+    assert got.row.etag == "f_demo:1"
+    assert got.row.stage == "draft"
+
+    created = await handle.mobpack_create(template="blank", name="Demo")
+    assert created.row.id == "f_demo"
+
+    saved = await handle.mobpack_save(
+        "f_demo",
+        document,
+        stage="draft",
+        expected_revision=1,
+        expected_etag="f_demo:1",
+    )
+    assert saved.row.revision == 2
+
+    undone = await handle.mobpack_undo(
+        "f_demo", expected_revision=2, expected_etag="f_demo:2"
+    )
+    assert undone.stepped is True
+    assert undone.reason is None
+    assert undone.row.revision == 3
+    assert undone.row.can_undo is False
+    assert undone.row.can_redo is True
+
+    redone = await handle.mobpack_redo("f_demo")
+    assert redone.stepped is True
+    assert redone.row.revision == 4
+    assert redone.row.can_undo is True
+    assert redone.row.can_redo is False
+
+    deleted = await handle.mobpack_delete("f_demo", expected_revision=2)
+    assert deleted.deleted is True
+    assert deleted.id == "f_demo"
+
+    applied = await handle.mobpack_apply_operation(
+        document,
+        {"type": "add_member", "member": {"id": "reviewer"}},
+        expected_catalog_snapshot_id="snap-1",
+    )
+    assert applied.ok is True
+    assert applied.selection == {"kind": "agent", "id": "reviewer"}
+    assert applied.validation.ok is True
+
+    deploy_command = await handle.mobpack_deploy_command(document)
+    assert deploy_command.argv == ["rkat", "mob", "deploy", "demo.mobpack"]
+
+    deployed = await handle.mobpack_deploy(document, execute=False)
+    assert deployed.executed is False
+    assert deployed.pack_sha256 == "deadbeef"
+
+    assert [call[0] for call in calls] == [
+        "mobkit/mobpacks/validate",
+        "mobkit/mobpacks/source",
+        "mobkit/mobpacks/export",
+        "mobkit/mobpacks/import",
+        "mobkit/mobpacks/list",
+        "mobkit/mobpacks/get",
+        "mobkit/mobpacks/create",
+        "mobkit/mobpacks/save",
+        "mobkit/mobpacks/undo",
+        "mobkit/mobpacks/redo",
+        "mobkit/mobpacks/delete",
+        "mobkit/mobpacks/apply_operation",
+        "mobkit/mobpacks/deploy_command",
+        "mobkit/mobpacks/deploy",
+    ]
+    assert calls[0][1] == {"document": document, "rkat_validate": True}
+    assert calls[1][1] == {"document": document}
+    assert calls[2][1] == {"document": document}
+    assert calls[3][1] == {
+        "mob_toml": "[mob]\nid = \"demo\"\n",
+        "source_name": "demo.toml",
+    }
+    assert calls[4][1] == {}
+    assert calls[5][1] == {"id": "f_demo"}
+    assert calls[6][1] == {"template": "blank", "name": "Demo"}
+    assert calls[7][1] == {
+        "id": "f_demo",
+        "document": document,
+        "stage": "draft",
+        "expected_revision": 1,
+        "expected_etag": "f_demo:1",
+    }
+    assert calls[8][1] == {
+        "id": "f_demo",
+        "expected_revision": 2,
+        "expected_etag": "f_demo:2",
+    }
+    assert calls[9][1] == {"id": "f_demo"}
+    assert calls[10][1] == {"id": "f_demo", "expected_revision": 2}
+    assert calls[11][1] == {
+        "document": document,
+        "operation": {"type": "add_member", "member": {"id": "reviewer"}},
+        "expected_catalog_snapshot_id": "snap-1",
+    }
+    assert calls[12][1] == {"document": document}
+    assert calls[13][1] == {"document": document, "execute": False}
+
+
+@pytest.mark.asyncio
+async def test_mobpack_authoring_optional_params_omitted():
+    """Optional guards must not leak into params when not provided."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/mobpacks/validate": _mobpack_validation_payload(),
+        "mobkit/mobpacks/delete": {
+            "source": "mobkit/mobpacks/delete",
+            "store_path": "/tmp/drafts.json",
+            "id": "f_demo",
+            "deleted": False,
+            "rows": [],
+        },
+    })
+
+    await handle.mobpack_validate({"mob_id": "demo"})
+    await handle.mobpack_delete("f_demo")
+
+    assert calls[0][1] == {"document": {"mob_id": "demo"}}
+    assert calls[1][1] == {"id": "f_demo"}
+
+
+@pytest.mark.asyncio
+async def test_mobpack_undo_not_stepped_carries_reason():
+    """When the history is empty, undo reports stepped=False with a reason
+    and leaves the draft row untouched."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/mobpacks/undo": {
+            "source": "mobkit/mobpacks/undo",
+            "store_path": "/tmp/drafts.json",
+            "stepped": False,
+            "reason": "nothing to undo",
+            "row": _mobpack_draft_row_payload(revision=1),
+            "rows": [_mobpack_draft_row_payload(revision=1)],
+        },
+    })
+
+    result = await handle.mobpack_undo("f_demo")
+    assert calls[0][0] == "mobkit/mobpacks/undo"
+    assert calls[0][1] == {"id": "f_demo"}
+    assert result.stepped is False
+    assert result.reason == "nothing to undo"
+    assert result.row.revision == 1
+    assert result.row.can_undo is False
+
+
 @pytest.mark.asyncio
 async def test_send_with_attachments_uses_multipart(monkeypatch):
     from meerkat_mobkit import runtime as runtime_module

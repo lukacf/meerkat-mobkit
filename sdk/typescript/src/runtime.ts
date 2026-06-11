@@ -81,6 +81,18 @@ import {
   parseMobpackAgentDefinitionsResult,
   parseMobpackTemplatesResult,
   parseMobpackCatalogsResult,
+  parseMobpackValidationResult,
+  parseMobpackSourceResult,
+  parseMobpackExportResult,
+  parseMobpackImportResult,
+  parseMobpackDraftListResult,
+  parseMobpackDraftGetResult,
+  parseMobpackDraftSaveResult,
+  parseMobpackDraftDeleteResult,
+  parseMobpackDraftHistoryResult,
+  parseMobpackApplyOperationResult,
+  parseMobpackDeployCommandResult,
+  parseMobpackDeployResult,
   eventQueryToDict,
   parseIdentityStatus,
   parseBlobGetResult,
@@ -121,6 +133,18 @@ import {
   type MobpackAgentDefinitionsResult,
   type MobpackTemplatesResult,
   type MobpackCatalogsResult,
+  type MobpackValidationResult,
+  type MobpackSourceResult,
+  type MobpackExportResult,
+  type MobpackImportResult,
+  type MobpackDraftListResult,
+  type MobpackDraftGetResult,
+  type MobpackDraftSaveResult,
+  type MobpackDraftDeleteResult,
+  type MobpackDraftHistoryResult,
+  type MobpackApplyOperationResult,
+  type MobpackDeployCommandResult,
+  type MobpackDeployResult,
   type EventQuery,
   type IdentityStatus,
   type BlobGetResult,
@@ -198,6 +222,49 @@ export type BlobUploadSource = Blob | BlobUploadInput;
 export interface SendMessageOptions {
   readonly attachments?: readonly BlobUploadSource[];
   readonly handlingMode?: "queue" | "steer";
+}
+
+/** Input alternatives for {@link MobHandle.mobpackImport}. */
+export interface MobpackImportOptions {
+  readonly mobToml?: string;
+  readonly contentBase64?: string;
+  readonly document?: Record<string, unknown>;
+  readonly sourceName?: string;
+}
+
+/** Options for {@link MobHandle.mobpackCreate}. */
+export interface MobpackCreateOptions {
+  readonly template?: string;
+  readonly name?: string;
+  readonly trigger?: string;
+}
+
+/** Options for {@link MobHandle.mobpackSave}. */
+export interface MobpackSaveOptions {
+  readonly validation?: Record<string, unknown>;
+  readonly stage?: string;
+  readonly expectedRevision?: number;
+  readonly expectedEtag?: string;
+}
+
+/** Options for {@link MobHandle.mobpackUndo} and {@link MobHandle.mobpackRedo}. */
+export interface MobpackHistoryOptions {
+  readonly expectedRevision?: number;
+  readonly expectedEtag?: string;
+}
+
+function mobpackHistoryParams(
+  draftId: string,
+  options?: MobpackHistoryOptions,
+): Record<string, unknown> {
+  const params: Record<string, unknown> = { id: draftId };
+  if (options?.expectedRevision !== undefined) {
+    params.expected_revision = options.expectedRevision;
+  }
+  if (options?.expectedEtag !== undefined) {
+    params.expected_etag = options.expectedEtag;
+  }
+  return params;
 }
 
 interface NormalizedBlobUpload {
@@ -630,6 +697,181 @@ export class MobHandle {
   async mobpackCatalogs(): Promise<MobpackCatalogsResult> {
     return parseMobpackCatalogsResult(
       await this._runtime._rpc("mobkit/mobpacks/catalogs"),
+    );
+  }
+
+  // -- Mobpack authoring ----------------------------------------------------
+
+  /** Validate a mobpack authoring document. */
+  async mobpackValidate(
+    document: Record<string, unknown>,
+    rkatValidate?: boolean,
+  ): Promise<MobpackValidationResult> {
+    const params: Record<string, unknown> = { document };
+    if (rkatValidate !== undefined) params.rkat_validate = rkatValidate;
+    return parseMobpackValidationResult(
+      await this._runtime._rpc("mobkit/mobpacks/validate", params),
+    );
+  }
+
+  /** Render the deployable source files (mob.toml etc.) for a document. */
+  async mobpackSource(
+    document: Record<string, unknown>,
+  ): Promise<MobpackSourceResult> {
+    return parseMobpackSourceResult(
+      await this._runtime._rpc("mobkit/mobpacks/source", { document }),
+    );
+  }
+
+  /** Export a mobpack document as a base64-encoded archive. */
+  async mobpackExport(
+    document: Record<string, unknown>,
+  ): Promise<MobpackExportResult> {
+    return parseMobpackExportResult(
+      await this._runtime._rpc("mobkit/mobpacks/export", { document }),
+    );
+  }
+
+  /** Import a mob.toml, mobpack archive, or editor document. */
+  async mobpackImport(
+    options: MobpackImportOptions,
+  ): Promise<MobpackImportResult> {
+    const params: Record<string, unknown> = {};
+    if (options.mobToml !== undefined) params.mob_toml = options.mobToml;
+    if (options.contentBase64 !== undefined) {
+      params.content_base64 = options.contentBase64;
+    }
+    if (options.document !== undefined) params.document = options.document;
+    if (options.sourceName !== undefined) {
+      params.source_name = options.sourceName;
+    }
+    return parseMobpackImportResult(
+      await this._runtime._rpc("mobkit/mobpacks/import", params),
+    );
+  }
+
+  /** List mobpack draft registry rows. */
+  async mobpackList(): Promise<MobpackDraftListResult> {
+    return parseMobpackDraftListResult(
+      await this._runtime._rpc("mobkit/mobpacks/list", {}),
+    );
+  }
+
+  /** Fetch a single mobpack draft registry row by id. */
+  async mobpackGet(draftId: string): Promise<MobpackDraftGetResult> {
+    return parseMobpackDraftGetResult(
+      await this._runtime._rpc("mobkit/mobpacks/get", { id: draftId }),
+    );
+  }
+
+  /** Create a new mobpack draft from a starter template. */
+  async mobpackCreate(
+    options?: MobpackCreateOptions,
+  ): Promise<MobpackDraftSaveResult> {
+    const params: Record<string, unknown> = {};
+    if (options?.template !== undefined) params.template = options.template;
+    if (options?.name !== undefined) params.name = options.name;
+    if (options?.trigger !== undefined) params.trigger = options.trigger;
+    return parseMobpackDraftSaveResult(
+      await this._runtime._rpc("mobkit/mobpacks/create", params),
+    );
+  }
+
+  /** Save a mobpack draft, optionally guarded by revision/etag. */
+  async mobpackSave(
+    draftId: string,
+    document: Record<string, unknown>,
+    options?: MobpackSaveOptions,
+  ): Promise<MobpackDraftSaveResult> {
+    const params: Record<string, unknown> = { id: draftId, document };
+    if (options?.validation !== undefined) {
+      params.validation = options.validation;
+    }
+    if (options?.stage !== undefined) params.stage = options.stage;
+    if (options?.expectedRevision !== undefined) {
+      params.expected_revision = options.expectedRevision;
+    }
+    if (options?.expectedEtag !== undefined) {
+      params.expected_etag = options.expectedEtag;
+    }
+    return parseMobpackDraftSaveResult(
+      await this._runtime._rpc("mobkit/mobpacks/save", params),
+    );
+  }
+
+  /** Delete a mobpack draft, optionally guarded by revision. */
+  async mobpackDelete(
+    draftId: string,
+    expectedRevision?: number,
+  ): Promise<MobpackDraftDeleteResult> {
+    const params: Record<string, unknown> = { id: draftId };
+    if (expectedRevision !== undefined) {
+      params.expected_revision = expectedRevision;
+    }
+    return parseMobpackDraftDeleteResult(
+      await this._runtime._rpc("mobkit/mobpacks/delete", params),
+    );
+  }
+
+  /** Step a mobpack draft one entry back in its undo history. */
+  async mobpackUndo(
+    draftId: string,
+    options?: MobpackHistoryOptions,
+  ): Promise<MobpackDraftHistoryResult> {
+    return parseMobpackDraftHistoryResult(
+      await this._runtime._rpc(
+        "mobkit/mobpacks/undo",
+        mobpackHistoryParams(draftId, options),
+      ),
+    );
+  }
+
+  /** Step a mobpack draft one entry forward in its redo history. */
+  async mobpackRedo(
+    draftId: string,
+    options?: MobpackHistoryOptions,
+  ): Promise<MobpackDraftHistoryResult> {
+    return parseMobpackDraftHistoryResult(
+      await this._runtime._rpc(
+        "mobkit/mobpacks/redo",
+        mobpackHistoryParams(draftId, options),
+      ),
+    );
+  }
+
+  /** Apply a structured authoring operation to a mobpack document. */
+  async mobpackApplyOperation(
+    document: Record<string, unknown>,
+    operation: Record<string, unknown>,
+    expectedCatalogSnapshotId?: string,
+  ): Promise<MobpackApplyOperationResult> {
+    const params: Record<string, unknown> = { document, operation };
+    if (expectedCatalogSnapshotId !== undefined) {
+      params.expected_catalog_snapshot_id = expectedCatalogSnapshotId;
+    }
+    return parseMobpackApplyOperationResult(
+      await this._runtime._rpc("mobkit/mobpacks/apply_operation", params),
+    );
+  }
+
+  /** Preview the rkat mob deploy command for a mobpack document. */
+  async mobpackDeployCommand(
+    document: Record<string, unknown>,
+  ): Promise<MobpackDeployCommandResult> {
+    return parseMobpackDeployCommandResult(
+      await this._runtime._rpc("mobkit/mobpacks/deploy_command", { document }),
+    );
+  }
+
+  /** Plan (and optionally execute) a mobpack deploy on the host. */
+  async mobpackDeploy(
+    document: Record<string, unknown>,
+    execute?: boolean,
+  ): Promise<MobpackDeployResult> {
+    const params: Record<string, unknown> = { document };
+    if (execute !== undefined) params.execute = execute;
+    return parseMobpackDeployResult(
+      await this._runtime._rpc("mobkit/mobpacks/deploy", params),
     );
   }
 

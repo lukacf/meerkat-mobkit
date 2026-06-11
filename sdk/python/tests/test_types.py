@@ -20,10 +20,23 @@ from meerkat_mobkit.types import (
     MemoryQueryResult,
     MemoryStoreInfo,
     MobpackAgentDefinitionsResult,
+    MobpackApplyOperationResult,
     MobpackCatalogsResult,
+    MobpackDeployCommandResult,
+    MobpackDeployResult,
+    MobpackDraftDeleteResult,
+    MobpackDraftGetResult,
+    MobpackDraftHistoryResult,
+    MobpackDraftListResult,
+    MobpackDraftRow,
+    MobpackDraftSaveResult,
+    MobpackExportResult,
+    MobpackImportResult,
     MobpackSkillsCatalogResult,
+    MobpackSourceResult,
     MobpackTemplatesResult,
     MobpackToolsCatalogResult,
+    MobpackValidationResult,
     PersistedEvent,
     ReconcileEdgesReport,
     ReconcileResult,
@@ -203,6 +216,266 @@ class TestMobpackEditorCatalogResults:
         assert catalogs.tool_catalog == [{"id": "shell"}]
         assert catalogs.models[0].display_name == "GPT-5"
         assert catalogs.provider_defaults[0].default_model_id == "gpt-5"
+
+
+class TestMobpackAuthoringResults:
+    def test_validation_result_from_dict(self):
+        validation = MobpackValidationResult.from_dict({
+            "ok": False,
+            "diagnostics": [{
+                "severity": "error",
+                "code": "missing_member",
+                "message": "no members defined",
+                "path": "members",
+            }],
+            "display_rows": [{
+                "kind": "crit",
+                "glyph": "!",
+                "head": "invalid mobpack",
+                "sub": "no members defined",
+                "meta": "members",
+            }],
+            "mob_id": "demo",
+            "flow_ids": ["flow_a"],
+            "validation_source": "mobkit/mobpacks/validate",
+            "deploy_command": "rkat mob deploy",
+        })
+        assert validation.ok is False
+        assert validation.diagnostics[0].severity == "error"
+        assert validation.diagnostics[0].code == "missing_member"
+        assert validation.diagnostics[0].path == "members"
+        assert validation.display_rows[0].kind == "crit"
+        assert validation.display_rows[0].glyph == "!"
+        assert validation.mob_id == "demo"
+        assert validation.flow_ids == ["flow_a"]
+        assert validation.deploy_command == "rkat mob deploy"
+
+    def test_validation_result_defaults(self):
+        validation = MobpackValidationResult.from_dict({"ok": True})
+        assert validation.ok is True
+        assert validation.diagnostics == []
+        assert validation.display_rows == []
+        assert validation.mob_id is None
+        assert validation.flow_ids == []
+
+    def test_source_and_export_results_from_dict(self):
+        source = MobpackSourceResult.from_dict({
+            "filename": "demo.mobpack",
+            "media_type": "application/vnd.meerkat.mobpack",
+            "mob_toml": "[mob]\n",
+            "source_files": [{
+                "path": "mob.toml",
+                "media_type": "text/x-toml",
+                "size_bytes": 7,
+                "content_base64": "W21vYl0K",
+                "sha256": "abc",
+                "text": "[mob]\n",
+            }],
+            "validation": {"ok": True},
+            "source": "mobkit/mobpacks/source",
+        })
+        assert source.filename == "demo.mobpack"
+        assert source.source_files[0].path == "mob.toml"
+        assert source.source_files[0].size_bytes == 7
+        assert source.source_files[0].text == "[mob]\n"
+        assert source.validation.ok is True
+
+        export = MobpackExportResult.from_dict({
+            "filename": "demo.mobpack",
+            "media_type": "application/vnd.meerkat.mobpack",
+            "content_base64": "UEsDBA==",
+            "mob_toml": "[mob]\n",
+            "source_files": [],
+            "validation": {"ok": True},
+        })
+        assert export.content_base64 == "UEsDBA=="
+        assert export.validation.ok is True
+
+    def test_import_result_from_dict(self):
+        imported = MobpackImportResult.from_dict({
+            "document": {"mob_id": "demo"},
+            "validation": {"ok": True},
+            "source": "mobkit/mobpacks/import:archive",
+            "source_label": "demo.mobpack",
+            "source_media_type": "application/vnd.meerkat.mobpack",
+        })
+        assert imported.document == {"mob_id": "demo"}
+        assert imported.source == "mobkit/mobpacks/import:archive"
+        assert imported.source_label == "demo.mobpack"
+
+    def test_draft_row_and_registry_results_from_dict(self):
+        row_payload = {
+            "id": "f_demo",
+            "name": "Demo",
+            "version": "mobpack.editor.v1",
+            "stage": "draft",
+            "trigger": "MobKit authoring draft",
+            "source": "mobkit/mobpacks/create",
+            "revision": 3,
+            "etag": "f_demo:3",
+            "updated_at_unix_ms": 1700000000000,
+            "document": {"mob_id": "demo"},
+            "validation": {"ok": True},
+            "can_undo": True,
+            "can_redo": False,
+        }
+        row = MobpackDraftRow.from_dict(row_payload)
+        assert row.id == "f_demo"
+        assert row.stage == "draft"
+        assert row.revision == 3
+        assert row.etag == "f_demo:3"
+        assert row.document == {"mob_id": "demo"}
+        assert row.validation == {"ok": True}
+        assert row.can_undo is True
+        assert row.can_redo is False
+
+        bare_row = MobpackDraftRow.from_dict({"id": "f_old"})
+        assert bare_row.can_undo is None
+        assert bare_row.can_redo is None
+
+        listed = MobpackDraftListResult.from_dict({
+            "source": "mobkit/mobpacks/list",
+            "store_path": "/tmp/drafts.json",
+            "runtime_backed": True,
+            "rows": [row_payload],
+        })
+        assert listed.store_path == "/tmp/drafts.json"
+        assert listed.runtime_backed is True
+        assert listed.rows[0].id == "f_demo"
+
+        got = MobpackDraftGetResult.from_dict({
+            "source": "mobkit/mobpacks/get",
+            "runtime_backed": True,
+            "row": row_payload,
+        })
+        assert got.store_path is None
+        assert got.row.revision == 3
+
+        saved = MobpackDraftSaveResult.from_dict({
+            "source": "mobkit/mobpacks/save",
+            "store_path": "/tmp/drafts.json",
+            "row": row_payload,
+            "rows": [row_payload],
+        })
+        assert saved.row.id == "f_demo"
+        assert len(saved.rows) == 1
+
+        deleted = MobpackDraftDeleteResult.from_dict({
+            "source": "mobkit/mobpacks/delete",
+            "store_path": "/tmp/drafts.json",
+            "id": "f_demo",
+            "deleted": True,
+            "rows": [],
+        })
+        assert deleted.id == "f_demo"
+        assert deleted.deleted is True
+        assert deleted.rows == []
+
+    def test_draft_history_result_from_dict(self):
+        row_payload = {
+            "id": "f_demo",
+            "name": "Demo",
+            "stage": "draft",
+            "revision": 4,
+            "etag": "f_demo:4",
+            "document": {"mob_id": "demo"},
+            "validation": {"ok": True},
+            "can_undo": False,
+            "can_redo": True,
+        }
+        stepped = MobpackDraftHistoryResult.from_dict({
+            "source": "mobkit/mobpacks/undo",
+            "store_path": "/tmp/drafts.json",
+            "stepped": True,
+            "row": row_payload,
+            "rows": [row_payload],
+        })
+        assert stepped.source == "mobkit/mobpacks/undo"
+        assert stepped.store_path == "/tmp/drafts.json"
+        assert stepped.stepped is True
+        assert stepped.reason is None
+        assert stepped.row.revision == 4
+        assert stepped.row.can_undo is False
+        assert stepped.row.can_redo is True
+        assert stepped.rows[0].id == "f_demo"
+
+        blocked = MobpackDraftHistoryResult.from_dict({
+            "source": "mobkit/mobpacks/redo",
+            "store_path": "/tmp/drafts.json",
+            "stepped": False,
+            "reason": "nothing to redo",
+            "row": row_payload,
+            "rows": [row_payload],
+        })
+        assert blocked.stepped is False
+        assert blocked.reason == "nothing to redo"
+        assert blocked.row.etag == "f_demo:4"
+
+    def test_apply_operation_result_from_dict(self):
+        applied = MobpackApplyOperationResult.from_dict({
+            "source": "mobkit/mobpacks/apply_operation",
+            "operation": "add_member",
+            "ok": True,
+            "document": {"mob_id": "demo", "members": [{"id": "reviewer"}]},
+            "selection": {"kind": "agent", "id": "reviewer"},
+            "validation": {"ok": True},
+        })
+        assert applied.operation == "add_member"
+        assert applied.ok is True
+        assert applied.selection == {"kind": "agent", "id": "reviewer"}
+        assert applied.validation.ok is True
+
+    def test_apply_operation_result_null_selection(self):
+        applied = MobpackApplyOperationResult.from_dict({
+            "source": "mobkit/mobpacks/apply_operation",
+            "operation": "delete_member",
+            "ok": True,
+            "document": {"mob_id": "demo"},
+            "selection": None,
+            "validation": {"ok": True},
+        })
+        assert applied.selection is None
+
+    def test_deploy_results_from_dict(self):
+        preview = MobpackDeployCommandResult.from_dict({
+            "command": "rkat mob deploy demo.mobpack",
+            "argv": ["rkat", "mob", "deploy", "demo.mobpack"],
+            "deploy_command": "rkat mob deploy",
+            "filename": "demo.mobpack",
+            "validation": {"ok": True},
+            "source": "meerkat_mobkit::mobpack::deploy_argv",
+        })
+        assert preview.command == "rkat mob deploy demo.mobpack"
+        assert preview.argv == ["rkat", "mob", "deploy", "demo.mobpack"]
+        assert preview.deploy_command == "rkat mob deploy"
+
+        deployed = MobpackDeployResult.from_dict({
+            "filename": "demo.mobpack",
+            "pack_path": "/tmp/demo.mobpack",
+            "pack_sha256": "deadbeef",
+            "command": "rkat mob deploy /tmp/demo.mobpack",
+            "argv": ["rkat", "mob", "deploy", "/tmp/demo.mobpack"],
+            "plan_trace": [{"step": "validate"}],
+            "executed": True,
+            "success": True,
+            "status_code": 0,
+            "stdout": "deployed",
+            "validation": {"ok": True},
+            "display_rows": [{
+                "kind": "ok",
+                "glyph": "✓",
+                "head": "deploy executed",
+                "sub": "deployed",
+                "meta": "/tmp/demo.mobpack",
+            }],
+        })
+        assert deployed.executed is True
+        assert deployed.success is True
+        assert deployed.status_code == 0
+        assert deployed.stdout == "deployed"
+        assert deployed.stderr is None
+        assert deployed.plan_trace == [{"step": "validate"}]
+        assert deployed.display_rows[0].head == "deploy executed"
 
 
 class TestReconcileResult:
