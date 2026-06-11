@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node build.cjs",
     "test:dist-freshness": "node build.cjs --check",
-    "test:controller": "node build.cjs --check && npm run typecheck --silent && node build.cjs --test-bundle && node test/source-contract.test.cjs && node test/controller-export-keys.test.cjs && node test/controller-projection.test.cjs",
+    "test:controller": "node build.cjs --check && npm run typecheck --silent && node build.cjs --test-bundle && node test/source-contract.test.cjs && node test/package-boundaries.test.cjs && node test/controller-export-keys.test.cjs && node test/controller-projection.test.cjs",
     "test:handoff-contract": "node test/handoff-visual-contract.test.cjs",
     "test:visual-contract": "node test/handoff-visual-contract.test.cjs",
     "test:browser-source": "node test/browser-source-smoke.cjs",

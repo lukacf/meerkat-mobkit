@@ -128,7 +128,13 @@ The standalone binary is a token-less local tool: it binds `127.0.0.1` by defaul
 
 ## Development
 
-The editor frontend lives in `flow-editor/` (React, bundled with esbuild). `npm run build` regenerates both `flow-editor/dist` and `meerkat-mobkit/flow-editor-dist`, which the Rust crate embeds via `include_str!`; `node build.cjs --check` fails when the embedded dist is stale.
+The editor frontend is split across three workspaces:
+
+- `flow-editor/` — the shell: the `src/app.tsx` entry, boot data, CSS, the esbuild pipeline (`build.cjs`), and the test lanes.
+- `packages/flow-editor-core/` — the headless controller plane (`@flow-editor-core`): framework-free projection/transition logic plus `createMobKitFlowController`, which assembles the `window.MobKitFlowController` facade the views call.
+- `packages/flow-editor-components/` — the React views (`@flow-editor-components`).
+
+`build.cjs` resolves the `@flow-editor-core` / `@flow-editor-components` aliases to the package sources and bundles `app.tsx` into a single `flow-editor.js` IIFE (React stays external, provided by `react-globals.js` as window globals). `npm run build` regenerates both `flow-editor/dist` and `meerkat-mobkit/flow-editor-dist`, which the Rust crate embeds via `include_str!`; `node build.cjs --check` fails when the embedded dist is stale.
 
 ```bash
 cd flow-editor
@@ -136,13 +142,15 @@ npm run build   # rebuild dist + the embedded flow-editor-dist
 npm run dev     # static dev server at http://127.0.0.1:4190/flow-editor
 ```
 
-The dev server serves `flow-editor/dist` and re-reads files on every request — rebuild after editing `src/` and refresh. Set `MOBKIT_FLOW_EDITOR_RPC_URL` to a real `/flow-editor/rpc` endpoint to proxy RPC calls; without it, RPC requests return an explanatory error.
+The dev server serves `flow-editor/dist` and re-reads files on every request — rebuild after editing the shell or packages and refresh. Set `MOBKIT_FLOW_EDITOR_RPC_URL` to a real `/flow-editor/rpc` endpoint to proxy RPC calls; without it, RPC requests return an explanatory error.
 
 ```bash
-make test-flow-editor              # dist freshness, controller, visual, and browser contracts
+make test-flow-editor              # dist freshness, typecheck, source/boundary contracts, facade key parity, projection suite, visual + browser contracts
 make test-flow-editor-rkat         # live export/import checks against rkat mob inspect/validate
 make test-flow-editor-rkat-deploy  # live checks including rkat mob deploy
 ```
+
+`npm run typecheck` covers both packages and the shell; `test/package-boundaries.test.cjs` keeps `@flow-editor-core` window/React/DOM-free and `@flow-editor-components` network-free; `test/controller-export-keys.test.cjs` pins the facade's 380-key manifest.
 
 ## See also
 
