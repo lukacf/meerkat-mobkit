@@ -213,6 +213,7 @@ export interface ConsoleUiConfig {
 
 export interface ConsolePolicyConfig {
   fetch_timeout_ms?: number;
+  read_only?: boolean;
 }
 
 export interface ConsoleTopologyNode {
@@ -306,6 +307,47 @@ export interface ConsoleExperience {
     title?: string;
     live_snapshot?: ConsoleHealthSnapshot;
   }>;
+  access?: ConsoleAccessSection;
+}
+
+/// Per-caller access standing, projected by `/console/experience` when an
+/// access controller is wired on the runtime.
+export interface ConsoleAccessSection {
+  available?: boolean;
+  enabled?: boolean;
+  subject?: string | null;
+  groups?: string[];
+  can_administer?: boolean;
+}
+
+export interface ConsoleAccessStatus extends ConsoleAccessSection {
+  revision?: number;
+  is_admin?: boolean;
+  actions?: string[];
+}
+
+export interface ConsoleAccessRule {
+  id: string;
+  description?: string;
+  effect?: "allow" | "deny";
+  subjects?: string[];
+  groups?: string[];
+  actions: string[];
+  agents?: string[];
+  roles?: string[];
+  match_labels?: Record<string, string>;
+}
+
+export interface ConsoleAccessGroup {
+  description?: string;
+  members?: string[];
+}
+
+export interface ConsoleAccessConfig {
+  enabled?: boolean;
+  admins?: string[];
+  groups?: Record<string, ConsoleAccessGroup>;
+  rules?: ConsoleAccessRule[];
 }
 
 export interface ConsoleModulesResponse {

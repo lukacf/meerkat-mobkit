@@ -321,6 +321,33 @@ fn console_experience_projects_fetch_timeout_policy() {
 }
 
 #[test]
+fn console_experience_projects_read_only_policy_and_capabilities() {
+    let state = decision_state_with_console_policy(ConsolePolicy {
+        require_app_auth: true,
+        read_only: true,
+        ..ConsolePolicy::default()
+    });
+    let response = handle_console_rest_json_route(
+        &state,
+        &ConsoleRestJsonRequest {
+            method: "GET".to_string(),
+            path: "/console/experience".to_string(),
+            auth: Some(ConsoleAccessRequest {
+                provider: AuthProvider::GoogleOAuth,
+                email: "alice@example.com".to_string(),
+            }),
+        },
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body["console_policy"]["read_only"], json!(true));
+    assert_eq!(
+        response.body["runtime_capabilities"]["can_send_messages"],
+        json!(false)
+    );
+}
+
+#[test]
 fn console_experience_projects_durable_identity_for_runtime_member_rows() {
     let state = decision_state(false);
     let runtime_snapshot = ConsoleLiveSnapshot::new(

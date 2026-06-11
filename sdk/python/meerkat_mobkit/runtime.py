@@ -276,6 +276,8 @@ class MobKitRuntime:
         runtime_options: dict[str, Any] = {}
         if self._config.gating_config_path:
             runtime_options["gating_config_path"] = self._config.gating_config_path
+        if self._config.access_config_path:
+            runtime_options["access_config_path"] = self._config.access_config_path
         if self._config.routing_config_path:
             runtime_options["routing_config_path"] = self._config.routing_config_path
         if self._config.scheduling_files:
@@ -286,6 +288,8 @@ class MobKitRuntime:
             runtime_options["auth_config"] = _serialize_config(self._config.auth_config)
         if self._config.event_log:
             runtime_options["event_log"] = _serialize_config(self._config.event_log)
+        if self._config.console_read_only is not None:
+            runtime_options["console_read_only"] = self._config.console_read_only
         if self._config.console_fetch_timeout_ms is not None:
             runtime_options["console_fetch_timeout_ms"] = (
                 self._config.console_fetch_timeout_ms

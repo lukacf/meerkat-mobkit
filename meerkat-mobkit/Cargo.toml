@@ -75,6 +75,10 @@ path = "../examples/001-incident-command-center-pack/server.rs"
 name = "mdm_mob_target"
 path = "../examples/004-mdm-console-pack/target.rs"
 
+[[example]]
+name = "access_control_console"
+path = "../examples/005-access-control-pack/server.rs"
+
 [dev-dependencies]
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

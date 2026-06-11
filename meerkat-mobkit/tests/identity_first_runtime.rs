@@ -6494,6 +6494,20 @@ async fn identity_first_runtime_topology_claims_persisted_wires_without_rebatchi
             Ok(())
         }
 
+        async fn wire_peers_batch(
+            &self,
+            edges: &[(AgentRuntimeId, AgentRuntimeId)],
+        ) -> Result<(), BridgeError> {
+            for (a, b) in edges {
+                self.wire_peer(a, b).await?;
+                self.current_wires
+                    .lock()
+                    .await
+                    .push((a.as_str().to_string(), b.as_str().to_string()));
+            }
+            Ok(())
+        }
+
         async fn unwire_peer(
             &self,
             a: &AgentRuntimeId,
@@ -6574,6 +6588,22 @@ async fn identity_first_runtime_topology_claims_persisted_wires_without_rebatchi
     assert!(
         bridge.wires.lock().await.is_empty(),
         "persisted wires should be claimed as managed without re-sending a batch"
+    );
+
+    bridge.current_wires.lock().await.clear();
+    restore_flow(
+        &runtime,
+        &roster,
+        Some(&StaticTopology(vec![("a:main", "b:main")])),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        bridge.wires.lock().await.as_slice(),
+        &[("rt:a:main:0".to_string(), "rt:b:main:0".to_string())],
+        "managed edges missing from the live wire snapshot should be retried"
     );
 
     restore_flow(&runtime, &roster, Some(&StaticTopology(Vec::new())), None)

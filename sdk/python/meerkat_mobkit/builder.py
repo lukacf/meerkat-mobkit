@@ -16,8 +16,10 @@ class MobKitBuilderConfig:
     pre_spawn_callback: Any | None = None
     error_callback: Any | None = None
     event_log: Any | None = None
+    console_read_only: bool | None = None
     console_fetch_timeout_ms: int | None = None
     gating_config_path: str | None = None
+    access_config_path: str | None = None
     routing_config_path: str | None = None
     scheduling_files: list[str] = field(default_factory=list)
     memory_config: Any | None = None
@@ -108,6 +110,17 @@ class MobKitBuilder:
         self._config.gating_config_path = config_path
         return self
 
+    def access_control(self, config_path: str) -> MobKitBuilder:
+        """Enable ABAC access control backed by a TOML file.
+
+        Conventionally ``config/access.toml`` (auto-discovered when present).
+        A missing file starts disabled; console admin edits persist back to
+        the same path. Without this (and without a conventional
+        ``config/access.toml``) access control is off entirely.
+        """
+        self._config.access_config_path = config_path
+        return self
+
     def routing(self, config_path: str) -> MobKitBuilder:
         self._config.routing_config_path = config_path
         return self
@@ -135,6 +148,10 @@ class MobKitBuilder:
         if not isinstance(timeout_ms, int) or timeout_ms <= 0:
             raise ValueError("console_fetch_timeout_ms must be a positive integer")
         self._config.console_fetch_timeout_ms = timeout_ms
+        return self
+
+    def console_read_only(self, read_only: bool = True) -> MobKitBuilder:
+        self._config.console_read_only = bool(read_only)
         return self
 
     def implicit_delegate_idle_retirement(
@@ -243,6 +260,7 @@ class MobKitBuilder:
 
         Convention (relative to cwd):
         - config/gating.toml → gating config
+        - config/access.toml → ABAC access control config
         - config/defaults/schedules.toml → default schedules
         - deployment/routing.toml → routing config
         - deployment/schedules.toml → deployment schedule overrides
@@ -254,6 +272,11 @@ class MobKitBuilder:
             candidate = Path("config/gating.toml")
             if candidate.is_file():
                 self._config.gating_config_path = str(candidate)
+
+        if self._config.access_config_path is None:
+            candidate = Path("config/access.toml")
+            if candidate.is_file():
+                self._config.access_config_path = str(candidate)
 
         if self._config.routing_config_path is None:
             candidate = Path("deployment/routing.toml")

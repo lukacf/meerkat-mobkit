@@ -62,6 +62,23 @@ Current HTTP routes to remember:
 
 Console projection is contract-boundary code. Prefer changing `console_aggregator`, `http_console`, `console/src/lib/adapters.ts`, or `packages/console-core` rather than leaking raw runtime text into React components.
 
+## Access Control (ABAC)
+
+Optional attribute-based access control for console and SSE surfaces lives in `meerkat-mobkit/src/access/` (model, engine, controller). Deny-by-default with deny-overrides when enabled; `admins` bypass rules; a disabled config (or absent controller) changes nothing.
+
+Key facts:
+
+- Opt-in via `config/access.toml` (mobkit_gateway conventional discovery), `UnifiedRuntimeBuilder::access_control_file`, `runtime.set_access_controller(...)`, or rpc_gateway `runtime_options.access_config_path` (TS SDK: `.accessControl(path)`, Python SDK: `.access_control(path)`; both auto-discover `config/access.toml`).
+- Actions vocabulary: `agent.view/send/spawn/respawn/retire/reset`, `gating.view/decide`, `mob.observe`, `runtime.admin`, `access.admin`.
+- Enforcement seams: experience filtering + affordance intersection in `runtime/console_ingress.rs` (`handle_console_rest_json_route_with_snapshot_and_access`), RPC gating + result filtering + `mobkit/access/*` admin methods in `http_console.rs` (`console_rpc_access_requirement`, `handle_access_admin_rpc`), SSE gating in `http_sse.rs` (`sse_access_context`).
+- `mob.observe` gates the whole-mob event surfaces (`/mob/events`, `/mobkit/mob_events/stream`, `mobkit/mob_events/query`/`subscribe`) but does NOT override per-agent `agent.view`: events are filtered per source/`agent_identity`, mob-level (unattributed) events flow on `mob.observe` alone. "Observe all" = `mob.observe` + `agent.view` on `*`.
+- `/blobs/{id}` is a capability surface (content-addressed `sha256:` ids, deduped across agents, no per-agent ACL) — authn + hash-unguessability, not an `agent.view` boundary.
+- Live config: `AccessController` (std RwLock + revision) persists TOML on every admin mutation; per-request `AccessView` snapshots; agent label/role attributes cached from roster projections so label selectors work on identity-only surfaces.
+- Console UI: `console/src/panels/AccessPanel.tsx`, nav kind `access` appears only when `experience.access.can_administer`.
+- Denials: JSON-RPC `-32030` with `data.kind = "access_denied"`, HTTP 403 on REST/SSE.
+- Anti-lockout invariant: enabling requires non-empty `admins`; validation lives in `access/model.rs`.
+- Tests: `meerkat-mobkit/tests/access_control.rs`, unit tests in `src/access/*`, console helper tests in `console/src/panels/AccessPanel.test.ts`. Docs: `docs/concepts/access-control.mdx`.
+
 ## Console Configuration
 
 The stock console can be shaped by `config/console.toml` in the conventional workspace layout. The runtime projects the parsed config through `GET /console/experience` as `console_config`, so embedders and the bundled React console share the same contract.

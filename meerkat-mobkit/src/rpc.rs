@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::console_aggregator::is_implicit_delegate_member;
+use crate::mob_handle_runtime::{topology_restore_failed_peer_ids, topology_restore_warning_json};
 use crate::runtime::{
     BigQuerySessionStoreAdapter, BigQuerySessionStoreError, ConsoleRestJsonRequest,
     ConsoleRestJsonResponse, DeliveryHistoryRequest, DeliverySendError, DeliverySendRequest,
@@ -2667,6 +2668,10 @@ async fn handle_unified_rpc_json_inner(
                     .await
                     {
                         Ok(live_result) => {
+                            let topology_restore_warning = live_result
+                                .get("topology_restore_warning")
+                                .filter(|warning| !warning.is_null())
+                                .cloned();
                             let live_session_id =
                                 live_result.get("session_id").and_then(Value::as_str);
                             if let Some(live_session_id) = live_session_id {
@@ -2680,7 +2685,7 @@ async fn handle_unified_rpc_json_inner(
                                         {
                                             Ok(updated_record) => {
                                                 record = updated_record;
-                                                None
+                                                topology_restore_warning
                                             }
                                             Err(err) => Some(serde_json::json!({
                                                 "kind": "identity_rebind_failed_after_member_respawn",
@@ -2700,7 +2705,7 @@ async fn handle_unified_rpc_json_inner(
                                     })),
                                 }
                             } else {
-                                None
+                                topology_restore_warning
                             }
                         }
                         Err(err) => Some(serde_json::json!({
@@ -4064,24 +4069,36 @@ async fn respawn_rpc_runtime_member_id(
     let handle = runtime.mob_handle();
     let member_id = meerkat_mob::ids::MeerkatId::from(runtime_member_id);
     let entry_before_respawn = handle.get_member(&member_id).await;
+    let mut topology_restore_warning = None;
     match handle.respawn(member_id.clone(), None).await {
         Ok(_receipt) => {}
-        Err(err) if mob_methods::lifecycle_archive_cleanup_completed(&err.to_string()) => {
-            if handle.get_member(&member_id).await.is_none()
-                && let Some(entry) = entry_before_respawn
-            {
-                let mut spec =
-                    meerkat_mob::SpawnMemberSpec::new(entry.role.clone(), member_id.clone());
-                if !entry.labels.is_empty() {
-                    spec = spec.with_labels(entry.labels.clone());
+        Err(err) => {
+            if let Some(failed_peer_ids) = topology_restore_failed_peer_ids(&err) {
+                tracing::warn!(
+                    member_id = %member_id,
+                    failed_peer_count = failed_peer_ids.len(),
+                    failed_peer_ids = ?failed_peer_ids,
+                    "rpc member respawn restored member with isolated peer edges; continuing degraded respawn"
+                );
+                topology_restore_warning = Some(topology_restore_warning_json(&failed_peer_ids));
+            } else if mob_methods::lifecycle_archive_cleanup_completed(&err.to_string()) {
+                if handle.get_member(&member_id).await.is_none()
+                    && let Some(entry) = entry_before_respawn
+                {
+                    let mut spec =
+                        meerkat_mob::SpawnMemberSpec::new(entry.role.clone(), member_id.clone());
+                    if !entry.labels.is_empty() {
+                        spec = spec.with_labels(entry.labels.clone());
+                    }
+                    handle
+                        .ensure_member(spec)
+                        .await
+                        .map_err(|ensure_err| ensure_err.to_string())?;
                 }
-                handle
-                    .ensure_member(spec)
-                    .await
-                    .map_err(|ensure_err| ensure_err.to_string())?;
+            } else {
+                return Err(err.to_string());
             }
         }
-        Err(err) => return Err(err.to_string()),
     }
     let session_id = handle
         .resolve_bridge_session_id_observation(&member_id)
@@ -4092,6 +4109,7 @@ async fn respawn_rpc_runtime_member_id(
         "session_id": session_id,
         "generation": Value::Null,
         "checkpoint_version": Value::Null,
+        "topology_restore_warning": topology_restore_warning,
     }))
 }
 

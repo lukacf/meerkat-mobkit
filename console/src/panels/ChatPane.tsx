@@ -25,6 +25,8 @@ interface ChatPaneProps {
   phase: "waiting" | "tool-executing" | "generating" | null;
   draft: string;
   sending: boolean;
+  readOnly?: boolean;
+  accessEnforcing?: boolean;
   staged: StagedAttachment[];
   onDraftChange: (value: string) => void;
   onStagedChange: React.Dispatch<React.SetStateAction<StagedAttachment[]>>;
@@ -481,6 +483,8 @@ export function ChatPane({
   phase,
   draft,
   sending,
+  readOnly = false,
+  accessEnforcing = false,
   staged,
   onDraftChange,
   onStagedChange,
@@ -563,13 +567,16 @@ export function ChatPane({
   const transcriptText = React.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
-  const canAttachImages = agent?.model_capabilities?.image_input === true;
+  const canAttachImages = !readOnly && agent?.model_capabilities?.image_input === true;
+  // Access control can grant view without send; `false` means the runtime
+  // explicitly withheld the send affordance. Unknown (absent) stays sendable.
+  const sendWithheld = accessEnforcing && agent?.affordances?.can_send_message === false;
   const [dragActive, setDragActive] = React.useState(false);
   const [attachmentError, setAttachmentError] = React.useState<string | null>(null);
   const resolvedDraftBlobRefs = React.useRef("");
 
   function addFiles(fileList: FileList | File[]) {
-    if (!canAttachImages) return;
+    if (readOnly || !canAttachImages) return;
     const files = dedupeComposerImageFiles(Array.from(fileList));
     const accepted: StagedAttachment[] = [];
     let error: string | null = null;
@@ -659,6 +666,9 @@ export function ChatPane({
   async function submitComposer() {
     if (staged.length > 0 && !canAttachImages) {
       setAttachmentError("model cannot see images");
+      return;
+    }
+    if (readOnly || sendWithheld) {
       return;
     }
     if (!draft.trim() && staged.length === 0) {
@@ -827,9 +837,18 @@ export function ChatPane({
             </div>
           )}
           <textarea
-            placeholder={`Message ${agentLabel}…`}
+            placeholder={
+              readOnly
+                ? "View-only console"
+                : sendWithheld
+                  ? `You can view ${agentLabel} but not message it`
+                  : `Message ${agentLabel}…`
+            }
             value={draft}
-            onChange={(e) => onDraftChange(e.target.value)}
+            disabled={readOnly || sendWithheld}
+            onChange={(e) => {
+              if (!readOnly && !sendWithheld) onDraftChange(e.target.value);
+            }}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitComposer(); } }}
             rows={2}
             data-testid={`chat-composer:${identity}`}
@@ -841,6 +860,8 @@ export function ChatPane({
               className="composer__send"
               disabled={
                 (!draft.trim() && staged.length === 0)
+                || readOnly
+                || sendWithheld
                 || (staged.length > 0 && !canAttachImages)
                 || (staged.length > 0 && sending)
               }
@@ -867,7 +888,9 @@ export function ChatPane({
           }} />
           <span>{state}</span>
           {phase && <><span>·</span><span style={{ color: "var(--accent)" }}>{phase}</span></>}
-          {!canAttachImages && <><span>·</span><span>model cannot see images</span></>}
+          {readOnly && <><span>·</span><span>view only</span></>}
+          {!readOnly && sendWithheld && <><span>·</span><span>send not permitted</span></>}
+          {!readOnly && !canAttachImages && <><span>·</span><span>model cannot see images</span></>}
           {attachmentError && <><span>·</span><span style={{ color: "var(--bad)" }}>{attachmentError}</span></>}
         </div>
       </div>

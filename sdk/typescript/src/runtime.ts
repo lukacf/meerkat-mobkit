@@ -373,9 +373,15 @@ export class MobKitRuntime {
     if (this._config.consoleConfigPath) {
       runtimeOptions.console_config_path = this._config.consoleConfigPath;
     }
+    if (this._config.accessConfigPath) {
+      runtimeOptions.access_config_path = this._config.accessConfigPath;
+    }
     if (this._config.consoleRequireAppAuth !== null) {
       runtimeOptions.console_require_app_auth =
         this._config.consoleRequireAppAuth;
+    }
+    if (this._config.consoleReadOnly !== null) {
+      runtimeOptions.console_read_only = this._config.consoleReadOnly;
     }
     if (this._config.consoleFetchTimeoutMs !== null) {
       runtimeOptions.console_fetch_timeout_ms =

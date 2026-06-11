@@ -212,6 +212,7 @@ export interface ConsoleUiConfig {
 
 export interface ConsolePolicyConfig {
   fetch_timeout_ms?: number;
+  read_only?: boolean;
 }
 
 export interface ConsoleTopologyNode {

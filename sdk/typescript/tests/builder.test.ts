@@ -96,11 +96,25 @@ describe("MobKitBuilder chainable methods", () => {
     assert.equal(builder._config.consoleConfigPath, "config/console.toml");
   });
 
+  it("accessControl() sets accessConfigPath and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.accessControl("config/access.toml");
+    assert.equal(result, builder);
+    assert.equal(builder._config.accessConfigPath, "config/access.toml");
+  });
+
   it("consoleAuthRequired() sets consoleRequireAppAuth and returns this", () => {
     const builder = MobKit.builder();
     const result = builder.consoleAuthRequired(false);
     assert.equal(result, builder);
     assert.equal(builder._config.consoleRequireAppAuth, false);
+  });
+
+  it("consoleReadOnly() sets consoleReadOnly and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.consoleReadOnly();
+    assert.equal(result, builder);
+    assert.equal(builder._config.consoleReadOnly, true);
   });
 
   it("consoleFetchTimeoutMs() sets consoleFetchTimeoutMs and returns this", () => {
@@ -247,6 +261,7 @@ describe("MobKitBuilder default config", () => {
     assert.equal(cfg.eventLog, null);
     assert.equal(cfg.consoleConfigPath, null);
     assert.equal(cfg.consoleRequireAppAuth, null);
+    assert.equal(cfg.consoleReadOnly, null);
     assert.equal(cfg.consoleFetchTimeoutMs, null);
     assert.equal(cfg.demoLlm, false);
     assert.equal(cfg.gatingConfigPath, null);
@@ -281,6 +296,17 @@ describe("MobKitBuilder convention defaults", () => {
     const builder = MobKit.builder();
     assert.deepEqual(builder._config.schedulingFiles, []);
   });
+
+  it("explicit accessControl overrides convention auto-discovery", () => {
+    // Convention defaults look for config/access.toml; an explicit
+    // accessControl() value must survive _applyConventionDefaults()
+    // regardless of whether the conventional file exists.
+    const builder = MobKit.builder()
+      .mob("config/mob.toml")
+      .accessControl("custom/access.toml");
+    (builder as any)._applyConventionDefaults();
+    assert.equal(builder._config.accessConfigPath, "custom/access.toml");
+  });
 });
 
 describe("MobKitBuilder method chaining", () => {
@@ -290,6 +316,7 @@ describe("MobKitBuilder method chaining", () => {
       .gateway("/bin/gw")
       .consoleConfig("console.toml")
       .consoleAuthRequired(false)
+      .consoleReadOnly(true)
       .consoleFetchTimeoutMs(120_000)
       .demoLlm()
       .gating("gating.toml")
@@ -304,6 +331,7 @@ describe("MobKitBuilder method chaining", () => {
     assert.equal(builder._config.gatewayBin, "/bin/gw");
     assert.equal(builder._config.consoleConfigPath, "console.toml");
     assert.equal(builder._config.consoleRequireAppAuth, false);
+    assert.equal(builder._config.consoleReadOnly, true);
     assert.equal(builder._config.consoleFetchTimeoutMs, 120_000);
     assert.equal(builder._config.demoLlm, true);
     assert.equal(builder._config.gatingConfigPath, "gating.toml");

@@ -33,7 +33,8 @@ export type MobKitDockTarget =
   | TimelinePanelTarget
   | RosterPanelTarget
   | GatesPanelTarget
-  | LogsPanelTarget;
+  | LogsPanelTarget
+  | AccessPanelTarget;
 
 export interface AgentChatTarget extends ConsoleDockTarget {
   kind: "agent-chat";
@@ -78,6 +79,10 @@ export interface GatesPanelTarget extends ConsoleDockTarget {
 
 export interface LogsPanelTarget extends ConsoleDockTarget {
   kind: "logs";
+}
+
+export interface AccessPanelTarget extends ConsoleDockTarget {
+  kind: "access";
 }
 
 export function buildPanelConversationKey(
@@ -148,7 +153,7 @@ export function buildInspectTarget(agent: ConsoleAgent): IdentityInspectTarget {
 
 export type ControlTargetKind =
   | "routing" | "gating" | "topology" | "health"
-  | "timeline" | "roster" | "gates" | "logs";
+  | "timeline" | "roster" | "gates" | "logs" | "access";
 
 export function buildControlTarget(kind: ControlTargetKind): MobKitDockTarget {
   switch (kind) {
@@ -168,6 +173,8 @@ export function buildControlTarget(kind: ControlTargetKind): MobKitDockTarget {
       return { id: "gating", kind: "gating", title: "Approvals", subtitle: "Pending approvals, audit, and policies", iconName: "i-bolt" };
     case "logs":
       return { id: "logs", kind, title: "Logs", subtitle: "Event stream", iconName: "i-terminal" };
+    case "access":
+      return { id: "access", kind, title: "Access", subtitle: "Who can see and do what", iconName: "i-gear" };
     default:
       return { id: "health", kind: "health", title: "Health" };
   }

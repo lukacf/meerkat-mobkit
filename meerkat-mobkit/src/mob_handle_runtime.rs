@@ -42,6 +42,25 @@ pub(crate) fn is_recoverable_lifecycle_cleanup_error(error: &str) -> bool {
             && error.contains("Runtime not ready: running"))
 }
 
+pub(crate) fn topology_restore_failed_peer_ids(
+    error: &meerkat_mob::MobRespawnError,
+) -> Option<Vec<String>> {
+    match error {
+        meerkat_mob::MobRespawnError::TopologyRestoreFailed {
+            receipt: _,
+            failed_peer_ids,
+        } => Some(failed_peer_ids.iter().map(ToString::to_string).collect()),
+        _ => None,
+    }
+}
+
+pub(crate) fn topology_restore_warning_json(failed_peer_ids: &[String]) -> Value {
+    serde_json::json!({
+        "kind": "topology_restore_degraded",
+        "failed_peer_ids": failed_peer_ids,
+    })
+}
+
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
@@ -4690,6 +4709,45 @@ image_generation = true
 
         assert!(is_previous_member_cleanup_ambiguous_error(error));
         assert!(is_recoverable_lifecycle_cleanup_error(error));
+    }
+
+    #[test]
+    fn topology_restore_failed_peer_ids_extracts_tolerated_peers() {
+        let identity = meerkat_mob::AgentIdentity::from("rt:review:singleton:0");
+        let receipt = meerkat_mob::MemberRespawnReceipt::new(
+            identity.clone(),
+            meerkat_mob::AgentRuntimeId::new(identity, meerkat_mob::ids::Generation::INITIAL),
+            meerkat_mob::FenceToken::new(1),
+            meerkat_mob::FenceToken::new(2),
+        );
+        let err = meerkat_mob::MobRespawnError::TopologyRestoreFailed {
+            receipt,
+            failed_peer_ids: vec![meerkat_mob::AgentIdentity::from("initiative:broken")],
+        };
+
+        assert_eq!(
+            topology_restore_failed_peer_ids(&err),
+            Some(vec!["initiative:broken".to_string()])
+        );
+        assert_eq!(
+            topology_restore_failed_peer_ids(&meerkat_mob::MobRespawnError::NoRuntimeControl {
+                identity: meerkat_mob::AgentIdentity::from("rt:review:singleton:0"),
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn topology_restore_warning_json_surfaces_isolated_peers() {
+        let failed_peer_ids = vec!["initiative:broken".to_string(), "helper:cold".to_string()];
+
+        assert_eq!(
+            topology_restore_warning_json(&failed_peer_ids),
+            serde_json::json!({
+                "kind": "topology_restore_degraded",
+                "failed_peer_ids": ["initiative:broken", "helper:cold"],
+            })
+        );
     }
 
     #[test]

@@ -46,6 +46,7 @@ export interface ConsoleFact<T> {
 export interface ConsoleCapabilities {
   methods: string[];
   version?: string;
+  readOnly?: boolean;
   runtime_capabilities?: unknown;
   method_capabilities?: unknown;
 }
@@ -96,6 +97,15 @@ export const CONSOLE_COMMAND_NAMES = {
   listGatingPending: "listGatingPending",
   listGatingAudit: "listGatingAudit",
   decideGating: "decideGating",
+  accessStatus: "accessStatus",
+  getAccessConfig: "getAccessConfig",
+  setAccessConfig: "setAccessConfig",
+  enableAccess: "enableAccess",
+  upsertAccessRule: "upsertAccessRule",
+  deleteAccessRule: "deleteAccessRule",
+  setAccessGroup: "setAccessGroup",
+  deleteAccessGroup: "deleteAccessGroup",
+  previewAccess: "previewAccess",
 } as const;
 
 export type ConsoleCommandName = typeof CONSOLE_COMMAND_NAMES[keyof typeof CONSOLE_COMMAND_NAMES];
@@ -156,6 +166,42 @@ const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
   [CONSOLE_COMMAND_NAMES.decideGating]: {
     method: CONSOLE_RPC_METHODS.gatingDecide,
     targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/gating"]),
+  },
+  [CONSOLE_COMMAND_NAMES.accessStatus]: {
+    method: CONSOLE_RPC_METHODS.accessStatus,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/access"]),
+  },
+  [CONSOLE_COMMAND_NAMES.getAccessConfig]: {
+    method: CONSOLE_RPC_METHODS.accessGet,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/access"]),
+  },
+  [CONSOLE_COMMAND_NAMES.setAccessConfig]: {
+    method: CONSOLE_RPC_METHODS.accessSet,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/access"]),
+  },
+  [CONSOLE_COMMAND_NAMES.enableAccess]: {
+    method: CONSOLE_RPC_METHODS.accessEnable,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/access"]),
+  },
+  [CONSOLE_COMMAND_NAMES.upsertAccessRule]: {
+    method: CONSOLE_RPC_METHODS.accessRuleUpsert,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/access"]),
+  },
+  [CONSOLE_COMMAND_NAMES.deleteAccessRule]: {
+    method: CONSOLE_RPC_METHODS.accessRuleDelete,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/access"]),
+  },
+  [CONSOLE_COMMAND_NAMES.setAccessGroup]: {
+    method: CONSOLE_RPC_METHODS.accessGroupSet,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/access"]),
+  },
+  [CONSOLE_COMMAND_NAMES.deleteAccessGroup]: {
+    method: CONSOLE_RPC_METHODS.accessGroupDelete,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/access"]),
+  },
+  [CONSOLE_COMMAND_NAMES.previewAccess]: {
+    method: CONSOLE_RPC_METHODS.accessPreview,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/access"]),
   },
 };
 
@@ -510,6 +556,7 @@ function normalizeCapabilities(value: unknown): ConsoleCapabilities {
   return {
     methods,
     version: typeof record.version === "string" ? record.version : undefined,
+    ...(typeof record.read_only === "boolean" ? { readOnly: record.read_only } : {}),
     runtime_capabilities: record.runtime_capabilities,
     method_capabilities: record.method_capabilities,
   };

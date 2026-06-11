@@ -3461,44 +3461,62 @@ fn frame_from_console_event(
     entry: &RuntimeEntry,
     envelope: crate::console_contracts::ConsoleIdentityEventEnvelope,
 ) -> NewConsoleFrame {
-    let turn_id = envelope
-        .data
+    let event_id = envelope.event_id;
+    let interaction_id = envelope.interaction_id;
+    let event_type = envelope.event_type;
+    let payload = envelope.data;
+    let turn_id = payload
         .get("turn_id")
         .and_then(Value::as_str)
         .map(ToString::to_string);
-    let run_id = envelope
-        .data
+    let run_id = payload
         .get("run_id")
         .and_then(Value::as_str)
         .map(ToString::to_string);
-    let status = match envelope.event_type.as_str() {
+    let status = match event_type.as_str() {
         "interaction_started" => ConsoleFrameStatus::Accepted,
         "interaction_failed" | "run_failed" => ConsoleFrameStatus::DeliveryFailed,
         "interaction_complete" | "run_completed" => ConsoleFrameStatus::Completed,
         _ => ConsoleFrameStatus::Delivered,
     };
     let identity = apply_namespace(&envelope.identity, &entry.identity_namespace);
+    let dedupe_key = reasoning_payload_text(&event_type, &payload)
+        .map(|reasoning_text| {
+            // Reasoning hashes assume console events carry full/cumulative text; if deltas become
+            // fragmentary, key by a stable reasoning segment id or emit only the complete frame.
+            let turn_scope = interaction_id
+                .as_deref()
+                .or(turn_id.as_deref())
+                .or(run_id.as_deref())
+                .unwrap_or(event_id.as_str());
+            format!(
+                "console-reasoning:{}:{}:{}",
+                entry.runtime_key,
+                turn_scope,
+                hash_short(&normalize_transcript_fingerprint_text(reasoning_text))
+            )
+        })
+        .unwrap_or_else(|| format!("console-event:{}:{}", entry.runtime_key, event_id));
     NewConsoleFrame {
-        id: Some(envelope.event_id.clone()),
-        dedupe_key: format!("console-event:{}:{}", entry.runtime_key, envelope.event_id),
+        id: Some(event_id.clone()),
+        dedupe_key,
         timestamp_ms: envelope.timestamp_ms,
         runtime_key: entry.runtime_key.clone(),
         identity: identity.clone(),
         conversation_id: Some(identity),
-        session_id: envelope
-            .data
+        session_id: payload
             .get("session_id")
             .and_then(Value::as_str)
             .map(ToString::to_string),
-        kind: envelope.event_type,
+        kind: event_type,
         status,
-        payload: envelope.data,
+        payload,
         source: ConsoleFrameSource {
             kind: ConsoleFrameSourceKind::ConsoleEvent,
             source_cursor: None,
         },
-        source_event_id: Some(envelope.event_id),
-        interaction_id: envelope.interaction_id,
+        source_event_id: Some(event_id),
+        interaction_id,
         turn_id,
         run_id,
         parent_frame_id: None,
@@ -3921,6 +3939,9 @@ fn transcript_fingerprint(kind: &str, payload: &Value) -> Option<String> {
         "text_delta" => {
             text_delta_payload_text(kind, payload).map(normalize_transcript_fingerprint_text)
         }
+        kind if is_reasoning_event_kind(kind) => {
+            reasoning_payload_text(kind, payload).map(normalize_transcript_fingerprint_text)
+        }
         "text_complete" | "interaction_complete" | "run_completed" => {
             assistant_terminal_fingerprint(kind, payload)
         }
@@ -3962,6 +3983,41 @@ fn text_delta_payload_text<'a>(kind: &str, payload: &'a Value) -> Option<&'a str
         .or_else(|| payload.get("content"))
         .and_then(Value::as_str)
         .or_else(|| payload.as_str())
+}
+
+fn reasoning_payload_text<'a>(kind: &str, payload: &'a Value) -> Option<&'a str> {
+    if !is_reasoning_event_kind(kind) {
+        return None;
+    }
+    if kind == "reasoning_delta" {
+        return payload
+            .get("delta")
+            .or_else(|| payload.get("text"))
+            .or_else(|| payload.get("content"))
+            .or_else(|| payload.get("summary"))
+            .or_else(|| payload.get("reasoning"))
+            .and_then(Value::as_str)
+            .or_else(|| payload.as_str());
+    }
+    payload
+        .get("summary")
+        .or_else(|| payload.get("text"))
+        .or_else(|| payload.get("content"))
+        .or_else(|| payload.get("delta"))
+        .or_else(|| payload.get("reasoning"))
+        .and_then(Value::as_str)
+        .or_else(|| payload.as_str())
+}
+
+fn is_reasoning_event_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "reasoning_delta"
+            | "reasoning_complete"
+            | "reasoning_summary"
+            | "reasoning_summary_delta"
+            | "reasoning_summary_complete"
+    )
 }
 
 fn stable_value_fingerprint(value: &Value) -> String {
@@ -4837,6 +4893,22 @@ comms = true
             identity_runtime: runtime.identity_runtime().cloned(),
             console_events: runtime.console_events(),
             visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+        }
+    }
+
+    fn console_envelope_for_test(
+        event_id: &str,
+        interaction_id: Option<&str>,
+        event_type: &str,
+        data: Value,
+    ) -> crate::console_contracts::ConsoleIdentityEventEnvelope {
+        crate::console_contracts::ConsoleIdentityEventEnvelope {
+            event_id: event_id.to_string(),
+            interaction_id: interaction_id.map(ToString::to_string),
+            identity: "agent-a".to_string(),
+            event_type: event_type.to_string(),
+            timestamp_ms: 1_000,
+            data,
         }
     }
 
@@ -6681,6 +6753,101 @@ comms = true
     }
 
     #[tokio::test]
+    async fn reasoning_console_events_with_identical_text_share_a_frame_key() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let runtime = build_single_member_runtime().await;
+        let entry = runtime_entry_for_test("runtime-a", &runtime);
+        for event_type in ["reasoning_delta", "reasoning_complete"] {
+            let frame = frame_from_console_event(
+                &entry,
+                console_envelope_for_test(
+                    event_type,
+                    Some("interaction-a"),
+                    event_type,
+                    json!({
+                        "delta": "I should inspect the file first.",
+                        "text": "I should inspect the file first.",
+                        "turn_id": "turn-a",
+                    }),
+                ),
+            );
+            aggregator
+                .store()
+                .append_if_absent(frame)
+                .await
+                .expect("append reasoning frame");
+        }
+
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("test/agent-a".to_string()),
+                limit: 10,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query timeline");
+
+        assert_eq!(
+            page.frames.len(),
+            1,
+            "identical reasoning re-emissions in one turn should collapse"
+        );
+        assert_eq!(page.frames[0].kind, "reasoning_delta");
+        assert_eq!(
+            page.frames[0].dedupe_key,
+            format!(
+                "console-reasoning:runtime-a:interaction-a:{}",
+                hash_short("I should inspect the file first.")
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn reasoning_console_events_with_different_text_keep_distinct_frames() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let runtime = build_single_member_runtime().await;
+        let entry = runtime_entry_for_test("runtime-a", &runtime);
+        for (event_id, text) in [
+            ("reasoning-1", "I should inspect the file first."),
+            ("reasoning-2", "Now I should run the focused test."),
+        ] {
+            let frame = frame_from_console_event(
+                &entry,
+                console_envelope_for_test(
+                    event_id,
+                    Some("interaction-a"),
+                    "reasoning_complete",
+                    json!({
+                        "text": text,
+                        "turn_id": "turn-a",
+                    }),
+                ),
+            );
+            aggregator
+                .store()
+                .append_if_absent(frame)
+                .await
+                .expect("append reasoning frame");
+        }
+
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("test/agent-a".to_string()),
+                limit: 10,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query timeline");
+
+        assert_eq!(
+            page.frames.len(),
+            2,
+            "distinct same-turn reasoning segments should not collapse"
+        );
+        assert_ne!(page.frames[0].dedupe_key, page.frames[1].dedupe_key);
+    }
+
+    #[tokio::test]
     async fn identity_recent_anchor_respects_query_limit() {
         let aggregator = MobKitConsoleAggregator::in_memory();
         aggregator
@@ -7994,6 +8161,26 @@ comms = true
             terminal.payload.get("reason").and_then(Value::as_str),
             Some("steer_delivered")
         );
+    }
+
+    #[test]
+    fn transcript_fingerprint_matches_equivalent_reasoning_payloads() {
+        let live = transcript_fingerprint(
+            "reasoning_complete",
+            &json!({ "text": "I should inspect the file first." }),
+        );
+        let replay = transcript_fingerprint(
+            "reasoning_complete",
+            &json!({ "summary": "I should inspect the file first." }),
+        );
+        let delta = transcript_fingerprint(
+            "reasoning_delta",
+            &json!({ "delta": "I should inspect the file first." }),
+        );
+
+        assert_eq!(live.as_deref(), Some("I should inspect the file first."));
+        assert_eq!(live, replay);
+        assert_eq!(live, delta);
     }
 
     #[tokio::test]
