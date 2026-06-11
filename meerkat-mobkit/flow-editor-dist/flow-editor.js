@@ -82,6 +82,8 @@ var MobKitFlowCore = (() => {
     agentSourceProvenanceState: () => agentSourceProvenanceState,
     agentViewForState: () => agentViewForState,
     agentViewFromSchema: () => agentViewFromSchema,
+    apiDisplayRows: () => apiDisplayRows,
+    apiOverlayClearTransition: () => apiOverlayClearTransition,
     authoringOperationAvailability: () => authoringOperationAvailability,
     authoringOperationFromIntent: () => authoringOperationFromIntent,
     authoringOperationsFromSchema: () => authoringOperationsFromSchema,
@@ -150,8 +152,15 @@ var MobKitFlowCore = (() => {
     contractDefaultValue: () => contractDefaultValue,
     contractStringValues: () => contractStringValues,
     contractValueAllowed: () => contractValueAllowed,
+    criticalErrorOutcome: () => criticalErrorOutcome,
     dependencyModeAllowed: () => dependencyModeAllowed,
     dependencyModeOptions: () => dependencyModeOptions,
+    deployErrorOutcome: () => deployErrorOutcome,
+    deployOutcome: () => deployOutcome,
+    deployPlanTraceCloseTransition: () => deployPlanTraceCloseTransition,
+    deployPlanTraceReadyTransition: () => deployPlanTraceReadyTransition,
+    deployPlanTraceState: () => deployPlanTraceState,
+    deployResultToRows: () => deployResultToRows,
     deployRuntimeCompatibility: () => deployRuntimeCompatibility,
     deploySettingsFieldPatch: () => deploySettingsFieldPatch,
     deploySettingsPatch: () => deploySettingsPatch,
@@ -160,6 +169,7 @@ var MobKitFlowCore = (() => {
     deployViewForState: () => deployViewForState,
     deployViewFromSchema: () => deployViewFromSchema,
     deployableInlineProfileBindingAllowed: () => deployableInlineProfileBindingAllowed,
+    diagnosticsToRows: () => diagnosticsToRows,
     directMemberAddValidation: () => directMemberAddValidation,
     dispatchModeAllowed: () => dispatchModeAllowed,
     dispatchModeOptions: () => dispatchModeOptions,
@@ -171,6 +181,7 @@ var MobKitFlowCore = (() => {
     editorInputParamDraftContract: () => editorInputParamDraftContract,
     editorInputParamNameFallback: () => editorInputParamNameFallback,
     editorInputStepDraftContract: () => editorInputStepDraftContract,
+    editorModeTransition: () => editorModeTransition,
     editorSchemaDraftContract: () => editorSchemaDraftContract,
     editorSchemaDraftField: () => editorSchemaDraftField,
     editorSchemaFieldNameFallback: () => editorSchemaFieldNameFallback,
@@ -181,9 +192,12 @@ var MobKitFlowCore = (() => {
     enumValueDeletePatch: () => enumValueDeletePatch,
     enumValueDraftPatch: () => enumValueDraftPatch,
     enumValuesForField: () => enumValuesForField,
+    errorMessage: () => errorMessage,
     errorViewForState: () => errorViewForState,
     errorViewFromSchema: () => errorViewFromSchema,
     escapeHtml: () => escapeHtml,
+    exportErrorOutcome: () => exportErrorOutcome,
+    exportOutcome: () => exportOutcome,
     findMember: () => findMember,
     firstContractValue: () => firstContractValue,
     firstDeploySurfaceRuntimeMode: () => firstDeploySurfaceRuntimeMode,
@@ -296,6 +310,7 @@ var MobKitFlowCore = (() => {
     graphToolTagClass: () => graphToolTagClass,
     graphViewFromSchema: () => graphViewFromSchema,
     hasAuthoringLaunchMode: () => hasAuthoringLaunchMode,
+    importErrorOutcome: () => importErrorOutcome,
     inlineSkillRealmIdFromOperationResult: () => inlineSkillRealmIdFromOperationResult,
     inputParamAddErrorState: () => inputParamAddErrorState,
     inputParamDeletePatch: () => inputParamDeletePatch,
@@ -462,6 +477,7 @@ var MobKitFlowCore = (() => {
     renameSchemaDefinition: () => renameSchemaDefinition,
     repeatConditionFromEdge: () => repeatConditionFromEdge,
     repeatIterationInputOptions: () => repeatIterationInputOptions,
+    requireExportArchiveMetadata: () => requireExportArchiveMetadata,
     reserveFlowBranchId: () => reserveFlowBranchId,
     rewriteConditionTextReference: () => rewriteConditionTextReference,
     rewriteEditorCondition: () => rewriteEditorCondition,
@@ -507,6 +523,7 @@ var MobKitFlowCore = (() => {
     skillRealmsForDocument: () => skillRealmsForDocument,
     slug: () => slug,
     sourceDefinitionRefRows: () => sourceDefinitionRefRows,
+    sourceErrorOutcome: () => sourceErrorOutcome,
     splitLegacyInputFieldLine: () => splitLegacyInputFieldLine,
     stepToolScopeAddPatch: () => stepToolScopeAddPatch,
     stepToolScopeRemovePatch: () => stepToolScopeRemovePatch,
@@ -527,8 +544,11 @@ var MobKitFlowCore = (() => {
     studioUpdateInstancePatch: () => studioUpdateInstancePatch,
     studioUpdateMemberPatch: () => studioUpdateMemberPatch,
     studioUpdateSchemaPatch: () => studioUpdateSchemaPatch,
+    themeToggleTransition: () => themeToggleTransition,
     toolCatalogEntryAvailability: () => toolCatalogEntryAvailability,
     toolCatalogEntryAvailable: () => toolCatalogEntryAvailable,
+    topRailNavigationTransition: () => topRailNavigationTransition,
+    topRailState: () => topRailState,
     trustPolicyOptions: () => trustPolicyOptions,
     tweaksControlState: () => tweaksControlState,
     uniqueEnumValue: () => uniqueEnumValue,
@@ -537,6 +557,11 @@ var MobKitFlowCore = (() => {
     uniqueSchemaFieldName: () => uniqueSchemaFieldName,
     validMemberToolIds: () => validMemberToolIds,
     validStepToolSet: () => validStepToolSet,
+    validationErrorOutcome: () => validationErrorOutcome,
+    validationOutcome: () => validationOutcome,
+    validationSheetCloseTransition: () => validationSheetCloseTransition,
+    validationSheetOpenTransition: () => validationSheetOpenTransition,
+    validationSheetState: () => validationSheetState,
     viewStringMapFromSchema: () => viewStringMapFromSchema
   });
 
@@ -7714,6 +7739,276 @@ var MobKitFlowCore = (() => {
     }
   }
 
+  // ../packages/flow-editor-core/src/shell/outcomes.ts
+  function diagnosticsToRows(validation) {
+    if (Array.isArray(validation?.display_rows)) {
+      return apiDisplayRows(validation.display_rows);
+    }
+    return [];
+  }
+  function deployResultToRows(result) {
+    if (Array.isArray(result?.display_rows)) {
+      return apiDisplayRows(result.display_rows);
+    }
+    return [];
+  }
+  function apiDisplayRows(rows) {
+    return (Array.isArray(rows) ? rows : []).filter((row) => row && typeof row === "object").map((row) => ({
+      kind: String(row.kind || ""),
+      glyph: String(row.glyph || ""),
+      head: String(row.head || ""),
+      sub: String(row.sub || ""),
+      meta: String(row.meta || "")
+    }));
+  }
+  function validationSheetState(results, options = {}) {
+    const view = deployViewForState(options.deployView);
+    const rows = Array.isArray(results) ? results : [];
+    const counts = rows.reduce((acc, row) => {
+      const kind = row?.kind || "warn";
+      if (kind === "ok") acc.ok += 1;
+      else if (kind === "crit") acc.crit += 1;
+      else acc.warn += 1;
+      return acc;
+    }, { ok: 0, warn: 0, crit: 0 });
+    const stage = String(options.stage || "").trim();
+    const stageBlocksActions = !!stage && stage !== "valid";
+    const actionsDisabled = counts.crit > 0 || stageBlocksActions;
+    const deployExecuteAllowed = options.capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
+    return {
+      rows,
+      counts,
+      eyebrow: view.validationEyebrow,
+      title: `${counts.ok} ${view.validationPassedLabel} \xB7 ${counts.warn} ${view.validationWarningsLabel} \xB7 ${counts.crit} ${view.validationBlockingLabel}`,
+      publishLabel: view.publishLabel,
+      deployPlanLabel: view.deployPlanLabel,
+      deployLabel: view.deployLabel,
+      closeLabel: view.closeLabel,
+      actionsDisabled,
+      publishDisabled: actionsDisabled,
+      deployPlanDisabled: actionsDisabled,
+      deployRunDisabled: actionsDisabled || !deployExecuteAllowed
+    };
+  }
+  function deployPlanTraceState(document, plan, options = {}) {
+    const view = deployViewForState(options.deployView);
+    const steps = Array.isArray(plan?.plan_trace) && plan.plan_trace.length ? plan.plan_trace : [{
+      node: null,
+      head: view.planUnavailableHead,
+      body: view.planUnavailableBody
+    }];
+    const title = document?.mob_id || document?.name || "mobkit_flow";
+    const subtitle = plan?.command || "";
+    const packLabel = plan?.pack_path || "";
+    return {
+      steps,
+      eyebrow: view.planEyebrow,
+      title,
+      subtitle,
+      packLabel,
+      firstLabel: view.planFirstLabel,
+      closeLabel: view.closeLabel,
+      stepLabel: view.planStepLabel,
+      previousLabel: view.planPreviousLabel,
+      nextLabel: view.planNextLabel
+    };
+  }
+  function topRailState({ contract, deploySettings, stage, view, theme, deployView, capabilities } = {}) {
+    const shell = deployViewForState(deployView);
+    const inEditor = view === "editor";
+    const contractState = contract?.error ? shell.apiErrorLabel : contract ? shell.apiReadyLabel : shell.apiLoadingLabel;
+    const deployCommand = contract?.deploy_settings?.command || "";
+    const deploySurface = deploySettings?.surface || contract?.deploy_settings?.surfaces?.[0] || "";
+    const deployActionsDisabled = stage !== "valid";
+    const deployExecuteAllowed = capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    return {
+      inEditor,
+      brandLabel: shell.brandLabel,
+      flowsTabLabel: shell.flowsTabLabel,
+      agentsTabLabel: shell.agentsTabLabel,
+      mobStatusTitle: shell.mobStatusTitle,
+      mobFileLabel: shell.mobFileLabel,
+      contractState,
+      deployPrefixLabel: shell.deployPrefixLabel,
+      deployCommand,
+      deploySurface,
+      flowsCrumbLabel: shell.flowsCrumbLabel,
+      crumbSeparator: shell.crumbSeparator,
+      planTraceLabel: shell.planTraceLabel,
+      importLabel: shell.importLabel,
+      validateLabel: shell.validateLabel,
+      publishLabel: shell.publishLabel,
+      deployPlanLabel: shell.deployPlanLabel,
+      deployLabel: shell.deployLabel,
+      overflowLabel: shell.overflowLabel,
+      settingsLabel: shell.settingsLabel,
+      settingsTitle: shell.settingsTitle,
+      deployActionsDisabled,
+      deployRunDisabled: deployActionsDisabled || !deployExecuteAllowed,
+      themeToggleTitle: `${shell.themeSwitchPrefix} ${nextTheme} ${shell.themeSwitchSuffix}`,
+      themeToggleLabel: nextTheme === "light" ? shell.darkThemeLabel : shell.lightThemeLabel,
+      basicModeTitle: shell.basicModeTitle,
+      basicModeLabel: shell.basicModeLabel,
+      graphModeTitle: shell.graphModeTitle,
+      graphModeLabel: shell.graphModeLabel
+    };
+  }
+  function topRailNavigationTransition(currentView, target) {
+    const view = String(currentView || "editor");
+    switch (String(target || "")) {
+      case "flows-tab":
+        return { view: view === "editor" ? "flows" : "editor" };
+      case "agents-tab":
+        return { view: "agents" };
+      case "flows-crumb":
+        return { view: "flows" };
+      default:
+        return null;
+    }
+  }
+  function editorModeTransition(target) {
+    const editorMode = String(target || "");
+    if (editorMode !== "basic" && editorMode !== "advanced") return null;
+    return { editorMode };
+  }
+  function themeToggleTransition(currentTheme) {
+    return {
+      field: "theme",
+      value: currentTheme === "dark" ? "light" : "dark"
+    };
+  }
+  function validationOutcome(document, result) {
+    const validation = result || null;
+    return {
+      document,
+      validation,
+      validationRows: diagnosticsToRows(validation),
+      stage: validation?.ok ? "valid" : "draft"
+    };
+  }
+  function exportOutcome(document, result, options = {}) {
+    const validation = result?.validation || null;
+    if (validation?.ok) {
+      requireExportArchiveMetadata(result);
+    }
+    const publishedStage = options.publishedStage || "published";
+    return {
+      document,
+      exportResult: result || null,
+      validation,
+      validationRows: diagnosticsToRows(validation),
+      stage: validation?.ok ? publishedStage : "draft"
+    };
+  }
+  function requireExportArchiveMetadata(result) {
+    if (!String(result?.content_base64 || "").trim()) {
+      throw new Error("mobkit/mobpacks/export did not return content_base64");
+    }
+    if (!String(result?.media_type || "").trim()) {
+      throw new Error("mobkit/mobpacks/export did not return media_type");
+    }
+    if (!String(result?.filename || "").trim()) {
+      throw new Error("mobkit/mobpacks/export did not return filename");
+    }
+  }
+  function deployOutcome(document, result, options = {}) {
+    const validation = result?.validation || null;
+    const executing = options.execute === true;
+    const deployOk = executing && result?.executed === true && result?.success === true && result?.status_code === 0;
+    return {
+      document,
+      deployResult: result || null,
+      validation,
+      validationRows: deployResultToRows(result),
+      stage: validation?.ok && deployOk ? "deployed" : "draft"
+    };
+  }
+  function validationSheetOpenTransition() {
+    return { validate: true };
+  }
+  function validationSheetCloseTransition() {
+    return { validate: false };
+  }
+  function deployPlanTraceReadyTransition(document, plan) {
+    return {
+      deployPlanOpen: true,
+      deployPlanDocument: document || null,
+      deployPlanResult: plan || null,
+      incrementDeployPlanKey: true
+    };
+  }
+  function deployPlanTraceCloseTransition() {
+    return { deployPlanOpen: false };
+  }
+  function apiOverlayClearTransition() {
+    return {
+      deployPlanOpen: false,
+      validate: false
+    };
+  }
+  function errorMessage(error) {
+    return error?.message || String(error || "");
+  }
+  function criticalErrorOutcome({ head, error, meta, errorView } = {}) {
+    const view = errorViewForState(errorView);
+    return {
+      validationRows: [{
+        kind: "crit",
+        glyph: view.criticalGlyph,
+        head: String(head || view.genericErrorHead),
+        sub: errorMessage(error),
+        meta: String(meta || "")
+      }],
+      stage: "draft"
+    };
+  }
+  function deployErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
+    return criticalErrorOutcome({
+      head: options.execute ? view.deployFailedHead : view.deployPlanFailedHead,
+      error,
+      meta: view.deployErrorMeta,
+      errorView: view
+    });
+  }
+  function sourceErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
+    return criticalErrorOutcome({
+      head: view.sourceFailedHead,
+      error,
+      meta: view.sourceErrorMeta,
+      errorView: view
+    });
+  }
+  function validationErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
+    return criticalErrorOutcome({
+      head: view.validationApiFailedHead,
+      error,
+      meta: view.rpcErrorMeta,
+      errorView: view
+    });
+  }
+  function exportErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
+    return criticalErrorOutcome({
+      head: view.exportFailedHead,
+      error,
+      meta: view.rpcErrorMeta,
+      errorView: view
+    });
+  }
+  function importErrorOutcome(error, options = {}) {
+    const view = errorViewForState(options.errorView);
+    return criticalErrorOutcome({
+      head: view.importFailedHead,
+      error,
+      meta: options.filename || "",
+      errorView: view
+    });
+  }
+
   // ../packages/flow-editor-core/src/studio/state.ts
   function directMemberAddValidation(member, members = [], contract = null) {
     if (!member || typeof member !== "object") {
@@ -8184,6 +8479,8 @@ const {
   agentSourceProvenanceState,
   agentViewForState,
   agentViewFromSchema,
+  apiDisplayRows,
+  apiOverlayClearTransition,
   authoringOperationAvailability,
   authoringOperationFromIntent,
   authoringOperationsFromSchema,
@@ -8252,8 +8549,15 @@ const {
   contractDefaultValue,
   contractStringValues,
   contractValueAllowed,
+  criticalErrorOutcome,
   dependencyModeAllowed,
   dependencyModeOptions,
+  deployErrorOutcome,
+  deployOutcome,
+  deployPlanTraceCloseTransition,
+  deployPlanTraceReadyTransition,
+  deployPlanTraceState,
+  deployResultToRows,
   deployRuntimeCompatibility,
   deploySettingsFieldPatch,
   deploySettingsPatch,
@@ -8262,6 +8566,7 @@ const {
   deployViewForState,
   deployViewFromSchema,
   deployableInlineProfileBindingAllowed,
+  diagnosticsToRows,
   directMemberAddValidation,
   dispatchModeAllowed,
   dispatchModeOptions,
@@ -8273,6 +8578,7 @@ const {
   editorInputParamDraftContract,
   editorInputParamNameFallback,
   editorInputStepDraftContract,
+  editorModeTransition,
   editorSchemaDraftContract,
   editorSchemaDraftField,
   editorSchemaFieldNameFallback,
@@ -8283,9 +8589,12 @@ const {
   enumValueDeletePatch,
   enumValueDraftPatch,
   enumValuesForField,
+  errorMessage,
   errorViewForState,
   errorViewFromSchema,
   escapeHtml,
+  exportErrorOutcome,
+  exportOutcome,
   findMember,
   firstContractValue,
   firstDeploySurfaceRuntimeMode,
@@ -8398,6 +8707,7 @@ const {
   graphToolTagClass,
   graphViewFromSchema,
   hasAuthoringLaunchMode,
+  importErrorOutcome,
   inlineSkillRealmIdFromOperationResult,
   inputParamAddErrorState,
   inputParamDeletePatch,
@@ -8564,6 +8874,7 @@ const {
   renameSchemaDefinition,
   repeatConditionFromEdge,
   repeatIterationInputOptions,
+  requireExportArchiveMetadata,
   reserveFlowBranchId,
   rewriteConditionTextReference,
   rewriteEditorCondition,
@@ -8609,6 +8920,7 @@ const {
   skillRealmsForDocument,
   slug,
   sourceDefinitionRefRows,
+  sourceErrorOutcome,
   splitLegacyInputFieldLine,
   stepToolScopeAddPatch,
   stepToolScopeRemovePatch,
@@ -8629,8 +8941,11 @@ const {
   studioUpdateInstancePatch,
   studioUpdateMemberPatch,
   studioUpdateSchemaPatch,
+  themeToggleTransition,
   toolCatalogEntryAvailability,
   toolCatalogEntryAvailable,
+  topRailNavigationTransition,
+  topRailState,
   trustPolicyOptions,
   tweaksControlState,
   uniqueEnumValue,
@@ -8639,6 +8954,11 @@ const {
   uniqueSchemaFieldName,
   validMemberToolIds,
   validStepToolSet,
+  validationErrorOutcome,
+  validationOutcome,
+  validationSheetCloseTransition,
+  validationSheetOpenTransition,
+  validationSheetState,
   viewStringMapFromSchema,
 } = window.MobKitFlowCore;
 /* global window, fetch */
@@ -10296,307 +10616,6 @@ const {
     return flowDraftIdFromSpec({
       name,
     }, existingRows);
-  }
-
-  function diagnosticsToRows(validation) {
-    if (Array.isArray(validation?.display_rows)) {
-      return apiDisplayRows(validation.display_rows);
-    }
-    return [];
-  }
-
-  function deployResultToRows(result) {
-    if (Array.isArray(result?.display_rows)) {
-      return apiDisplayRows(result.display_rows);
-    }
-    return [];
-  }
-
-  function apiDisplayRows(rows) {
-    return (Array.isArray(rows) ? rows : [])
-      .filter((row) => row && typeof row === "object")
-      .map((row) => ({
-        kind: String(row.kind || ""),
-        glyph: String(row.glyph || ""),
-        head: String(row.head || ""),
-        sub: String(row.sub || ""),
-        meta: String(row.meta || ""),
-      }));
-  }
-
-  function validationSheetState(results, options = {}) {
-    const view = deployViewForState(options.deployView);
-    const rows = Array.isArray(results) ? results : [];
-    const counts = rows.reduce((acc, row) => {
-      const kind = row?.kind || "warn";
-      if (kind === "ok") acc.ok += 1;
-      else if (kind === "crit") acc.crit += 1;
-      else acc.warn += 1;
-      return acc;
-    }, { ok: 0, warn: 0, crit: 0 });
-    const stage = String(options.stage || "").trim();
-    const stageBlocksActions = !!stage && stage !== "valid";
-    const actionsDisabled = counts.crit > 0 || stageBlocksActions;
-    const deployExecuteAllowed = options.capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
-    return {
-      rows,
-      counts,
-      eyebrow: view.validationEyebrow,
-      title: `${counts.ok} ${view.validationPassedLabel} · ${counts.warn} ${view.validationWarningsLabel} · ${counts.crit} ${view.validationBlockingLabel}`,
-      publishLabel: view.publishLabel,
-      deployPlanLabel: view.deployPlanLabel,
-      deployLabel: view.deployLabel,
-      closeLabel: view.closeLabel,
-      actionsDisabled,
-      publishDisabled: actionsDisabled,
-      deployPlanDisabled: actionsDisabled,
-      deployRunDisabled: actionsDisabled || !deployExecuteAllowed,
-    };
-  }
-
-  function deployPlanTraceState(document, plan, options = {}) {
-    const view = deployViewForState(options.deployView);
-    const steps = Array.isArray(plan?.plan_trace) && plan.plan_trace.length
-      ? plan.plan_trace
-      : [{
-        node: null,
-        head: view.planUnavailableHead,
-        body: view.planUnavailableBody,
-      }];
-    const title = document?.mob_id || document?.name || "mobkit_flow";
-    const subtitle = plan?.command || "";
-    const packLabel = plan?.pack_path || "";
-    return {
-      steps,
-      eyebrow: view.planEyebrow,
-      title,
-      subtitle,
-      packLabel,
-      firstLabel: view.planFirstLabel,
-      closeLabel: view.closeLabel,
-      stepLabel: view.planStepLabel,
-      previousLabel: view.planPreviousLabel,
-      nextLabel: view.planNextLabel,
-    };
-  }
-
-  function topRailState({ contract, deploySettings, stage, view, theme, deployView, capabilities } = {}) {
-    const shell = deployViewForState(deployView);
-    const inEditor = view === "editor";
-    const contractState = contract?.error ? shell.apiErrorLabel : contract ? shell.apiReadyLabel : shell.apiLoadingLabel;
-    const deployCommand = contract?.deploy_settings?.command || "";
-    const deploySurface = deploySettings?.surface || contract?.deploy_settings?.surfaces?.[0] || "";
-    const deployActionsDisabled = stage !== "valid";
-    const deployExecuteAllowed = capabilities?.authoring_capabilities?.deploy_execute_allowed !== false;
-    const nextTheme = theme === "dark" ? "light" : "dark";
-    return {
-      inEditor,
-      brandLabel: shell.brandLabel,
-      flowsTabLabel: shell.flowsTabLabel,
-      agentsTabLabel: shell.agentsTabLabel,
-      mobStatusTitle: shell.mobStatusTitle,
-      mobFileLabel: shell.mobFileLabel,
-      contractState,
-      deployPrefixLabel: shell.deployPrefixLabel,
-      deployCommand,
-      deploySurface,
-      flowsCrumbLabel: shell.flowsCrumbLabel,
-      crumbSeparator: shell.crumbSeparator,
-      planTraceLabel: shell.planTraceLabel,
-      importLabel: shell.importLabel,
-      validateLabel: shell.validateLabel,
-      publishLabel: shell.publishLabel,
-      deployPlanLabel: shell.deployPlanLabel,
-      deployLabel: shell.deployLabel,
-      overflowLabel: shell.overflowLabel,
-      settingsLabel: shell.settingsLabel,
-      settingsTitle: shell.settingsTitle,
-      deployActionsDisabled,
-      deployRunDisabled: deployActionsDisabled || !deployExecuteAllowed,
-      themeToggleTitle: `${shell.themeSwitchPrefix} ${nextTheme} ${shell.themeSwitchSuffix}`,
-      themeToggleLabel: nextTheme === "light" ? shell.darkThemeLabel : shell.lightThemeLabel,
-      basicModeTitle: shell.basicModeTitle,
-      basicModeLabel: shell.basicModeLabel,
-      graphModeTitle: shell.graphModeTitle,
-      graphModeLabel: shell.graphModeLabel,
-    };
-  }
-
-  function topRailNavigationTransition(currentView, target) {
-    const view = String(currentView || "editor");
-    switch (String(target || "")) {
-      case "flows-tab":
-        return { view: view === "editor" ? "flows" : "editor" };
-      case "agents-tab":
-        return { view: "agents" };
-      case "flows-crumb":
-        return { view: "flows" };
-      default:
-        return null;
-    }
-  }
-
-  function editorModeTransition(target) {
-    const editorMode = String(target || "");
-    if (editorMode !== "basic" && editorMode !== "advanced") return null;
-    return { editorMode };
-  }
-
-  function themeToggleTransition(currentTheme) {
-    return {
-      field: "theme",
-      value: currentTheme === "dark" ? "light" : "dark",
-    };
-  }
-
-  function validationOutcome(document, result) {
-    const validation = result || null;
-    return {
-      document,
-      validation,
-      validationRows: diagnosticsToRows(validation),
-      stage: validation?.ok ? "valid" : "draft",
-    };
-  }
-
-  function exportOutcome(document, result, options = {}) {
-    const validation = result?.validation || null;
-    if (validation?.ok) {
-      requireExportArchiveMetadata(result);
-    }
-    const publishedStage = options.publishedStage || "published";
-    return {
-      document,
-      exportResult: result || null,
-      validation,
-      validationRows: diagnosticsToRows(validation),
-      stage: validation?.ok ? publishedStage : "draft",
-    };
-  }
-
-  function requireExportArchiveMetadata(result) {
-    if (!String(result?.content_base64 || "").trim()) {
-      throw new Error("mobkit/mobpacks/export did not return content_base64");
-    }
-    if (!String(result?.media_type || "").trim()) {
-      throw new Error("mobkit/mobpacks/export did not return media_type");
-    }
-    if (!String(result?.filename || "").trim()) {
-      throw new Error("mobkit/mobpacks/export did not return filename");
-    }
-  }
-
-  function deployOutcome(document, result, options = {}) {
-    const validation = result?.validation || null;
-    const executing = options.execute === true;
-    const deployOk =
-      executing &&
-      result?.executed === true &&
-      result?.success === true &&
-      result?.status_code === 0;
-    return {
-      document,
-      deployResult: result || null,
-      validation,
-      validationRows: deployResultToRows(result),
-      stage: validation?.ok && deployOk ? "deployed" : "draft",
-    };
-  }
-
-  function validationSheetOpenTransition() {
-    return { validate: true };
-  }
-
-  function validationSheetCloseTransition() {
-    return { validate: false };
-  }
-
-  function deployPlanTraceReadyTransition(document, plan) {
-    return {
-      deployPlanOpen: true,
-      deployPlanDocument: document || null,
-      deployPlanResult: plan || null,
-      incrementDeployPlanKey: true,
-    };
-  }
-
-  function deployPlanTraceCloseTransition() {
-    return { deployPlanOpen: false };
-  }
-
-  function apiOverlayClearTransition() {
-    return {
-      deployPlanOpen: false,
-      validate: false,
-    };
-  }
-
-  function errorMessage(error) {
-    return error?.message || String(error || "");
-  }
-
-  function criticalErrorOutcome({ head, error, meta, errorView } = {}) {
-    const view = errorViewForState(errorView);
-    return {
-      validationRows: [{
-        kind: "crit",
-        glyph: view.criticalGlyph,
-        head: String(head || view.genericErrorHead),
-        sub: errorMessage(error),
-        meta: String(meta || ""),
-      }],
-      stage: "draft",
-    };
-  }
-
-  function deployErrorOutcome(error, options = {}) {
-    const view = errorViewForState(options.errorView);
-    return criticalErrorOutcome({
-      head: options.execute ? view.deployFailedHead : view.deployPlanFailedHead,
-      error,
-      meta: view.deployErrorMeta,
-      errorView: view,
-    });
-  }
-
-  function sourceErrorOutcome(error, options = {}) {
-    const view = errorViewForState(options.errorView);
-    return criticalErrorOutcome({
-      head: view.sourceFailedHead,
-      error,
-      meta: view.sourceErrorMeta,
-      errorView: view,
-    });
-  }
-
-  function validationErrorOutcome(error, options = {}) {
-    const view = errorViewForState(options.errorView);
-    return criticalErrorOutcome({
-      head: view.validationApiFailedHead,
-      error,
-      meta: view.rpcErrorMeta,
-      errorView: view,
-    });
-  }
-
-  function exportErrorOutcome(error, options = {}) {
-    const view = errorViewForState(options.errorView);
-    return criticalErrorOutcome({
-      head: view.exportFailedHead,
-      error,
-      meta: view.rpcErrorMeta,
-      errorView: view,
-    });
-  }
-
-  function importErrorOutcome(error, options = {}) {
-    const view = errorViewForState(options.errorView);
-    return criticalErrorOutcome({
-      head: view.importFailedHead,
-      error,
-      meta: options.filename || "",
-      errorView: view,
-    });
   }
 
   function sourceFileRequiresText(file) {

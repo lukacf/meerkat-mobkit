@@ -1241,7 +1241,19 @@ assert.match(app, /MobKitFlowController\.exportErrorOutcome\(error, \{ errorView
 assert.match(app, /MobKitFlowController\.importErrorOutcome\(error, \{ filename: file\.name, errorView: catalogs\.errorView \}\)/, "app shell must project import errors through the controller plane with schema-backed error view");
 assert.match(app, /hydrateMobpackDocumentState\(result, \{[\s\S]*errorView: catalogs\.errorView/, "app shell must pass schema-backed error view into import hydration rejection projection");
 assert(!/["'](?:MobKit error|Deploy failed|Deploy plan failed|Source render failed|MobKit API unavailable|Export failed|Import failed|Imported mobpack is missing a MobKit editor flow)["']/.test(controller), "controller error-row display labels must come from MobKit editor_error_view, not local literals");
-assert(!/["'](?:mobkit\/mobpacks\/deploy|mobkit\/mobpacks\/export|\/flow-editor\/rpc|missing_editor_flow)["']/.test((controller.match(/function (?:criticalErrorOutcome|deployErrorOutcome|sourceErrorOutcome|validationErrorOutcome|exportErrorOutcome|importErrorOutcome|hydrateMobpackDocumentState)[\s\S]*?function sourceDocumentFromSourceResult/) || [""])[0]), "controller error-row display meta values must come from MobKit editor_error_view, not local literals");
+// Re-anchored in S13: the error-outcome family (criticalErrorOutcome through
+// importErrorOutcome) moved to @flow-editor-core shell/outcomes.ts, which
+// sits after the residue in the concatenation, while
+// hydrateMobpackDocumentState and sourceDocumentFromSourceResult are still
+// residue. One span can no longer cover both regions without sweeping
+// rpc/client.ts (whose "/flow-editor/rpc" default is legitimate), so the
+// residue keeps its old landmarks and the moved family is extracted
+// separately, ending at importErrorOutcome's own closing body so the block
+// never spans neighboring core modules.
+const hydrationErrorMetaBlock = (controller.match(/function hydrateMobpackDocumentState[\s\S]*?function sourceDocumentFromSourceResult/) || [""])[0];
+const errorOutcomeFamilyBlock = (controller.match(/function criticalErrorOutcome[\s\S]*?function importErrorOutcome[\s\S]*?errorView: view,\s*\}\);\s*\}/) || [""])[0];
+assert.match(errorOutcomeFamilyBlock, /function importErrorOutcome/, "error-outcome family extraction must span criticalErrorOutcome through importErrorOutcome");
+assert(!/["'](?:mobkit\/mobpacks\/deploy|mobkit\/mobpacks\/export|\/flow-editor\/rpc|missing_editor_flow)["']/.test(hydrationErrorMetaBlock + "\n" + errorOutcomeFamilyBlock), "controller error-row display meta values must come from MobKit editor_error_view, not local literals");
 assert(!/result\.ok \? ["']valid["']|result\.validation\?\.ok \? ["']published["']|result\.validation\?\.ok &&|plan\.validation\?\.ok \? ["']valid["']|const deployOk =/.test(app), "app shell must not choose MobKit API success stages locally");
 assert(!/kind:\s*["']crit["']|glyph:\s*["']!["']|head:\s*["'](?:Deploy|Source|MobKit|Export|Import)/.test(app), "app shell must not assemble MobKit critical diagnostic rows locally");
 assert.match(app, /const handleValidate = async \(\) => \{[\s\S]*const projected = await buildMobKitProjectedDocument\(\);[\s\S]*const document = projected\.document;[\s\S]*requestToken = projected\.requestToken;[\s\S]*MobKitFlowController\.validateDocument\(document,\s*currentDraftGuard\(\)\);[\s\S]*if \(!authoringRevisionIsCurrent\(requestToken\)\) return;[\s\S]*persistCurrentOutcome\(outcome\)/, "stale validation responses must not write validation, stage, or flow-row state after an edit");
