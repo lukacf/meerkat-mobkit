@@ -14,7 +14,7 @@ use crate::http_console::{
 };
 use crate::http_sse::{
     agent_events_sse_router_with_access_and_priming, mob_events_sse_router_with_access_and_priming,
-    mob_structural_events_sse_router_with_access,
+    mob_structural_events_sse_router_with_access_and_priming,
 };
 use crate::runtime::RuntimeDecisionState;
 use tower::limit::ConcurrencyLimitLayer;
@@ -104,7 +104,7 @@ impl UnifiedRuntime {
                 }),
                 Some(sse_decisions_a),
                 access.clone(),
-                access.as_ref().map(|_| self.mob_runtime.handle()),
+                access.as_ref().map(|_| self.mob_runtime.clone()),
             ))
             .merge(mob_events_sse_router_with_access_and_priming(
                 Arc::new(move || {
@@ -113,13 +113,14 @@ impl UnifiedRuntime {
                 }),
                 Some(sse_decisions_b),
                 access.clone(),
-                access.as_ref().map(|_| self.mob_runtime.handle()),
+                access.as_ref().map(|_| self.mob_runtime.clone()),
             ))
-            .merge(mob_structural_events_sse_router_with_access(
+            .merge(mob_structural_events_sse_router_with_access_and_priming(
                 self.mob_runtime.handle(),
                 self.mob_events_store(),
                 Some(sse_decisions_c),
-                access,
+                access.clone(),
+                access.as_ref().map(|_| self.mob_runtime.clone()),
             ))
             .layer(ConcurrencyLimitLayer::new(
                 DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS,

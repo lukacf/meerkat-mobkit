@@ -27,6 +27,9 @@ use serde_json::Value;
 use crate::blob_store::{
     Base64BlobStoreAdapter, BinaryBlobStore, BinaryBlobStoreAdapter, ObjectStoreBlobStore,
 };
+use crate::console_spawn::{
+    ConsoleSpawnSink, SharedConsoleSpawnSinkSlot, new_console_spawn_sink_slot,
+};
 
 pub(crate) const DELEGATE_IDLE_RETIRE_SECS_LABEL: &str = "implicit_delegate_idle_retire_secs";
 pub(crate) const DELEGATE_IDLE_RETIRE_DISABLED_LABEL: &str = "disabled";
@@ -308,6 +311,7 @@ impl ImplicitDelegateRetirementOverrides {
 struct AutoWireParentMobToolsFactory {
     inner: Arc<dyn meerkat_core::service::MobToolsFactory>,
     implicit_delegate_retirement_overrides: ImplicitDelegateRetirementOverrides,
+    console_spawn_sink: SharedConsoleSpawnSinkSlot,
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -318,12 +322,15 @@ impl meerkat_core::service::MobToolsFactory for AutoWireParentMobToolsFactory {
         args: meerkat_core::service::MobToolsBuildArgs,
     ) -> Result<Arc<dyn meerkat_core::AgentToolDispatcher>, Box<dyn std::error::Error + Send + Sync>>
     {
+        let spawner_comms_name = args.comms_name.clone();
         let inner = self.inner.build_mob_tools(args).await?;
         Ok(Arc::new(AutoWireParentMobToolDispatcher {
             inner,
             implicit_delegate_retirement_overrides: self
                 .implicit_delegate_retirement_overrides
                 .clone(),
+            console_spawn_sink: Arc::clone(&self.console_spawn_sink),
+            spawner_comms_name,
         }))
     }
 }
@@ -331,6 +338,12 @@ impl meerkat_core::service::MobToolsFactory for AutoWireParentMobToolsFactory {
 struct AutoWireParentMobToolDispatcher {
     inner: Arc<dyn meerkat_core::AgentToolDispatcher>,
     implicit_delegate_retirement_overrides: ImplicitDelegateRetirementOverrides,
+    /// Late-bound console sink; empty until a console-bearing runtime
+    /// installs one, in which case successful spawns project into it.
+    console_spawn_sink: SharedConsoleSpawnSinkSlot,
+    /// Comms name of the agent owning this tool surface — identifies the
+    /// spawning parent for console lineage.
+    spawner_comms_name: Option<String>,
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -360,10 +373,22 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
         if call.name == "delegate" {
             return self.dispatch_delegate(call).await;
         }
-        if call.name != "mob_spawn_member" {
-            return self.inner.dispatch(call).await;
+        if call.name == "mob_spawn_member" {
+            return self.dispatch_mob_spawn_member(call).await;
         }
-        self.dispatch_mob_spawn_member(call).await
+        if crate::console_spawn::is_console_spawn_tool(call.name) {
+            // Spawn variants this wrapper does not otherwise intercept
+            // (e.g. spawn_member/spawn_many_members surfaces) still get
+            // their members projected into the console.
+            let args = serde_json::from_str::<Value>(call.args.get()).ok();
+            let name = call.name.to_string();
+            let outcome = self.inner.dispatch(call).await?;
+            if let Some(args) = args {
+                self.project_spawn_to_console(&name, &args, &outcome).await;
+            }
+            return Ok(outcome);
+        }
+        self.inner.dispatch(call).await
     }
 
     fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
@@ -384,6 +409,8 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
         let dispatcher = Arc::new(Self {
             inner: outcome.into_dispatcher(),
             implicit_delegate_retirement_overrides: owned.implicit_delegate_retirement_overrides,
+            console_spawn_sink: owned.console_spawn_sink,
+            spawner_comms_name: owned.spawner_comms_name,
         });
         Ok(if was_bound {
             meerkat_core::agent::BindOutcome::Bound(dispatcher)
@@ -408,6 +435,8 @@ impl AutoWireParentMobToolDispatcher {
                 .entry("auto_wire_parent".to_string())
                 .or_insert(Value::Bool(true));
         }
+        let name = call.name.to_string();
+        let args_for_console = args.clone();
         let args = serde_json::value::RawValue::from_string(args.to_string()).map_err(|error| {
             meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
         })?;
@@ -423,6 +452,8 @@ impl AutoWireParentMobToolDispatcher {
             &idle_retire_targets,
         )
         .await;
+        self.project_spawn_to_console(&name, &args_for_console, &outcome)
+            .await;
 
         Ok(outcome)
     }
@@ -435,6 +466,8 @@ impl AutoWireParentMobToolDispatcher {
             meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
         })?;
         let idle_retire_override = delegate_idle_retire_override_from_args(call.name, &mut args)?;
+        let name = call.name.to_string();
+        let args_for_console = args.clone();
         let args = serde_json::value::RawValue::from_string(args.to_string()).map_err(|error| {
             meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
         })?;
@@ -447,8 +480,42 @@ impl AutoWireParentMobToolDispatcher {
 
         self.register_idle_retire_override_from_outcome(&outcome, idle_retire_override, &[])
             .await;
+        self.project_spawn_to_console(&name, &args_for_console, &outcome)
+            .await;
 
         Ok(outcome)
+    }
+
+    /// Project a successful spawn into the console, when a console-bearing
+    /// runtime installed a sink. Failure-isolated and additive: the spawn
+    /// outcome is never altered, and a runtime without a console store
+    /// behaves exactly as before.
+    async fn project_spawn_to_console(
+        &self,
+        tool_name: &str,
+        args: &Value,
+        outcome: &meerkat_core::ToolDispatchOutcome,
+    ) {
+        if outcome.result.is_error {
+            return;
+        }
+        let sink = self
+            .console_spawn_sink
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(sink) = sink else {
+            return;
+        };
+        let seeds = crate::console_spawn::console_spawn_seeds(
+            tool_name,
+            args,
+            &outcome.result.text_content(),
+            self.spawner_comms_name.as_deref(),
+        );
+        for seed in &seeds {
+            sink.project_spawned_member(seed).await;
+        }
     }
 
     async fn register_idle_retire_override_from_outcome(
@@ -772,6 +839,7 @@ fn install_agent_mob_tools(
     Arc<meerkat_mob_mcp::MobMcpState>,
     ImplicitDelegateRetirementOverrides,
     SharedDefaultLlmClientSlot,
+    SharedConsoleSpawnSinkSlot,
 ) {
     let default_llm_client_slot = Arc::new(std::sync::RwLock::new(None::<Arc<dyn LlmClient>>));
     let default_llm_client_provider_slot = Arc::clone(&default_llm_client_slot);
@@ -791,12 +859,14 @@ fn install_agent_mob_tools(
         })));
     let state = Arc::new(state);
     let implicit_delegate_retirement_overrides = ImplicitDelegateRetirementOverrides::default();
+    let console_spawn_sink = new_console_spawn_sink_slot();
     let inner = Arc::new(meerkat_mob_mcp::AgentMobToolSurfaceFactory::new(
         Arc::clone(&state),
     ));
     let factory = Arc::new(AutoWireParentMobToolsFactory {
         inner,
         implicit_delegate_retirement_overrides: implicit_delegate_retirement_overrides.clone(),
+        console_spawn_sink: Arc::clone(&console_spawn_sink),
     });
     *slot
         .write()
@@ -805,6 +875,7 @@ fn install_agent_mob_tools(
         state,
         implicit_delegate_retirement_overrides,
         default_llm_client_slot,
+        console_spawn_sink,
     )
 }
 
@@ -2011,6 +2082,7 @@ pub struct MobBootstrapSpec {
     pub(crate) agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     pub(crate) implicit_delegate_retirement_overrides: Option<ImplicitDelegateRetirementOverrides>,
     pub(crate) agent_mob_default_llm_client_slot: Option<SharedDefaultLlmClientSlot>,
+    pub(crate) console_spawn_sink_slot: Option<SharedConsoleSpawnSinkSlot>,
     pub options: MobBootstrapOptions,
     /// Explicit runtime adapter — bypasses `session_service.runtime_adapter()`.
     ///
@@ -2043,6 +2115,7 @@ impl MobBootstrapSpec {
             agent_mob_mcp_state: None,
             implicit_delegate_retirement_overrides: None,
             agent_mob_default_llm_client_slot: None,
+            console_spawn_sink_slot: None,
             options: MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -2219,11 +2292,13 @@ impl MobBootstrapSpec {
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
             agent_mob_default_llm_client_slot,
+            console_spawn_sink_slot,
         ) = install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
+        spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.runtime_adapter = runtime_adapter;
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -2374,11 +2449,13 @@ impl MobBootstrapSpec {
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
             agent_mob_default_llm_client_slot,
+            console_spawn_sink_slot,
         ) = install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
+        spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -2489,11 +2566,13 @@ impl MobBootstrapSpec {
             agent_mob_mcp_state,
             implicit_delegate_retirement_overrides,
             agent_mob_default_llm_client_slot,
+            console_spawn_sink_slot,
         ) = install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
+        spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -2602,6 +2681,9 @@ pub struct MobRuntime {
     implicit_delegate_retirement_overrides: Option<ImplicitDelegateRetirementOverrides>,
     binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
     baseline_member_specs: Arc<tokio::sync::RwLock<Vec<SpawnMemberSpec>>>,
+    /// Slot shared with the agent mob-tool dispatchers. A console-bearing
+    /// runtime fills it so agent-tool spawns project into the console.
+    console_spawn_sink_slot: Option<SharedConsoleSpawnSinkSlot>,
     /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
     /// Dropped when the runtime is dropped, cleaning up the temp dir.
     _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -2616,6 +2698,7 @@ impl MobRuntime {
         let agent_mob_mcp_state = spec.agent_mob_mcp_state.clone();
         let implicit_delegate_retirement_overrides =
             spec.implicit_delegate_retirement_overrides.clone();
+        let console_spawn_sink_slot = spec.console_spawn_sink_slot.clone();
         let default_llm_client = spec
             .options
             .default_llm_client
@@ -2663,6 +2746,7 @@ impl MobRuntime {
             implicit_delegate_retirement_overrides,
             binary_blob_store,
             baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            console_spawn_sink_slot,
             _ephemeral_dir: ephemeral_dir,
         })
     }
@@ -2675,6 +2759,7 @@ impl MobRuntime {
             implicit_delegate_retirement_overrides: None,
             binary_blob_store: None,
             baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            console_spawn_sink_slot: None,
             _ephemeral_dir: None,
         }
     }
@@ -2685,6 +2770,36 @@ impl MobRuntime {
 
     pub fn agent_mob_mcp_state(&self) -> Option<Arc<meerkat_mob_mcp::MobMcpState>> {
         self.agent_mob_mcp_state.clone()
+    }
+
+    /// Install the console sink that agent-tool spawns project into. A no-op
+    /// for runtimes built without agent mob tools (no slot to fill).
+    pub(crate) fn install_console_spawn_sink(&self, sink: ConsoleSpawnSink) {
+        if let Some(slot) = self.console_spawn_sink_slot.as_ref() {
+            *slot
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
+        }
+    }
+
+    /// The installed console spawn sink, if any.
+    pub(crate) fn console_spawn_sink(&self) -> Option<ConsoleSpawnSink> {
+        self.console_spawn_sink_slot.as_ref().and_then(|slot| {
+            slot.read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        })
+    }
+
+    /// Console identity metadata registered by agent-tool spawns, keyed by
+    /// console identity. Empty when no console sink is installed.
+    pub(crate) async fn console_identity_labels(
+        &self,
+    ) -> BTreeMap<String, BTreeMap<String, String>> {
+        match self.console_spawn_sink() {
+            Some(sink) => sink.identity_labels_snapshot().await,
+            None => BTreeMap::new(),
+        }
     }
 
     pub(crate) fn implicit_delegate_retirement_overrides(
@@ -3050,6 +3165,8 @@ mod tests {
         AutoWireParentMobToolDispatcher {
             inner: Arc::new(EmptyDispatcher),
             implicit_delegate_retirement_overrides: overrides,
+            console_spawn_sink: new_console_spawn_sink_slot(),
+            spawner_comms_name: None,
         }
     }
 
@@ -3149,6 +3266,8 @@ mod tests {
                 bound: Arc::clone(&bound),
             }),
             implicit_delegate_retirement_overrides: ImplicitDelegateRetirementOverrides::default(),
+            console_spawn_sink: new_console_spawn_sink_slot(),
+            spawner_comms_name: None,
         });
 
         assert!(dispatcher.capabilities().ops_lifecycle);
@@ -4767,5 +4886,249 @@ image_generation = true
         assert!(!is_recoverable_lifecycle_cleanup_error(
             "model provider returned rate limit"
         ));
+    }
+
+    mod console_spawn_projection {
+        use super::*;
+        use crate::console_spawn::new_console_spawn_sink_slot;
+        use crate::unified_runtime::ConsoleEventStore;
+        use meerkat_core::AgentToolDispatcher;
+
+        /// Inner dispatcher standing in for the meerkat-mob-mcp tool surface:
+        /// returns a canned payload for any call.
+        struct CannedDispatcher {
+            payload: Value,
+            is_error: bool,
+        }
+
+        #[async_trait::async_trait]
+        impl meerkat_core::AgentToolDispatcher for CannedDispatcher {
+            fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+                Vec::<Arc<meerkat_core::types::ToolDef>>::new().into()
+            }
+
+            async fn dispatch(
+                &self,
+                call: meerkat_core::types::ToolCallView<'_>,
+            ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+                Ok(meerkat_core::ToolDispatchOutcome::sync_result(
+                    meerkat_core::types::ToolResult::new(
+                        call.id.to_string(),
+                        self.payload.to_string(),
+                        self.is_error,
+                    ),
+                ))
+            }
+
+            fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
+                meerkat_core::agent::DispatcherCapabilities::default()
+            }
+        }
+
+        fn console_wrapper(
+            payload: Value,
+            is_error: bool,
+            store: Option<&ConsoleEventStore>,
+        ) -> AutoWireParentMobToolDispatcher {
+            let console_spawn_sink = new_console_spawn_sink_slot();
+            if let Some(store) = store {
+                *console_spawn_sink
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(ConsoleSpawnSink::new(store.clone()));
+            }
+            AutoWireParentMobToolDispatcher {
+                inner: Arc::new(CannedDispatcher { payload, is_error }),
+                implicit_delegate_retirement_overrides:
+                    ImplicitDelegateRetirementOverrides::default(),
+                console_spawn_sink,
+                spawner_comms_name: Some("ob3/orchestrator/ops-lead".to_string()),
+            }
+        }
+
+        async fn dispatch_tool(
+            dispatcher: &AutoWireParentMobToolDispatcher,
+            name: &str,
+            args: Value,
+        ) -> meerkat_core::ToolDispatchOutcome {
+            let raw = serde_json::value::RawValue::from_string(args.to_string()).expect("raw args");
+            dispatcher
+                .dispatch(meerkat_core::types::ToolCallView {
+                    id: "call-1",
+                    name,
+                    args: &raw,
+                })
+                .await
+                .expect("dispatch succeeds")
+        }
+
+        async fn kickoff_events(
+            store: &ConsoleEventStore,
+        ) -> Vec<crate::console_contracts::ConsoleIdentityEventEnvelope> {
+            store
+                .replay_all(None)
+                .await
+                .expect("replay")
+                .into_iter()
+                .filter(|event| event.event_type == "user_input")
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn mob_spawn_member_projects_kickoff_into_console() {
+            let store = ConsoleEventStore::new();
+            let dispatcher = console_wrapper(
+                serde_json::json!({
+                    "agent_identity": "worker-3",
+                    "member_ref": "opaque-ref"
+                }),
+                false,
+                Some(&store),
+            );
+
+            let outcome = dispatch_tool(
+                &dispatcher,
+                "mob_spawn_member",
+                serde_json::json!({
+                    "mob_id": "ob3",
+                    "profile": "person-worker",
+                    "member_id": "worker-3",
+                    "initial_message": "Find the person",
+                    "labels": { "group": "workers" }
+                }),
+            )
+            .await;
+            assert!(!outcome.result.is_error);
+
+            let kickoffs = kickoff_events(&store).await;
+            assert_eq!(kickoffs.len(), 1, "spawn must project one kickoff");
+            let kickoff = &kickoffs[0];
+            assert_eq!(kickoff.identity, "worker-3");
+            assert!(kickoff.event_id.starts_with("spawn-kickoff:ob3:worker-3:"));
+            assert_eq!(kickoff.data["content"][0]["text"], "Find the person");
+            assert_eq!(kickoff.data["via_tool"], "mob_spawn_member");
+            assert_eq!(kickoff.data["parent_identity"], "ops-lead");
+
+            let labels = store
+                .identity_labels("worker-3")
+                .await
+                .expect("spawn registers console identity labels");
+            assert_eq!(labels.get("group").map(String::as_str), Some("workers"));
+            assert_eq!(
+                labels.get("spawned_by").map(String::as_str),
+                Some("ops-lead")
+            );
+        }
+
+        #[tokio::test]
+        async fn repeated_spawn_dispatch_keeps_one_kickoff() {
+            let store = ConsoleEventStore::new();
+            let dispatcher = console_wrapper(
+                serde_json::json!({ "agent_identity": "worker-3" }),
+                false,
+                Some(&store),
+            );
+            let args = serde_json::json!({
+                "mob_id": "ob3",
+                "profile": "person-worker",
+                "member_id": "worker-3",
+                "initial_message": "Find the person"
+            });
+
+            dispatch_tool(&dispatcher, "mob_spawn_member", args.clone()).await;
+            dispatch_tool(&dispatcher, "mob_spawn_member", args).await;
+
+            assert_eq!(
+                kickoff_events(&store).await.len(),
+                1,
+                "retry/double-spawn must not duplicate the kickoff frame"
+            );
+        }
+
+        #[tokio::test]
+        async fn delegate_projects_task_kickoff_for_generated_helper() {
+            let store = ConsoleEventStore::new();
+            let dispatcher = console_wrapper(
+                serde_json::json!({
+                    "agent_identity": "helper-3f2a",
+                    "member_ref": "opaque",
+                    "mob_id": "implicit-1",
+                    "wired": true
+                }),
+                false,
+                Some(&store),
+            );
+
+            dispatch_tool(
+                &dispatcher,
+                "delegate",
+                serde_json::json!({ "task": "Review the diff" }),
+            )
+            .await;
+
+            let kickoffs = kickoff_events(&store).await;
+            assert_eq!(kickoffs.len(), 1);
+            assert_eq!(kickoffs[0].identity, "helper-3f2a");
+            assert_eq!(kickoffs[0].data["content"][0]["text"], "Review the diff");
+            assert_eq!(kickoffs[0].data["via_tool"], "delegate");
+        }
+
+        #[tokio::test]
+        async fn spawn_without_console_sink_leaves_outcome_unchanged() {
+            let dispatcher = console_wrapper(
+                serde_json::json!({ "agent_identity": "worker-3" }),
+                false,
+                None,
+            );
+
+            let outcome = dispatch_tool(
+                &dispatcher,
+                "mob_spawn_member",
+                serde_json::json!({
+                    "mob_id": "ob3",
+                    "profile": "person-worker",
+                    "member_id": "worker-3",
+                    "initial_message": "Find the person"
+                }),
+            )
+            .await;
+
+            assert!(!outcome.result.is_error);
+            assert!(
+                outcome
+                    .result
+                    .text_content()
+                    .contains("\"agent_identity\":\"worker-3\""),
+                "no console store → spawn outcome passes through untouched"
+            );
+        }
+
+        #[tokio::test]
+        async fn failed_spawn_projects_nothing() {
+            let store = ConsoleEventStore::new();
+            let dispatcher = console_wrapper(
+                serde_json::json!({ "error": "spawn rejected" }),
+                true,
+                Some(&store),
+            );
+
+            dispatch_tool(
+                &dispatcher,
+                "mob_spawn_member",
+                serde_json::json!({
+                    "mob_id": "ob3",
+                    "profile": "person-worker",
+                    "member_id": "worker-3",
+                    "initial_message": "Find the person"
+                }),
+            )
+            .await;
+
+            assert!(
+                kickoff_events(&store).await.is_empty(),
+                "failed spawns must not seed console chats"
+            );
+            assert!(store.identity_labels("worker-3").await.is_none());
+        }
     }
 }

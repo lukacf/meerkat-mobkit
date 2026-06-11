@@ -662,7 +662,7 @@ async fn console_timeline_handler(
     if let Some(runtime) = &state.runtime
         && let Some(controller) = state.access.as_ref().filter(|c| c.enabled())
     {
-        prime_access_cache_from_handle(&runtime.handle(), controller).await;
+        prime_access_cache_from_runtime(runtime, controller).await;
     }
     let timeline_query = timeline_query_from_http(query, None);
     match Box::pin(aggregator.query_timeline_windowed(timeline_query)).await {
@@ -1083,7 +1083,7 @@ async fn console_timeline_stream_handler(
             .as_ref()
             .filter(|controller| controller.enabled())
     {
-        prime_access_cache_from_handle(&runtime.handle(), controller).await;
+        prime_access_cache_from_runtime(runtime, controller).await;
     }
     let Some(aggregator) = &state.console_aggregator else {
         return console_json_error(
@@ -3962,7 +3962,7 @@ async fn handle_console_runtime_rpc_with_visibility(
     // `/console/experience`. RPC callers must not depend on having polled the
     // experience endpoint first.
     if let Some(controller) = access.filter(|controller| controller.enabled()) {
-        prime_access_cache_from_handle(&runtime.handle(), controller).await;
+        prime_access_cache_from_runtime(runtime, controller).await;
     }
     if let Some(response) = handle_access_admin_rpc(access, access_view, &request) {
         return response;
@@ -6453,6 +6453,7 @@ async fn collect_console_snapshot_read_model(
         ..ConsoleSnapshotReadModelState::default()
     };
     collect_console_session_index_for_handle(&handle, &mut state).await;
+    let registered_labels = runtime.console_identity_labels().await;
 
     // Snapshot + project the primary mob into the cache. Done here
     // under the background refresh lock so per-request
@@ -6460,7 +6461,7 @@ async fn collect_console_snapshot_read_model(
     // methods. The session-id index in `state` was populated above by
     // `collect_console_session_index_for_handle`.
     let (primary_members, _primary_owner_index) =
-        project_console_members_from_handle(&handle, None, None, &state).await;
+        project_console_members_from_handle(&handle, None, None, &state, &registered_labels).await;
     state.primary_members = primary_members;
 
     let Some(mcp_state) = runtime.agent_mob_mcp_state() else {
@@ -6490,6 +6491,7 @@ async fn collect_console_snapshot_read_model(
                 Some(&host_identity),
                 Some(mob_id.as_str()),
                 &state,
+                &registered_labels,
             )
             .await;
             delegate_groups.push(delegate_members);
@@ -7468,10 +7470,36 @@ fn baseline_spec_visible_to_console(
 /// gated on a prior `/console/experience` call. Additive (it does not evict),
 /// so it never clears delegate-member attributes primed by the experience
 /// projection; the experience path owns wholesale rebuild + eviction.
+///
+/// Console metadata registered by agent-tool spawns (`spawned_by` lineage,
+/// spawn labels) fills label gaps the roster does not carry, and identities
+/// known only to the spawn registry (e.g. members of agent-created sub-mobs)
+/// are primed registry-only so lineage rules resolve for them too.
+pub(crate) async fn prime_access_cache_from_runtime(
+    runtime: &MobRuntime,
+    access: &AccessController,
+) {
+    if !access.enabled() {
+        return;
+    }
+    let registered = runtime.console_identity_labels().await;
+    prime_access_cache_from_handle_with_registry(&runtime.handle(), access, &registered).await;
+}
+
 pub(crate) async fn prime_access_cache_from_handle(handle: &MobHandle, access: &AccessController) {
     if !access.enabled() {
         return;
     }
+    prime_access_cache_from_handle_with_registry(handle, access, &BTreeMap::new()).await;
+}
+
+async fn prime_access_cache_from_handle_with_registry(
+    handle: &MobHandle,
+    access: &AccessController,
+    registered: &BTreeMap<String, BTreeMap<String, String>>,
+) {
+    let mut registry_only: BTreeMap<&String, &BTreeMap<String, String>> =
+        registered.iter().collect();
     for entry in handle.list_all_members().await {
         let member_identity = entry.agent_identity.to_string();
         // Console identity may be overridden by a label, mirroring
@@ -7482,11 +7510,27 @@ pub(crate) async fn prime_access_cache_from_handle(handle: &MobHandle, access: &
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
             .map_or_else(|| member_identity.clone(), ToString::to_string);
+        let mut labels = entry.labels.clone();
+        // Roster labels are caller-controlled; only the spawn registry may
+        // assert lineage, or a spoofed `spawned_by` could mint inherited
+        // visibility (or hide a member behind a denied parent).
+        crate::console_spawn::sanitize_unverified_lineage_labels(&mut labels);
+        if let Some(spawn_labels) = registry_only.remove(&console_identity) {
+            crate::console_spawn::merge_registered_labels(&mut labels, spawn_labels);
+        }
         access.record_agent_attributes(AgentResourceAttributes {
             identity: console_identity,
             agent_id: Some(member_identity),
             role: Some(entry.role.to_string()),
-            labels: entry.labels.clone(),
+            labels,
+        });
+    }
+    for (identity, spawn_labels) in registry_only {
+        access.record_agent_attributes(AgentResourceAttributes {
+            identity: identity.clone(),
+            agent_id: None,
+            role: spawn_labels.get("role").cloned(),
+            labels: spawn_labels.clone(),
         });
     }
 }
@@ -7496,6 +7540,7 @@ async fn project_console_members_from_handle(
     host_identity: Option<&str>,
     source_mob_id: Option<&str>,
     read_model: &ConsoleSnapshotReadModelState,
+    registered_labels: &BTreeMap<String, BTreeMap<String, String>>,
 ) -> (Vec<ConsoleMember>, BTreeMap<String, String>) {
     let entries = handle.list_all_members().await;
     let mut members = Vec::with_capacity(entries.len());
@@ -7509,6 +7554,20 @@ async fn project_console_members_from_handle(
         let model_capabilities =
             model_capabilities_for_role(handle.definition(), entry.role.as_str());
         let mut labels = entry.labels.clone();
+        // Spawn-time console metadata (group/display labels, spawned_by
+        // lineage) fills gaps the roster does not carry; roster labels win —
+        // except lineage, which only the spawn registry may assert (this
+        // projection feeds the experience-path ABAC attribute rebuild).
+        crate::console_spawn::sanitize_unverified_lineage_labels(&mut labels);
+        let console_identity_key = entry
+            .labels
+            .get("agent_identity")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map_or(identity.as_str(), |value| value);
+        if let Some(spawn_labels) = registered_labels.get(console_identity_key) {
+            crate::console_spawn::merge_registered_labels(&mut labels, spawn_labels);
+        }
         if let Some(host_identity) = host_identity {
             labels
                 .entry("delegate_host_identity".to_string())
@@ -10361,9 +10420,14 @@ comms = true
             .await?;
 
         let empty_read_model = ConsoleSnapshotReadModelState::default();
-        let (members, session_owner_by_id) =
-            project_console_members_from_handle(&runtime.handle(), None, None, &empty_read_model)
-                .await;
+        let (members, session_owner_by_id) = project_console_members_from_handle(
+            &runtime.handle(),
+            None,
+            None,
+            &empty_read_model,
+            &BTreeMap::new(),
+        )
+        .await;
 
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].model_capabilities, expected);
@@ -10376,6 +10440,7 @@ comms = true
             None,
             None,
             &refreshed_read_model,
+            &BTreeMap::new(),
         )
         .await;
         assert_eq!(
