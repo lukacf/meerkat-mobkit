@@ -1105,14 +1105,14 @@ assert.deepEqual(controller.flowRegistryViewState([
     stage: "valid",
   }],
 }]);
-// Empty registry keeps the drafts section and surfaces the empty state.
+// Empty registry surfaces the empty state alone — no section chrome.
 const emptyRegistryView = controller.flowRegistryViewState([], "", { canCreate: true, flowRegistryView: TEST_FLOW_REGISTRY_VIEW, nowUnixMs: REGISTRY_NOW_UNIX_MS });
 assert.equal(emptyRegistryView.title, "0 mobs");
 assert.deepEqual(emptyRegistryView.empty, {
   title: "No mobs yet",
   text: "Create a mob to start authoring a deployable MobKit flow.",
 });
-assert.deepEqual(emptyRegistryView.sections, [{ key: "drafts", label: "Drafts", hint: "", rows: [] }]);
+assert.deepEqual(emptyRegistryView.sections, []);
 // Description derivation: document.flow.description, then row.description, then "".
 const descriptionRows = controller.flowRegistryViewState([
   { id: "f_doc", name: "Doc", description: "Row fallback.", document: { flow: { description: "  Document first.  " } } },

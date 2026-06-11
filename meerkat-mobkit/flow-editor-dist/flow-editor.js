@@ -7645,7 +7645,7 @@ ${kind}` : "";
     const draftRows = list.filter((row) => !row?.runtime_projection);
     const runtimeRows = list.filter((row) => !!row?.runtime_projection);
     const sections = [];
-    if (draftRows.length || !runtimeRows.length) {
+    if (draftRows.length || list.length && !runtimeRows.length) {
       sections.push({
         key: "drafts",
         label: view.draftsSectionLabel,

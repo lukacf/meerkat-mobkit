@@ -195,7 +195,9 @@ export function flowRegistryViewState(rows, currentFlowId, options = {}) {
   const draftRows = list.filter((row) => !row?.runtime_projection);
   const runtimeRows = list.filter((row) => !!row?.runtime_projection);
   const sections = [];
-  if (draftRows.length || !runtimeRows.length) {
+  // An empty library is communicated by the empty state alone; section
+  // chrome only appears once there is at least one row anywhere.
+  if (draftRows.length || (list.length && !runtimeRows.length)) {
     sections.push({
       key: "drafts",
       label: view.draftsSectionLabel,
