@@ -12,24 +12,41 @@ const defaultOutDir = path.join(root, "dist");
 const defaultRustOutDir = path.join(root, "../meerkat-mobkit/flow-editor-dist");
 const tmpDir = path.join(root, ".tmp");
 const corePackageEntry = path.join(root, "../packages/flow-editor-core/src/index.ts");
+const componentsPackageEntry = path.join(root, "../packages/flow-editor-components/src/index.ts");
 
 // "@flow-editor-core" is a virtual entry: the headless controller package is
 // bundled as an IIFE assigned to window.MobKitFlowCore, and the controller.js
 // bootstrap builds window.MobKitFlowController from its
 // createMobKitFlowController facade. The emitted artifact set and names
 // never change.
+//
+// "@flow-editor-components" is the second virtual entry: the React view
+// package is bundled as an IIFE and a shell adapter footer assigns the same
+// window.* component globals the replaced legacy .jsx files assigned, so
+// app.jsx and the remaining legacy files keep resolving components through
+// window unchanged.
 const CORE_SCRIPT = "@flow-editor-core";
+const COMPONENTS_SCRIPT = "@flow-editor-components";
 const scriptOrder = [
   "data.js",
   CORE_SCRIPT,
   "controller.js",
-  "tweaks-panel.jsx",
+  COMPONENTS_SCRIPT,
   "graph.jsx",
   "inspector.jsx",
   "overlays.jsx",
   "agents.jsx",
   "builder.jsx",
   "app.jsx",
+];
+
+// The window globals the legacy files assigned (tweaks-panel.jsx's
+// Object.assign(window, ...) footer); grows per slice as each .jsx file
+// moves into @flow-editor-components.
+const componentsWindowGlobals = [
+  "useTweaks", "TweaksPanel", "TweakSection", "TweakRow",
+  "TweakSlider", "TweakToggle", "TweakRadio", "TweakSelect",
+  "TweakText", "TweakNumber", "TweakColor", "TweakButton",
 ];
 
 async function buildCoreIife() {
@@ -46,6 +63,31 @@ async function buildCoreIife() {
   });
   const code = result.outputFiles[0].text;
   return `${code}\nwindow.MobKitFlowCore = MobKitFlowCore;\n`;
+}
+
+async function buildComponentsIife() {
+  const result = await build({
+    absWorkingDir: root,
+    entryPoints: [componentsPackageEntry],
+    bundle: true,
+    format: "iife",
+    globalName: "MobKitFlowComponents",
+    platform: "neutral",
+    target: ["es2020"],
+    write: false,
+    jsxFactory: "React.createElement",
+    jsxFragment: "React.Fragment",
+    alias: {
+      "@flow-editor-core": corePackageEntry,
+      "@flow-editor-components": componentsPackageEntry,
+    },
+    nodePaths: [path.join(root, "node_modules")],
+  });
+  const code = result.outputFiles[0].text;
+  const assignments = componentsWindowGlobals
+    .map((name) => `  ${name}: MobKitFlowComponents.${name},`)
+    .join("\n");
+  return `${code}\nObject.assign(window, {\n${assignments}\n});\n`;
 }
 
 function hash(bytes) {
@@ -124,11 +166,14 @@ async function buildAssets({ outDir, rustOutDir }) {
   });
 
   const coreIife = await buildCoreIife();
+  const componentsIife = await buildComponentsIife();
   const appParts = [];
   for (const file of scriptOrder) {
     appParts.push(`\n/* ${file} */\n`);
     if (file === CORE_SCRIPT) {
       appParts.push(coreIife);
+    } else if (file === COMPONENTS_SCRIPT) {
+      appParts.push(componentsIife);
     } else {
       appParts.push(await compileClassicScript(file));
     }

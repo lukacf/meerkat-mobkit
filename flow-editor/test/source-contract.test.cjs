@@ -32,7 +32,11 @@ const controller = [
   ...coreModuleFiles.map((file) => fs.readFileSync(file, "utf8")),
 ].join("\n");
 const topRailBlock = (app.match(/function TopRail[\s\S]*?\/\/ ── Flows registry view/) || [""])[0];
-const tweaksPanel = src("tweaks-panel.jsx");
+// The view layer migrates per legacy .jsx file into @flow-editor-components
+// (S20-S22); each moved file's assertions re-anchor onto its package module.
+const componentsSrcDir = path.join(root, "..", "packages", "flow-editor-components", "src");
+const componentsSrc = (name) => fs.readFileSync(path.join(componentsSrcDir, name), "utf8");
+const tweaksPanel = componentsSrc(path.join("tweaks", "tweaks-panel.tsx"));
 const devServer = fs.readFileSync(path.join(root, "dev-server.cjs"), "utf8");
 const makefile = fs.readFileSync(path.join(root, "..", "Makefile"), "utf8");
 const ciWorkflow = fs.readFileSync(path.join(root, "..", ".github", "workflows", "ci.yml"), "utf8");
