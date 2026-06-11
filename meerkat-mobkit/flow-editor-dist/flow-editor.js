@@ -61,6 +61,7 @@ var MobKitFlowCore = (() => {
     RPC_METHODS: () => RPC_METHODS,
     SCHEMA_COMMAND_KEYS: () => SCHEMA_COMMAND_KEYS,
     SCHEMA_VERSION: () => SCHEMA_VERSION,
+    addInlineSkillToRealms: () => addInlineSkillToRealms,
     agentAccessViewForState: () => agentAccessViewForState,
     agentAccessViewFromSchema: () => agentAccessViewFromSchema,
     agentDetailViewForState: () => agentDetailViewForState,
@@ -94,6 +95,13 @@ var MobKitFlowCore = (() => {
     jsonEquivalent: () => jsonEquivalent,
     launchViewForState: () => launchViewForState,
     launchViewFromSchema: () => launchViewFromSchema,
+    memberInlineSkillPatch: () => memberInlineSkillPatch,
+    memberSkillAccessState: () => memberSkillAccessState,
+    memberSkillRemovePatch: () => memberSkillRemovePatch,
+    memberSkillTogglePatch: () => memberSkillTogglePatch,
+    memberToolAccessPatch: () => memberToolAccessPatch,
+    memberToolAccessState: () => memberToolAccessState,
+    memberToolRemovePatch: () => memberToolRemovePatch,
     newFlowViewForState: () => newFlowViewForState,
     newFlowViewFromSchema: () => newFlowViewFromSchema,
     normalizeMaxInlinePeerNotifications: () => normalizeMaxInlinePeerNotifications,
@@ -102,9 +110,13 @@ var MobKitFlowCore = (() => {
     normalizePositiveInteger: () => normalizePositiveInteger,
     normalizeProfileBackend: () => normalizeProfileBackend,
     normalizeProviderParams: () => normalizeProviderParams,
+    normalizeSkillId: () => normalizeSkillId,
+    normalizeStepToolScopeList: () => normalizeStepToolScopeList,
     normalizeStringList: () => normalizeStringList,
+    normalizeToolRef: () => normalizeToolRef,
     numberOrNull: () => numberOrNull,
     operationErrorText: () => operationErrorText,
+    profileName: () => profileName,
     roleAccentColor: () => roleAccentColor,
     roleAccentStyle: () => roleAccentStyle,
     rpcMethod: () => rpcMethod,
@@ -115,283 +127,17 @@ var MobKitFlowCore = (() => {
     settingsViewFromSchema: () => settingsViewFromSchema,
     settingsViewLabelMapFromSchema: () => settingsViewLabelMapFromSchema,
     settingsViewOptionsFromSchema: () => settingsViewOptionsFromSchema,
+    skillIdsFromRealms: () => skillIdsFromRealms,
+    slug: () => slug,
+    stepToolScopeAddPatch: () => stepToolScopeAddPatch,
+    stepToolScopeRemovePatch: () => stepToolScopeRemovePatch,
+    stepToolScopeState: () => stepToolScopeState,
+    toolCatalogEntryAvailability: () => toolCatalogEntryAvailability,
+    toolCatalogEntryAvailable: () => toolCatalogEntryAvailable,
+    validMemberToolIds: () => validMemberToolIds,
+    validStepToolSet: () => validStepToolSet,
     viewStringMapFromSchema: () => viewStringMapFromSchema
   });
-
-  // ../packages/flow-editor-core/src/shared/constants.ts
-  var SCHEMA_VERSION = "0.1.0";
-  var RPC_METHODS = {
-    schema: "mobkit/mobpacks/schema",
-    catalogs: "mobkit/mobpacks/catalogs",
-    validate: "mobkit/mobpacks/validate",
-    source: "mobkit/mobpacks/source",
-    export: "mobkit/mobpacks/export",
-    import: "mobkit/mobpacks/import",
-    list: "mobkit/mobpacks/list",
-    get: "mobkit/mobpacks/get",
-    create: "mobkit/mobpacks/create",
-    save: "mobkit/mobpacks/save",
-    delete: "mobkit/mobpacks/delete",
-    undo: "mobkit/mobpacks/undo",
-    redo: "mobkit/mobpacks/redo",
-    applyOperation: "mobkit/mobpacks/apply_operation",
-    graphProjection: "mobkit/mobpacks/graph_projection",
-    graphToFlow: "mobkit/mobpacks/graph_to_flow",
-    deployCommand: "mobkit/mobpacks/deploy_command",
-    deploy: "mobkit/mobpacks/deploy"
-  };
-  var SCHEMA_COMMAND_KEYS = {
-    schema: "schema",
-    catalogs: "catalogs",
-    validate: "validate",
-    source: "source",
-    export: "export",
-    import: "import",
-    list: "list",
-    get: "get",
-    create: "create",
-    save: "save",
-    delete: "delete",
-    undo: "undo",
-    redo: "redo",
-    applyOperation: "apply_operation",
-    graphProjection: "graph_projection",
-    graphToFlow: "graph_to_flow",
-    deployCommand: "deploy_command",
-    deploy: "deploy_rpc"
-  };
-  var EMPTY_DEPLOY_SETTINGS = {
-    command: "",
-    surface: "",
-    trustPolicy: "",
-    model: "",
-    maxDuration: "",
-    maxToolCalls: null,
-    maxTotalTokens: null,
-    isolated: false,
-    realm: "",
-    instance: "",
-    realmBackend: "",
-    contextRoot: "",
-    stateRoot: "",
-    userConfigRoot: "",
-    prompt: ""
-  };
-  var EMPTY_MOB_SETTINGS = {
-    orchestrator: "",
-    autoWireOrchestrator: false,
-    roleWiring: [],
-    backendDefault: "",
-    externalAddressBase: "",
-    advanced: {
-      topology: null,
-      supervisor: null,
-      limits: null,
-      spawnPolicy: null,
-      eventRouter: null
-    }
-  };
-  var MOB_SETTINGS_PATCH_KEYS = new Set(Object.keys(EMPTY_MOB_SETTINGS));
-  var GRAPH_NODE_W = 200;
-  var GRAPH_NODE_H = 156;
-
-  // ../packages/flow-editor-core/src/rpc/client.ts
-  var controllerConfig = {
-    rpcUrl: "/flow-editor/rpc",
-    rpcMethods: { ...RPC_METHODS }
-  };
-  function configure(options) {
-    const rpcUrl = String(options?.rpcUrl || "").trim();
-    if (rpcUrl) {
-      controllerConfig.rpcUrl = rpcUrl;
-    }
-  }
-  function rpcPath() {
-    return controllerConfig.rpcUrl || "/flow-editor/rpc";
-  }
-  function operationErrorText(result = null, fallback = "") {
-    if (!result || typeof result !== "object") return "";
-    const validationRow = result?.validation?.display_rows?.[0] || null;
-    const validationMessage = String(validationRow?.sub || "").trim();
-    if (validationMessage) return validationMessage;
-    const validationHead = String(validationRow?.head || "").trim();
-    if (validationHead) return validationHead;
-    const error = String(result?.error || "").trim();
-    if (error) return error;
-    return result.ok === false ? String(fallback || "").trim() : "";
-  }
-  function rpcMethod(name) {
-    return controllerConfig.rpcMethods?.[name] || RPC_METHODS[name] || "";
-  }
-  function authoringRpcMethodsFromSchema(schema) {
-    const commands = schema?.commands;
-    if (!commands || typeof commands !== "object") return {};
-    const out = {};
-    for (const [name, commandKey] of Object.entries(SCHEMA_COMMAND_KEYS)) {
-      const value = String(commands[commandKey] || "").trim();
-      if (value) out[name] = value;
-    }
-    return out;
-  }
-  function authoringOperationsFromSchema(schema) {
-    const operations = Array.isArray(schema?.operations) ? schema.operations : [];
-    const out = {};
-    for (const operation of operations) {
-      if (!operation || typeof operation !== "object") continue;
-      const type = String(operation.type || "").trim();
-      if (!type) continue;
-      out[type] = {
-        type,
-        plane: String(operation.plane || ""),
-        authority: String(operation.authority || ""),
-        requires: Array.isArray(operation.requires) ? operation.requires.map((item) => String(item || "")).filter(Boolean) : [],
-        mutates: Array.isArray(operation.mutates) ? operation.mutates.map((item) => String(item || "")).filter(Boolean) : [],
-        projectionDocumentSupported: !!operation.projection_document_supported || !!operation.projectionDocumentSupported,
-        raw: operation
-      };
-    }
-    return out;
-  }
-  function authoringOperationAvailability(operations, type) {
-    const operationType = String(type || "").trim();
-    const entry = operations && typeof operations === "object" ? operations[operationType] : null;
-    return {
-      type: operationType,
-      supported: !!entry,
-      operation: entry || null,
-      error: entry || !operationType ? "" : `MobKit authoring operation unavailable: ${operationType}`
-    };
-  }
-  function authoringOperationFromIntent(request = {}) {
-    const input = request && typeof request === "object" ? request : {};
-    if (input.type) return input;
-    const intent = String(input.intent || "").trim();
-    switch (intent) {
-      case "system.syncGraphToFlow":
-        return { type: "sync_graph_to_flow", reason: input.reason || "sync_graph_to_flow", selection: input.selection || null };
-      case "system.reconcileMembers":
-        return { type: "reconcile_members", reason: input.reason || "reconcile_members", selection: input.selection || null };
-      case "system.reconcileConditionFields":
-        return { type: "reconcile_condition_fields", reason: input.reason || "reconcile_condition_fields", selection: input.selection || null };
-      case "system.reconcileContractRefs":
-        return { type: "reconcile_contract_refs", reason: input.reason || "reconcile_contract_refs", selection: input.selection || null };
-      case "agent.addDefinition":
-        return { type: "add_agent_definition", definition_id: input.definitionId };
-      case "agent.updateMember":
-        return { type: "update_member", member_id: input.memberId, patch: input.patch || {} };
-      case "agent.addTool":
-        return { type: "add_member_tool", member_id: input.memberId, tool_id: input.toolId };
-      case "agent.removeTool":
-        return { type: "remove_member_tool", member_id: input.memberId, tool_id: input.toolId };
-      case "agent.toggleSkill":
-        return { type: "toggle_member_skill", member_id: input.memberId, skill_id: input.skillId };
-      case "agent.removeSkill":
-        return { type: "remove_member_skill", member_id: input.memberId, skill_id: input.skillId };
-      case "agent.createInlineSkill":
-        return { type: "create_inline_skill", member_id: input.memberId, label: input.label, content: input.content };
-      case "agent.assignSchema":
-        return { type: "assign_member_schema", member_id: input.memberId, schema_id: input.schemaId };
-      case "agent.deleteMember":
-        return { type: "delete_member", member_id: input.memberId };
-      case "schema.add":
-        return { type: "add_schema" };
-      case "schema.update":
-        return { type: "update_schema", schema_id: input.schemaId, patch: input.patch || {} };
-      case "schema.rename":
-        return { type: "rename_schema", schema_id: input.schemaId, new_id: input.newId };
-      case "schema.delete":
-        return { type: "delete_schema", schema_id: input.schemaId };
-      case "schema.addField":
-        return { type: "add_schema_field", schema_id: input.schemaId };
-      case "schema.updateField":
-        return { type: "update_schema_field", schema_id: input.schemaId, field_id: input.fieldId, patch: input.patch || {} };
-      case "schema.renameField":
-        return { type: "rename_schema_field", schema_id: input.schemaId, field_id: input.fieldId, new_name: input.newName };
-      case "schema.deleteField":
-        return { type: "delete_schema_field", schema_id: input.schemaId, field_id: input.fieldId };
-      case "settings.updateDeploy":
-        return { type: "unsupported_settings_replace", selection: input.selection || null };
-      case "settings.updateDeployField":
-        return { type: "update_deploy_settings", field: input.field, value: input.value, selection: input.selection || null };
-      case "settings.updateMob":
-        return { type: "unsupported_settings_replace", selection: input.selection || null };
-      case "settings.updateMobField":
-        return { type: "update_mob_settings", field: input.field, value: input.value, selection: input.selection || null };
-      case "settings.updateRoleWiring":
-        return { type: "unsupported_settings_replace", selection: input.selection || null };
-      case "settings.editRoleWiring":
-        return { type: "update_role_wiring", action: input.action, index: input.index, field: input.field, value: input.value, selection: input.selection || null };
-      case "basic.updateStep":
-        return { type: "update_flow_step", step_id: input.stepId, patch: input.patch || {} };
-      case "basic.editStep":
-        return { type: "apply_flow_step_edit", step_id: input.stepId, action: input.action, ...input.payload || {} };
-      case "basic.insertStep":
-        return { type: "insert_flow_step", pick: input.pick, lane_ref: input.laneRef };
-      case "basic.deleteStep":
-        return { type: "delete_flow_step", step_id: input.stepId };
-      case "basic.addInputParam":
-        return { type: "add_input_param", step_id: input.stepId };
-      case "basic.updateInputParam":
-        return { type: "update_input_param", step_id: input.stepId, param_id: input.paramId, patch: input.patch || {} };
-      case "basic.renameInputParam":
-        return { type: "rename_input_param", step_id: input.stepId, param_id: input.paramId, new_name: input.newName };
-      case "basic.deleteInputParam":
-        return { type: "delete_input_param", step_id: input.stepId, param_id: input.paramId };
-      case "graph.insertNode":
-        return { type: "insert_graph_node", ...input.operation || { pick: input.pick, cell: input.cell } };
-      case "graph.editNode":
-        return { type: "apply_graph_node_edit", instance_id: input.instanceId, action: input.action, ...input.payload || {} };
-      case "graph.moveNode":
-        return { type: "move_graph_node", instance_id: input.instanceId, cell: input.cell, original_cell: input.originalCell };
-      case "graph.deleteNode":
-        return { type: "delete_graph_node", instance_id: input.instanceId };
-      case "graph.connectNodes":
-        return { type: "connect_graph_nodes", ...input.operation || { from_id: input.fromId, to_id: input.toId } };
-      case "graph.editEdge":
-        return { type: "apply_graph_edge_edit", edge_id: input.edgeId, action: input.action, ...input.payload || {} };
-      case "graph.deleteEdge":
-        return { type: "delete_graph_edge", edge_id: input.edgeId };
-      default:
-        return input;
-    }
-  }
-  function inlineSkillRealmIdFromOperationResult(result) {
-    const skillId = String(result?.selection?.skill_id || result?.skill_id || "").trim();
-    const realms = Array.isArray(result?.document?.skill_realms) ? result.document.skill_realms : [];
-    if (!skillId) return "";
-    const realm = realms.find((candidate) => {
-      return Array.isArray(candidate?.skills) && candidate.skills.some((skill) => String(skill?.id || "").trim() === skillId);
-    });
-    return String(realm?.id || "").trim();
-  }
-  function configureAuthoringMethodsFromSchema(schema) {
-    const methods = authoringRpcMethodsFromSchema(schema);
-    controllerConfig.rpcMethods = { ...RPC_METHODS, ...methods };
-    controllerConfig.authoringOperations = authoringOperationsFromSchema(schema);
-    return { ...controllerConfig.rpcMethods };
-  }
-  var requestId = 0;
-  async function callRpc(method, params, options = {}) {
-    const response = await fetch(rpcPath(), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      ...options.signal ? { signal: options.signal } : {},
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: ++requestId,
-        method,
-        params: params || {}
-      })
-    });
-    if (!response.ok) {
-      throw new Error(`MobKit API ${response.status}`);
-    }
-    const payload = await response.json();
-    if (payload.error) {
-      throw new Error(payload.error.message || "MobKit API error");
-    }
-    return payload.result;
-  }
 
   // ../packages/flow-editor-core/src/shared/normalize.ts
   function normalizeProfileBackend(value) {
@@ -1564,6 +1310,626 @@ var MobKitFlowCore = (() => {
       return { id, glyph, label, meta };
     }).filter(Boolean);
   }
+
+  // ../packages/flow-editor-core/src/_residue-bridge.ts
+  function basicEditorViewState(basicView) {
+    return window.MobKitFlowController.basicEditorViewState(basicView);
+  }
+
+  // ../packages/flow-editor-core/src/domain/tool-skill-access.ts
+  function slug(value, fallback) {
+    const out = String(value || fallback || "mobpack").toLowerCase().replace(/[^a-z0-9_ -]+/g, "").trim().replace(/[\s-]+/g, "_").replace(/^_+|_+$/g, "");
+    return out || fallback || "mobpack";
+  }
+  function profileName(member) {
+    return slug(member?.name || member?.role || member?.id || "member", "member");
+  }
+  function normalizeToolRef(raw, catalog) {
+    const id = String(raw || "").trim();
+    if (!id) return "";
+    const entries = Array.isArray(catalog) ? catalog : [];
+    const entry = (entries || []).find((tool) => tool.id === id);
+    if (entry && toolCatalogEntryAvailable(entry)) return id;
+    return "";
+  }
+  function toolCatalogEntryAvailability(tool) {
+    const availability = tool?.runtimeAvailability || tool?.runtime_availability || null;
+    return availability && typeof availability === "object" ? availability : null;
+  }
+  function toolCatalogEntryAvailable(tool) {
+    const availability = toolCatalogEntryAvailability(tool);
+    return availability?.available === false ? false : true;
+  }
+  function normalizeSkillId(raw) {
+    return String(raw || "").trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, ".").replace(/^[._-]+|[._-]+$/g, "").replace(/\.{2,}/g, ".");
+  }
+  function skillIdsFromRealms(realms) {
+    const ids = /* @__PURE__ */ new Set();
+    for (const realm of realms || []) {
+      for (const skill of realm?.skills || []) {
+        if (skill?.id) ids.add(String(skill.id));
+      }
+    }
+    return ids;
+  }
+  function addInlineSkillToRealms(realms, spec = {}, accessView = null) {
+    const view = agentAccessViewForState(accessView);
+    const nextRealms = JSON.parse(JSON.stringify(realms || []));
+    const label = String(spec.label || spec.id || "").trim();
+    if (!label) throw new Error(view.skillInlineMissingLabelError);
+    const content = String(spec.content || "").trim();
+    if (!content) throw new Error(view.skillInlineMissingContentError);
+    const used = skillIdsFromRealms(nextRealms);
+    const explicitId = String(spec.id || "").trim();
+    const identityText = explicitId || label;
+    if (!normalizeSkillId(identityText)) throw new Error(view.skillInlineInvalidIdError);
+    const rawId = explicitId || (label.includes(".") ? label : `mob.${label}`);
+    const baseId = normalizeSkillId(rawId);
+    if (!baseId) throw new Error(view.skillInlineInvalidIdError);
+    let id = baseId;
+    let index = 2;
+    while (used.has(id)) id = `${baseId}.${index++}`;
+    let realm = nextRealms.find((candidate) => candidate?.id === view.inlineSkillRealmId);
+    if (!realm) {
+      realm = {
+        id: view.inlineSkillRealmId,
+        label: view.inlineSkillRealmLabel,
+        source: view.inlineSkillRealmSource,
+        default: nextRealms.length === 0,
+        skills: []
+      };
+      nextRealms.unshift(realm);
+    }
+    if (!Array.isArray(realm.skills)) realm.skills = [];
+    realm.skills.push({
+      id,
+      label,
+      source: view.inlineSkillSource,
+      content,
+      desc: spec.desc || view.inlineSkillDefaultDescription
+    });
+    return { id, skillRealms: nextRealms };
+  }
+  function memberToolAccessPatch(member, raw, toolCatalog, accessView = null) {
+    const view = agentAccessViewForState(accessView);
+    const id = normalizeToolRef(raw, toolCatalog);
+    if (!id) {
+      return {
+        ok: false,
+        id: "",
+        error: raw ? view.toolInvalidError : "",
+        patch: null
+      };
+    }
+    const tools = normalizeStringList(member?.tools);
+    if (tools.includes(id)) {
+      return { ok: true, id, alreadySelected: true, patch: null };
+    }
+    return { ok: true, id, alreadySelected: false, patch: { tools: [...tools, id] } };
+  }
+  function memberToolRemovePatch(member, toolId) {
+    const id = String(toolId || "").trim();
+    if (!id) return { ok: false, id: "", patch: null };
+    const tools = normalizeStringList(member?.tools);
+    return { ok: true, id, patch: { tools: tools.filter((candidate) => candidate !== id) } };
+  }
+  function memberToolAccessState(member, toolCatalog = [], accessView = null) {
+    const view = agentAccessViewForState(accessView);
+    const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
+    const metaById = new Map(catalog.map((tool) => [String(tool.id), tool]));
+    const selectedTools = normalizeStringList(member?.tools);
+    const selectedSet = new Set(selectedTools);
+    const catalogSet = new Set(catalog.map((tool) => String(tool.id)));
+    const toolRow = (id) => {
+      const meta = metaById.get(id) || null;
+      const unavailable = !catalogSet.has(id);
+      const runtimeAvailability = toolCatalogEntryAvailability(meta);
+      const runtimeUnavailable = runtimeAvailability?.available === false;
+      const reason = unavailable ? view.toolInvalidError : runtimeUnavailable ? runtimeAvailability.reason || view.toolInvalidError : "";
+      return {
+        id,
+        name: id,
+        unavailable: unavailable || runtimeUnavailable,
+        reason,
+        description: reason || meta?.desc || view.toolMissingDescription,
+        meta,
+        runtimeAvailability,
+        className: `tool-row${unavailable || runtimeUnavailable ? " tool-row--invalid" : ""}`,
+        removeLabel: view.toolRemoveLabel
+      };
+    };
+    const addableRow = (tool) => {
+      const id = String(tool.id);
+      const label = tool.label || id;
+      const desc = tool.desc || id;
+      return {
+        id,
+        value: id,
+        label,
+        description: desc,
+        optionLabel: `${label} \u2014 ${desc}`,
+        disabled: !toolCatalogEntryAvailable(tool),
+        meta: tool
+      };
+    };
+    return {
+      selectedTools,
+      title: view.toolTitle,
+      hint: view.toolHint,
+      rows: selectedTools.map(toolRow),
+      addableRows: catalog.filter((tool) => !selectedSet.has(String(tool.id))).map(addableRow),
+      addSelectValue: "",
+      addSelectPlaceholder: view.toolAddSelectPlaceholder,
+      sourceLabel: view.toolSourceLabel,
+      sourcePlaceholder: view.toolSourcePlaceholder,
+      addButtonLabel: view.toolAddButtonLabel,
+      emptyToolError: view.toolEmptyError,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError
+    };
+  }
+  function stepToolScopeState({ member, selected, mode = "member", toolCatalog = [], basicView = null } = {}) {
+    const view = basicEditorViewState(basicView);
+    const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
+    const catalogIds = Array.from(new Set(catalog.map((tool) => String(tool.id).trim()).filter(Boolean)));
+    const selectedTools = Array.from(new Set(normalizeStringList(selected)));
+    const memberToolIds = validMemberToolIds(member, catalogIds);
+    const validToolIds = mode === "catalog" ? catalogIds : memberToolIds;
+    const validToolSet = new Set(validToolIds);
+    const addable = validToolIds.filter((id) => !selectedTools.includes(id));
+    const metaById = new Map(catalog.map((tool) => [String(tool.id), tool]));
+    const rowFor = (id) => {
+      const meta = metaById.get(id) || null;
+      const unavailable = !validToolSet.has(id);
+      const reason = unavailable ? mode === "catalog" ? view.toolScopeNotInCatalogReason : view.toolScopeNotEnabledReason : "";
+      return {
+        id,
+        name: id,
+        meta,
+        unavailable,
+        reason,
+        className: `tool-row${unavailable ? " tool-row--invalid" : ""}`,
+        description: unavailable ? reason : meta?.desc || view.toolScopeToolDescriptionFallback,
+        removeLabel: view.toolScopeRemoveLabel
+      };
+    };
+    const optionFor = (id) => {
+      const meta = metaById.get(id) || null;
+      const label = meta?.label || id;
+      const desc = meta?.desc || id;
+      return {
+        id,
+        value: id,
+        label,
+        description: desc,
+        optionLabel: `${label} \u2014 ${desc}`,
+        meta
+      };
+    };
+    return {
+      selectedTools,
+      addable,
+      addableRows: addable.map(optionFor),
+      rows: selectedTools.map(rowFor),
+      addSelectValue: "",
+      addSelectPlaceholder: mode === "member" && !member ? view.toolScopeSelectMemberPlaceholder : mode === "catalog" ? view.toolScopeBlockCatalogPlaceholder : view.toolScopeAddProfilePlaceholder,
+      disabled: mode === "member" && !member || addable.length === 0
+    };
+  }
+  function validMemberToolIds(member, catalogIds) {
+    const catalogIdSet = new Set(catalogIds || []);
+    return Array.from(new Set(normalizeStringList(member?.tools).filter((id) => catalogIdSet.has(id))));
+  }
+  function validStepToolSet({ member, mode = "member", toolCatalog = [] } = {}) {
+    const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
+    const catalogIds = Array.from(new Set(catalog.map((tool) => String(tool.id).trim()).filter(Boolean)));
+    if (mode === "catalog") return new Set(catalogIds);
+    return new Set(validMemberToolIds(member, catalogIds));
+  }
+  function normalizeStepToolScopeList(tools, options = {}) {
+    const validTools = validStepToolSet(options);
+    return Array.from(new Set(normalizeStringList(tools).filter((tool) => validTools.has(tool))));
+  }
+  function stepToolScopeAddPatch(selected, raw, options = {}) {
+    const id = String(raw || "").trim();
+    const field = options.field || "allowedTools";
+    if (!id) return { ok: false, id: "", patch: null };
+    const state = stepToolScopeState({ ...options, selected });
+    if (!state.addable.includes(id)) {
+      return { ok: false, id, patch: null };
+    }
+    return {
+      ok: true,
+      id,
+      patch: { [field]: [...state.selectedTools, id] }
+    };
+  }
+  function stepToolScopeRemovePatch(selected, raw, options = {}) {
+    const id = String(raw || "").trim();
+    const field = options.field || "allowedTools";
+    if (!id) return { ok: false, id: "", patch: null };
+    const selectedTools = Array.from(new Set(normalizeStringList(selected)));
+    return {
+      ok: true,
+      id,
+      patch: { [field]: selectedTools.filter((candidate) => candidate !== id) }
+    };
+  }
+  function memberSkillTogglePatch(member, skillId, skillRealms = []) {
+    const id = String(skillId || "").trim();
+    if (!id) return { ok: false, id: "", patch: null };
+    const skills = normalizeStringList(member?.skills);
+    const selected = skills.includes(id);
+    if (!selected && !skillIdsFromRealms(skillRealms).has(id)) {
+      return { ok: false, id, patch: null };
+    }
+    return {
+      ok: true,
+      id,
+      selected: !selected,
+      patch: { skills: selected ? skills.filter((candidate) => candidate !== id) : [...skills, id] }
+    };
+  }
+  function memberSkillRemovePatch(member, skillId) {
+    const id = String(skillId || "").trim();
+    if (!id) return { ok: false, id: "", patch: null };
+    const skills = normalizeStringList(member?.skills);
+    return { ok: true, id, patch: { skills: skills.filter((candidate) => candidate !== id) } };
+  }
+  function memberInlineSkillPatch(member, realms, spec = {}, accessView = null) {
+    const view = agentAccessViewForState(accessView);
+    const result = addInlineSkillToRealms(realms, spec, accessView);
+    const skills = normalizeStringList(member?.skills);
+    return {
+      ...result,
+      realmId: view.inlineSkillRealmId,
+      patch: { skills: skills.includes(result.id) ? skills : [...skills, result.id] }
+    };
+  }
+  function memberSkillAccessState({ member, skillRealms, realmId = "", inlineOpen = false, accessView = null } = {}) {
+    const view = agentAccessViewForState(accessView);
+    const realms = Array.isArray(skillRealms) ? skillRealms.filter((realm) => realm?.id) : [];
+    const defaultRealm = realms.find((realm) => realm.default) || realms[0] || null;
+    const selectedRealm = realms.find((realm) => realm.id === realmId) || defaultRealm;
+    const selectedSkillIds = normalizeStringList(member?.skills);
+    const selectedSet = new Set(selectedSkillIds);
+    const byId = /* @__PURE__ */ new Map();
+    for (const sourceRealm of realms) {
+      for (const skill of sourceRealm.skills || []) {
+        const id = String(skill?.id || "").trim();
+        if (!id || byId.has(id)) continue;
+        byId.set(id, { ...skill, id, realm: sourceRealm });
+      }
+    }
+    const skillRows = (selectedRealm?.skills || []).filter((skill) => String(skill?.id || "").trim()).map((skill) => {
+      const id = String(skill.id).trim();
+      const selected = selectedSet.has(id);
+      return {
+        id,
+        selected,
+        className: `skill-row${selected ? " is-on" : ""}`,
+        checkLabel: selected ? view.skillSelectedCheckLabel : "",
+        name: id,
+        desc: skill.desc || skill.path || skill.source || view.skillDefaultDescription,
+        skill
+      };
+    });
+    const selectedOutsideRealm = selectedSkillIds.map((id) => byId.get(id)).filter((skill) => skill && skill.realm?.id !== selectedRealm?.id).map((skill) => ({
+      id: skill.id,
+      realmId: skill.realm?.id || "",
+      realmLabel: skill.realm?.label || skill.realm?.id || "",
+      className: "skill-chip",
+      title: skill.realm?.label || skill.realm?.id || "",
+      label: skill.id,
+      detail: skill.realm?.label || skill.realm?.id || "",
+      removeLabel: view.skillRemoveLabel
+    }));
+    const unavailableSelected = selectedSkillIds.filter((id) => !byId.has(id)).map((id) => ({
+      id,
+      className: "skill-chip is-invalid",
+      label: id,
+      removeLabel: view.skillRemoveLabel
+    }));
+    return {
+      sectionTitle: view.skillSectionTitle,
+      inlineToggleLabel: inlineOpen ? view.skillInlineCancelLabel : view.skillInlineOpenLabel,
+      hint: view.skillHint,
+      inlineLabelPlaceholder: view.skillInlineLabelPlaceholder,
+      inlineContentRows: view.skillInlineContentRows,
+      inlineContentPlaceholder: view.skillInlineContentPlaceholder,
+      inlineCreateHint: view.skillInlineCreateHint,
+      inlineAddLabel: view.skillInlineAddLabel,
+      inlineErrorFallback: view.skillInlineErrorFallback,
+      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
+      noRealmsMessage: view.skillNoRealmsMessage,
+      realmLabel: view.skillRealmLabel,
+      hasRealms: realms.length > 0,
+      realmId: selectedRealm?.id || "",
+      realmOptions: realms.map((realm) => ({
+        id: realm.id,
+        label: `${realm.label || realm.id}${realm.default ? view.skillDefaultRealmSuffix : ""}`
+      })),
+      skillRows,
+      selectedOutsideRealm,
+      unavailableSelected,
+      unavailableHeading: view.skillUnavailableHeading,
+      outsideRealmHeading: view.skillOutsideRealmHeading
+    };
+  }
+
+  // ../packages/flow-editor-core/src/shared/constants.ts
+  var SCHEMA_VERSION = "0.1.0";
+  var RPC_METHODS = {
+    schema: "mobkit/mobpacks/schema",
+    catalogs: "mobkit/mobpacks/catalogs",
+    validate: "mobkit/mobpacks/validate",
+    source: "mobkit/mobpacks/source",
+    export: "mobkit/mobpacks/export",
+    import: "mobkit/mobpacks/import",
+    list: "mobkit/mobpacks/list",
+    get: "mobkit/mobpacks/get",
+    create: "mobkit/mobpacks/create",
+    save: "mobkit/mobpacks/save",
+    delete: "mobkit/mobpacks/delete",
+    undo: "mobkit/mobpacks/undo",
+    redo: "mobkit/mobpacks/redo",
+    applyOperation: "mobkit/mobpacks/apply_operation",
+    graphProjection: "mobkit/mobpacks/graph_projection",
+    graphToFlow: "mobkit/mobpacks/graph_to_flow",
+    deployCommand: "mobkit/mobpacks/deploy_command",
+    deploy: "mobkit/mobpacks/deploy"
+  };
+  var SCHEMA_COMMAND_KEYS = {
+    schema: "schema",
+    catalogs: "catalogs",
+    validate: "validate",
+    source: "source",
+    export: "export",
+    import: "import",
+    list: "list",
+    get: "get",
+    create: "create",
+    save: "save",
+    delete: "delete",
+    undo: "undo",
+    redo: "redo",
+    applyOperation: "apply_operation",
+    graphProjection: "graph_projection",
+    graphToFlow: "graph_to_flow",
+    deployCommand: "deploy_command",
+    deploy: "deploy_rpc"
+  };
+  var EMPTY_DEPLOY_SETTINGS = {
+    command: "",
+    surface: "",
+    trustPolicy: "",
+    model: "",
+    maxDuration: "",
+    maxToolCalls: null,
+    maxTotalTokens: null,
+    isolated: false,
+    realm: "",
+    instance: "",
+    realmBackend: "",
+    contextRoot: "",
+    stateRoot: "",
+    userConfigRoot: "",
+    prompt: ""
+  };
+  var EMPTY_MOB_SETTINGS = {
+    orchestrator: "",
+    autoWireOrchestrator: false,
+    roleWiring: [],
+    backendDefault: "",
+    externalAddressBase: "",
+    advanced: {
+      topology: null,
+      supervisor: null,
+      limits: null,
+      spawnPolicy: null,
+      eventRouter: null
+    }
+  };
+  var MOB_SETTINGS_PATCH_KEYS = new Set(Object.keys(EMPTY_MOB_SETTINGS));
+  var GRAPH_NODE_W = 200;
+  var GRAPH_NODE_H = 156;
+
+  // ../packages/flow-editor-core/src/rpc/client.ts
+  var controllerConfig = {
+    rpcUrl: "/flow-editor/rpc",
+    rpcMethods: { ...RPC_METHODS }
+  };
+  function configure(options) {
+    const rpcUrl = String(options?.rpcUrl || "").trim();
+    if (rpcUrl) {
+      controllerConfig.rpcUrl = rpcUrl;
+    }
+  }
+  function rpcPath() {
+    return controllerConfig.rpcUrl || "/flow-editor/rpc";
+  }
+  function operationErrorText(result = null, fallback = "") {
+    if (!result || typeof result !== "object") return "";
+    const validationRow = result?.validation?.display_rows?.[0] || null;
+    const validationMessage = String(validationRow?.sub || "").trim();
+    if (validationMessage) return validationMessage;
+    const validationHead = String(validationRow?.head || "").trim();
+    if (validationHead) return validationHead;
+    const error = String(result?.error || "").trim();
+    if (error) return error;
+    return result.ok === false ? String(fallback || "").trim() : "";
+  }
+  function rpcMethod(name) {
+    return controllerConfig.rpcMethods?.[name] || RPC_METHODS[name] || "";
+  }
+  function authoringRpcMethodsFromSchema(schema) {
+    const commands = schema?.commands;
+    if (!commands || typeof commands !== "object") return {};
+    const out = {};
+    for (const [name, commandKey] of Object.entries(SCHEMA_COMMAND_KEYS)) {
+      const value = String(commands[commandKey] || "").trim();
+      if (value) out[name] = value;
+    }
+    return out;
+  }
+  function authoringOperationsFromSchema(schema) {
+    const operations = Array.isArray(schema?.operations) ? schema.operations : [];
+    const out = {};
+    for (const operation of operations) {
+      if (!operation || typeof operation !== "object") continue;
+      const type = String(operation.type || "").trim();
+      if (!type) continue;
+      out[type] = {
+        type,
+        plane: String(operation.plane || ""),
+        authority: String(operation.authority || ""),
+        requires: Array.isArray(operation.requires) ? operation.requires.map((item) => String(item || "")).filter(Boolean) : [],
+        mutates: Array.isArray(operation.mutates) ? operation.mutates.map((item) => String(item || "")).filter(Boolean) : [],
+        projectionDocumentSupported: !!operation.projection_document_supported || !!operation.projectionDocumentSupported,
+        raw: operation
+      };
+    }
+    return out;
+  }
+  function authoringOperationAvailability(operations, type) {
+    const operationType = String(type || "").trim();
+    const entry = operations && typeof operations === "object" ? operations[operationType] : null;
+    return {
+      type: operationType,
+      supported: !!entry,
+      operation: entry || null,
+      error: entry || !operationType ? "" : `MobKit authoring operation unavailable: ${operationType}`
+    };
+  }
+  function authoringOperationFromIntent(request = {}) {
+    const input = request && typeof request === "object" ? request : {};
+    if (input.type) return input;
+    const intent = String(input.intent || "").trim();
+    switch (intent) {
+      case "system.syncGraphToFlow":
+        return { type: "sync_graph_to_flow", reason: input.reason || "sync_graph_to_flow", selection: input.selection || null };
+      case "system.reconcileMembers":
+        return { type: "reconcile_members", reason: input.reason || "reconcile_members", selection: input.selection || null };
+      case "system.reconcileConditionFields":
+        return { type: "reconcile_condition_fields", reason: input.reason || "reconcile_condition_fields", selection: input.selection || null };
+      case "system.reconcileContractRefs":
+        return { type: "reconcile_contract_refs", reason: input.reason || "reconcile_contract_refs", selection: input.selection || null };
+      case "agent.addDefinition":
+        return { type: "add_agent_definition", definition_id: input.definitionId };
+      case "agent.updateMember":
+        return { type: "update_member", member_id: input.memberId, patch: input.patch || {} };
+      case "agent.addTool":
+        return { type: "add_member_tool", member_id: input.memberId, tool_id: input.toolId };
+      case "agent.removeTool":
+        return { type: "remove_member_tool", member_id: input.memberId, tool_id: input.toolId };
+      case "agent.toggleSkill":
+        return { type: "toggle_member_skill", member_id: input.memberId, skill_id: input.skillId };
+      case "agent.removeSkill":
+        return { type: "remove_member_skill", member_id: input.memberId, skill_id: input.skillId };
+      case "agent.createInlineSkill":
+        return { type: "create_inline_skill", member_id: input.memberId, label: input.label, content: input.content };
+      case "agent.assignSchema":
+        return { type: "assign_member_schema", member_id: input.memberId, schema_id: input.schemaId };
+      case "agent.deleteMember":
+        return { type: "delete_member", member_id: input.memberId };
+      case "schema.add":
+        return { type: "add_schema" };
+      case "schema.update":
+        return { type: "update_schema", schema_id: input.schemaId, patch: input.patch || {} };
+      case "schema.rename":
+        return { type: "rename_schema", schema_id: input.schemaId, new_id: input.newId };
+      case "schema.delete":
+        return { type: "delete_schema", schema_id: input.schemaId };
+      case "schema.addField":
+        return { type: "add_schema_field", schema_id: input.schemaId };
+      case "schema.updateField":
+        return { type: "update_schema_field", schema_id: input.schemaId, field_id: input.fieldId, patch: input.patch || {} };
+      case "schema.renameField":
+        return { type: "rename_schema_field", schema_id: input.schemaId, field_id: input.fieldId, new_name: input.newName };
+      case "schema.deleteField":
+        return { type: "delete_schema_field", schema_id: input.schemaId, field_id: input.fieldId };
+      case "settings.updateDeploy":
+        return { type: "unsupported_settings_replace", selection: input.selection || null };
+      case "settings.updateDeployField":
+        return { type: "update_deploy_settings", field: input.field, value: input.value, selection: input.selection || null };
+      case "settings.updateMob":
+        return { type: "unsupported_settings_replace", selection: input.selection || null };
+      case "settings.updateMobField":
+        return { type: "update_mob_settings", field: input.field, value: input.value, selection: input.selection || null };
+      case "settings.updateRoleWiring":
+        return { type: "unsupported_settings_replace", selection: input.selection || null };
+      case "settings.editRoleWiring":
+        return { type: "update_role_wiring", action: input.action, index: input.index, field: input.field, value: input.value, selection: input.selection || null };
+      case "basic.updateStep":
+        return { type: "update_flow_step", step_id: input.stepId, patch: input.patch || {} };
+      case "basic.editStep":
+        return { type: "apply_flow_step_edit", step_id: input.stepId, action: input.action, ...input.payload || {} };
+      case "basic.insertStep":
+        return { type: "insert_flow_step", pick: input.pick, lane_ref: input.laneRef };
+      case "basic.deleteStep":
+        return { type: "delete_flow_step", step_id: input.stepId };
+      case "basic.addInputParam":
+        return { type: "add_input_param", step_id: input.stepId };
+      case "basic.updateInputParam":
+        return { type: "update_input_param", step_id: input.stepId, param_id: input.paramId, patch: input.patch || {} };
+      case "basic.renameInputParam":
+        return { type: "rename_input_param", step_id: input.stepId, param_id: input.paramId, new_name: input.newName };
+      case "basic.deleteInputParam":
+        return { type: "delete_input_param", step_id: input.stepId, param_id: input.paramId };
+      case "graph.insertNode":
+        return { type: "insert_graph_node", ...input.operation || { pick: input.pick, cell: input.cell } };
+      case "graph.editNode":
+        return { type: "apply_graph_node_edit", instance_id: input.instanceId, action: input.action, ...input.payload || {} };
+      case "graph.moveNode":
+        return { type: "move_graph_node", instance_id: input.instanceId, cell: input.cell, original_cell: input.originalCell };
+      case "graph.deleteNode":
+        return { type: "delete_graph_node", instance_id: input.instanceId };
+      case "graph.connectNodes":
+        return { type: "connect_graph_nodes", ...input.operation || { from_id: input.fromId, to_id: input.toId } };
+      case "graph.editEdge":
+        return { type: "apply_graph_edge_edit", edge_id: input.edgeId, action: input.action, ...input.payload || {} };
+      case "graph.deleteEdge":
+        return { type: "delete_graph_edge", edge_id: input.edgeId };
+      default:
+        return input;
+    }
+  }
+  function inlineSkillRealmIdFromOperationResult(result) {
+    const skillId = String(result?.selection?.skill_id || result?.skill_id || "").trim();
+    const realms = Array.isArray(result?.document?.skill_realms) ? result.document.skill_realms : [];
+    if (!skillId) return "";
+    const realm = realms.find((candidate) => {
+      return Array.isArray(candidate?.skills) && candidate.skills.some((skill) => String(skill?.id || "").trim() === skillId);
+    });
+    return String(realm?.id || "").trim();
+  }
+  function configureAuthoringMethodsFromSchema(schema) {
+    const methods = authoringRpcMethodsFromSchema(schema);
+    controllerConfig.rpcMethods = { ...RPC_METHODS, ...methods };
+    controllerConfig.authoringOperations = authoringOperationsFromSchema(schema);
+    return { ...controllerConfig.rpcMethods };
+  }
+  var requestId = 0;
+  async function callRpc(method, params, options = {}) {
+    const response = await fetch(rpcPath(), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      ...options.signal ? { signal: options.signal } : {},
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: ++requestId,
+        method,
+        params: params || {}
+      })
+    });
+    if (!response.ok) {
+      throw new Error(`MobKit API ${response.status}`);
+    }
+    const payload = await response.json();
+    if (payload.error) {
+      throw new Error(payload.error.message || "MobKit API error");
+    }
+    return payload.result;
+  }
   return __toCommonJS(index_exports);
 })();
 
@@ -1581,6 +1947,7 @@ const {
   RPC_METHODS,
   SCHEMA_COMMAND_KEYS,
   SCHEMA_VERSION,
+  addInlineSkillToRealms,
   agentAccessViewForState,
   agentAccessViewFromSchema,
   agentDetailViewForState,
@@ -1614,6 +1981,13 @@ const {
   jsonEquivalent,
   launchViewForState,
   launchViewFromSchema,
+  memberInlineSkillPatch,
+  memberSkillAccessState,
+  memberSkillRemovePatch,
+  memberSkillTogglePatch,
+  memberToolAccessPatch,
+  memberToolAccessState,
+  memberToolRemovePatch,
   newFlowViewForState,
   newFlowViewFromSchema,
   normalizeMaxInlinePeerNotifications,
@@ -1622,9 +1996,13 @@ const {
   normalizePositiveInteger,
   normalizeProfileBackend,
   normalizeProviderParams,
+  normalizeSkillId,
+  normalizeStepToolScopeList,
   normalizeStringList,
+  normalizeToolRef,
   numberOrNull,
   operationErrorText,
+  profileName,
   roleAccentColor,
   roleAccentStyle,
   rpcMethod,
@@ -1635,6 +2013,15 @@ const {
   settingsViewFromSchema,
   settingsViewLabelMapFromSchema,
   settingsViewOptionsFromSchema,
+  skillIdsFromRealms,
+  slug,
+  stepToolScopeAddPatch,
+  stepToolScopeRemovePatch,
+  stepToolScopeState,
+  toolCatalogEntryAvailability,
+  toolCatalogEntryAvailable,
+  validMemberToolIds,
+  validStepToolSet,
   viewStringMapFromSchema,
 } = window.MobKitFlowCore;
 /* global window, fetch */
@@ -1642,390 +2029,6 @@ const {
 // Keeps deployable document generation and API calls outside the visual JSX.
 
 (function () {
-  function slug(value, fallback) {
-    const out = String(value || fallback || "mobpack")
-      .toLowerCase()
-      .replace(/[^a-z0-9_ -]+/g, "")
-      .trim()
-      .replace(/[\s-]+/g, "_")
-      .replace(/^_+|_+$/g, "");
-    return out || fallback || "mobpack";
-  }
-
-  function profileName(member) {
-    return slug(member?.name || member?.role || member?.id || "member", "member");
-  }
-
-  function normalizeToolRef(raw, catalog) {
-    const id = String(raw || "").trim();
-    if (!id) return "";
-    const entries = Array.isArray(catalog) ? catalog : [];
-    const entry = (entries || []).find((tool) => tool.id === id);
-    if (entry && toolCatalogEntryAvailable(entry)) return id;
-    return "";
-  }
-
-  function toolCatalogEntryAvailability(tool) {
-    const availability = tool?.runtimeAvailability || tool?.runtime_availability || null;
-    return availability && typeof availability === "object" ? availability : null;
-  }
-
-  function toolCatalogEntryAvailable(tool) {
-    const availability = toolCatalogEntryAvailability(tool);
-    return availability?.available === false ? false : true;
-  }
-
-  function normalizeSkillId(raw) {
-    return String(raw || "")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_.-]+/g, ".")
-      .replace(/^[._-]+|[._-]+$/g, "")
-      .replace(/\.{2,}/g, ".");
-  }
-
-  function skillIdsFromRealms(realms) {
-    const ids = new Set();
-    for (const realm of realms || []) {
-      for (const skill of realm?.skills || []) {
-        if (skill?.id) ids.add(String(skill.id));
-      }
-    }
-    return ids;
-  }
-
-  function addInlineSkillToRealms(realms, spec = {}, accessView = null) {
-    const view = agentAccessViewForState(accessView);
-    const nextRealms = JSON.parse(JSON.stringify(realms || []));
-    const label = String(spec.label || spec.id || "").trim();
-    if (!label) throw new Error(view.skillInlineMissingLabelError);
-    const content = String(spec.content || "").trim();
-    if (!content) throw new Error(view.skillInlineMissingContentError);
-    const used = skillIdsFromRealms(nextRealms);
-    const explicitId = String(spec.id || "").trim();
-    const identityText = explicitId || label;
-    if (!normalizeSkillId(identityText)) throw new Error(view.skillInlineInvalidIdError);
-    const rawId = explicitId || (label.includes(".") ? label : `mob.${label}`);
-    const baseId = normalizeSkillId(rawId);
-    if (!baseId) throw new Error(view.skillInlineInvalidIdError);
-    let id = baseId;
-    let index = 2;
-    while (used.has(id)) id = `${baseId}.${index++}`;
-    let realm = nextRealms.find((candidate) => candidate?.id === view.inlineSkillRealmId);
-    if (!realm) {
-      realm = {
-        id: view.inlineSkillRealmId,
-        label: view.inlineSkillRealmLabel,
-        source: view.inlineSkillRealmSource,
-        default: nextRealms.length === 0,
-        skills: [],
-      };
-      nextRealms.unshift(realm);
-    }
-    if (!Array.isArray(realm.skills)) realm.skills = [];
-    realm.skills.push({
-      id,
-      label,
-      source: view.inlineSkillSource,
-      content,
-      desc: spec.desc || view.inlineSkillDefaultDescription,
-    });
-    return { id, skillRealms: nextRealms };
-  }
-
-  function memberToolAccessPatch(member, raw, toolCatalog, accessView = null) {
-    const view = agentAccessViewForState(accessView);
-    const id = normalizeToolRef(raw, toolCatalog);
-    if (!id) {
-      return {
-        ok: false,
-        id: "",
-        error: raw ? view.toolInvalidError : "",
-        patch: null,
-      };
-    }
-    const tools = normalizeStringList(member?.tools);
-    if (tools.includes(id)) {
-      return { ok: true, id, alreadySelected: true, patch: null };
-    }
-    return { ok: true, id, alreadySelected: false, patch: { tools: [...tools, id] } };
-  }
-
-  function memberToolRemovePatch(member, toolId) {
-    const id = String(toolId || "").trim();
-    if (!id) return { ok: false, id: "", patch: null };
-    const tools = normalizeStringList(member?.tools);
-    return { ok: true, id, patch: { tools: tools.filter((candidate) => candidate !== id) } };
-  }
-
-  function memberToolAccessState(member, toolCatalog = [], accessView = null) {
-    const view = agentAccessViewForState(accessView);
-    const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
-    const metaById = new Map(catalog.map((tool) => [String(tool.id), tool]));
-    const selectedTools = normalizeStringList(member?.tools);
-    const selectedSet = new Set(selectedTools);
-    const catalogSet = new Set(catalog.map((tool) => String(tool.id)));
-    const toolRow = (id) => {
-      const meta = metaById.get(id) || null;
-      const unavailable = !catalogSet.has(id);
-      const runtimeAvailability = toolCatalogEntryAvailability(meta);
-      const runtimeUnavailable = runtimeAvailability?.available === false;
-      const reason = unavailable
-        ? view.toolInvalidError
-        : (runtimeUnavailable ? (runtimeAvailability.reason || view.toolInvalidError) : "");
-      return {
-        id,
-        name: id,
-        unavailable: unavailable || runtimeUnavailable,
-        reason,
-        description: reason || meta?.desc || view.toolMissingDescription,
-        meta,
-        runtimeAvailability,
-        className: `tool-row${(unavailable || runtimeUnavailable) ? " tool-row--invalid" : ""}`,
-        removeLabel: view.toolRemoveLabel,
-      };
-    };
-    const addableRow = (tool) => {
-      const id = String(tool.id);
-      const label = tool.label || id;
-      const desc = tool.desc || id;
-      return {
-        id,
-        value: id,
-        label,
-        description: desc,
-        optionLabel: `${label} — ${desc}`,
-        disabled: !toolCatalogEntryAvailable(tool),
-        meta: tool,
-      };
-    };
-    return {
-      selectedTools,
-      title: view.toolTitle,
-      hint: view.toolHint,
-      rows: selectedTools.map(toolRow),
-      addableRows: catalog
-        .filter((tool) => !selectedSet.has(String(tool.id)))
-        .map(addableRow),
-      addSelectValue: "",
-      addSelectPlaceholder: view.toolAddSelectPlaceholder,
-      sourceLabel: view.toolSourceLabel,
-      sourcePlaceholder: view.toolSourcePlaceholder,
-      addButtonLabel: view.toolAddButtonLabel,
-      emptyToolError: view.toolEmptyError,
-      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
-    };
-  }
-
-  function stepToolScopeState({ member, selected, mode = "member", toolCatalog = [], basicView = null } = {}) {
-    const view = basicEditorViewState(basicView);
-    const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
-    const catalogIds = Array.from(new Set(catalog.map((tool) => String(tool.id).trim()).filter(Boolean)));
-    const selectedTools = Array.from(new Set(normalizeStringList(selected)));
-    const memberToolIds = validMemberToolIds(member, catalogIds);
-    const validToolIds = mode === "catalog" ? catalogIds : memberToolIds;
-    const validToolSet = new Set(validToolIds);
-    const addable = validToolIds.filter((id) => !selectedTools.includes(id));
-    const metaById = new Map(catalog.map((tool) => [String(tool.id), tool]));
-    const rowFor = (id) => {
-      const meta = metaById.get(id) || null;
-      const unavailable = !validToolSet.has(id);
-      const reason = unavailable
-        ? (mode === "catalog" ? view.toolScopeNotInCatalogReason : view.toolScopeNotEnabledReason)
-        : "";
-      return {
-        id,
-        name: id,
-        meta,
-        unavailable,
-        reason,
-        className: `tool-row${unavailable ? " tool-row--invalid" : ""}`,
-        description: unavailable ? reason : (meta?.desc || view.toolScopeToolDescriptionFallback),
-        removeLabel: view.toolScopeRemoveLabel,
-      };
-    };
-    const optionFor = (id) => {
-      const meta = metaById.get(id) || null;
-      const label = meta?.label || id;
-      const desc = meta?.desc || id;
-      return {
-        id,
-        value: id,
-        label,
-        description: desc,
-        optionLabel: `${label} — ${desc}`,
-        meta,
-      };
-    };
-    return {
-      selectedTools,
-      addable,
-      addableRows: addable.map(optionFor),
-      rows: selectedTools.map(rowFor),
-      addSelectValue: "",
-      addSelectPlaceholder: mode === "member" && !member
-        ? view.toolScopeSelectMemberPlaceholder
-        : (mode === "catalog" ? view.toolScopeBlockCatalogPlaceholder : view.toolScopeAddProfilePlaceholder),
-      disabled: (mode === "member" && !member) || addable.length === 0,
-    };
-  }
-
-  function validMemberToolIds(member, catalogIds) {
-    const catalogIdSet = new Set(catalogIds || []);
-    return Array.from(new Set(normalizeStringList(member?.tools).filter((id) => catalogIdSet.has(id))));
-  }
-
-  function validStepToolSet({ member, mode = "member", toolCatalog = [] } = {}) {
-    const catalog = Array.isArray(toolCatalog) ? toolCatalog.filter((tool) => tool?.id) : [];
-    const catalogIds = Array.from(new Set(catalog.map((tool) => String(tool.id).trim()).filter(Boolean)));
-    if (mode === "catalog") return new Set(catalogIds);
-    return new Set(validMemberToolIds(member, catalogIds));
-  }
-
-  function normalizeStepToolScopeList(tools, options = {}) {
-    const validTools = validStepToolSet(options);
-    return Array.from(new Set(normalizeStringList(tools).filter((tool) => validTools.has(tool))));
-  }
-
-  function stepToolScopeAddPatch(selected, raw, options = {}) {
-    const id = String(raw || "").trim();
-    const field = options.field || "allowedTools";
-    if (!id) return { ok: false, id: "", patch: null };
-    const state = stepToolScopeState({ ...options, selected });
-    if (!state.addable.includes(id)) {
-      return { ok: false, id, patch: null };
-    }
-    return {
-      ok: true,
-      id,
-      patch: { [field]: [...state.selectedTools, id] },
-    };
-  }
-
-  function stepToolScopeRemovePatch(selected, raw, options = {}) {
-    const id = String(raw || "").trim();
-    const field = options.field || "allowedTools";
-    if (!id) return { ok: false, id: "", patch: null };
-    const selectedTools = Array.from(new Set(normalizeStringList(selected)));
-    return {
-      ok: true,
-      id,
-      patch: { [field]: selectedTools.filter((candidate) => candidate !== id) },
-    };
-  }
-
-  function memberSkillTogglePatch(member, skillId, skillRealms = []) {
-    const id = String(skillId || "").trim();
-    if (!id) return { ok: false, id: "", patch: null };
-    const skills = normalizeStringList(member?.skills);
-    const selected = skills.includes(id);
-    if (!selected && !skillIdsFromRealms(skillRealms).has(id)) {
-      return { ok: false, id, patch: null };
-    }
-    return {
-      ok: true,
-      id,
-      selected: !selected,
-      patch: { skills: selected ? skills.filter((candidate) => candidate !== id) : [...skills, id] },
-    };
-  }
-
-  function memberSkillRemovePatch(member, skillId) {
-    const id = String(skillId || "").trim();
-    if (!id) return { ok: false, id: "", patch: null };
-    const skills = normalizeStringList(member?.skills);
-    return { ok: true, id, patch: { skills: skills.filter((candidate) => candidate !== id) } };
-  }
-
-  function memberInlineSkillPatch(member, realms, spec = {}, accessView = null) {
-    const view = agentAccessViewForState(accessView);
-    const result = addInlineSkillToRealms(realms, spec, accessView);
-    const skills = normalizeStringList(member?.skills);
-    return {
-      ...result,
-      realmId: view.inlineSkillRealmId,
-      patch: { skills: skills.includes(result.id) ? skills : [...skills, result.id] },
-    };
-  }
-
-  function memberSkillAccessState({ member, skillRealms, realmId = "", inlineOpen = false, accessView = null } = {}) {
-    const view = agentAccessViewForState(accessView);
-    const realms = Array.isArray(skillRealms) ? skillRealms.filter((realm) => realm?.id) : [];
-    const defaultRealm = realms.find((realm) => realm.default) || realms[0] || null;
-    const selectedRealm = realms.find((realm) => realm.id === realmId) || defaultRealm;
-    const selectedSkillIds = normalizeStringList(member?.skills);
-    const selectedSet = new Set(selectedSkillIds);
-    const byId = new Map();
-    for (const sourceRealm of realms) {
-      for (const skill of sourceRealm.skills || []) {
-        const id = String(skill?.id || "").trim();
-        if (!id || byId.has(id)) continue;
-        byId.set(id, { ...skill, id, realm: sourceRealm });
-      }
-    }
-    const skillRows = (selectedRealm?.skills || [])
-      .filter((skill) => String(skill?.id || "").trim())
-      .map((skill) => {
-        const id = String(skill.id).trim();
-        const selected = selectedSet.has(id);
-        return {
-          id,
-          selected,
-          className: `skill-row${selected ? " is-on" : ""}`,
-          checkLabel: selected ? view.skillSelectedCheckLabel : "",
-          name: id,
-          desc: skill.desc || skill.path || skill.source || view.skillDefaultDescription,
-          skill,
-        };
-      });
-    const selectedOutsideRealm = selectedSkillIds
-      .map((id) => byId.get(id))
-      .filter((skill) => skill && skill.realm?.id !== selectedRealm?.id)
-      .map((skill) => ({
-        id: skill.id,
-        realmId: skill.realm?.id || "",
-        realmLabel: skill.realm?.label || skill.realm?.id || "",
-        className: "skill-chip",
-        title: skill.realm?.label || skill.realm?.id || "",
-        label: skill.id,
-        detail: skill.realm?.label || skill.realm?.id || "",
-        removeLabel: view.skillRemoveLabel,
-      }));
-    const unavailableSelected = selectedSkillIds
-      .filter((id) => !byId.has(id))
-      .map((id) => ({
-        id,
-        className: "skill-chip is-invalid",
-        label: id,
-        removeLabel: view.skillRemoveLabel,
-      }));
-    return {
-      sectionTitle: view.skillSectionTitle,
-      inlineToggleLabel: inlineOpen ? view.skillInlineCancelLabel : view.skillInlineOpenLabel,
-      hint: view.skillHint,
-      inlineLabelPlaceholder: view.skillInlineLabelPlaceholder,
-      inlineContentRows: view.skillInlineContentRows,
-      inlineContentPlaceholder: view.skillInlineContentPlaceholder,
-      inlineCreateHint: view.skillInlineCreateHint,
-      inlineAddLabel: view.skillInlineAddLabel,
-      inlineErrorFallback: view.skillInlineErrorFallback,
-      authoringOperationUnavailableError: view.authoringOperationUnavailableError,
-      noRealmsMessage: view.skillNoRealmsMessage,
-      realmLabel: view.skillRealmLabel,
-      hasRealms: realms.length > 0,
-      realmId: selectedRealm?.id || "",
-      realmOptions: realms.map((realm) => ({
-        id: realm.id,
-        label: `${realm.label || realm.id}${realm.default ? view.skillDefaultRealmSuffix : ""}`,
-      })),
-      skillRows,
-      selectedOutsideRealm,
-      unavailableSelected,
-      unavailableHeading: view.skillUnavailableHeading,
-      outsideRealmHeading: view.skillOutsideRealmHeading,
-    };
-  }
-
   function agentListState({ members = [], instances = [], schemas = [], selection = null, agentView = null } = {}) {
     const sourceMembers = Array.isArray(members) ? members : [];
     const sourceInstances = Array.isArray(instances) ? instances : [];
