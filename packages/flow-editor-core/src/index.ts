@@ -22,5 +22,6 @@ export * from "./schema/field-edit";
 export * from "./shared/constants";
 export * from "./shared/normalize";
 export * from "./shell/outcomes";
+export * from "./source/view";
 export * from "./studio/state";
 export * from "./views/view-config";

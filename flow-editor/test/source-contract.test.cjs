@@ -60,7 +60,13 @@ const builderMemberStepControlBlock = (builderStepInspectorBlock.match(/\/\/ mem
 const builderCanvasBlock = (builder.match(/function Fork[\s\S]*?function StepInspector/) || [""])[0];
 const builderMutationBlock = (builder.match(/const insertAt = \(laneRef, pick\) => \{[\s\S]*?const openPicker/) || [""])[0];
 const builderStepPickerBlock = (builder.match(/function StepPicker[\s\S]*?\/\/ ── Inspector/) || [""])[0];
-const sourceEditorBlock = (controller.match(/function sourceEditorState[\s\S]*?function sampleFlowsFromCatalogs/) || [""])[0];
+// Re-anchored to end-of-function in S14: the old end landmark
+// (sampleFlowsFromCatalogs) stays in the residue until S15 while
+// sourceEditorState moved to @flow-editor-core source/view.ts, which sits
+// after the residue in the concatenation. The tail pattern is
+// sourceViewForState's own closing return keys, so the block keeps spanning
+// exactly sourceEditorState through sourceViewForState wherever they live.
+const sourceEditorBlock = (controller.match(/function sourceEditorState[\s\S]*?function sourceViewForState\(sourceDocument, sourceView\) \{[\s\S]*?closeLabel: String\(view\?\.closeLabel \|\| ""\),\s*\};\s*\}/) || [""])[0];
 const graphEditorBlock = (graph.match(/function GraphEditor[\s\S]*?function SourceFileAdornmentView/) || [""])[0];
 const agentsListBlock = (agents.match(/function AgentsList[\s\S]*?function AddAgentControl/) || [""])[0];
 // Re-anchored to end-of-function in S3: the old end landmark
@@ -1250,10 +1256,23 @@ assert(!/["'](?:MobKit error|Deploy failed|Deploy plan failed|Source render fail
 // residue keeps its old landmarks and the moved family is extracted
 // separately, ending at importErrorOutcome's own closing body so the block
 // never spans neighboring core modules.
-const hydrationErrorMetaBlock = (controller.match(/function hydrateMobpackDocumentState[\s\S]*?function sourceDocumentFromSourceResult/) || [""])[0];
+// Re-anchored again in S14: the old end landmark
+// (sourceDocumentFromSourceResult) moved to @flow-editor-core
+// source/view.ts, so a single span from the residue's
+// hydrateMobpackDocumentState would sweep rpc/client.ts (whose
+// "/flow-editor/rpc" default is legitimate). The residue block now ends at
+// flowImportedIdFromDocument's own closing body — the last function of the
+// hydration family still in the residue — and the moved source-file
+// metadata pair (sourceFileRequiresText through the
+// sourceDocumentFromSourceResult header) is extracted separately; both feed
+// the same banned-literal assertion, preserving the original coverage.
+const hydrationErrorMetaBlock = (controller.match(/function hydrateMobpackDocumentState[\s\S]*?function flowImportedIdFromDocument[\s\S]*?\}, existingRows\);\s*\}/) || [""])[0];
+const sourceFileMetaBlock = (controller.match(/function sourceFileRequiresText[\s\S]*?function sourceDocumentFromSourceResult/) || [""])[0];
+assert.match(hydrationErrorMetaBlock, /function flowImportedIdFromDocument/, "hydration error-meta extraction must span hydrateMobpackDocumentState through flowImportedIdFromDocument");
+assert.match(sourceFileMetaBlock, /function validateSourceFileMetadata/, "source-file metadata extraction must span sourceFileRequiresText through sourceDocumentFromSourceResult");
 const errorOutcomeFamilyBlock = (controller.match(/function criticalErrorOutcome[\s\S]*?function importErrorOutcome[\s\S]*?errorView: view,\s*\}\);\s*\}/) || [""])[0];
 assert.match(errorOutcomeFamilyBlock, /function importErrorOutcome/, "error-outcome family extraction must span criticalErrorOutcome through importErrorOutcome");
-assert(!/["'](?:mobkit\/mobpacks\/deploy|mobkit\/mobpacks\/export|\/flow-editor\/rpc|missing_editor_flow)["']/.test(hydrationErrorMetaBlock + "\n" + errorOutcomeFamilyBlock), "controller error-row display meta values must come from MobKit editor_error_view, not local literals");
+assert(!/["'](?:mobkit\/mobpacks\/deploy|mobkit\/mobpacks\/export|\/flow-editor\/rpc|missing_editor_flow)["']/.test(hydrationErrorMetaBlock + "\n" + sourceFileMetaBlock + "\n" + errorOutcomeFamilyBlock), "controller error-row display meta values must come from MobKit editor_error_view, not local literals");
 assert(!/result\.ok \? ["']valid["']|result\.validation\?\.ok \? ["']published["']|result\.validation\?\.ok &&|plan\.validation\?\.ok \? ["']valid["']|const deployOk =/.test(app), "app shell must not choose MobKit API success stages locally");
 assert(!/kind:\s*["']crit["']|glyph:\s*["']!["']|head:\s*["'](?:Deploy|Source|MobKit|Export|Import)/.test(app), "app shell must not assemble MobKit critical diagnostic rows locally");
 assert.match(app, /const handleValidate = async \(\) => \{[\s\S]*const projected = await buildMobKitProjectedDocument\(\);[\s\S]*const document = projected\.document;[\s\S]*requestToken = projected\.requestToken;[\s\S]*MobKitFlowController\.validateDocument\(document,\s*currentDraftGuard\(\)\);[\s\S]*if \(!authoringRevisionIsCurrent\(requestToken\)\) return;[\s\S]*persistCurrentOutcome\(outcome\)/, "stale validation responses must not write validation, stage, or flow-row state after an edit");
