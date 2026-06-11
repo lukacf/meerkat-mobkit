@@ -7,9 +7,10 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { chromium } = require("playwright");
 
+const { resolveFlowEditorBinary } = require("./flow-editor-binary.cjs");
+
 const repoRoot = path.join(__dirname, "..", "..");
-const defaultBinary = path.join(repoRoot, "target", "debug", "mobkit_flow_editor");
-const binary = process.env.MOBKIT_FLOW_EDITOR_BIN || defaultBinary;
+const binary = resolveFlowEditorBinary();
 const port = Number(process.env.MOBKIT_FLOW_EDITOR_BROWSER_PORT || 4196);
 const addr = `127.0.0.1:${port}`;
 const baseUrl = process.env.MOBKIT_FLOW_EDITOR_BROWSER_URL || `http://${addr}`;

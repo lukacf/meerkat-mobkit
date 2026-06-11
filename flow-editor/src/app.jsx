@@ -61,6 +61,39 @@ function App() {
   const authoringOperationRunner = React.useRef(null);
   const projectionSyncInFlight = React.useRef(false);
   const projectionSyncReset = React.useRef(0);
+  // System reconciles must not retry without bound: a client/server
+  // disagreement (failed validation, or a change the server will not make)
+  // would otherwise turn into an unbounded RPC retry loop. Each reconcile
+  // intent gets a few attempts per authoring revision; the latch releases on
+  // the next real edit (markDraft / hydration bumps the revision).
+  const RECONCILE_MAX_ATTEMPTS_PER_REVISION = 4;
+  const reconcileFailureRevision = React.useRef(null);
+  const reconcileAttempts = React.useRef({ revision: null, counts: {} });
+  const reconcileLatched = () =>
+    reconcileFailureRevision.current !== null
+    && reconcileFailureRevision.current === authoringRevision.current;
+  const reconcileShouldRun = (intent) => {
+    if (reconcileLatched()) return false;
+    const attempts = reconcileAttempts.current;
+    if (attempts.revision !== authoringRevision.current) {
+      attempts.revision = authoringRevision.current;
+      attempts.counts = {};
+    }
+    attempts.counts[intent] = (attempts.counts[intent] || 0) + 1;
+    if (attempts.counts[intent] > RECONCILE_MAX_ATTEMPTS_PER_REVISION) {
+      reconcileFailureRevision.current = authoringRevision.current;
+      console.warn(`MobKit ${intent} did not converge; reconciliation paused until the next edit`);
+      return false;
+    }
+    return true;
+  };
+  const latchReconcileFailure = (result) => {
+    if (result?.ok === false) {
+      reconcileFailureRevision.current = authoringRevision.current;
+      console.warn("MobKit system reconcile paused until the next edit:", result?.error || result?.validation?.display_rows?.[0]?.sub || "validation failed");
+    }
+    return result;
+  };
   if (!authoringOperationRunner.current) {
     authoringOperationRunner.current = window.MobKitFlowController.createAuthoringOperationRunner({
       getAuthoringOperations: () => authoringRunnerContext.current.catalogs?.authoringOperations,
@@ -349,9 +382,10 @@ function App() {
       || result.mobSettings !== mobSettings;
     previousMembersRef.current = studio.members;
     if (!changed) return;
+    if (!reconcileShouldRun("system.reconcileMembers")) return;
     applyMobKitAuthoringOperation({
       intent: "system.reconcileMembers",
-    });
+    }).then(latchReconcileFailure);
   }, [studio.members, flow, studio.instances, studio.edges, mobSettings]);
 
   React.useEffect(() => {
@@ -367,9 +401,10 @@ function App() {
     const flowChanged = result.flow !== flow;
     const edgesChanged = result.edges !== studio.edges;
     if (!flowChanged && !edgesChanged) return;
+    if (!reconcileShouldRun("system.reconcileConditionFields")) return;
     applyMobKitAuthoringOperation({
       intent: "system.reconcileConditionFields",
-    });
+    }).then(latchReconcileFailure);
   }, [flow, studio.edges, studio.instances, studio.members, studio.schemas]);
 
   React.useEffect(() => {
@@ -389,9 +424,10 @@ function App() {
       contractLoaded: !!catalogs.contractMeta.loaded,
     });
     if (!result.changed) return;
+    if (!reconcileShouldRun("system.reconcileContractRefs")) return;
     applyMobKitAuthoringOperation({
       intent: "system.reconcileContractRefs",
-    });
+    }).then(latchReconcileFailure);
   }, [
     studio.members,
     studio.skillRealms,
@@ -1068,6 +1104,7 @@ function App() {
         onImport={() => importInputRef.current?.click()}
         onDeployPlanTrace={handleDeployPlanTrace}
         onYaml={handleSource}
+        onToggleSettings={() => window.dispatchEvent(new CustomEvent("mobkit-flow-editor:settings-toggle"))}
         deploySettings={deploySettings}
       />
       <input
@@ -1313,7 +1350,7 @@ async function importParamsFromFile(file) {
   });
 }
 
-function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, onToggleTheme, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDeployPlanTrace, onYaml, contract, deploySettings }) {
+function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, onToggleTheme, onToggleSettings, onValidate, onPublish, onDeployPlan, onDeployRun, onImport, onDeployPlanTrace, onYaml, contract, deploySettings }) {
   return (
     <header className="toprail">
       <div className="brand">
@@ -1365,6 +1402,13 @@ function TopRail({ stage, view, onNavigate, currentFlowName, theme, railState, o
           title={railState.themeToggleTitle}
         >
           {railState.themeToggleLabel}
+        </button>
+        <button
+          className="btn btn--ghost btn--sm settings-toggle"
+          onClick={onToggleSettings}
+          title={railState.settingsTitle}
+        >
+          {railState.settingsLabel}
         </button>
       </div>
     </header>

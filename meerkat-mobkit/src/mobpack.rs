@@ -2101,6 +2101,8 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         "deploy_plan_label": "DEPLOY PLAN",
         "deploy_label": "DEPLOY",
         "overflow_label": "MORE",
+        "settings_label": "⚙ SETTINGS",
+        "settings_title": "Editor, mob, and deploy settings",
         "theme_switch_prefix": "Switch to",
         "theme_switch_suffix": "mode",
         "dark_theme_label": "☾ dark",
@@ -4491,6 +4493,7 @@ fn apply_sync_graph_to_flow_operation(
     operation: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
     document.flow = graph_to_flow_from_document(document);
+    reconcile_flow_step_launch_modes(document);
     Ok(operation_selection_or_clear(operation))
 }
 
@@ -6970,6 +6973,8 @@ fn apply_insert_flow_step_operation(
     if !insert_flow_step_into_lane(steps, lane_ref, &step) {
         return Err("insert_flow_step lane_ref did not match a flow lane".to_string());
     }
+    reconcile_flow_step_launch_modes(document);
+    reproject_graph_for_flow_change(document);
     Ok(json!({ "kind": "step", "id": step_id }))
 }
 
@@ -7001,6 +7006,8 @@ fn apply_update_flow_step_operation(
     )?;
     *flow_step_mut_by_id(&mut document.flow, &step_id)
         .ok_or_else(|| format!("flow step not found: {step_id}"))? = next_step;
+    reconcile_flow_step_launch_modes(document);
+    reproject_graph_for_flow_change(document);
     Ok(json!({ "kind": "step", "id": step_id }))
 }
 
@@ -7860,6 +7867,8 @@ fn apply_flow_step_edit_operation(
     )?;
     *flow_step_mut_by_id(&mut document.flow, &step_id)
         .ok_or_else(|| format!("flow step not found: {step_id}"))? = next_step;
+    reconcile_flow_step_launch_modes(document);
+    reproject_graph_for_flow_change(document);
     Ok(json!({ "kind": "step", "id": step_id }))
 }
 
@@ -7873,6 +7882,8 @@ fn apply_delete_flow_step_operation(
         return Err(format!("flow step not found: {step_id}"));
     }
     clear_deleted_flow_step_references(&mut document.flow, &step_id);
+    reconcile_flow_step_launch_modes(document);
+    reproject_graph_for_flow_change(document);
     Ok(json!({ "kind": null, "id": null }))
 }
 
@@ -10701,6 +10712,138 @@ fn reconcile_document_after_member_change(document: &mut MobpackDocument) {
     prune_flow_steps_for_members(&mut document.flow, &members, &member_ids);
     prune_graph_instances_for_members(&mut document.instances, &members, &member_ids);
     prune_graph_edges_for_instances(&mut document.edges, &document.instances);
+    reconcile_flow_step_launch_modes(document);
+}
+
+/// Re-derive the graph projection (instances/edges/frames) after a flow-step
+/// mutation so the operation result validates against the document it
+/// returns, not a stale graph. Documents without a graph projection
+/// (all-null) are left untouched.
+fn reproject_graph_for_flow_change(document: &mut MobpackDocument) {
+    if document.instances.is_null() && document.edges.is_null() && document.frames.is_null() {
+        return;
+    }
+    let Some(steps) = document.flow.get("steps").and_then(Value::as_array) else {
+        return;
+    };
+    let (instances, edges, frames) = graph_projection_from_visual_steps(steps);
+    document.instances = Value::Array(instances);
+    document.edges = Value::Array(edges);
+    document.frames = Value::Array(frames);
+}
+
+/// Keep `document.launch_modes` consistent with the flow's member steps:
+/// every member step gets exactly one entry, orphaned/duplicate entries are
+/// dropped, and entries follow the step's role and inline launch mode.
+fn reconcile_flow_step_launch_modes(document: &mut MobpackDocument) {
+    let step_roles = editor_flow_member_step_roles(&document.flow);
+    if step_roles.is_empty() {
+        return;
+    }
+    let inline_modes = editor_flow_member_step_launch_values(&document.flow);
+    let entry_step_id = |entry: &Value| -> Option<String> {
+        entry
+            .get("step_id")
+            .or_else(|| entry.get("stepId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    };
+    let mut entries = document
+        .launch_modes
+        .as_array()
+        .cloned()
+        .unwrap_or_else(Vec::new);
+    let mut seen = BTreeSet::new();
+    entries.retain(|entry| {
+        entry_step_id(entry)
+            .map(|step_id| step_roles.contains_key(&step_id) && seen.insert(step_id))
+            .unwrap_or(false)
+    });
+    for entry in entries.iter_mut() {
+        let Some(step_id) = entry_step_id(entry) else {
+            continue;
+        };
+        let Some(role) = step_roles.get(&step_id) else {
+            continue;
+        };
+        let Some(object) = entry.as_object_mut() else {
+            continue;
+        };
+        let member_matches = object
+            .get("member_id")
+            .or_else(|| object.get("memberId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            == Some(role.as_str());
+        if !member_matches {
+            object.remove("memberId");
+            object.insert("member_id".to_string(), Value::String(role.clone()));
+            object.remove("profile");
+        }
+        if let Some(inline) = inline_modes.get(&step_id) {
+            object.remove("launchMode");
+            object.insert("launch_mode".to_string(), inline.clone());
+        }
+    }
+    for (step_id, role) in &step_roles {
+        if seen.contains(step_id) {
+            continue;
+        }
+        let launch_mode = inline_modes
+            .get(step_id)
+            .cloned()
+            .unwrap_or_else(|| json!({ "kind": "Fresh" }));
+        entries.push(json!({
+            "step_id": step_id,
+            "member_id": role,
+            "launch_mode": launch_mode,
+        }));
+    }
+    document.launch_modes = Value::Array(entries);
+}
+
+fn editor_flow_member_step_launch_values(flow: &Value) -> BTreeMap<String, Value> {
+    let mut modes = BTreeMap::new();
+    if let Some(steps) = flow.get("steps").and_then(Value::as_array) {
+        collect_editor_flow_member_step_launch_values(steps, &mut modes);
+    }
+    modes
+}
+
+fn collect_editor_flow_member_step_launch_values(
+    steps: &[Value],
+    modes: &mut BTreeMap<String, Value>,
+) {
+    for step in steps {
+        if step.get("type").and_then(Value::as_str) == Some("member")
+            && let Some(id) = step
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            && let Some(mode) = step
+                .get("launchMode")
+                .or_else(|| step.get("launch_mode"))
+                .filter(|mode| mode.is_object())
+        {
+            modes.insert(id.to_string(), mode.clone());
+        }
+        if let Some(nested) = step.get("steps").and_then(Value::as_array) {
+            collect_editor_flow_member_step_launch_values(nested, modes);
+        }
+        if let Some(branches) = step.get("branches").and_then(Value::as_array) {
+            for branch in branches {
+                if let Some(branch_steps) = branch.get("steps").and_then(Value::as_array) {
+                    collect_editor_flow_member_step_launch_values(branch_steps, modes);
+                }
+            }
+        }
+        if let Some(fallback) = step.get("fallback").and_then(Value::as_array) {
+            collect_editor_flow_member_step_launch_values(fallback, modes);
+        }
+    }
 }
 
 fn member_tool_set(members: &[Value], member_id: &str) -> BTreeSet<String> {
@@ -11983,11 +12126,37 @@ fn validate_with_rkat_requested(params: &Value) -> bool {
         .unwrap_or(false)
 }
 
+fn rkat_binary_available(bin: &str) -> bool {
+    let path = std::path::Path::new(bin);
+    if path.components().count() > 1 {
+        return path.is_file();
+    }
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(bin).is_file()))
+        .unwrap_or(false)
+}
+
 fn validate_document_with_rkat(
     params: &Value,
     document: &MobpackDocument,
     mut validation: MobpackValidationResult,
 ) -> Result<MobpackValidationResult, String> {
+    let rkat_bin = deploy_rkat_bin(params);
+    if !rkat_binary_available(&rkat_bin) {
+        // Embedding hosts do not always ship rkat; structural validation
+        // already ran, so degrade to a warning instead of failing every
+        // validate on such hosts.
+        validation.display_rows.push(MobpackDisplayRow {
+            kind: "warn".to_string(),
+            glyph: "△".to_string(),
+            head: "rkat mob validate skipped".to_string(),
+            sub: format!(
+                "'{rkat_bin}' is not available on this host; only MobKit structural validation ran"
+            ),
+            meta: "rkat mob validate".to_string(),
+        });
+        return Ok(validation);
+    }
     let export = export_mobpack(&json!({ "document": document }))?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(export.content_base64.as_bytes())
@@ -12000,7 +12169,6 @@ fn validate_document_with_rkat(
     std::fs::write(&pack_path, bytes)
         .map_err(|err| format!("failed to write validation mobpack: {err}"))?;
 
-    let rkat_bin = deploy_rkat_bin(params);
     let argv = vec![
         rkat_bin,
         "mob".to_string(),
@@ -26190,6 +26358,158 @@ model = "gpt-5.5"
                 |path| path.ends_with(".mobpack") && std::path::Path::new(path).exists()
             ),
             "{args:?}"
+        );
+    }
+
+    #[test]
+    fn validate_document_with_rkat_skips_when_rkat_unavailable() {
+        let document = valid_document();
+        let validation = validate_document(&document);
+        assert!(validation.ok, "{validation:#?}");
+        let result = validate_document_with_rkat(
+            &json!({ "rkat_bin": "definitely-not-a-real-rkat-binary" }),
+            &document,
+            validation,
+        )
+        .expect("rkat-unavailable validation");
+        assert!(result.ok, "{result:#?}");
+        assert!(
+            result
+                .display_rows
+                .iter()
+                .any(|row| row.kind == "warn" && row.head == "rkat mob validate skipped"),
+            "{result:#?}"
+        );
+    }
+
+    #[test]
+    fn insert_member_step_into_parallel_lane_keeps_launch_modes_valid() {
+        // Mirror the editor lifecycle: each flow operation is followed by a
+        // graph projection of the resulting document, like the Flow Editor
+        // shell does after Basic-mode edits.
+        fn project(document: &Value) -> (Value, Value) {
+            let projection = graph_projection_mobpack(&json!({ "document": document }))
+                .expect("graph projection");
+            let mut merged = document.clone();
+            merged["instances"] = projection["instances"].clone();
+            merged["edges"] = projection["edges"].clone();
+            merged["frames"] = projection["frames"].clone();
+            (merged, projection["validation"].clone())
+        }
+
+        let template = blank_mobpack_template();
+        let mut document = template["document"].clone();
+        assert!(document.is_object(), "blank template document missing");
+        // mobkit/mobpacks/create clears the template mob_toml snapshot.
+        document["mob_toml"] = Value::Null;
+
+        let inserted_parallel = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "insert_flow_step",
+                "pick": { "kind": "parallel" },
+                "lane_ref": { "lane": "main", "index": 1 }
+            }
+        }))
+        .expect("insert parallel step");
+        let (parallel_document, parallel_validation) = project(&inserted_parallel["document"]);
+        assert!(
+            parallel_validation["ok"].as_bool().unwrap_or(false),
+            "{parallel_validation:#?}"
+        );
+        let parallel_id = inserted_parallel["selection"]["id"]
+            .as_str()
+            .expect("parallel selection id")
+            .to_string();
+        let branch_id = parallel_document["flow"]["steps"]
+            .as_array()
+            .and_then(|steps| {
+                steps
+                    .iter()
+                    .find(|step| step["id"].as_str() == Some(parallel_id.as_str()))
+            })
+            .and_then(|step| step["branches"][0]["id"].as_str())
+            .expect("first parallel branch id")
+            .to_string();
+
+        let inserted_member = apply_mobpack_authoring_operation(&json!({
+            "document": parallel_document,
+            "operation": {
+                "type": "insert_flow_step",
+                "pick": { "kind": "member", "id": "m_worker" },
+                "lane_ref": { "parentId": parallel_id, "branchId": branch_id, "index": 0 }
+            }
+        }))
+        .expect("insert member step into parallel lane");
+        let (member_document, member_validation) = project(&inserted_member["document"]);
+        let launch_codes = [
+            "missing_step_launch_mode",
+            "unknown_launch_step",
+            "duplicate_launch_step",
+            "missing_launch_step",
+        ];
+        assert!(
+            member_validation["diagnostics"]
+                .as_array()
+                .expect("diagnostics array")
+                .iter()
+                .all(|diagnostic| !launch_codes
+                    .contains(&diagnostic["code"].as_str().unwrap_or_default())),
+            "member step in a parallel lane must keep launch_modes consistent: {member_validation:#?}"
+        );
+        let member_step_id = inserted_member["selection"]["id"]
+            .as_str()
+            .expect("member selection id");
+        let launch_entries = member_document["launch_modes"]
+            .as_array()
+            .expect("launch modes array");
+        assert!(
+            launch_entries
+                .iter()
+                .any(|entry| entry["step_id"].as_str() == Some(member_step_id)
+                    && entry["member_id"].as_str() == Some("m_worker")),
+            "{launch_entries:#?}"
+        );
+
+        // With an instruction filled in (the one remaining draft diagnostic),
+        // the document must validate end to end.
+        let instructed = apply_mobpack_authoring_operation(&json!({
+            "document": member_document,
+            "operation": {
+                "type": "apply_flow_step_edit",
+                "step_id": member_step_id,
+                "action": "set_instruction",
+                "instruction": "Handle the branch task."
+            }
+        }))
+        .expect("set member step instruction");
+        let (instructed_document, instructed_validation) = project(&instructed["document"]);
+        assert!(
+            instructed_validation["ok"].as_bool().unwrap_or(false),
+            "{instructed_validation:#?}"
+        );
+
+        let deleted = apply_mobpack_authoring_operation(&json!({
+            "document": instructed_document,
+            "operation": {
+                "type": "delete_flow_step",
+                "step_id": member_step_id
+            }
+        }))
+        .expect("delete member step");
+        let (deleted_document, deleted_validation) = project(&deleted["document"]);
+        assert!(
+            deleted_validation["ok"].as_bool().unwrap_or(false),
+            "{deleted_validation:#?}"
+        );
+        let remaining = deleted_document["launch_modes"]
+            .as_array()
+            .expect("launch modes array after delete");
+        assert!(
+            remaining
+                .iter()
+                .all(|entry| entry["step_id"].as_str() != Some(member_step_id)),
+            "deleting a member step must drop its launch mode entry: {remaining:#?}"
         );
     }
 

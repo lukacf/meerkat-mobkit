@@ -23,8 +23,17 @@ fi
 
 CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}" "$CARGO_CMD" build -p meerkat-mobkit --bin mobkit_flow_editor
 
+# repo-cargo isolates CARGO_TARGET_DIR outside the repo tree; resolve the
+# binary from the same environment the build used.
+TARGET_DIR="${CARGO_TARGET_DIR:-}"
+if [[ -z "$TARGET_DIR" ]]; then
+  TARGET_DIR="$("$CARGO_CMD" --print-env 2>/dev/null | sed -n 's/^CARGO_TARGET_DIR=//p' || true)"
+fi
+TARGET_DIR="${TARGET_DIR:-$ROOT/target}"
+FLOW_EDITOR_BIN="${MOBKIT_FLOW_EDITOR_BIN:-$TARGET_DIR/debug/mobkit_flow_editor}"
+
 LOG_FILE="$(mktemp -t mobkit-flow-editor-rkat-e2e.XXXXXX.log)"
-"$ROOT/target/debug/mobkit_flow_editor" "${SERVER_ARGS[@]}" >"$LOG_FILE" 2>&1 &
+"$FLOW_EDITOR_BIN" "${SERVER_ARGS[@]}" >"$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 
 cleanup() {

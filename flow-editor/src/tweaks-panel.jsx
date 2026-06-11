@@ -259,9 +259,16 @@ function TweaksPanel({ title = 'Tweaks', closeLabel = 'Close', noDeckControls = 
       if (t === '__activate_edit_mode') setOpen(true);
       else if (t === '__deactivate_edit_mode') setOpen(false);
     };
+    // The top rail's settings button is the in-app entry point; the
+    // postMessage protocol stays for embedding hosts with their own toggle.
+    const onToggle = () => setOpen((current) => !current);
     window.addEventListener('message', onMsg);
+    window.addEventListener('mobkit-flow-editor:settings-toggle', onToggle);
     window.parent.postMessage({ type: '__edit_mode_available' }, '*');
-    return () => window.removeEventListener('message', onMsg);
+    return () => {
+      window.removeEventListener('message', onMsg);
+      window.removeEventListener('mobkit-flow-editor:settings-toggle', onToggle);
+    };
   }, []);
 
   const dismiss = () => {

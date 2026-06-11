@@ -90,7 +90,10 @@
 
   function operationErrorText(result = null, fallback = "") {
     if (!result || typeof result !== "object") return "";
-    const validationHead = String(result?.validation?.display_rows?.[0]?.head || "").trim();
+    const validationRow = result?.validation?.display_rows?.[0] || null;
+    const validationMessage = String(validationRow?.sub || "").trim();
+    if (validationMessage) return validationMessage;
+    const validationHead = String(validationRow?.head || "").trim();
     if (validationHead) return validationHead;
     const error = String(result?.error || "").trim();
     if (error) return error;
@@ -1275,6 +1278,8 @@
       deployPlanLabel: String(view.deploy_plan_label || "").trim(),
       deployLabel: String(view.deploy_label || "").trim(),
       overflowLabel: String(view.overflow_label || "").trim(),
+      settingsLabel: String(view.settings_label || "").trim(),
+      settingsTitle: String(view.settings_title || "").trim(),
       themeSwitchPrefix: String(view.theme_switch_prefix || "").trim(),
       themeSwitchSuffix: String(view.theme_switch_suffix || "").trim(),
       darkThemeLabel: String(view.dark_theme_label || "").trim(),
@@ -1320,6 +1325,8 @@
       deployPlanLabel: String(view?.deployPlanLabel || ""),
       deployLabel: String(view?.deployLabel || ""),
       overflowLabel: String(view?.overflowLabel || ""),
+      settingsLabel: String(view?.settingsLabel || ""),
+      settingsTitle: String(view?.settingsTitle || ""),
       themeSwitchPrefix: String(view?.themeSwitchPrefix || ""),
       themeSwitchSuffix: String(view?.themeSwitchSuffix || ""),
       darkThemeLabel: String(view?.darkThemeLabel || ""),
@@ -3175,6 +3182,10 @@
   }
 
   function pruneMissingMemberStep(step, memberIds) {
+    // Mirrors MobKit's prune_step_array_for_members: member steps without a
+    // live member are dropped, but containers (repeat/branch/parallel) stay
+    // even when emptied — an empty lane is a legitimate draft state, and the
+    // server keeps it.
     if (!step || typeof step !== "object") return step;
     if (step.type === "member") {
       const role = String(step.role || "").trim();
@@ -3182,26 +3193,20 @@
     }
     if (step.type === "repeat") {
       const steps = pruneMissingMemberSteps(step.steps || [], memberIds);
-      if (!steps.length) return null;
       return steps === step.steps ? step : { ...step, steps };
     }
     if (step.type === "branch" || step.type === "parallel") {
       let changed = false;
-      const branches = (step.branches || []).flatMap((branch) => {
+      const branches = (step.branches || []).map((branch) => {
         const branchSteps = pruneMissingMemberSteps(branch?.steps || [], memberIds);
-        if (branchSteps !== branch.steps) changed = true;
-        if (!branchSteps.length) {
-          changed = true;
-          return [];
-        }
-        return branchSteps === branch.steps ? [branch] : [{ ...branch, steps: branchSteps }];
+        if (branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, steps: branchSteps };
       });
       const fallback = Array.isArray(step.fallback)
         ? pruneMissingMemberSteps(step.fallback, memberIds)
         : step.fallback;
       if (fallback !== step.fallback) changed = true;
-      const hasFallback = Array.isArray(fallback) && fallback.length > 0;
-      if (!branches.length && !hasFallback) return null;
       return changed ? { ...step, branches, fallback } : step;
     }
     return step;
@@ -10055,6 +10060,8 @@
       deployPlanLabel: shell.deployPlanLabel,
       deployLabel: shell.deployLabel,
       overflowLabel: shell.overflowLabel,
+      settingsLabel: shell.settingsLabel,
+      settingsTitle: shell.settingsTitle,
       deployActionsDisabled,
       deployRunDisabled: deployActionsDisabled || !deployExecuteAllowed,
       themeToggleTitle: `${shell.themeSwitchPrefix} ${nextTheme} ${shell.themeSwitchSuffix}`,

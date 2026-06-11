@@ -71,6 +71,8 @@ const TEST_DEPLOY_VIEW_SCHEMA = {
   deploy_plan_label: "DEPLOY PLAN",
   deploy_label: "DEPLOY",
   overflow_label: "MORE",
+  settings_label: "⚙ SETTINGS",
+  settings_title: "Editor, mob, and deploy settings",
   theme_switch_prefix: "Switch to",
   theme_switch_suffix: "mode",
   dark_theme_label: "☾ dark",
@@ -111,6 +113,8 @@ const TEST_DEPLOY_VIEW = {
   deployPlanLabel: "DEPLOY PLAN",
   deployLabel: "DEPLOY",
   overflowLabel: "MORE",
+  settingsLabel: "⚙ SETTINGS",
+  settingsTitle: "Editor, mob, and deploy settings",
   themeSwitchPrefix: "Switch to",
   themeSwitchSuffix: "mode",
   darkThemeLabel: "☾ dark",
@@ -606,6 +610,8 @@ assert.deepEqual(controller.topRailState({
   deployPlanLabel: "DEPLOY PLAN",
   deployLabel: "DEPLOY",
   overflowLabel: "MORE",
+  settingsLabel: "⚙ SETTINGS",
+  settingsTitle: "Editor, mob, and deploy settings",
   deployActionsDisabled: true,
   deployRunDisabled: true,
   themeToggleTitle: "Switch to dark mode",
@@ -642,6 +648,8 @@ assert.deepEqual(controller.topRailState({
   deployPlanLabel: "DEPLOY PLAN",
   deployLabel: "DEPLOY",
   overflowLabel: "MORE",
+  settingsLabel: "⚙ SETTINGS",
+  settingsTitle: "Editor, mob, and deploy settings",
   deployActionsDisabled: false,
   deployRunDisabled: false,
   themeToggleTitle: "Switch to light mode",
@@ -3875,10 +3883,14 @@ const memberStepPrunedFlow = controller.reconcileFlowMemberSteps({
     },
   ],
 }, [members[0]]);
-assert.deepEqual(memberStepPrunedFlow.steps.map((step) => step.id), ["keep_top", "repeat_keep", "branch_keep"]);
+// Containers stay even when emptied — mirrors MobKit's
+// prune_step_array_for_members, which only drops member steps.
+assert.deepEqual(memberStepPrunedFlow.steps.map((step) => step.id), ["keep_top", "repeat_keep", "branch_keep", "parallel_drop"]);
 assert.deepEqual(memberStepPrunedFlow.steps[1].steps.map((step) => step.id), ["keep_repeat"]);
-assert.deepEqual(memberStepPrunedFlow.steps[2].branches.map((branch) => branch.id), ["keep_branch"]);
+assert.deepEqual(memberStepPrunedFlow.steps[2].branches.map((branch) => branch.id), ["drop_branch", "keep_branch"]);
+assert.deepEqual(memberStepPrunedFlow.steps[2].branches[0].steps, []);
 assert.deepEqual(memberStepPrunedFlow.steps[2].fallback, []);
+assert.deepEqual(memberStepPrunedFlow.steps[3].branches[0].steps, []);
 
 const controlRoleFlow = controller.reconcileFlowControlRoles({
   name: "control-role-proof",

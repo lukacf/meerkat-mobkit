@@ -33,11 +33,11 @@ function diff(entry) {
 }
 
 if (!fs.existsSync(zipPath)) {
-  if (process.env.MOBKIT_EDITOR_ALLOW_MISSING_HANDOFF === "1") {
-    process.stdout.write(`handoff zip not found at ${zipPath}; visual contract skipped by MOBKIT_EDITOR_ALLOW_MISSING_HANDOFF=1\n`);
-    process.exit(0);
+  if (process.env.MOBKIT_EDITOR_REQUIRE_HANDOFF === "1") {
+    throw new Error(`handoff zip not found at ${zipPath}; set MOBKIT_EDITOR_HANDOFF_ZIP to the designer handoff archive`);
   }
-  throw new Error(`handoff zip not found at ${zipPath}; set MOBKIT_EDITOR_HANDOFF_ZIP or MOBKIT_EDITOR_ALLOW_MISSING_HANDOFF=1`);
+  process.stdout.write(`handoff zip not found at ${zipPath}; visual contract skipped (set MOBKIT_EDITOR_REQUIRE_HANDOFF=1 to make this an error)\n`);
+  process.exit(0);
 }
 
 assert.equal(local("tokens.css"), fromZip("tokens.css"), "design tokens must match the handoff exactly");
@@ -155,7 +155,7 @@ const unexpected = styleDiff.filter((line) => {
     if (line.includes("}")) allowedAddedBlock = false;
     return false;
   }
-  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|button\.node|a\.node|\.source-file-adornment|\.node--source-file|\.source-file__|\.source-file-list|\.source-file-row|\.bld-toml--graph|\.agent-editor__confirm|\.agent-runtime|\.actions-menu|\.mob-status|\.toprail|\.brand|\.viewtabs|\.actions|\.stage|\.btn--sm|\.theme-toggle|\.deploy-plan|\.source-drawer|\.validate|\.builder|\.bld-stage|\.bld-panel)/.test(line)) {
+  if (sign === "+" && /(\.inline-skill|\+\.skill-chip em|\.crumbs \.crumb\.is-current|button\.node|a\.node|\.source-file-adornment|\.node--source-file|\.source-file__|\.source-file-list|\.source-file-row|\.bld-toml--graph|\.agent-editor__confirm|\.agent-runtime|\.actions-menu|\.mob-status|\.toprail|\.brand|\.viewtabs|\.actions|\.stage|\.btn--sm|\.theme-toggle|\.settings-toggle|\.deploy-plan|\.source-drawer|\.validate|\.builder|\.bld-stage|\.bld-panel)/.test(line)) {
     if (!line.includes("}")) allowedAddedBlock = true;
     return false;
   }

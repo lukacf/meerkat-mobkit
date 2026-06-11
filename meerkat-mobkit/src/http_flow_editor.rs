@@ -23,11 +23,26 @@ const FLOW_EDITOR_FRONTEND_APP_CSS: &str = include_str!("../flow-editor-dist/flo
 /// mobpack-authoring JSON-RPC methods. Console runtime methods remain on the
 /// console RPC plane.
 pub fn flow_editor_router() -> Router {
-    flow_editor_frontend_router::<()>().merge(flow_editor_rpc_router::<()>())
+    standalone_favicon_router::<()>()
+        .merge(flow_editor_frontend_router::<()>())
+        .merge(flow_editor_rpc_router::<()>())
 }
 
 pub fn flow_editor_router_with_host_deploy() -> Router {
-    flow_editor_frontend_router::<()>().merge(flow_editor_rpc_router_allowing_host_deploy::<()>())
+    standalone_favicon_router::<()>()
+        .merge(flow_editor_frontend_router::<()>())
+        .merge(flow_editor_rpc_router_allowing_host_deploy::<()>())
+}
+
+/// Quiet-favicon route for the standalone Flow Editor server only. It must
+/// not be part of `flow_editor_frontend_router`: hosts that merge the Flow
+/// Editor with the console (for example `build_reference_app_router`) already
+/// register `/favicon.ico`, and axum panics on duplicate routes.
+fn standalone_favicon_router<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new().route("/favicon.ico", get(|| async { StatusCode::NO_CONTENT }))
 }
 
 pub fn protected_flow_editor_router(decisions: RuntimeDecisionState) -> Router {
@@ -49,7 +64,6 @@ where
     S: Clone + Send + Sync + 'static,
 {
     Router::new()
-        .route("/favicon.ico", get(|| async { StatusCode::NO_CONTENT }))
         .route("/flow-editor", get(flow_editor_frontend_index_handler))
         .route("/flow-editor/", get(flow_editor_frontend_index_handler))
         .route(
@@ -422,8 +436,8 @@ mod tests {
     use crate::rpc::JsonRpcRequest;
 
     #[tokio::test]
-    async fn flow_editor_frontend_serves_empty_favicon_response() {
-        let response = super::flow_editor_frontend_router::<()>()
+    async fn standalone_flow_editor_serves_empty_favicon_response() {
+        let response = super::flow_editor_router()
             .oneshot(
                 Request::builder()
                     .uri("/favicon.ico")
@@ -434,6 +448,15 @@ mod tests {
             .expect("favicon response");
 
         assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
+    }
+
+    #[test]
+    fn flow_editor_frontend_router_merges_with_console_frontend_router() {
+        // `build_reference_app_router` merges both frontends into one app
+        // router; duplicate paths (such as /favicon.ico) make axum panic at
+        // startup, so the shared frontend router must stay collision-free.
+        let _ = crate::http_console::console_frontend_router()
+            .merge(super::flow_editor_frontend_router::<()>());
     }
 
     #[test]
