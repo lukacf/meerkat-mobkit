@@ -21,7 +21,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use meerkat::{AgentEvent, AgentFactory, Config, build_ephemeral_service};
 use meerkat_core::types::HandlingMode;
-use meerkat_mob::ids::MeerkatId;
+// meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
+use meerkat_mob::ids::AgentIdentity;
 use meerkat_mob::{MobBuilder, MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 
 #[tokio::main]
@@ -68,32 +69,37 @@ comms = true
         status
     );
 
-    handle
-        .spawn_spec(
-            SpawnMemberSpec::new(ProfileName::from("lead"), MeerkatId::from("lead-1"))
+    Box::pin(
+        handle.spawn_spec(
+            SpawnMemberSpec::new(ProfileName::from("lead"), AgentIdentity::from("lead-1"))
                 .with_initial_message(meerkat_core::ContentInput::Text(
                     "You are the lead. Keep responses brief and direct.".to_string(),
                 )),
-        )
-        .await?;
-    handle
-        .spawn_spec(
-            SpawnMemberSpec::new(ProfileName::from("worker"), MeerkatId::from("worker-1"))
+        ),
+    )
+    .await?;
+    Box::pin(
+        handle.spawn_spec(
+            SpawnMemberSpec::new(ProfileName::from("worker"), AgentIdentity::from("worker-1"))
                 .with_initial_message(meerkat_core::ContentInput::Text(
                     "You are a worker. Help the lead when asked.".to_string(),
                 )),
-        )
-        .await?;
+        ),
+    )
+    .await?;
     handle
-        .wire(MeerkatId::from("lead-1"), MeerkatId::from("worker-1"))
+        .wire(
+            AgentIdentity::from("lead-1"),
+            AgentIdentity::from("worker-1"),
+        )
         .await?;
     println!("REAL_SMOKE: spawned lead-1 + worker-1 and wired them");
 
     let mut agent_stream = handle
-        .subscribe_agent_events(&MeerkatId::from("lead-1"))
+        .subscribe_agent_events(&AgentIdentity::from("lead-1"))
         .await?;
     handle
-        .member(&MeerkatId::from("lead-1"))
+        .member(&AgentIdentity::from("lead-1"))
         .await?
         .send(
             "Give a 2-sentence plan to implement a Rust CLI smoke test and mention one task to delegate to worker-1.",
@@ -135,8 +141,10 @@ comms = true
                 println!("\nREAL_SMOKE: interaction_complete");
                 break;
             }
-            AgentEvent::InteractionFailed { error, .. } => {
-                println!("\nREAL_SMOKE: interaction_failed error={error}");
+            AgentEvent::InteractionFailed { reason, .. } => {
+                // meerkat 0.7: the failure cause is typed; the display string
+                // is its Display projection.
+                println!("\nREAL_SMOKE: interaction_failed error={reason}");
                 break;
             }
             _ => {}

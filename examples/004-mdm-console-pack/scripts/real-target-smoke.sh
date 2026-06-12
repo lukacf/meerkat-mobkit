@@ -5,6 +5,12 @@ pack_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 examples_dir="$(cd "${pack_dir}/.." && pwd)"
 repo_root="$(cd "${examples_dir}/.." && pwd)"
 
+# Meerkat 0.7's machine-authority code allocates huge debug-build stack
+# frames. The mdm_mob_target binary sizes its own threads; this export is
+# belt and braces because this script launches the prebuilt debug binary
+# directly (bypassing the workspace .cargo/config.toml [env] section).
+export RUST_MIN_STACK="${RUST_MIN_STACK:-33554432}"
+
 target_listen="${MDM_REAL_TARGET_SMOKE_LISTEN:-127.0.0.1:5807}"
 supervisor_bind="${MDM_REAL_TARGET_SMOKE_SUPERVISOR_BIND:-127.0.0.1:5808}"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/mdm-real-target-smoke.XXXXXX")"

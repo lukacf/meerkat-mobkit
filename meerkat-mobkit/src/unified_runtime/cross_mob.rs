@@ -2,7 +2,7 @@
 
 use meerkat_core::comms::TrustedPeerDescriptor;
 use meerkat_core::types::HandlingMode;
-use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::ids::AgentIdentity;
 use meerkat_mob::{MobHandle, PeerTarget};
 
 use crate::auth::peer_keys::GatewayPeerKeys;
@@ -165,7 +165,10 @@ impl UnifiedRuntime {
 
         let local_handle = self.mob_runtime.handle();
         let local_mob_id = local_handle.mob_id().to_string();
-        let local_mid = MeerkatId::from(local_member_id);
+        // Cross-mob callers speak the public alias space (identity-first
+        // runtime ids like `rt:{identity}:{gen}` included); the mob roster
+        // holds comms-safe encoded ids, so encode at this boundary.
+        let local_mid = crate::member_comms_id::mob_member_id(local_member_id);
 
         let local_info = self
             .get_member_peer_info(&local_handle, &local_mid, &local_mob_id)
@@ -173,7 +176,7 @@ impl UnifiedRuntime {
 
         match remote {
             LocalOrRemote::Local(remote_handle) => {
-                let remote_mid = MeerkatId::from(remote_member_id);
+                let remote_mid = crate::member_comms_id::mob_member_id(remote_member_id);
                 let remote_info = self
                     .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
                     .await?;
@@ -295,7 +298,7 @@ impl UnifiedRuntime {
         let remote = self.dispatch_for(&entry).await?;
         let local_handle = self.mob_runtime.handle();
         let local_mob_id = local_handle.mob_id().to_string();
-        let local_mid = MeerkatId::from(local_member_id);
+        let local_mid = crate::member_comms_id::mob_member_id(local_member_id);
 
         let mut first_error: Option<CrossMobError> = None;
 
@@ -306,7 +309,7 @@ impl UnifiedRuntime {
 
         match remote {
             LocalOrRemote::Local(remote_handle) => {
-                let remote_mid = MeerkatId::from(remote_member_id);
+                let remote_mid = crate::member_comms_id::mob_member_id(remote_member_id);
                 if let Ok(remote_info) = self
                     .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
                     .await
@@ -402,7 +405,7 @@ impl UnifiedRuntime {
     ) -> Result<String, CrossMobError> {
         let entry = self.resolve_contact(remote_mob_id)?;
         let remote = self.dispatch_for(&entry).await?;
-        let remote_mid = MeerkatId::from(remote_member_id);
+        let remote_mid = crate::member_comms_id::mob_member_id(remote_member_id);
         let content = content.into();
         let _ = from_local_member; // audit context; delivery is via remote handle
 
@@ -422,7 +425,7 @@ impl UnifiedRuntime {
                     .resolve_bridge_session_id(&remote_mid)
                     .await
                     .ok_or_else(|| CrossMobError::NoCommsInfo {
-                        member_id: remote_mid.to_string(),
+                        member_id: remote_member_id.to_string(),
                         mob_id: remote_mob_id.to_string(),
                     })?;
                 Ok(session_id.to_string())
@@ -500,7 +503,7 @@ impl UnifiedRuntime {
     ) -> Result<(String, String, String), CrossMobError> {
         let handle = self.mob_runtime.handle();
         let mob_id = handle.mob_id().to_string();
-        let mid = MeerkatId::from(member_id);
+        let mid = crate::member_comms_id::mob_member_id(member_id);
         let info = self.get_member_peer_info(&handle, &mid, &mob_id).await?;
         let address = format!("inproc://{}", info.comms_name);
         Ok((info.peer_id, info.comms_name, address))
@@ -532,7 +535,7 @@ impl UnifiedRuntime {
             remote_address,
             remote_pubkey,
         )?;
-        let local_mid = MeerkatId::from(local_member_id);
+        let local_mid = crate::member_comms_id::mob_member_id(local_member_id);
         self.mob_runtime
             .handle()
             .wire(local_mid, PeerTarget::External(spec))
@@ -556,7 +559,7 @@ impl UnifiedRuntime {
             remote_address,
             remote_pubkey,
         )?;
-        let local_mid = MeerkatId::from(local_member_id);
+        let local_mid = crate::member_comms_id::mob_member_id(local_member_id);
         self.mob_runtime
             .handle()
             .unwire(local_mid, PeerTarget::External(spec))
@@ -612,17 +615,21 @@ impl UnifiedRuntime {
     async fn get_member_peer_info(
         &self,
         handle: &MobHandle,
-        meerkat_id: &MeerkatId,
+        meerkat_id: &AgentIdentity,
         mob_id: &str,
     ) -> Result<MemberPeerInfo, CrossMobError> {
-        let entry =
-            handle
-                .get_member(meerkat_id)
-                .await
-                .ok_or_else(|| CrossMobError::MemberNotFound {
-                    member_id: meerkat_id.to_string(),
-                    mob_id: mob_id.to_string(),
-                })?;
+        let entry = handle
+            .get_member(meerkat_id)
+            .await
+            .map_err(|err| {
+                CrossMobError::PeerSpec(format!(
+                    "member lookup for '{meerkat_id}' in mob '{mob_id}' failed: {err}"
+                ))
+            })?
+            .ok_or_else(|| CrossMobError::MemberNotFound {
+                member_id: meerkat_id.to_string(),
+                mob_id: mob_id.to_string(),
+            })?;
         let peer_id = entry
             .peer_id()
             .ok_or_else(|| CrossMobError::NoCommsInfo {

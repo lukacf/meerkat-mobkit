@@ -10,7 +10,6 @@ use std::time::Duration;
 use futures::stream::{BoxStream, SelectAll, StreamExt};
 use meerkat_core::comms::EventStream;
 use meerkat_core::event::{AgentEvent, agent_event_type};
-use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::{
     AgentIdentity, AgentRuntimeId, AttributedEvent, FenceToken, MobError, MobHandle, ProfileName,
     SpawnMemberSpec,
@@ -96,7 +95,12 @@ pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpe
     };
     let mut spawn = SpawnMemberSpec::new(
         meerkat_mob::ProfileName::from(spec.profile.as_str()),
-        MeerkatId::from(spec.meerkat_id.as_str()),
+        // The spec stays in the public alias space: the hook-aware
+        // `UnifiedRuntime::spawn`/`spawn_many` own the encode to the
+        // comms-safe roster id (meerkat 0.7 MemberCommsName), and the encode
+        // is deliberately not idempotent (`mk--` is a reserved marker), so
+        // encoding here too would double-encode `:`-bearing identities.
+        meerkat_mob::ids::AgentIdentity::from(spec.meerkat_id.as_str()),
     );
     if let Some(context) = spec.context.clone() {
         spawn = spawn.with_context(context);
@@ -264,14 +268,14 @@ impl UnifiedRuntime {
         module_config: MobKitConfig,
         timeout: Duration,
     ) -> Result<Self, UnifiedRuntimeBootstrapError> {
-        Self::bootstrap_with_options(
+        Box::pin(Self::bootstrap_with_options(
             mob_spec,
             module_config,
             Vec::new(),
             timeout,
             RuntimeOptions::default(),
             Arc::new(InMemoryMetadataStore::new()),
-        )
+        ))
         .await
     }
 
@@ -354,6 +358,63 @@ impl UnifiedRuntime {
 
     pub(crate) fn module_runtime_handle(&self) -> Arc<tokio::sync::Mutex<MobkitRuntimeHandle>> {
         Arc::clone(&self.module_runtime)
+    }
+
+    pub(crate) fn mobpack_runtime_catalog_state_snapshot(
+        &self,
+    ) -> crate::mobpack::MobpackRuntimeCatalogState {
+        let loaded_modules = self
+            .module_runtime
+            .try_lock()
+            .map(|runtime| runtime.loaded_modules())
+            .unwrap_or_default();
+        let has_peer_mob_handles = self
+            .peer_mob_handles
+            .try_read()
+            .map(|handles| !handles.is_empty())
+            .unwrap_or(false);
+        let mut runtime_methods = vec![
+            "mobkit/capabilities".to_string(),
+            "mobkit/models/catalog".to_string(),
+            "mobkit/spawn_member".to_string(),
+            "mobkit/list_members".to_string(),
+            "mobkit/get_member".to_string(),
+            "mobkit/run_flow".to_string(),
+            "mobkit/list_flows".to_string(),
+            "mobkit/list_runs".to_string(),
+        ];
+        runtime_methods.extend(
+            crate::rpc::MOBPACK_AUTHORING_METHODS
+                .iter()
+                .map(std::string::ToString::to_string),
+        );
+        if self.has_contact_directory() {
+            runtime_methods.push("mobkit/cross_mob/directory".to_string());
+        }
+        if has_peer_mob_handles && self.has_inproc_contacts() {
+            runtime_methods.extend([
+                "mobkit/cross_mob/wire".to_string(),
+                "mobkit/cross_mob/unwire".to_string(),
+                "mobkit/cross_mob/send".to_string(),
+            ]);
+        }
+        crate::mobpack::MobpackRuntimeCatalogState {
+            loaded_modules,
+            runtime_methods,
+            has_contact_directory: self.has_contact_directory(),
+            has_peer_mob_handles,
+            has_inproc_contacts: self.has_inproc_contacts(),
+            runtime_flow_rows: crate::mobpack::runtime_flow_registry_rows_from_definition(
+                self.mob_handle().definition(),
+            ),
+            runtime_agent_definition_sources:
+                crate::mobpack::runtime_agent_definition_sources_from_definition(
+                    self.mob_handle().definition(),
+                ),
+            runtime_skill_realms: crate::mobpack::runtime_skill_realms_from_definition(
+                self.mob_handle().definition(),
+            ),
+        }
     }
 
     /// Return the session bridge for identity-first operations, if configured.
@@ -638,7 +699,13 @@ async fn run_resilient_mob_agent_event_forwarder(
     #[cfg(not(target_arch = "wasm32"))]
     reconcile_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut streams).await;
+    Box::pin(reconcile_agent_event_streams(
+        &handle,
+        &agent_mob_mcp_state,
+        &mut tracked,
+        &mut streams,
+    ))
+    .await;
 
     loop {
         tokio::select! {
@@ -672,7 +739,7 @@ async fn run_resilient_mob_agent_event_forwarder(
                 }
             }
             _ = reconcile_interval.tick() => {
-                reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut streams).await;
+                Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut streams)).await;
             }
         }
     }
@@ -687,22 +754,29 @@ async fn reconcile_agent_event_streams(
     let mut handles = vec![handle.clone()];
     if let Some(state) = agent_mob_mcp_state {
         let primary_mob_id = handle.mob_id().to_string();
-        handles.extend(state.mob_handles_snapshot().await.into_iter().filter_map(
-            |(mob_id, child_handle)| {
-                if mob_id.as_str() == primary_mob_id {
-                    None
-                } else {
-                    Some(child_handle)
-                }
-            },
-        ));
+        handles.extend(
+            Box::pin(state.mob_handles_snapshot())
+                .await
+                .into_iter()
+                .filter_map(|(mob_id, child_handle)| {
+                    if mob_id.as_str() == primary_mob_id {
+                        None
+                    } else {
+                        Some(child_handle)
+                    }
+                }),
+        );
     }
 
     let mut current: HashSet<TrackedAgentEventStream> = HashSet::new();
     for handle in &handles {
         let mob_id = handle.mob_id().to_string();
         for entry in handle.list_members_including_retiring().await {
-            let (runtime_id, fence_token) = entry.binding_atoms();
+            // Members without current machine-supplied binding atoms have no
+            // live runtime stream to track; their stale streams age out.
+            let Some((runtime_id, fence_token)) = entry.binding_atoms() else {
+                continue;
+            };
             current.insert((
                 mob_id.clone(),
                 entry.agent_identity.clone(),
@@ -718,7 +792,10 @@ async fn reconcile_agent_event_streams(
         let mob_id = handle.mob_id().to_string();
         for entry in handle.list_members_including_retiring().await {
             let identity = entry.agent_identity.clone();
-            let (runtime_id, fence_token) = entry.binding_atoms();
+            // No binding atoms means no live runtime to subscribe to.
+            let Some((runtime_id, fence_token)) = entry.binding_atoms() else {
+                continue;
+            };
             let tracked_key = (
                 mob_id.clone(),
                 identity.clone(),
@@ -880,9 +957,73 @@ fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<Uni
         source: "agent".to_string(),
         timestamp_ms: attributed.envelope.timestamp_ms,
         event: UnifiedEvent::Agent {
-            agent_id: attributed.source.to_string(),
+            // The runtime id's member component is the comms-safe roster
+            // encoding (meerkat 0.7 `MemberCommsName`); decode back to the
+            // public alias space here so console replay resolution, the
+            // `mobkit/events/subscribe` buffer, and the event log all key
+            // events by the same ids that spawn/reserve paths register.
+            agent_id: crate::member_comms_id::runtime_event_alias(&attributed.source),
             event_type: agent_event_type(&attributed.envelope.payload).to_string(),
-            payload: serde_json::to_value(&attributed.envelope.payload).ok(),
+            // Project through the console wire shape (not the raw 0.7 event)
+            // so downstream surfaces — console timeline frames, the
+            // `mobkit/events/subscribe` replay buffer, and the event-log
+            // query — keep the `result`/`tool_call_id` keys the SDKs parse.
+            payload: Some(crate::mob_handle_runtime::console_agent_event_payload(
+                &attributed.envelope.payload,
+            )),
         },
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use meerkat_mob::ids::Generation;
+
+    fn attributed_text_delta(member_id: &str, generation: u64) -> AttributedEvent {
+        AttributedEvent {
+            source: AgentRuntimeId::new(
+                AgentIdentity::from(member_id),
+                Generation::new(generation),
+            ),
+            source_fence_token: FenceToken::new(1),
+            role: ProfileName::from("worker"),
+            envelope: meerkat_core::event::EventEnvelope {
+                event_id: Default::default(),
+                source: meerkat_core::event::EventSourceIdentity::runtime("test"),
+                seq: 0,
+                mob_id: None,
+                timestamp_ms: 1,
+                payload: AgentEvent::TextDelta {
+                    delta: "hello".to_string(),
+                },
+            },
+        }
+    }
+
+    /// Regression: identity-first members spawn under comms-safe encoded
+    /// roster ids (`mk--…`); the agent-event ingest must decode the member
+    /// component back to the public alias space before console/SDK
+    /// projection, or events project under junk identities and reserved
+    /// interactions never complete.
+    #[test]
+    fn attributed_event_ingest_decodes_encoded_roster_member_ids() {
+        let encoded = crate::member_comms_id::mob_member_id_str("rt:review:singleton:0");
+        assert!(encoded.starts_with("mk--"), "precondition: alias encodes");
+        let unified = attributed_event_to_unified(attributed_text_delta(&encoded, 1));
+        let UnifiedEvent::Agent { agent_id, .. } = unified.event else {
+            panic!("expected agent event");
+        };
+        assert_eq!(agent_id, "rt:review:singleton:0:1");
+    }
+
+    #[test]
+    fn attributed_event_ingest_passes_plain_member_ids_through() {
+        let unified = attributed_event_to_unified(attributed_text_delta("worker-one", 0));
+        let UnifiedEvent::Agent { agent_id, .. } = unified.event else {
+            panic!("expected agent event");
+        };
+        assert_eq!(agent_id, "worker-one:0");
     }
 }

@@ -3,6 +3,12 @@ set -euo pipefail
 
 pack_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo_root="$(cd "${pack_dir}/../.." && pwd)"
+
+# Meerkat 0.7's machine-authority code allocates huge debug-build stack
+# frames. The mdm_mob_target binary sizes its own threads; this export is
+# belt and braces because this script launches the prebuilt debug binary
+# directly (bypassing the workspace .cargo/config.toml [env] section).
+export RUST_MIN_STACK="${RUST_MIN_STACK:-33554432}"
 state_dir="${pack_dir}/.state"
 bindings_dir="${state_dir}/bindings"
 targets_file="${MDM_TARGET_BINDINGS_FILE:-${state_dir}/target-bindings.json}"

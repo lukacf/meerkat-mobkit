@@ -100,3 +100,62 @@ test("signals rail merges non-adjacent frames from the same turn", () => {
   assert.equal(commanderTurn?.title, "Turn activity");
   assert.equal(commanderTurn?.items.length, 2);
 });
+
+test("signals rail previews never leak the meerkat 0.7.1 peer transport projection", () => {
+  const projection =
+    "Peer request from peer_id 6f6114cd-2cf7-590f-a172-0e36feacd12c"
+    + " (display_name: incident-command-center/commander/incident-commander)"
+    + " (id: 964020b4-c9b6-4c31-ba6c-30598279b388)\n"
+    + "Intent: mob.kickoff_started\n"
+    + "Params: {\n"
+    + "  \"peer_spec\": {\n"
+    + "    \"address\": \"inproc://incident-command-center/commander/incident-commander\",\n"
+    + "    \"pubkey\": [20, 129, 97, 58, 74, 93, 150, 7]\n"
+    + "  }\n"
+    + "}\n"
+    + "Request ID: 964020b4-c9b6-4c31-ba6c-30598279b388\n"
+    + "\n"
+    + "This is a correlated peer request. Reply with send_response with arguments"
+    + " {\"in_reply_to\":\"964020b4-c9b6-4c31-ba6c-30598279b388\",\"status\":\"completed\"}."
+    + " Do not answer this request with send_message.";
+
+  const frames: ConsoleFrame[] = [
+    {
+      id: "kickoff-notice",
+      event: "system_notice",
+      identity: "scribe",
+      timestampMs: Date.now(),
+      sourceKind: "session_history",
+      data: {
+        kind: "comms",
+        blocks: [{
+          type: "comms",
+          kind: "request",
+          direction: "incoming",
+          peer: {
+            id: "6f6114cd-2cf7-590f-a172-0e36feacd12c",
+            display_name: "incident-command-center/commander/incident-commander",
+          },
+          request_id: "964020b4-c9b6-4c31-ba6c-30598279b388",
+          intent: "mob.kickoff_started",
+          summary: "Peer request: mob.kickoff_started",
+          content: [{ type: "text", text: projection }],
+        }],
+      },
+    },
+  ];
+
+  const groups = buildSignalGroupsForTest(frames);
+  const received = groups.find((group) => group.title.startsWith("Received from"));
+
+  assert.ok(received, "incoming comms notice should produce a Received from signal");
+  assert.equal(received?.detail, "Peer request: mob.kickoff_started");
+  for (const group of groups) {
+    for (const item of group.items) {
+      assert.ok(
+        !/peer_id|pubkey|send_response/i.test(`${item.label} ${item.detail}`),
+        `signal preview must not leak transport scaffold: ${item.label} ${item.detail}`,
+      );
+    }
+  }
+});

@@ -22,7 +22,8 @@ use async_trait::async_trait;
 use tokio::time::sleep;
 
 use meerkat_mob::definition::WiringRules;
-use meerkat_mob::ids::MeerkatId;
+// meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
+use meerkat_mob::ids::AgentIdentity as MeerkatId;
 use meerkat_mob::{
     MobDefinition, MobId, MobRuntimeMode, Profile, ProfileBinding, ProfileName, ToolConfig,
 };

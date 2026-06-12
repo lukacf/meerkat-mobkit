@@ -250,8 +250,9 @@ impl LlmClient for SlowTurnClient {
         })
     }
 
-    fn provider(&self) -> &'static str {
-        "slow-identity-test"
+    // meerkat 0.7: LlmClient::provider returns the typed Provider.
+    fn provider(&self) -> meerkat_core::Provider {
+        meerkat_core::Provider::OpenAI
     }
 
     fn health_check<'life0, 'async_trait>(
@@ -348,7 +349,7 @@ fn continuity_record(identity: &str) -> ContinuityRecord {
 
 /// Helper: assert builder.build() returns Err and the error message contains the given substring.
 async fn assert_build_err_contains(builder: UnifiedRuntimeBuilder, expected: &str) {
-    match builder.build().await {
+    match Box::pin(builder.build()).await {
         Err(e) => {
             let msg = e.to_string();
             assert!(
@@ -362,7 +363,7 @@ async fn assert_build_err_contains(builder: UnifiedRuntimeBuilder, expected: &st
 
 /// Helper: assert builder.build() returns Err and the error message does NOT contain either substring.
 async fn assert_build_err_not_contains(builder: UnifiedRuntimeBuilder, not_a: &str, not_b: &str) {
-    match builder.build().await {
+    match Box::pin(builder.build()).await {
         Err(e) => {
             let msg = e.to_string();
             assert!(
@@ -483,17 +484,19 @@ async fn identity_first_builder_bootstraps_and_exposes_identity_runtime() {
     let tmp = tempfile::tempdir().unwrap();
     let roster = Arc::new(StubRosterProvider::new(vec![durable_spec("agent:alpha")]));
 
-    let runtime = UnifiedRuntimeBuilder::default()
-        .definition(test_definition())
-        .continuity_store(Arc::new(StubContinuityStore))
-        .lease_provider(Arc::new(StubLeaseProvider))
-        .roster_provider(roster)
-        .scratch_dir(tmp.path())
-        .identity_runtime_instance_id("builder-test")
-        .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
-        .build()
-        .await
-        .expect("builder should bootstrap identity-first runtime");
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(StubContinuityStore))
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(roster)
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("builder should bootstrap identity-first runtime");
 
     let identity_runtime = runtime
         .identity_runtime()
@@ -514,19 +517,21 @@ async fn identity_first_send_does_not_park_mob_actor_until_turn_completion() {
     let tmp = tempfile::tempdir().unwrap();
     let roster = Arc::new(StubRosterProvider::new(vec![durable_spec("agent:alpha")]));
 
-    let runtime = UnifiedRuntimeBuilder::default()
-        .definition(test_definition())
-        .continuity_store(Arc::new(StubContinuityStore))
-        .lease_provider(Arc::new(StubLeaseProvider))
-        .roster_provider(roster)
-        .scratch_dir(tmp.path())
-        .identity_runtime_instance_id("builder-slow-send-test")
-        .default_llm_client(Arc::new(SlowTurnClient {
-            delay: Duration::from_secs(2),
-        }))
-        .build()
-        .await
-        .expect("builder should bootstrap identity-first runtime");
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(StubContinuityStore))
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(roster)
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-slow-send-test")
+            .default_llm_client(Arc::new(SlowTurnClient {
+                delay: Duration::from_secs(2),
+            }))
+            .build(),
+    )
+    .await
+    .expect("builder should bootstrap identity-first runtime");
 
     let identity_runtime = runtime
         .identity_runtime()
@@ -543,18 +548,20 @@ async fn identity_first_send_does_not_park_mob_actor_until_turn_completion() {
     .expect("identity send should ack at ingress, not turn completion")
     .expect("identity send should be accepted");
 
-    tokio::time::timeout(
+    Box::pin(tokio::time::timeout(
         Duration::from_millis(250),
         runtime
             .mob_handle()
             .spawn_spec(meerkat_mob::SpawnMemberSpec::from_wire(
                 "default".to_string(),
-                "agent:beta".to_string(),
+                // meerkat 0.7: MemberCommsName is fail-closed; raw mob member
+                // ids must be identifier-safe (no ":").
+                "agent-beta".to_string(),
                 Some("You are beta.".into()),
                 None,
                 None,
             )),
-    )
+    ))
     .await
     .expect("mob actor should still process spawn while alpha turn runs")
     .expect("spawn should succeed");
@@ -579,18 +586,20 @@ async fn identity_first_builder_lazy_materialize_registers_large_ready_roster_wi
         .collect::<BTreeMap<_, _>>();
     let continuity_store = Arc::new(CountingReadyContinuityStore::new(records));
 
-    let runtime = UnifiedRuntimeBuilder::default()
-        .definition(test_definition())
-        .continuity_store(continuity_store.clone())
-        .lease_provider(Arc::new(StubLeaseProvider))
-        .roster_provider(Arc::new(StubRosterProvider::new(specs)))
-        .scratch_dir(tmp.path())
-        .identity_runtime_instance_id("builder-lazy-test")
-        .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
-        .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
-        .build()
-        .await
-        .expect("lazy builder should bootstrap identity metadata");
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(continuity_store.clone())
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(Arc::new(StubRosterProvider::new(specs)))
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-lazy-test")
+            .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("lazy builder should bootstrap identity metadata");
 
     assert_eq!(
         continuity_store.load_snapshot_calls(),
@@ -635,18 +644,20 @@ async fn identity_first_builder_lazy_console_lists_and_inspects_dormant_identiti
     let continuity_store = Arc::new(CountingReadyContinuityStore::new(records));
 
     let runtime = Arc::new(
-        UnifiedRuntimeBuilder::default()
-            .definition(test_definition())
-            .continuity_store(continuity_store.clone())
-            .lease_provider(Arc::new(StubLeaseProvider))
-            .roster_provider(Arc::new(StubRosterProvider::new(specs)))
-            .scratch_dir(tmp.path())
-            .identity_runtime_instance_id("builder-lazy-console-test")
-            .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
-            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
-            .build()
-            .await
-            .expect("lazy builder should bootstrap identity metadata"),
+        Box::pin(
+            UnifiedRuntimeBuilder::default()
+                .definition(test_definition())
+                .continuity_store(continuity_store.clone())
+                .lease_provider(Arc::new(StubLeaseProvider))
+                .roster_provider(Arc::new(StubRosterProvider::new(specs)))
+                .scratch_dir(tmp.path())
+                .identity_runtime_instance_id("builder-lazy-console-test")
+                .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+                .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+                .build(),
+        )
+        .await
+        .expect("lazy builder should bootstrap identity metadata"),
     );
     let aggregator = MobKitConsoleAggregator::in_memory();
     aggregator.register_runtime(ConsoleRuntimeRegistration {
@@ -738,19 +749,21 @@ async fn identity_first_builder_lazy_topology_refresh_stays_metadata_only() {
         ])),
     });
 
-    let runtime = UnifiedRuntimeBuilder::default()
-        .definition(test_definition())
-        .continuity_store(continuity_store.clone())
-        .lease_provider(Arc::new(StubLeaseProvider))
-        .roster_provider(Arc::new(StubRosterProvider::new(specs)))
-        .topology_provider(topology)
-        .scratch_dir(tmp.path())
-        .identity_runtime_instance_id("builder-lazy-refresh-test")
-        .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
-        .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
-        .build()
-        .await
-        .expect("lazy builder should bootstrap");
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(continuity_store.clone())
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(Arc::new(StubRosterProvider::new(specs)))
+            .topology_provider(topology)
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-lazy-refresh-test")
+            .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("lazy builder should bootstrap");
 
     runtime
         .refresh_desired_topology()
@@ -802,19 +815,21 @@ async fn identity_first_builder_lazy_run_flow_materializes_ob3_shaped_roster_bef
         ])),
     });
 
-    let runtime = UnifiedRuntimeBuilder::default()
-        .definition(review_flow_definition())
-        .continuity_store(Arc::new(StubContinuityStore))
-        .lease_provider(Arc::new(StubLeaseProvider))
-        .roster_provider(Arc::new(StubRosterProvider::new(specs)))
-        .topology_provider(topology)
-        .scratch_dir(tmp.path())
-        .identity_runtime_instance_id("builder-lazy-flow-test")
-        .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
-        .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
-        .build()
-        .await
-        .expect("lazy builder should bootstrap");
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(review_flow_definition())
+            .continuity_store(Arc::new(StubContinuityStore))
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(Arc::new(StubRosterProvider::new(specs)))
+            .topology_provider(topology)
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-lazy-flow-test")
+            .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("lazy builder should bootstrap");
 
     assert!(
         runtime
@@ -862,9 +877,17 @@ async fn identity_first_builder_lazy_run_flow_materializes_ob3_shaped_roster_bef
     );
 
     let members = runtime.mob_handle().list_members_including_retiring().await;
+    // meerkat 0.7: roster member ids are comms-safe encodings of the public
+    // runtime-id aliases (MemberCommsName rejects ":"); the wire projection
+    // (member_entry_to_json) decodes back to the alias space asserted below.
     let member_ids = members
         .iter()
-        .map(|member| member.agent_identity.to_string())
+        .map(|member| {
+            meerkat_mobkit::mob_handle_runtime::member_entry_to_json(member)["agent_identity"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         member_ids.len(),
@@ -901,17 +924,19 @@ async fn identity_first_builder_runtime_checkpoint_follows_initial_session_save_
     let roster = Arc::new(StubRosterProvider::new(vec![durable_spec("agent:alpha")]));
     let continuity_store = Arc::new(LocalContinuityStore::in_memory().unwrap());
 
-    let runtime = UnifiedRuntimeBuilder::default()
-        .definition(test_definition())
-        .continuity_store(continuity_store)
-        .lease_provider(Arc::new(StubLeaseProvider))
-        .roster_provider(roster)
-        .scratch_dir(tmp.path())
-        .identity_runtime_instance_id("builder-checkpoint-test")
-        .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
-        .build()
-        .await
-        .expect("builder should bootstrap identity-first runtime");
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(continuity_store)
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(roster)
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-checkpoint-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("builder should bootstrap identity-first runtime");
 
     let identity = AgentIdentity::parse("agent:alpha").unwrap();
     let identity_runtime = runtime
@@ -948,32 +973,36 @@ async fn identity_first_builder_resume_checkpoint_follows_registered_session_sav
     {
         let tmp = tempfile::tempdir().unwrap();
         let roster = Arc::new(StubRosterProvider::new(vec![durable_spec("agent:alpha")]));
-        UnifiedRuntimeBuilder::default()
-            .definition(test_definition())
-            .continuity_store(continuity_store.clone())
-            .lease_provider(Arc::new(StubLeaseProvider))
-            .roster_provider(roster)
-            .scratch_dir(tmp.path())
-            .identity_runtime_instance_id("builder-resume-seed")
-            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
-            .build()
-            .await
-            .expect("seed runtime should create continuity");
+        Box::pin(
+            UnifiedRuntimeBuilder::default()
+                .definition(test_definition())
+                .continuity_store(continuity_store.clone())
+                .lease_provider(Arc::new(StubLeaseProvider))
+                .roster_provider(roster)
+                .scratch_dir(tmp.path())
+                .identity_runtime_instance_id("builder-resume-seed")
+                .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+                .build(),
+        )
+        .await
+        .expect("seed runtime should create continuity");
     }
 
     let tmp = tempfile::tempdir().unwrap();
     let roster = Arc::new(StubRosterProvider::new(vec![durable_spec("agent:alpha")]));
-    let runtime = UnifiedRuntimeBuilder::default()
-        .definition(test_definition())
-        .continuity_store(continuity_store)
-        .lease_provider(Arc::new(StubLeaseProvider))
-        .roster_provider(roster)
-        .scratch_dir(tmp.path())
-        .identity_runtime_instance_id("builder-resume-test")
-        .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
-        .build()
-        .await
-        .expect("builder should resume identity-first runtime");
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(continuity_store)
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(roster)
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-resume-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("builder should resume identity-first runtime");
 
     let identity_runtime = runtime
         .identity_runtime()
@@ -1018,19 +1047,21 @@ async fn identity_first_builder_refreshes_desired_topology_from_providers() {
         .unwrap(),
     ]));
 
-    let runtime = UnifiedRuntimeBuilder::default()
-        .definition(test_definition())
-        .continuity_store(Arc::new(StubContinuityStore))
-        .lease_provider(Arc::new(StubLeaseProvider))
-        .roster_provider(roster)
-        .topology_provider(Arc::new(StubTopologyProvider {
-            edges: edges.clone(),
-        }))
-        .scratch_dir(tmp.path())
-        .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
-        .build()
-        .await
-        .expect("builder should bootstrap identity-first runtime");
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(StubContinuityStore))
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(roster)
+            .topology_provider(Arc::new(StubTopologyProvider {
+                edges: edges.clone(),
+            }))
+            .scratch_dir(tmp.path())
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("builder should bootstrap identity-first runtime");
 
     edges.lock().await.clear();
     let result = runtime
@@ -1076,4 +1107,67 @@ fn identity_first_builder_legacy_adapter_still_works() {
     };
     let durable = meerkat_mobkit::identity_first::agent_discovery_to_durable(&spec).unwrap();
     assert_eq!(durable.identity.as_str(), "triage:main");
+}
+
+// ===========================================================================
+// Regression: external (peer-only) member restore must carry a generated
+// owner binding on meerkat 0.7.1
+// ===========================================================================
+
+/// meerkat 0.7.1 `MultiBackendProvisioner::provision_member` fails external
+/// peer-only members closed unless the spawn carries a generated owner
+/// binding (owner bridge session + ops registry). The identity-first restore
+/// path used plain `MobHandle::spawn_spec`, so real-target bootstrap (e.g.
+/// the 004-mdm-console-pack real-target smoke) died with
+/// "external peer-only member operation requires generated owner binding"
+/// before touching the external backend at all.
+///
+/// This definition deliberately has no `[backend.external]`, so an
+/// owner-bound spawn deterministically fails *later* — at the provisioner's
+/// "external backend is not configured" check, which sits past the
+/// owner-binding gate — without any network I/O.
+#[tokio::test]
+async fn identity_first_external_member_restore_supplies_generated_owner_binding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut spec = durable_spec("agent:target");
+    spec.backend = Some(meerkat_mob::MobBackendKind::External);
+    spec.binding = Some(
+        serde_json::from_value(serde_json::json!({
+            "kind": "external",
+            "address": "tcp://127.0.0.1:4777",
+            "bootstrap_token": "regression-test-token",
+            "identity": {
+                "kind": "ed25519_public_key",
+                "public_key": "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+            }
+        }))
+        .expect("wire binding"),
+    );
+    let roster = Arc::new(StubRosterProvider::new(vec![spec]));
+
+    let err = match Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(StubContinuityStore))
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(roster)
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-external-owner-binding-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("external-binding spec without [backend.external] should fail restore"),
+    };
+
+    assert!(
+        !err.contains("requires generated owner binding"),
+        "identity-first restore must spawn external members with a generated owner context, got: {err}"
+    );
+    assert!(
+        err.contains("external backend is not configured"),
+        "expected the spawn to pass the owner-binding gate and reach the external-backend check, got: {err}"
+    );
 }

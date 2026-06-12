@@ -544,14 +544,14 @@ impl UnifiedRuntimeBuilder {
                 Arc::new(InMemoryConsoleLogStore::new())
             };
 
-        let runtime = UnifiedRuntime::bootstrap_with_options(
+        let runtime = Box::pin(UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
             self.module_agent_events,
             timeout,
             self.options,
             persistent_metadata,
-        )
+        ))
         .await
         .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
 
@@ -967,11 +967,9 @@ mod tests {
         CreateSessionRequest {
             model: "gpt-5.5".to_string(),
             prompt: meerkat_core::ContentInput::Text(prompt.into()),
-            render_metadata: None,
-            system_prompt: None,
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
             max_tokens: None,
             event_tx: None,
-            skill_references: None,
             initial_turn: InitialTurnPolicy::Defer,
             deferred_prompt_policy: DeferredPromptPolicy::Discard,
             build: Some(build),

@@ -7,6 +7,11 @@ SCENARIO="$PACK_DIR/scenario.yaml"
 
 : "${OPENAI_API_KEY:?Set OPENAI_API_KEY to run the live incident command center pack}"
 export RKAT_INCIDENT_MODEL="${RKAT_INCIDENT_MODEL:-gpt-5.5}"
+# Meerkat 0.7's machine-authority code allocates huge debug-build stack
+# frames. The example binary sizes its own threads, and the workspace
+# .cargo/config.toml covers cargo-invoked flows; this export is belt and
+# braces for prebuilt-binary runs documented from this script.
+export RUST_MIN_STACK="${RUST_MIN_STACK:-33554432}"
 LISTEN_ADDR="$(python3 - <<'PY'
 import socket
 s = socket.socket()
@@ -19,12 +24,16 @@ PY
 
 cleanup() {
   if [[ -n "${SERVER_PID:-}" ]]; then
-    kill "${SERVER_PID}" >/dev/null 2>&1 || true
+    # The server is started in its own process group (set -m below); kill the
+    # whole group so cargo/server descendants die too, not just the subshell.
+    kill -TERM -- -"${SERVER_PID}" >/dev/null 2>&1 || kill "${SERVER_PID}" >/dev/null 2>&1 || true
     wait "${SERVER_PID}" >/dev/null 2>&1 || true
     SERVER_PID=""
   fi
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 wait_for_server() {
   python3 - <<'PY' "$1"
@@ -47,8 +56,12 @@ PY
 start_server() {
   local listen_addr="$1"
   echo "[incident-pack] starting incident example server at http://${listen_addr}"
+  # set -m puts the background job in its own process group so cleanup can
+  # kill the entire cargo/server tree via kill -- -PID.
+  set -m
   (cd "$ROOT" && INCIDENT_COMMAND_CENTER_LISTEN_ADDR="$listen_addr" cargo run -p meerkat-mobkit --example incident_command_center > /tmp/incident-command-center.log 2>&1) &
   SERVER_PID=$!
+  set +m
   wait_for_server "http://${listen_addr}"
 }
 

@@ -19,7 +19,7 @@ use meerkat_mob::{
     MobBuilder, MobDefinition, MobError, MobHandle, MobSessionService, MobStorage, Profile,
     ProfileName, SpawnMemberSpec,
 };
-use meerkat_runtime::input_state::StoredInputState;
+use meerkat_runtime::input_state::{InputStatePersistenceRecord, StoredInputState};
 use meerkat_runtime::store::MachineLifecycleCommit;
 use meerkat_store::StoreAdapter;
 use serde_json::Value;
@@ -41,8 +41,47 @@ pub(crate) fn is_previous_member_cleanup_ambiguous_error(error: &str) -> bool {
 pub(crate) fn is_recoverable_lifecycle_cleanup_error(error: &str) -> bool {
     is_previous_member_cleanup_ambiguous_error(error)
         || (error.contains("disposal completed but ArchiveSession failed")
-            && error.contains("cancel-before-retire failed")
-            && error.contains("Runtime not ready: running"))
+            && (
+                // Cancel/retire race: the runtime was still running when the
+                // archive step tried to cancel it.
+                (error.contains("cancel-before-retire failed")
+                    && error.contains("Runtime not ready: running"))
+                // meerkat 0.7.1: the session machine of an idle member sits in
+                // `Stopped`, whose DSL authority rejects the archive step's
+                // final `Retire` input. Disposal already completed — the
+                // member left the roster (retire) or is anchored for cleanup
+                // retry (respawn) — so the failed bookkeeping transition must
+                // not fail the lifecycle operation.
+                || (error.contains("guard rejected transition from Stopped")
+                    && error.contains("input::Retire"))
+                // meerkat 0.7.1 retire performs a final fenced continuity
+                // save for the old session. Identity-first reset/delete flows
+                // advance or remove the mobkit-owned continuity record before
+                // retiring the old generation, so that save is intentionally
+                // stale; disposal itself completed.
+                || (error.contains("continuity save")
+                    && (error.contains("continuity record not found")
+                        || error.contains("stale fencing token")))
+            ))
+}
+
+/// True when a session archive failed only at its final runtime-retire
+/// realization because the session machine sits in `Stopped`.
+///
+/// meerkat 0.7.1 splits the archive across two realizations, committed
+/// document-first: the durable session-document lifecycle commit lands,
+/// then `MachineSessionArchiveProtocol::retire_session` drives the machine
+/// `Retire` transition. The session machine accepts `Retire` from
+/// Idle/Attached/Running/Retired but NOT from `Stopped` — and an idle mob
+/// member's runtime is stopped (and persisted as `Stopped`) between turns,
+/// so member retire/respawn disposal deterministically fails here.
+/// meerkat-mob's own archive helper (`retire_runtime_session_for_archive`)
+/// explicitly treats `Stopped` as already-retired; the meerkat-session
+/// protocol misses that tolerance.
+pub(crate) fn is_stopped_session_archive_retire_rejection(error: &str) -> bool {
+    error.contains("machine archive retire failed")
+        && error.contains("guard rejected transition from Stopped")
+        && error.contains("input::Retire")
 }
 
 pub(crate) fn topology_restore_failed_peer_ids(
@@ -71,6 +110,22 @@ use std::sync::{Mutex, OnceLock};
 pub const MEMBER_STATE_ACTIVE: &str = "active";
 /// Member state constant for members transitioning to retired.
 pub const MEMBER_STATE_RETIRING: &str = "retiring";
+
+/// Project a machine-owned member status into the console's member-state
+/// string vocabulary.
+///
+/// Meerkat 0.7 replaced the roster-owned two-state `MemberState` with the
+/// machine-projected [`meerkat_mob::MobMemberStatus`]; the legacy
+/// active/retiring pair keeps the existing console constants and the newer
+/// machine statuses (broken/completed/unknown) project as their canonical
+/// snake_case names.
+pub(crate) fn member_status_state_string(status: meerkat_mob::MobMemberStatus) -> String {
+    match status {
+        meerkat_mob::MobMemberStatus::Active => MEMBER_STATE_ACTIVE.to_string(),
+        meerkat_mob::MobMemberStatus::Retiring => MEMBER_STATE_RETIRING.to_string(),
+        other => format!("{other:?}").to_ascii_lowercase(),
+    }
+}
 
 /// Options for bootstrapping a mob runtime.
 #[derive(Clone, Default)]
@@ -142,7 +197,7 @@ impl meerkat_core::AgentLlmClient for ReplaySanitizingAgentLlmClient {
             .await
     }
 
-    fn provider(&self) -> &'static str {
+    fn provider(&self) -> meerkat_core::Provider {
         self.inner.provider()
     }
 
@@ -192,7 +247,7 @@ impl LlmClient for ReplaySanitizingLlmClient {
         })
     }
 
-    fn provider(&self) -> &'static str {
+    fn provider(&self) -> meerkat_core::Provider {
         self.inner.provider()
     }
 
@@ -931,8 +986,10 @@ fn sanitize_message_for_stateless_replay(message: Message) -> Message {
                 .blocks
                 .into_iter()
                 .filter_map(|block| match block {
-                    AssistantBlock::ServerToolContent { name, content, .. }
-                        if is_replay_unsafe_server_tool_content(&name, &content) =>
+                    // Meerkat 0.7 types the server-tool name as `ServerToolKind`;
+                    // the replay-unsafe predicate keys on the provider-native name.
+                    AssistantBlock::ServerToolContent { kind, content, .. }
+                        if is_replay_unsafe_server_tool_content(kind.provider_name(), &content) =>
                     {
                         None
                     }
@@ -1042,7 +1099,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
         session_delta: Option<meerkat_runtime::store::SessionDelta>,
         receipt: meerkat_core::lifecycle::RunBoundaryReceipt,
-        input_updates: Vec<StoredInputState>,
+        input_updates: Vec<InputStatePersistenceRecord>,
         session_store_key: Option<meerkat_core::types::SessionId>,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         self.inner
@@ -1115,7 +1172,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
     async fn persist_input_state(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
-        state: &StoredInputState,
+        state: &InputStatePersistenceRecord,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         self.inner.persist_input_state(runtime_id, state).await
     }
@@ -1128,19 +1185,18 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         self.inner.load_input_state(runtime_id, input_id).await
     }
 
-    async fn load_runtime_state(
+    async fn load_machine_lifecycle_record(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
-    ) -> Result<Option<meerkat_runtime::RuntimeState>, meerkat_runtime::store::RuntimeStoreError>
-    {
-        self.inner.load_runtime_state(runtime_id).await
+    ) -> Result<Option<Vec<u8>>, meerkat_runtime::store::RuntimeStoreError> {
+        self.inner.load_machine_lifecycle_record(runtime_id).await
     }
 
     async fn commit_machine_lifecycle(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
         commit: MachineLifecycleCommit,
-        input_states: &[StoredInputState],
+        input_states: &[InputStatePersistenceRecord],
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         self.inner
             .commit_machine_lifecycle(runtime_id, commit, input_states)
@@ -1241,7 +1297,11 @@ fn normalize_runtime_turn_request(
     // The direct agent/session path is queue-only, so forward a normalized
     // turn request to avoid re-injecting runtime-only semantics.
     req.runtime.handling_mode = meerkat_core::types::HandlingMode::Queue;
-    req.runtime.render_metadata = None;
+    // Meerkat 0.7: render metadata lives only on the typed turn-metadata
+    // carrier; strip it there instead of the removed flat field.
+    if let Some(metadata) = req.runtime.turn_metadata.as_mut() {
+        metadata.render_metadata = None;
+    }
     req
 }
 
@@ -1262,7 +1322,10 @@ macro_rules! delegate_mob_session_service {
                 let ctx = SessionCreatedContext {
                     model: req.model.clone(),
                     labels: req.labels.clone().unwrap_or_default(),
-                    system_prompt: req.system_prompt.clone(),
+                    system_prompt: req
+                        .system_prompt
+                        .as_set_prompt()
+                        .map(ToString::to_string),
                 };
                 let result = self.inner.create_session(req).await?;
 
@@ -1316,13 +1379,6 @@ macro_rules! delegate_mob_session_service {
                         request_policy,
                     )
                     .await
-            }
-            async fn update_session_keep_alive(
-                &self,
-                id: &meerkat_core::types::SessionId,
-                keep_alive: bool,
-            ) -> Result<(), SessionError> {
-                self.inner.update_session_keep_alive(id, keep_alive).await
             }
             async fn update_session_mob_authority_context(
                 &self,
@@ -1496,9 +1552,33 @@ macro_rules! delegate_mob_session_service {
                 &self,
                 session_id: &meerkat_core::types::SessionId,
             ) -> Result<(), SessionError> {
-                self.inner
+                match self
+                    .inner
                     .archive_with_mob_lifecycle_authority(session_id)
                     .await
+                {
+                    Err(err)
+                        if is_stopped_session_archive_retire_rejection(&err.to_string()) =>
+                    {
+                        // meerkat 0.7.1: the archive protocol commits the
+                        // durable archive document FIRST, then drives the
+                        // machine `Retire` realization — which the session
+                        // machine of an idle (stopped-between-turns) member
+                        // rejects from `Stopped`. meerkat-mob's own archive
+                        // helper treats `Stopped` as already-retired; mirror
+                        // that tolerance here so member retire/respawn
+                        // disposal completes instead of wedging the roster
+                        // anchor in `retiring` (any disposal retry on the
+                        // retained anchor stalls the mob actor).
+                        tracing::warn!(
+                            session_id = %session_id,
+                            error = %err,
+                            "archive: tolerating Retire rejection for stopped idle session; archive document committed"
+                        );
+                        Ok(())
+                    }
+                    other => other,
+                }
             }
             async fn execution_snapshot(
                 &self,
@@ -1725,7 +1805,7 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
         let ctx = SessionCreatedContext {
             model: req.model.clone(),
             labels: req.labels.clone().unwrap_or_default(),
-            system_prompt: req.system_prompt.clone(),
+            system_prompt: req.system_prompt.as_set_prompt().map(ToString::to_string),
         };
         let result = self.inner.create_session(req).await?;
         (self.after_hook)(result.session_id.clone(), ctx).await;
@@ -1771,13 +1851,6 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
                 request_policy,
             )
             .await
-    }
-    async fn update_session_keep_alive(
-        &self,
-        id: &meerkat_core::types::SessionId,
-        keep_alive: bool,
-    ) -> Result<(), SessionError> {
-        self.inner.update_session_keep_alive(id, keep_alive).await
     }
     async fn update_session_mob_authority_context(
         &self,
@@ -2271,7 +2344,18 @@ impl MobBootstrapSpec {
                     let runtime_adapter = runtime_adapter.clone();
                     let user_after_create_hook = user_after_create_hook.clone();
                     Box::pin(async move {
-                        runtime_adapter.register_session(session_id.clone()).await;
+                        // The after-create hook is fire-and-forget; surface a
+                        // failed control-plane registration in logs instead of
+                        // silently dropping it (it cannot abort the session).
+                        if let Err(error) =
+                            runtime_adapter.register_session(session_id.clone()).await
+                        {
+                            tracing::error!(
+                                session_id = %session_id,
+                                error = %error,
+                                "post-create session runtime registration failed"
+                            );
+                        }
                         if let Some(user_after_create_hook) = user_after_create_hook {
                             user_after_create_hook(session_id, ctx).await;
                         }
@@ -2550,7 +2634,16 @@ impl MobBootstrapSpec {
             let runtime_adapter = runtime_adapter_for_after_create.clone();
             let after_create_hook = after_create_hook.clone();
             Box::pin(async move {
-                runtime_adapter.register_session(session_id.clone()).await;
+                // The after-create hook is fire-and-forget; surface a failed
+                // control-plane registration in logs instead of silently
+                // dropping it (it cannot abort the session).
+                if let Err(error) = runtime_adapter.register_session(session_id.clone()).await {
+                    tracing::error!(
+                        session_id = %session_id,
+                        error = %error,
+                        "post-create session runtime registration failed"
+                    );
+                }
                 if let Some(after_create_hook) = after_create_hook {
                     after_create_hook(session_id, ctx).await;
                 }
@@ -2980,7 +3073,78 @@ impl MobRuntime {
 /// for a member must use `mobkit/member_status`, which serializes
 /// `MobMemberSnapshot.current_session_id` natively.
 pub fn member_entry_to_json(entry: &meerkat_mob::runtime::MobMemberListEntry) -> serde_json::Value {
-    serde_json::to_value(entry).unwrap_or(serde_json::Value::Null)
+    let mut value = serde_json::to_value(entry).unwrap_or(serde_json::Value::Null);
+    // Wire egress speaks the public alias space: roster ids are comms-safe
+    // encodings (meerkat 0.7 MemberCommsName forbids `:` in member ids);
+    // decode them back to the aliases consoles/SDKs address members by.
+    if let Some(object) = value.as_object_mut() {
+        if let Some(serde_json::Value::String(id)) = object.get_mut("agent_identity") {
+            *id = crate::member_comms_id::runtime_alias_str(id).into_owned();
+        }
+        if let Some(serde_json::Value::Array(peers)) = object.get_mut("wired_to") {
+            for peer in peers {
+                if let serde_json::Value::String(peer_id) = peer {
+                    *peer_id = crate::member_comms_id::runtime_alias_str(peer_id).into_owned();
+                }
+            }
+        }
+        // meerkat 0.7 replaced the roster-owned `state: MemberState` with the
+        // machine-projected `status: MobMemberStatus`. MobKit's wire contract
+        // (and the published SDKs — Python `MemberSnapshot.from_dict` indexes
+        // `data["state"]`) keeps the `state` key, so project `status` back
+        // into the console state vocabulary alongside it.
+        object.insert(
+            "state".to_string(),
+            serde_json::Value::String(member_status_state_string(entry.status)),
+        );
+    }
+    value
+}
+
+/// Project a meerkat `AgentEvent` into mobkit's console/SSE/event-log JSON
+/// payload shape.
+///
+/// Every surface that serializes an `AgentEvent` for consoles or SDKs must
+/// route through here (HTTP SSE, the unified-runtime event ingest, the
+/// identity-first live console projection) so the wire shape stays uniform:
+///
+/// - tool events mirror `id` into `tool_call_id`;
+/// - meerkat 0.7 removed the flat `result: String` from
+///   `ToolExecutionCompleted` (typed `content` blocks are the sole owner),
+///   while MobKit's wire contract — and the published SDKs, which parse
+///   `result` — keep it. Derive it from the text blocks here.
+pub fn console_agent_event_payload(event: &meerkat_core::AgentEvent) -> Value {
+    use meerkat_core::AgentEvent;
+    use meerkat_core::event::agent_event_type;
+
+    let mut payload = serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({}));
+    let record = match payload.as_object_mut() {
+        Some(record) => record,
+        None => return payload,
+    };
+    let is_tool_event = matches!(
+        agent_event_type(event),
+        "tool_call_requested"
+            | "tool_result_received"
+            | "tool_execution_started"
+            | "tool_execution_completed"
+            | "tool_execution_timed_out"
+    );
+    if is_tool_event
+        && !record.contains_key("tool_call_id")
+        && let Some(id) = record.get("id").cloned()
+    {
+        record.insert("tool_call_id".to_string(), id);
+    }
+    if let AgentEvent::ToolExecutionCompleted { content, .. } = event
+        && !record.contains_key("result")
+    {
+        record.insert(
+            "result".to_string(),
+            Value::String(meerkat_core::types::text_content(content)),
+        );
+    }
+    payload
 }
 
 pub fn content_input_has_images(content: &meerkat_core::ContentInput) -> bool {
@@ -2996,7 +3160,7 @@ pub fn model_capabilities_for_model(
     provider: Provider,
     model: &str,
 ) -> crate::runtime::ConsoleModelCapabilities {
-    let image_input = meerkat_core::model_profile::profile_for(provider, model)
+    let image_input = meerkat_models::profile_for(provider, model)
         .map(|profile| profile.vision)
         .unwrap_or(false);
     crate::runtime::ConsoleModelCapabilities { image_input }
@@ -3005,8 +3169,8 @@ pub fn model_capabilities_for_model(
 pub fn model_capabilities_for_profile(
     profile: &Profile,
 ) -> crate::runtime::ConsoleModelCapabilities {
-    let image_input = Provider::infer_from_model(&profile.model)
-        .and_then(|provider| meerkat_core::model_profile::profile_for(provider, &profile.model))
+    let image_input = meerkat_models::infer_provider(&profile.model)
+        .and_then(|provider| meerkat_models::profile_for(provider, &profile.model))
         .map(|profile| profile.vision)
         .unwrap_or(false);
     crate::runtime::ConsoleModelCapabilities { image_input }
@@ -3033,7 +3197,7 @@ pub fn model_capabilities_for_member_entry(
 pub async fn model_capabilities_for_member(
     handle: &MobHandle,
     session_service: Option<&Arc<dyn MobSessionService>>,
-    member_id: &meerkat_mob::ids::MeerkatId,
+    member_id: &meerkat_mob::ids::AgentIdentity,
 ) -> crate::runtime::ConsoleModelCapabilities {
     if let Some(service) = session_service
         && let Some(session_id) = handle.resolve_bridge_session_id(member_id).await
@@ -3042,9 +3206,13 @@ pub async fn model_capabilities_for_member(
         return model_capabilities_for_model(view.state.provider, &view.state.model);
     }
 
+    // Capability projection is a read-only display hint: a faulted or absent
+    // member lookup degrades to "no image input" rather than failing the read.
     handle
         .get_member(member_id)
         .await
+        .ok()
+        .flatten()
         .map(|member| model_capabilities_for_role(handle.definition(), member.role.as_str()))
         .unwrap_or(crate::runtime::ConsoleModelCapabilities { image_input: false })
 }
@@ -3058,8 +3226,14 @@ pub async fn assert_member_accepts_images(
     if !content_input_has_images(content) {
         return Ok(());
     }
-    let mid = meerkat_mob::ids::MeerkatId::from(member_id);
-    let Some(member) = handle.get_member(&mid).await else {
+    // Wire member ids are public aliases; the roster id is the comms-safe
+    // encoding (meerkat 0.7 MemberCommsName).
+    let mid = crate::member_comms_id::mob_member_id(member_id);
+    let Some(member) = handle
+        .get_member(&mid)
+        .await
+        .map_err(|_| MobRuntimeError::InvalidInput("member lookup failed"))?
+    else {
         return Err(MobRuntimeError::InvalidInput("member not found"));
     };
     let caps = model_capabilities_for_member(handle, session_service, &member.agent_identity).await;
@@ -3114,7 +3288,9 @@ pub async fn send_message_on_mob_with_mode(
     if is_empty {
         return Err(MobRuntimeError::InvalidInput("content must not be empty"));
     }
-    let mid = meerkat_mob::ids::MeerkatId::from(member_id);
+    // Wire member ids are public aliases; the roster id is the comms-safe
+    // encoding (meerkat 0.7 MemberCommsName).
+    let mid = crate::member_comms_id::mob_member_id(member_id);
     let _receipt = handle
         .member(&mid)
         .await?
@@ -3555,7 +3731,7 @@ realm_profile = "worker-v2"
                         },
                         meerkat_core::AssistantBlock::ServerToolContent {
                             id: Some("ws-stream".to_string()),
-                            name: "web_search".to_string(),
+                            kind: meerkat_core::ServerToolKind::WebSearch,
                             content: serde_json::json!({
                                 "type": "response.web_search_call.searching",
                                 "item_id": "ws_123"
@@ -3564,7 +3740,9 @@ realm_profile = "worker-v2"
                         },
                         meerkat_core::AssistantBlock::ServerToolContent {
                             id: Some("ws_123".to_string()),
-                            name: "web_search_call".to_string(),
+                            kind: meerkat_core::ServerToolKind::ProviderNative {
+                                name: "web_search_call".to_string(),
+                            },
                             content: serde_json::json!({
                                 "type": "web_search_call",
                                 "id": "ws_123",
@@ -3574,7 +3752,9 @@ realm_profile = "worker-v2"
                         },
                         meerkat_core::AssistantBlock::ServerToolContent {
                             id: None,
-                            name: "web_search_annotations".to_string(),
+                            kind: meerkat_core::ServerToolKind::ProviderNative {
+                                name: "web_search_annotations".to_string(),
+                            },
                             content: serde_json::json!({
                                 "type": "message_annotations",
                                 "annotations": []
@@ -3599,8 +3779,8 @@ realm_profile = "worker-v2"
         ));
         assert!(matches!(
             assistant.blocks[1],
-            meerkat_core::AssistantBlock::ServerToolContent { ref name, .. }
-                if name == "web_search_call"
+            meerkat_core::AssistantBlock::ServerToolContent { ref kind, .. }
+                if kind.provider_name() == "web_search_call"
         ));
     }
 
@@ -3676,8 +3856,8 @@ realm_profile = "worker-v2"
             )]))
         }
 
-        fn provider(&self) -> &'static str {
-            "openai"
+        fn provider(&self) -> meerkat_core::Provider {
+            meerkat_core::Provider::OpenAI
         }
 
         async fn health_check(&self) -> Result<(), meerkat_client::LlmError> {
@@ -3699,7 +3879,7 @@ realm_profile = "worker-v2"
                     },
                     meerkat_core::AssistantBlock::ServerToolContent {
                         id: Some("ws-stream".to_string()),
-                        name: "web_search".to_string(),
+                        kind: meerkat_core::ServerToolKind::WebSearch,
                         content: serde_json::json!({
                             "type": "response.web_search_call.searching",
                             "item_id": "ws_123"
@@ -3766,8 +3946,8 @@ realm_profile = "worker-v2"
             ))
         }
 
-        fn provider(&self) -> &'static str {
-            "openai"
+        fn provider(&self) -> meerkat_core::Provider {
+            meerkat_core::Provider::OpenAI
         }
 
         fn model(&self) -> &'static str {
@@ -3789,7 +3969,7 @@ realm_profile = "worker-v2"
                     },
                     meerkat_core::AssistantBlock::ServerToolContent {
                         id: Some("ws-stream".to_string()),
-                        name: "web_search".to_string(),
+                        kind: meerkat_core::ServerToolKind::WebSearch,
                         content: serde_json::json!({
                             "type": "response.web_search_call.searching",
                             "item_id": "ws_123"
@@ -3798,7 +3978,9 @@ realm_profile = "worker-v2"
                     },
                     meerkat_core::AssistantBlock::ServerToolContent {
                         id: Some("ok".to_string()),
-                        name: "web_search_call".to_string(),
+                        kind: meerkat_core::ServerToolKind::ProviderNative {
+                            name: "web_search_call".to_string(),
+                        },
                         content: serde_json::json!({
                             "type": "web_search_call",
                             "id": "ws_123",
@@ -3832,8 +4014,8 @@ realm_profile = "worker-v2"
         ));
         assert!(matches!(
             assistant.blocks[1],
-            meerkat_core::AssistantBlock::ServerToolContent { ref name, .. }
-                if name == "web_search_call"
+            meerkat_core::AssistantBlock::ServerToolContent { ref kind, .. }
+                if kind.provider_name() == "web_search_call"
         ));
     }
 
@@ -4005,14 +4187,18 @@ realm_profile = "worker-v2"
         // Hook that mutates and captures the post-mutation state.
         let hook: PreBuildHook = Arc::new(move |req: &mut CreateSessionRequest| {
             req.model = "hooked-model".to_string();
-            req.system_prompt = Some("injected-prompt".to_string());
+            req.system_prompt =
+                meerkat_core::config::SystemPromptOverride::Set("injected-prompt".to_string());
             let labels = req.labels.get_or_insert_with(Default::default);
             labels.insert("hook_label".to_string(), "hook_value".to_string());
             // Capture to prove the hook ran and mutated the request.
             let mut lock = captured_clone
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *lock = Some((req.model.clone(), req.system_prompt.clone()));
+            *lock = Some((
+                req.model.clone(),
+                req.system_prompt.as_set_prompt().map(ToString::to_string),
+            ));
             Box::pin(async { Ok(()) })
         });
         let wrapped = PreBuildMobSessionService {
@@ -4025,11 +4211,9 @@ realm_profile = "worker-v2"
         let req = CreateSessionRequest {
             model: "original-model".to_string(),
             prompt: meerkat_core::ContentInput::Text("test".to_string()),
-            render_metadata: None,
-            system_prompt: None,
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
             max_tokens: None,
             event_tx: None,
-            skill_references: None,
             initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
             build: None,
             labels: None,
@@ -4243,9 +4427,13 @@ realm_profile = "worker-v2"
                 &session_id,
                 &meerkat_core::lifecycle::RunId::new(),
                 vec![meerkat_core::session::PendingSystemContextAppend {
-                    text: "steer".to_string(),
+                    content: meerkat_core::lifecycle::run_primitive::CoreRenderable::Text {
+                        text: "steer".to_string(),
+                    },
                     source: Some("test".to_string()),
                     idempotency_key: Some("test".to_string()),
+                    source_kind: meerkat_core::session::SystemContextSource::default(),
+                    peer_response_terminal: None,
                     accepted_at: meerkat_core::time_compat::SystemTime::now(),
                 }],
             )
@@ -4445,20 +4633,20 @@ realm_profile = "worker-v2"
             panic!("failed to parse child mob definition");
         };
 
-        let mob_id = state
-            .mob_create_definition(child_definition)
+        let mob_id = Box::pin(state.mob_create_definition(child_definition))
             .await
             .expect("child mob should be created");
-        state
-            .mob_spawn_spec(
-                &mob_id,
-                SpawnMemberSpec::new(
-                    ProfileName::from("investigation-worker"),
-                    meerkat_mob::AgentIdentity::from("investigation-worker:one"),
-                ),
-            )
-            .await
-            .expect("created mob should resolve definition-seeded realm profile at spawn time");
+        Box::pin(state.mob_spawn_spec(
+            &mob_id,
+            SpawnMemberSpec::new(
+                ProfileName::from("investigation-worker"),
+                // meerkat 0.7: MemberCommsName is fail-closed; raw mob
+                // member ids must be identifier-safe (no ":").
+                meerkat_mob::AgentIdentity::from("investigation-worker-one"),
+            ),
+        ))
+        .await
+        .expect("created mob should resolve definition-seeded realm profile at spawn time");
     }
 
     #[tokio::test]
@@ -4488,15 +4676,15 @@ realm_profile = "worker-v2"
         let runtime = MobRuntime::bootstrap(spec)
             .await
             .unwrap_or_else(|e| panic!("{e}"));
-        let mid = meerkat_mob::ids::MeerkatId::from("worker:one");
-        runtime
-            .handle
-            .spawn_spec(SpawnMemberSpec::new(
-                ProfileName::from("worker"),
-                mid.clone(),
-            ))
-            .await
-            .unwrap_or_else(|e| panic!("{e}"));
+        // meerkat 0.7: MemberCommsName is fail-closed; raw mob member ids
+        // must be identifier-safe (no ":").
+        let mid = meerkat_mob::ids::AgentIdentity::from("worker-one");
+        Box::pin(runtime.handle.spawn_spec(SpawnMemberSpec::new(
+            ProfileName::from("worker"),
+            mid.clone(),
+        )))
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
         let session_id = runtime
             .handle
             .resolve_bridge_session_id(&mid)
@@ -4539,15 +4727,15 @@ realm_profile = "worker-v2"
         let runtime = MobRuntime::bootstrap(spec)
             .await
             .unwrap_or_else(|e| panic!("{e}"));
-        let mid = meerkat_mob::ids::MeerkatId::from("worker:one");
-        runtime
-            .handle
-            .spawn_spec(SpawnMemberSpec::new(
-                ProfileName::from("worker"),
-                mid.clone(),
-            ))
-            .await
-            .unwrap_or_else(|e| panic!("{e}"));
+        // meerkat 0.7: MemberCommsName is fail-closed; raw mob member ids
+        // must be identifier-safe (no ":").
+        let mid = meerkat_mob::ids::AgentIdentity::from("worker-one");
+        Box::pin(runtime.handle.spawn_spec(SpawnMemberSpec::new(
+            ProfileName::from("worker"),
+            mid.clone(),
+        )))
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
         let session_id = runtime
             .handle
             .resolve_bridge_session_id(&mid)
@@ -4580,9 +4768,7 @@ realm_profile = "worker-v2"
         resume_spec.launch_mode = meerkat_mob::MemberLaunchMode::Resume {
             bridge_session_id: session_id.clone(),
         };
-        restarted
-            .handle
-            .spawn_spec(resume_spec)
+        Box::pin(restarted.handle.spawn_spec(resume_spec))
             .await
             .unwrap_or_else(|e| panic!("resume should load the external session snapshot: {e}"));
 
@@ -4675,16 +4861,21 @@ image_generation = true
             system_prompt: Some("system".to_string()),
             event_tx: None,
             runtime: meerkat_core::service::StartTurnRuntimeSemantics {
-                render_metadata: Some(meerkat_core::types::RenderMetadata {
-                    class: meerkat_core::types::RenderClass::OpsProgress,
-                    salience: meerkat_core::types::RenderSalience::Urgent,
-                }),
                 handling_mode: meerkat_core::types::HandlingMode::Steer,
-                skill_references: None,
                 flow_tool_overlay: None,
                 pre_turn_context_appends: Vec::new(),
                 typed_turn_appends: Vec::new(),
-                turn_metadata: None,
+                // Render metadata now lives only on the typed turn-metadata
+                // carrier (meerkat 0.7).
+                turn_metadata: Some(
+                    meerkat_core::lifecycle::run_primitive::RuntimeTurnMetadata {
+                        render_metadata: Some(meerkat_core::types::RenderMetadata {
+                            class: meerkat_core::types::RenderClass::OpsProgress,
+                            salience: meerkat_core::types::RenderSalience::Urgent,
+                        }),
+                        ..Default::default()
+                    },
+                ),
             },
         };
 
@@ -4699,7 +4890,11 @@ image_generation = true
             "runtime-applied turns must downgrade Steer before reaching direct session services"
         );
         assert!(
-            normalized.runtime.render_metadata.is_none(),
+            normalized
+                .runtime
+                .turn_metadata
+                .as_ref()
+                .is_none_or(|metadata| metadata.render_metadata.is_none()),
             "runtime-owned render metadata must not be forwarded through the direct agent path"
         );
         assert_eq!(normalized.prompt, expected_prompt);
@@ -4733,11 +4928,9 @@ image_generation = true
         let mut req = CreateSessionRequest {
             model: "test".to_string(),
             prompt: meerkat_core::ContentInput::Text("test".to_string()),
-            render_metadata: None,
-            system_prompt: None,
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
             max_tokens: None,
             event_tx: None,
-            skill_references: None,
             initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
             build: None,
             labels: None,
@@ -4773,11 +4966,9 @@ image_generation = true
         let mut req = CreateSessionRequest {
             model: "test".to_string(),
             prompt: meerkat_core::ContentInput::Text("test".to_string()),
-            render_metadata: None,
-            system_prompt: None,
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
             max_tokens: None,
             event_tx: None,
-            skill_references: None,
             initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
             build: None,
             labels: None,
@@ -4798,7 +4989,8 @@ image_generation = true
                 req: &mut CreateSessionRequest,
             ) -> Result<(), SessionError> {
                 req.model = "hook-overridden".to_string();
-                req.system_prompt = Some("injected by hook".to_string());
+                req.system_prompt =
+                    meerkat_core::config::SystemPromptOverride::Set("injected by hook".to_string());
                 Ok(())
             }
         }
@@ -4807,11 +4999,9 @@ image_generation = true
         let mut req = CreateSessionRequest {
             model: "original".to_string(),
             prompt: meerkat_core::ContentInput::Text("test".to_string()),
-            render_metadata: None,
-            system_prompt: None,
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
             max_tokens: None,
             event_tx: None,
-            skill_references: None,
             initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
             build: None,
             labels: None,
@@ -4819,7 +5009,7 @@ image_generation = true
         };
         hook.before_create(&mut req).await.unwrap();
         assert_eq!(req.model, "hook-overridden");
-        assert_eq!(req.system_prompt.as_deref(), Some("injected by hook"));
+        assert_eq!(req.system_prompt.as_set_prompt(), Some("injected by hook"));
     }
 
     #[test]
@@ -4841,7 +5031,9 @@ image_generation = true
         );
         let err = meerkat_mob::MobRespawnError::TopologyRestoreFailed {
             receipt,
-            failed_peer_ids: vec![meerkat_mob::AgentIdentity::from("initiative:broken")],
+            failed_peer_ids: vec![meerkat_mob::RespawnTopologyPeerId::from(
+                "initiative:broken",
+            )],
         };
 
         assert_eq!(
@@ -4885,6 +5077,85 @@ image_generation = true
         ));
         assert!(!is_recoverable_lifecycle_cleanup_error(
             "model provider returned rate limit"
+        ));
+    }
+
+    /// Regression (meerkat 0.7.1): idle members sit in machine state
+    /// `Stopped`, whose DSL authority rejects the archive step's final
+    /// `Retire` input. Disposal completed, so retire/respawn must treat the
+    /// failed bookkeeping transition as success instead of surfacing -32000.
+    #[test]
+    fn recoverable_lifecycle_cleanup_accepts_stopped_guard_archive_retire() {
+        let error = "internal error: disposal completed but ArchiveSession failed: \
+            session error: agent error: Internal error: machine archive retire failed \
+            after registration: Internal error: DSL authority (Retire): guard rejected \
+            transition from Stopped for input::Retire";
+
+        assert!(is_recoverable_lifecycle_cleanup_error(error));
+    }
+
+    /// Regression (meerkat 0.7.1): retire now performs a final fenced
+    /// continuity save. Identity-first reset/delete advance or remove the
+    /// mobkit-owned continuity record before retiring the old generation, so
+    /// that save fails fail-closed with "record not found" / "stale fencing
+    /// token" — both must be recoverable cleanup, not reset/delete failures.
+    #[test]
+    fn recoverable_lifecycle_cleanup_accepts_stale_continuity_save_on_retire() {
+        let record_gone = "internal error: disposal completed but ArchiveSession failed: \
+            session error: agent error: Internal error: continuity save: \
+            continuity record not found for identity:luka";
+        let stale_fence = "internal error: disposal completed but ArchiveSession failed: \
+            session error: agent error: Internal error: continuity save: \
+            stale fencing token for identity:luka: presented 1, current 6";
+
+        assert!(is_recoverable_lifecycle_cleanup_error(record_gone));
+        assert!(is_recoverable_lifecycle_cleanup_error(stale_fence));
+    }
+
+    /// Regression (meerkat 0.7.1): an idle member's session machine sits in
+    /// `Stopped`; the archive protocol commits the durable document first,
+    /// then fails its runtime `Retire` realization on the `Stopped` guard.
+    /// The session-service wrapper tolerates exactly this signature so
+    /// member retire/respawn disposal completes (meerkat-mob's own archive
+    /// helper treats `Stopped` as already-retired).
+    #[test]
+    fn stopped_session_archive_retire_rejection_matches_only_stopped_guard() {
+        assert!(is_stopped_session_archive_retire_rejection(
+            "session error: agent error: Internal error: machine archive retire failed \
+             after registration: Internal error: DSL authority (Retire): guard rejected \
+             transition from Stopped for input::Retire"
+        ));
+        // The pre-registration variant carries the same meaning.
+        assert!(is_stopped_session_archive_retire_rejection(
+            "agent error: Internal error: machine archive retire failed: Internal error: \
+             DSL authority (Retire): guard rejected transition from Stopped for input::Retire"
+        ));
+        // Other guard rejections and other retire failures stay fail-closed.
+        assert!(!is_stopped_session_archive_retire_rejection(
+            "machine archive retire failed after registration: Internal error: \
+             DSL authority (Retire): guard rejected transition from Running for input::Retire"
+        ));
+        assert!(!is_stopped_session_archive_retire_rejection(
+            "guard rejected transition from Stopped for input::Retire"
+        ));
+        assert!(!is_stopped_session_archive_retire_rejection(
+            "machine archive retire failed: store unavailable"
+        ));
+    }
+
+    /// The new arms must stay scoped to completed disposals: the same inner
+    /// failures without the "disposal completed" prefix (e.g. a continuity
+    /// save failing mid-delivery) are real errors.
+    #[test]
+    fn recoverable_lifecycle_cleanup_requires_completed_disposal() {
+        assert!(!is_recoverable_lifecycle_cleanup_error(
+            "continuity save: continuity record not found for identity:luka"
+        ));
+        assert!(!is_recoverable_lifecycle_cleanup_error(
+            "DSL authority (Retire): guard rejected transition from Stopped for input::Retire"
+        ));
+        assert!(!is_recoverable_lifecycle_cleanup_error(
+            "disposal aborted at ArchiveSession: continuity save: stale fencing token"
         ));
     }
 

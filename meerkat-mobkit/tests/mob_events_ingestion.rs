@@ -40,7 +40,7 @@ fn sample_definition() -> MobDefinition {
 id = "test-mob"
 
 [profiles.worker]
-model = "test-model"
+model = "gpt-5.5"
 external_addressable = false
 "#,
     )
@@ -166,6 +166,8 @@ fn all_mob_event_kinds_project_with_kind_label() {
     let m = project(MobEventKind::FlowFailed {
         run_id: run_id.clone(),
         flow_id: flow_id.clone(),
+        // meerkat 0.7: FlowFailed carries a typed failure classification.
+        cause: meerkat_mob::event::FlowFailureClass::StepError,
         reason: "boom".to_string(),
     });
     assert_eq!(m.kind, "flow_failed");

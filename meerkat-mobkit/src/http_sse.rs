@@ -34,28 +34,7 @@ use meerkat_mob::MobError;
 pub(crate) const DEFAULT_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 pub(crate) const KEEP_ALIVE_TEXT: &str = "keep-alive";
 
-pub(crate) fn console_agent_event_payload(event: &AgentEvent) -> Value {
-    let mut payload = serde_json::to_value(event).unwrap_or_else(|_| json!({}));
-    let record = match payload.as_object_mut() {
-        Some(record) => record,
-        None => return payload,
-    };
-    let is_tool_event = matches!(
-        agent_event_type(event),
-        "tool_call_requested"
-            | "tool_result_received"
-            | "tool_execution_started"
-            | "tool_execution_completed"
-            | "tool_execution_timed_out"
-    );
-    if is_tool_event
-        && !record.contains_key("tool_call_id")
-        && let Some(id) = record.get("id").cloned()
-    {
-        record.insert("tool_call_id".to_string(), id);
-    }
-    payload
-}
+pub(crate) use crate::mob_handle_runtime::console_agent_event_payload;
 
 pub fn agent_event_sse(interaction_id: &str, seq: u64, event: &AgentEvent) -> Event {
     let event_name = agent_event_name(event);
@@ -216,7 +195,10 @@ async fn agent_events_sse_handler(
 // Tier 3: Mob-merged SSE  (MK-006)
 // ---------------------------------------------------------------------------
 
-pub type MobEventSubscribeFuture = Pin<Box<dyn Future<Output = MobEventRouterHandle> + Send>>;
+/// Meerkat 0.7: mob event-router subscription is fallible (machine command
+/// faults surface as `MobError` instead of panicking inside the router).
+pub type MobEventSubscribeFuture =
+    Pin<Box<dyn Future<Output = Result<MobEventRouterHandle, meerkat_mob::MobError>> + Send>>;
 
 pub type MobEventSubscribeFn = Arc<dyn Fn() -> MobEventSubscribeFuture + Send + Sync>;
 
@@ -302,12 +284,21 @@ async fn mob_events_sse_handler(
         return Err(sse_access_denied(ACTION_MOB_OBSERVE));
     }
     let stream_view = access_view.filter(AccessView::enforced);
-    let mut router_handle = (state.subscribe_fn)().await;
+    let mut router_handle = (state.subscribe_fn)().await.map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("mob event subscription failed: {err}")})),
+        )
+    })?;
 
     let stream = stream! {
         let mut seq = 0_u64;
         while let Some(attributed) = router_handle.event_rx.recv().await {
-            let source = attributed.source.to_string();
+            // Decode the comms-safe roster member id back to the public
+            // alias space: SDK `EventStream` consumers filter by alias, and
+            // fail-closed per-agent ABAC view rules are written against
+            // aliases — an encoded id would silently drop both.
+            let source = crate::member_comms_id::runtime_event_alias(&attributed.source);
             if stream_view
                 .as_ref()
                 .is_some_and(|view| !view.can_view_agent(&source))

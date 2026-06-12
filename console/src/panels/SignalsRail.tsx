@@ -1,4 +1,5 @@
 import React from "react";
+import { stripPeerTransportScaffold } from "../lib/adapters";
 import type { ConsoleFrame, ConsoleRailFilterPresetConfig } from "../types";
 
 interface SignalsRailProps {
@@ -172,7 +173,10 @@ function typedSystemNoticeSignal(data: Record<string, unknown>): { targets: stri
     const peerLabel = textFromValue(peer.display_name) || textFromValue(peer.id) || "peer";
     targets.push(lastSegment(peerLabel));
     if (block.direction === "outgoing") incoming = false;
-    const content = textFromValue(block.content);
+    // Pure-scaffold content (the canonical peer transport projection) falls
+    // back to the typed summary/intent so signal previews show a parsed
+    // intent summary, never the raw envelope.
+    const content = stripPeerTransportScaffold(textFromValue(block.content));
     const detail = content || textFromValue(block.summary) || textFromValue(block.intent) || textFromValue(block.payload);
     if (detail) details.push(detail);
   }
@@ -230,7 +234,9 @@ function signalFromFrame(frame: ConsoleFrame): Signal | null {
   switch (frame.event) {
     case "user_input":
     case "interaction_started": {
-      const request = textFromValue(data.content ?? data.text ?? data.prompt);
+      const request = stripPeerTransportScaffold(
+        textFromValue(data.content ?? data.text ?? data.prompt),
+      );
       if (!request) return null;
       if (isScaffoldRequest(request)) return null;
       return {

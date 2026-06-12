@@ -21,14 +21,15 @@ use std::time::Duration;
 use futures::StreamExt;
 use meerkat::{AgentEvent, AgentFactory, Config, build_ephemeral_service};
 use meerkat_core::types::HandlingMode;
-use meerkat_mob::ids::MeerkatId;
+// meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
+use meerkat_mob::ids::AgentIdentity as MeerkatId;
 use meerkat_mob::{MobBuilder, MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ =
         std::env::var("OPENAI_API_KEY").map_err(|_| "Set OPENAI_API_KEY to run streaming_smoke")?;
-    let model = std::env::var("RKAT_SMOKE_MODEL").unwrap_or_else(|_| "gpt-5.2".to_string());
+    let model = std::env::var("RKAT_SMOKE_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string());
 
     println!("STREAM_SMOKE: model={model}");
 
@@ -46,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 id = "test-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]
@@ -66,22 +67,24 @@ comms = true
         .create()
         .await?;
 
-    handle
-        .spawn_spec(
+    Box::pin(
+        handle.spawn_spec(
             SpawnMemberSpec::new(ProfileName::from("lead"), MeerkatId::from("lead-1"))
                 .with_initial_message(meerkat_core::ContentInput::Text(
                     "You are concise. 1 short paragraph max.".to_string(),
                 )),
-        )
-        .await?;
-    handle
-        .spawn_spec(
+        ),
+    )
+    .await?;
+    Box::pin(
+        handle.spawn_spec(
             SpawnMemberSpec::new(ProfileName::from("worker"), MeerkatId::from("worker-1"))
                 .with_initial_message(meerkat_core::ContentInput::Text(
                     "You are a helper worker.".to_string(),
                 )),
-        )
-        .await?;
+        ),
+    )
+    .await?;
     handle
         .wire(MeerkatId::from("lead-1"), MeerkatId::from("worker-1"))
         .await?;
@@ -105,7 +108,8 @@ comms = true
     println!("STREAM_SMOKE: message sent to lead-1");
 
     // 3) Mob-wide merged attributed event stream
-    let mut mob_router = handle.subscribe_mob_events().await;
+    // meerkat 0.7: subscribe_mob_events returns Result<MobEventRouterHandle, _>.
+    let mut mob_router = handle.subscribe_mob_events().await?;
     println!("STREAM_SMOKE: subscribed to mob event router");
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(35);
@@ -125,10 +129,10 @@ comms = true
                         _ => {}
                     }
                     println!(
-                        "AGENT_STREAM {} seq={} source={} payload={:?}",
+                        "AGENT_STREAM {} seq={} source={:?} payload={:?}",
                         envelope.event_id,
                         envelope.seq,
-                        envelope.source_id,
+                        envelope.source,
                         envelope.payload,
                     );
                 }

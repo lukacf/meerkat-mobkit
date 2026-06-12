@@ -25,6 +25,11 @@ pub const ACTION_GATING_DECIDE: &str = "gating.decide";
 pub const ACTION_MOB_OBSERVE: &str = "mob.observe";
 /// Operate runtime plumbing: routing tables, labels, wiring, reconcile.
 pub const ACTION_RUNTIME_ADMIN: &str = "runtime.admin";
+/// Author mobpacks in the Flow Editor: drafts, authoring operations,
+/// validation, source rendering, export/import, and authoring catalogs.
+pub const ACTION_MOBPACK_AUTHOR: &str = "mobpack.author";
+/// Execute a mobpack deploy on the host (`rkat mob run`).
+pub const ACTION_MOBPACK_DEPLOY: &str = "mobpack.deploy";
 /// Read and mutate the access-control configuration itself.
 pub const ACTION_ACCESS_ADMIN: &str = "access.admin";
 
@@ -40,6 +45,8 @@ pub const ACCESS_ACTIONS: &[&str] = &[
     ACTION_GATING_DECIDE,
     ACTION_MOB_OBSERVE,
     ACTION_RUNTIME_ADMIN,
+    ACTION_MOBPACK_AUTHOR,
+    ACTION_MOBPACK_DEPLOY,
     ACTION_ACCESS_ADMIN,
 ];
 

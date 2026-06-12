@@ -1301,11 +1301,9 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                 let mut modified_req = CreateSessionRequest {
                     model: req.model.clone(),
                     prompt: req.prompt.clone(),
-                    render_metadata: req.render_metadata.clone(),
                     system_prompt: req.system_prompt.clone(),
                     max_tokens: req.max_tokens,
                     event_tx: req.event_tx.clone(),
-                    skill_references: req.skill_references.clone(),
                     initial_turn: req.initial_turn.clone(),
                     build: req.build.clone(),
                     labels: req.labels.clone(),
@@ -1317,10 +1315,23 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         let combined: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
                         if !combined.is_empty() {
                             let extra = combined.join("\n");
-                            modified_req.system_prompt = Some(match &modified_req.system_prompt {
-                                Some(existing) => format!("{existing}\n{extra}"),
-                                None => extra,
-                            });
+                            use meerkat_core::config::SystemPromptOverride;
+                            modified_req.system_prompt = match &modified_req.system_prompt {
+                                SystemPromptOverride::Set(existing) => {
+                                    SystemPromptOverride::Set(format!("{existing}\n{extra}"))
+                                }
+                                SystemPromptOverride::Inherit => SystemPromptOverride::Set(extra),
+                                // An explicit Disable suppresses every prompt
+                                // source; honor it rather than resurrecting a
+                                // prompt from hook-supplied instructions.
+                                SystemPromptOverride::Disable => {
+                                    tracing::warn!(
+                                        "callback/build_agent: additional_instructions ignored \
+                                         because system prompt is explicitly disabled"
+                                    );
+                                    SystemPromptOverride::Disable
+                                }
+                            };
                         }
                     }
                 }
@@ -1340,7 +1351,7 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                     if let Some(ref store) = self.session_store {
                         let sid =
                             meerkat_core::types::SessionId::parse(resume_id).map_err(|_| {
-                                SessionError::Agent(AgentError::ToolError(format!(
+                                SessionError::Agent(agent_tool_error(format!(
                                     "callback/build_agent: invalid resume_session_id: {resume_id}"
                                 )))
                             })?;
@@ -1351,7 +1362,7 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                             .and_then(|b| b.resume_session.as_ref())
                         {
                             if existing.id() != &sid {
-                                return Err(SessionError::Agent(AgentError::ToolError(format!(
+                                return Err(SessionError::Agent(agent_tool_error(format!(
                                     "callback/build_agent: resume_session_id conflict: \
                                      spawn set {} but hook set {resume_id}",
                                     existing.id()
@@ -1360,12 +1371,12 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                             // Same ID — already loaded, skip.
                         } else {
                             let session = store.load(&sid).await.map_err(|e| {
-                                SessionError::Agent(AgentError::ToolError(format!(
+                                SessionError::Agent(agent_tool_error(format!(
                                     "callback/build_agent: failed to load resume session {resume_id}: {e}"
                                 )))
                             })?;
                             let session = session.ok_or_else(|| {
-                                SessionError::Agent(AgentError::ToolError(format!(
+                                SessionError::Agent(agent_tool_error(format!(
                                     "callback/build_agent: resume session not found: {resume_id}"
                                 )))
                             })?;
@@ -1375,7 +1386,7 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                             build.resume_session = Some(session);
                         }
                     } else {
-                        return Err(SessionError::Agent(AgentError::ToolError(
+                        return Err(SessionError::Agent(agent_tool_error(
                             "callback/build_agent: resume_session_id requires persistent mode \
                              (no session store available in ephemeral mode)"
                                 .to_string(),
@@ -1393,11 +1404,9 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                                 if let Some(name) = v.as_str() {
                                     tool_names.push(name.to_string());
                                 } else {
-                                    return Err(SessionError::Agent(AgentError::ToolError(
-                                        format!(
-                                            "callback/build_agent: tools must be strings, got: {v}"
-                                        ),
-                                    )));
+                                    return Err(SessionError::Agent(agent_tool_error(format!(
+                                        "callback/build_agent: tools must be strings, got: {v}"
+                                    ))));
                                 }
                             }
                             if !tool_names.is_empty() {
@@ -1413,7 +1422,7 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                             }
                         }
                         None => {
-                            return Err(SessionError::Agent(AgentError::ToolError(format!(
+                            return Err(SessionError::Agent(agent_tool_error(format!(
                                 "callback/build_agent: tools must be a JSON array, got: {tools}"
                             ))));
                         }
@@ -1425,7 +1434,7 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                 // Propagate the error — before_create failure aborts session creation.
                 // This is an intentional breaking change from v0.5.x where failures
                 // were silently swallowed with a fallback to default build.
-                Err(SessionError::Agent(AgentError::ToolError(format!(
+                Err(SessionError::Agent(agent_tool_error(format!(
                     "callback/build_agent failed: {err}"
                 ))))
             }
@@ -1433,9 +1442,32 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
     }
 }
 
+/// Meerkat 0.7 replaced `agent_tool_error(String)` with the typed
+/// `AgentError::Tool { error: ToolError }` carrier.
+fn agent_tool_error(message: String) -> AgentError {
+    AgentError::Tool {
+        error: ToolError::execution_failed(message),
+    }
+}
+
 /// Persistent mode: reads JSON-RPC over stdin, bootstraps unified runtime, serves HTTP.
-#[tokio::main]
-async fn run_persistent() {
+fn run_persistent() {
+    // Meerkat 0.7's generated machine-authority apply path needs deep worker
+    // stacks (mirrors meerkat-rpc's explicit 16 MiB tokio worker sizing).
+    match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()
+    {
+        Ok(runtime) => runtime.block_on(run_persistent_inner()),
+        Err(error) => {
+            eprintln!("failed to build tokio runtime: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run_persistent_inner() {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     // Initialize tracing subscriber so meerkat-mob/meerkat-runtime errors
@@ -1508,7 +1540,7 @@ async fn run_persistent() {
 id = "persistent-gateway"
 
 [profiles.default]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 "#,
     );
@@ -2010,14 +2042,14 @@ external_addressable = true
         } else {
             Arc::new(InMemoryMetadataStore::new())
         };
-    let mut runtime = UnifiedRuntime::bootstrap_with_options(
+    let mut runtime = Box::pin(UnifiedRuntime::bootstrap_with_options(
         mob_spec,
         module_config,
         Vec::new(),
         timeout,
         gateway_options.runtime_options.clone(),
         persistent_metadata,
-    )
+    ))
     .await
     .unwrap_or_else(|e| {
         let error_response = json!({

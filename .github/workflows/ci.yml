@@ -73,6 +73,26 @@ jobs:
       - run: scripts/repo-cargo build -p meerkat-mobkit --example library_mode_reference
       - run: npm --prefix console run e2e:browser --silent
 
+  flow-editor:
+    name: flow-editor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: flow-editor/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm --prefix flow-editor ci --silent --no-fund --no-audit
+      - run: npm --prefix flow-editor exec -- playwright install --with-deps chromium
+      - run: CARGO_INCREMENTAL=0 scripts/repo-cargo build -p meerkat-mobkit --bin mobkit_flow_editor
+      - run: npm --prefix flow-editor run test:controller --silent
+      - run: npm --prefix flow-editor run test:visual-contract --silent
+      - run: npm --prefix flow-editor run test:browser-source --silent
+      - run: npm --prefix flow-editor run test:browser-interactions --silent
+
   audit:
     name: audit
     runs-on: ubuntu-latest
@@ -83,7 +103,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [fmt-lint, test, test-python, console, audit]
+    needs: [fmt-lint, test, test-python, console, flow-editor, audit]
     runs-on: ubuntu-latest
     steps:
       - name: Check job results
@@ -92,12 +112,14 @@ jobs:
                 "${{ needs.test.result }}" != "success" ||
                 "${{ needs.test-python.result }}" != "success" ||
                 "${{ needs.console.result }}" != "success" ||
+                "${{ needs.flow-editor.result }}" != "success" ||
                 "${{ needs.audit.result }}" != "success" ]]; then
             echo "One or more jobs failed or were cancelled."
             echo "  fmt-lint:     ${{ needs.fmt-lint.result }}"
             echo "  test:         ${{ needs.test.result }}"
             echo "  test-python:  ${{ needs.test-python.result }}"
             echo "  console:      ${{ needs.console.result }}"
+            echo "  flow-editor:  ${{ needs.flow-editor.result }}"
             echo "  audit:        ${{ needs.audit.result }}"
             exit 1
           fi

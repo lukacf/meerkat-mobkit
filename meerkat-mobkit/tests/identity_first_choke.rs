@@ -1238,7 +1238,10 @@ async fn identity_first_choke_20_session_hook_adapter_unsupported_mutation() {
         ) -> Result<(), meerkat_core::service::SessionError> {
             // Supported mutations
             req.model = "claude-opus-4-6".to_string();
-            req.system_prompt = Some("new prompt".to_string());
+            // meerkat 0.7: CreateSessionRequest.system_prompt is the typed
+            // tri-state SystemPromptOverride.
+            req.system_prompt =
+                meerkat_core::config::SystemPromptOverride::Set("new prompt".to_string());
             // Unsupported mutation
             req.max_tokens = Some(8192);
             Ok(())

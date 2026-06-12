@@ -11,7 +11,7 @@ NC     := \033[0m
 
 # ── meta ──────────────────────────────────────────────────────
 
-.PHONY: all build release test test-python test-all lint fmt fmt-check \
+.PHONY: all build release test test-python test-flow-editor test-flow-editor-rkat test-flow-editor-rkat-deploy test-all lint fmt fmt-check \
         audit ci ci-smoke check doc doc-open coverage clean \
         install-hooks uninstall-hooks pre-commit-all update outdated \
         verify-version-parity bump-sdk-versions publish-dry-run-python \
@@ -43,7 +43,26 @@ test-python: ## Run Python SDK tests
 	PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -q
 	@echo "$(GREEN)Python SDK tests passed.$(NC)"
 
-test-all: test test-python ## Run all tests (Rust + Python)
+test-flow-editor: ## Run Flow Editor source, projection, visual, browser, and embedded freshness contracts
+	@echo "$(YELLOW)Running Flow Editor tests…$(NC)"
+	CARGO_INCREMENTAL=0 $(CARGO) build -p meerkat-mobkit --bin mobkit_flow_editor
+	npm --prefix flow-editor run test:controller --silent
+	npm --prefix flow-editor run test:visual-contract --silent
+	npm --prefix flow-editor run test:browser-source --silent
+	npm --prefix flow-editor run test:browser-interactions --silent
+	@echo "$(GREEN)Flow Editor tests passed.$(NC)"
+
+test-flow-editor-rkat: ## Run live Flow Editor export/import checks against rkat mob inspect/validate
+	@echo "$(YELLOW)Running live Flow Editor rkat tests…$(NC)"
+	scripts/run-flow-editor-rkat-e2e.sh
+	@echo "$(GREEN)Live Flow Editor rkat tests passed.$(NC)"
+
+test-flow-editor-rkat-deploy: ## Run live Flow Editor rkat tests including rkat mob deploy
+	@echo "$(YELLOW)Running live Flow Editor rkat deploy tests…$(NC)"
+	scripts/run-flow-editor-rkat-e2e.sh --deploy
+	@echo "$(GREEN)Live Flow Editor rkat deploy tests passed.$(NC)"
+
+test-all: test test-python test-flow-editor ## Run all tests (Rust + Python + Flow Editor)
 
 # ── lint / format ─────────────────────────────────────────────
 

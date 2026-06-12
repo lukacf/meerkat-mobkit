@@ -25,7 +25,8 @@ use axum::http::{Request, StatusCode, header};
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_core::SessionId;
-use meerkat_mob::ids::MeerkatId;
+// meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
+use meerkat_mob::ids::AgentIdentity as MobMemberId;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec,
@@ -158,7 +159,7 @@ comms = true
 fn console_member_spec(member_id: &str) -> SpawnMemberSpec {
     SpawnMemberSpec::from_wire(
         "lead".to_string(),
-        MeerkatId::from(member_id).to_string(),
+        MobMemberId::from(member_id).to_string(),
         Some(format!("You are {member_id}. Keep responses concise.").into()),
         None,
         None,
@@ -446,6 +447,89 @@ async fn live_snapshot_keeps_configured_modules_even_when_runtime_members_differ
 }
 
 #[tokio::test]
+async fn reconcile_spawns_colon_identities_and_member_rows_keep_public_alias() {
+    // meerkat 0.7's MemberCommsName is fail-closed: roster member ids must not
+    // contain ':'. Identity-first identities like "domain:billing" are encoded
+    // into comms-safe roster ids at the mobkit→meerkat-mob boundary and must
+    // decode back to the public alias on every projection surface.
+    let fixture = build_runtime_fixture().await;
+
+    let report = fixture
+        .runtime
+        .reconcile(vec![
+            console_member_spec("triage:main"),
+            console_member_spec("domain:billing"),
+        ])
+        .await
+        .expect("reconcile of ':'-bearing identities must spawn, not fail comms-name validation");
+
+    assert!(
+        report.mob.failures.is_empty(),
+        "no per-identity reconcile failures expected: {:?}",
+        report.mob.failures
+    );
+    let mut spawned: Vec<&str> = report
+        .mob
+        .spawned
+        .iter()
+        .map(|receipt| receipt.agent_identity.as_str())
+        .collect();
+    spawned.sort_unstable();
+    assert_eq!(spawned, vec!["domain:billing", "triage:main"]);
+    let mut desired = report.mob.desired.clone();
+    desired.sort_unstable();
+    assert_eq!(desired, vec!["domain:billing", "triage:main"]);
+    assert!(
+        !format!("{report:?}").contains("mk--"),
+        "reconcile report must speak the public alias space, got: {report:?}"
+    );
+
+    // Member rows project the original identity string, not the encoded
+    // roster id.
+    let app = fixture
+        .runtime
+        .build_reference_app_router(decision_state(false));
+    let list_payload = json!({
+        "jsonrpc": "2.0",
+        "id": "list-members",
+        "method": "mobkit/list_members",
+        "params": {}
+    });
+    let list_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/console/rpc")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(list_payload.to_string()))
+                .expect("list_members request"),
+        )
+        .await
+        .expect("list_members response");
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_body = to_bytes(list_response.into_body(), 1024 * 1024)
+        .await
+        .expect("list_members body");
+    let list_json: Value = serde_json::from_slice(&list_body).expect("list_members json");
+    let mut row_identities: Vec<&str> = list_json["result"]
+        .as_array()
+        .expect("member rows array")
+        .iter()
+        .map(|row| row["agent_identity"].as_str().expect("agent_identity"))
+        .collect();
+    row_identities.sort_unstable();
+    assert_eq!(row_identities, vec!["domain:billing", "triage:main"]);
+    assert!(
+        !list_json.to_string().contains("mk--"),
+        "member rows must not leak encoded roster ids: {list_json}"
+    );
+
+    let shutdown = fixture.runtime.shutdown().await;
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
+}
+
+#[tokio::test]
 async fn multipart_blob_upload_round_trips_through_reference_router() {
     let definition = MobDefinition::from_toml(
         r#"
@@ -453,7 +537,7 @@ async fn multipart_blob_upload_round_trips_through_reference_router() {
 id = "multipart-console-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]
@@ -461,21 +545,23 @@ comms = true
 "#,
     )
     .expect("parse multipart mob definition");
-    let runtime = UnifiedRuntime::builder()
-        .definition(definition)
-        .module_config(MobKitConfig {
-            modules: vec![],
-            discovery: DiscoverySpec {
-                namespace: "multipart-console".to_string(),
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(definition)
+            .module_config(MobKitConfig {
                 modules: vec![],
-            },
-            pre_spawn: vec![],
-        })
-        .default_llm_client(Arc::new(TestClient::default()))
-        .timeout(Duration::from_secs(2))
-        .build()
-        .await
-        .expect("build multipart runtime");
+                discovery: DiscoverySpec {
+                    namespace: "multipart-console".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            })
+            .default_llm_client(Arc::new(TestClient::default()))
+            .timeout(Duration::from_secs(2))
+            .build(),
+    )
+    .await
+    .expect("build multipart runtime");
 
     let app = runtime.build_reference_app_router(decision_state(false));
     let boundary = "mobkit-test-boundary";
@@ -920,17 +1006,17 @@ async fn phase_h1_multi_instance_profile_sidebar_enumerates_individual_agents() 
 
     let identity_luka = SpawnMemberSpec::new(
         meerkat_mob::ProfileName::from("lead"),
-        MeerkatId::from("identity:luka"),
+        MobMemberId::from("identity:luka"),
     )
     .with_labels(identity_luka_labels);
     let identity_parent = SpawnMemberSpec::new(
         meerkat_mob::ProfileName::from("lead"),
-        MeerkatId::from("identity:parent"),
+        MobMemberId::from("identity:parent"),
     )
     .with_labels(identity_parent_labels);
     let gate = SpawnMemberSpec::new(
         meerkat_mob::ProfileName::from("lead"),
-        MeerkatId::from("gate:main"),
+        MobMemberId::from("gate:main"),
     )
     .with_labels(gate_labels);
 

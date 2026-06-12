@@ -248,7 +248,7 @@ fn build_phase1_mob_spec_with_session_service(
 id = "phase1-unified-mob"
 
 [profiles.worker]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.worker.tools]
@@ -343,7 +343,11 @@ async fn http_get_response(address: SocketAddr, path: &str) -> String {
 }
 
 async fn build_unified_runtime_fixture(module_config: MobKitConfig) -> UnifiedRuntimeFixture {
-    build_unified_runtime_fixture_with_agent_events(module_config, Vec::new()).await
+    Box::pin(build_unified_runtime_fixture_with_agent_events(
+        module_config,
+        Vec::new(),
+    ))
+    .await
 }
 
 async fn build_unified_runtime_fixture_with_agent_events(
@@ -351,14 +355,16 @@ async fn build_unified_runtime_fixture_with_agent_events(
     module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
 ) -> UnifiedRuntimeFixture {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_phase1_mob_spec(&temp_dir))
-        .module_config(module_config)
-        .module_agent_events(module_agent_events)
-        .timeout(Duration::from_secs(2))
-        .build()
-        .await
-        .expect("bootstrap unified runtime");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_phase1_mob_spec(&temp_dir))
+            .module_config(module_config)
+            .module_agent_events(module_agent_events)
+            .timeout(Duration::from_secs(2))
+            .build(),
+    )
+    .await
+    .expect("bootstrap unified runtime");
 
     UnifiedRuntimeFixture {
         _temp_dir: temp_dir,
@@ -830,7 +836,7 @@ async fn req_001_unified_owner_starts_and_shuts_down_from_single_object() {
         pre_spawn: vec![],
     };
 
-    let fixture = build_unified_runtime_fixture(config).await;
+    let fixture = Box::pin(build_unified_runtime_fixture(config)).await;
     assert_eq!(
         fixture.runtime.mob_handle().status().await.unwrap(),
         MobState::Running
@@ -871,7 +877,7 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
         pre_spawn: vec![],
     };
 
-    let fixture = build_unified_runtime_fixture_with_agent_events(
+    let fixture = Box::pin(build_unified_runtime_fixture_with_agent_events(
         config,
         vec![EventEnvelope {
             event_id: "evt-agent-worker-1".to_string(),
@@ -883,7 +889,7 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
                 payload: Some(json!({"text":"seeded worker event"})),
             },
         }],
-    )
+    ))
     .await;
 
     let ready_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -989,7 +995,7 @@ async fn choke_002_unified_dispatch_executes_mob_runtime_injection_success_path(
         }],
     };
 
-    let fixture = build_unified_runtime_fixture(config).await;
+    let fixture = Box::pin(build_unified_runtime_fixture(config)).await;
     fixture
         .runtime
         .spawn(spawn_spec("worker", "worker-1"))
@@ -1061,7 +1067,7 @@ async fn choke_003_unified_dispatch_surfaces_mob_runtime_injection_failure() {
         }],
     };
 
-    let fixture = build_unified_runtime_fixture(config).await;
+    let fixture = Box::pin(build_unified_runtime_fixture(config)).await;
     let dispatch = fixture
         .runtime
         .dispatch_schedule_tick(
@@ -1125,7 +1131,7 @@ async fn req_001_reference_entrypoint_real_listener_graceful_shutdown_stops_runt
         pre_spawn: vec![],
     };
 
-    let fixture = build_unified_runtime_fixture(config).await;
+    let fixture = Box::pin(build_unified_runtime_fixture(config)).await;
     let module_pid = fixture
         .runtime
         .module_events()

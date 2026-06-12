@@ -38,7 +38,7 @@ fn mob_spec(temp_dir: &tempfile::TempDir) -> MobBootstrapSpec {
 id = "shutdown-drain-mob"
 
 [profiles.worker]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.worker.tools]
@@ -102,14 +102,16 @@ async fn shutdown_drain_completes_immediately_with_no_active_members() {
 #[ignore]
 async fn shutdown_drain_report_fields_populated_with_active_members() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(mob_spec(&temp_dir))
-        .module_config(empty_module_config("drain-active"))
-        .timeout(Duration::from_secs(2))
-        .drain_timeout(Duration::from_millis(200))
-        .build()
-        .await
-        .expect("build");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(mob_spec(&temp_dir))
+            .module_config(empty_module_config("drain-active"))
+            .timeout(Duration::from_secs(2))
+            .drain_timeout(Duration::from_millis(200))
+            .build(),
+    )
+    .await
+    .expect("build");
 
     runtime
         .spawn(member_spec("worker", "drain-worker-1"))
@@ -148,14 +150,16 @@ async fn shutdown_drain_uses_default_timeout_from_bootstrap() {
 #[ignore]
 async fn shutting_down_flag_prevents_new_dispatches_during_drain() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(mob_spec(&temp_dir))
-        .module_config(empty_module_config("drain-flag"))
-        .timeout(Duration::from_secs(2))
-        .drain_timeout(Duration::from_millis(100))
-        .build()
-        .await
-        .expect("build");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(mob_spec(&temp_dir))
+            .module_config(empty_module_config("drain-flag"))
+            .timeout(Duration::from_secs(2))
+            .drain_timeout(Duration::from_millis(100))
+            .build(),
+    )
+    .await
+    .expect("build");
 
     // Trigger shutdown to set the shutting_down flag
     let _shutdown = runtime.shutdown().await;

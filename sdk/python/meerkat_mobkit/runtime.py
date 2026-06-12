@@ -49,6 +49,23 @@ from .types import (
     MemoryIndexResult,
     MemoryQueryResult,
     MemoryStoreInfo,
+    MobpackAgentDefinitionsResult,
+    MobpackApplyOperationResult,
+    MobpackCatalogsResult,
+    MobpackDeployCommandResult,
+    MobpackDeployResult,
+    MobpackDraftDeleteResult,
+    MobpackDraftGetResult,
+    MobpackDraftHistoryResult,
+    MobpackDraftListResult,
+    MobpackDraftSaveResult,
+    MobpackExportResult,
+    MobpackImportResult,
+    MobpackSkillsCatalogResult,
+    MobpackSourceResult,
+    MobpackTemplatesResult,
+    MobpackToolsCatalogResult,
+    MobpackValidationResult,
     MobStructuralEvent,
     ModelsCatalogResult,
     ReconcileEdgesReport,
@@ -716,6 +733,207 @@ class MobHandle:
         """Return the curated model catalog with provider defaults."""
         raw = await self._runtime._rpc("mobkit/models/catalog")
         return ModelsCatalogResult.from_dict(raw)
+
+    async def tools_catalog(self) -> MobpackToolsCatalogResult:
+        """Return the MobKit tool catalog used by mobpack authoring."""
+        raw = await self._runtime._rpc("mobkit/tools/catalog")
+        return MobpackToolsCatalogResult.from_dict(raw)
+
+    async def skills_catalog(self) -> MobpackSkillsCatalogResult:
+        """Return the MobKit skill realms used by mobpack authoring."""
+        raw = await self._runtime._rpc("mobkit/skills/catalog")
+        return MobpackSkillsCatalogResult.from_dict(raw)
+
+    async def agent_definitions(self) -> MobpackAgentDefinitionsResult:
+        """Return MobKit-owned agent definitions for the Agent Editor."""
+        raw = await self._runtime._rpc("mobkit/agent_definitions/list")
+        return MobpackAgentDefinitionsResult.from_dict(raw)
+
+    async def mobpack_templates(self) -> MobpackTemplatesResult:
+        """Return blank and sample mobpack templates."""
+        raw = await self._runtime._rpc("mobkit/mobpacks/templates")
+        return MobpackTemplatesResult.from_dict(raw)
+
+    async def mobpack_catalogs(self) -> MobpackCatalogsResult:
+        """Return the composed MobKit mobpack authoring catalog snapshot."""
+        raw = await self._runtime._rpc("mobkit/mobpacks/catalogs")
+        return MobpackCatalogsResult.from_dict(raw)
+
+    async def mobpack_validate(
+        self,
+        document: dict[str, Any],
+        *,
+        rkat_validate: bool | None = None,
+    ) -> MobpackValidationResult:
+        """Validate a mobpack authoring document."""
+        params: dict[str, Any] = {"document": document}
+        if rkat_validate is not None:
+            params["rkat_validate"] = rkat_validate
+        raw = await self._runtime._rpc("mobkit/mobpacks/validate", params)
+        return MobpackValidationResult.from_dict(raw)
+
+    async def mobpack_source(self, document: dict[str, Any]) -> MobpackSourceResult:
+        """Render the deployable source files (mob.toml etc.) for a document."""
+        raw = await self._runtime._rpc("mobkit/mobpacks/source", {"document": document})
+        return MobpackSourceResult.from_dict(raw)
+
+    async def mobpack_export(self, document: dict[str, Any]) -> MobpackExportResult:
+        """Export a mobpack document as a base64-encoded archive."""
+        raw = await self._runtime._rpc("mobkit/mobpacks/export", {"document": document})
+        return MobpackExportResult.from_dict(raw)
+
+    async def mobpack_import(
+        self,
+        *,
+        mob_toml: str | None = None,
+        content_base64: str | None = None,
+        document: dict[str, Any] | None = None,
+        source_name: str | None = None,
+    ) -> MobpackImportResult:
+        """Import a mob.toml, mobpack archive, or editor document."""
+        params: dict[str, Any] = {}
+        if mob_toml is not None:
+            params["mob_toml"] = mob_toml
+        if content_base64 is not None:
+            params["content_base64"] = content_base64
+        if document is not None:
+            params["document"] = document
+        if source_name is not None:
+            params["source_name"] = source_name
+        raw = await self._runtime._rpc("mobkit/mobpacks/import", params)
+        return MobpackImportResult.from_dict(raw)
+
+    async def mobpack_list(self) -> MobpackDraftListResult:
+        """List mobpack draft registry rows."""
+        raw = await self._runtime._rpc("mobkit/mobpacks/list", {})
+        return MobpackDraftListResult.from_dict(raw)
+
+    async def mobpack_get(self, draft_id: str) -> MobpackDraftGetResult:
+        """Fetch a single mobpack draft registry row by id."""
+        raw = await self._runtime._rpc("mobkit/mobpacks/get", {"id": draft_id})
+        return MobpackDraftGetResult.from_dict(raw)
+
+    async def mobpack_create(
+        self,
+        *,
+        template: str | None = None,
+        name: str | None = None,
+        trigger: str | None = None,
+    ) -> MobpackDraftSaveResult:
+        """Create a new mobpack draft from a starter template."""
+        params: dict[str, Any] = {}
+        if template is not None:
+            params["template"] = template
+        if name is not None:
+            params["name"] = name
+        if trigger is not None:
+            params["trigger"] = trigger
+        raw = await self._runtime._rpc("mobkit/mobpacks/create", params)
+        return MobpackDraftSaveResult.from_dict(raw)
+
+    async def mobpack_save(
+        self,
+        draft_id: str,
+        document: dict[str, Any],
+        *,
+        validation: dict[str, Any] | None = None,
+        stage: str | None = None,
+        expected_revision: int | None = None,
+        expected_etag: str | None = None,
+    ) -> MobpackDraftSaveResult:
+        """Save a mobpack draft, optionally guarded by revision/etag."""
+        params: dict[str, Any] = {"id": draft_id, "document": document}
+        if validation is not None:
+            params["validation"] = validation
+        if stage is not None:
+            params["stage"] = stage
+        if expected_revision is not None:
+            params["expected_revision"] = expected_revision
+        if expected_etag is not None:
+            params["expected_etag"] = expected_etag
+        raw = await self._runtime._rpc("mobkit/mobpacks/save", params)
+        return MobpackDraftSaveResult.from_dict(raw)
+
+    async def mobpack_delete(
+        self,
+        draft_id: str,
+        *,
+        expected_revision: int | None = None,
+    ) -> MobpackDraftDeleteResult:
+        """Delete a mobpack draft, optionally guarded by revision."""
+        params: dict[str, Any] = {"id": draft_id}
+        if expected_revision is not None:
+            params["expected_revision"] = expected_revision
+        raw = await self._runtime._rpc("mobkit/mobpacks/delete", params)
+        return MobpackDraftDeleteResult.from_dict(raw)
+
+    async def mobpack_undo(
+        self,
+        draft_id: str,
+        *,
+        expected_revision: int | None = None,
+        expected_etag: str | None = None,
+    ) -> MobpackDraftHistoryResult:
+        """Step a mobpack draft one entry back in its undo history."""
+        params: dict[str, Any] = {"id": draft_id}
+        if expected_revision is not None:
+            params["expected_revision"] = expected_revision
+        if expected_etag is not None:
+            params["expected_etag"] = expected_etag
+        raw = await self._runtime._rpc("mobkit/mobpacks/undo", params)
+        return MobpackDraftHistoryResult.from_dict(raw)
+
+    async def mobpack_redo(
+        self,
+        draft_id: str,
+        *,
+        expected_revision: int | None = None,
+        expected_etag: str | None = None,
+    ) -> MobpackDraftHistoryResult:
+        """Step a mobpack draft one entry forward in its redo history."""
+        params: dict[str, Any] = {"id": draft_id}
+        if expected_revision is not None:
+            params["expected_revision"] = expected_revision
+        if expected_etag is not None:
+            params["expected_etag"] = expected_etag
+        raw = await self._runtime._rpc("mobkit/mobpacks/redo", params)
+        return MobpackDraftHistoryResult.from_dict(raw)
+
+    async def mobpack_apply_operation(
+        self,
+        document: dict[str, Any],
+        operation: dict[str, Any],
+        *,
+        expected_catalog_snapshot_id: str | None = None,
+    ) -> MobpackApplyOperationResult:
+        """Apply a structured authoring operation to a mobpack document."""
+        params: dict[str, Any] = {"document": document, "operation": operation}
+        if expected_catalog_snapshot_id is not None:
+            params["expected_catalog_snapshot_id"] = expected_catalog_snapshot_id
+        raw = await self._runtime._rpc("mobkit/mobpacks/apply_operation", params)
+        return MobpackApplyOperationResult.from_dict(raw)
+
+    async def mobpack_deploy_command(
+        self, document: dict[str, Any]
+    ) -> MobpackDeployCommandResult:
+        """Preview the rkat mob deploy command for a mobpack document."""
+        raw = await self._runtime._rpc(
+            "mobkit/mobpacks/deploy_command", {"document": document}
+        )
+        return MobpackDeployCommandResult.from_dict(raw)
+
+    async def mobpack_deploy(
+        self,
+        document: dict[str, Any],
+        *,
+        execute: bool | None = None,
+    ) -> MobpackDeployResult:
+        """Plan (and optionally execute) a mobpack deploy on the host."""
+        params: dict[str, Any] = {"document": document}
+        if execute is not None:
+            params["execute"] = execute
+        raw = await self._runtime._rpc("mobkit/mobpacks/deploy", params)
+        return MobpackDeployResult.from_dict(raw)
 
     async def session_store_bigquery(self, **kwargs: Any) -> Any:
         """Run a BigQuery session-store RPC operation."""

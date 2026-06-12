@@ -688,11 +688,14 @@ impl AgentCustomizer for SessionHookCustomizerAdapter {
         let mut req = meerkat_core::service::CreateSessionRequest {
             model: draft.model.clone().unwrap_or_default(),
             prompt: meerkat_core::ContentInput::Text(String::new()),
-            render_metadata: None,
-            system_prompt: draft.system_prompt.clone(),
+            // Meerkat 0.7: per-request system prompt is the typed tri-state
+            // override; a draft prompt maps to an explicit `Set`.
+            system_prompt: match draft.system_prompt.clone() {
+                Some(prompt) => meerkat_core::config::SystemPromptOverride::Set(prompt),
+                None => meerkat_core::config::SystemPromptOverride::Inherit,
+            },
             max_tokens: None,
             event_tx: None,
-            skill_references: None,
             initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
             build: None,
             labels: if draft.labels.is_empty() {
@@ -707,10 +710,8 @@ impl AgentCustomizer for SessionHookCustomizerAdapter {
         // Supported: model, system_prompt, labels — written back to draft.
         // Unsupported: everything else — warn if hook mutated them.
         let prompt_before = req.prompt.clone();
-        let render_metadata_before = req.render_metadata.clone();
         let max_tokens_before = req.max_tokens;
         let event_tx_was_some = req.event_tx.is_some();
-        let skill_refs_before = req.skill_references.clone();
         let initial_turn_before = req.initial_turn;
         let build_before_is_none = req.build.is_none();
 
@@ -726,21 +727,19 @@ impl AgentCustomizer for SessionHookCustomizerAdapter {
         if req.prompt != prompt_before {
             unsupported_mutations.push("prompt");
         }
-        if req.render_metadata != render_metadata_before {
-            unsupported_mutations.push("render_metadata");
-        }
         if req.max_tokens != max_tokens_before {
             unsupported_mutations.push("max_tokens");
         }
         if req.event_tx.is_some() != event_tx_was_some {
             unsupported_mutations.push("event_tx");
         }
-        if req.skill_references != skill_refs_before {
-            unsupported_mutations.push("skill_references");
-        }
         if req.initial_turn != initial_turn_before {
             unsupported_mutations.push("initial_turn");
         }
+        // Meerkat 0.7 removed the flat `render_metadata` / `skill_references`
+        // request fields; both now live only on the typed
+        // `build.initial_turn_metadata` carrier, which the `build` mutation
+        // detection below already covers.
         if let Some(ref build) = req.build {
             if build_before_is_none {
                 // Hook created a build block — any build.* is unsupported
@@ -774,7 +773,7 @@ impl AgentCustomizer for SessionHookCustomizerAdapter {
         if !req.model.is_empty() {
             draft.model = Some(req.model);
         }
-        draft.system_prompt = req.system_prompt;
+        draft.system_prompt = req.system_prompt.as_set_prompt().map(ToString::to_string);
         draft.labels = req.labels.unwrap_or_default();
 
         Ok(())

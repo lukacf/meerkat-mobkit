@@ -1493,13 +1493,20 @@ function renderRunStartedPromptEntries(
       });
       return entries;
     }
+    // Defense in depth beyond the structured-comms signature match: the
+    // canonical peer transport projection never renders as a user prompt,
+    // even when no matching comms notice landed in the suppression window.
+    const scrubbedPrompt = stripPeerTransportScaffold(prompt);
+    if (!scrubbedPrompt) {
+      return entries;
+    }
     entries.push({
       kind: "message",
       id: entryId,
       identity: USER_IDENTITY,
       variant: "plain",
       ...(createdAt ? { createdAt } : {}),
-      text: prompt,
+      text: scrubbedPrompt,
     });
   }
 
@@ -2097,6 +2104,31 @@ function isCommsLikeRunStartedPrompt(text: string): boolean {
 
 const PEER_ENVELOPE_LINE_RE = /^Peer\s+(?:message|request|response)\s+from\s+(.+):(.*)$/i;
 const BRACKETED_COMMS_LINE_RE = /^\[COMMS\s+(?:MESSAGE|REQUEST|RESPONSE)\s+from\s+([^\]]+)\](.*)$/i;
+
+// Meerkat 0.7.1 canonical model-facing peer-request projection: starts with
+// "Peer request from peer_id <uuid>" and runs through the protocol coaching
+// tail ("Do not answer this request with send_message." in the multi-line
+// `format_peer_request_projection` form, "Do not use send_message for this
+// reply." in the single-line `prompt_text` form). The span in between carries
+// transport material (peer_spec addresses, raw pubkey bytes, send_response
+// call templates) that must never render in user-facing chat or signal
+// previews.
+const PEER_TRANSPORT_SCAFFOLD_START_RE = /Peer\s+request\s+from\s+peer_id\s/i;
+const PEER_TRANSPORT_SCAFFOLD_SPAN_RE =
+  /Peer\s+request\s+from\s+peer_id\s[\s\S]*?(?:Do not answer this request with send_message\.|Do not use send_message for this reply\.)/gi;
+
+/// Remove canonical peer transport scaffold spans, keeping any human-authored
+/// remainder (e.g. an appended request body). Returns "" when the text is
+/// pure transport scaffold.
+export function stripPeerTransportScaffold(text: string): string {
+  if (!text || !PEER_TRANSPORT_SCAFFOLD_START_RE.test(text)) return text;
+  let scrubbed = text.replace(PEER_TRANSPORT_SCAFFOLD_SPAN_RE, " ");
+  // Defensive: a projection without its coaching terminator (e.g. truncated
+  // upstream) must still never render; cut from the marker onward.
+  const residualIndex = scrubbed.search(PEER_TRANSPORT_SCAFFOLD_START_RE);
+  if (residualIndex >= 0) scrubbed = scrubbed.slice(0, residualIndex);
+  return scrubbed.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -2709,7 +2741,13 @@ function typedSystemNoticeBlocksToRich(
         .join("\n")
         .trim();
       const peerImages = contentBlocks.filter((item) => item.type === "image");
-      const displayBodySource = contentText || typedCommsStableBodyText(record) || bodyText;
+      // Scrub canonical transport scaffold before choosing a display body so
+      // a pure-scaffold content block falls back to the parsed summary
+      // (`Peer request: <intent>`) instead of leaking pubkey bytes and
+      // protocol coaching into the chat preview.
+      const displayBodySource = stripPeerTransportScaffold(contentText)
+        || stripPeerTransportScaffold(typedCommsStableBodyText(record))
+        || stripPeerTransportScaffold(bodyText);
       const preserveStructuredContentEnvelope = structuredCommsBodyShouldPreserveLeadingEnvelope(
         displayBodySource,
         peerAliases,

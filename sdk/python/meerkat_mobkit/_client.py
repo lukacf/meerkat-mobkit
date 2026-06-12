@@ -41,6 +41,159 @@ class MobkitModelsCatalogResult(TypedDict):
     provider_defaults: list[dict[str, Any]]
 
 
+class MobkitToolsCatalogResult(TypedDict):
+    schema_version: str
+    runtime_backed: bool
+    source: str
+    authoring_provider: dict[str, Any]
+    runtime_unavailable_reason: str
+    tool_catalog: list[dict[str, Any]]
+
+
+class MobkitSkillsCatalogResult(TypedDict):
+    schema_version: str
+    runtime_backed: bool
+    source: str
+    authoring_provider: dict[str, Any]
+    runtime_unavailable_reason: str
+    skill_realms: list[dict[str, Any]]
+
+
+class MobkitAgentDefinitionsResult(TypedDict):
+    schema_version: str
+    runtime_backed: bool
+    source: str
+    authoring_provider: dict[str, Any]
+    runtime_unavailable_reason: str
+    agent_definitions: list[dict[str, Any]]
+
+
+class MobkitTemplatesResult(TypedDict):
+    schema_version: str
+    source: str
+    authoring_provider: dict[str, Any]
+    runtime_unavailable_reason: str
+    blank_mobpack: dict[str, Any]
+    sample_mobpacks: list[dict[str, Any]]
+    sample_agent_definitions: list[dict[str, Any]]
+    templates: dict[str, Any]
+
+
+class MobkitCatalogsResult(TypedDict):
+    schema_version: str
+    runtime_backed: bool
+    authoring_provider: dict[str, Any]
+    runtime_unavailable_reason: str
+    sources: dict[str, Any]
+    templates: dict[str, Any]
+    tool_catalog: list[dict[str, Any]]
+    skill_realms: list[dict[str, Any]]
+    blank_mobpack: dict[str, Any]
+    sample_mobpacks: list[dict[str, Any]]
+    agent_definitions: list[dict[str, Any]]
+    sample_agent_definitions: list[dict[str, Any]]
+    models: list[dict[str, Any]]
+    provider_defaults: list[dict[str, Any]]
+
+
+class MobkitMobpackValidationResult(TypedDict):
+    ok: bool
+    diagnostics: list[dict[str, Any]]
+    display_rows: list[dict[str, Any]]
+    flow_ids: list[str]
+    validation_source: str
+    deploy_command: str
+
+
+class MobkitMobpackSourceResult(TypedDict):
+    filename: str
+    media_type: str
+    mob_toml: str
+    source_files: list[dict[str, Any]]
+    validation: dict[str, Any]
+    source: str
+
+
+class MobkitMobpackExportResult(TypedDict):
+    filename: str
+    media_type: str
+    content_base64: str
+    mob_toml: str
+    source_files: list[dict[str, Any]]
+    validation: dict[str, Any]
+
+
+class MobkitMobpackImportResult(TypedDict):
+    document: dict[str, Any]
+    validation: dict[str, Any]
+    source: str
+    source_label: str
+    source_media_type: str
+
+
+class MobkitMobpackDraftListResult(TypedDict):
+    source: str
+    runtime_backed: bool
+    rows: list[dict[str, Any]]
+
+
+class MobkitMobpackDraftGetResult(TypedDict):
+    source: str
+    runtime_backed: bool
+    row: dict[str, Any]
+
+
+class MobkitMobpackDraftSaveResult(TypedDict):
+    source: str
+    row: dict[str, Any]
+    rows: list[dict[str, Any]]
+
+
+class MobkitMobpackDraftDeleteResult(TypedDict):
+    source: str
+    id: str
+    deleted: bool
+    rows: list[dict[str, Any]]
+
+
+class MobkitMobpackDraftHistoryResult(TypedDict):
+    source: str
+    stepped: bool
+    row: dict[str, Any]
+    rows: list[dict[str, Any]]
+
+
+class MobkitMobpackApplyOperationResult(TypedDict):
+    source: str
+    operation: str
+    ok: bool
+    document: dict[str, Any]
+    selection: dict[str, Any]
+    validation: dict[str, Any]
+
+
+class MobkitMobpackDeployCommandResult(TypedDict):
+    command: str
+    argv: list[str]
+    deploy_command: str
+    filename: str
+    validation: dict[str, Any]
+    source: str
+
+
+class MobkitMobpackDeployResult(TypedDict):
+    filename: str
+    pack_path: str
+    pack_sha256: str
+    command: str
+    argv: list[str]
+    plan_trace: list[dict[str, Any]]
+    executed: bool
+    success: bool
+    validation: dict[str, Any]
+    display_rows: list[dict[str, Any]]
+
+
 class MobkitStatusResult(TypedDict):
     contract_version: str
     running: bool
@@ -290,6 +443,364 @@ class MobkitTypedClient:
             ),
         )
 
+    def tools_catalog(
+        self, request_id: str = "tools_catalog"
+    ) -> MobkitToolsCatalogResult:
+        return cast(
+            MobkitToolsCatalogResult,
+            _unwrap_typed_result(
+                self.rpc(request_id, "mobkit/tools/catalog", {}),
+                request_id,
+                "mobkit/tools/catalog",
+                _is_tools_catalog_result,
+            ),
+        )
+
+    def skills_catalog(
+        self, request_id: str = "skills_catalog"
+    ) -> MobkitSkillsCatalogResult:
+        return cast(
+            MobkitSkillsCatalogResult,
+            _unwrap_typed_result(
+                self.rpc(request_id, "mobkit/skills/catalog", {}),
+                request_id,
+                "mobkit/skills/catalog",
+                _is_skills_catalog_result,
+            ),
+        )
+
+    def agent_definitions(
+        self, request_id: str = "agent_definitions"
+    ) -> MobkitAgentDefinitionsResult:
+        return cast(
+            MobkitAgentDefinitionsResult,
+            _unwrap_typed_result(
+                self.rpc(request_id, "mobkit/agent_definitions/list", {}),
+                request_id,
+                "mobkit/agent_definitions/list",
+                _is_agent_definitions_result,
+            ),
+        )
+
+    def mobpack_templates(
+        self, request_id: str = "mobpack_templates"
+    ) -> MobkitTemplatesResult:
+        return cast(
+            MobkitTemplatesResult,
+            _unwrap_typed_result(
+                self.rpc(request_id, "mobkit/mobpacks/templates", {}),
+                request_id,
+                "mobkit/mobpacks/templates",
+                _is_mobpack_templates_result,
+            ),
+        )
+
+    def mobpack_catalogs(
+        self, request_id: str = "mobpack_catalogs"
+    ) -> MobkitCatalogsResult:
+        return cast(
+            MobkitCatalogsResult,
+            _unwrap_typed_result(
+                self.rpc(request_id, "mobkit/mobpacks/catalogs", {}),
+                request_id,
+                "mobkit/mobpacks/catalogs",
+                _is_mobpack_catalogs_result,
+            ),
+        )
+
+    def mobpack_validate(
+        self,
+        document: Mapping[str, Any],
+        *,
+        rkat_validate: bool | None = None,
+        request_id: str = "mobpack_validate",
+    ) -> MobkitMobpackValidationResult:
+        return cast(
+            MobkitMobpackValidationResult,
+            _unwrap_typed_result(
+                self.rpc(
+                    request_id,
+                    "mobkit/mobpacks/validate",
+                    _mobpack_validate_params(document, rkat_validate),
+                ),
+                request_id,
+                "mobkit/mobpacks/validate",
+                _is_mobpack_validation_result,
+            ),
+        )
+
+    def mobpack_source(
+        self,
+        document: Mapping[str, Any],
+        request_id: str = "mobpack_source",
+    ) -> MobkitMobpackSourceResult:
+        return cast(
+            MobkitMobpackSourceResult,
+            _unwrap_typed_result(
+                self.rpc(
+                    request_id, "mobkit/mobpacks/source", {"document": dict(document)}
+                ),
+                request_id,
+                "mobkit/mobpacks/source",
+                _is_mobpack_source_result,
+            ),
+        )
+
+    def mobpack_export(
+        self,
+        document: Mapping[str, Any],
+        request_id: str = "mobpack_export",
+    ) -> MobkitMobpackExportResult:
+        return cast(
+            MobkitMobpackExportResult,
+            _unwrap_typed_result(
+                self.rpc(
+                    request_id, "mobkit/mobpacks/export", {"document": dict(document)}
+                ),
+                request_id,
+                "mobkit/mobpacks/export",
+                _is_mobpack_export_result,
+            ),
+        )
+
+    def mobpack_import(
+        self,
+        *,
+        mob_toml: str | None = None,
+        content_base64: str | None = None,
+        document: Mapping[str, Any] | None = None,
+        source_name: str | None = None,
+        request_id: str = "mobpack_import",
+    ) -> MobkitMobpackImportResult:
+        return cast(
+            MobkitMobpackImportResult,
+            _unwrap_typed_result(
+                self.rpc(
+                    request_id,
+                    "mobkit/mobpacks/import",
+                    _mobpack_import_params(
+                        mob_toml, content_base64, document, source_name
+                    ),
+                ),
+                request_id,
+                "mobkit/mobpacks/import",
+                _is_mobpack_import_result,
+            ),
+        )
+
+    def mobpack_list(
+        self, request_id: str = "mobpack_list"
+    ) -> MobkitMobpackDraftListResult:
+        return cast(
+            MobkitMobpackDraftListResult,
+            _unwrap_typed_result(
+                self.rpc(request_id, "mobkit/mobpacks/list", {}),
+                request_id,
+                "mobkit/mobpacks/list",
+                _is_mobpack_draft_list_result,
+            ),
+        )
+
+    def mobpack_get(
+        self, draft_id: str, request_id: str = "mobpack_get"
+    ) -> MobkitMobpackDraftGetResult:
+        return cast(
+            MobkitMobpackDraftGetResult,
+            _unwrap_typed_result(
+                self.rpc(request_id, "mobkit/mobpacks/get", {"id": draft_id}),
+                request_id,
+                "mobkit/mobpacks/get",
+                _is_mobpack_draft_get_result,
+            ),
+        )
+
+    def mobpack_create(
+        self,
+        *,
+        template: str | None = None,
+        name: str | None = None,
+        trigger: str | None = None,
+        request_id: str = "mobpack_create",
+    ) -> MobkitMobpackDraftSaveResult:
+        return cast(
+            MobkitMobpackDraftSaveResult,
+            _unwrap_typed_result(
+                self.rpc(
+                    request_id,
+                    "mobkit/mobpacks/create",
+                    _mobpack_create_params(template, name, trigger),
+                ),
+                request_id,
+                "mobkit/mobpacks/create",
+                _is_mobpack_draft_save_result,
+            ),
+        )
+
+    def mobpack_save(
+        self,
+        draft_id: str,
+        document: Mapping[str, Any],
+        *,
+        validation: Mapping[str, Any] | None = None,
+        stage: str | None = None,
+        expected_revision: int | None = None,
+        expected_etag: str | None = None,
+        request_id: str = "mobpack_save",
+    ) -> MobkitMobpackDraftSaveResult:
+        return cast(
+            MobkitMobpackDraftSaveResult,
+            _unwrap_typed_result(
+                self.rpc(
+                    request_id,
+                    "mobkit/mobpacks/save",
+                    _mobpack_save_params(
+                        draft_id,
+                        document,
+                        validation,
+                        stage,
+                        expected_revision,
+                        expected_etag,
+                    ),
+                ),
+                request_id,
+                "mobkit/mobpacks/save",
+                _is_mobpack_draft_save_result,
+            ),
+        )
+
+    def mobpack_delete(
+        self,
+        draft_id: str,
+        *,
+        expected_revision: int | None = None,
+        request_id: str = "mobpack_delete",
+    ) -> MobkitMobpackDraftDeleteResult:
+        return cast(
+            MobkitMobpackDraftDeleteResult,
+            _unwrap_typed_result(
+                self.rpc(
+                    request_id,
+                    "mobkit/mobpacks/delete",
+                    _mobpack_delete_params(draft_id, expected_revision),
+                ),
+                request_id,
+                "mobkit/mobpacks/delete",
+                _is_mobpack_draft_delete_result,
+            ),
+        )
+
+    def mobpack_undo(
+        self,
+        draft_id: str,
+        *,
+        expected_revision: int | None = None,
+        expected_etag: str | None = None,
+        request_id: str = "mobpack_undo",
+    ) -> MobkitMobpackDraftHistoryResult:
+        return cast(
+            MobkitMobpackDraftHistoryResult,
+            _unwrap_typed_result(
+                self.rpc(
+                    request_id,
+                    "mobkit/mobpacks/undo",
+                    _mobpack_history_params(
+                        draft_id, expected_revision, expected_etag
+                    ),
+                ),
+                request_id,
+                "mobkit/mobpacks/undo",
+                _is_mobpack_draft_history_result,
+            ),
+        )
+
+    def mobpack_redo(
+        self,
+        draft_id: str,
+        *,
+        expected_revision: int | None = None,
+        expected_etag: str | None = None,
+        request_id: str = "mobpack_redo",
+    ) -> MobkitMobpackDraftHistoryResult:
+        return cast(
+            MobkitMobpackDraftHistoryResult,
+            _unwrap_typed_result(
+                self.rpc(
+                    request_id,
+                    "mobkit/mobpacks/redo",
+                    _mobpack_history_params(
+                        draft_id, expected_revision, expected_etag
+                    ),
+                ),
+                request_id,
+                "mobkit/mobpacks/redo",
+                _is_mobpack_draft_history_result,
+            ),
+        )
+
+    def mobpack_apply_operation(
+        self,
+        document: Mapping[str, Any],
+        operation: Mapping[str, Any],
+        *,
+        expected_catalog_snapshot_id: str | None = None,
+        request_id: str = "mobpack_apply_operation",
+    ) -> MobkitMobpackApplyOperationResult:
+        return cast(
+            MobkitMobpackApplyOperationResult,
+            _unwrap_typed_result(
+                self.rpc(
+                    request_id,
+                    "mobkit/mobpacks/apply_operation",
+                    _mobpack_apply_operation_params(
+                        document, operation, expected_catalog_snapshot_id
+                    ),
+                ),
+                request_id,
+                "mobkit/mobpacks/apply_operation",
+                _is_mobpack_apply_operation_result,
+            ),
+        )
+
+    def mobpack_deploy_command(
+        self,
+        document: Mapping[str, Any],
+        request_id: str = "mobpack_deploy_command",
+    ) -> MobkitMobpackDeployCommandResult:
+        return cast(
+            MobkitMobpackDeployCommandResult,
+            _unwrap_typed_result(
+                self.rpc(
+                    request_id,
+                    "mobkit/mobpacks/deploy_command",
+                    {"document": dict(document)},
+                ),
+                request_id,
+                "mobkit/mobpacks/deploy_command",
+                _is_mobpack_deploy_command_result,
+            ),
+        )
+
+    def mobpack_deploy(
+        self,
+        document: Mapping[str, Any],
+        *,
+        execute: bool | None = None,
+        request_id: str = "mobpack_deploy",
+    ) -> MobkitMobpackDeployResult:
+        return cast(
+            MobkitMobpackDeployResult,
+            _unwrap_typed_result(
+                self.rpc(
+                    request_id,
+                    "mobkit/mobpacks/deploy",
+                    _mobpack_deploy_params(document, execute),
+                ),
+                request_id,
+                "mobkit/mobpacks/deploy",
+                _is_mobpack_deploy_result,
+            ),
+        )
+
 
 class MobkitAsyncTypedClient:
     def __init__(self, transport: AsyncRpcTransport):
@@ -404,6 +915,314 @@ class MobkitAsyncTypedClient:
             ),
         )
 
+    async def tools_catalog(
+        self, request_id: str = "tools_catalog"
+    ) -> MobkitToolsCatalogResult:
+        return cast(
+            MobkitToolsCatalogResult,
+            await self.request(
+                request_id,
+                "mobkit/tools/catalog",
+                {},
+                _is_tools_catalog_result,
+            ),
+        )
+
+    async def skills_catalog(
+        self, request_id: str = "skills_catalog"
+    ) -> MobkitSkillsCatalogResult:
+        return cast(
+            MobkitSkillsCatalogResult,
+            await self.request(
+                request_id,
+                "mobkit/skills/catalog",
+                {},
+                _is_skills_catalog_result,
+            ),
+        )
+
+    async def agent_definitions(
+        self, request_id: str = "agent_definitions"
+    ) -> MobkitAgentDefinitionsResult:
+        return cast(
+            MobkitAgentDefinitionsResult,
+            await self.request(
+                request_id,
+                "mobkit/agent_definitions/list",
+                {},
+                _is_agent_definitions_result,
+            ),
+        )
+
+    async def mobpack_templates(
+        self, request_id: str = "mobpack_templates"
+    ) -> MobkitTemplatesResult:
+        return cast(
+            MobkitTemplatesResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/templates",
+                {},
+                _is_mobpack_templates_result,
+            ),
+        )
+
+    async def mobpack_catalogs(
+        self, request_id: str = "mobpack_catalogs"
+    ) -> MobkitCatalogsResult:
+        return cast(
+            MobkitCatalogsResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/catalogs",
+                {},
+                _is_mobpack_catalogs_result,
+            ),
+        )
+
+    async def mobpack_validate(
+        self,
+        document: Mapping[str, Any],
+        *,
+        rkat_validate: bool | None = None,
+        request_id: str = "mobpack_validate",
+    ) -> MobkitMobpackValidationResult:
+        return cast(
+            MobkitMobpackValidationResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/validate",
+                _mobpack_validate_params(document, rkat_validate),
+                _is_mobpack_validation_result,
+            ),
+        )
+
+    async def mobpack_source(
+        self,
+        document: Mapping[str, Any],
+        request_id: str = "mobpack_source",
+    ) -> MobkitMobpackSourceResult:
+        return cast(
+            MobkitMobpackSourceResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/source",
+                {"document": dict(document)},
+                _is_mobpack_source_result,
+            ),
+        )
+
+    async def mobpack_export(
+        self,
+        document: Mapping[str, Any],
+        request_id: str = "mobpack_export",
+    ) -> MobkitMobpackExportResult:
+        return cast(
+            MobkitMobpackExportResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/export",
+                {"document": dict(document)},
+                _is_mobpack_export_result,
+            ),
+        )
+
+    async def mobpack_import(
+        self,
+        *,
+        mob_toml: str | None = None,
+        content_base64: str | None = None,
+        document: Mapping[str, Any] | None = None,
+        source_name: str | None = None,
+        request_id: str = "mobpack_import",
+    ) -> MobkitMobpackImportResult:
+        return cast(
+            MobkitMobpackImportResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/import",
+                _mobpack_import_params(mob_toml, content_base64, document, source_name),
+                _is_mobpack_import_result,
+            ),
+        )
+
+    async def mobpack_list(
+        self, request_id: str = "mobpack_list"
+    ) -> MobkitMobpackDraftListResult:
+        return cast(
+            MobkitMobpackDraftListResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/list",
+                {},
+                _is_mobpack_draft_list_result,
+            ),
+        )
+
+    async def mobpack_get(
+        self, draft_id: str, request_id: str = "mobpack_get"
+    ) -> MobkitMobpackDraftGetResult:
+        return cast(
+            MobkitMobpackDraftGetResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/get",
+                {"id": draft_id},
+                _is_mobpack_draft_get_result,
+            ),
+        )
+
+    async def mobpack_create(
+        self,
+        *,
+        template: str | None = None,
+        name: str | None = None,
+        trigger: str | None = None,
+        request_id: str = "mobpack_create",
+    ) -> MobkitMobpackDraftSaveResult:
+        return cast(
+            MobkitMobpackDraftSaveResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/create",
+                _mobpack_create_params(template, name, trigger),
+                _is_mobpack_draft_save_result,
+            ),
+        )
+
+    async def mobpack_save(
+        self,
+        draft_id: str,
+        document: Mapping[str, Any],
+        *,
+        validation: Mapping[str, Any] | None = None,
+        stage: str | None = None,
+        expected_revision: int | None = None,
+        expected_etag: str | None = None,
+        request_id: str = "mobpack_save",
+    ) -> MobkitMobpackDraftSaveResult:
+        return cast(
+            MobkitMobpackDraftSaveResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/save",
+                _mobpack_save_params(
+                    draft_id,
+                    document,
+                    validation,
+                    stage,
+                    expected_revision,
+                    expected_etag,
+                ),
+                _is_mobpack_draft_save_result,
+            ),
+        )
+
+    async def mobpack_delete(
+        self,
+        draft_id: str,
+        *,
+        expected_revision: int | None = None,
+        request_id: str = "mobpack_delete",
+    ) -> MobkitMobpackDraftDeleteResult:
+        return cast(
+            MobkitMobpackDraftDeleteResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/delete",
+                _mobpack_delete_params(draft_id, expected_revision),
+                _is_mobpack_draft_delete_result,
+            ),
+        )
+
+    async def mobpack_undo(
+        self,
+        draft_id: str,
+        *,
+        expected_revision: int | None = None,
+        expected_etag: str | None = None,
+        request_id: str = "mobpack_undo",
+    ) -> MobkitMobpackDraftHistoryResult:
+        return cast(
+            MobkitMobpackDraftHistoryResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/undo",
+                _mobpack_history_params(draft_id, expected_revision, expected_etag),
+                _is_mobpack_draft_history_result,
+            ),
+        )
+
+    async def mobpack_redo(
+        self,
+        draft_id: str,
+        *,
+        expected_revision: int | None = None,
+        expected_etag: str | None = None,
+        request_id: str = "mobpack_redo",
+    ) -> MobkitMobpackDraftHistoryResult:
+        return cast(
+            MobkitMobpackDraftHistoryResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/redo",
+                _mobpack_history_params(draft_id, expected_revision, expected_etag),
+                _is_mobpack_draft_history_result,
+            ),
+        )
+
+    async def mobpack_apply_operation(
+        self,
+        document: Mapping[str, Any],
+        operation: Mapping[str, Any],
+        *,
+        expected_catalog_snapshot_id: str | None = None,
+        request_id: str = "mobpack_apply_operation",
+    ) -> MobkitMobpackApplyOperationResult:
+        return cast(
+            MobkitMobpackApplyOperationResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/apply_operation",
+                _mobpack_apply_operation_params(
+                    document, operation, expected_catalog_snapshot_id
+                ),
+                _is_mobpack_apply_operation_result,
+            ),
+        )
+
+    async def mobpack_deploy_command(
+        self,
+        document: Mapping[str, Any],
+        request_id: str = "mobpack_deploy_command",
+    ) -> MobkitMobpackDeployCommandResult:
+        return cast(
+            MobkitMobpackDeployCommandResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/deploy_command",
+                {"document": dict(document)},
+                _is_mobpack_deploy_command_result,
+            ),
+        )
+
+    async def mobpack_deploy(
+        self,
+        document: Mapping[str, Any],
+        *,
+        execute: bool | None = None,
+        request_id: str = "mobpack_deploy",
+    ) -> MobkitMobpackDeployResult:
+        return cast(
+            MobkitMobpackDeployResult,
+            await self.request(
+                request_id,
+                "mobkit/mobpacks/deploy",
+                _mobpack_deploy_params(document, execute),
+                _is_mobpack_deploy_result,
+            ),
+        )
+
 
 def _read_http_body(http_request: urllib_request.Request, timeout_seconds: float) -> str:
     with urllib_request.urlopen(http_request, timeout=timeout_seconds) as response:
@@ -421,6 +1240,111 @@ def _build_request(
         "method": method,
         "params": dict(params) if params is not None else {},
     }
+
+
+def _mobpack_validate_params(
+    document: Mapping[str, Any], rkat_validate: bool | None
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"document": dict(document)}
+    if rkat_validate is not None:
+        params["rkat_validate"] = rkat_validate
+    return params
+
+
+def _mobpack_import_params(
+    mob_toml: str | None,
+    content_base64: str | None,
+    document: Mapping[str, Any] | None,
+    source_name: str | None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    if mob_toml is not None:
+        params["mob_toml"] = mob_toml
+    if content_base64 is not None:
+        params["content_base64"] = content_base64
+    if document is not None:
+        params["document"] = dict(document)
+    if source_name is not None:
+        params["source_name"] = source_name
+    return params
+
+
+def _mobpack_create_params(
+    template: str | None, name: str | None, trigger: str | None
+) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    if template is not None:
+        params["template"] = template
+    if name is not None:
+        params["name"] = name
+    if trigger is not None:
+        params["trigger"] = trigger
+    return params
+
+
+def _mobpack_save_params(
+    draft_id: str,
+    document: Mapping[str, Any],
+    validation: Mapping[str, Any] | None,
+    stage: str | None,
+    expected_revision: int | None,
+    expected_etag: str | None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"id": draft_id, "document": dict(document)}
+    if validation is not None:
+        params["validation"] = dict(validation)
+    if stage is not None:
+        params["stage"] = stage
+    if expected_revision is not None:
+        params["expected_revision"] = expected_revision
+    if expected_etag is not None:
+        params["expected_etag"] = expected_etag
+    return params
+
+
+def _mobpack_history_params(
+    draft_id: str,
+    expected_revision: int | None,
+    expected_etag: str | None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"id": draft_id}
+    if expected_revision is not None:
+        params["expected_revision"] = expected_revision
+    if expected_etag is not None:
+        params["expected_etag"] = expected_etag
+    return params
+
+
+def _mobpack_delete_params(
+    draft_id: str, expected_revision: int | None
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"id": draft_id}
+    if expected_revision is not None:
+        params["expected_revision"] = expected_revision
+    return params
+
+
+def _mobpack_apply_operation_params(
+    document: Mapping[str, Any],
+    operation: Mapping[str, Any],
+    expected_catalog_snapshot_id: str | None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "document": dict(document),
+        "operation": dict(operation),
+    }
+    if expected_catalog_snapshot_id is not None:
+        params["expected_catalog_snapshot_id"] = expected_catalog_snapshot_id
+    return params
+
+
+def _mobpack_deploy_params(
+    document: Mapping[str, Any], execute: bool | None
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"document": dict(document)}
+    if execute is not None:
+        params["execute"] = execute
+    return params
 
 
 def _parse_json_rpc_response(payload: Any, request_id: str) -> JsonRpcResponse:
@@ -553,6 +1477,186 @@ def _is_models_catalog_result(value: Any) -> bool:
         isinstance(value, dict)
         and isinstance(value.get("models"), list)
         and isinstance(value.get("provider_defaults"), list)
+    )
+
+
+def _is_tools_catalog_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("schema_version"), str)
+        and isinstance(value.get("runtime_backed"), bool)
+        and isinstance(value.get("source"), str)
+        and isinstance(value.get("authoring_provider"), dict)
+        and isinstance(value.get("tool_catalog"), list)
+    )
+
+
+def _is_skills_catalog_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("schema_version"), str)
+        and isinstance(value.get("runtime_backed"), bool)
+        and isinstance(value.get("source"), str)
+        and isinstance(value.get("authoring_provider"), dict)
+        and isinstance(value.get("skill_realms"), list)
+    )
+
+
+def _is_agent_definitions_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("schema_version"), str)
+        and isinstance(value.get("runtime_backed"), bool)
+        and isinstance(value.get("source"), str)
+        and isinstance(value.get("authoring_provider"), dict)
+        and isinstance(value.get("agent_definitions"), list)
+    )
+
+
+def _is_mobpack_templates_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("schema_version"), str)
+        and isinstance(value.get("source"), str)
+        and isinstance(value.get("authoring_provider"), dict)
+        and isinstance(value.get("blank_mobpack"), dict)
+        and isinstance(value.get("sample_mobpacks"), list)
+        and isinstance(value.get("sample_agent_definitions"), list)
+        and isinstance(value.get("templates"), dict)
+    )
+
+
+def _is_mobpack_catalogs_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("schema_version"), str)
+        and isinstance(value.get("runtime_backed"), bool)
+        and isinstance(value.get("authoring_provider"), dict)
+        and isinstance(value.get("sources"), dict)
+        and isinstance(value.get("templates"), dict)
+        and isinstance(value.get("tool_catalog"), list)
+        and isinstance(value.get("skill_realms"), list)
+        and isinstance(value.get("blank_mobpack"), dict)
+        and isinstance(value.get("sample_mobpacks"), list)
+        and isinstance(value.get("agent_definitions"), list)
+        and isinstance(value.get("sample_agent_definitions"), list)
+        and isinstance(value.get("models"), list)
+        and isinstance(value.get("provider_defaults"), list)
+    )
+
+
+def _is_mobpack_validation_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("ok"), bool)
+        and isinstance(value.get("diagnostics"), list)
+        and isinstance(value.get("display_rows"), list)
+        and isinstance(value.get("deploy_command"), str)
+    )
+
+
+def _is_mobpack_source_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("filename"), str)
+        and isinstance(value.get("mob_toml"), str)
+        and isinstance(value.get("source_files"), list)
+        and isinstance(value.get("validation"), dict)
+    )
+
+
+def _is_mobpack_export_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("filename"), str)
+        and isinstance(value.get("media_type"), str)
+        and isinstance(value.get("content_base64"), str)
+        and isinstance(value.get("validation"), dict)
+    )
+
+
+def _is_mobpack_import_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("document"), dict)
+        and isinstance(value.get("validation"), dict)
+        and isinstance(value.get("source"), str)
+    )
+
+
+def _is_mobpack_draft_list_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("source"), str)
+        and isinstance(value.get("rows"), list)
+    )
+
+
+def _is_mobpack_draft_get_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("source"), str)
+        and isinstance(value.get("row"), dict)
+    )
+
+
+def _is_mobpack_draft_save_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("source"), str)
+        and isinstance(value.get("row"), dict)
+        and isinstance(value.get("rows"), list)
+    )
+
+
+def _is_mobpack_draft_delete_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("source"), str)
+        and isinstance(value.get("id"), str)
+        and isinstance(value.get("deleted"), bool)
+        and isinstance(value.get("rows"), list)
+    )
+
+
+def _is_mobpack_draft_history_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("source"), str)
+        and isinstance(value.get("stepped"), bool)
+        and isinstance(value.get("row"), dict)
+        and isinstance(value.get("rows"), list)
+    )
+
+
+def _is_mobpack_apply_operation_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("ok"), bool)
+        and isinstance(value.get("operation"), str)
+        and isinstance(value.get("document"), dict)
+        and isinstance(value.get("validation"), dict)
+    )
+
+
+def _is_mobpack_deploy_command_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("command"), str)
+        and isinstance(value.get("argv"), list)
+        and isinstance(value.get("deploy_command"), str)
+        and isinstance(value.get("validation"), dict)
+    )
+
+
+def _is_mobpack_deploy_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("filename"), str)
+        and isinstance(value.get("command"), str)
+        and isinstance(value.get("executed"), bool)
+        and isinstance(value.get("success"), bool)
+        and isinstance(value.get("validation"), dict)
     )
 
 

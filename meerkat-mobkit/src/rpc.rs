@@ -58,6 +58,249 @@ use subscribe_methods::{SubscribeParamsError, parse_subscribe_request};
 pub const JSONRPC_VERSION: &str = "2.0";
 pub const MOBKIT_CONTRACT_VERSION: &str = "0.4.0";
 pub const MAX_SCHEDULES_PER_REQUEST: usize = 256;
+pub(crate) const MOBPACK_AUTHORING_METHODS: &[&str] = &[
+    "mobkit/mobpacks/schema",
+    "mobkit/mobpacks/catalogs",
+    "mobkit/tools/catalog",
+    "mobkit/skills/catalog",
+    "mobkit/agent_definitions/list",
+    "mobkit/mobpacks/templates",
+    "mobkit/mobpacks/validate",
+    "mobkit/mobpacks/source",
+    "mobkit/mobpacks/export",
+    "mobkit/mobpacks/import",
+    "mobkit/mobpacks/list",
+    "mobkit/mobpacks/get",
+    "mobkit/mobpacks/create",
+    "mobkit/mobpacks/save",
+    "mobkit/mobpacks/delete",
+    "mobkit/mobpacks/undo",
+    "mobkit/mobpacks/redo",
+    "mobkit/mobpacks/apply_operation",
+    "mobkit/mobpacks/graph_projection",
+    "mobkit/mobpacks/graph_to_flow",
+    "mobkit/mobpacks/deploy_command",
+    "mobkit/mobpacks/deploy",
+];
+
+pub(crate) fn mobpack_authoring_capabilities() -> Value {
+    serde_json::json!({
+        "domain": "mobpack_authoring",
+        "runtime_mutation": false,
+        "host_mutation_methods": {
+            "mobkit/mobpacks/deploy": "when execute=true, writes a mobpack archive and runs rkat mob run on the host",
+            "mobkit/mobpacks/validate": "when rkat_validate=true, writes a mobpack archive and runs rkat mob validate on the host"
+        },
+        "deploy_command": "rkat mob run",
+        "methods": MOBPACK_AUTHORING_METHODS,
+        "operations": crate::mobpack::mobpack_authoring_operations(),
+    })
+}
+
+async fn mobpack_runtime_catalog_state(
+    runtime: &UnifiedRuntime,
+) -> crate::mobpack::MobpackRuntimeCatalogState {
+    let loaded_modules = runtime.loaded_modules().await;
+    let runtime_flow_rows = crate::mobpack::runtime_flow_registry_rows_from_definition(
+        runtime.mob_handle().definition(),
+    );
+    let runtime_agent_definition_sources =
+        crate::mobpack::runtime_agent_definition_sources_from_definition(
+            runtime.mob_handle().definition(),
+        );
+    let runtime_skill_realms =
+        crate::mobpack::runtime_skill_realms_from_definition(runtime.mob_handle().definition());
+    let mut runtime_methods = vec![
+        "mobkit/capabilities".to_string(),
+        "mobkit/models/catalog".to_string(),
+        "mobkit/spawn_member".to_string(),
+        "mobkit/list_members".to_string(),
+        "mobkit/get_member".to_string(),
+        "mobkit/run_flow".to_string(),
+        "mobkit/list_flows".to_string(),
+        "mobkit/list_runs".to_string(),
+    ];
+    runtime_methods.extend(
+        MOBPACK_AUTHORING_METHODS
+            .iter()
+            .map(std::string::ToString::to_string),
+    );
+    if runtime.has_contact_directory() {
+        runtime_methods.push("mobkit/cross_mob/directory".to_string());
+    }
+    if runtime.has_peer_mob_handles().await && runtime.has_inproc_contacts() {
+        runtime_methods.extend([
+            "mobkit/cross_mob/wire".to_string(),
+            "mobkit/cross_mob/unwire".to_string(),
+            "mobkit/cross_mob/send".to_string(),
+        ]);
+    }
+    crate::mobpack::MobpackRuntimeCatalogState {
+        loaded_modules,
+        runtime_methods,
+        has_contact_directory: runtime.has_contact_directory(),
+        has_peer_mob_handles: runtime.has_peer_mob_handles().await,
+        has_inproc_contacts: runtime.has_inproc_contacts(),
+        runtime_flow_rows,
+        runtime_agent_definition_sources,
+        runtime_skill_realms,
+    }
+}
+
+async fn handle_unified_mobpack_authoring_rpc(
+    runtime: &UnifiedRuntime,
+    method: &str,
+    params: &Value,
+    response_id: Value,
+) -> JsonRpcResponse {
+    let runtime_catalog_state = match method {
+        "mobkit/mobpacks/schema"
+        | "mobkit/mobpacks/catalogs"
+        | "mobkit/tools/catalog"
+        | "mobkit/skills/catalog"
+        | "mobkit/agent_definitions/list"
+        | "mobkit/mobpacks/templates"
+        | "mobkit/mobpacks/list"
+        | "mobkit/mobpacks/get"
+        | "mobkit/mobpacks/apply_operation" => Some(mobpack_runtime_catalog_state(runtime).await),
+        _ => None,
+    };
+    let result = match method {
+        "mobkit/mobpacks/catalogs" => Ok(crate::mobpack::mobpack_catalogs_response_with_runtime(
+            runtime_catalog_state.as_ref(),
+        )),
+        "mobkit/tools/catalog" => Ok(crate::mobpack::mobpack_tools_catalog_response_with_runtime(
+            runtime_catalog_state.as_ref(),
+        )),
+        "mobkit/skills/catalog" => Ok(
+            crate::mobpack::mobpack_skills_catalog_response_with_runtime(
+                runtime_catalog_state.as_ref(),
+            ),
+        ),
+        "mobkit/agent_definitions/list" => Ok(
+            crate::mobpack::mobpack_agent_definitions_response_with_runtime(
+                runtime_catalog_state.as_ref(),
+            ),
+        ),
+        "mobkit/mobpacks/templates" => Ok(crate::mobpack::mobpack_templates_response_with_runtime(
+            runtime_catalog_state.as_ref(),
+        )),
+        _ => {
+            return handle_mobpack_authoring_rpc_with_runtime(
+                method,
+                params,
+                response_id.clone(),
+                runtime_catalog_state.as_ref(),
+            )
+            .unwrap_or_else(|| JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32601,
+                    message: "Method not found".to_string(),
+                    data: None,
+                }),
+            });
+        }
+    };
+    match result {
+        Ok(result) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(result),
+            error: None,
+        },
+        Err(message) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message,
+                data: None,
+            }),
+        },
+    }
+}
+
+pub(crate) fn handle_mobpack_authoring_rpc(
+    method: &str,
+    params: &Value,
+    response_id: Value,
+) -> Option<JsonRpcResponse> {
+    handle_mobpack_authoring_rpc_with_runtime(method, params, response_id, None)
+}
+
+pub(crate) fn handle_mobpack_authoring_rpc_with_runtime(
+    method: &str,
+    params: &Value,
+    response_id: Value,
+    runtime: Option<&crate::mobpack::MobpackRuntimeCatalogState>,
+) -> Option<JsonRpcResponse> {
+    let result = match method {
+        "mobkit/mobpacks/schema" => Ok(crate::mobpack::mobpack_schema_response_with_runtime(
+            runtime,
+        )),
+        "mobkit/mobpacks/catalogs" => Ok(crate::mobpack::mobpack_catalogs_response_with_runtime(
+            runtime,
+        )),
+        "mobkit/tools/catalog" => Ok(crate::mobpack::mobpack_tools_catalog_response_with_runtime(
+            runtime,
+        )),
+        "mobkit/skills/catalog" => {
+            Ok(crate::mobpack::mobpack_skills_catalog_response_with_runtime(runtime))
+        }
+        "mobkit/agent_definitions/list" => {
+            Ok(crate::mobpack::mobpack_agent_definitions_response_with_runtime(runtime))
+        }
+        "mobkit/mobpacks/templates" => Ok(crate::mobpack::mobpack_templates_response_with_runtime(
+            runtime,
+        )),
+        "mobkit/mobpacks/validate" => crate::mobpack::validate_mobpack(params)
+            .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
+        "mobkit/mobpacks/source" => crate::mobpack::source_mobpack(params)
+            .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
+        "mobkit/mobpacks/export" => crate::mobpack::export_mobpack(params)
+            .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
+        "mobkit/mobpacks/import" => crate::mobpack::import_mobpack(params),
+        "mobkit/mobpacks/list" => crate::mobpack::list_mobpack_drafts_with_runtime(params, runtime),
+        "mobkit/mobpacks/get" => crate::mobpack::get_mobpack_draft_with_runtime(params, runtime),
+        "mobkit/mobpacks/create" => crate::mobpack::create_mobpack_draft(params),
+        "mobkit/mobpacks/save" => crate::mobpack::save_mobpack_draft(params),
+        "mobkit/mobpacks/delete" => crate::mobpack::delete_mobpack_draft(params),
+        "mobkit/mobpacks/undo" => crate::mobpack::undo_mobpack_draft(params),
+        "mobkit/mobpacks/redo" => crate::mobpack::redo_mobpack_draft(params),
+        "mobkit/mobpacks/apply_operation" => {
+            crate::mobpack::apply_mobpack_authoring_operation_with_runtime(params, runtime)
+        }
+        "mobkit/mobpacks/graph_projection" => crate::mobpack::graph_projection_mobpack(params),
+        "mobkit/mobpacks/graph_to_flow" => crate::mobpack::graph_to_flow_mobpack(params),
+        "mobkit/mobpacks/deploy_command" => crate::mobpack::deploy_command_preview(params)
+            .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
+        "mobkit/mobpacks/deploy" => crate::mobpack::deploy_mobpack(params)
+            .and_then(|result| serde_json::to_value(result).map_err(|err| err.to_string())),
+        _ => return None,
+    };
+    Some(match result {
+        Ok(result) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(result),
+            error: None,
+        },
+        Err(message) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message,
+                data: None,
+            }),
+        },
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RpcCapabilitiesError {
@@ -244,53 +487,71 @@ pub fn handle_mobkit_rpc_json(
             })),
             error: None,
         },
-        "mobkit/capabilities" => JsonRpcResponse {
-            jsonrpc: JSONRPC_VERSION.to_string(),
-            id: response_id,
-            result: Some(serde_json::json!({
-                "contract_version": MOBKIT_CONTRACT_VERSION,
-                "methods": [
-                    "mobkit/status",
-                    "mobkit/capabilities",
-                    "mobkit/reconcile",
-                    "mobkit/spawn_member",
-                    "mobkit/scheduling/evaluate",
-                    "mobkit/scheduling/dispatch",
-                    "mobkit/routing/resolve",
-                    "mobkit/routing/routes/list",
-                    "mobkit/routing/routes/add",
-                    "mobkit/routing/routes/delete",
-                    "mobkit/delivery/send",
-                    "mobkit/delivery/history",
-                    "mobkit/events/subscribe",
-                    "mobkit/memory/stores",
-                    "mobkit/memory/index",
-                    "mobkit/memory/query",
-                    "mobkit/session_store/bigquery",
-                    "mobkit/gating/evaluate",
-                    "mobkit/gating/pending",
-                    "mobkit/gating/decide",
-                    "mobkit/gating/audit",
-                    "mobkit/call_tool",
-                    "mobkit/models/catalog"
-                ],
-                "loaded_modules": runtime.loaded_modules(),
-                "runtime_capabilities": {
-                    "can_spawn_members": false,
-                    "can_send_messages": false,
-                    "can_wire_members": false,
-                    "can_retire_members": false,
-                    "available_spawn_modes": ["module"],
-                }
-            })),
-            error: None,
-        },
+        "mobkit/capabilities" => {
+            let mut methods = vec![
+                "mobkit/status",
+                "mobkit/capabilities",
+                "mobkit/reconcile",
+                "mobkit/spawn_member",
+                "mobkit/scheduling/evaluate",
+                "mobkit/scheduling/dispatch",
+                "mobkit/routing/resolve",
+                "mobkit/routing/routes/list",
+                "mobkit/routing/routes/add",
+                "mobkit/routing/routes/delete",
+                "mobkit/delivery/send",
+                "mobkit/delivery/history",
+                "mobkit/events/subscribe",
+                "mobkit/memory/stores",
+                "mobkit/memory/index",
+                "mobkit/memory/query",
+                "mobkit/session_store/bigquery",
+                "mobkit/gating/evaluate",
+                "mobkit/gating/pending",
+                "mobkit/gating/decide",
+                "mobkit/gating/audit",
+                "mobkit/call_tool",
+                "mobkit/models/catalog",
+            ];
+            methods.extend_from_slice(MOBPACK_AUTHORING_METHODS);
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(serde_json::json!({
+                    "contract_version": MOBKIT_CONTRACT_VERSION,
+                    "methods": methods,
+                    "loaded_modules": runtime.loaded_modules(),
+                    "runtime_capabilities": {
+                        "can_spawn_members": false,
+                        "can_send_messages": false,
+                        "can_wire_members": false,
+                        "can_retire_members": false,
+                        "available_spawn_modes": ["module"],
+                    },
+                    "authoring_capabilities": mobpack_authoring_capabilities(),
+                })),
+                error: None,
+            }
+        }
         "mobkit/models/catalog" => JsonRpcResponse {
             jsonrpc: JSONRPC_VERSION.to_string(),
             id: response_id,
             result: Some(build_models_catalog_result()),
             error: None,
         },
+        method if MOBPACK_AUTHORING_METHODS.contains(&method) => {
+            handle_mobpack_authoring_rpc(method, &request.params, response_id.clone())
+                .unwrap_or_else(|| JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32601,
+                        message: "Method not found".to_string(),
+                        data: None,
+                    }),
+                })
+        }
         "mobkit/reconcile" => {
             let modules = match params::required_string_array(&request.params, "modules") {
                 Ok(m) => m,
@@ -1109,6 +1370,7 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/run_labels/get",
                 "mobkit/run_labels/delete",
             ];
+            methods.extend_from_slice(MOBPACK_AUTHORING_METHODS);
             if identity_ctx.is_some() {
                 methods.extend_from_slice(&[
                     "mobkit/send",
@@ -1152,7 +1414,8 @@ async fn handle_unified_rpc_json_inner(
                         "can_wire_members": true,
                         "can_retire_members": true,
                         "available_spawn_modes": ["module", "profile"],
-                    }
+                    },
+                    "authoring_capabilities": mobpack_authoring_capabilities(),
                 })),
                 error: None,
             }
@@ -1252,7 +1515,7 @@ async fn handle_unified_rpc_json_inner(
                     None,
                     None,
                 );
-                match runtime.spawn(spec).await {
+                match Box::pin(runtime.spawn(spec)).await {
                     Ok(_member_ref) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
@@ -1878,17 +2141,35 @@ async fn handle_unified_rpc_json_inner(
             result: Some(build_models_catalog_result()),
             error: None,
         },
+        method if MOBPACK_AUTHORING_METHODS.contains(&method) => {
+            handle_unified_mobpack_authoring_rpc(runtime, method, &request.params, response_id)
+                .await
+        }
         "mobkit/blob/get" => {
             mob_methods::handle_blob_get(runtime, response_id, &request.params).await
         }
         "mobkit/send_message" => {
-            mob_methods::handle_send_message(runtime, response_id, &request.params).await
+            // Pass the identity runtime so bare durable identities resolve
+            // through the identity bridge when no roster member matches
+            // (exact member-id match wins; see `SendMessageTarget`).
+            Box::pin(mob_methods::handle_send_message(
+                runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/find_members" => {
             mob_methods::handle_find_members(runtime, response_id, &request.params).await
         }
         "mobkit/ensure_member" => {
-            mob_methods::handle_ensure_member(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_ensure_member(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/list_members" => mob_methods::handle_list_members(runtime, response_id).await,
         "mobkit/get_member" => {
@@ -1898,7 +2179,12 @@ async fn handle_unified_rpc_json_inner(
             mob_methods::handle_retire_member(runtime, response_id, &request.params).await
         }
         "mobkit/respawn_member" => {
-            mob_methods::handle_respawn_member(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_respawn_member(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/reconcile_edges" => mob_methods::handle_reconcile_edges(runtime, response_id).await,
         "mobkit/rediscover" => mob_methods::handle_rediscover(runtime, response_id).await,
@@ -1909,10 +2195,20 @@ async fn handle_unified_rpc_json_inner(
             mob_methods::handle_mob_events_subscribe(runtime, response_id, request.params).await
         }
         "mobkit/cross_mob/wire" => {
-            mob_methods::handle_cross_mob_wire(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_cross_mob_wire(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/cross_mob/unwire" => {
-            mob_methods::handle_cross_mob_unwire(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_cross_mob_unwire(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/cross_mob/send" => {
             mob_methods::handle_cross_mob_send(runtime, response_id, &request.params).await
@@ -1937,13 +2233,28 @@ async fn handle_unified_rpc_json_inner(
             mob_methods::handle_force_cancel_member(runtime, response_id, &request.params).await
         }
         "mobkit/spawn_helper" => {
-            mob_methods::handle_spawn_helper(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_spawn_helper(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/fork_helper" => {
-            mob_methods::handle_fork_helper(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_fork_helper(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/attach_existing_session" => {
-            mob_methods::handle_attach_existing_session(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_attach_existing_session(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/cancel_flow" => {
             mob_methods::handle_cancel_flow(runtime, response_id, &request.params).await
@@ -1956,7 +2267,12 @@ async fn handle_unified_rpc_json_inner(
             mob_methods::handle_list_runs(runtime, response_id, &request.params).await
         }
         "mobkit/run_flow" => {
-            mob_methods::handle_run_flow(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_run_flow(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/collect_completed" => {
             mob_methods::handle_collect_completed(runtime, response_id).await
@@ -2330,7 +2646,7 @@ async fn handle_unified_rpc_json_inner(
                     let continuity_health =
                         serde_json::to_value(&status.continuity_health).unwrap_or(Value::Null);
                     let result = serde_json::json!({
-                        "state": format!("{:?}", status.state),
+                        "state": identity_lifecycle_state_json(status.state),
                         "identity": status.identity.as_str(),
                         "agent_runtime_id": status.agent_runtime_id.as_ref().map(super::identity_first::AgentRuntimeId::as_str),
                         "session_id": status.session_id.as_ref().map(ToString::to_string),
@@ -2417,10 +2733,10 @@ async fn handle_unified_rpc_json_inner(
             };
             match identity_rt.respawn(&identity).await {
                 Ok(mut record) => {
-                    let live_respawn_warning = match respawn_rpc_runtime_member_id(
+                    let live_respawn_warning = match Box::pin(respawn_rpc_runtime_member_id(
                         runtime,
                         record.agent_runtime_id.as_str(),
-                    )
+                    ))
                     .await
                     {
                         Ok(live_result) => {
@@ -2517,7 +2833,7 @@ async fn handle_unified_rpc_json_inner(
                 }
                 Err(e @ crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
                     if let Some(live) = target.live.as_ref() {
-                        match respawn_rpc_live_identity(runtime, live).await {
+                        match Box::pin(respawn_rpc_live_identity(runtime, live)).await {
                             Ok(result) => {
                                 runtime
                                     .record_console_lifecycle(
@@ -2724,33 +3040,34 @@ async fn handle_unified_rpc_json_inner(
                 }
                 Err(e @ crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
                     if let Some(live) = target.live.as_ref() {
-                        let response = match respawn_rpc_live_identity(runtime, live).await {
-                            Ok(result) => {
-                                runtime
-                                    .record_console_lifecycle(
-                                        live.identity.as_str(),
-                                        "identity_reset",
-                                        serde_json::json!({}),
-                                    )
-                                    .await;
-                                JsonRpcResponse {
+                        let response =
+                            match Box::pin(respawn_rpc_live_identity(runtime, live)).await {
+                                Ok(result) => {
+                                    runtime
+                                        .record_console_lifecycle(
+                                            live.identity.as_str(),
+                                            "identity_reset",
+                                            serde_json::json!({}),
+                                        )
+                                        .await;
+                                    JsonRpcResponse {
+                                        jsonrpc: JSONRPC_VERSION.to_string(),
+                                        id: response_id,
+                                        result: Some(result),
+                                        error: None,
+                                    }
+                                }
+                                Err(err) => JsonRpcResponse {
                                     jsonrpc: JSONRPC_VERSION.to_string(),
                                     id: response_id,
-                                    result: Some(result),
-                                    error: None,
-                                }
-                            }
-                            Err(err) => JsonRpcResponse {
-                                jsonrpc: JSONRPC_VERSION.to_string(),
-                                id: response_id,
-                                result: None,
-                                error: Some(JsonRpcError {
-                                    code: -32000,
-                                    message: format!("reset failed: {err}"),
-                                    data: None,
-                                }),
-                            },
-                        };
+                                    result: None,
+                                    error: Some(JsonRpcError {
+                                        code: -32000,
+                                        message: format!("reset failed: {err}"),
+                                        data: None,
+                                    }),
+                                },
+                            };
                         return if is_notification {
                             String::new()
                         } else {
@@ -2818,7 +3135,7 @@ async fn handle_unified_rpc_json_inner(
                 }
                 Err(e @ crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
                     if let Some(live) = target.live.as_ref() {
-                        match respawn_rpc_live_identity(runtime, live).await {
+                        match Box::pin(respawn_rpc_live_identity(runtime, live)).await {
                             Ok(result) => {
                                 runtime
                                     .record_console_lifecycle(
@@ -3013,7 +3330,7 @@ async fn handle_unified_rpc_json_inner(
                         id: response_id,
                         result: Some(serde_json::json!({
                             "identity": identity.as_str(),
-                            "state": status.as_ref().map(|status| format!("{:?}", status.state)),
+                            "state": status.as_ref().map(|status| identity_lifecycle_state_json(status.state)),
                             "profile": status.as_ref().and_then(|status| status.profile.as_ref().map(meerkat_mob::ProfileName::as_str)),
                             "addressability": status.as_ref().map(|status| addressability_json(status.addressability)),
                             "display_name": status.as_ref().and_then(|status| status.display_name.as_ref().map(super::identity_first::DisplayName::as_str)),
@@ -3261,7 +3578,11 @@ fn rpc_member_durable_identity(member: &meerkat_mob::runtime::MobMemberListEntry
         .get("agent_identity")
         .filter(|value| !value.trim().is_empty())
         .cloned()
-        .unwrap_or_else(|| member.agent_identity.to_string())
+        // Fallback surfaces the public alias, not the comms-safe roster id
+        // (meerkat 0.7 MemberCommsName).
+        .unwrap_or_else(|| {
+            crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()).into_owned()
+        })
 }
 
 async fn resolve_rpc_live_identity_alias(
@@ -3286,7 +3607,7 @@ async fn resolve_rpc_live_runtime_member_alias(
     runtime: &UnifiedRuntime,
     runtime_member_id: &str,
 ) -> Result<Option<RpcLiveIdentityAlias>, String> {
-    let requested_member_id = meerkat_mob::ids::MeerkatId::from(runtime_member_id);
+    let requested_member_id = crate::member_comms_id::mob_member_id(runtime_member_id);
     let handle = runtime.mob_handle();
     let Some(member) = handle
         .list_members_including_retiring()
@@ -3308,7 +3629,10 @@ async fn resolve_rpc_live_runtime_member_alias(
         .map(|session_id| session_id.to_string());
     Ok(Some(RpcLiveIdentityAlias {
         identity,
-        runtime_member_id: member.agent_identity.to_string(),
+        runtime_member_id: crate::member_comms_id::runtime_alias_str(
+            member.agent_identity.as_str(),
+        )
+        .into_owned(),
         member,
         session_id,
     }))
@@ -3318,7 +3642,7 @@ async fn rpc_runtime_member_alias_exists_hidden(
     runtime: &UnifiedRuntime,
     runtime_member_id: &str,
 ) -> bool {
-    let requested_member_id = meerkat_mob::ids::MeerkatId::from(runtime_member_id);
+    let requested_member_id = crate::member_comms_id::mob_member_id(runtime_member_id);
     runtime
         .mob_handle()
         .list_members_including_retiring()
@@ -3332,7 +3656,7 @@ async fn rpc_live_identity_alias_exists_hidden(
     runtime: &UnifiedRuntime,
     requested_identity: &str,
 ) -> bool {
-    let requested_member_id = meerkat_mob::ids::MeerkatId::from(requested_identity);
+    let requested_member_id = crate::member_comms_id::mob_member_id(requested_identity);
     runtime
         .mob_handle()
         .list_members_including_retiring()
@@ -3352,7 +3676,7 @@ async fn resolve_rpc_live_identity_alias_candidates(
     runtime: &UnifiedRuntime,
     requested_identity: &str,
 ) -> Result<Vec<RpcLiveIdentityAlias>, String> {
-    let requested_member_id = meerkat_mob::ids::MeerkatId::from(requested_identity);
+    let requested_member_id = crate::member_comms_id::mob_member_id(requested_identity);
     let handle = runtime.mob_handle();
     let members = handle.list_members_including_retiring().await;
     let exact_matches = members
@@ -3388,7 +3712,10 @@ async fn resolve_rpc_live_identity_alias_candidates(
             .map(|session_id| session_id.to_string());
         aliases.push(RpcLiveIdentityAlias {
             identity,
-            runtime_member_id: member.agent_identity.to_string(),
+            runtime_member_id: crate::member_comms_id::runtime_alias_str(
+                member.agent_identity.as_str(),
+            )
+            .into_owned(),
             member,
             session_id,
         });
@@ -3698,7 +4025,7 @@ fn rpc_member_is_addressable(member: &meerkat_mob::runtime::MobMemberListEntry) 
 
 fn rpc_live_identity_status_json(alias: &RpcLiveIdentityAlias) -> Value {
     serde_json::json!({
-        "state": format!("{:?}", alias.member.state),
+        "state": crate::mob_handle_runtime::member_status_state_string(alias.member.status),
         "identity": alias.identity.as_str(),
         "agent_runtime_id": alias.runtime_member_id,
         "session_id": alias.session_id,
@@ -3720,14 +4047,14 @@ async fn rpc_live_identity_inspect_json(
 ) -> Value {
     let snapshot = runtime
         .mob_handle()
-        .member_status(&meerkat_mob::ids::MeerkatId::from(
+        .member_status(&crate::member_comms_id::mob_member_id(
             alias.runtime_member_id.as_str(),
         ))
         .await
         .ok();
     serde_json::json!({
         "identity": alias.identity.as_str(),
-        "state": format!("{:?}", alias.member.state),
+        "state": crate::mob_handle_runtime::member_status_state_string(alias.member.status),
         "profile": alias.member.role.to_string(),
         "addressability": if rpc_member_is_addressable(&alias.member) { "addressable" } else { "internal_only" },
         "display_name": alias.member.labels.get("display_name"),
@@ -3762,7 +4089,7 @@ async fn retire_rpc_runtime_member_id(
 ) -> Result<(), String> {
     match runtime
         .mob_handle()
-        .retire(meerkat_mob::ids::MeerkatId::from(runtime_member_id))
+        .retire(crate::member_comms_id::mob_member_id(runtime_member_id))
         .await
     {
         Ok(()) => Ok(()),
@@ -3772,7 +4099,9 @@ async fn retire_rpc_runtime_member_id(
 }
 
 fn rpc_member_id_matches_durable_identity(member_id: &str, durable_identity: &str) -> bool {
-    member_id == durable_identity
+    // Roster ids are comms-safe encodings of public aliases (meerkat 0.7
+    // MemberCommsName); compare in the public alias space.
+    crate::member_comms_id::runtime_alias_str(member_id) == durable_identity
 }
 
 async fn retire_stale_rpc_members_for_identity(
@@ -3797,10 +4126,17 @@ async fn retire_stale_rpc_members_for_identity(
                 .get("agent_identity")
                 .is_some_and(|identity| identity == durable_identity))
                 && keep_runtime_member_id
-                    .map(|keep| member.agent_identity.as_str() != keep)
+                    .map(|keep| {
+                        // `keep` is a public alias; compare decoded.
+                        crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str())
+                            != keep
+                    })
                     .unwrap_or(true)
         })
-        .map(|member| member.agent_identity.to_string())
+        // `retire_rpc_runtime_member_id` re-encodes; hand it the alias.
+        .map(|member| {
+            crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()).into_owned()
+        })
         .collect::<Vec<_>>();
     for member_id in stale_members {
         retire_rpc_runtime_member_id(runtime, &member_id).await?;
@@ -3812,8 +4148,11 @@ async fn respawn_rpc_live_identity(
     runtime: &UnifiedRuntime,
     alias: &RpcLiveIdentityAlias,
 ) -> Result<Value, String> {
-    let mut result =
-        respawn_rpc_runtime_member_id(runtime, alias.runtime_member_id.as_str()).await?;
+    let mut result = Box::pin(respawn_rpc_runtime_member_id(
+        runtime,
+        alias.runtime_member_id.as_str(),
+    ))
+    .await?;
     result["identity"] = serde_json::json!(alias.identity.as_str());
     Ok(result)
 }
@@ -3823,8 +4162,10 @@ async fn respawn_rpc_runtime_member_id(
     runtime_member_id: &str,
 ) -> Result<Value, String> {
     let handle = runtime.mob_handle();
-    let member_id = meerkat_mob::ids::MeerkatId::from(runtime_member_id);
-    let entry_before_respawn = handle.get_member(&member_id).await;
+    let member_id = crate::member_comms_id::mob_member_id(runtime_member_id);
+    // Best-effort repair material: a faulted lookup degrades to None (the
+    // respawn itself surfaces real faults).
+    let entry_before_respawn = handle.get_member(&member_id).await.ok().flatten();
     let mut topology_restore_warning = None;
     match handle.respawn(member_id.clone(), None).await {
         Ok(_receipt) => {}
@@ -3838,7 +4179,13 @@ async fn respawn_rpc_runtime_member_id(
                 );
                 topology_restore_warning = Some(topology_restore_warning_json(&failed_peer_ids));
             } else if mob_methods::lifecycle_archive_cleanup_completed(&err.to_string()) {
-                if handle.get_member(&member_id).await.is_none()
+                // A faulted lookup must not read as "absent" (that would mint
+                // a spurious replacement member); surface it instead.
+                if handle
+                    .get_member(&member_id)
+                    .await
+                    .map_err(|lookup_err| lookup_err.to_string())?
+                    .is_none()
                     && let Some(entry) = entry_before_respawn
                 {
                     let mut spec =
@@ -3886,6 +4233,14 @@ fn addressability_json(addressability: crate::identity_first::AgentAddressabilit
         crate::identity_first::AgentAddressability::Addressable => "addressable",
         crate::identity_first::AgentAddressability::InternalOnly => "internal_only",
     }
+}
+
+/// Wire vocabulary for identity-first lifecycle states — see
+/// [`crate::identity_first::IdentityLifecycleState::wire_str`].
+fn identity_lifecycle_state_json(
+    state: crate::identity_first::IdentityLifecycleState,
+) -> &'static str {
+    state.wire_str()
 }
 
 fn identity_error_response(
@@ -4069,6 +4424,433 @@ comms = true
         )
     }
 
+    #[tokio::test]
+    async fn unified_capabilities_separate_mobpack_authoring_from_runtime_controls()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-authoring-capabilities-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+
+        let response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "mobkit/capabilities",
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                None,
+            )
+            .await,
+        )?;
+
+        assert!(response["error"].is_null(), "{response:#?}");
+        let methods = response["result"]["methods"]
+            .as_array()
+            .expect("methods array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        for method in super::MOBPACK_AUTHORING_METHODS {
+            assert!(
+                methods.contains(method),
+                "missing authoring method {method}"
+            );
+        }
+        assert_eq!(
+            response["result"]["authoring_capabilities"]["domain"],
+            json!("mobpack_authoring")
+        );
+        assert_eq!(
+            response["result"]["authoring_capabilities"]["runtime_mutation"],
+            json!(false)
+        );
+        assert_eq!(
+            response["result"]["authoring_capabilities"]["host_mutation_methods"]["mobkit/mobpacks/deploy"],
+            json!("when execute=true, writes a mobpack archive and runs rkat mob run on the host")
+        );
+        assert_eq!(
+            response["result"]["authoring_capabilities"]["methods"]
+                .as_array()
+                .expect("authoring methods")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>(),
+            super::MOBPACK_AUTHORING_METHODS
+        );
+        assert_eq!(
+            response["result"]["authoring_capabilities"]["deploy_command"],
+            json!("rkat mob run")
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unified_rpc_dispatches_mobpack_authoring_methods()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-authoring-dispatch-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+
+        let response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "mobkit/mobpacks/schema",
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                None,
+            )
+            .await,
+        )?;
+
+        assert!(response["error"].is_null(), "{response:#?}");
+        assert_eq!(
+            response["result"]["media_type"],
+            json!("application/vnd.meerkat.mobpack")
+        );
+        assert_eq!(
+            response["result"]["commands"]["deploy_rpc"],
+            json!("mobkit/mobpacks/deploy")
+        );
+        assert_eq!(
+            response["result"]["deploy_settings"]["runtime_backed"],
+            json!(true)
+        );
+        assert_eq!(
+            response["result"]["deploy_settings"]["authoring_provider"]["runtime_binding"],
+            json!("bound")
+        );
+        assert_eq!(
+            response["result"]["deploy_settings"]["provenance"]["source"],
+            json!("UnifiedRuntime.authoring_provider.deploy_target")
+        );
+        assert!(response["result"]["sample_mobpacks"].is_null());
+        assert!(response["result"]["agent_definitions"].is_null());
+
+        let catalogs: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "mobkit/mobpacks/catalogs",
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                None,
+            )
+            .await,
+        )?;
+        assert!(catalogs["error"].is_null(), "{catalogs:#?}");
+        assert_eq!(catalogs["result"]["runtime_backed"], json!(true));
+        assert_eq!(
+            catalogs["result"]["authoring_provider"]["id"],
+            json!("unified_runtime")
+        );
+        assert_eq!(
+            catalogs["result"]["authoring_provider"]["runtime_binding"],
+            json!("bound")
+        );
+        assert_eq!(
+            catalogs["result"]["sources"]["runtime"],
+            json!("unified_runtime")
+        );
+        assert_eq!(
+            catalogs["result"]["sources"]["runtime_binding"],
+            json!("bound")
+        );
+        assert!(
+            catalogs["result"]["runtime_unavailable_reason"].is_null(),
+            "{catalogs:#?}"
+        );
+        assert_eq!(
+            catalogs["result"]["catalog_snapshot"]["runtime_backed"],
+            json!(true)
+        );
+        assert_eq!(
+            catalogs["result"]["authoring_provider"]["deploy_target"]["command"],
+            json!("rkat mob run")
+        );
+        assert!(
+            catalogs["result"]["authoring_provider"]["runtime_methods"]
+                .as_array()
+                .is_some_and(|methods| methods.contains(&json!("mobkit/mobpacks/deploy"))),
+            "{catalogs:#?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn mobpack_authoring_rpc_helper_preserves_runtime_catalog_binding()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = crate::mobpack::MobpackRuntimeCatalogState {
+            loaded_modules: vec!["editor-host".to_string()],
+            runtime_methods: vec![
+                "mobkit/mobpacks/catalogs".to_string(),
+                "mobkit/mobpacks/apply_operation".to_string(),
+                "mobkit/mobpacks/deploy".to_string(),
+            ],
+            has_contact_directory: true,
+            has_peer_mob_handles: false,
+            has_inproc_contacts: false,
+            runtime_flow_rows: vec![json!({
+                "id": "runtime_rpc_main",
+                "source": "mobkit/runtime/flow_projection",
+                "document": {
+                    "mob_id": "runtime_rpc",
+                    "flow": { "name": "main", "steps": [] },
+                    "members": []
+                },
+                "validation": { "ok": true }
+            })],
+            runtime_agent_definition_sources: vec![json!({
+                "id": "runtime_profiles_rpc",
+                "name": "Runtime RPC profiles",
+                "source": "mobkit/runtime/agent-definitions",
+                "document": {
+                    "mob_id": "runtime_rpc",
+                    "members": [{
+                        "id": "m_runtime_reviewer",
+                        "name": "Runtime reviewer",
+                        "role": "runtime_reviewer",
+                        "profileBinding": "inline",
+                        "model": "gpt-5.5",
+                        "runtimeMode": "turn_driven",
+                        "tools": ["builtins"],
+                        "skills": ["mob.runtime.review"],
+                        "schema": ""
+                    }],
+                    "schemas": []
+                }
+            })],
+            runtime_skill_realms: vec![json!({
+                "id": "runtime_rpc",
+                "label": "Runtime RPC",
+                "source": "mobkit/runtime/skills",
+                "skills": [{
+                    "id": "mob.runtime.review",
+                    "label": "Runtime review",
+                    "source": "inline",
+                    "content": "Review runtime work."
+                }]
+            })],
+        };
+
+        let catalogs = super::handle_mobpack_authoring_rpc_with_runtime(
+            "mobkit/mobpacks/catalogs",
+            &json!({}),
+            json!(1),
+            Some(&runtime),
+        )
+        .expect("catalogs method");
+        let catalogs: Value = serde_json::to_value(catalogs)?;
+        assert_eq!(catalogs["result"]["runtime_backed"], json!(true));
+        assert_eq!(
+            catalogs["result"]["authoring_provider"]["runtime_binding"],
+            json!("bound")
+        );
+        assert_eq!(
+            catalogs["result"]["runtime_flows"][0]["id"],
+            json!("runtime_rpc_main")
+        );
+        let listed = super::handle_mobpack_authoring_rpc_with_runtime(
+            "mobkit/mobpacks/list",
+            &json!({}),
+            json!(2),
+            Some(&runtime),
+        )
+        .expect("list method");
+        let listed: Value = serde_json::to_value(listed)?;
+        assert_eq!(listed["result"]["runtime_backed"], json!(true));
+        assert_eq!(listed["result"]["rows"][0]["id"], json!("runtime_rpc_main"));
+
+        let fetched = super::handle_mobpack_authoring_rpc_with_runtime(
+            "mobkit/mobpacks/get",
+            &json!({ "id": "runtime_rpc_main" }),
+            json!(3),
+            Some(&runtime),
+        )
+        .expect("get method");
+        let fetched: Value = serde_json::to_value(fetched)?;
+        assert_eq!(fetched["result"]["runtime_backed"], json!(true));
+        assert_eq!(fetched["result"]["row"]["id"], json!("runtime_rpc_main"));
+
+        let definitions = super::handle_mobpack_authoring_rpc_with_runtime(
+            "mobkit/agent_definitions/list",
+            &json!({}),
+            json!(4),
+            Some(&runtime),
+        )
+        .expect("agent definitions method");
+        let definitions: Value = serde_json::to_value(definitions)?;
+        let runtime_definition = definitions["result"]["agent_definitions"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row["sourceOrigin"] == "mobkit/runtime/agent-definitions")
+            })
+            .expect("runtime profile definition");
+        assert_eq!(runtime_definition["role"], json!("runtime_reviewer"));
+        assert_eq!(
+            runtime_definition["toolDefinitions"][0]["id"],
+            json!("builtins")
+        );
+        assert_eq!(
+            runtime_definition["skillDefinitions"][0]["id"],
+            json!("mob.runtime.review")
+        );
+        assert_eq!(
+            definitions["result"]["catalog_snapshot"]["runtime_backed"],
+            json!(true)
+        );
+
+        let tools = super::handle_mobpack_authoring_rpc_with_runtime(
+            "mobkit/tools/catalog",
+            &json!({}),
+            json!(5),
+            Some(&runtime),
+        )
+        .expect("tools catalog method");
+        let tools: Value = serde_json::to_value(tools)?;
+        let mob_tool = tools["result"]["tool_catalog"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool["id"] == "mob")
+            .expect("mob tool");
+        assert_eq!(mob_tool["runtime_availability"]["available"], json!(false));
+
+        let agents = super::handle_mobpack_authoring_rpc_with_runtime(
+            "mobkit/agent_definitions/list",
+            &json!({}),
+            json!(3),
+            Some(&runtime),
+        )
+        .expect("agent definitions method");
+        let agents: Value = serde_json::to_value(agents)?;
+        assert_eq!(agents["result"]["runtime_backed"], json!(true));
+        let planner = agents["result"]["agent_definitions"]
+            .as_array()
+            .expect("agent definitions")
+            .iter()
+            .find(|definition| definition["role"] == "planner")
+            .expect("planner definition");
+        let planner_mob_tool = planner["toolDefinitions"]
+            .as_array()
+            .expect("planner tools")
+            .iter()
+            .find(|tool| tool["id"] == "mob")
+            .expect("planner mob tool");
+        assert_eq!(
+            planner_mob_tool["runtimeAvailability"]["state"],
+            json!("unavailable")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn module_rpc_dispatches_mobpack_authoring_methods()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let config = MobKitConfig {
+            modules: Vec::new(),
+            discovery: DiscoverySpec {
+                namespace: "module-rpc-authoring-dispatch-test".to_string(),
+                modules: Vec::new(),
+            },
+            pre_spawn: Vec::new(),
+        };
+        let mut runtime = crate::start_mobkit_runtime(config, Vec::new(), Duration::from_secs(1))?;
+
+        let capabilities: Value = serde_json::from_str(&super::handle_mobkit_rpc_json(
+            &mut runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "mobkit/capabilities",
+            })
+            .to_string(),
+            Duration::from_secs(1),
+        ))?;
+        let methods = capabilities["result"]["methods"]
+            .as_array()
+            .expect("methods array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        for method in super::MOBPACK_AUTHORING_METHODS {
+            assert!(
+                methods.contains(method),
+                "missing authoring method {method}"
+            );
+        }
+        assert_eq!(
+            capabilities["result"]["authoring_capabilities"]["runtime_mutation"],
+            json!(false)
+        );
+        assert_eq!(
+            capabilities["result"]["authoring_capabilities"]["host_mutation_methods"]["mobkit/mobpacks/deploy"],
+            json!("when execute=true, writes a mobpack archive and runs rkat mob run on the host")
+        );
+
+        let schema: Value = serde_json::from_str(&super::handle_mobkit_rpc_json(
+            &mut runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "mobkit/mobpacks/schema",
+            })
+            .to_string(),
+            Duration::from_secs(1),
+        ))?;
+        assert!(schema["error"].is_null(), "{schema:#?}");
+        assert_eq!(
+            schema["result"]["commands"]["deploy_rpc"],
+            json!("mobkit/mobpacks/deploy")
+        );
+        assert!(schema["result"]["agent_definitions"].is_null());
+
+        let _ = runtime.shutdown();
+        Ok(())
+    }
+
     #[test]
     fn generated_runtime_ids_match_their_durable_identity_prefix() {
         assert!(!rpc_member_id_matches_durable_identity(
@@ -4160,19 +4942,21 @@ comms = true
     async fn runtime_id_live_only_resolution_rejects_duplicate_projected_identity()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
-        let runtime = UnifiedRuntime::builder()
-            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
-            .module_config(MobKitConfig {
-                modules: Vec::new(),
-                discovery: DiscoverySpec {
-                    namespace: "rpc-identity-alias-test".to_string(),
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
                     modules: Vec::new(),
-                },
-                pre_spawn: Vec::new(),
-            })
-            .timeout(Duration::from_secs(1))
-            .build()
-            .await?;
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-identity-alias-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
         for runtime_id in ["rt:review:singleton:0", "rt:review:singleton:1"] {
             let mut labels = BTreeMap::new();
             labels.insert("agent_identity".to_string(), "review:singleton".to_string());
@@ -4215,19 +4999,21 @@ comms = true
     async fn durable_resolution_prefers_registered_live_binding_over_stale_duplicates()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
-        let runtime = UnifiedRuntime::builder()
-            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
-            .module_config(MobKitConfig {
-                modules: Vec::new(),
-                discovery: DiscoverySpec {
-                    namespace: "rpc-identity-alias-test".to_string(),
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
                     modules: Vec::new(),
-                },
-                pre_spawn: Vec::new(),
-            })
-            .timeout(Duration::from_secs(1))
-            .build()
-            .await?;
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-identity-alias-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
         for runtime_id in ["rt:review:singleton:0", "rt:review:singleton:1"] {
             let mut labels = BTreeMap::new();
             labels.insert("agent_identity".to_string(), "review:singleton".to_string());
@@ -4311,19 +5097,21 @@ comms = true
     async fn durable_resolution_rejects_hidden_registered_live_binding()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
-        let runtime = UnifiedRuntime::builder()
-            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
-            .module_config(MobKitConfig {
-                modules: Vec::new(),
-                discovery: DiscoverySpec {
-                    namespace: "rpc-hidden-bound-test".to_string(),
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
                     modules: Vec::new(),
-                },
-                pre_spawn: Vec::new(),
-            })
-            .timeout(Duration::from_secs(1))
-            .build()
-            .await?;
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-hidden-bound-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
         runtime
             .spawn(
                 SpawnMemberSpec::from_wire(
@@ -4395,19 +5183,21 @@ comms = true
     async fn live_only_hidden_alias_reports_policy_error()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
-        let runtime = UnifiedRuntime::builder()
-            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
-            .module_config(MobKitConfig {
-                modules: Vec::new(),
-                discovery: DiscoverySpec {
-                    namespace: "rpc-hidden-live-only-test".to_string(),
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
                     modules: Vec::new(),
-                },
-                pre_spawn: Vec::new(),
-            })
-            .timeout(Duration::from_secs(1))
-            .build()
-            .await?;
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-hidden-live-only-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
         runtime
             .spawn(
                 SpawnMemberSpec::from_wire(
@@ -4482,19 +5272,21 @@ comms = true
     async fn live_only_resolution_rejects_runtime_member_bound_to_other_durable_identity()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
-        let runtime = UnifiedRuntime::builder()
-            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
-            .module_config(MobKitConfig {
-                modules: Vec::new(),
-                discovery: DiscoverySpec {
-                    namespace: "rpc-identity-alias-test".to_string(),
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
                     modules: Vec::new(),
-                },
-                pre_spawn: Vec::new(),
-            })
-            .timeout(Duration::from_secs(1))
-            .build()
-            .await?;
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-identity-alias-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
         let mut labels = BTreeMap::new();
         labels.insert("agent_identity".to_string(), "other:singleton".to_string());
         runtime
@@ -4558,6 +5350,626 @@ comms = true
         assert!(
             err.contains("identity runtime binding belongs to review:singleton"),
             "unexpected error: {err}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression: under the meerkat 0.7.1 identity-first roster the runtime
+    /// members are keyed `rt:{identity}:{generation}`, so a gateway-plane
+    /// `mobkit/send_message` addressed to the bare durable identity (the
+    /// only id the SDK hands out pre-burst) used to fail with
+    /// `mob member not found`. Bare identities must bridge-resolve through
+    /// the identity runtime — like console send — while an exact roster
+    /// member id match keeps raw member-id semantics and wins over identity
+    /// resolution.
+    #[tokio::test]
+    async fn send_message_resolves_bare_durable_identity_through_identity_bridge()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-send-message-identity-bridge-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(5))
+                .build(),
+        )
+        .await?;
+
+        // Identity-first roster shape: each durable identity is seated as
+        // runtime member rt:{identity}:0; the bare identity is NOT a roster id.
+        for (runtime_id, durable) in [
+            ("rt:atlas-base-001:0", "atlas-base-001"),
+            ("rt:draco-base-001:0", "draco-base-001"),
+        ] {
+            runtime
+                .spawn(
+                    SpawnMemberSpec::from_wire(
+                        "worker".to_string(),
+                        runtime_id.to_string(),
+                        Some("You are a swarm base agent.".into()),
+                        None,
+                        None,
+                    )
+                    .with_labels(BTreeMap::from([(
+                        "agent_identity".to_string(),
+                        durable.to_string(),
+                    )])),
+                )
+                .await?;
+        }
+        // Precedence probe: a bare roster member whose id collides with a
+        // registered durable identity.
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "draco-base-001".to_string(),
+                Some("You are the raw roster member.".into()),
+                None,
+                None,
+            ))
+            .await?;
+
+        let session_service = runtime
+            .mob_runtime()
+            .session_service()
+            .cloned()
+            .expect("test mob spec has a session service");
+        let bridge: Arc<dyn crate::identity_first::SessionBridge> = Arc::new(
+            crate::identity_first::MobSessionBridge::with_session_service(
+                runtime.mob_handle(),
+                session_service,
+            ),
+        );
+        let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-send-message-identity-bridge-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge),
+            default_timeout: None,
+        })
+        .with_runtime_services(crate::identity_first::AgentRuntimeServices::new(
+            runtime.mob_handle(),
+        ));
+        for (durable, runtime_id) in [
+            ("atlas-base-001", "rt:atlas-base-001:0"),
+            ("draco-base-001", "rt:draco-base-001:0"),
+        ] {
+            let identity = AgentIdentity::parse(durable)?;
+            let session_id = runtime
+                .mob_handle()
+                .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id(runtime_id))
+                .await
+                .unwrap_or_else(meerkat_core::types::SessionId::new);
+            identity_rt
+                .register(
+                    DurableAgentSpec {
+                        identity: identity.clone(),
+                        profile: meerkat_mob::ProfileName::from("worker"),
+                        addressability: AgentAddressability::Addressable,
+                        display_name: None,
+                        labels: BTreeMap::new(),
+                        context: None,
+                        additional_instructions: Vec::new(),
+                        initial_message: None,
+                        runtime_mode_override: None,
+                        backend: None,
+                        binding: None,
+                    },
+                    IdentityLifecycleState::Active,
+                    Some(ContinuityRecord {
+                        identity: identity.clone(),
+                        agent_runtime_id: AgentRuntimeId::parse(runtime_id)?,
+                        session_id,
+                        generation: ContinuityGeneration::new(0),
+                        checkpoint_version: CheckpointVersion::new(0),
+                    }),
+                    Some(LeaseGrant {
+                        identity,
+                        fencing_token: FencingToken::new(1),
+                        ttl: Duration::from_mins(1),
+                    }),
+                )
+                .await;
+        }
+        let identity_ctx = IdentityFirstContext {
+            runtime: Arc::new(identity_rt),
+            roster_provider: Arc::new(EmptyRosterProvider),
+            topology_provider: None,
+            customizer: None,
+        };
+
+        let send = |id: u64, params: Value| {
+            let runtime = &runtime;
+            let identity_ctx = &identity_ctx;
+            async move {
+                let raw = handle_unified_rpc_json(
+                    runtime,
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": "mobkit/send_message",
+                        "params": params,
+                    })
+                    .to_string(),
+                    Duration::from_secs(10),
+                    None,
+                    Some(identity_ctx),
+                )
+                .await;
+                serde_json::from_str::<Value>(&raw)
+            }
+        };
+
+        // 1. Bare durable identity bridges to the rt:{identity}:{generation}
+        //    member and reports the bridge session that took the delivery.
+        let response = send(
+            1,
+            json!({ "member_id": "atlas-base-001", "message": "status check" }),
+        )
+        .await?;
+        assert!(
+            response["error"].is_null(),
+            "bare identity send must bridge-resolve: {response:#?}"
+        );
+        assert_eq!(response["result"]["accepted"], json!(true));
+        assert_eq!(response["result"]["member_id"], json!("atlas-base-001"));
+        let atlas_session = runtime
+            .mob_handle()
+            .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id(
+                "rt:atlas-base-001:0",
+            ))
+            .await
+            .expect("atlas runtime member has a bridge session after send")
+            .to_string();
+        assert_eq!(response["result"]["session_id"], json!(atlas_session));
+
+        // 2. Steer rides the same bridge resolution.
+        let response = send(
+            2,
+            json!({
+                "member_id": "atlas-base-001",
+                "message": "steer: stand down",
+                "handling_mode": "steer",
+            }),
+        )
+        .await?;
+        assert!(
+            response["error"].is_null(),
+            "bare identity steer must bridge-resolve: {response:#?}"
+        );
+        assert_eq!(response["result"]["accepted"], json!(true));
+
+        // 3. Precedence: an exact roster member id wins over identity
+        //    resolution — the bare member takes the delivery, not the
+        //    identity's rt:draco-base-001:0 binding.
+        let response = send(
+            3,
+            json!({ "member_id": "draco-base-001", "message": "raw roster delivery" }),
+        )
+        .await?;
+        assert!(
+            response["error"].is_null(),
+            "exact roster member send must keep raw semantics: {response:#?}"
+        );
+        assert_eq!(response["result"]["accepted"], json!(true));
+        let draco_raw_session = runtime
+            .mob_handle()
+            .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id("draco-base-001"))
+            .await
+            .expect("bare draco member has a bridge session after send")
+            .to_string();
+        assert_eq!(response["result"]["session_id"], json!(draco_raw_session));
+        if let Some(draco_rt_session) = runtime
+            .mob_handle()
+            .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id(
+                "rt:draco-base-001:0",
+            ))
+            .await
+        {
+            assert_ne!(
+                response["result"]["session_id"],
+                json!(draco_rt_session.to_string()),
+                "exact member id match must not be shadowed by identity resolution"
+            );
+        }
+
+        // 4. Unknown ids keep raw member-not-found semantics.
+        let response = send(
+            4,
+            json!({ "member_id": "phantom-base-999", "message": "nobody home" }),
+        )
+        .await?;
+        assert_eq!(response["error"]["code"], json!(-32000), "{response:#?}");
+        let message = response["error"]["message"]
+            .as_str()
+            .expect("error message");
+        assert!(
+            message.starts_with("send_message failed:"),
+            "unexpected error message: {message}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression: the member-state wire vocabulary is lowercase
+    /// (`"active"`/`"retiring"`, matching the published SDK constants) on
+    /// BOTH member-state surfaces — the roster member rows and the
+    /// identity-first status RPC. The identity surface used to Debug-format
+    /// the lifecycle state (`"Active"`), so consumers comparing across the
+    /// two surfaces broke on casing.
+    #[tokio::test]
+    async fn member_state_wire_vocabulary_is_lowercase_on_both_surfaces()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-state-vocabulary-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(5))
+                .build(),
+        )
+        .await?;
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "worker-one".to_string(),
+                None,
+                None,
+                None,
+            ))
+            .await?;
+
+        // Surface 1: roster member rows.
+        let raw = handle_unified_rpc_json(
+            &runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "mobkit/get_member",
+                "params": { "member_id": "worker-one" },
+            })
+            .to_string(),
+            Duration::from_secs(5),
+            None,
+            None,
+        )
+        .await;
+        let response: Value = serde_json::from_str(&raw)?;
+        assert_eq!(
+            response["result"]["state"],
+            json!("active"),
+            "member rows must speak the lowercase SDK vocabulary: {response:#?}"
+        );
+
+        // Surface 2: identity-first status RPC.
+        let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-state-vocabulary-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        });
+        let identity = AgentIdentity::parse("review:singleton")?;
+        identity_rt
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:review:singleton:0")?,
+                    session_id: meerkat_core::types::SessionId::new(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                Some(LeaseGrant {
+                    identity,
+                    fencing_token: FencingToken::new(1),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+        let identity_ctx = IdentityFirstContext {
+            runtime: Arc::new(identity_rt),
+            roster_provider: Arc::new(EmptyRosterProvider),
+            topology_provider: None,
+            customizer: None,
+        };
+        let raw = handle_unified_rpc_json(
+            &runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "mobkit/status_identity",
+                "params": { "identity": "review:singleton" },
+            })
+            .to_string(),
+            Duration::from_secs(5),
+            None,
+            Some(&identity_ctx),
+        )
+        .await;
+        let response: Value = serde_json::from_str(&raw)?;
+        assert_eq!(
+            response["result"]["state"],
+            json!("active"),
+            "identity status must speak the same lowercase vocabulary: {response:#?}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression: `mobkit/send_message` precedence is resolved from a
+    /// point-in-time roster probe. When a roster member whose id collides
+    /// with a registered durable identity is transiently absent mid-
+    /// reconcile (retire completes before the replacement spawn lands), the
+    /// send must NOT silently fall through to the identity bridge and land
+    /// in a different agent's conversation — membership declared in the
+    /// reconcile baseline pins raw member-id semantics, surfacing the mob's
+    /// own member-not-found error instead.
+    #[tokio::test]
+    async fn send_message_pins_baseline_member_over_identity_fallback()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-send-message-baseline-pin-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(5))
+                .build(),
+        )
+        .await?;
+
+        // Identity-first member backing the durable identity, plus a raw
+        // roster member with the colliding bare id.
+        for member in ["rt:draco-base-001:0", "draco-base-001"] {
+            runtime
+                .spawn(SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    member.to_string(),
+                    None,
+                    None,
+                    None,
+                ))
+                .await?;
+        }
+
+        let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-send-message-baseline-pin-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        });
+        let identity = AgentIdentity::parse("draco-base-001")?;
+        identity_rt
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:draco-base-001:0")?,
+                    session_id: meerkat_core::types::SessionId::new(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                Some(LeaseGrant {
+                    identity,
+                    fencing_token: FencingToken::new(1),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+        let identity_ctx = IdentityFirstContext {
+            runtime: Arc::new(identity_rt),
+            roster_provider: Arc::new(EmptyRosterProvider),
+            topology_provider: None,
+            customizer: None,
+        };
+
+        // The raw roster member is part of the declared baseline ...
+        runtime
+            .mob_runtime()
+            .set_baseline_member_specs(vec![SpawnMemberSpec::new(
+                meerkat_mob::ProfileName::from("worker"),
+                meerkat_mob::AgentIdentity::from("draco-base-001"),
+            )])
+            .await;
+        // ... and is transiently absent (reconcile retired it; the
+        // replacement spawn has not landed yet).
+        runtime
+            .mob_handle()
+            .retire(meerkat_mob::AgentIdentity::from("draco-base-001"))
+            .await?;
+
+        let raw = handle_unified_rpc_json(
+            &runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "mobkit/send_message",
+                "params": { "member_id": "draco-base-001", "message": "mid-reconcile send" },
+            })
+            .to_string(),
+            Duration::from_secs(10),
+            None,
+            Some(&identity_ctx),
+        )
+        .await;
+        let response: Value = serde_json::from_str(&raw)?;
+        assert_eq!(
+            response["error"]["code"],
+            json!(-32000),
+            "transiently-absent baseline member must keep raw member-id semantics \
+             instead of silently delivering through the identity bridge: {response:#?}"
+        );
+        let message = response["error"]["message"]
+            .as_str()
+            .expect("error message");
+        assert!(
+            message.starts_with("send_message failed:"),
+            "unexpected error message: {message}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression (meerkat 0.7.1 migration): an idle member's session
+    /// machine sits in `Stopped`, where the archive step's final `Retire`
+    /// transition is guard-rejected ("disposal completed but ArchiveSession
+    /// failed: … guard rejected transition from Stopped for input::Retire").
+    /// `mobkit/retire_member` and `mobkit/respawn_member` must treat that
+    /// bookkeeping failure as completed cleanup instead of surfacing -32000,
+    /// and a recovered respawn must leave an active replacement — never a
+    /// member wedged in `retiring` with its session disposed.
+    #[tokio::test]
+    async fn retire_and_respawn_rpcs_succeed_for_idle_member()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-idle-lifecycle-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(5))
+                .build(),
+        )
+        .await?;
+
+        for member in ["worker-one", "worker-two"] {
+            runtime
+                .spawn(SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    member.to_string(),
+                    None,
+                    None,
+                    None,
+                ))
+                .await?;
+        }
+
+        let send = |id: u64, method: &'static str, params: Value| {
+            let runtime = &runtime;
+            async move {
+                let raw = handle_unified_rpc_json(
+                    runtime,
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": method,
+                        "params": params,
+                    })
+                    .to_string(),
+                    Duration::from_secs(10),
+                    None,
+                    None,
+                )
+                .await;
+                serde_json::from_str::<Value>(&raw)
+            }
+        };
+
+        // Retire an idle member: must report accepted and remove the member.
+        let response = send(
+            1,
+            "mobkit/retire_member",
+            json!({"member_id": "worker-one"}),
+        )
+        .await?;
+        assert!(
+            response["error"].is_null(),
+            "retire_member must succeed for an idle member: {response:#?}"
+        );
+        assert_eq!(response["result"]["accepted"], json!(true));
+        assert!(
+            !runtime
+                .mob_handle()
+                .list_members_including_retiring()
+                .await
+                .iter()
+                .any(|entry| entry.agent_identity.as_str() == "worker-one"),
+            "retired member must leave the roster"
+        );
+
+        // Respawn an idle member: must report accepted and leave an active
+        // (not retiring) replacement in the roster.
+        let response = send(
+            2,
+            "mobkit/respawn_member",
+            json!({"member_id": "worker-two"}),
+        )
+        .await?;
+        assert!(
+            response["error"].is_null(),
+            "respawn_member must succeed for an idle member: {response:#?}"
+        );
+        assert_eq!(response["result"]["accepted"], json!(true));
+        let members = runtime.mob_handle().list_members_including_retiring().await;
+        let worker_two = members
+            .iter()
+            .find(|entry| entry.agent_identity.as_str() == "worker-two")
+            .expect("respawned member must remain in the roster");
+        assert_eq!(
+            worker_two.status,
+            meerkat_mob::MobMemberStatus::Active,
+            "respawned member must be active, not wedged in retiring"
         );
 
         Ok(())

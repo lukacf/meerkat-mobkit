@@ -14,11 +14,12 @@ use meerkat::AgentToolDispatcher;
 use meerkat_client::LlmClient;
 use meerkat_core::ToolCategoryOverride;
 use meerkat_core::error::ToolError;
-use meerkat_core::service::{CreateSessionRequest, MobToolAuthorityContext, SessionBuildOptions};
+use meerkat_core::service::{CreateSessionRequest, SessionBuildOptions};
 use meerkat_core::{
     ToolCallView, ToolDef, ToolDispatchOutcome, ToolProvenance, ToolResult, ToolSourceKind,
 };
-use meerkat_mob::ids::MeerkatId;
+// meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
+use meerkat_mob::ids::AgentIdentity as MeerkatId;
 use meerkat_mob::{MobDefinition, ProfileName, SpawnMemberSpec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -181,7 +182,7 @@ pub fn load_scenario(path: &Path) -> Result<IncidentScenario> {
 
 pub async fn build_runtime_bundle(path: &Path) -> Result<IncidentRuntimeBundle> {
     let scenario = load_scenario(path)?;
-    build_runtime_bundle_with_client(&scenario, None).await
+    Box::pin(build_runtime_bundle_with_client(&scenario, None)).await
 }
 
 pub async fn build_runtime_bundle_with_default_client(
@@ -189,7 +190,11 @@ pub async fn build_runtime_bundle_with_default_client(
     default_llm_client: Arc<dyn LlmClient>,
 ) -> Result<IncidentRuntimeBundle> {
     let scenario = load_scenario(path)?;
-    build_runtime_bundle_with_client(&scenario, Some(default_llm_client)).await
+    Box::pin(build_runtime_bundle_with_client(
+        &scenario,
+        Some(default_llm_client),
+    ))
+    .await
 }
 
 async fn build_runtime_bundle_with_client(
@@ -206,7 +211,9 @@ async fn build_runtime_bundle_with_client(
     if let Some(client) = default_llm_client.or_else(default_incident_llm_client_from_env) {
         builder = builder.default_llm_client(client);
     }
-    let runtime = builder.build().await.context("build incident runtime")?;
+    let runtime = Box::pin(builder.build())
+        .await
+        .context("build incident runtime")?;
 
     seed_runtime(&runtime, scenario).await?;
 
@@ -733,6 +740,25 @@ fn fixture_binary_path() -> Result<PathBuf> {
         return Ok(PathBuf::from(path));
     }
 
+    // Resolve next to the running example binary first: the example lives at
+    // <target>/debug/examples/<name> and mcp_fixture at <target>/debug/
+    // mcp_fixture, so this keeps repo-cargo's isolated CARGO_TARGET_DIR
+    // working without any env plumbing (and without falling through to the
+    // raw `cargo build` below, which would create a stray ./target).
+    if let Ok(current_exe) = std::env::current_exe() {
+        let mut dir = current_exe.parent();
+        while let Some(candidate_dir) = dir {
+            let candidate = candidate_dir.join("mcp_fixture");
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+            if candidate_dir.ends_with("debug") || candidate_dir.ends_with("release") {
+                break;
+            }
+            dir = candidate_dir.parent();
+        }
+    }
+
     if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
         let binary_path = PathBuf::from(target_dir).join("debug").join("mcp_fixture");
         if binary_path.exists() {
@@ -871,7 +897,9 @@ fn is_incident_commander_request(
     is_incident_commander(labels)
         || req
             .system_prompt
-            .as_deref()
+            // meerkat 0.7: system_prompt is the typed tri-state
+            // SystemPromptOverride; read explicit Set values via as_set_prompt.
+            .as_set_prompt()
             .is_some_and(|prompt| prompt.contains("You are the incident commander"))
 }
 
@@ -888,10 +916,11 @@ impl SessionHook for IncidentSessionHook {
         if is_commander {
             build.override_mob = ToolCategoryOverride::Enable;
             build.resume_override_mask.override_mob = true;
-            build.mob_tool_authority_context = Some(
-                MobToolAuthorityContext::create_only_generated()
-                    .with_managed_mob_scope(["incident-command-center"]),
-            );
+            // meerkat 0.7: hosts no longer mint MobToolAuthorityContext
+            // directly (create_only_generated was removed); explicit mob
+            // enablement records the create-only handoff intent and the
+            // runtime authority bridge mints the generated context.
+            build.apply_generated_create_only_mob_operator_access(ToolCategoryOverride::Enable);
         }
         if labels
             .get("addressable")

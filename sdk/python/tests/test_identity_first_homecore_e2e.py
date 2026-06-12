@@ -31,14 +31,27 @@ from meerkat_mobkit.errors import RpcError
 # Environment / skip helpers
 # ---------------------------------------------------------------------------
 
-_GATEWAY_BIN = os.path.join(
-    os.path.expanduser("~/Library/Caches/rust-workspaces"),
-    "meerkat-mobkit-2783c42580",
-    "targets",
-    "meerkat-mobkit-44eecf13a1",
-    "debug",
-    "rpc_gateway",
-)
+# The gateway-backed suites must exercise THIS worktree's freshly built
+# rpc_gateway, not whichever binary the main checkout last built. The default
+# path below is the main worktree's scripts/repo-cargo lane; running from a
+# feature worktree would silently test the wrong artifact (and hide the wire
+# drift the branch introduces). Prefer an explicit override:
+#   MOBKIT_GATEWAY_BIN=$(./scripts/repo-cargo --print-env CARGO_TARGET_DIR)/debug/rpc_gateway
+def _resolve_gateway_bin() -> str:
+    override = os.environ.get("MOBKIT_GATEWAY_BIN", "").strip()
+    if override:
+        return override
+    return os.path.join(
+        os.path.expanduser("~/Library/Caches/rust-workspaces"),
+        "meerkat-mobkit-2783c42580",
+        "targets",
+        "meerkat-mobkit-44eecf13a1",
+        "debug",
+        "rpc_gateway",
+    )
+
+
+_GATEWAY_BIN = _resolve_gateway_bin()
 
 
 def _anthropic_key() -> str | None:
@@ -259,11 +272,11 @@ class TestHC01FamilyBootstrapAndMixedDelivery:
 
             # status() shows correct state
             status = await rt.status("triage:main")
-            assert status.state == "Active"
+            assert status.state == "active"
             assert status.addressability == "internal_only"
 
             luka_status = await rt.status("identity:luka")
-            assert luka_status.state == "Active"
+            assert luka_status.state == "active"
             assert luka_status.addressability == "addressable"
             assert luka_status.agent_runtime_id is not None
             assert luka_status.session_id is not None
@@ -375,7 +388,7 @@ class TestHC03ReconcileNewMember:
             after_olivia = await rt.status("identity:olivia")
 
             # olivia is new
-            assert after_olivia.state == "Active"
+            assert after_olivia.state == "active"
             assert after_olivia.session_id is not None
             assert after_olivia.generation == 0
 
@@ -461,7 +474,7 @@ class TestHC05DurableRespawn:
             await rt.dispatch("domain:calendar", di)
 
             before = await rt.status("domain:calendar")
-            assert before.state == "Active"
+            assert before.state == "active"
             before_rt_id = before.agent_runtime_id
             before_session = before.session_id
             before_gen = before.generation
@@ -471,7 +484,7 @@ class TestHC05DurableRespawn:
             assert result is not None
 
             after = await rt.status("domain:calendar")
-            assert after.state == "Active"
+            assert after.state == "active"
             assert after.agent_runtime_id == before_rt_id
             assert after.session_id == before_session  # session preserved
             assert after.generation == before_gen  # generation NOT advanced
@@ -512,7 +525,7 @@ class TestHC06LeaseSemantics:
             assert result is not None
 
             status = await rt.status("triage:main")
-            assert status.state == "Active"
+            assert status.state == "active"
         finally:
             await rt.shutdown()
 
@@ -570,7 +583,7 @@ class TestHC07ResetVsDelete:
         rt2 = await _boot_identity_runtime(state_dir, mob_toml, roster)
         try:
             after = await rt2.status("identity:luka")
-            assert after.state == "Active"
+            assert after.state == "active"
             assert after.generation == 0
             assert after.session_id != before.session_id
         finally:
@@ -625,7 +638,7 @@ class TestHC08PersistentRestart:
             after = await rt2.status("identity:luka")
             assert after.session_id == session_before
             assert after.agent_runtime_id == rt_id_before
-            assert after.state == "Active"
+            assert after.state == "active"
 
             triage_after = await rt2.status("triage:main")
             assert triage_after.session_id == triage_session_before

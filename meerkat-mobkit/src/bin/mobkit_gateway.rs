@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow};
 use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionService};
-use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::ids::AgentIdentity;
 use meerkat_mob::{MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::contact_directory::ContactDirectory;
 use meerkat_mobkit::{
@@ -258,7 +258,7 @@ id = "{runtime_id}"
 orchestrator = "alpha"
 
 [profiles.alpha]
-model = "gpt-5.2"
+model = "gpt-5.5"
 skills = ["alpha-role"]
 peer_description = "Runtime guide -- expands this runtime into a small mob and coordinates peers"
 external_addressable = true
@@ -270,7 +270,7 @@ mob = true
 mob_tasks = true
 
 [profiles.worker]
-model = "gpt-5.2"
+model = "gpt-5.5"
 skills = ["worker-role"]
 peer_description = "General-purpose peer meerkat"
 external_addressable = true
@@ -536,9 +536,22 @@ fn init_error(request_id: Value, code: i64, message: String) -> Value {
     })
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(error) = run().await {
+fn main() {
+    // Meerkat 0.7's generated machine-authority apply path needs deep worker
+    // stacks (mirrors meerkat-rpc's explicit 16 MiB tokio worker sizing).
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let response = init_error(Value::Null, -32603, error.to_string());
+            print_json_line(&response);
+            std::process::exit(1);
+        }
+    };
+    if let Err(error) = runtime.block_on(Box::pin(run())) {
         let response = init_error(Value::Null, -32603, error.to_string());
         print_json_line(&response);
         std::process::exit(1);
@@ -696,7 +709,7 @@ async fn run() -> anyhow::Result<()> {
         default_llm_client: None,
     });
 
-    let mut runtime = UnifiedRuntime::bootstrap(
+    let mut runtime = Box::pin(UnifiedRuntime::bootstrap(
         mob_spec,
         meerkat_mobkit::MobKitConfig {
             modules: Vec::new(),
@@ -707,7 +720,7 @@ async fn run() -> anyhow::Result<()> {
             pre_spawn: Vec::new(),
         },
         Duration::from_secs(30),
-    )
+    ))
     .await
     .context("failed to bootstrap local runtime")?;
 
@@ -756,7 +769,7 @@ async fn run() -> anyhow::Result<()> {
         runtime
             .mob_handle()
             .ensure_member(
-                SpawnMemberSpec::new(ProfileName::from("alpha"), MeerkatId::from("alpha"))
+                SpawnMemberSpec::new(ProfileName::from("alpha"), AgentIdentity::from("alpha"))
                     .with_labels(labels),
             )
             .await

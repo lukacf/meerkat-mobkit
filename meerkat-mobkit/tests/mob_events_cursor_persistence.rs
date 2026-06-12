@@ -46,7 +46,7 @@ async fn projected_cursor_is_persisted_to_sqlite_metadata_store() {
 id = "cursor-persist-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]
@@ -84,14 +84,16 @@ message = "first"
     let metadata_store =
         Arc::new(SqliteMetadataStore::open(&metadata_path).expect("open SqliteMetadataStore"));
 
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(mob_spec)
-        .module_config(module_config)
-        .timeout(Duration::from_secs(2))
-        .persistent_metadata(metadata_store.clone())
-        .build()
-        .await
-        .expect("build runtime with persistent metadata");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(mob_spec)
+            .module_config(module_config)
+            .timeout(Duration::from_secs(2))
+            .persistent_metadata(metadata_store.clone())
+            .build(),
+    )
+    .await
+    .expect("build runtime with persistent metadata");
 
     let mut rx = runtime.subscribe_mob_events();
 

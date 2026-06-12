@@ -19,7 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use meerkat_client::TestClient;
-use meerkat_mob::ids::MeerkatId;
+// meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
+use meerkat_mob::ids::AgentIdentity as MeerkatId;
 use meerkat_mob::{MobDefinition, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MobKitConfig, PreSpawnData,
@@ -32,7 +33,7 @@ const MINIMAL_MOB_TOML: &str = r#"
 id = "reference-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]
@@ -44,20 +45,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let definition = MobDefinition::from_toml(MINIMAL_MOB_TOML)
         .map_err(|e| std::io::Error::other(format!("bad mob definition: {e}")))?;
 
-    let runtime = UnifiedRuntime::builder()
-        .definition(definition)
-        .default_llm_client(Arc::new(TestClient::default()))
-        .module_config(MobKitConfig {
-            modules: vec![],
-            discovery: DiscoverySpec {
-                namespace: "reference-app".to_string(),
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(definition)
+            .default_llm_client(Arc::new(TestClient::default()))
+            .module_config(MobKitConfig {
                 modules: vec![],
-            },
-            pre_spawn: Vec::<PreSpawnData>::new(),
-        })
-        .timeout(Duration::from_secs(5))
-        .build()
-        .await?;
+                discovery: DiscoverySpec {
+                    namespace: "reference-app".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: Vec::<PreSpawnData>::new(),
+            })
+            .timeout(Duration::from_secs(5))
+            .build(),
+    )
+    .await?;
 
     runtime.reconcile(reference_member_specs()).await?;
     runtime

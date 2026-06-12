@@ -53,7 +53,7 @@ pub(crate) const VIA_TOOL_LABEL: &str = "via_tool";
 pub(crate) struct ConsoleSpawnSeed {
     /// Target mob, when the spawn path knows it.
     pub(crate) mob_id: Option<String>,
-    /// Runtime member id (the mob roster `MeerkatId`).
+    /// Runtime member id (the mob roster `AgentIdentity`).
     pub(crate) member_id: String,
     /// Console identity for the member's chat. Matches the identity the
     /// console event projection derives for the member's runtime events:

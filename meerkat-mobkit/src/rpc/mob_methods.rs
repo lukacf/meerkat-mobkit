@@ -3,7 +3,6 @@
 use base64::Engine;
 use meerkat_contracts::WireRuntimeBinding;
 use meerkat_core::ContentInput;
-use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::launch::{ForkContext, MemberLaunchMode};
 use meerkat_mob::runtime::reconcile::MemberFilter;
 use meerkat_mob::{HelperOptions, MobBackendKind, MobRuntimeMode, ProfileName, SpawnMemberSpec};
@@ -33,7 +32,7 @@ fn runtime_binding_from_wire(
                 peer_id: resolved.peer_id.to_string(),
                 address,
                 bootstrap_token,
-                pubkey: Some(resolved.pubkey),
+                pubkey: resolved.pubkey,
             })
         }
     }
@@ -149,8 +148,95 @@ fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMo
     }
 }
 
+/// Delivery target for `mobkit/send_message`, resolved from the wire
+/// `member_id` parameter.
+///
+/// Precedence contract:
+/// 1. An exact mob-roster match (after public-alias/comms encoding) always
+///    wins. Callers holding concrete member ids — `rt:{identity}:{generation}`
+///    aliases, plain member names, and every member of a non-identity-first
+///    mob — keep raw member-id semantics.
+/// 2. Otherwise, on identity-first runtimes a bare durable identity (e.g.
+///    `atlas-base-001` when the meerkat 0.7.1 roster holds
+///    `rt:atlas-base-001:0`) resolves through the identity bridge —
+///    the gateway-plane counterpart of the console plane's
+///    `console_send_with_identity_first_fallback` (`http_console.rs`).
+/// 3. Anything else (no identity runtime, unparseable identity, unknown
+///    identity) falls through to raw member-id semantics so the original
+///    mob `member not found` error surfaces unchanged.
+enum SendMessageTarget {
+    /// Deliver through the mob roster (`send_message_on_mob_with_mode`).
+    MobMember,
+    /// Deliver through the identity bridge
+    /// (`IdentityRuntime::send_with_mode`), which lazily materializes
+    /// dormant identities before delivery.
+    Identity {
+        identity_rt: std::sync::Arc<crate::identity_first::IdentityRuntime>,
+        identity: crate::identity_first::AgentIdentity,
+        /// Live runtime member id bound to the identity, when materialized.
+        runtime_member_id: Option<String>,
+        /// Bridge session bound to the identity at resolve time, when
+        /// materialized. Pins the reported session reference: the post-send
+        /// status re-read can race a concurrent retire/rebind, and an empty
+        /// session id on the wire would read as a valid session reference to
+        /// SDK typed results.
+        session_id: Option<meerkat_core::types::SessionId>,
+    },
+}
+
+async fn resolve_send_message_target(
+    runtime: &UnifiedRuntime,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    member_id: &str,
+) -> SendMessageTarget {
+    let roster_id = crate::member_comms_id::mob_member_id(member_id);
+    if matches!(
+        runtime.mob_handle().get_member(&roster_id).await,
+        Ok(Some(_))
+    ) {
+        return SendMessageTarget::MobMember;
+    }
+    // Precedence pinning: the roster probe above is a point-in-time machine
+    // command. A member declared in the reconcile baseline is a roster
+    // member even when a concurrent retire/reconcile makes the probe read
+    // absent (reconcile retires stale members before the replacement spawn
+    // lands). Falling through to the identity bridge in that window would
+    // silently deliver to a same-named durable identity's conversation;
+    // keep raw member-id semantics instead, so the send either lands on the
+    // (re)spawned member or surfaces the mob's own member-not-found error.
+    if runtime
+        .mob_runtime()
+        .baseline_member_specs()
+        .await
+        .iter()
+        .any(|spec| spec.identity.as_str() == member_id)
+    {
+        return SendMessageTarget::MobMember;
+    }
+    let Some(identity_rt) = identity_runtime.or_else(|| runtime.identity_runtime()) else {
+        return SendMessageTarget::MobMember;
+    };
+    let Ok(identity) = crate::identity_first::AgentIdentity::parse(member_id) else {
+        return SendMessageTarget::MobMember;
+    };
+    match identity_rt.status(&identity).await {
+        Ok(status) => SendMessageTarget::Identity {
+            identity_rt: identity_rt.clone(),
+            identity,
+            runtime_member_id: status
+                .agent_runtime_id
+                .map(|runtime_id| runtime_id.as_str().to_string()),
+            session_id: status.session_id,
+        },
+        // Unknown identity: keep raw member-id semantics so the original
+        // mob `member not found` error surfaces.
+        Err(_) => SendMessageTarget::MobMember,
+    }
+}
+
 pub(super) async fn handle_send_message(
     runtime: &UnifiedRuntime,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
@@ -188,13 +274,29 @@ pub(super) async fn handle_send_message(
 
     match (member_id, content) {
         (Some(member_id), Some(content)) if !member_id.is_empty() => {
-            if let Err(err) = assert_member_accepts_images(
-                &runtime.mob_handle(),
-                runtime.mob_runtime().session_service(),
-                member_id,
-                &content,
-            )
-            .await
+            let target = resolve_send_message_target(runtime, identity_runtime, member_id).await;
+            // Pre-flight the image-capability guard against the member that
+            // will actually take the delivery: the wire id for roster sends,
+            // the live runtime member for identity-bridge sends. A dormant
+            // identity has no live member to project capabilities from yet —
+            // it materializes inside `send_with_mode`, where the session
+            // bridge re-runs the same guard.
+            let image_guard_member_id = match &target {
+                SendMessageTarget::MobMember => Some(member_id),
+                SendMessageTarget::Identity {
+                    runtime_member_id: Some(runtime_member_id),
+                    ..
+                } => Some(runtime_member_id.as_str()),
+                SendMessageTarget::Identity { .. } => None,
+            };
+            if let Some(guard_member_id) = image_guard_member_id
+                && let Err(err) = assert_member_accepts_images(
+                    &runtime.mob_handle(),
+                    runtime.mob_runtime().session_service(),
+                    guard_member_id,
+                    &content,
+                )
+                .await
             {
                 return JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
@@ -213,29 +315,71 @@ pub(super) async fn handle_send_message(
                 meerkat_core::types::HandlingMode::Queue => "queue",
                 meerkat_core::types::HandlingMode::Steer => "steer",
             };
+            // Console events are keyed by the durable identity for
+            // identity-bridge sends (mirroring the console plane) and by the
+            // wire member id for roster sends.
+            let (events_identity, events_member_id) = match &target {
+                SendMessageTarget::MobMember => {
+                    (member_id.to_string(), Some(member_id.to_string()))
+                }
+                SendMessageTarget::Identity {
+                    identity,
+                    runtime_member_id,
+                    ..
+                } => (identity.as_str().to_string(), runtime_member_id.clone()),
+            };
             let _ = runtime
                 .console_events()
                 .reserve_interaction_value(
-                    member_id,
-                    Some(member_id),
+                    &events_identity,
+                    events_member_id.as_deref(),
                     &interaction_id,
                     "mobkit/send_message",
                     content_value.clone(),
                 )
                 .await;
-            match send_message_on_mob_with_mode(
-                &runtime.mob_handle(),
-                member_id,
-                content.clone(),
-                handling_mode,
-            )
-            .await
-            {
+            let delivery: Result<String, String> = match &target {
+                SendMessageTarget::MobMember => send_message_on_mob_with_mode(
+                    &runtime.mob_handle(),
+                    member_id,
+                    content.clone(),
+                    handling_mode,
+                )
+                .await
+                .map_err(|err| err.to_string()),
+                SendMessageTarget::Identity {
+                    identity_rt,
+                    identity,
+                    session_id: resolve_time_session_id,
+                    ..
+                } => match identity_rt
+                    .send_with_mode(identity, &content, handling_mode)
+                    .await
+                {
+                    // Report the bridge session that took the delivery —
+                    // re-read after the send so a lazy materialization or a
+                    // delivered-session rebind is reflected. A concurrent
+                    // retire/rebind between the send and the re-read can
+                    // transiently surface no session; fall back to the
+                    // resolve-time binding rather than fabricating an empty
+                    // session reference on the wire.
+                    Ok(_token) => Ok(identity_rt
+                        .status(identity)
+                        .await
+                        .ok()
+                        .and_then(|status| status.session_id)
+                        .or_else(|| resolve_time_session_id.clone())
+                        .map(|session_id| session_id.to_string())
+                        .unwrap_or_default()),
+                    Err(err) => Err(err.to_string()),
+                },
+            };
+            match delivery {
                 Ok(session_id) => {
                     runtime
                         .console_events()
                         .append(
-                            member_id,
+                            &events_identity,
                             Some(interaction_id),
                             "user_input",
                             serde_json::json!({
@@ -261,11 +405,11 @@ pub(super) async fn handle_send_message(
                     runtime
                         .console_events()
                         .append(
-                            member_id,
+                            &events_identity,
                             Some(interaction_id),
                             "interaction_failed",
                             serde_json::json!({
-                                "reason": err.to_string(),
+                                "reason": err,
                                 "origin": "mobkit/send_message",
                                 "content": content_value,
                             }),
@@ -390,10 +534,24 @@ pub(super) async fn handle_find_members(
             let filter = MemberFilter {
                 labels: std::collections::BTreeMap::from([(key.to_string(), value.to_string())]),
                 role: None,
-                state: None,
+                status: None,
             };
             let handle = runtime.mob_handle();
-            let entries = handle.list_members_matching(filter).await;
+            let entries = match handle.list_members_matching(filter).await {
+                Ok(entries) => entries,
+                Err(err) => {
+                    return JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("member lookup failed: {err}"),
+                            data: None,
+                        }),
+                    };
+                }
+            };
             let mut members = Vec::with_capacity(entries.len());
             for entry in &entries {
                 members.push(member_entry_to_json(entry));
@@ -575,8 +733,10 @@ pub(super) async fn handle_ensure_member(
                 }
             };
 
-            let mut spec =
-                SpawnMemberSpec::new(ProfileName::from(role), MeerkatId::from(agent_identity));
+            let mut spec = SpawnMemberSpec::new(
+                ProfileName::from(role),
+                crate::member_comms_id::mob_member_id(agent_identity),
+            );
             if let Some(runtime_mode) = runtime_mode {
                 spec = spec.with_runtime_mode(runtime_mode);
             }
@@ -667,7 +827,7 @@ pub(super) async fn handle_get_member(
     match member_id {
         Some(mid) if !mid.is_empty() => {
             let handle = runtime.mob_handle();
-            let identity = MeerkatId::from(mid);
+            let identity = crate::member_comms_id::mob_member_id(mid);
             let entries = handle.list_members_including_retiring().await;
             match entries.into_iter().find(|e| e.agent_identity == identity) {
                 Some(entry) => JsonRpcResponse {
@@ -710,7 +870,10 @@ pub(super) async fn handle_retire_member(
     match member_id {
         Some(mid) if !mid.is_empty() => {
             let handle = runtime.mob_handle();
-            match handle.retire(MeerkatId::from(mid)).await {
+            match handle
+                .retire(crate::member_comms_id::mob_member_id(mid))
+                .await
+            {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -759,8 +922,10 @@ pub(super) async fn handle_respawn_member(
     match member_id {
         Some(mid) if !mid.is_empty() => {
             let handle = runtime.mob_handle();
-            let identity = MeerkatId::from(mid);
-            let entry_before_respawn = handle.get_member(&identity).await;
+            let identity = crate::member_comms_id::mob_member_id(mid);
+            // Best-effort repair material: a faulted lookup degrades to None
+            // (the respawn itself surfaces real faults).
+            let entry_before_respawn = handle.get_member(&identity).await.ok().flatten();
             let mut topology_restore_warning = None;
             match handle.respawn(identity.clone(), None).await {
                 Ok(_receipt) => JsonRpcResponse {
@@ -780,7 +945,24 @@ pub(super) async fn handle_respawn_member(
                         topology_restore_warning =
                             Some(topology_restore_warning_json(&failed_peer_ids));
                     } else if lifecycle_archive_cleanup_completed(&err.to_string()) {
-                        if handle.get_member(&identity).await.is_none()
+                        // A faulted lookup must not read as "absent" (that
+                        // would mint a spurious replacement member).
+                        let member_after_cleanup = match handle.get_member(&identity).await {
+                            Ok(member) => member,
+                            Err(lookup_err) => {
+                                return JsonRpcResponse {
+                                    jsonrpc: JSONRPC_VERSION.to_string(),
+                                    id: response_id,
+                                    result: None,
+                                    error: Some(JsonRpcError {
+                                        code: -32000,
+                                        message: format!("respawn_member failed: {lookup_err}"),
+                                        data: None,
+                                    }),
+                                };
+                            }
+                        };
+                        if member_after_cleanup.is_none()
                             && let Some(entry) = entry_before_respawn
                         {
                             let mut spec =
@@ -1068,7 +1250,7 @@ pub(super) async fn handle_cross_mob_wire(
         (Some(local), Some(remote), Some(mob))
             if !local.is_empty() && !remote.is_empty() && !mob.is_empty() =>
         {
-            match runtime.wire_cross_mob(local, remote, mob).await {
+            match Box::pin(runtime.wire_cross_mob(local, remote, mob)).await {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -1120,7 +1302,7 @@ pub(super) async fn handle_cross_mob_unwire(
         (Some(local), Some(remote), Some(mob))
             if !local.is_empty() && !remote.is_empty() && !mob.is_empty() =>
         {
-            match runtime.unwire_cross_mob(local, remote, mob).await {
+            match Box::pin(runtime.unwire_cross_mob(local, remote, mob)).await {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -1302,7 +1484,7 @@ pub(super) async fn handle_member_status(
         Some(mid) if !mid.is_empty() => {
             match runtime
                 .mob_handle()
-                .member_status(&MeerkatId::from(mid))
+                .member_status(&crate::member_comms_id::mob_member_id(mid))
                 .await
             {
                 Ok(snapshot) => JsonRpcResponse {
@@ -1346,7 +1528,7 @@ pub(super) async fn handle_force_cancel_member(
         Some(mid) if !mid.is_empty() => {
             match runtime
                 .mob_handle()
-                .force_cancel_member(MeerkatId::from(mid))
+                .force_cancel_member(crate::member_comms_id::mob_member_id(mid))
                 .await
             {
                 Ok(()) => JsonRpcResponse {
@@ -1406,9 +1588,12 @@ pub(super) async fn handle_spawn_helper(
                 }
             };
             let handle = runtime.mob_handle();
-            match handle
-                .spawn_helper(MeerkatId::from(mid), task_str, options)
-                .await
+            match Box::pin(handle.spawn_helper(
+                crate::member_comms_id::mob_member_id(mid),
+                task_str,
+                options,
+            ))
+            .await
             {
                 Ok(result) => {
                     // Note: meerkat 0.6's `spawn_helper` retires the helper
@@ -1500,15 +1685,14 @@ pub(super) async fn handle_fork_helper(
                 }
             };
             let handle = runtime.mob_handle();
-            match handle
-                .fork_helper(
-                    &MeerkatId::from(source),
-                    MeerkatId::from(mid),
-                    task_str,
-                    fork_context,
-                    options,
-                )
-                .await
+            match Box::pin(handle.fork_helper(
+                &crate::member_comms_id::mob_member_id(source),
+                crate::member_comms_id::mob_member_id(mid),
+                task_str,
+                fork_context,
+                options,
+            ))
+            .await
             {
                 Ok(result) => {
                     // See `handle_spawn_helper`: meerkat 0.6 retires the
@@ -1579,11 +1763,11 @@ pub(super) async fn handle_attach_existing_session(
                     };
                 }
             };
-            let identity = MeerkatId::from(mid);
+            let identity = crate::member_comms_id::mob_member_id(mid);
             let spec = SpawnMemberSpec::new(ProfileName::from(role), identity.clone())
                 .with_launch_mode(MemberLaunchMode::Resume { bridge_session_id });
             let handle = runtime.mob_handle();
-            match handle.spawn_spec(spec).await {
+            match Box::pin(handle.spawn_spec(spec)).await {
                 Ok(_) => match handle.member_status(&identity).await {
                     Ok(snapshot) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
@@ -1706,7 +1890,7 @@ pub(super) async fn handle_run_flow(
                     }),
                 };
             }
-            match runtime.mob_handle().run_flow(flow_id, flow_params).await {
+            match Box::pin(runtime.mob_handle().run_flow(flow_id, flow_params)).await {
                 Ok(run_id) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,

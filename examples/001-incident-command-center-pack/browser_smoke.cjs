@@ -447,6 +447,11 @@ async function main() {
 
     console.log("smoke:topology");
     await clickNav(page, "topology");
+    await page.getByTestId("topology-panel").waitFor();
+    // TopologyPanel defaults to the dense graph view, which only exposes
+    // topology-dense-map; per-node topology-node:* testids exist only in the
+    // Roles view, so switch views before waiting on them.
+    await page.getByTestId("topology-view:roles").click();
     const topologyNode = page.getByTestId("topology-node:incident-commander");
     await topologyNode.waitFor();
     await page.getByTestId("topology-node:payments-sre").waitFor({ state: "visible", timeout: 60000 });
@@ -455,7 +460,12 @@ async function main() {
     console.log("smoke:inspect");
     await selectSidebarItem(page, "Incident Commander");
     commanderPanel = await dockPanelForIdentity(page, "incident-commander");
-    await commanderPanel.getByTestId("conv-action:inspect").evaluate((button) => button.click());
+    // The console renamed the inspect affordance testid to conv-action:details;
+    // keep the old id as a fallback for older console builds.
+    const inspectAction = (await commanderPanel.getByTestId("conv-action:details").count())
+      ? commanderPanel.getByTestId("conv-action:details")
+      : commanderPanel.getByTestId("conv-action:inspect");
+    await inspectAction.evaluate((button) => button.click());
     await page.getByTestId("inspect-panel:incident-commander").waitFor();
     await waitForText(page.getByTestId("inspect-panel:incident-commander"), "addressable");
 
@@ -489,37 +499,36 @@ async function main() {
     const alphaBefore = await panelAlpha.innerText();
     const bravoBefore = await panelBravo.innerText();
 
+    // Split panes share the identity-scoped conversation log: the console
+    // deliberately removed per-panel frame filtering (panel ids are ephemeral
+    // UI instance ids; filtering by them hid history after refresh — see
+    // framesVisibleInPanel in console/src/ConsoleApp.tsx). A prompt sent from
+    // either pane must therefore mirror into both panes exactly once.
     await sendPanelMessage(panelAlpha, "incident-commander", alphaFollowUpPrompt);
     await waitForPanelChange(panelAlpha, alphaBefore);
-    await assertEventually(async () => {
-      const alphaMessages = await transcriptMessages(panelAlpha);
-      return alphaMessages.filter((entry) =>
-        entry.className.includes("msg--user")
-        && entry.text.includes(alphaFollowUpPrompt)
-      ).length === 1;
-    }, "alpha panel must render its own prompt exactly once", 60000, 250);
-    const bravoAfterAlphaMessages = await transcriptMessages(panelBravo);
-    assert.equal(bravoAfterAlphaMessages.filter((entry) =>
-      entry.className.includes("msg--user")
-      && entry.text.includes(alphaFollowUpPrompt)
-    ).length, 0, "bravo panel must not receive alpha user prompt");
+    for (const [panel, label] of [[panelAlpha, "alpha"], [panelBravo, "bravo"]]) {
+      await assertEventually(async () => {
+        const messages = await transcriptMessages(panel);
+        return messages.filter((entry) =>
+          entry.className.includes("msg--user")
+          && entry.text.includes(alphaFollowUpPrompt)
+        ).length === 1;
+      }, `${label} panel must render the shared alpha prompt exactly once`, 60000, 250);
+    }
     await waitForTimelineQuiet(baseUrl, "incident-commander", 5000, 120000);
     await waitForComposerIdle(panelBravo, "incident-commander");
 
     await sendPanelMessage(panelBravo, "incident-commander", bravoFollowUpPrompt);
     await waitForPanelChange(panelBravo, bravoBefore);
-    await assertEventually(async () => {
-      const bravoMessages = await transcriptMessages(panelBravo);
-      return bravoMessages.filter((entry) =>
-        entry.className.includes("msg--user")
-        && entry.text.includes(bravoFollowUpPrompt)
-      ).length === 1;
-    }, "bravo panel must render its own prompt exactly once", 60000, 250);
-    const alphaAfterBravoMessages = await transcriptMessages(panelAlpha);
-    assert.equal(alphaAfterBravoMessages.filter((entry) =>
-      entry.className.includes("msg--user")
-      && entry.text.includes(bravoFollowUpPrompt)
-    ).length, 0, "alpha panel must not receive bravo user prompt");
+    for (const [panel, label] of [[panelAlpha, "alpha"], [panelBravo, "bravo"]]) {
+      await assertEventually(async () => {
+        const messages = await transcriptMessages(panel);
+        return messages.filter((entry) =>
+          entry.className.includes("msg--user")
+          && entry.text.includes(bravoFollowUpPrompt)
+        ).length === 1;
+      }, `${label} panel must render the shared bravo prompt exactly once`, 60000, 250);
+    }
     await waitForComposerIdle(panelAlpha, "incident-commander");
     await waitForComposerIdle(panelBravo, "incident-commander");
 

@@ -43,7 +43,7 @@ pub use engine::{AccessDecision, AccessPrincipal, AccessResource, evaluate_acces
 pub use model::{
     ACCESS_ACTIONS, ACTION_ACCESS_ADMIN, ACTION_AGENT_RESET, ACTION_AGENT_RESPAWN,
     ACTION_AGENT_RETIRE, ACTION_AGENT_SEND, ACTION_AGENT_SPAWN, ACTION_AGENT_VIEW,
-    ACTION_GATING_DECIDE, ACTION_GATING_VIEW, ACTION_MOB_OBSERVE, ACTION_RUNTIME_ADMIN,
-    AccessConfigError, AccessControlConfig, AccessEffect, AccessGroup, AccessRule,
-    validate_access_config,
+    ACTION_GATING_DECIDE, ACTION_GATING_VIEW, ACTION_MOB_OBSERVE, ACTION_MOBPACK_AUTHOR,
+    ACTION_MOBPACK_DEPLOY, ACTION_RUNTIME_ADMIN, AccessConfigError, AccessControlConfig,
+    AccessEffect, AccessGroup, AccessRule, validate_access_config,
 };

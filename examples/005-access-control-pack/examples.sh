@@ -11,6 +11,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PACK_DIR="$ROOT/examples/005-access-control-pack"
 MODE="${1:-smoke}"
 
+# Meerkat 0.7's machine-authority code allocates huge debug-build stack
+# frames. The example binary sizes its own threads, and the workspace
+# .cargo/config.toml covers cargo-invoked flows; this export is belt and
+# braces for prebuilt-binary runs documented from this script.
+export RUST_MIN_STACK="${RUST_MIN_STACK:-33554432}"
+
 pick_port() {
   python3 - <<'PY'
 import socket
@@ -40,11 +46,20 @@ PY
 }
 
 cleanup() {
+  # Jobs are started in their own process groups (set -m below); kill the
+  # whole group so cargo/server/node descendants die too.
   for pid in "${SERVER_PID:-}" "${PROXY_PID:-}"; do
-    [[ -n "$pid" ]] && { kill "$pid" >/dev/null 2>&1 || true; wait "$pid" >/dev/null 2>&1 || true; }
+    [[ -n "$pid" ]] && {
+      kill -TERM -- -"$pid" >/dev/null 2>&1 || kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+    }
   done
+  SERVER_PID=""
+  PROXY_PID=""
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 echo "[access-control-pack] building console assets"
 (cd "$ROOT/console" && npm run build --silent)
@@ -56,13 +71,19 @@ export ACCESS_CONTROL_WORK_DIR="$WORK_DIR"
 if [[ "$MODE" == "--serve" ]]; then
   LISTEN_ADDR="127.0.0.1:7300"
   echo "[access-control-pack] starting example server at http://${LISTEN_ADDR}"
+  # set -m puts background jobs in their own process groups so cleanup can
+  # kill the entire cargo/server tree via kill -- -PID.
+  set -m
   (cd "$ROOT" && ACCESS_CONTROL_LISTEN_ADDR="$LISTEN_ADDR" \
     cargo run -p meerkat-mobkit --example access_control_console) &
   SERVER_PID=$!
+  set +m
   wait_for_server "http://${LISTEN_ADDR}"
   echo "[access-control-pack] starting persona proxies"
+  set -m
   ACCESS_CONTROL_TARGET="$LISTEN_ADDR" node "$PACK_DIR/persona-proxy.mjs" &
   PROXY_PID=$!
+  set +m
   echo "[access-control-pack] ready — open the persona tabs printed above. Ctrl-C to stop."
   wait "$SERVER_PID"
   exit 0
@@ -70,9 +91,11 @@ fi
 
 LISTEN_ADDR="$(pick_port)"
 echo "[access-control-pack] starting example server at http://${LISTEN_ADDR}"
+set -m
 (cd "$ROOT" && ACCESS_CONTROL_LISTEN_ADDR="$LISTEN_ADDR" \
   cargo run -p meerkat-mobkit --example access_control_console > "$WORK_DIR/server.log" 2>&1) &
 SERVER_PID=$!
+set +m
 wait_for_server "http://${LISTEN_ADDR}"
 echo "[access-control-pack] running HTTP smoke"
 node "$PACK_DIR/smoke.mjs" "http://${LISTEN_ADDR}"

@@ -151,6 +151,24 @@ for (const run of runs) {
 }
 ```
 
+## Mobpack authoring
+
+`MobHandle` wraps the full Flow Editor authoring surface (`mobkit/mobpacks/*`) with typed methods: `mobpackTemplates`, `mobpackCatalogs`, `mobpackValidate`, `mobpackSource`, `mobpackExport`, `mobpackImport`, `mobpackList`, `mobpackGet`, `mobpackCreate`, `mobpackSave`, `mobpackDelete`, `mobpackUndo`, `mobpackRedo`, `mobpackApplyOperation`, `mobpackDeployCommand`, and `mobpackDeploy`.
+
+```typescript
+// Create a draft from the blank template, validate, export
+const draft = await handle.mobpackCreate({ template: "blank", name: "support-bot" });
+const document = draft.row.document;
+
+const validation = await handle.mobpackValidate(document);
+console.log(validation.ok, validation.displayRows.length);
+
+const pack = await handle.mobpackExport(document);
+const archive = Buffer.from(pack.contentBase64, "base64"); // pack.filename, pack.mediaType
+```
+
+`mobpackDeploy(document, true)` sends `execute: true`, which writes the archive and runs `rkat mob run` on the host — gated by the surface's advertised `authoring_capabilities` and, on ABAC-enforced runtimes, the caller's `mobpack.deploy` grant. See the [Flow Editor guide](/guides/flow-editor).
+
 ## Rust parity notes
 
 The TypeScript SDK targets the JSON-RPC gateway. Rust also exposes lower-level native builder options for in-process embedding; those remain Rust-native and are not mirrored one-for-one in the gateway SDKs.

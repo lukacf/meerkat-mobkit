@@ -24,14 +24,27 @@ from meerkat_mobkit.errors import RpcError
 # Environment / skip helpers
 # ---------------------------------------------------------------------------
 
-_GATEWAY_BIN = os.path.join(
-    os.path.expanduser("~/Library/Caches/rust-workspaces"),
-    "meerkat-mobkit-2783c42580",
-    "targets",
-    "meerkat-mobkit-44eecf13a1",
-    "debug",
-    "rpc_gateway",
-)
+# The gateway-backed suites must exercise THIS worktree's freshly built
+# rpc_gateway, not whichever binary the main checkout last built. The default
+# path below is the main worktree's scripts/repo-cargo lane; running from a
+# feature worktree would silently test the wrong artifact (and hide the wire
+# drift the branch introduces). Prefer an explicit override:
+#   MOBKIT_GATEWAY_BIN=$(./scripts/repo-cargo --print-env CARGO_TARGET_DIR)/debug/rpc_gateway
+def _resolve_gateway_bin() -> str:
+    override = os.environ.get("MOBKIT_GATEWAY_BIN", "").strip()
+    if override:
+        return override
+    return os.path.join(
+        os.path.expanduser("~/Library/Caches/rust-workspaces"),
+        "meerkat-mobkit-2783c42580",
+        "targets",
+        "meerkat-mobkit-44eecf13a1",
+        "debug",
+        "rpc_gateway",
+    )
+
+
+_GATEWAY_BIN = _resolve_gateway_bin()
 
 
 def _anthropic_key() -> str | None:
@@ -400,7 +413,7 @@ class TestHC05DurableRespawn:
 
             snap = await handle.get_member("respawn-target")
             assert snap.agent_identity == "respawn-target"
-            assert snap.state == "Active"
+            assert snap.state == "active"
         finally:
             await rt.shutdown()
 
@@ -424,7 +437,7 @@ class TestHC06RetireStopsWork:
             # Use an addressable profile so we can verify it's active first
             await handle.ensure_member("retire-target", role="personal")
             snap = await handle.get_member("retire-target")
-            assert snap.state == "Active"
+            assert snap.state == "active"
 
             # Retire the member
             await handle.retire_member("retire-target")
@@ -433,7 +446,7 @@ class TestHC06RetireStopsWork:
             members = await handle.list_members()
             target = [m for m in members if m.agent_identity == "retire-target"]
             if target:
-                assert target[0].state == "Retiring"
+                assert target[0].state == "retiring"
         finally:
             await rt.shutdown()
 
@@ -497,7 +510,7 @@ class TestHC07ResetVsDelete:
             snap = await handle.get_member("luka")
             assert snap.agent_identity == "luka"
             assert snap.role == "personal"
-            assert snap.state == "Active"
+            assert snap.state == "active"
         finally:
             await rt.shutdown()
 

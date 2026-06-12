@@ -62,7 +62,7 @@ fn build_mob_spec(temp_dir: &tempfile::TempDir) -> MobBootstrapSpec {
 id = "mk001-discovery-mob"
 
 [profiles.worker]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.worker.tools]
@@ -199,6 +199,24 @@ fn mk001_discovery_spec_to_spawn_spec_minimal() {
 }
 
 #[test]
+fn mk001_discovery_spec_to_spawn_spec_keeps_colon_identity_in_public_alias_space() {
+    // The encode to meerkat 0.7's comms-safe roster id happens once, inside
+    // `UnifiedRuntime::spawn`/`spawn_many` (and `reconcile`). Encoding here
+    // too would double-encode (`mk--` is a reserved, non-idempotent marker).
+    let spec = AgentDiscoverySpec {
+        profile: "lead".to_string(),
+        meerkat_id: "domain:billing".to_string(),
+        labels: None,
+        context: None,
+        additional_instructions: vec![],
+        resume_session_id: None,
+    };
+
+    let spawn = discovery_spec_to_spawn_spec(&spec);
+    assert_eq!(spawn.identity.as_str(), "domain:billing");
+}
+
+#[test]
 fn mk001_agent_discovery_spec_serde_roundtrip() {
     let spec = AgentDiscoverySpec {
         profile: "worker".to_string(),
@@ -285,14 +303,16 @@ async fn mk002_builder_with_discovery_spawns_discovered_agents() {
         ],
     };
 
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_mob_spec(&temp_dir))
-        .module_config(empty_module_config())
-        .timeout(Duration::from_secs(2))
-        .discovery(discovery)
-        .build()
-        .await
-        .expect("build with discovery");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .discovery(discovery)
+            .build(),
+    )
+    .await
+    .expect("build with discovery");
 
     // Reconcile to get current roster and verify the discovered agents are present.
     let desired: Vec<SpawnMemberSpec> = vec![
@@ -341,15 +361,17 @@ async fn mk002_builder_pre_spawn_hook_runs_before_discovery() {
         }],
     };
 
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_mob_spec(&temp_dir))
-        .module_config(empty_module_config())
-        .timeout(Duration::from_secs(2))
-        .pre_spawn_hook(hook)
-        .discovery(discovery)
-        .build()
-        .await
-        .expect("build with hook");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .pre_spawn_hook(hook)
+            .discovery(discovery)
+            .build(),
+    )
+    .await
+    .expect("build with hook");
 
     assert!(
         hook_ran.load(Ordering::SeqCst),

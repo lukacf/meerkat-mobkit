@@ -219,29 +219,33 @@ pub use meerkat_contracts::MobReconcileReportWire as MobReconcileReport;
 /// Project meerkat's native `ReconcileReport` into the canonical wire shape.
 ///
 /// Mirrors the `mob/reconcile` RPC handler's projection in
-/// `meerkat-rpc/src/handlers/mob.rs` so both surfaces emit byte-identical
-/// JSON for the same reconcile outcome.
+/// `meerkat-rpc/src/handlers/mob.rs`, with one mobkit-specific step: the
+/// report's roster member ids are comms-safe encodings (meerkat 0.7
+/// `MemberCommsName`), and this is a projection boundary, so every id is
+/// decoded back to the public alias consoles/SDKs address members by.
 pub fn meerkat_reconcile_report_to_wire(
     mob_id: &str,
     report: meerkat_mob::runtime::reconcile::ReconcileReport,
 ) -> MobReconcileReport {
     use meerkat_contracts::{MobSpawnReceiptWire, WireMemberRef};
+    let alias_of =
+        |id: &str| -> String { crate::member_comms_id::runtime_alias_str(id).into_owned() };
     MobReconcileReport {
         desired: report
             .desired
             .into_iter()
-            .map(|id| id.to_string())
+            .map(|id| alias_of(id.as_str()))
             .collect(),
         retained: report
             .retained
             .into_iter()
-            .map(|id| id.to_string())
+            .map(|id| alias_of(id.as_str()))
             .collect(),
         spawned: report
             .spawned
             .into_iter()
             .map(|receipt| {
-                let identity_str = receipt.agent_identity.to_string();
+                let identity_str = alias_of(receipt.agent_identity.as_str());
                 MobSpawnReceiptWire {
                     member_ref: WireMemberRef::encode(mob_id, &identity_str),
                     agent_identity: identity_str,
@@ -251,13 +255,13 @@ pub fn meerkat_reconcile_report_to_wire(
         retired: report
             .retired
             .into_iter()
-            .map(|id| id.to_string())
+            .map(|id| alias_of(id.as_str()))
             .collect(),
         failures: report
             .failures
             .into_iter()
             .map(|failure| MobReconcileFailure {
-                agent_identity: failure.agent_identity.to_string(),
+                agent_identity: alias_of(failure.agent_identity.as_str()),
                 stage: match failure.stage {
                     meerkat_mob::runtime::reconcile::ReconcileStage::Spawn => {
                         meerkat_contracts::WireMobReconcileStage::Spawn
@@ -266,7 +270,10 @@ pub fn meerkat_reconcile_report_to_wire(
                         meerkat_contracts::WireMobReconcileStage::Retire
                     }
                 },
-                error: failure.error.to_string(),
+                error: meerkat_contracts::WireMobError {
+                    code: meerkat_mob::mob_error_wire_code(&failure.error),
+                    message: failure.error.to_string(),
+                },
             })
             .collect(),
     }

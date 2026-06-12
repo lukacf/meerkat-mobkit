@@ -381,7 +381,10 @@ async fn handle_wire(
             };
         }
     };
-    let mid = meerkat_mob::ids::MeerkatId::from(remote_member);
+    // The control plane speaks the public alias space; the local roster
+    // holds comms-safe encoded ids (meerkat 0.7 MemberCommsName), so encode
+    // at this boundary.
+    let mid = crate::member_comms_id::mob_member_id(remote_member);
     let result = if wire {
         handle
             .wire(mid, meerkat_mob::PeerTarget::External(spec))
@@ -414,7 +417,7 @@ async fn handle_inject(
             };
         }
     };
-    let mid = meerkat_mob::ids::MeerkatId::from(remote_member);
+    let mid = crate::member_comms_id::mob_member_id(remote_member);
     let member = match handle.member(&mid).await {
         Ok(m) => m,
         Err(err) => {
@@ -448,14 +451,21 @@ async fn handle_lookup_member(
     handle: &meerkat_mob::MobHandle,
     remote_member: &str,
 ) -> ControlResponse {
-    let mid = meerkat_mob::ids::MeerkatId::from(remote_member);
+    let mid = crate::member_comms_id::mob_member_id(remote_member);
     let mob_id = handle.mob_id().to_string();
     let entry = match handle.get_member(&mid).await {
-        Some(e) => e,
-        None => {
+        Ok(Some(e)) => e,
+        Ok(None) => {
             return ControlResponse::Err {
                 code: "unknown_member".to_string(),
                 message: format!("member '{remote_member}' not in mob '{mob_id}'"),
+            };
+        }
+        // A faulted lookup is a mob error, not an unknown member.
+        Err(err) => {
+            return ControlResponse::Err {
+                code: "mob_error".to_string(),
+                message: err.to_string(),
             };
         }
     };
@@ -468,7 +478,9 @@ async fn handle_lookup_member(
             };
         }
     };
-    let comms_name = format!("{}/{}/{}", mob_id, entry.role, remote_member);
+    // The comms name derives from the roster id (the comms-safe encoding),
+    // matching meerkat-mob's `derived_comms_name()` — not the public alias.
+    let comms_name = format!("{}/{}/{}", mob_id, entry.role, mid);
     ControlResponse::Member {
         peer_id,
         comms_name,

@@ -53,7 +53,7 @@ async fn build_runtime() -> (TempDir, UnifiedRuntime) {
 id = "signed-peer-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]
@@ -63,7 +63,7 @@ comms = true
     .expect("parse mob definition");
     for binding in definition.profiles.values_mut() {
         if let Some(profile) = binding.as_inline_mut() {
-            profile.model = "gpt-5.2".to_string();
+            profile.model = "gpt-5.5".to_string();
         }
     }
 
@@ -181,7 +181,7 @@ async fn wire_local_rejects_non_inproc_without_pubkey() {
     handle
         .ensure_member(meerkat_mob::SpawnMemberSpec::new(
             meerkat_mob::ProfileName::from("lead"),
-            meerkat_mob::ids::MeerkatId::from("alice"),
+            meerkat_mob::ids::AgentIdentity::from("alice"),
         ))
         .await
         .expect("ensure_member");

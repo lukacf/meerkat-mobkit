@@ -68,7 +68,7 @@ fn build_phase2_mob_spec(temp_dir: &tempfile::TempDir) -> MobBootstrapSpec {
 id = "phase2-unified-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]
@@ -174,18 +174,20 @@ async fn get_raw(address: SocketAddr, path: &str, timeout: Duration) -> String {
 #[tokio::test]
 #[ignore]
 async fn req_002_builder_returns_unified_runtime_and_reference_app_is_unified_only() {
-    let missing_mob_spec = match UnifiedRuntime::builder()
-        .module_config(MobKitConfig {
-            modules: vec![],
-            discovery: DiscoverySpec {
-                namespace: "phase2-builder-missing-mob".to_string(),
+    let missing_mob_spec = match Box::pin(
+        UnifiedRuntime::builder()
+            .module_config(MobKitConfig {
                 modules: vec![],
-            },
-            pre_spawn: vec![],
-        })
-        .timeout(Duration::from_secs(1))
-        .build()
-        .await
+                discovery: DiscoverySpec {
+                    namespace: "phase2-builder-missing-mob".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            })
+            .timeout(Duration::from_secs(1))
+            .build(),
+    )
+    .await
     {
         Ok(_) => panic!("missing mob_spec should return a typed builder error"),
         Err(error) => error,
@@ -196,11 +198,13 @@ async fn req_002_builder_returns_unified_runtime_and_reference_app_is_unified_on
     ));
 
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let missing_module_config = match UnifiedRuntime::builder()
-        .mob_spec(build_phase2_mob_spec(&temp_dir))
-        .timeout(Duration::from_secs(1))
-        .build()
-        .await
+    let missing_module_config = match Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_phase2_mob_spec(&temp_dir))
+            .timeout(Duration::from_secs(1))
+            .build(),
+    )
+    .await
     {
         Ok(_) => panic!("missing module_config should return a typed builder error"),
         Err(error) => error,
@@ -210,20 +214,22 @@ async fn req_002_builder_returns_unified_runtime_and_reference_app_is_unified_on
         UnifiedRuntimeBuilderError::MissingRequiredField(UnifiedRuntimeBuilderField::ModuleConfig)
     ));
 
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_phase2_mob_spec(&temp_dir))
-        .module_config(MobKitConfig {
-            modules: vec![],
-            discovery: DiscoverySpec {
-                namespace: "phase2-builder-success".to_string(),
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_phase2_mob_spec(&temp_dir))
+            .module_config(MobKitConfig {
                 modules: vec![],
-            },
-            pre_spawn: vec![],
-        })
-        .timeout(Duration::from_secs(1))
-        .build()
-        .await
-        .expect("builder should return unified runtime");
+                discovery: DiscoverySpec {
+                    namespace: "phase2-builder-success".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            })
+            .timeout(Duration::from_secs(1))
+            .build(),
+    )
+    .await
+    .expect("builder should return unified runtime");
     assert_eq!(
         runtime.mob_handle().status().await.unwrap(),
         MobState::Running
@@ -255,20 +261,22 @@ fn sc_001_reference_app_router_proves_unified_owned_console_path() {
 #[ignore]
 async fn req_002_router_builders_prove_console_and_sse_behavior() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_phase2_mob_spec(&temp_dir))
-        .module_config(MobKitConfig {
-            modules: vec![],
-            discovery: DiscoverySpec {
-                namespace: "phase2-router-builder-proof".to_string(),
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_phase2_mob_spec(&temp_dir))
+            .module_config(MobKitConfig {
                 modules: vec![],
-            },
-            pre_spawn: vec![],
-        })
-        .timeout(Duration::from_secs(1))
-        .build()
-        .await
-        .expect("build unified runtime");
+                discovery: DiscoverySpec {
+                    namespace: "phase2-router-builder-proof".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            })
+            .timeout(Duration::from_secs(1))
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
 
     runtime
         .spawn(spawn_spec("lead", "router"))
@@ -327,20 +335,22 @@ async fn req_002_router_builders_prove_console_and_sse_behavior() {
 #[ignore]
 async fn req_002_serve_proves_reference_console_route_behavior() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_phase2_mob_spec(&temp_dir))
-        .module_config(MobKitConfig {
-            modules: vec![],
-            discovery: DiscoverySpec {
-                namespace: "phase2-serve-proof".to_string(),
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_phase2_mob_spec(&temp_dir))
+            .module_config(MobKitConfig {
                 modules: vec![],
-            },
-            pre_spawn: vec![],
-        })
-        .timeout(Duration::from_secs(1))
-        .build()
-        .await
-        .expect("build unified runtime");
+                discovery: DiscoverySpec {
+                    namespace: "phase2-serve-proof".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            })
+            .timeout(Duration::from_secs(1))
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -373,20 +383,22 @@ async fn req_002_serve_proves_reference_console_route_behavior() {
 #[ignore]
 async fn e2e_001_real_http_interactions_stream_sse_through_unified_runtime() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_phase2_mob_spec(&temp_dir))
-        .module_config(MobKitConfig {
-            modules: vec![],
-            discovery: DiscoverySpec {
-                namespace: "phase2-e2e-sse".to_string(),
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_phase2_mob_spec(&temp_dir))
+            .module_config(MobKitConfig {
                 modules: vec![],
-            },
-            pre_spawn: vec![],
-        })
-        .timeout(Duration::from_secs(1))
-        .build()
-        .await
-        .expect("build unified runtime");
+                discovery: DiscoverySpec {
+                    namespace: "phase2-e2e-sse".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            })
+            .timeout(Duration::from_secs(1))
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
 
     runtime
         .spawn(spawn_spec("lead", "router"))
@@ -433,7 +445,7 @@ async fn e2e_001_real_http_interactions_stream_sse_through_unified_runtime() {
 #[ignore]
 async fn req_008_reconcile_updates_routing_wiring_when_router_module_is_loaded() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
+    let runtime = Box::pin(UnifiedRuntime::builder()
         .mob_spec(build_phase2_mob_spec(&temp_dir))
         .module_config(MobKitConfig {
             modules: vec![shell_module(
@@ -447,7 +459,7 @@ async fn req_008_reconcile_updates_routing_wiring_when_router_module_is_loaded()
             pre_spawn: vec![],
         })
         .timeout(Duration::from_secs(2))
-        .build()
+        .build())
         .await
         .expect("build unified runtime");
 
@@ -503,7 +515,7 @@ async fn req_008_reconcile_updates_routing_wiring_when_router_module_is_loaded()
 #[ignore]
 async fn req_008_reconcile_route_mutation_failure_is_typed() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
+    let runtime = Box::pin(UnifiedRuntime::builder()
         .mob_spec(build_phase2_mob_spec(&temp_dir))
         .module_config(MobKitConfig {
             modules: vec![shell_module(
@@ -517,7 +529,7 @@ async fn req_008_reconcile_route_mutation_failure_is_typed() {
             pre_spawn: vec![],
         })
         .timeout(Duration::from_secs(2))
-        .build()
+        .build())
         .await
         .expect("build unified runtime");
 

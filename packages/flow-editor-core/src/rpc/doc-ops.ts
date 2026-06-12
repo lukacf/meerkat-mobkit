@@ -1,0 +1,305 @@
+// @ts-nocheck — migration window only (removed by the S23 strictness
+// ratchet): the rpc-doc-ops functions move byte-verbatim as plain JS, and
+// their `options = {}` / `params = {}` / `row = {}` parameter defaults plus
+// destructured request options raise TS2339/TS2345 under .ts semantics.
+// Source-contract pins this exact text (e.g. saveDocument's guard threading
+// and applyAuthoringOperationDocument's snapshot id), so suppression must
+// live at file level, not in the moved bodies. Resolution/linkage stays
+// guarded behaviorally: the projection suite and export-keys test load the
+// bundle and exercise these functions, so a missed import or re-export
+// still fails the gate as a ReferenceError.
+//
+// Document-operation RPC wrappers for the Flow Editor controller plane.
+// Moved verbatim from the controller.js rpc-doc-ops range: schema/
+// capability/catalog loads, document validate/source/export/deploy/import/
+// list/get/create/save/delete, MobKit-owned undo/redo history steps, the
+// authoring operation apply path with draft and catalog snapshot guards,
+// createAuthoringOperationRunner (a stateful per-runner promise queue —
+// moved intact as a closure factory), graph projection RPCs, and decoded
+// file import params projection.
+import { authoringProjectionFromOperationResult } from "../catalogs/hydration";
+import { normalizeDeploySettings } from "../document/build-projection";
+import { flowRegistryRowIsRuntimeProjection } from "../registry/flow-registry";
+import {
+  authoringOperationAvailability,
+  authoringOperationFromIntent,
+  callRpc,
+  rpcMethod,
+} from "./client";
+
+export async function loadSchema(options = {}) {
+  return callRpc(rpcMethod("schema"), {}, options);
+}
+
+export async function loadCapabilities(options = {}) {
+  return callRpc("mobkit/capabilities", {}, options);
+}
+
+export async function loadCatalogs(options = {}) {
+  return callRpc(rpcMethod("catalogs"), {}, options);
+}
+
+export async function validateDocument(document, options = {}) {
+  const { signal, rkatValidate, rkat_validate, ...requestOptions } = options || {};
+  return callRpc(rpcMethod("validate"), {
+    document,
+    rkat_validate: rkatValidate ?? rkat_validate ?? true,
+    ...requestOptions,
+  }, { signal });
+}
+
+export async function sourceDocument(document, options = {}) {
+  const { signal, ...requestOptions } = options || {};
+  return callRpc(rpcMethod("source"), { document, ...requestOptions }, { signal });
+}
+
+export async function exportDocument(document, options = {}) {
+  const { signal, ...requestOptions } = options || {};
+  return callRpc(rpcMethod("export"), { document, ...requestOptions }, { signal });
+}
+
+export async function deployDocument(document, options = {}) {
+  const { signal, ...requestOptions } = options || {};
+  return callRpc(rpcMethod("deploy"), { document, ...requestOptions }, { signal });
+}
+
+export async function deployCommandPreviewForDocument(document, options = {}) {
+  const { signal, packPath, prompt: optionPrompt, deploySettings, ...requestOptions } = options || {};
+  const sourceDocument = document && typeof document === "object" ? document : {};
+  const deploy = normalizeDeploySettings(sourceDocument.deploy || deploySettings);
+  const prompt = String(optionPrompt || deploy.prompt || "").trim();
+  const request = {
+    document: {
+      ...sourceDocument,
+      deploy,
+    },
+    ...requestOptions,
+  };
+  if (String(packPath || "").trim()) request.pack_path = String(packPath).trim();
+  if (prompt) request.prompt = prompt;
+  return callRpc(rpcMethod("deployCommand"), request, { signal });
+}
+
+export async function importDocument(params, options = {}) {
+  return callRpc(rpcMethod("import"), params || {}, options);
+}
+
+export async function listDocuments(params = {}, options = {}) {
+  return callRpc(rpcMethod("list"), params || {}, options);
+}
+
+export async function getDocument(id, params = {}, options = {}) {
+  return callRpc(rpcMethod("get"), { ...(params || {}), id }, options);
+}
+
+export async function createDocument(spec = {}, options = {}) {
+  return callRpc(rpcMethod("create"), spec || {}, options);
+}
+
+// MobKit-owned history steps over the draft store: the server restores a
+// snapshot it recorded itself, so the browser never authors restore state.
+export async function undoDocument(params = {}, options = {}) {
+  return historyStepDocument("undo", params, options);
+}
+
+export async function redoDocument(params = {}, options = {}) {
+  return historyStepDocument("redo", params, options);
+}
+
+export async function historyStepDocument(direction, params = {}, options = {}) {
+  const { signal } = options || {};
+  const request = { id: String(params.id || "").trim() };
+  const expectedRevision = params.expected_revision ?? params.expectedRevision;
+  if (expectedRevision !== undefined && expectedRevision !== null && expectedRevision !== "") {
+    request.expected_revision = Number(expectedRevision);
+  }
+  const expectedEtag = String(params.expected_etag ?? params.expectedEtag ?? "").trim();
+  if (expectedEtag) request.expected_etag = expectedEtag;
+  return callRpc(rpcMethod(direction), request, { signal });
+}
+
+export async function saveDocument(row = {}, options = {}) {
+  if (flowRegistryRowIsRuntimeProjection(row)) {
+    return {
+      ok: false,
+      error: "runtime_projection_read_only",
+      row: null,
+      reason: "Runtime flow projections must be forked into a MobKit draft before saving.",
+    };
+  }
+  const document = row.document;
+  const request = {
+    id: row.id || row.currentFlowId,
+    document,
+    validation: row.validation ?? null,
+    stage: row.stage,
+    trigger: row.trigger,
+    source: row.source,
+  };
+  const expectedRevision = row.expectedRevision ?? row.expected_revision ?? row.baseRevision ?? row.base_revision ?? row.revision ?? row.draft_revision;
+  if (expectedRevision !== undefined && expectedRevision !== null && expectedRevision !== "") {
+    request.expected_revision = Number(expectedRevision);
+  }
+  const expectedEtag = row.expectedEtag ?? row.expected_etag ?? row.draft_etag ?? row.etag;
+  if (expectedEtag) {
+    request.expected_etag = String(expectedEtag);
+  }
+  return callRpc(rpcMethod("save"), request, options);
+}
+
+export async function deleteDocument(id, params = {}, options = {}) {
+  return callRpc(rpcMethod("delete"), { ...(params || {}), id }, options);
+}
+
+export async function applyAuthoringOperationDocument(document, operation, options = {}) {
+  const {
+    signal,
+    catalogSnapshot,
+    catalog_snapshot,
+    expectedCatalogSnapshotId,
+    expected_catalog_snapshot_id,
+    ...requestOptions
+  } = options || {};
+  const expectedSnapshotId = String(
+    expectedCatalogSnapshotId
+    ?? expected_catalog_snapshot_id
+    ?? catalogSnapshot?.id
+    ?? catalog_snapshot?.id
+    ?? catalogSnapshot
+    ?? catalog_snapshot
+    ?? "",
+  ).trim();
+  return callRpc(rpcMethod("applyOperation"), {
+    document,
+    operation,
+    ...(expectedSnapshotId ? { expected_catalog_snapshot_id: expectedSnapshotId } : {}),
+    ...requestOptions,
+  }, { signal });
+}
+
+export function isDraftGuardConflictError(error) {
+  const message = String(error?.message || error || "");
+  return message.includes("draft revision conflict") || message.includes("draft etag conflict");
+}
+
+export function createAuthoringOperationRunner(options = {}) {
+  const hooks = options && typeof options === "object" ? options : {};
+  let queue = Promise.resolve();
+  const runOperation = async (operation, enqueuedRevision) => {
+    if (hooks.isRevisionCurrent && !hooks.isRevisionCurrent(enqueuedRevision)) {
+      return {
+        ok: false,
+        error: hooks.getStaleError?.() || "MobKit authoring operation result is stale",
+      };
+    }
+    const translatedOperation = authoringOperationFromIntent(operation);
+    const availability = authoringOperationAvailability(
+      hooks.getAuthoringOperations?.() || hooks.authoringOperations || {},
+      translatedOperation?.type,
+    );
+    if (!availability.supported) return { ok: false, error: availability.error };
+    const requestToken = hooks.getCurrentRevision?.();
+    let document;
+    try {
+      document = hooks.getCurrentDocument?.();
+    } catch (error) {
+      return { ok: false, error: error?.message || String(error) };
+    }
+    let result;
+    try {
+      result = await applyAuthoringOperationDocument(document, translatedOperation, {
+        ...(hooks.getDraftGuard?.() || {}),
+        catalogSnapshot: hooks.getCatalogSnapshot?.(),
+      });
+    } catch (error) {
+      if (!isDraftGuardConflictError(error)) throw error;
+      // Our own autosave raced this operation and bumped the draft store
+      // revision. The submitted document is still the freshest authoring
+      // state, so retry once without the optimistic store guard; save-time
+      // concurrency control is unaffected.
+      result = await applyAuthoringOperationDocument(document, translatedOperation, {
+        catalogSnapshot: hooks.getCatalogSnapshot?.(),
+      });
+    }
+    if (hooks.isRevisionCurrent && !hooks.isRevisionCurrent(requestToken)) {
+      return {
+        ok: false,
+        error: hooks.getStaleError?.() || "MobKit authoring operation result is stale",
+      };
+    }
+    const projection = authoringProjectionFromOperationResult(result, hooks.getProjectionDefaults?.() || {});
+    if (!projection) {
+      return {
+        ok: false,
+        error: hooks.getMissingDocumentError?.() || "MobKit authoring operation did not return a document",
+      };
+    }
+    hooks.beginProjectionSync?.();
+    hooks.applyProjection?.(projection);
+    hooks.markDraft?.();
+    return result;
+  };
+  return (operation) => {
+    const enqueuedRevision = hooks.getCurrentRevision?.();
+    const run = queue.catch(() => null).then(() => runOperation(operation, enqueuedRevision));
+    queue = run.catch(() => null);
+    return run;
+  };
+}
+
+export async function graphProjectionDocument(document, options = {}) {
+  const { signal, ...requestOptions } = options || {};
+  return callRpc(rpcMethod("graphProjection"), { document, ...requestOptions }, { signal });
+}
+
+export async function graphToFlowDocument(document, options = {}) {
+  const { signal, ...requestOptions } = options || {};
+  return callRpc(rpcMethod("graphToFlow"), { document, ...requestOptions }, { signal });
+}
+
+export function importParamsFromDecodedFile(input = {}) {
+  const {
+    filename = "",
+    mediaType = "",
+    kind = "",
+    text = "",
+    parsedJson,
+    contentBase64 = "",
+  } = input;
+  const sourceMeta = {
+    source_name: String(filename || ""),
+    source_media_type: String(mediaType || ""),
+  };
+  const filenameText = String(filename || "");
+  const mediaTypeText = String(mediaType || "");
+  const sourceKind = String(kind || inferDecodedFileKind(filenameText, mediaTypeText)).toLowerCase();
+  if (sourceKind === "toml") {
+    return { ...sourceMeta, mob_toml: String(text || "") };
+  }
+  if (sourceKind === "json") {
+    const parsed = Object.prototype.hasOwnProperty.call(input, "parsedJson")
+      ? parsedJson
+      : parseDecodedJsonImport(text, filenameText);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? { ...parsed, ...sourceMeta }
+      : { ...sourceMeta, document: parsed };
+  }
+  return { ...sourceMeta, content_base64: String(contentBase64 || "") };
+}
+
+export function inferDecodedFileKind(filename, mediaType) {
+  const name = String(filename || "");
+  const type = String(mediaType || "").toLowerCase();
+  if (/\.toml$/i.test(name) || type.includes("toml")) return "toml";
+  if (/\.json$/i.test(name) || type.includes("json")) return "json";
+  return "binary";
+}
+
+export function parseDecodedJsonImport(text, filename = "") {
+  try {
+    return JSON.parse(String(text || ""));
+  } catch (error) {
+    const label = String(filename || "JSON import");
+    throw new Error(`${label} is not valid JSON: ${error?.message || error}`);
+  }
+}

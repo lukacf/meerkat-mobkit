@@ -3,6 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Meerkat 0.7's machine-authority code allocates huge debug-build stack
+# frames. The mdm_mob_target binary sizes its own threads; this export is
+# belt and braces for prebuilt debug binaries launched from the pack scripts.
+export RUST_MIN_STACK="${RUST_MIN_STACK:-33554432}"
+
 command="${1:---smoke}"
 if [[ $# -gt 0 ]]; then
   shift

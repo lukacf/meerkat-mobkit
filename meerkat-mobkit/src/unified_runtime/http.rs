@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::routing::get;
-use meerkat_mob::ids::MeerkatId;
 
 use crate::console_aggregator::{
     ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
@@ -12,6 +11,7 @@ use crate::console_aggregator::{
 use crate::http_console::{
     console_frontend_router, console_json_router_with_runtime_events_and_policy,
 };
+use crate::http_flow_editor::protected_flow_editor_router_with_runtime_catalog;
 use crate::http_sse::{
     agent_events_sse_router_with_access_and_priming, mob_events_sse_router_with_access_and_priming,
     mob_structural_events_sse_router_with_access_and_priming,
@@ -83,6 +83,8 @@ impl UnifiedRuntime {
         // must carry a valid bearer / auth_token. Pre-fix, only the
         // structural-events route gated; tier-2 (`/agents/{id}/events`)
         // and tier-3 (`/mob/events`) shipped unauthenticated.
+        let flow_editor_decisions = decisions.clone();
+        let flow_editor_runtime_catalog = self.mobpack_runtime_catalog_state_snapshot();
         let sse_decisions_a = decisions.clone();
         let sse_decisions_b = decisions.clone();
         let sse_decisions_c = decisions.clone();
@@ -90,6 +92,11 @@ impl UnifiedRuntime {
         Router::new()
             .route("/healthz", get(|| async { "ok" }))
             .merge(self.build_console_frontend_router())
+            .merge(protected_flow_editor_router_with_runtime_catalog(
+                flow_editor_decisions,
+                flow_editor_runtime_catalog,
+                access.clone(),
+            ))
             .merge(self.build_console_json_router_with_policy(decisions, visibility_policy))
             .merge(agent_events_sse_router_with_access_and_priming(
                 Arc::new(move |agent_id| {
@@ -97,7 +104,9 @@ impl UnifiedRuntime {
                     Box::pin(async move {
                         runtime
                             .handle()
-                            .subscribe_agent_events(&MeerkatId::from(agent_id))
+                            .subscribe_agent_events(&crate::member_comms_id::mob_member_id(
+                                &agent_id,
+                            ))
                             .await
                             .map_err(Into::into)
                     })
