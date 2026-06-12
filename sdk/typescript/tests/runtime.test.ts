@@ -1076,14 +1076,14 @@ describe("MobHandle.findMembers()", () => {
       {
         agent_identity: "m-1",
         role: "a",
-        state: "Active",
+        state: "active",
         wired_to: [],
         labels: {},
       },
       {
         agent_identity: "m-2",
         role: "b",
-        state: "Active",
+        state: "active",
         wired_to: [],
         labels: {},
       },
@@ -1116,7 +1116,7 @@ describe("MobHandle.listMembers()", () => {
       {
         agent_identity: "m-1",
         role: "a",
-        state: "Active",
+        state: "active",
         wired_to: [],
         labels: {},
       },

@@ -39,6 +39,7 @@ const inspector = componentsSrc(path.join("inspector", "inspector.tsx"));
 const overlays = componentsSrc(path.join("overlays", "overlays.tsx"));
 const agents = componentsSrc(path.join("agents", "agents.tsx"));
 const builder = componentsSrc(path.join("builder", "builder.tsx"));
+const echoText = componentsSrc(path.join("shared", "echo-text.tsx"));
 const devServer = fs.readFileSync(path.join(root, "dev-server.cjs"), "utf8");
 const makefile = fs.readFileSync(path.join(root, "..", "Makefile"), "utf8");
 const ciWorkflow = fs.readFileSync(path.join(root, "..", ".github", "workflows", "ci.yml"), "utf8");
@@ -1315,7 +1316,16 @@ assert(!/kind:\s*["']crit["']|glyph:\s*["']!["']|head:\s*["'](?:Deploy|Source|Mo
 assert.match(app, /const handleValidate = async \(\) => \{[\s\S]*const projected = await buildMobKitProjectedDocument\(\);[\s\S]*const document = projected\.document;[\s\S]*requestToken = projected\.requestToken;[\s\S]*MobKitFlowController\.validateDocument\(document,\s*currentDraftGuard\(\)\);[\s\S]*if \(!authoringRevisionIsCurrent\(requestToken\)\) return;[\s\S]*persistCurrentOutcome\(outcome\)/, "stale validation responses must not write validation, stage, or flow-row state after an edit");
 assert.match(app, /const handleValidate = async \(\) => \{[\s\S]*finally \{[\s\S]*if \(requestToken === null \|\| authoringRevisionIsCurrent\(requestToken\)\) \{[\s\S]*validationSheetOpenTransition\(\)[\s\S]*\}[\s\S]*setApiBusy\(false\);[\s\S]*\}/, "stale validation responses must not open the validation sheet after an edit");
 assert.match(app, /const handlePublish = async \(\) => \{[\s\S]*const projected = await buildMobKitProjectedDocument\(\);[\s\S]*const document = projected\.document;[\s\S]*requestToken = projected\.requestToken;[\s\S]*MobKitFlowController\.exportDocument\(document,\s*currentDraftGuard\(\)\);[\s\S]*if \(!authoringRevisionIsCurrent\(requestToken\)\) return;[\s\S]*persistCurrentOutcome\(outcome\)/, "stale publish/export responses must not write published validation state after an edit");
-assert.match(app, /const handleDeploy = async \(\{ execute \}\) => \{[\s\S]*const projected = await buildMobKitProjectedDocument\(\);[\s\S]*const document = projected\.document;[\s\S]*requestToken = projected\.requestToken;[\s\S]*MobKitFlowController\.deployDocument\(document, \{ execute,\s*\.\.\.currentDraftGuard\(\) \}\);[\s\S]*if \(!authoringRevisionIsCurrent\(requestToken\)\) return;[\s\S]*persistCurrentOutcome\(outcome\)/, "stale deploy responses must not write validation, stage, or flow-row state after an edit");
+// A stale (mid-run edit) NON-execute deploy bails before writing any state.
+// An execute:true deploy is an authoritative host side effect that already
+// ran, so its outcome is persisted and the `deployed` host event fires even
+// when the authoring revision moved on; only the local validation-sheet
+// mutations stay gated behind the revision-currency check.
+assert.match(app, /const handleDeploy = async \(\{ execute \}\) => \{[\s\S]*const projected = await buildMobKitProjectedDocument\(\);[\s\S]*const document = projected\.document;[\s\S]*requestToken = projected\.requestToken;[\s\S]*MobKitFlowController\.deployDocument\(document, \{ execute,\s*\.\.\.currentDraftGuard\(\) \}\);[\s\S]*const revisionCurrent = authoringRevisionIsCurrent\(requestToken\);[\s\S]*if \(!revisionCurrent && !execute\) return;[\s\S]*persistCurrentOutcome\(outcome\);[\s\S]*if \(execute\) emitHostEvent\("deployed",[\s\S]*if \(!revisionCurrent\) return;[\s\S]*setValidationResults\(outcome\.validationRows\)/, "execute deploys must persist outcome and fire the deployed host event even after a mid-run edit; only stale non-execute deploys and stale local validation-sheet writes bail");
+// The outcome projection must read the freshest rows (flowsRef), never the
+// click-time `flows` closure, so a row updated during the blocking deploy is
+// not clobbered back to a stale snapshot (which re-arms the save loop).
+assert.match(app, /const persistCurrentOutcome = \(outcome\) => \{[\s\S]*flowRegistryPersistOutcomeProjection\(flowsRef\.current,/, "deploy outcome persistence must project against the live flows ref, not the click-time closure, to avoid clobbering rows updated during a blocking deploy");
 assert.match(app, /flowRegistryPersistDocumentProjection\(flows,[\s\S]*skipIfUnchanged:\s*true,[\s\S]*\},\s*\[[\s\S]*contract,[\s\S]*catalogs\.models,[\s\S]*catalogs\.toolCatalog,[\s\S]*catalogs\.contractMeta\.loaded,[\s\S]*\]\)/, "flow registry auto-persistence must rerun when MobKit contract/model/tool catalog inputs change the deployable document projection");
 assert.match(app, /flowRegistryPersistDocumentProjection\(flows,[\s\S]*document,[\s\S]*skipIfUnchanged:\s*true,[\s\S]*\},\s*\[[\s\S]*authoringDocument,[\s\S]*\]\)/, "flow registry auto-persistence must persist MobKit-returned authoring documents even when UI shards did not change");
 assert(!/state\?\.source\s*\|\|\s*["']mobkit\/mobpacks\/export["']|state\?\.filename\s*\|\|\s*["']mobkit\/mob\.toml["']/.test(overlays), "source overlays must not invent source provenance labels when export state omits them");
@@ -1932,7 +1942,7 @@ assert(!/studioAppendInstancesPatch|studioAppendEdgesPatch|graphControlShape|gra
 assert.match(app, /MobKitFlowController\.flowRegistryMarkDraftPatch/, "app shell must mark registry rows draft through the controller plane");
 assert.match(app, /MobKitFlowController\.flowRegistryPersistDocumentProjection/, "app shell must persist document snapshots through a single controller projection");
 assert.match(app, /MobKitFlowController\.flowRegistryPersistOutcomeProjection/, "app shell must persist MobKit API outcomes through a single controller projection");
-assert.match(app, /flowRegistryPersistOutcomeProjection\(flows,\s*\{[\s\S]*currentFlowId,[\s\S]*outcome/, "API outcome persistence must pass flow rows, current flow id, and the full controller outcome into the controller projection");
+assert.match(app, /flowRegistryPersistOutcomeProjection\(flowsRef\.current,\s*\{[\s\S]*currentFlowId,[\s\S]*outcome/, "API outcome persistence must pass the LIVE flow rows (flowsRef.current, not the click-time closure), current flow id, and the full controller outcome into the controller projection");
 assert.match(app, /flowRegistryPersistDocumentProjection\(flows,\s*\{[\s\S]*currentFlowId,[\s\S]*document,[\s\S]*validation,[\s\S]*stage/, "explicit document persistence must pass flow rows, document, validation, and stage into the controller projection");
 assert.match(app, /flowRegistryPersistDocumentProjection\(flows,\s*\{[\s\S]*previousSignature:\s*persistedDocumentSig\.current,[\s\S]*skipIfUnchanged:\s*true/, "autosave persistence must let the controller projection suppress unchanged document snapshots");
 assert(!/flowRegistryRememberDocumentPatch/.test(app), "app shell must not apply flow registry document row patches locally");
@@ -2129,6 +2139,27 @@ assert.match(controller, /function exportDownloadPayload[\s\S]*mobkit\/mobpacks\
 assert(!/result\.media_type\s*\|\|\s*["']application\/vnd\.meerkat\.mobpack["']|result\.filename\s*\|\|\s*["']mobkit-flow\.mobpack["']/.test(app), "browser download must not invent MobKit export media type or filename");
 assert.match(app, /function importParamsFromFile/, "browser file decoding belongs to the app UI shell");
 assert.match(app, /function rpcUrlFromShell/, "browser RPC URL discovery belongs to the app UI shell");
+
+// EchoText resyncs the local draft to the server-authoritative `value` on
+// blur, not only inside the `[value]`-dep effect. A per-keystroke
+// apply_operation that fails leaves the document value unchanged, so the
+// effect never fires; without the blur resync the typed character stays in
+// the field forever (phantom text not in the deployable document).
+assert.match(
+  echoText,
+  /onBlur:\s*\(e\)\s*=>\s*\{[\s\S]*focusedRef\.current\s*=\s*false;[\s\S]*setDraft\(value\s*\?\?\s*""\);[\s\S]*\},/,
+  "EchoText must resync the draft to the server-authoritative value on blur so a failed per-keystroke op cannot strand phantom text",
+);
+
+// Agent edits must not snapshot client studio history before a
+// server-authoritative authoring op: snap() bumps authoringRevision (via
+// markDraft) and the runner then drops any in-flight op whose enqueued
+// revision is stale, silently discarding the prior agent edit. Undo/redo are
+// server-backed (handleHistoryStep), so the studio history snap is dead here.
+assert(
+  !/studio\.snap\(\)/.test(agents),
+  "Agent intent handlers must not call studio.snap() before a server-authoritative op (it self-cancels in-flight agent edits)",
+);
 
 assert.match(
   devServer,

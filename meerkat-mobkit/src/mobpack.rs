@@ -14640,6 +14640,33 @@ fn document_from_params(params: &Value) -> Result<MobpackDocument, String> {
     document_from_value(params)
 }
 
+/// True when a mobpack archive carries an adaptive layer that import cannot
+/// reconstruct: the `manifest.toml` `[adaptive]` section, or `adaptive/`
+/// artifacts (`policies.toml`, `flowmaster.prompt.md`) written by
+/// [`append_adaptive_archive_files`]. Used to fail-closed on adaptive packs
+/// that lack a `mobkit/editor.json` (the only form import can round-trip).
+fn archive_carries_adaptive_layer(
+    manifest_toml: Option<&str>,
+    files: &BTreeMap<String, Vec<u8>>,
+) -> bool {
+    if manifest_toml.is_some_and(manifest_declares_adaptive_section) {
+        return true;
+    }
+    files
+        .keys()
+        .any(|path| path == "adaptive/policies.toml" || path == "adaptive/flowmaster.prompt.md")
+}
+
+/// True when a `manifest.toml` body contains a top-level `[adaptive]` table
+/// header (line-anchored so an `[adaptive.x]` subtable or a `[requires]`
+/// string value cannot false-match).
+fn manifest_declares_adaptive_section(manifest: &str) -> bool {
+    manifest
+        .lines()
+        .map(str::trim)
+        .any(|line| line == "[adaptive]")
+}
+
 fn document_from_archive_bytes(bytes: &[u8]) -> Result<MobpackDocument, String> {
     let decoder = GzDecoder::new(bytes);
     let mut archive = tar::Archive::new(decoder);
@@ -14690,7 +14717,7 @@ fn document_from_archive_bytes(bytes: &[u8]) -> Result<MobpackDocument, String> 
             let definition = MobDefinition::from_toml(mob_toml)
                 .map_err(|err| format!("failed to parse mob.toml from mobpack archive: {err}"))?;
             let fallback_name = document.name.trim().to_string();
-            let deploy = document.deploy;
+            let deploy = document.deploy.clone();
             let mut projected = project_definition_to_editor_document(
                 &definition,
                 mob_toml,
@@ -14698,9 +14725,35 @@ fn document_from_archive_bytes(bytes: &[u8]) -> Result<MobpackDocument, String> 
                 deploy,
             )?;
             hydrate_path_skill_content_from_archive(&mut projected, &files)?;
+            // The mob.toml reprojection (member/parallel/branch/repeat steps)
+            // cannot reconstruct the adaptive layer step. If the editor.json
+            // document carried one, reprojecting would silently gut the
+            // adaptive layer — keep the editor-authored document instead of
+            // dropping a step that 0.7.1 hosts run on.
+            if !adaptive_flow_steps(&document.flow).is_empty()
+                && adaptive_flow_steps(&projected.flow).is_empty()
+            {
+                return Ok(document);
+            }
             return Ok(projected);
         }
         return Ok(document);
+    }
+    // No `mobkit/editor.json`: the document is reconstructed by projecting
+    // `mob.toml`, which only produces member/parallel/branch/repeat steps. An
+    // adaptive pack (meerkat-side or hand-built) carries its adaptive layer in
+    // `manifest.toml [adaptive]` + `adaptive/` artifacts that the projection
+    // cannot read back. Refuse rather than silently import a gutted,
+    // non-adaptive document (re-export would also strip the `[requires]` /
+    // `[adaptive]` capability stamp).
+    if archive_carries_adaptive_layer(manifest_toml.as_deref(), &files) {
+        return Err(
+            "mobpack archive declares an adaptive layer ([adaptive] in manifest.toml) but \
+             carries no mobkit/editor.json; the Flow Editor cannot project the adaptive layer \
+             from mob.toml alone. Import the editor-authored pack (with mobkit/editor.json) or \
+             edit this pack with the meerkat tooling that produced it."
+                .to_string(),
+        );
     }
     let name = manifest_toml
         .as_deref()
@@ -28774,6 +28827,71 @@ model = "gpt-5.5"
         ] {
             assert!(paths.contains(path), "{paths:?}");
         }
+    }
+
+    /// Regression: an adaptive pack WITHOUT `mobkit/editor.json` (any
+    /// meerkat-side or hand-built adaptive pack) cannot be reconstructed by
+    /// the editor's mob.toml projection — it produces no adaptive step. Import
+    /// must refuse such a pack instead of silently importing a gutted,
+    /// non-adaptive document (which on re-export would also strip the
+    /// `[requires]` / `[adaptive]` capability stamp). The editor-authored pack
+    /// (with `mobkit/editor.json`) still round-trips with its adaptive step.
+    #[test]
+    fn archive_import_refuses_adaptive_pack_without_editor_json() {
+        let document = document_with_adaptive_layer();
+        let validation = validate_document(&document);
+        assert!(validation.ok, "{:?}", validation.diagnostics);
+        let export = export_mobpack(&json!({ "document": document })).expect("export");
+        let archive_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&export.content_base64)
+            .expect("archive bytes");
+
+        // Sanity: the full editor-authored archive imports WITH its adaptive
+        // step (the editor.json round-trip path).
+        let imported = import_mobpack(&json!({
+            "content_base64": export.content_base64,
+        }))
+        .expect("editor-authored adaptive pack imports");
+        let imported_document: MobpackDocument =
+            serde_json::from_value(imported["document"].clone()).expect("document");
+        assert!(
+            !adaptive_flow_steps(&imported_document.flow).is_empty(),
+            "editor-authored adaptive pack must keep its adaptive step"
+        );
+
+        // Strip mobkit/editor.json to simulate a meerkat-side / hand-built
+        // adaptive pack, preserving manifest.toml + adaptive/ artifacts.
+        let mut stripped_files = BTreeMap::<String, Vec<u8>>::new();
+        let mut archive = tar::Archive::new(GzDecoder::new(archive_bytes.as_slice()));
+        for entry in archive.entries().expect("archive entries") {
+            let mut entry = entry.expect("archive entry");
+            let path = entry
+                .path()
+                .expect("entry path")
+                .to_string_lossy()
+                .to_string();
+            if path == "mobkit/editor.json" {
+                continue;
+            }
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).expect("read entry");
+            stripped_files.insert(path, bytes);
+        }
+        assert!(
+            stripped_files.contains_key("adaptive/policies.toml"),
+            "stripped archive must still carry the adaptive artifacts"
+        );
+        let stripped_archive =
+            encode_deployable_mobpack_archive(&stripped_files).expect("re-encode stripped archive");
+
+        let err = import_mobpack(&json!({
+            "content_base64": base64::engine::general_purpose::STANDARD.encode(stripped_archive),
+        }))
+        .expect_err("adaptive pack without editor.json must be refused");
+        assert!(
+            err.contains("adaptive layer"),
+            "refusal must explain the adaptive-layer projection gap: {err}"
+        );
     }
 
     #[test]

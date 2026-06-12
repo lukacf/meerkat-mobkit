@@ -175,6 +175,12 @@ enum SendMessageTarget {
         identity: crate::identity_first::AgentIdentity,
         /// Live runtime member id bound to the identity, when materialized.
         runtime_member_id: Option<String>,
+        /// Bridge session bound to the identity at resolve time, when
+        /// materialized. Pins the reported session reference: the post-send
+        /// status re-read can race a concurrent retire/rebind, and an empty
+        /// session id on the wire would read as a valid session reference to
+        /// SDK typed results.
+        session_id: Option<meerkat_core::types::SessionId>,
     },
 }
 
@@ -190,6 +196,23 @@ async fn resolve_send_message_target(
     ) {
         return SendMessageTarget::MobMember;
     }
+    // Precedence pinning: the roster probe above is a point-in-time machine
+    // command. A member declared in the reconcile baseline is a roster
+    // member even when a concurrent retire/reconcile makes the probe read
+    // absent (reconcile retires stale members before the replacement spawn
+    // lands). Falling through to the identity bridge in that window would
+    // silently deliver to a same-named durable identity's conversation;
+    // keep raw member-id semantics instead, so the send either lands on the
+    // (re)spawned member or surfaces the mob's own member-not-found error.
+    if runtime
+        .mob_runtime()
+        .baseline_member_specs()
+        .await
+        .iter()
+        .any(|spec| spec.identity.as_str() == member_id)
+    {
+        return SendMessageTarget::MobMember;
+    }
     let Some(identity_rt) = identity_runtime.or_else(|| runtime.identity_runtime()) else {
         return SendMessageTarget::MobMember;
     };
@@ -203,6 +226,7 @@ async fn resolve_send_message_target(
             runtime_member_id: status
                 .agent_runtime_id
                 .map(|runtime_id| runtime_id.as_str().to_string()),
+            session_id: status.session_id,
         },
         // Unknown identity: keep raw member-id semantics so the original
         // mob `member not found` error surfaces.
@@ -326,6 +350,7 @@ pub(super) async fn handle_send_message(
                 SendMessageTarget::Identity {
                     identity_rt,
                     identity,
+                    session_id: resolve_time_session_id,
                     ..
                 } => match identity_rt
                     .send_with_mode(identity, &content, handling_mode)
@@ -333,12 +358,17 @@ pub(super) async fn handle_send_message(
                 {
                     // Report the bridge session that took the delivery —
                     // re-read after the send so a lazy materialization or a
-                    // delivered-session rebind is reflected.
+                    // delivered-session rebind is reflected. A concurrent
+                    // retire/rebind between the send and the re-read can
+                    // transiently surface no session; fall back to the
+                    // resolve-time binding rather than fabricating an empty
+                    // session reference on the wire.
                     Ok(_token) => Ok(identity_rt
                         .status(identity)
                         .await
                         .ok()
                         .and_then(|status| status.session_id)
+                        .or_else(|| resolve_time_session_id.clone())
                         .map(|session_id| session_id.to_string())
                         .unwrap_or_default()),
                     Err(err) => Err(err.to_string()),

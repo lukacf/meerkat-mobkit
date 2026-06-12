@@ -120,6 +120,22 @@ pub(crate) fn runtime_alias_str(member_id: &str) -> Cow<'_, str> {
     }
 }
 
+/// Project a mob runtime id (`{roster_member_id}:{generation}`) into the
+/// public alias space (`{alias}:{generation}`).
+///
+/// Agent events leave meerkat-mob keyed by [`AgentRuntimeId`]s built from
+/// roster binding atoms; the member-id component is the comms-safe encoding,
+/// so it must be decoded before any console/SDK projection — console replay
+/// resolution, the `mobkit/events/subscribe` buffer, `/mob/events` SSE, and
+/// per-agent ABAC view checks all speak the alias space.
+pub(crate) fn runtime_event_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId) -> String {
+    format!(
+        "{}:{}",
+        runtime_alias_str(runtime_id.identity.as_str()),
+        runtime_id.generation.get()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +182,22 @@ mod tests {
         let encoded = mob_member_id_str(alias);
         assert_ne!(encoded, alias, "marker-prefixed names must be re-encoded");
         assert_eq!(runtime_alias_str(&encoded), alias);
+    }
+
+    #[test]
+    fn runtime_event_alias_decodes_encoded_roster_member_ids() {
+        use meerkat_mob::ids::{AgentIdentity, AgentRuntimeId, Generation};
+
+        // Identity-first alias: the roster id is the comms-safe encoding and
+        // must decode back to the public alias before any event projection.
+        let encoded = mob_member_id_str("rt:review:singleton:0").into_owned();
+        let runtime_id =
+            AgentRuntimeId::new(AgentIdentity::from(encoded.as_str()), Generation::new(1));
+        assert_eq!(runtime_event_alias(&runtime_id), "rt:review:singleton:0:1");
+
+        // Plain member names pass through unchanged.
+        let runtime_id = AgentRuntimeId::initial(AgentIdentity::from("worker-one"));
+        assert_eq!(runtime_event_alias(&runtime_id), "worker-one:0");
     }
 
     #[test]

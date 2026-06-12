@@ -125,7 +125,11 @@ function AddAgentControl({ studio, setAgentSel, agentDefinitions = [], applyAgen
       setLastAddResult({ ok: false, error: definitionState.authoringOperationUnavailableError });
       return;
     }
-    if (studio.snap) studio.snap();
+    // No client-side history snapshot before a server-authoritative op: it
+    // bumps authoringRevision (via markDraft) and the runner then drops any
+    // in-flight op whose enqueued revision is now stale, silently discarding
+    // the prior agent edit. Undo/redo are server-backed (handleHistoryStep),
+    // so the studio history snap maintained here is dead for undo anyway.
     const result = await applyAgentIntent({ intent: "agent.addDefinition", definitionId });
     setLastAddResult(result);
     if (!result.ok) return;
@@ -219,7 +223,6 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       return;
     }
     try {
-      if (studio.snap) studio.snap();
       const result = await applyAgentIntent({ intent: "agent.updateMember", memberId: member.id, patch });
       if (!result?.ok) {
         setMemberEditError(mobKitOperationError(result, editorState.memberUpdateFallbackError));
@@ -246,7 +249,6 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       return;
     }
     try {
-      if (studio.snap) studio.snap();
       const result = await applyAgentIntent({ intent: "agent.addTool", memberId: member.id, toolId });
       if (!result?.ok) {
         setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
@@ -264,7 +266,6 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
       return;
     }
     try {
-      if (studio.snap) studio.snap();
       const result = await applyAgentIntent({ intent: "agent.removeTool", memberId: member.id, toolId });
       if (!result?.ok) {
         setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
@@ -911,7 +912,6 @@ function SkillAccess({ studio, member, agentAccessView = null, applyAgentIntent 
       return null;
     }
     try {
-      if (studio.snap) studio.snap();
       const result = await applyAgentIntent({ memberId: member.id, ...intentRequest });
       if (!result?.ok) {
         setInlineError(window.MobKitFlowController.operationErrorText(result, fallback));

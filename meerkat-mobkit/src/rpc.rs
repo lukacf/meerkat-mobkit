@@ -88,7 +88,8 @@ pub(crate) fn mobpack_authoring_capabilities() -> Value {
         "domain": "mobpack_authoring",
         "runtime_mutation": false,
         "host_mutation_methods": {
-            "mobkit/mobpacks/deploy": "when execute=true, writes a mobpack archive and runs rkat mob run on the host"
+            "mobkit/mobpacks/deploy": "when execute=true, writes a mobpack archive and runs rkat mob run on the host",
+            "mobkit/mobpacks/validate": "when rkat_validate=true, writes a mobpack archive and runs rkat mob validate on the host"
         },
         "deploy_command": "rkat mob run",
         "methods": MOBPACK_AUTHORING_METHODS,
@@ -2645,7 +2646,7 @@ async fn handle_unified_rpc_json_inner(
                     let continuity_health =
                         serde_json::to_value(&status.continuity_health).unwrap_or(Value::Null);
                     let result = serde_json::json!({
-                        "state": format!("{:?}", status.state),
+                        "state": identity_lifecycle_state_json(status.state),
                         "identity": status.identity.as_str(),
                         "agent_runtime_id": status.agent_runtime_id.as_ref().map(super::identity_first::AgentRuntimeId::as_str),
                         "session_id": status.session_id.as_ref().map(ToString::to_string),
@@ -3329,7 +3330,7 @@ async fn handle_unified_rpc_json_inner(
                         id: response_id,
                         result: Some(serde_json::json!({
                             "identity": identity.as_str(),
-                            "state": status.as_ref().map(|status| format!("{:?}", status.state)),
+                            "state": status.as_ref().map(|status| identity_lifecycle_state_json(status.state)),
                             "profile": status.as_ref().and_then(|status| status.profile.as_ref().map(meerkat_mob::ProfileName::as_str)),
                             "addressability": status.as_ref().map(|status| addressability_json(status.addressability)),
                             "display_name": status.as_ref().and_then(|status| status.display_name.as_ref().map(super::identity_first::DisplayName::as_str)),
@@ -4232,6 +4233,14 @@ fn addressability_json(addressability: crate::identity_first::AgentAddressabilit
         crate::identity_first::AgentAddressability::Addressable => "addressable",
         crate::identity_first::AgentAddressability::InternalOnly => "internal_only",
     }
+}
+
+/// Wire vocabulary for identity-first lifecycle states — see
+/// [`crate::identity_first::IdentityLifecycleState::wire_str`].
+fn identity_lifecycle_state_json(
+    state: crate::identity_first::IdentityLifecycleState,
+) -> &'static str {
+    state.wire_str()
 }
 
 fn identity_error_response(
@@ -5587,6 +5596,380 @@ comms = true
         assert!(
             message.starts_with("send_message failed:"),
             "unexpected error message: {message}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression: the member-state wire vocabulary is lowercase
+    /// (`"active"`/`"retiring"`, matching the published SDK constants) on
+    /// BOTH member-state surfaces — the roster member rows and the
+    /// identity-first status RPC. The identity surface used to Debug-format
+    /// the lifecycle state (`"Active"`), so consumers comparing across the
+    /// two surfaces broke on casing.
+    #[tokio::test]
+    async fn member_state_wire_vocabulary_is_lowercase_on_both_surfaces()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-state-vocabulary-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(5))
+                .build(),
+        )
+        .await?;
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "worker-one".to_string(),
+                None,
+                None,
+                None,
+            ))
+            .await?;
+
+        // Surface 1: roster member rows.
+        let raw = handle_unified_rpc_json(
+            &runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "mobkit/get_member",
+                "params": { "member_id": "worker-one" },
+            })
+            .to_string(),
+            Duration::from_secs(5),
+            None,
+            None,
+        )
+        .await;
+        let response: Value = serde_json::from_str(&raw)?;
+        assert_eq!(
+            response["result"]["state"],
+            json!("active"),
+            "member rows must speak the lowercase SDK vocabulary: {response:#?}"
+        );
+
+        // Surface 2: identity-first status RPC.
+        let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-state-vocabulary-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        });
+        let identity = AgentIdentity::parse("review:singleton")?;
+        identity_rt
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:review:singleton:0")?,
+                    session_id: meerkat_core::types::SessionId::new(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                Some(LeaseGrant {
+                    identity,
+                    fencing_token: FencingToken::new(1),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+        let identity_ctx = IdentityFirstContext {
+            runtime: Arc::new(identity_rt),
+            roster_provider: Arc::new(EmptyRosterProvider),
+            topology_provider: None,
+            customizer: None,
+        };
+        let raw = handle_unified_rpc_json(
+            &runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "mobkit/status_identity",
+                "params": { "identity": "review:singleton" },
+            })
+            .to_string(),
+            Duration::from_secs(5),
+            None,
+            Some(&identity_ctx),
+        )
+        .await;
+        let response: Value = serde_json::from_str(&raw)?;
+        assert_eq!(
+            response["result"]["state"],
+            json!("active"),
+            "identity status must speak the same lowercase vocabulary: {response:#?}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression: `mobkit/send_message` precedence is resolved from a
+    /// point-in-time roster probe. When a roster member whose id collides
+    /// with a registered durable identity is transiently absent mid-
+    /// reconcile (retire completes before the replacement spawn lands), the
+    /// send must NOT silently fall through to the identity bridge and land
+    /// in a different agent's conversation — membership declared in the
+    /// reconcile baseline pins raw member-id semantics, surfacing the mob's
+    /// own member-not-found error instead.
+    #[tokio::test]
+    async fn send_message_pins_baseline_member_over_identity_fallback()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-send-message-baseline-pin-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(5))
+                .build(),
+        )
+        .await?;
+
+        // Identity-first member backing the durable identity, plus a raw
+        // roster member with the colliding bare id.
+        for member in ["rt:draco-base-001:0", "draco-base-001"] {
+            runtime
+                .spawn(SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    member.to_string(),
+                    None,
+                    None,
+                    None,
+                ))
+                .await?;
+        }
+
+        let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-send-message-baseline-pin-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        });
+        let identity = AgentIdentity::parse("draco-base-001")?;
+        identity_rt
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:draco-base-001:0")?,
+                    session_id: meerkat_core::types::SessionId::new(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                Some(LeaseGrant {
+                    identity,
+                    fencing_token: FencingToken::new(1),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+        let identity_ctx = IdentityFirstContext {
+            runtime: Arc::new(identity_rt),
+            roster_provider: Arc::new(EmptyRosterProvider),
+            topology_provider: None,
+            customizer: None,
+        };
+
+        // The raw roster member is part of the declared baseline ...
+        runtime
+            .mob_runtime()
+            .set_baseline_member_specs(vec![SpawnMemberSpec::new(
+                meerkat_mob::ProfileName::from("worker"),
+                meerkat_mob::AgentIdentity::from("draco-base-001"),
+            )])
+            .await;
+        // ... and is transiently absent (reconcile retired it; the
+        // replacement spawn has not landed yet).
+        runtime
+            .mob_handle()
+            .retire(meerkat_mob::AgentIdentity::from("draco-base-001"))
+            .await?;
+
+        let raw = handle_unified_rpc_json(
+            &runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "mobkit/send_message",
+                "params": { "member_id": "draco-base-001", "message": "mid-reconcile send" },
+            })
+            .to_string(),
+            Duration::from_secs(10),
+            None,
+            Some(&identity_ctx),
+        )
+        .await;
+        let response: Value = serde_json::from_str(&raw)?;
+        assert_eq!(
+            response["error"]["code"],
+            json!(-32000),
+            "transiently-absent baseline member must keep raw member-id semantics \
+             instead of silently delivering through the identity bridge: {response:#?}"
+        );
+        let message = response["error"]["message"]
+            .as_str()
+            .expect("error message");
+        assert!(
+            message.starts_with("send_message failed:"),
+            "unexpected error message: {message}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression (meerkat 0.7.1 migration): an idle member's session
+    /// machine sits in `Stopped`, where the archive step's final `Retire`
+    /// transition is guard-rejected ("disposal completed but ArchiveSession
+    /// failed: … guard rejected transition from Stopped for input::Retire").
+    /// `mobkit/retire_member` and `mobkit/respawn_member` must treat that
+    /// bookkeeping failure as completed cleanup instead of surfacing -32000,
+    /// and a recovered respawn must leave an active replacement — never a
+    /// member wedged in `retiring` with its session disposed.
+    #[tokio::test]
+    async fn retire_and_respawn_rpcs_succeed_for_idle_member()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-idle-lifecycle-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(5))
+                .build(),
+        )
+        .await?;
+
+        for member in ["worker-one", "worker-two"] {
+            runtime
+                .spawn(SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    member.to_string(),
+                    None,
+                    None,
+                    None,
+                ))
+                .await?;
+        }
+
+        let send = |id: u64, method: &'static str, params: Value| {
+            let runtime = &runtime;
+            async move {
+                let raw = handle_unified_rpc_json(
+                    runtime,
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": method,
+                        "params": params,
+                    })
+                    .to_string(),
+                    Duration::from_secs(10),
+                    None,
+                    None,
+                )
+                .await;
+                serde_json::from_str::<Value>(&raw)
+            }
+        };
+
+        // Retire an idle member: must report accepted and remove the member.
+        let response = send(
+            1,
+            "mobkit/retire_member",
+            json!({"member_id": "worker-one"}),
+        )
+        .await?;
+        assert!(
+            response["error"].is_null(),
+            "retire_member must succeed for an idle member: {response:#?}"
+        );
+        assert_eq!(response["result"]["accepted"], json!(true));
+        assert!(
+            !runtime
+                .mob_handle()
+                .list_members_including_retiring()
+                .await
+                .iter()
+                .any(|entry| entry.agent_identity.as_str() == "worker-one"),
+            "retired member must leave the roster"
+        );
+
+        // Respawn an idle member: must report accepted and leave an active
+        // (not retiring) replacement in the roster.
+        let response = send(
+            2,
+            "mobkit/respawn_member",
+            json!({"member_id": "worker-two"}),
+        )
+        .await?;
+        assert!(
+            response["error"].is_null(),
+            "respawn_member must succeed for an idle member: {response:#?}"
+        );
+        assert_eq!(response["result"]["accepted"], json!(true));
+        let members = runtime.mob_handle().list_members_including_retiring().await;
+        let worker_two = members
+            .iter()
+            .find(|entry| entry.agent_identity.as_str() == "worker-two")
+            .expect("respawned member must remain in the roster");
+        assert_eq!(
+            worker_two.status,
+            meerkat_mob::MobMemberStatus::Active,
+            "respawned member must be active, not wedged in retiring"
         );
 
         Ok(())

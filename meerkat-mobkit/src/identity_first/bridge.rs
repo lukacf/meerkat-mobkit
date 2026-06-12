@@ -581,6 +581,31 @@ impl MobSessionBridge {
     }
 }
 
+/// Project meerkat 0.7's tri-state peer connectivity into an inspect-level
+/// reachable count, when the tri-state resolves one.
+///
+/// Only a resolved probe ([`WirePeerConnectivity::Known`]) contributes a
+/// live count. The not-applicable / probe-timed-out arms (and an uncomputed
+/// projection) return `None` so the caller falls back to the machine-owned
+/// wiring degree (`wired_to.len()`) instead of projecting 0 — a freshly
+/// wired member has peers regardless of whether a live probe resolved, and
+/// the sibling console alias surface computes the same wire field from
+/// `wired_to`; the two surfaces must agree.
+fn peer_reachable_count_from_connectivity(
+    connectivity: Option<&meerkat_contracts::WirePeerConnectivity>,
+) -> Option<usize> {
+    match connectivity {
+        Some(meerkat_contracts::WirePeerConnectivity::Known { snapshot }) => {
+            Some(snapshot.reachable_peer_count)
+        }
+        Some(
+            meerkat_contracts::WirePeerConnectivity::NotApplicable
+            | meerkat_contracts::WirePeerConnectivity::ProbeTimedOut,
+        )
+        | None => None,
+    }
+}
+
 /// External (peer-only) member provisioning on meerkat 0.7.1 requires a
 /// machine-minted owner context; plain `spawn_spec` fails closed by design.
 pub(crate) fn spawn_spec_requires_generated_owner_context(spawn_spec: &SpawnMemberSpec) -> bool {
@@ -1124,18 +1149,22 @@ impl SessionBridge for MobSessionBridge {
             .member_status(&mid)
             .await
             .map_err(|e| BridgeError::Mob(e.to_string()))?;
+        let peer_reachable_count =
+            match peer_reachable_count_from_connectivity(snap.peer_connectivity.as_ref()) {
+                Some(count) => count,
+                None => self
+                    .handle
+                    .get_member(&mid)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|entry| entry.wired_to.len())
+                    .unwrap_or(0),
+            };
         Ok(MemberInspection {
             output_preview: snap.output_preview.clone(),
             is_final: snap.is_final,
-            // Meerkat 0.7 carries peer connectivity as a tri-state; only a
-            // resolved snapshot contributes a reachable count (not-applicable
-            // and probe-timeout project as 0, matching the legacy `None` arm).
-            peer_reachable_count: match snap.peer_connectivity.as_ref() {
-                Some(meerkat_contracts::WirePeerConnectivity::Known { snapshot }) => {
-                    snapshot.reachable_peer_count
-                }
-                _ => 0,
-            },
+            peer_reachable_count,
         })
     }
 
@@ -1224,6 +1253,41 @@ mod tests {
             backend: None,
             binding: None,
         }
+    }
+
+    /// Regression: meerkat 0.7.1 made `member_status` peer connectivity a
+    /// tri-state. Only the `Known` arm carries a live count; the
+    /// not-applicable / probe-timed-out arms must defer to the machine-owned
+    /// wiring degree (`wired_to.len()`) instead of projecting 0, or
+    /// `peer_reachable_count` reads 0 for freshly role-wired members and
+    /// topology verification breaks.
+    #[test]
+    fn peer_reachable_count_tri_state_defers_to_wiring_when_unresolved() {
+        use meerkat_contracts::{WirePeerConnectivity, WirePeerConnectivitySnapshot};
+
+        let known = WirePeerConnectivity::Known {
+            snapshot: WirePeerConnectivitySnapshot {
+                reachable_peer_count: 3,
+                unknown_peer_count: 0,
+                unreachable_peers: Vec::new(),
+            },
+        };
+        assert_eq!(
+            peer_reachable_count_from_connectivity(Some(&known)),
+            Some(3),
+            "a resolved probe owns the count"
+        );
+        assert_eq!(
+            peer_reachable_count_from_connectivity(Some(&WirePeerConnectivity::NotApplicable)),
+            None,
+            "not-applicable must defer to the wiring fallback"
+        );
+        assert_eq!(
+            peer_reachable_count_from_connectivity(Some(&WirePeerConnectivity::ProbeTimedOut)),
+            None,
+            "probe timeout must defer to the wiring fallback"
+        );
+        assert_eq!(peer_reachable_count_from_connectivity(None), None);
     }
 
     #[test]

@@ -706,6 +706,18 @@ async fn console_send_handler(
     if state.decisions.console.read_only {
         return console_json_error(StatusCode::FORBIDDEN, "read_only", "console is read-only");
     }
+    // Prime the attribute cache from the live roster BEFORE the `agent.send`
+    // decision: role/label-scoped rules resolve through the cache, and on a
+    // cold cache the decision degrades to a bare-identity resource — a deny
+    // rule scoped by `roles`/`match_labels` would not match, so a scripted
+    // caller hitting `/console/send` as its first request could reach a
+    // member the rule was meant to exclude (fail-closed requires the
+    // attributes to be present when the rule is evaluated).
+    if let Some(runtime) = &state.runtime
+        && let Some(controller) = state.access.as_ref().filter(|c| c.enabled())
+    {
+        prime_access_cache_from_runtime(runtime, controller).await;
+    }
     if let Some(view) = auth_context.access_view.as_ref()
         && view.enforced()
         && !view.allows_agent(ACTION_AGENT_SEND, request.identity.as_str())
@@ -3486,7 +3498,7 @@ fn console_identity_status_json_from_identity_status(
 ) -> Value {
     json!({
         "identity": status.identity.as_str(),
-        "state": format!("{:?}", status.state),
+        "state": status.state.wire_str(),
         "role": status.profile.as_ref().map(ProfileName::as_str),
         "addressability": console_addressability_json(status.addressability),
         "display_name": status.display_name.as_ref().map(crate::identity_first::DisplayName::as_str),
@@ -3535,7 +3547,7 @@ fn console_identity_inspect_json_from_identity_status(
         .or_else(|| live_alias.map(|alias| alias.runtime_member_id.clone()));
     json!({
         "identity": status.identity.as_str(),
-        "state": format!("{:?}", status.state),
+        "state": status.state.wire_str(),
         "role": status.profile.as_ref().map(ProfileName::as_str),
         "addressability": console_addressability_json(status.addressability),
         "display_name": status.display_name.as_ref().map(crate::identity_first::DisplayName::as_str),

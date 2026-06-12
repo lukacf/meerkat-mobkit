@@ -842,6 +842,96 @@ async fn timeline_role_rules_resolve_without_prior_experience() {
     let _ = runtime.mob_handle().stop().await;
 }
 
+/// Regression: REST `/console/send` evaluates the `agent.send` decision
+/// before any cache-warming request (experience/timeline/RPC) has run, so
+/// the handler must prime the attribute cache itself. Without priming, a
+/// label-scoped deny rule does not match on a cold cache (the decision
+/// degrades to a bare-identity resource) and a scripted caller whose FIRST
+/// request is `/console/send` reaches a member the rule was meant to
+/// exclude.
+#[tokio::test]
+async fn rest_console_send_resolves_label_deny_on_cold_cache() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    // A member the deny rule is scoped to by label.
+    runtime
+        .spawn(
+            SpawnMemberSpec::from_wire(
+                "lead".to_string(),
+                MeerkatId::from("red-shadow").to_string(),
+                Some("You are red-shadow.".into()),
+                None,
+                None,
+            )
+            .with_labels(BTreeMap::from([("team".to_string(), "red".to_string())])),
+        )
+        .await
+        .expect("spawn labeled member");
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "everyone-sends".to_string(),
+                actions: vec!["agent.send".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "deny-red-team-send".to_string(),
+                effect: meerkat_mobkit::AccessEffect::Deny,
+                actions: vec!["agent.send".to_string()],
+                match_labels: BTreeMap::from([("team".to_string(), "red".to_string())]),
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    })
+    .expect("controller");
+    runtime.set_access_controller(controller);
+    let app = runtime.build_reference_app_router(decision_state(false));
+
+    let rest_send = |identity: &'static str, idempotency_key: &'static str| {
+        let app = app.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/console/send")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "identity": identity,
+                            "content": "hello",
+                            "origin": "test",
+                            "idempotency_key": idempotency_key,
+                        })
+                        .to_string(),
+                    ))
+                    .expect("send request"),
+            )
+            .await
+            .expect("send response")
+            .status()
+        }
+    };
+
+    // FIRST request of the process: the label-scoped deny must already
+    // resolve — without handler-level priming this read 200.
+    assert_eq!(
+        rest_send("red-shadow", "cold-deny-send").await,
+        StatusCode::FORBIDDEN,
+        "label-scoped deny must resolve on a cold cache"
+    );
+
+    // Members outside the deny scope still pass the same gate cold.
+    assert_ne!(
+        rest_send("router", "cold-allow-send").await,
+        StatusCode::FORBIDDEN,
+        "non-matching members must keep passing the send gate"
+    );
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
 #[tokio::test]
 async fn timeline_rpc_is_filtered_per_caller() {
     let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;

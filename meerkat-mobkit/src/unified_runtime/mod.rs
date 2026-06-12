@@ -957,7 +957,12 @@ fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<Uni
         source: "agent".to_string(),
         timestamp_ms: attributed.envelope.timestamp_ms,
         event: UnifiedEvent::Agent {
-            agent_id: attributed.source.to_string(),
+            // The runtime id's member component is the comms-safe roster
+            // encoding (meerkat 0.7 `MemberCommsName`); decode back to the
+            // public alias space here so console replay resolution, the
+            // `mobkit/events/subscribe` buffer, and the event log all key
+            // events by the same ids that spawn/reserve paths register.
+            agent_id: crate::member_comms_id::runtime_event_alias(&attributed.source),
             event_type: agent_event_type(&attributed.envelope.payload).to_string(),
             // Project through the console wire shape (not the raw 0.7 event)
             // so downstream surfaces — console timeline frames, the
@@ -967,5 +972,58 @@ fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<Uni
                 &attributed.envelope.payload,
             )),
         },
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use meerkat_mob::ids::Generation;
+
+    fn attributed_text_delta(member_id: &str, generation: u64) -> AttributedEvent {
+        AttributedEvent {
+            source: AgentRuntimeId::new(
+                AgentIdentity::from(member_id),
+                Generation::new(generation),
+            ),
+            source_fence_token: FenceToken::new(1),
+            role: ProfileName::from("worker"),
+            envelope: meerkat_core::event::EventEnvelope {
+                event_id: Default::default(),
+                source: meerkat_core::event::EventSourceIdentity::runtime("test"),
+                seq: 0,
+                mob_id: None,
+                timestamp_ms: 1,
+                payload: AgentEvent::TextDelta {
+                    delta: "hello".to_string(),
+                },
+            },
+        }
+    }
+
+    /// Regression: identity-first members spawn under comms-safe encoded
+    /// roster ids (`mk--…`); the agent-event ingest must decode the member
+    /// component back to the public alias space before console/SDK
+    /// projection, or events project under junk identities and reserved
+    /// interactions never complete.
+    #[test]
+    fn attributed_event_ingest_decodes_encoded_roster_member_ids() {
+        let encoded = crate::member_comms_id::mob_member_id_str("rt:review:singleton:0");
+        assert!(encoded.starts_with("mk--"), "precondition: alias encodes");
+        let unified = attributed_event_to_unified(attributed_text_delta(&encoded, 1));
+        let UnifiedEvent::Agent { agent_id, .. } = unified.event else {
+            panic!("expected agent event");
+        };
+        assert_eq!(agent_id, "rt:review:singleton:0:1");
+    }
+
+    #[test]
+    fn attributed_event_ingest_passes_plain_member_ids_through() {
+        let unified = attributed_event_to_unified(attributed_text_delta("worker-one", 0));
+        let UnifiedEvent::Agent { agent_id, .. } = unified.event else {
+            panic!("expected agent event");
+        };
+        assert_eq!(agent_id, "worker-one:0");
     }
 }

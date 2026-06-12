@@ -294,7 +294,11 @@ async fn mob_events_sse_handler(
     let stream = stream! {
         let mut seq = 0_u64;
         while let Some(attributed) = router_handle.event_rx.recv().await {
-            let source = attributed.source.to_string();
+            // Decode the comms-safe roster member id back to the public
+            // alias space: SDK `EventStream` consumers filter by alias, and
+            // fail-closed per-agent ABAC view rules are written against
+            // aliases — an encoded id would silently drop both.
+            let source = crate::member_comms_id::runtime_event_alias(&attributed.source);
             if stream_view
                 .as_ref()
                 .is_some_and(|view| !view.can_view_agent(&source))

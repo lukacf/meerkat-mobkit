@@ -322,6 +322,20 @@ export function flowRegistryRowFromDocument({
     source: String(flowRow?.source || source || ""),
     document,
     validation: validation ?? null,
+    // Carry the optimistic-concurrency fields through. Without them, rows
+    // hydrated from the backend list (bootstrap) lose their revision/etag,
+    // so `flowRegistryDraftGuard` returns `{}` (no `expected_revision`) and
+    // every save/apply_operation/undo/deploy runs UNGUARDED until the first
+    // save response replaces the row — two sessions opening the same draft
+    // would last-write-win over each other for the whole first-edit span.
+    ...(flowRegistryRowRevision(flowRow) !== null
+      ? { revision: flowRegistryRowRevision(flowRow) }
+      : {}),
+    ...(Number(flowRow?.draft_revision) >= 0 && flowRow?.draft_revision != null
+      ? { draft_revision: Number(flowRow.draft_revision) }
+      : {}),
+    ...(flowRow?.draft_etag ? { draft_etag: String(flowRow.draft_etag) } : {}),
+    ...(flowRow?.etag ? { etag: String(flowRow.etag) } : {}),
     ...(Number(flowRow?.updated_at_unix_ms) > 0
       ? { updated_at_unix_ms: Number(flowRow.updated_at_unix_ms) }
       : {}),
@@ -370,6 +384,33 @@ export function flowRegistryRowRevision(row) {
   const value = row?.revision ?? row?.draft_revision;
   const revision = Number(value);
   return Number.isFinite(revision) && revision >= 0 ? revision : null;
+}
+
+/// Refresh ONLY the optimistic-concurrency guard fields (revision/etag) of the
+/// matching local row from an authoritative server row, preserving the local
+/// document (the in-progress draft edits). Used by the save-conflict handler:
+/// a concurrent writer bumped the server revision, so the conflicting local
+/// row must adopt the server's revision before the draft is re-persisted —
+/// otherwise the re-save carries the same stale `expected_revision` and
+/// conflicts forever (unbounded autosave retry loop).
+export function flowRegistryRefreshGuardPatch(rows, currentFlowId, serverRow) {
+  const list = Array.isArray(rows) ? rows : [];
+  const id = String(currentFlowId || serverRow?.id || "").trim();
+  if (!id || !serverRow || typeof serverRow !== "object") return list;
+  const revision = flowRegistryRowRevision(serverRow);
+  const etag = flowRegistryRowEtag(serverRow);
+  if (revision === null && !etag) return list;
+  let changed = false;
+  const next = list.map((row) => {
+    if (!row || row.id !== id) return row;
+    changed = true;
+    return {
+      ...row,
+      ...(revision !== null ? { revision, draft_revision: revision } : {}),
+      ...(etag ? { draft_etag: etag, etag } : {}),
+    };
+  });
+  return changed ? next : list;
 }
 
 export function flowRegistryRowEtag(row) {

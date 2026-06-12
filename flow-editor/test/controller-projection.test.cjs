@@ -11030,6 +11030,74 @@ assert.deepEqual(controller.flowRegistryDraftGuard(registryRows[0], "fallback_id
 });
 assert.deepEqual(controller.flowRegistryDraftGuard({ id: "new_draft" }), {});
 
+// Regression (library rows strip revision/etag): rows hydrated from the
+// backend list must carry the optimistic-concurrency fields through, or the
+// first autosave/apply/undo/deploy after opening a library draft runs
+// UNGUARDED (expected_revision null) until a save response replaces the row.
+const backendHydratedRows = controller.flowRegistryRowsFromBackend([
+  {
+    id: "f_backend",
+    document: registryDocument,
+    validation: { ok: true },
+    stage: "valid",
+    revision: 4,
+    draft_revision: 4,
+    draft_etag: "f_backend:4",
+  },
+]);
+assert.equal(backendHydratedRows.length, 1);
+assert.equal(backendHydratedRows[0].revision, 4);
+assert.equal(backendHydratedRows[0].draft_revision, 4);
+assert.equal(backendHydratedRows[0].draft_etag, "f_backend:4");
+assert.deepEqual(
+  controller.flowRegistryDraftGuard(backendHydratedRows[0]),
+  { id: "f_backend", expected_revision: 4, expected_etag: "f_backend:4" },
+  "backend-hydrated library rows must produce a guarded draft guard",
+);
+
+// Regression (save-conflict loop): the conflict handler refreshes the local
+// row's revision/etag from the authoritative server row, preserving the local
+// document, so the re-save carries a revision the server accepts instead of
+// re-sending the stale guard forever.
+const localEditedDocument = { ...registryDocument, name: "Locally Edited" };
+const conflictedRows = [
+  {
+    id: "f_backend",
+    document: localEditedDocument,
+    validation: null,
+    stage: "draft",
+    revision: 4,
+    draft_revision: 4,
+    draft_etag: "f_backend:4",
+  },
+];
+const refreshedRows = controller.flowRegistryRefreshGuardPatch(conflictedRows, "f_backend", {
+  id: "f_backend",
+  document: { name: "Server Wins" },
+  revision: 9,
+  draft_revision: 9,
+  draft_etag: "f_backend:9",
+});
+assert.notEqual(refreshedRows, conflictedRows, "guard refresh must produce a new rows array");
+assert.equal(refreshedRows[0].revision, 9, "revision must advance to the server's current");
+assert.equal(refreshedRows[0].draft_etag, "f_backend:9");
+assert.equal(
+  refreshedRows[0].document,
+  localEditedDocument,
+  "guard refresh must preserve the in-progress local document, not adopt the server's",
+);
+assert.deepEqual(
+  controller.flowRegistryDraftGuard(refreshedRows[0]),
+  { id: "f_backend", expected_revision: 9, expected_etag: "f_backend:9" },
+  "the re-save must now carry the refreshed (acceptable) revision",
+);
+// A server row with no concurrency fields leaves the local row untouched
+// (same reference) rather than clobbering the guard.
+assert.equal(
+  controller.flowRegistryRefreshGuardPatch(conflictedRows, "f_backend", { id: "f_backend" }),
+  conflictedRows,
+);
+
 const unchangedRegistryProjection = controller.flowRegistryPersistDocumentProjection(registryRows, {
   currentFlowId: "f_existing",
   document: registryDocument,

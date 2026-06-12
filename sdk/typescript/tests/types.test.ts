@@ -488,13 +488,13 @@ describe("parseMemberSnapshot", () => {
     const result = parseMemberSnapshot({
       agent_identity: "mk-1",
       role: "assistant",
-      state: "Active",
+      state: "active",
       wired_to: ["mk-2", "mk-3"],
       labels: { role: "lead", tier: "gold" },
     });
     assert.equal(result.agentIdentity, "mk-1");
     assert.equal(result.role, "assistant");
-    assert.equal(result.state, "Active");
+    assert.equal(result.state, "active");
     assert.deepEqual(result.wiredTo, ["mk-2", "mk-3"]);
     assert.deepEqual(result.labels, { role: "lead", tier: "gold" });
   });

@@ -176,6 +176,28 @@ impl ConsoleEventStore {
             .insert(runtime_member_id, identity);
     }
 
+    /// Register a runtime-id → identity mapping only when no mapping exists
+    /// for that key yet. Used by roster-refresh paths (reconcile) whose
+    /// alias self-mapping is a fallback: it must never clobber the durable
+    /// console identity that spawn/reserve paths registered for the same
+    /// runtime member id.
+    pub(crate) async fn register_runtime_identity_fallback(
+        &self,
+        runtime_member_id: impl Into<String>,
+        identity: impl Into<String>,
+    ) {
+        let runtime_member_id = runtime_member_id.into();
+        let identity = identity.into();
+        if runtime_member_id.trim().is_empty() || identity.trim().is_empty() {
+            return;
+        }
+        let mut state = self.state.write().await;
+        state
+            .runtime_to_identity
+            .entry(runtime_member_id)
+            .or_insert(identity);
+    }
+
     /// Register console identity metadata (spawn labels, lineage). Merges
     /// per key; the latest registration wins so a respawn can update labels.
     pub(crate) async fn register_identity_labels(
@@ -351,8 +373,9 @@ impl ConsoleEventStore {
 
         let (identity, interaction_id, superseded_pending) = {
             let mut state = self.state.write().await;
-            let identity = state
-                .resolve_identity_for_runtime_event(agent_id)
+            let registered_identity = state.resolve_identity_for_runtime_event(agent_id);
+            let identity = registered_identity
+                .clone()
                 .or_else(|| derive_identity_from_runtime_id(agent_id));
             let Some(identity) = identity else {
                 tracing::warn!(
@@ -362,10 +385,17 @@ impl ConsoleEventStore {
                 );
                 return;
             };
-            state
-                .runtime_to_identity
-                .entry(agent_id.clone())
-                .or_insert_with(|| identity.clone());
+            // Cache only registration-backed resolutions. A heuristic
+            // derive guess must stay repairable: caching it would make the
+            // exact-match lookup permanently shadow a later
+            // `register_runtime_identity` (spawn/reserve/reconcile), so a
+            // single early event would strand every later interaction.
+            if registered_identity.is_some() {
+                state
+                    .runtime_to_identity
+                    .entry(agent_id.clone())
+                    .or_insert_with(|| identity.clone());
+            }
             let (interaction_id, superseded_pending) = match event_type.as_str() {
                 "run_started" => {
                     select_interaction_for_run_started(&mut state, &identity, &projected_data)
@@ -1026,6 +1056,126 @@ mod tests {
             .find(|event| event.event_id == "evt-3")
             .expect("after-tool delta should be replayed");
         assert_eq!(after_tool_delta.interaction_id.as_deref(), Some("turn-1"));
+    }
+
+    fn agent_event(
+        event_id: &str,
+        agent_id: &str,
+        event_type: &str,
+    ) -> EventEnvelope<UnifiedEvent> {
+        EventEnvelope {
+            event_id: event_id.to_string(),
+            source: "test".to_string(),
+            timestamp_ms: 1,
+            event: UnifiedEvent::Agent {
+                agent_id: agent_id.to_string(),
+                event_type: event_type.to_string(),
+                payload: Some(json!({})),
+            },
+        }
+    }
+
+    /// Regression: an agent event that arrives before any registration must
+    /// not poison the runtime-id cache. The derive-based guess used to be
+    /// cached via `or_insert`, so the exact-match lookup permanently shadowed
+    /// the later `register_runtime_identity` and reserved interactions never
+    /// completed.
+    #[tokio::test]
+    async fn early_event_does_not_poison_cache_against_later_registration() {
+        let store = ConsoleEventStore::new();
+
+        // Event lands before any spawn/reserve/reconcile registration.
+        store
+            .project_unified_event(&agent_event(
+                "evt-early",
+                "rt:review:singleton:0:1",
+                "text_delta",
+            ))
+            .await;
+
+        // Identity-bridge send path: reserve registers the runtime member id
+        // against the durable identity.
+        store
+            .register_runtime_identity("rt:review:singleton:0", "review:singleton")
+            .await;
+        store
+            .reserve_interaction_value(
+                "review:singleton",
+                Some("rt:review:singleton:0"),
+                "turn-1",
+                "mobkit/send_message",
+                json!({}),
+            )
+            .await
+            .expect("reserve interaction");
+
+        store
+            .project_unified_event(&agent_event(
+                "evt-complete",
+                "rt:review:singleton:0:1",
+                "run_completed",
+            ))
+            .await;
+
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("all-events replay should succeed");
+        let completion = replay
+            .iter()
+            .find(|event| event.event_id == "evt-complete")
+            .expect("completion event should project");
+        assert_eq!(
+            completion.identity, "review:singleton",
+            "completion must project under the registered durable identity"
+        );
+        assert_eq!(completion.event_type, "interaction_complete");
+        assert_eq!(completion.interaction_id.as_deref(), Some("turn-1"));
+    }
+
+    /// Regression: the reconcile roster refresh registers the alias
+    /// self-mapping as a fallback only — it must never clobber the durable
+    /// identity that an identity-bridge reserve registered for the same
+    /// runtime member id.
+    #[tokio::test]
+    async fn fallback_registration_never_clobbers_durable_identity() {
+        let store = ConsoleEventStore::new();
+        store
+            .register_runtime_identity("rt:review:singleton:0", "review:singleton")
+            .await;
+        // Reconcile tick after the reserve.
+        store
+            .register_runtime_identity_fallback("rt:review:singleton:0", "rt:review:singleton:0")
+            .await;
+        store
+            .reserve_interaction_value(
+                "review:singleton",
+                Some("rt:review:singleton:0"),
+                "turn-1",
+                "mobkit/send_message",
+                json!({}),
+            )
+            .await
+            .expect("reserve interaction");
+
+        store
+            .project_unified_event(&agent_event(
+                "evt-complete",
+                "rt:review:singleton:0:1",
+                "run_completed",
+            ))
+            .await;
+
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("all-events replay should succeed");
+        let completion = replay
+            .iter()
+            .find(|event| event.event_id == "evt-complete")
+            .expect("completion event should project");
+        assert_eq!(completion.identity, "review:singleton");
+        assert_eq!(completion.interaction_id.as_deref(), Some("turn-1"));
     }
 
     #[test]

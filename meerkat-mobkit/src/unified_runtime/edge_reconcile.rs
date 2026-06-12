@@ -52,15 +52,18 @@ impl UnifiedRuntime {
             .await
             .map_err(|err| UnifiedRuntimeReconcileError::Mob(err.into()))?;
         let mob = meerkat_reconcile_report_to_wire(&mob_id, meerkat_report);
-        // 2. Refresh active members. Roster ids are comms-safe encodings;
-        // console events arrive keyed by runtime ids derived from the roster
-        // id, so register roster id → public alias.
+        // 2. Refresh active members. Roster ids are comms-safe encodings; the
+        // agent-event ingest decodes them back to the alias space, so console
+        // registration is keyed by the public alias. Register as a fallback
+        // only: spawn/reserve paths register the durable console identity for
+        // the same alias key, and a reconcile must never clobber that with
+        // the alias self-mapping.
         let active_snapshots = self.mob_handle().list_members_including_retiring().await;
         for member in &active_snapshots {
-            let roster_id = member.agent_identity.to_string();
-            let alias = crate::member_comms_id::runtime_alias_str(&roster_id).into_owned();
+            let alias = crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str())
+                .into_owned();
             self.console_events
-                .register_runtime_identity(roster_id, alias)
+                .register_runtime_identity_fallback(alias.clone(), alias)
                 .await;
         }
         let active_member_ids = active_snapshots

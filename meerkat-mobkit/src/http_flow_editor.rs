@@ -358,7 +358,26 @@ fn flow_editor_rpc_access_requirement(method: &str, params: &Value) -> Option<&'
     {
         return Some(ACTION_MOBPACK_DEPLOY);
     }
+    // `validate` with `rkat_validate: true` writes a rendered mobpack archive
+    // to a caller-controlled path and spawns `rkat mob validate` — a
+    // host-mutating side effect, not a pure authoring read. Gate it behind
+    // the same deploy grant as host-executing deploys.
+    if method == "mobkit/mobpacks/validate" && validate_rkat_execution_requested(params) {
+        return Some(ACTION_MOBPACK_DEPLOY);
+    }
     Some(ACTION_MOBPACK_AUTHOR)
+}
+
+/// True when a `mobkit/mobpacks/validate` request asks to render the pack and
+/// run `rkat mob validate` on the host (mirrors
+/// `mobpack::validate_with_rkat_requested`). This is the host-mutating arm:
+/// it writes a mobpack archive and spawns a child process.
+fn validate_rkat_execution_requested(params: &Value) -> bool {
+    params
+        .get("rkat_validate")
+        .or_else(|| params.get("rkatValidate"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn flow_editor_rpc_access_violation(
@@ -477,6 +496,47 @@ fn handle_flow_editor_rpc_with_auth(
                     })),
                 }),
             )
+        }
+        // `validate` with `rkat_validate: true` is host-mutating (it writes a
+        // rendered mobpack archive to a caller-controlled path and spawns
+        // `rkat mob validate`). Without the host grant, strip the flag so the
+        // request degrades to pure structural validation instead of touching
+        // the host filesystem or spawning a process. Fail-closed: the default
+        // standalone surface (no `--allow-host-deploy`) and any caller lacking
+        // `mobpack.deploy` can never reach the file-write/exec sink.
+        "mobkit/mobpacks/validate"
+            if !auth.host_mutation_allowed
+                && validate_rkat_execution_requested(&request.params) =>
+        {
+            let mut params = request.params.clone();
+            if let Some(object) = params.as_object_mut() {
+                object.remove("rkat_validate");
+                object.remove("rkatValidate");
+            }
+            match crate::rpc::handle_mobpack_authoring_rpc_with_runtime(
+                "mobkit/mobpacks/validate",
+                &params,
+                response_id.clone(),
+                runtime_catalog,
+            ) {
+                Some(response) => serde_json::to_value(response).unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "jsonrpc": JSONRPC_VERSION,
+                        "id": Value::Null,
+                        "error": { "code": -32603, "message": "serialization failed" }
+                    })
+                }),
+                None => response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "method not found on flow editor rpc: mobkit/mobpacks/validate"
+                            .to_string(),
+                        data: None,
+                    }),
+                ),
+            }
         }
         method if crate::rpc::MOBPACK_AUTHORING_METHODS.contains(&method) => {
             match crate::rpc::handle_mobpack_authoring_rpc_with_runtime(
@@ -954,6 +1014,116 @@ mod tests {
         assert!(argv.lines().any(|line| line == "run"));
         assert!(argv.lines().any(|line| line == "--prompt"));
         assert!(argv.lines().any(|line| line == "Reply with exactly OK."));
+    }
+
+    /// Security regression: `mobkit/mobpacks/validate` with
+    /// `rkat_validate: true` writes a rendered mobpack archive to a
+    /// caller-controlled path and spawns `rkat mob validate`. On the default
+    /// standalone surface (no `--allow-host-deploy`, `host_mutation_allowed`
+    /// false) an unauthenticated client must NOT reach that file-write/exec
+    /// sink: the request degrades to structural-only validation, leaving no
+    /// archive on disk and spawning no process.
+    #[cfg(unix)]
+    #[test]
+    fn standalone_flow_editor_validate_cannot_write_files_or_spawn_rkat_without_host_grant() {
+        let catalogs = super::handle_flow_editor_rpc(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: "mobkit/mobpacks/catalogs".to_string(),
+            params: Value::Null,
+        });
+        let sample = catalogs["result"]["sample_mobpacks"]
+            .as_array()
+            .expect("sample mobpacks")
+            .iter()
+            .find(|sample| sample["id"] == "sample_docs_only")
+            .expect("docs sample");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A `rkat` that records the fact it ran — it must never be invoked.
+        let fake_rkat = dir.path().join("rkat");
+        let spawn_marker = dir.path().join("rkat.ran");
+        std::fs::write(
+            &fake_rkat,
+            format!(
+                "#!/bin/sh\ntouch {}\necho should-not-run\n",
+                spawn_marker.to_string_lossy()
+            ),
+        )
+        .expect("write fake rkat");
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&fake_rkat)
+            .expect("fake rkat metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_rkat, permissions).expect("chmod fake rkat");
+
+        // Attacker-controlled absolute pack path: it must never be written.
+        let attacker_pack_path = dir.path().join("attacker-controlled.mobpack");
+
+        let response = super::handle_flow_editor_rpc(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(2)),
+            method: "mobkit/mobpacks/validate".to_string(),
+            params: json!({
+                "document": sample["document"].clone(),
+                "rkat_validate": true,
+                "rkat_bin": fake_rkat,
+                "validation_pack_path": attacker_pack_path,
+            }),
+        });
+
+        // Structural validation still runs and succeeds …
+        assert!(response["error"].is_null(), "{response:#?}");
+        assert_eq!(response["result"]["ok"], json!(true), "{response:#?}");
+        // … but it did NOT escalate to the host-executing rkat path.
+        assert_ne!(
+            response["result"]["validation_source"],
+            json!("rkat mob validate"),
+            "rkat validate must not run without the host grant: {response:#?}"
+        );
+        assert!(
+            !attacker_pack_path.exists(),
+            "validate must not write a caller-controlled archive without the host grant"
+        );
+        assert!(
+            !spawn_marker.exists(),
+            "validate must not spawn rkat without the host grant"
+        );
+    }
+
+    /// The ABAC access requirement classifies validate-with-rkat as a
+    /// host-mutating operation: it requires `mobpack.deploy`, not just
+    /// `mobpack.author`. A pure structural validate stays an authoring read.
+    #[tokio::test]
+    async fn access_control_requires_mobpack_deploy_for_validate_with_rkat() {
+        let access =
+            authoring_access_controller(vec![allow_everyone("authors", &["mobpack.author"])]);
+        let response = protected_rpc_response(
+            Some(access),
+            rpc_body(
+                "mobkit/mobpacks/validate",
+                json!({ "document": json!({}), "rkat_validate": true }),
+            ),
+        )
+        .await;
+        assert_eq!(response["error"]["code"], json!(ACCESS_DENIED_RPC_CODE));
+        assert_eq!(response["error"]["data"]["action"], json!("mobpack.deploy"));
+
+        // A structural-only validate is authoring, not deploy: the author
+        // grant is sufficient (no access-denied).
+        let access =
+            authoring_access_controller(vec![allow_everyone("authors", &["mobpack.author"])]);
+        let response = protected_rpc_response(
+            Some(access),
+            rpc_body("mobkit/mobpacks/validate", json!({ "document": json!({}) })),
+        )
+        .await;
+        assert_ne!(
+            response["error"]["code"],
+            json!(ACCESS_DENIED_RPC_CODE),
+            "structural validate must remain an authoring read: {response:#?}"
+        );
     }
 
     #[test]

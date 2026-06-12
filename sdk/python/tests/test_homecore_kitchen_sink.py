@@ -32,14 +32,27 @@ from meerkat_mobkit.errors import RpcError
 # Environment / skip helpers
 # ---------------------------------------------------------------------------
 
-_GATEWAY_BIN = os.path.join(
-    os.path.expanduser("~/Library/Caches/rust-workspaces"),
-    "meerkat-mobkit-2783c42580",
-    "targets",
-    "meerkat-mobkit-44eecf13a1",
-    "debug",
-    "rpc_gateway",
-)
+# The gateway-backed suites must exercise THIS worktree's freshly built
+# rpc_gateway, not whichever binary the main checkout last built. The default
+# path below is the main worktree's scripts/repo-cargo lane; running from a
+# feature worktree would silently test the wrong artifact (and hide the wire
+# drift the branch introduces). Prefer an explicit override:
+#   MOBKIT_GATEWAY_BIN=$(./scripts/repo-cargo --print-env CARGO_TARGET_DIR)/debug/rpc_gateway
+def _resolve_gateway_bin() -> str:
+    override = os.environ.get("MOBKIT_GATEWAY_BIN", "").strip()
+    if override:
+        return override
+    return os.path.join(
+        os.path.expanduser("~/Library/Caches/rust-workspaces"),
+        "meerkat-mobkit-2783c42580",
+        "targets",
+        "meerkat-mobkit-44eecf13a1",
+        "debug",
+        "rpc_gateway",
+    )
+
+
+_GATEWAY_BIN = _resolve_gateway_bin()
 
 
 def _anthropic_key() -> str | None:
@@ -279,7 +292,7 @@ class TestHouseholdIncident:
             # All 7 Active
             for name, agent in agents.items():
                 s = await agent.status()
-                assert s.state == "Active", f"{name}: {s.state}"
+                assert s.state == "active", f"{name}: {s.state}"
 
             # ASSERT topology wiring via identity-first inspect
             triage_inspection = await triage.inspect()
@@ -496,7 +509,7 @@ class TestHouseholdIncident:
 
             olivia2 = rt2.agent("identity:olivia")
             olivia_status = await olivia2.status()
-            assert olivia_status.state == "Active"
+            assert olivia_status.state == "active"
             assert olivia_status.generation == 0
 
             luka_post = await luka2.status()
@@ -517,7 +530,7 @@ class TestHouseholdIncident:
             ]
             for name in all_identities:
                 s = await rt2.status(name)
-                assert s.state == "Active", f"{name}: {s.state}"
+                assert s.state == "active", f"{name}: {s.state}"
 
             print(f"[Phase 8] All {len(all_identities)} actors Active")
             print("\n=== HOUSEHOLD KITCHEN SINK PASSED ===")

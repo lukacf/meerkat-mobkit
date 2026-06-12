@@ -8046,6 +8046,16 @@ ${kind}` : "";
       source: String(flowRow?.source || source || ""),
       document: document2,
       validation: validation ?? null,
+      // Carry the optimistic-concurrency fields through. Without them, rows
+      // hydrated from the backend list (bootstrap) lose their revision/etag,
+      // so `flowRegistryDraftGuard` returns `{}` (no `expected_revision`) and
+      // every save/apply_operation/undo/deploy runs UNGUARDED until the first
+      // save response replaces the row — two sessions opening the same draft
+      // would last-write-win over each other for the whole first-edit span.
+      ...flowRegistryRowRevision(flowRow) !== null ? { revision: flowRegistryRowRevision(flowRow) } : {},
+      ...Number(flowRow?.draft_revision) >= 0 && flowRow?.draft_revision != null ? { draft_revision: Number(flowRow.draft_revision) } : {},
+      ...flowRow?.draft_etag ? { draft_etag: String(flowRow.draft_etag) } : {},
+      ...flowRow?.etag ? { etag: String(flowRow.etag) } : {},
       ...Number(flowRow?.updated_at_unix_ms) > 0 ? { updated_at_unix_ms: Number(flowRow.updated_at_unix_ms) } : {},
       ...flowRow?.registry_source ? { registry_source: String(flowRow.registry_source) } : {},
       ...flowRow?.document_kind ? { document_kind: String(flowRow.document_kind) } : {},
@@ -8086,6 +8096,25 @@ ${kind}` : "";
     const value = row?.revision ?? row?.draft_revision;
     const revision = Number(value);
     return Number.isFinite(revision) && revision >= 0 ? revision : null;
+  }
+  function flowRegistryRefreshGuardPatch(rows, currentFlowId, serverRow) {
+    const list = Array.isArray(rows) ? rows : [];
+    const id = String(currentFlowId || serverRow?.id || "").trim();
+    if (!id || !serverRow || typeof serverRow !== "object") return list;
+    const revision = flowRegistryRowRevision(serverRow);
+    const etag = flowRegistryRowEtag(serverRow);
+    if (revision === null && !etag) return list;
+    let changed = false;
+    const next = list.map((row) => {
+      if (!row || row.id !== id) return row;
+      changed = true;
+      return {
+        ...row,
+        ...revision !== null ? { revision, draft_revision: revision } : {},
+        ...etag ? { draft_etag: etag, etag } : {}
+      };
+    });
+    return changed ? next : list;
   }
   function flowRegistryRowEtag(row) {
     const value = row?.draft_etag ?? row?.etag;
@@ -11069,6 +11098,7 @@ ${JSON.stringify(document2)}`;
       flowRegistryPersistOutcomeProjection,
       flowRegistryAppendRowPatch,
       flowRegistryUpsertRowPatch,
+      flowRegistryRefreshGuardPatch,
       renameSchemaDefinition,
       reconcileFlowMemberSteps,
       reconcileFlowMemberSchemas,
@@ -11189,6 +11219,7 @@ ${JSON.stringify(document2)}`;
       },
       onBlur: (e) => {
         focusedRef.current = false;
+        setDraft(value ?? "");
         if (onBlur) onBlur(e);
       },
       onChange: (e) => {
@@ -11285,7 +11316,6 @@ ${JSON.stringify(document2)}`;
         setLastAddResult({ ok: false, error: definitionState.authoringOperationUnavailableError });
         return;
       }
-      if (studio.snap) studio.snap();
       const result = await applyAgentIntent({ intent: "agent.addDefinition", definitionId });
       setLastAddResult(result);
       if (!result.ok) return;
@@ -11363,7 +11393,6 @@ ${JSON.stringify(document2)}`;
         return;
       }
       try {
-        if (studio.snap) studio.snap();
         const result = await applyAgentIntent({ intent: "agent.updateMember", memberId: member.id, patch });
         if (!result?.ok) {
           setMemberEditError(mobKitOperationError(result, editorState.memberUpdateFallbackError));
@@ -11390,7 +11419,6 @@ ${JSON.stringify(document2)}`;
         return;
       }
       try {
-        if (studio.snap) studio.snap();
         const result = await applyAgentIntent({ intent: "agent.addTool", memberId: member.id, toolId });
         if (!result?.ok) {
           setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
@@ -11408,7 +11436,6 @@ ${JSON.stringify(document2)}`;
         return;
       }
       try {
-        if (studio.snap) studio.snap();
         const result = await applyAgentIntent({ intent: "agent.removeTool", memberId: member.id, toolId });
         if (!result?.ok) {
           setToolDraftError(mobKitOperationError(result, editorState.toolUpdateFallbackError));
@@ -11814,7 +11841,6 @@ ${JSON.stringify(document2)}`;
         return null;
       }
       try {
-        if (studio.snap) studio.snap();
         const result = await applyAgentIntent({ memberId: member.id, ...intentRequest });
         if (!result?.ok) {
           setInlineError(window.MobKitFlowController.operationErrorText(result, fallback));
@@ -13510,6 +13536,8 @@ ${JSON.stringify(document2)}`;
         const importInputRef = React.useRef(null);
         const previousMembersRef = React.useRef([]);
         const hydratingDocumentRef = React.useRef(false);
+        const flowsRef = React.useRef(flows);
+        flowsRef.current = flows;
         const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
         const canCreateAuthoring = !!catalogs.contractMeta.loaded && !contract?.error;
         const deployContractLoaded = !!catalogs.contractMeta.loaded;
@@ -13934,9 +13962,18 @@ ${JSON.stringify(document2)}`;
             }
           }).catch((error) => {
             if (MobKitFlowController.isDraftGuardConflictError(error)) {
-              console.warn("MobKit draft save superseded; re-persisting the current draft:", error?.message || error);
-              persistedDocumentSig.current = "";
-              setFlows((rows) => Array.isArray(rows) ? [...rows] : rows);
+              console.warn("MobKit draft save superseded; refreshing draft revision before re-persisting:", error?.message || error);
+              const conflictId = rowPatch?.id || rowPatch?.document?.mob_id || currentFlowId;
+              MobKitFlowController.getDocument(conflictId).then((refreshed) => {
+                const serverRow = refreshed?.row;
+                if (serverRow) {
+                  setFlows((rows) => MobKitFlowController.flowRegistryRefreshGuardPatch(rows, conflictId, serverRow));
+                }
+                persistedDocumentSig.current = "";
+                setFlows((rows) => Array.isArray(rows) ? [...rows] : rows);
+              }).catch((refetchError) => {
+                showAuthoringFailure(refetchError, authoringFailureHead("draft_save"));
+              });
               return;
             }
             showAuthoringFailure(error, authoringFailureHead("draft_save"));
@@ -13987,7 +14024,7 @@ ${JSON.stringify(document2)}`;
           catalogs.contractMeta.loaded
         ]);
         const persistCurrentOutcome = (outcome) => {
-          const projection = MobKitFlowController.flowRegistryPersistOutcomeProjection(flows, {
+          const projection = MobKitFlowController.flowRegistryPersistOutcomeProjection(flowsRef.current, {
             currentFlowId,
             outcome
           });
@@ -14226,15 +14263,17 @@ ${JSON.stringify(document2)}`;
             const document2 = projected.document;
             requestToken = projected.requestToken;
             const result = await MobKitFlowController.deployDocument(document2, { execute, ...currentDraftGuard() });
-            if (!authoringRevisionIsCurrent(requestToken)) return;
             const outcome = MobKitFlowController.deployOutcome(document2, result, { execute });
             window.__mobkitFlowLastDocument = document2;
             window.__mobkitFlowLastDeploy = result;
+            const revisionCurrent = authoringRevisionIsCurrent(requestToken);
+            if (!revisionCurrent && !execute) return;
             persistCurrentOutcome(outcome);
+            if (execute) emitHostEvent("deployed", { id: currentFlowId, stage: outcome.stage, ok: outcome.stage === "deployed" });
+            if (!revisionCurrent) return;
             setValidationResults(outcome.validationRows);
             setStage(outcome.stage);
             applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
-            if (execute) emitHostEvent("deployed", { id: currentFlowId, stage: outcome.stage, ok: outcome.stage === "deployed" });
           } catch (error) {
             if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
             const outcome = MobKitFlowController.deployErrorOutcome(error, { execute, errorView: catalogs.errorView });

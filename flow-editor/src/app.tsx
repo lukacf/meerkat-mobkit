@@ -284,6 +284,15 @@ function App() {
   const importInputRef = React.useRef(null);
   const previousMembersRef = React.useRef([]);
   const hydratingDocumentRef = React.useRef(false);
+  // Always-current view of `flows`, reassigned every render. Operations that
+  // run AFTER a long await (deploy execute:true blocks for the whole
+  // `rkat mob run`) must project against the freshest rows, not the row
+  // snapshot captured in their click-time closure — otherwise a registry row
+  // updated mid-await (e.g. an autosave response carrying the new draft
+  // revision) is clobbered back to the stale snapshot, which then re-arms the
+  // save-conflict loop single-tab.
+  const flowsRef = React.useRef(flows);
+  flowsRef.current = flows;
 
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const canCreateAuthoring = !!catalogs.contractMeta.loaded && !contract?.error;
@@ -748,13 +757,34 @@ function App() {
       })
       .catch((error) => {
         if (MobKitFlowController.isDraftGuardConflictError(error)) {
-          // A concurrent autosave already bumped the draft revision. This
-          // save carries the older document, so retrying it would overwrite
-          // the newer draft; drop it and force the persistence effect to
-          // re-save the CURRENT document against the refreshed registry row.
-          console.warn("MobKit draft save superseded; re-persisting the current draft:", error?.message || error);
-          persistedDocumentSig.current = "";
-          setFlows((rows) => (Array.isArray(rows) ? [...rows] : rows));
+          // A concurrent writer already bumped the draft revision. This save
+          // carries the older document, so retrying it would overwrite the
+          // newer draft. Refetch the authoritative server row to adopt its
+          // refreshed revision/etag, THEN force the persistence effect to
+          // re-save the CURRENT document against the refreshed guard.
+          //
+          // Refetching is load-bearing: the conflicting rowPatch's revision
+          // is stale, so without refreshing the registry row the re-save
+          // re-sends the same expected_revision, conflicts again, and re-arms
+          // itself forever (~250 RPC/s autosave loop). Exit requires a
+          // revision the server will accept.
+          console.warn("MobKit draft save superseded; refreshing draft revision before re-persisting:", error?.message || error);
+          const conflictId = rowPatch?.id || rowPatch?.document?.mob_id || currentFlowId;
+          MobKitFlowController.getDocument(conflictId)
+            .then((refreshed) => {
+              const serverRow = refreshed?.row;
+              if (serverRow) {
+                setFlows((rows) =>
+                  MobKitFlowController.flowRegistryRefreshGuardPatch(rows, conflictId, serverRow));
+              }
+              persistedDocumentSig.current = "";
+              setFlows((rows) => (Array.isArray(rows) ? [...rows] : rows));
+            })
+            .catch((refetchError) => {
+              // The refresh itself failed: surface it rather than re-arming a
+              // loop that can never converge.
+              showAuthoringFailure(refetchError, authoringFailureHead("draft_save"));
+            });
           return;
         }
         showAuthoringFailure(error, authoringFailureHead("draft_save"));
@@ -808,7 +838,12 @@ function App() {
     catalogs.contractMeta.loaded,
   ]);
   const persistCurrentOutcome = (outcome) => {
-    const projection = MobKitFlowController.flowRegistryPersistOutcomeProjection(flows, {
+    // Project against the freshest rows (flowsRef), not the click-time `flows`
+    // closure: a blocking deploy can resolve long after this handler was
+    // bound, by which point an in-flight autosave may have advanced a row's
+    // revision. Clobbering that back to the stale snapshot re-arms the
+    // save-conflict loop.
+    const projection = MobKitFlowController.flowRegistryPersistOutcomeProjection(flowsRef.current, {
       currentFlowId,
       outcome,
     });
@@ -1057,15 +1092,24 @@ function App() {
       const document = projected.document;
       requestToken = projected.requestToken;
       const result = await MobKitFlowController.deployDocument(document, { execute, ...currentDraftGuard() });
-      if (!authoringRevisionIsCurrent(requestToken)) return;
       const outcome = MobKitFlowController.deployOutcome(document, result, { execute });
       window.__mobkitFlowLastDocument = document;
       window.__mobkitFlowLastDeploy = result;
+      // An execute:true deploy is an authoritative host side effect that
+      // already ran: persist its outcome and fire the `deployed` host event
+      // even if the user edited mid-run (authoring revision moved on).
+      // Dropping it here would leave the registry and host listeners unaware
+      // of a mob that actually deployed. The local validation-sheet UI
+      // mutations stay gated on revision currency so a stale sheet does not
+      // flash over newer edits.
+      const revisionCurrent = authoringRevisionIsCurrent(requestToken);
+      if (!revisionCurrent && !execute) return;
       persistCurrentOutcome(outcome);
+      if (execute) emitHostEvent("deployed", { id: currentFlowId, stage: outcome.stage, ok: outcome.stage === "deployed" });
+      if (!revisionCurrent) return;
       setValidationResults(outcome.validationRows);
       setStage(outcome.stage);
       applyApiOverlayPatch(MobKitFlowController.validationSheetOpenTransition());
-      if (execute) emitHostEvent("deployed", { id: currentFlowId, stage: outcome.stage, ok: outcome.stage === "deployed" });
     } catch (error) {
       if (requestToken !== null && !authoringRevisionIsCurrent(requestToken)) return;
       const outcome = MobKitFlowController.deployErrorOutcome(error, { execute, errorView: catalogs.errorView });

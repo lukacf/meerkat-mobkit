@@ -109,6 +109,7 @@
     "flowRegistryMarkDraftPatch",
     "flowRegistryPersistDocumentProjection",
     "flowRegistryPersistOutcomeProjection",
+    "flowRegistryRefreshGuardPatch",
     "flowRegistryRememberDocumentPatch",
     "flowRegistryRowFromDocument",
     "flowRegistryRowIsRuntimeProjection",

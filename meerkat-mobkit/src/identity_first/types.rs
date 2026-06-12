@@ -595,6 +595,27 @@ pub enum IdentityLifecycleState {
     Uninitialized,
 }
 
+impl IdentityLifecycleState {
+    /// Canonical wire vocabulary for identity lifecycle states.
+    ///
+    /// meerkat 0.7 moved the member rows (`mobkit/get_member`,
+    /// `list_members`, `ensure_member`, `find_members`) to lowercase state
+    /// strings — matching the published SDK constants
+    /// (`MEMBER_STATE_ACTIVE = "active"`) and the console vocabulary. The
+    /// identity-first status/inspect surfaces must speak the same casing so
+    /// the two member-state surfaces never disagree on the same wire.
+    pub fn wire_str(self) -> &'static str {
+        match self {
+            Self::Dormant => "dormant",
+            Self::Active => "active",
+            Self::Retiring => "retiring",
+            Self::Suspended => "suspended",
+            Self::Broken => "broken",
+            Self::Uninitialized => "uninitialized",
+        }
+    }
+}
+
 /// Information about a held lease.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseInfo {

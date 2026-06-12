@@ -41,8 +41,47 @@ pub(crate) fn is_previous_member_cleanup_ambiguous_error(error: &str) -> bool {
 pub(crate) fn is_recoverable_lifecycle_cleanup_error(error: &str) -> bool {
     is_previous_member_cleanup_ambiguous_error(error)
         || (error.contains("disposal completed but ArchiveSession failed")
-            && error.contains("cancel-before-retire failed")
-            && error.contains("Runtime not ready: running"))
+            && (
+                // Cancel/retire race: the runtime was still running when the
+                // archive step tried to cancel it.
+                (error.contains("cancel-before-retire failed")
+                    && error.contains("Runtime not ready: running"))
+                // meerkat 0.7.1: the session machine of an idle member sits in
+                // `Stopped`, whose DSL authority rejects the archive step's
+                // final `Retire` input. Disposal already completed — the
+                // member left the roster (retire) or is anchored for cleanup
+                // retry (respawn) — so the failed bookkeeping transition must
+                // not fail the lifecycle operation.
+                || (error.contains("guard rejected transition from Stopped")
+                    && error.contains("input::Retire"))
+                // meerkat 0.7.1 retire performs a final fenced continuity
+                // save for the old session. Identity-first reset/delete flows
+                // advance or remove the mobkit-owned continuity record before
+                // retiring the old generation, so that save is intentionally
+                // stale; disposal itself completed.
+                || (error.contains("continuity save")
+                    && (error.contains("continuity record not found")
+                        || error.contains("stale fencing token")))
+            ))
+}
+
+/// True when a session archive failed only at its final runtime-retire
+/// realization because the session machine sits in `Stopped`.
+///
+/// meerkat 0.7.1 splits the archive across two realizations, committed
+/// document-first: the durable session-document lifecycle commit lands,
+/// then `MachineSessionArchiveProtocol::retire_session` drives the machine
+/// `Retire` transition. The session machine accepts `Retire` from
+/// Idle/Attached/Running/Retired but NOT from `Stopped` — and an idle mob
+/// member's runtime is stopped (and persisted as `Stopped`) between turns,
+/// so member retire/respawn disposal deterministically fails here.
+/// meerkat-mob's own archive helper (`retire_runtime_session_for_archive`)
+/// explicitly treats `Stopped` as already-retired; the meerkat-session
+/// protocol misses that tolerance.
+pub(crate) fn is_stopped_session_archive_retire_rejection(error: &str) -> bool {
+    error.contains("machine archive retire failed")
+        && error.contains("guard rejected transition from Stopped")
+        && error.contains("input::Retire")
 }
 
 pub(crate) fn topology_restore_failed_peer_ids(
@@ -1513,9 +1552,33 @@ macro_rules! delegate_mob_session_service {
                 &self,
                 session_id: &meerkat_core::types::SessionId,
             ) -> Result<(), SessionError> {
-                self.inner
+                match self
+                    .inner
                     .archive_with_mob_lifecycle_authority(session_id)
                     .await
+                {
+                    Err(err)
+                        if is_stopped_session_archive_retire_rejection(&err.to_string()) =>
+                    {
+                        // meerkat 0.7.1: the archive protocol commits the
+                        // durable archive document FIRST, then drives the
+                        // machine `Retire` realization — which the session
+                        // machine of an idle (stopped-between-turns) member
+                        // rejects from `Stopped`. meerkat-mob's own archive
+                        // helper treats `Stopped` as already-retired; mirror
+                        // that tolerance here so member retire/respawn
+                        // disposal completes instead of wedging the roster
+                        // anchor in `retiring` (any disposal retry on the
+                        // retained anchor stalls the mob actor).
+                        tracing::warn!(
+                            session_id = %session_id,
+                            error = %err,
+                            "archive: tolerating Retire rejection for stopped idle session; archive document committed"
+                        );
+                        Ok(())
+                    }
+                    other => other,
+                }
             }
             async fn execution_snapshot(
                 &self,
@@ -5014,6 +5077,85 @@ image_generation = true
         ));
         assert!(!is_recoverable_lifecycle_cleanup_error(
             "model provider returned rate limit"
+        ));
+    }
+
+    /// Regression (meerkat 0.7.1): idle members sit in machine state
+    /// `Stopped`, whose DSL authority rejects the archive step's final
+    /// `Retire` input. Disposal completed, so retire/respawn must treat the
+    /// failed bookkeeping transition as success instead of surfacing -32000.
+    #[test]
+    fn recoverable_lifecycle_cleanup_accepts_stopped_guard_archive_retire() {
+        let error = "internal error: disposal completed but ArchiveSession failed: \
+            session error: agent error: Internal error: machine archive retire failed \
+            after registration: Internal error: DSL authority (Retire): guard rejected \
+            transition from Stopped for input::Retire";
+
+        assert!(is_recoverable_lifecycle_cleanup_error(error));
+    }
+
+    /// Regression (meerkat 0.7.1): retire now performs a final fenced
+    /// continuity save. Identity-first reset/delete advance or remove the
+    /// mobkit-owned continuity record before retiring the old generation, so
+    /// that save fails fail-closed with "record not found" / "stale fencing
+    /// token" — both must be recoverable cleanup, not reset/delete failures.
+    #[test]
+    fn recoverable_lifecycle_cleanup_accepts_stale_continuity_save_on_retire() {
+        let record_gone = "internal error: disposal completed but ArchiveSession failed: \
+            session error: agent error: Internal error: continuity save: \
+            continuity record not found for identity:luka";
+        let stale_fence = "internal error: disposal completed but ArchiveSession failed: \
+            session error: agent error: Internal error: continuity save: \
+            stale fencing token for identity:luka: presented 1, current 6";
+
+        assert!(is_recoverable_lifecycle_cleanup_error(record_gone));
+        assert!(is_recoverable_lifecycle_cleanup_error(stale_fence));
+    }
+
+    /// Regression (meerkat 0.7.1): an idle member's session machine sits in
+    /// `Stopped`; the archive protocol commits the durable document first,
+    /// then fails its runtime `Retire` realization on the `Stopped` guard.
+    /// The session-service wrapper tolerates exactly this signature so
+    /// member retire/respawn disposal completes (meerkat-mob's own archive
+    /// helper treats `Stopped` as already-retired).
+    #[test]
+    fn stopped_session_archive_retire_rejection_matches_only_stopped_guard() {
+        assert!(is_stopped_session_archive_retire_rejection(
+            "session error: agent error: Internal error: machine archive retire failed \
+             after registration: Internal error: DSL authority (Retire): guard rejected \
+             transition from Stopped for input::Retire"
+        ));
+        // The pre-registration variant carries the same meaning.
+        assert!(is_stopped_session_archive_retire_rejection(
+            "agent error: Internal error: machine archive retire failed: Internal error: \
+             DSL authority (Retire): guard rejected transition from Stopped for input::Retire"
+        ));
+        // Other guard rejections and other retire failures stay fail-closed.
+        assert!(!is_stopped_session_archive_retire_rejection(
+            "machine archive retire failed after registration: Internal error: \
+             DSL authority (Retire): guard rejected transition from Running for input::Retire"
+        ));
+        assert!(!is_stopped_session_archive_retire_rejection(
+            "guard rejected transition from Stopped for input::Retire"
+        ));
+        assert!(!is_stopped_session_archive_retire_rejection(
+            "machine archive retire failed: store unavailable"
+        ));
+    }
+
+    /// The new arms must stay scoped to completed disposals: the same inner
+    /// failures without the "disposal completed" prefix (e.g. a continuity
+    /// save failing mid-delivery) are real errors.
+    #[test]
+    fn recoverable_lifecycle_cleanup_requires_completed_disposal() {
+        assert!(!is_recoverable_lifecycle_cleanup_error(
+            "continuity save: continuity record not found for identity:luka"
+        ));
+        assert!(!is_recoverable_lifecycle_cleanup_error(
+            "DSL authority (Retire): guard rejected transition from Stopped for input::Retire"
+        ));
+        assert!(!is_recoverable_lifecycle_cleanup_error(
+            "disposal aborted at ArchiveSession: continuity save: stale fencing token"
         ));
     }
 

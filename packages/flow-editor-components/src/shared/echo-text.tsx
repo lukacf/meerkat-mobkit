@@ -11,6 +11,15 @@
 // the server document is the only truth: any value change (echo, undo/redo,
 // selection switch) syncs the draft. Key usages by the edited entity's id so
 // switching selection remounts with clean state.
+//
+// On blur the draft is force-resynced to the server-authoritative `value`,
+// not just on `value` change. A per-keystroke apply_operation that FAILS
+// (RPC error / injected backend failure / runner stale-drop) leaves the
+// document value unchanged, so the `[value]`-dep effect never fires and the
+// typed character would otherwise stay in the field forever — displaying text
+// that is not in the deployable document. Resyncing on blur drops that
+// phantom; any in-flight op that lands later still resyncs through the
+// unfocused `[value]` effect.
 
 export function useEchoDraft(value) {
   const [draft, setDraft] = React.useState(value ?? "");
@@ -32,6 +41,10 @@ function echoProps({ value, onChangeText, onFocus, onBlur, ...rest }, draftState
     },
     onBlur: (e) => {
       focusedRef.current = false;
+      // Server-authoritative resync: snap back to the committed document
+      // value so a failed per-keystroke op cannot strand phantom text in
+      // the field after the user leaves it.
+      setDraft(value ?? "");
       if (onBlur) onBlur(e);
     },
     onChange: (e) => {
