@@ -27,6 +27,8 @@ use super::types::{
 
 fn is_missing_event_injector_error(error: &str) -> bool {
     error.contains("missing event injector capability")
+        || (error.contains("missing required capability")
+            && error.contains("interaction_event_injector"))
 }
 
 fn is_missing_bridge_session_snapshot_error(error: &str) -> bool {
@@ -1455,6 +1457,12 @@ mod tests {
         assert!(
             is_repairable_bridge_delivery_error("missing event injector capability for member"),
             "existing stale event-injector repair path must remain covered"
+        );
+        assert!(
+            is_repairable_bridge_delivery_error(
+                "mob member rt:us-president:0 missing required capability interaction_event_injector: autonomous member dispatch"
+            ),
+            "newer autonomous member dispatch wording should repair and retry instead of dropping the event"
         );
         assert!(
             is_repairable_bridge_delivery_error(
