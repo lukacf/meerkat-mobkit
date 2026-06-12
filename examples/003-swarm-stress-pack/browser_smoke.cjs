@@ -348,9 +348,13 @@ async function main() {
       const parentRow = rowByIdentity.get(parent.identity);
       assert.ok(parentRow, `missing parent row for ${parent.identity}`);
       await sleep(parentIndex * 300);
-      await rpcWithRetry(baseUrl, "mobkit/send_message", {
-        member_id: parentRow.member_id || parent.identity,
-        message: `stress action ${parentIndex + 1}: spawn ${(groups.get(parent.identity) || []).length} sub-agents over a burst window, collect their returns, then fan out to ${PEER_FANOUT_PER_PARENT} wired peers.`,
+      // Console RPC plane has no mobkit/send_message (gateway-only method);
+      // use mobkit/console/send, the console-plane equivalent.
+      await rpcWithRetry(baseUrl, "mobkit/console/send", {
+        identity: rowRuntimeIdentity(parentRow, parent.identity),
+        content: `stress action ${parentIndex + 1}: spawn ${(groups.get(parent.identity) || []).length} sub-agents over a burst window, collect their returns, then fan out to ${PEER_FANOUT_PER_PARENT} wired peers.`,
+        origin: "example-003-playwright",
+        idempotency_key: `example-003:burst-kickoff:${parent.identity}`,
         handling_mode: "queue",
       });
       await runBounded(
@@ -392,9 +396,11 @@ async function main() {
   await runBounded(burst, SEND_CONCURRENCY, async (agent, index) => {
     const row = rowByIdentity.get(agent.identity);
     assert.ok(row, `missing sub-agent row for ${agent.identity}`);
-    await rpcWithRetry(baseUrl, "mobkit/send_message", {
-      member_id: row.member_id || row.identity || agent.identity,
-      message: `sub-agent return ${index + 1}/${BURST_TOTAL}: return a compact status for parent=${agent.parentIdentity}; include identity=${agent.identity}, shard=${agent.shard}, and wave=burst.`,
+    await rpcWithRetry(baseUrl, "mobkit/console/send", {
+      identity: rowRuntimeIdentity(row, agent.identity),
+      content: `sub-agent return ${index + 1}/${BURST_TOTAL}: return a compact status for parent=${agent.parentIdentity}; include identity=${agent.identity}, shard=${agent.shard}, and wave=burst.`,
+      origin: "example-003-playwright",
+      idempotency_key: `example-003:sub-return:${agent.identity}`,
       handling_mode: "queue",
     });
   });
@@ -402,11 +408,13 @@ async function main() {
     const children = groups.get(parent.identity) || [];
     const parentRow = rowByIdentity.get(parent.identity);
     assert.ok(parentRow, `missing parent row for ${parent.identity}`);
-    await rpcWithRetry(baseUrl, "mobkit/send_message", {
-      member_id: parentRow.member_id || parent.identity,
-      message: `sub-agent returns received for stress action ${parentIndex + 1}: ${children
+    await rpcWithRetry(baseUrl, "mobkit/console/send", {
+      identity: rowRuntimeIdentity(parentRow, parent.identity),
+      content: `sub-agent returns received for stress action ${parentIndex + 1}: ${children
         .map((child) => `${child.identity}/${child.shard}`)
         .join(", ")}. Publish a compact fanout packet to your wired peers.`,
+      origin: "example-003-playwright",
+      idempotency_key: `example-003:parent-collect:${parent.identity}`,
       handling_mode: "queue",
     });
   });
@@ -419,9 +427,11 @@ async function main() {
         async (peerIdentity, peerIndex) => {
           const peerRow = rowByIdentity.get(peerIdentity);
           assert.ok(peerRow, `missing peer row for ${peerIdentity}`);
-          await rpcWithRetry(baseUrl, "mobkit/send_message", {
-            member_id: peerRow.member_id || peerIdentity,
-            message: `peer fanout from ${parent.identity} action ${parentIndex + 1}: acknowledge parent=${parent.identity}, peer_index=${peerIndex + 1}/${peers.length}, burst_children=${(groups.get(parent.identity) || []).length}.`,
+          await rpcWithRetry(baseUrl, "mobkit/console/send", {
+            identity: rowRuntimeIdentity(peerRow, peerIdentity),
+            content: `peer fanout from ${parent.identity} action ${parentIndex + 1}: acknowledge parent=${parent.identity}, peer_index=${peerIndex + 1}/${peers.length}, burst_children=${(groups.get(parent.identity) || []).length}.`,
+            origin: "example-003-playwright",
+            idempotency_key: `example-003:peer-fanout:${parent.identity}:${peerIdentity}`,
             handling_mode: "queue",
           });
         },
@@ -436,9 +446,11 @@ async function main() {
     async (agent, index) => {
       const row = rowByIdentity.get(agent.identity);
       assert.ok(row, `missing identity row for ${agent.identity}`);
-      await rpcWithRetry(baseUrl, "mobkit/send_message", {
-        member_id: row.member_id || row.identity || agent.identity,
-        message: `direct SDK-style probe ${index + 1}: answer with mob=${agent.mob}, shard=${agent.shard}, wave=burst, and one readiness observation.`,
+      await rpcWithRetry(baseUrl, "mobkit/console/send", {
+        identity: rowRuntimeIdentity(row, agent.identity),
+        content: `direct SDK-style probe ${index + 1}: answer with mob=${agent.mob}, shard=${agent.shard}, wave=burst, and one readiness observation.`,
+        origin: "example-003-playwright",
+        idempotency_key: `example-003:direct-probe:${agent.identity}`,
         handling_mode: "queue",
       });
     },

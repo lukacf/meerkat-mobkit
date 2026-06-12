@@ -228,3 +228,90 @@ async fn incident_pack_exposes_seeded_stock_console_state() {
         "seeded gating pending entry should exist"
     );
 }
+
+/// Regression test: the seeded R3 gating action must deliver its approval
+/// notification even though the bundle is built inside an active tokio
+/// runtime. `UnifiedRuntime::evaluate_gating_action` previously ran the
+/// router/delivery MCP boundary calls directly on the runtime thread, so the
+/// notification silently failed with
+/// `cannot execute blocking MCP boundary call inside an active tokio runtime`
+/// and the pending request timed out to safe_draft.
+#[tokio::test]
+async fn incident_pack_gating_approval_notification_fires_from_async_context() {
+    let bundle = Box::pin(build_runtime_bundle_with_default_client(
+        &scenario_path().expect("incident scenario path"),
+        Arc::new(IncidentPackTestClient),
+    ))
+    .await
+    .expect("incident runtime bundle");
+    let app = bundle
+        .runtime
+        .build_reference_app_router(bundle.decisions.clone());
+
+    let pending = json_response(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/console/rpc")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": "incident-pack-gating-pending",
+                    "method": "mobkit/gating/pending",
+                    "params": {},
+                })
+                .to_string(),
+            ))
+            .expect("gating pending request"),
+    )
+    .await;
+    let pending_rows = pending["result"]["pending"]
+        .as_array()
+        .unwrap_or_else(|| panic!("pending array missing in response: {pending:?}"));
+    let seeded = pending_rows
+        .iter()
+        .find(|entry| entry["action"] == json!("publish_status_update"))
+        .unwrap_or_else(|| panic!("seeded publish_status_update pending entry: {pending:?}"));
+    assert!(
+        seeded["approval_route_id"].is_string(),
+        "approval route must be resolved through the router module: {seeded:?}"
+    );
+    assert!(
+        seeded["approval_delivery_id"].is_string(),
+        "approval notification must be delivered through the delivery module: {seeded:?}"
+    );
+
+    let audit = json_response(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri("/console/rpc")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": "incident-pack-gating-audit",
+                    "method": "mobkit/gating/audit",
+                    "params": { "limit": 100 },
+                })
+                .to_string(),
+            ))
+            .expect("gating audit request"),
+    )
+    .await;
+    let entries = audit["result"]["entries"]
+        .as_array()
+        .unwrap_or_else(|| panic!("audit entries missing in response: {audit:?}"));
+    let pending_created = entries
+        .iter()
+        .find(|entry| {
+            entry["event_type"] == json!("pending_created")
+                && entry["action_id"] == seeded["action_id"]
+        })
+        .unwrap_or_else(|| panic!("pending_created audit entry: {audit:?}"));
+    assert!(
+        pending_created["detail"]["approval_notification_error"].is_null(),
+        "approval notification must not fail: {pending_created:?}"
+    );
+}

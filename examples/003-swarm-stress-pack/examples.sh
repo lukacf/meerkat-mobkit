@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PACK_DIR="$ROOT/examples/003-swarm-stress-pack"
 
+# Meerkat 0.7's machine-authority code allocates huge debug-build stack
+# frames; belt-and-braces for any prebuilt debug binary launched from here.
+export RUST_MIN_STACK="${RUST_MIN_STACK:-33554432}"
+
 echo "[swarm-stress-pack] ensuring example JS deps"
 (cd "$ROOT/examples" && npm install --silent --no-fund --no-audit)
 
@@ -24,15 +28,24 @@ if [[ " $* " == *" --browser-smoke "* ]]; then
   LOG_FILE="$(mktemp -t swarm-stress.XXXXXX.log)"
   cleanup() {
     if [[ -n "${SERVER_PID:-}" ]]; then
-      kill "$SERVER_PID" >/dev/null 2>&1 || true
+      # The runtime is started in its own process group (set -m below); kill
+      # the whole group so npx/tsx/node/rpc_gateway descendants die too.
+      kill -TERM -- -"$SERVER_PID" >/dev/null 2>&1 || kill "$SERVER_PID" >/dev/null 2>&1 || true
       wait "$SERVER_PID" >/dev/null 2>&1 || true
+      SERVER_PID=""
     fi
   }
   trap cleanup EXIT
+  trap 'cleanup; exit 130' INT
+  trap 'cleanup; exit 143' TERM
 
   echo "[swarm-stress-pack] starting real Gemini-backed live console for browser smoke"
+  # set -m puts the background job in its own process group so cleanup can
+  # kill the entire npx/tsx/gateway tree via kill -- -PID.
+  set -m
   (cd "$ROOT/examples" && npx tsx "$PACK_DIR/run.ts" >"$LOG_FILE" 2>&1) &
   SERVER_PID=$!
+  set +m
 
   BASE_URL=""
   for _ in $(seq 1 240); do

@@ -148,8 +148,71 @@ fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMo
     }
 }
 
+/// Delivery target for `mobkit/send_message`, resolved from the wire
+/// `member_id` parameter.
+///
+/// Precedence contract:
+/// 1. An exact mob-roster match (after public-alias/comms encoding) always
+///    wins. Callers holding concrete member ids — `rt:{identity}:{generation}`
+///    aliases, plain member names, and every member of a non-identity-first
+///    mob — keep raw member-id semantics.
+/// 2. Otherwise, on identity-first runtimes a bare durable identity (e.g.
+///    `atlas-base-001` when the meerkat 0.7.1 roster holds
+///    `rt:atlas-base-001:0`) resolves through the identity bridge —
+///    the gateway-plane counterpart of the console plane's
+///    `console_send_with_identity_first_fallback` (`http_console.rs`).
+/// 3. Anything else (no identity runtime, unparseable identity, unknown
+///    identity) falls through to raw member-id semantics so the original
+///    mob `member not found` error surfaces unchanged.
+enum SendMessageTarget {
+    /// Deliver through the mob roster (`send_message_on_mob_with_mode`).
+    MobMember,
+    /// Deliver through the identity bridge
+    /// (`IdentityRuntime::send_with_mode`), which lazily materializes
+    /// dormant identities before delivery.
+    Identity {
+        identity_rt: std::sync::Arc<crate::identity_first::IdentityRuntime>,
+        identity: crate::identity_first::AgentIdentity,
+        /// Live runtime member id bound to the identity, when materialized.
+        runtime_member_id: Option<String>,
+    },
+}
+
+async fn resolve_send_message_target(
+    runtime: &UnifiedRuntime,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    member_id: &str,
+) -> SendMessageTarget {
+    let roster_id = crate::member_comms_id::mob_member_id(member_id);
+    if matches!(
+        runtime.mob_handle().get_member(&roster_id).await,
+        Ok(Some(_))
+    ) {
+        return SendMessageTarget::MobMember;
+    }
+    let Some(identity_rt) = identity_runtime.or_else(|| runtime.identity_runtime()) else {
+        return SendMessageTarget::MobMember;
+    };
+    let Ok(identity) = crate::identity_first::AgentIdentity::parse(member_id) else {
+        return SendMessageTarget::MobMember;
+    };
+    match identity_rt.status(&identity).await {
+        Ok(status) => SendMessageTarget::Identity {
+            identity_rt: identity_rt.clone(),
+            identity,
+            runtime_member_id: status
+                .agent_runtime_id
+                .map(|runtime_id| runtime_id.as_str().to_string()),
+        },
+        // Unknown identity: keep raw member-id semantics so the original
+        // mob `member not found` error surfaces.
+        Err(_) => SendMessageTarget::MobMember,
+    }
+}
+
 pub(super) async fn handle_send_message(
     runtime: &UnifiedRuntime,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
@@ -187,13 +250,29 @@ pub(super) async fn handle_send_message(
 
     match (member_id, content) {
         (Some(member_id), Some(content)) if !member_id.is_empty() => {
-            if let Err(err) = assert_member_accepts_images(
-                &runtime.mob_handle(),
-                runtime.mob_runtime().session_service(),
-                member_id,
-                &content,
-            )
-            .await
+            let target = resolve_send_message_target(runtime, identity_runtime, member_id).await;
+            // Pre-flight the image-capability guard against the member that
+            // will actually take the delivery: the wire id for roster sends,
+            // the live runtime member for identity-bridge sends. A dormant
+            // identity has no live member to project capabilities from yet —
+            // it materializes inside `send_with_mode`, where the session
+            // bridge re-runs the same guard.
+            let image_guard_member_id = match &target {
+                SendMessageTarget::MobMember => Some(member_id),
+                SendMessageTarget::Identity {
+                    runtime_member_id: Some(runtime_member_id),
+                    ..
+                } => Some(runtime_member_id.as_str()),
+                SendMessageTarget::Identity { .. } => None,
+            };
+            if let Some(guard_member_id) = image_guard_member_id
+                && let Err(err) = assert_member_accepts_images(
+                    &runtime.mob_handle(),
+                    runtime.mob_runtime().session_service(),
+                    guard_member_id,
+                    &content,
+                )
+                .await
             {
                 return JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
@@ -212,29 +291,65 @@ pub(super) async fn handle_send_message(
                 meerkat_core::types::HandlingMode::Queue => "queue",
                 meerkat_core::types::HandlingMode::Steer => "steer",
             };
+            // Console events are keyed by the durable identity for
+            // identity-bridge sends (mirroring the console plane) and by the
+            // wire member id for roster sends.
+            let (events_identity, events_member_id) = match &target {
+                SendMessageTarget::MobMember => {
+                    (member_id.to_string(), Some(member_id.to_string()))
+                }
+                SendMessageTarget::Identity {
+                    identity,
+                    runtime_member_id,
+                    ..
+                } => (identity.as_str().to_string(), runtime_member_id.clone()),
+            };
             let _ = runtime
                 .console_events()
                 .reserve_interaction_value(
-                    member_id,
-                    Some(member_id),
+                    &events_identity,
+                    events_member_id.as_deref(),
                     &interaction_id,
                     "mobkit/send_message",
                     content_value.clone(),
                 )
                 .await;
-            match send_message_on_mob_with_mode(
-                &runtime.mob_handle(),
-                member_id,
-                content.clone(),
-                handling_mode,
-            )
-            .await
-            {
+            let delivery: Result<String, String> = match &target {
+                SendMessageTarget::MobMember => send_message_on_mob_with_mode(
+                    &runtime.mob_handle(),
+                    member_id,
+                    content.clone(),
+                    handling_mode,
+                )
+                .await
+                .map_err(|err| err.to_string()),
+                SendMessageTarget::Identity {
+                    identity_rt,
+                    identity,
+                    ..
+                } => match identity_rt
+                    .send_with_mode(identity, &content, handling_mode)
+                    .await
+                {
+                    // Report the bridge session that took the delivery —
+                    // re-read after the send so a lazy materialization or a
+                    // delivered-session rebind is reflected.
+                    Ok(_token) => Ok(identity_rt
+                        .status(identity)
+                        .await
+                        .ok()
+                        .and_then(|status| status.session_id)
+                        .map(|session_id| session_id.to_string())
+                        .unwrap_or_default()),
+                    Err(err) => Err(err.to_string()),
+                },
+            };
+            match delivery {
                 Ok(session_id) => {
                     runtime
                         .console_events()
                         .append(
-                            member_id,
+                            &events_identity,
                             Some(interaction_id),
                             "user_input",
                             serde_json::json!({
@@ -260,11 +375,11 @@ pub(super) async fn handle_send_message(
                     runtime
                         .console_events()
                         .append(
-                            member_id,
+                            &events_identity,
                             Some(interaction_id),
                             "interaction_failed",
                             serde_json::json!({
-                                "reason": err.to_string(),
+                                "reason": err,
                                 "origin": "mobkit/send_message",
                                 "content": content_value,
                             }),

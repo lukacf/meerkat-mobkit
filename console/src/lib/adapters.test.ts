@@ -13,6 +13,7 @@ import {
   optimisticUserMessageForPanel,
   resolvePanelResponsePhase,
   sortConversationTimelineEntries,
+  stripPeerTransportScaffold,
   systemNoticeClearsBusyState,
 } from "./adapters";
 
@@ -3838,6 +3839,176 @@ test("mapFramesToTimelineEntries preserves standalone peer scaffold words in cle
   assert.equal(
     block?.type === "tool-call" ? block.peerBody : "",
     "Peer message Please keep this heading.",
+  );
+});
+
+// Meerkat 0.7.1 canonical model-facing peer-request projection: transport
+// envelope (peer_spec address + pubkey bytes) plus protocol coaching. This is
+// what the runtime stuffs into the typed comms block content for mob kickoff
+// requests; none of it may surface in user-facing chat.
+const MEERKAT_071_PEER_REQUEST_PROJECTION =
+  "Peer request from peer_id 6f6114cd-2cf7-590f-a172-0e36feacd12c"
+  + " (display_name: incident-command-center/commander/incident-commander)"
+  + " (id: 964020b4-c9b6-4c31-ba6c-30598279b388)\n"
+  + "Intent: mob.kickoff_started\n"
+  + "Params: {\n"
+  + "  \"peer\": \"incident-commander\",\n"
+  + "  \"peer_spec\": {\n"
+  + "    \"address\": \"inproc://incident-command-center/commander/incident-commander\",\n"
+  + "    \"peer_id\": \"6f6114cd-2cf7-590f-a172-0e36feacd12c\",\n"
+  + "    \"pubkey\": [20, 129, 97, 58, 74, 93, 150, 7]\n"
+  + "  },\n"
+  + "  \"role\": \"commander\"\n"
+  + "}\n"
+  + "Request ID: 964020b4-c9b6-4c31-ba6c-30598279b388\n"
+  + "\n"
+  + "This is a correlated peer request. Reply with send_response with arguments"
+  + " {\"in_reply_to\":\"964020b4-c9b6-4c31-ba6c-30598279b388\","
+  + "\"peer_id\":\"6f6114cd-2cf7-590f-a172-0e36feacd12c\",\"status\":\"completed\"}."
+  + " Use status=\"failed\" instead of \"completed\" when the request cannot be"
+  + " fulfilled, and include result only when the request contract provides a"
+  + " typed result payload. Do not answer this request with send_message.";
+
+function meerkat071KickoffNotice() {
+  return {
+    role: "system_notice",
+    kind: "comms",
+    body: "Peer request: mob.kickoff_started",
+    blocks: [{
+      type: "comms",
+      kind: "request",
+      direction: "incoming",
+      peer: {
+        id: "6f6114cd-2cf7-590f-a172-0e36feacd12c",
+        display_name: "incident-command-center/commander/incident-commander",
+      },
+      request_id: "964020b4-c9b6-4c31-ba6c-30598279b388",
+      intent: "mob.kickoff_started",
+      summary: "Peer request: mob.kickoff_started",
+      payload: {
+        peer: "incident-commander",
+        peer_spec: {
+          address: "inproc://incident-command-center/commander/incident-commander",
+          peer_id: "6f6114cd-2cf7-590f-a172-0e36feacd12c",
+          pubkey: [20, 129, 97, 58, 74, 93, 150, 7],
+        },
+        role: "commander",
+      },
+      content: [{ type: "text", text: MEERKAT_071_PEER_REQUEST_PROJECTION }],
+    }],
+  };
+}
+
+test("mapFramesToTimelineEntries never renders the meerkat 0.7.1 peer transport projection as the comms body", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "scribe",
+      member_id: "scribe",
+      label: "Scribe",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-06-12T18:48:01.000Z"),
+        data: {
+          prompt:
+            "Peer request: mob.kickoff_started\n"
+            + MEERKAT_071_PEER_REQUEST_PROJECTION,
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-06-12T18:48:01.519Z"),
+        sourceKind: "session_history",
+        data: { message: meerkat071KickoffNotice() },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  const commsEntry = entries.find((entry) => entry.identity.id === "comms");
+  assert.ok(commsEntry, "typed comms notice should render a comms entry");
+  const block = commsEntry && "blocks" in commsEntry && Array.isArray(commsEntry.blocks)
+    ? commsEntry.blocks[0]
+    : null;
+  assert.equal(block?.type, "tool-call");
+  const peerBody = block?.type === "tool-call" ? block.peerBody || "" : "";
+  assert.equal(peerBody, "Peer request: mob.kickoff_started");
+  for (const marker of ["pubkey", "peer_spec", "send_response", "Do not answer this request"]) {
+    assert.ok(
+      !peerBody.includes(marker),
+      `comms body must not leak transport scaffold marker "${marker}": ${peerBody}`,
+    );
+  }
+
+  for (const entry of entries) {
+    if (entry.identity.id !== "user" || entry.kind !== "message" || !("text" in entry)) continue;
+    assert.ok(
+      !/pubkey|peer_spec|Do not answer this request/.test(entry.text),
+      `user entries must not leak transport scaffold: ${entry.text}`,
+    );
+  }
+});
+
+test("mapFramesToTimelineEntries drops pure peer transport scaffold run prompts even without a matching comms notice", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "scribe",
+      member_id: "scribe",
+      label: "Scribe",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-06-12T18:48:01.000Z"),
+        data: { prompt: MEERKAT_071_PEER_REQUEST_PROJECTION },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(
+    entries.some((entry) => entry.identity.id === "user"),
+    false,
+    `pure transport scaffold must not render as a user prompt: ${JSON.stringify(entries)}`,
+  );
+});
+
+test("stripPeerTransportScaffold keeps human-authored remainder and drops the envelope", () => {
+  assert.equal(stripPeerTransportScaffold(MEERKAT_071_PEER_REQUEST_PROJECTION), "");
+  assert.equal(
+    stripPeerTransportScaffold(
+      `${MEERKAT_071_PEER_REQUEST_PROJECTION}\nPlease summarize the incident.`,
+    ),
+    "Please summarize the incident.",
+  );
+  // Single-line `prompt_text` form terminates with the send_message coaching.
+  assert.equal(
+    stripPeerTransportScaffold(
+      "Peer request from peer_id 6f6114cd-2cf7-590f-a172-0e36feacd12c."
+      + " Intent: review. Request ID: req-1. Params: {\"x\":1}."
+      + " This is not a normal user request and not a prompt for direct"
+      + " user-facing output. Reply with send_response."
+      + " Do not use send_message for this reply.",
+    ),
+    "",
+  );
+  // Truncated envelope (no coaching terminator) still never leaks.
+  assert.equal(
+    stripPeerTransportScaffold(
+      "Peer request from peer_id 6f6114cd-2cf7-590f-a172-0e36feacd12c\nParams: { \"pubkey\": [1, 2, 3",
+    ),
+    "",
+  );
+  // Ordinary peer text is untouched.
+  assert.equal(
+    stripPeerTransportScaffold("Peer request from fugue/peer-a:\nDone."),
+    "Peer request from fugue/peer-a:\nDone.",
   );
 });
 

@@ -505,8 +505,39 @@ async fn write_binding(
     Ok(binding)
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+// Bootstrap-only expects, before any runtime exists to report errors through
+// (the sibling example packs carry the same allowance file-wide).
+#[allow(clippy::expect_used)]
+fn main() {
+    // Meerkat 0.7's generated machine-authority apply path allocates very
+    // large stack frames in debug builds (see .cargo/config.toml). The
+    // workspace-level `[env] RUST_MIN_STACK` only covers `cargo run`/test
+    // flows, not direct execution of the prebuilt binary (local-target.sh
+    // and real-target-smoke.sh launch the built example directly), so the
+    // example sizes its own threads explicitly: the root future runs on a
+    // dedicated 32 MiB thread and tokio workers get 32 MiB stacks (mirrors
+    // mobkit_gateway/rpc_gateway's explicit worker sizing).
+    const STACK_SIZE: usize = 32 * 1024 * 1024;
+    std::thread::Builder::new()
+        .name("mdm-target-runtime".into())
+        .stack_size(STACK_SIZE)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(STACK_SIZE)
+                .build()
+                .expect("build tokio runtime");
+            if let Err(error) = runtime.block_on(run()) {
+                eprintln!("mdm target failed: {error:#}");
+                std::process::exit(1);
+            }
+        })
+        .expect("spawn runtime thread")
+        .join()
+        .expect("runtime thread panicked");
+}
+
+async fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "warn".into()))
         .init();

@@ -150,8 +150,32 @@ fn seed_access_config() -> AccessControlConfig {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Meerkat 0.7's generated machine-authority apply path allocates very
+    // large stack frames in debug builds (see .cargo/config.toml). The
+    // workspace-level `[env] RUST_MIN_STACK` only covers `cargo run`/test
+    // flows, not direct execution of the prebuilt binary, so the example
+    // sizes its own threads explicitly: the root future runs on a dedicated
+    // 32 MiB thread and tokio workers get 32 MiB stacks (mirrors
+    // mobkit_gateway/rpc_gateway's explicit worker sizing).
+    const STACK_SIZE: usize = 32 * 1024 * 1024;
+    std::thread::Builder::new()
+        .name("access-control-runtime".into())
+        .stack_size(STACK_SIZE)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(STACK_SIZE)
+                .build()
+                .expect("build tokio runtime");
+            runtime.block_on(run());
+        })
+        .expect("spawn runtime thread")
+        .join()
+        .expect("runtime thread panicked");
+}
+
+async fn run() {
     let listen_addr =
         std::env::var("ACCESS_CONTROL_LISTEN_ADDR").unwrap_or_else(|_| DEFAULT_LISTEN_ADDR.into());
     let work_dir = std::env::var("ACCESS_CONTROL_WORK_DIR").map_or_else(

@@ -4036,13 +4036,17 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
       });
       return entries;
     }
+    const scrubbedPrompt = stripPeerTransportScaffold(prompt);
+    if (!scrubbedPrompt) {
+      return entries;
+    }
     entries.push({
       kind: "message",
       id: entryId,
       identity: USER_IDENTITY,
       variant: "plain",
       ...createdAt ? { createdAt } : {},
-      text: prompt
+      text: scrubbedPrompt
     });
   }
   return entries;
@@ -4418,6 +4422,15 @@ function isCommsLikeRunStartedPrompt(text) {
   return /(^|\n)\s*Peer (?:message|request|response)(?:\s+from\b|$)/i.test(trimmed) || /(^|\n)\s*\[COMMS (?:MESSAGE|REQUEST|RESPONSE)\b/i.test(trimmed);
 }
 var PEER_ENVELOPE_LINE_RE = /^Peer\s+(?:message|request|response)\s+from\s+(.+):(.*)$/i;
+var PEER_TRANSPORT_SCAFFOLD_START_RE = /Peer\s+request\s+from\s+peer_id\s/i;
+var PEER_TRANSPORT_SCAFFOLD_SPAN_RE = /Peer\s+request\s+from\s+peer_id\s[\s\S]*?(?:Do not answer this request with send_message\.|Do not use send_message for this reply\.)/gi;
+function stripPeerTransportScaffold(text) {
+  if (!text || !PEER_TRANSPORT_SCAFFOLD_START_RE.test(text)) return text;
+  let scrubbed = text.replace(PEER_TRANSPORT_SCAFFOLD_SPAN_RE, " ");
+  const residualIndex = scrubbed.search(PEER_TRANSPORT_SCAFFOLD_START_RE);
+  if (residualIndex >= 0) scrubbed = scrubbed.slice(0, residualIndex);
+  return scrubbed.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -4849,7 +4862,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, co
       const contentBlocks2 = typedNoticeContentBlocks(record.content, blobBaseUrl);
       const contentText = contentBlocks2.map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n").trim();
       const peerImages = contentBlocks2.filter((item) => item.type === "image");
-      const displayBodySource = contentText || typedCommsStableBodyText(record) || bodyText;
+      const displayBodySource = stripPeerTransportScaffold(contentText) || stripPeerTransportScaffold(typedCommsStableBodyText(record)) || stripPeerTransportScaffold(bodyText);
       const preserveStructuredContentEnvelope = structuredCommsBodyShouldPreserveLeadingEnvelope(
         displayBodySource,
         peerAliases
@@ -11494,7 +11507,7 @@ function typedSystemNoticeSignal(data) {
     const peerLabel = textFromValue(peer.display_name) || textFromValue(peer.id) || "peer";
     targets.push(lastSegment(peerLabel));
     if (block.direction === "outgoing") incoming = false;
-    const content = textFromValue(block.content);
+    const content = stripPeerTransportScaffold(textFromValue(block.content));
     const detail = content || textFromValue(block.summary) || textFromValue(block.intent) || textFromValue(block.payload);
     if (detail) details.push(detail);
   }
@@ -11538,7 +11551,9 @@ function signalFromFrame(frame) {
   switch (frame.event) {
     case "user_input":
     case "interaction_started": {
-      const request = textFromValue(data.content ?? data.text ?? data.prompt);
+      const request = stripPeerTransportScaffold(
+        textFromValue(data.content ?? data.text ?? data.prompt)
+      );
       if (!request) return null;
       if (isScaffoldRequest(request)) return null;
       return {
@@ -15077,7 +15092,15 @@ function ConsoleApp({ baseUrl }) {
   async function onLifecycleAction(identity, method) {
     if (consoleReadOnly) return;
     const command = method === "mobkit/retire" ? CONSOLE_COMMAND_NAMES2.retireIdentity : method === "mobkit/respawn" ? CONSOLE_COMMAND_NAMES2.respawnIdentity : CONSOLE_COMMAND_NAMES2.resetIdentity;
-    await executeHeadlessCommand(command, identityWorkbenchTarget(identity, "chat"), { identity });
+    try {
+      await executeHeadlessCommand(command, identityWorkbenchTarget(identity, "chat"), {
+        identity
+      });
+      setActionError("");
+    } catch (lifecycleError) {
+      setActionError(errorMessage(lifecycleError));
+      return;
+    }
     const nextAgents = await loadExperience();
     if (method !== "mobkit/retire") return;
     if (nextAgents.some(

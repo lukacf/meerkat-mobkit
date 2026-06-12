@@ -313,6 +313,11 @@ pub struct MobSessionBridge {
     continuity_session_store: Option<Arc<ContinuitySessionStoreAdapter>>,
     runtime_members: Arc<tokio::sync::RwLock<HashMap<String, String>>>,
     runtime_sessions: Arc<tokio::sync::RwLock<HashMap<String, meerkat_core::types::SessionId>>>,
+    /// Lazily-minted ops-owner bridge session for external (peer-only)
+    /// members, used when the mob was created without machine-bound owner
+    /// bridge-session authority. Stable for the bridge lifetime so every
+    /// external member shares one generated operation owner.
+    generated_external_owner_session: std::sync::OnceLock<meerkat_core::types::SessionId>,
 }
 
 impl MobSessionBridge {
@@ -325,6 +330,7 @@ impl MobSessionBridge {
             continuity_session_store: None,
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            generated_external_owner_session: std::sync::OnceLock::new(),
         }
     }
 
@@ -340,6 +346,7 @@ impl MobSessionBridge {
             continuity_session_store: None,
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            generated_external_owner_session: std::sync::OnceLock::new(),
         }
     }
 
@@ -355,6 +362,7 @@ impl MobSessionBridge {
             continuity_session_store: None,
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            generated_external_owner_session: std::sync::OnceLock::new(),
         }
     }
 
@@ -371,6 +379,7 @@ impl MobSessionBridge {
             continuity_session_store: None,
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            generated_external_owner_session: std::sync::OnceLock::new(),
         }
     }
 
@@ -387,6 +396,7 @@ impl MobSessionBridge {
             continuity_session_store: Some(session_store),
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            generated_external_owner_session: std::sync::OnceLock::new(),
         }
     }
 
@@ -529,6 +539,55 @@ impl MobSessionBridge {
             },
         }
     }
+
+    /// Ops-owner bridge session for external (peer-only) member operations.
+    ///
+    /// meerkat 0.7.1 fails external member provisioning closed unless the
+    /// spawn carries a generated owner binding (owner bridge session + ops
+    /// registry; see `MultiBackendProvisioner::provision_member`). Prefer the
+    /// mob's machine-bound owner bridge-session authority when it exists;
+    /// otherwise mint one stable session id for this bridge — the runtime
+    /// adapter creates local session resources for it on demand, exactly like
+    /// meerkat's own external smoke supervisors.
+    fn external_owner_bridge_session_id(&self) -> meerkat_core::types::SessionId {
+        if let Some(authority) = self.handle.owner_bridge_session_lifecycle_authority() {
+            return authority.bridge_session_id;
+        }
+        self.generated_external_owner_session
+            .get_or_init(meerkat_core::types::SessionId::new)
+            .clone()
+    }
+
+    /// Spawn a mob member from a fully-built spec, attaching the generated
+    /// owner context that meerkat 0.7.1 requires for external (peer-only)
+    /// bindings. Session-backed specs spawn through the plain path.
+    async fn spawn_member_spec(
+        &self,
+        spawn_spec: SpawnMemberSpec,
+    ) -> Result<(), meerkat_mob::MobError> {
+        if spawn_spec_requires_generated_owner_context(&spawn_spec) {
+            let owner_session_id = self.external_owner_bridge_session_id();
+            Box::pin(
+                self.handle
+                    .spawn_spec_with_generated_owner_context(spawn_spec, owner_session_id),
+            )
+            .await
+            .map(|_| ())
+        } else {
+            Box::pin(self.handle.spawn_spec(spawn_spec))
+                .await
+                .map(|_| ())
+        }
+    }
+}
+
+/// External (peer-only) member provisioning on meerkat 0.7.1 requires a
+/// machine-minted owner context; plain `spawn_spec` fails closed by design.
+pub(crate) fn spawn_spec_requires_generated_owner_context(spawn_spec: &SpawnMemberSpec) -> bool {
+    matches!(
+        spawn_spec.binding,
+        Some(meerkat_mob::RuntimeBinding::External { .. })
+    )
 }
 
 fn spec_uses_external_binding(spec: &DurableAgentSpec) -> bool {
@@ -673,7 +732,7 @@ impl SessionBridge for MobSessionBridge {
             self.base_profile_for_spec(spec).as_ref(),
         );
 
-        Box::pin(self.handle.spawn_spec(spawn_spec))
+        self.spawn_member_spec(spawn_spec)
             .await
             .map_err(|e| BridgeError::Mob(e.to_string()))?;
         self.remember_runtime_member(runtime_id, &mid).await;
@@ -703,7 +762,7 @@ impl SessionBridge for MobSessionBridge {
                 bridge_session_id: session_id.clone(),
             };
             let mid = member_id_for_spawn_spec(runtime_id, spec);
-            Box::pin(self.handle.spawn_spec(spawn_spec))
+            self.spawn_member_spec(spawn_spec)
                 .await
                 .map_err(|e| BridgeError::Mob(e.to_string()))?;
             self.remember_runtime_member(runtime_id, &mid).await;
@@ -727,8 +786,8 @@ impl SessionBridge for MobSessionBridge {
 
         let mid = member_id_for_spawn_spec(runtime_id, spec);
 
-        match Box::pin(self.handle.spawn_spec(spawn_spec)).await {
-            Ok(_) => {
+        match self.spawn_member_spec(spawn_spec).await {
+            Ok(()) => {
                 self.remember_runtime_member(runtime_id, &mid).await;
                 self.remember_runtime_session(runtime_id, session_id).await;
                 Ok(ResumeSessionOutcome::Resumed {
@@ -752,7 +811,7 @@ impl SessionBridge for MobSessionBridge {
                     draft,
                     self.base_profile_for_spec(spec).as_ref(),
                 );
-                Box::pin(self.handle.spawn_spec(fresh_spec))
+                self.spawn_member_spec(fresh_spec)
                     .await
                     .map_err(|e2| BridgeError::Mob(e2.to_string()))?;
 
@@ -1275,6 +1334,50 @@ mod tests {
             assert_eq!(address.as_str(), "tcp://127.0.0.1:4777");
             assert_eq!(pubkey, [7; 32]);
         }
+    }
+
+    #[test]
+    fn external_binding_spawn_specs_require_generated_owner_context() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let draft = AgentBuildDraft {
+            model: None,
+            system_prompt: None,
+            additional_instructions: Vec::new(),
+            labels: Default::default(),
+            app_context: None,
+            external_tools: Vec::new(),
+            local_external_tools: Default::default(),
+        };
+
+        // Session-backed members keep the plain spawn path.
+        let session_spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, None);
+        assert!(
+            !spawn_spec_requires_generated_owner_context(&session_spawn),
+            "session-backed spawns must not require a generated owner context"
+        );
+
+        // meerkat 0.7.1 MultiBackendProvisioner::provision_member fails
+        // external (peer-only) members closed without a generated owner
+        // binding; the bridge must route them through
+        // spawn_spec_with_generated_owner_context.
+        let mut spec = durable_spec();
+        spec.backend = Some(meerkat_mob::MobBackendKind::External);
+        spec.binding = Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "external",
+                "address": "tcp://127.0.0.1:4777",
+                "identity": {
+                    "kind": "ed25519_public_key",
+                    "public_key": "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+                }
+            }))
+            .expect("wire binding"),
+        );
+        let external_spawn = build_spawn_spec(&runtime_id, &spec, &draft, None);
+        assert!(
+            spawn_spec_requires_generated_owner_context(&external_spawn),
+            "external peer-only spawns must carry a generated owner binding on meerkat 0.7.1"
+        );
     }
 
     #[test]

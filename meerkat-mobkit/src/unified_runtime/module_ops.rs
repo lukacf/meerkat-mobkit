@@ -128,14 +128,19 @@ impl UnifiedRuntime {
         self.module_runtime.lock().await.memory_query(request)
     }
 
+    /// Evaluate a gating action — the R3 approval-notification path (and the
+    /// R2/R3 memory-conflict probe) performs blocking MCP boundary calls, so
+    /// the evaluation runs on a dedicated thread via `run_blocking`. Without
+    /// it the approval notification silently fails with
+    /// `RuntimeUnavailable("cannot execute blocking MCP boundary call inside
+    /// an active tokio runtime")` and the pending request times out to
+    /// safe_draft.
     pub async fn evaluate_gating_action(
         &self,
         request: GatingEvaluateRequest,
     ) -> GatingEvaluateResult {
-        self.module_runtime
-            .lock()
-            .await
-            .evaluate_gating_action(request)
+        let mut rt = self.module_runtime.lock().await;
+        run_blocking(|| rt.evaluate_gating_action(request))
     }
 
     pub async fn list_gating_pending(&self) -> Vec<GatingPendingEntry> {

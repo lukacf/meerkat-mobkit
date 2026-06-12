@@ -1108,3 +1108,66 @@ fn identity_first_builder_legacy_adapter_still_works() {
     let durable = meerkat_mobkit::identity_first::agent_discovery_to_durable(&spec).unwrap();
     assert_eq!(durable.identity.as_str(), "triage:main");
 }
+
+// ===========================================================================
+// Regression: external (peer-only) member restore must carry a generated
+// owner binding on meerkat 0.7.1
+// ===========================================================================
+
+/// meerkat 0.7.1 `MultiBackendProvisioner::provision_member` fails external
+/// peer-only members closed unless the spawn carries a generated owner
+/// binding (owner bridge session + ops registry). The identity-first restore
+/// path used plain `MobHandle::spawn_spec`, so real-target bootstrap (e.g.
+/// the 004-mdm-console-pack real-target smoke) died with
+/// "external peer-only member operation requires generated owner binding"
+/// before touching the external backend at all.
+///
+/// This definition deliberately has no `[backend.external]`, so an
+/// owner-bound spawn deterministically fails *later* — at the provisioner's
+/// "external backend is not configured" check, which sits past the
+/// owner-binding gate — without any network I/O.
+#[tokio::test]
+async fn identity_first_external_member_restore_supplies_generated_owner_binding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut spec = durable_spec("agent:target");
+    spec.backend = Some(meerkat_mob::MobBackendKind::External);
+    spec.binding = Some(
+        serde_json::from_value(serde_json::json!({
+            "kind": "external",
+            "address": "tcp://127.0.0.1:4777",
+            "bootstrap_token": "regression-test-token",
+            "identity": {
+                "kind": "ed25519_public_key",
+                "public_key": "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+            }
+        }))
+        .expect("wire binding"),
+    );
+    let roster = Arc::new(StubRosterProvider::new(vec![spec]));
+
+    let err = match Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(StubContinuityStore))
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(roster)
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-external-owner-binding-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("external-binding spec without [backend.external] should fail restore"),
+    };
+
+    assert!(
+        !err.contains("requires generated owner binding"),
+        "identity-first restore must spawn external members with a generated owner context, got: {err}"
+    );
+    assert!(
+        err.contains("external backend is not configured"),
+        "expected the spawn to pass the owner-binding gate and reach the external-backend check, got: {err}"
+    );
+}

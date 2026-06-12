@@ -2148,8 +2148,12 @@ async fn handle_unified_rpc_json_inner(
             mob_methods::handle_blob_get(runtime, response_id, &request.params).await
         }
         "mobkit/send_message" => {
+            // Pass the identity runtime so bare durable identities resolve
+            // through the identity bridge when no roster member matches
+            // (exact member-id match wins; see `SendMessageTarget`).
             Box::pin(mob_methods::handle_send_message(
                 runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
                 response_id,
                 &request.params,
             ))
@@ -5337,6 +5341,252 @@ comms = true
         assert!(
             err.contains("identity runtime binding belongs to review:singleton"),
             "unexpected error: {err}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression: under the meerkat 0.7.1 identity-first roster the runtime
+    /// members are keyed `rt:{identity}:{generation}`, so a gateway-plane
+    /// `mobkit/send_message` addressed to the bare durable identity (the
+    /// only id the SDK hands out pre-burst) used to fail with
+    /// `mob member not found`. Bare identities must bridge-resolve through
+    /// the identity runtime — like console send — while an exact roster
+    /// member id match keeps raw member-id semantics and wins over identity
+    /// resolution.
+    #[tokio::test]
+    async fn send_message_resolves_bare_durable_identity_through_identity_bridge()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-send-message-identity-bridge-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(5))
+                .build(),
+        )
+        .await?;
+
+        // Identity-first roster shape: each durable identity is seated as
+        // runtime member rt:{identity}:0; the bare identity is NOT a roster id.
+        for (runtime_id, durable) in [
+            ("rt:atlas-base-001:0", "atlas-base-001"),
+            ("rt:draco-base-001:0", "draco-base-001"),
+        ] {
+            runtime
+                .spawn(
+                    SpawnMemberSpec::from_wire(
+                        "worker".to_string(),
+                        runtime_id.to_string(),
+                        Some("You are a swarm base agent.".into()),
+                        None,
+                        None,
+                    )
+                    .with_labels(BTreeMap::from([(
+                        "agent_identity".to_string(),
+                        durable.to_string(),
+                    )])),
+                )
+                .await?;
+        }
+        // Precedence probe: a bare roster member whose id collides with a
+        // registered durable identity.
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "draco-base-001".to_string(),
+                Some("You are the raw roster member.".into()),
+                None,
+                None,
+            ))
+            .await?;
+
+        let session_service = runtime
+            .mob_runtime()
+            .session_service()
+            .cloned()
+            .expect("test mob spec has a session service");
+        let bridge: Arc<dyn crate::identity_first::SessionBridge> = Arc::new(
+            crate::identity_first::MobSessionBridge::with_session_service(
+                runtime.mob_handle(),
+                session_service,
+            ),
+        );
+        let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-send-message-identity-bridge-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge),
+            default_timeout: None,
+        })
+        .with_runtime_services(crate::identity_first::AgentRuntimeServices::new(
+            runtime.mob_handle(),
+        ));
+        for (durable, runtime_id) in [
+            ("atlas-base-001", "rt:atlas-base-001:0"),
+            ("draco-base-001", "rt:draco-base-001:0"),
+        ] {
+            let identity = AgentIdentity::parse(durable)?;
+            let session_id = runtime
+                .mob_handle()
+                .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id(runtime_id))
+                .await
+                .unwrap_or_else(meerkat_core::types::SessionId::new);
+            identity_rt
+                .register(
+                    DurableAgentSpec {
+                        identity: identity.clone(),
+                        profile: meerkat_mob::ProfileName::from("worker"),
+                        addressability: AgentAddressability::Addressable,
+                        display_name: None,
+                        labels: BTreeMap::new(),
+                        context: None,
+                        additional_instructions: Vec::new(),
+                        initial_message: None,
+                        runtime_mode_override: None,
+                        backend: None,
+                        binding: None,
+                    },
+                    IdentityLifecycleState::Active,
+                    Some(ContinuityRecord {
+                        identity: identity.clone(),
+                        agent_runtime_id: AgentRuntimeId::parse(runtime_id)?,
+                        session_id,
+                        generation: ContinuityGeneration::new(0),
+                        checkpoint_version: CheckpointVersion::new(0),
+                    }),
+                    Some(LeaseGrant {
+                        identity,
+                        fencing_token: FencingToken::new(1),
+                        ttl: Duration::from_mins(1),
+                    }),
+                )
+                .await;
+        }
+        let identity_ctx = IdentityFirstContext {
+            runtime: Arc::new(identity_rt),
+            roster_provider: Arc::new(EmptyRosterProvider),
+            topology_provider: None,
+            customizer: None,
+        };
+
+        let send = |id: u64, params: Value| {
+            let runtime = &runtime;
+            let identity_ctx = &identity_ctx;
+            async move {
+                let raw = handle_unified_rpc_json(
+                    runtime,
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": "mobkit/send_message",
+                        "params": params,
+                    })
+                    .to_string(),
+                    Duration::from_secs(10),
+                    None,
+                    Some(identity_ctx),
+                )
+                .await;
+                serde_json::from_str::<Value>(&raw)
+            }
+        };
+
+        // 1. Bare durable identity bridges to the rt:{identity}:{generation}
+        //    member and reports the bridge session that took the delivery.
+        let response = send(
+            1,
+            json!({ "member_id": "atlas-base-001", "message": "status check" }),
+        )
+        .await?;
+        assert!(
+            response["error"].is_null(),
+            "bare identity send must bridge-resolve: {response:#?}"
+        );
+        assert_eq!(response["result"]["accepted"], json!(true));
+        assert_eq!(response["result"]["member_id"], json!("atlas-base-001"));
+        let atlas_session = runtime
+            .mob_handle()
+            .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id(
+                "rt:atlas-base-001:0",
+            ))
+            .await
+            .expect("atlas runtime member has a bridge session after send")
+            .to_string();
+        assert_eq!(response["result"]["session_id"], json!(atlas_session));
+
+        // 2. Steer rides the same bridge resolution.
+        let response = send(
+            2,
+            json!({
+                "member_id": "atlas-base-001",
+                "message": "steer: stand down",
+                "handling_mode": "steer",
+            }),
+        )
+        .await?;
+        assert!(
+            response["error"].is_null(),
+            "bare identity steer must bridge-resolve: {response:#?}"
+        );
+        assert_eq!(response["result"]["accepted"], json!(true));
+
+        // 3. Precedence: an exact roster member id wins over identity
+        //    resolution — the bare member takes the delivery, not the
+        //    identity's rt:draco-base-001:0 binding.
+        let response = send(
+            3,
+            json!({ "member_id": "draco-base-001", "message": "raw roster delivery" }),
+        )
+        .await?;
+        assert!(
+            response["error"].is_null(),
+            "exact roster member send must keep raw semantics: {response:#?}"
+        );
+        assert_eq!(response["result"]["accepted"], json!(true));
+        let draco_raw_session = runtime
+            .mob_handle()
+            .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id("draco-base-001"))
+            .await
+            .expect("bare draco member has a bridge session after send")
+            .to_string();
+        assert_eq!(response["result"]["session_id"], json!(draco_raw_session));
+        if let Some(draco_rt_session) = runtime
+            .mob_handle()
+            .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id(
+                "rt:draco-base-001:0",
+            ))
+            .await
+        {
+            assert_ne!(
+                response["result"]["session_id"],
+                json!(draco_rt_session.to_string()),
+                "exact member id match must not be shadowed by identity resolution"
+            );
+        }
+
+        // 4. Unknown ids keep raw member-not-found semantics.
+        let response = send(
+            4,
+            json!({ "member_id": "phantom-base-999", "message": "nobody home" }),
+        )
+        .await?;
+        assert_eq!(response["error"]["code"], json!(-32000), "{response:#?}");
+        let message = response["error"]["message"]
+            .as_str()
+            .expect("error message");
+        assert!(
+            message.starts_with("send_message failed:"),
+            "unexpected error message: {message}"
         );
 
         Ok(())

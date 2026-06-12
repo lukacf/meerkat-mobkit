@@ -740,6 +740,25 @@ fn fixture_binary_path() -> Result<PathBuf> {
         return Ok(PathBuf::from(path));
     }
 
+    // Resolve next to the running example binary first: the example lives at
+    // <target>/debug/examples/<name> and mcp_fixture at <target>/debug/
+    // mcp_fixture, so this keeps repo-cargo's isolated CARGO_TARGET_DIR
+    // working without any env plumbing (and without falling through to the
+    // raw `cargo build` below, which would create a stray ./target).
+    if let Ok(current_exe) = std::env::current_exe() {
+        let mut dir = current_exe.parent();
+        while let Some(candidate_dir) = dir {
+            let candidate = candidate_dir.join("mcp_fixture");
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+            if candidate_dir.ends_with("debug") || candidate_dir.ends_with("release") {
+                break;
+            }
+            dir = candidate_dir.parent();
+        }
+    }
+
     if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
         let binary_path = PathBuf::from(target_dir).join("debug").join("mcp_fixture");
         if binary_path.exists() {

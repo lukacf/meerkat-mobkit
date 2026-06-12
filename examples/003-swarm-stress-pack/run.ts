@@ -374,7 +374,11 @@ async function main() {
   if (forceDemoLlm && forceRealLlm) {
     throw new Error("--demo-llm and --real-llm are mutually exclusive");
   }
-  const useDemoLlm = forceDemoLlm;
+  // Env opt-out of real provider calls (same effect as --demo-llm) so keyed
+  // shells can run shape-only without editing the command line. An explicit
+  // --real-llm flag overrides it.
+  const envDemoLlm = process.env.MOBKIT_EXAMPLE_DEMO_LLM === "1";
+  const useDemoLlm = forceDemoLlm || (!forceRealLlm && envDemoLlm);
   if (
     !useDemoLlm &&
     !process.env.GEMINI_API_KEY &&
@@ -404,8 +408,13 @@ async function main() {
       "[swarm-stress] using deterministic demo LLM (shape-only, not the real stress scenario)",
     );
   } else {
-    console.log(
-      `[swarm-stress] using real Gemini-backed provider for ${SWARM_STRESS_MODEL}`,
+    const keySource = process.env.GEMINI_API_KEY
+      ? "GEMINI_API_KEY"
+      : "GOOGLE_API_KEY";
+    console.warn(
+      `[swarm-stress] WARNING: real ${SWARM_STRESS_MODEL} provider calls will be made via ${keySource}` +
+        ` (hundreds of agents; this burns real tokens${forceRealLlm ? "" : "; implicit because the key is set"}).` +
+        " Pass --demo-llm or set MOBKIT_EXAMPLE_DEMO_LLM=1 for a deterministic shape-only run.",
     );
   }
 

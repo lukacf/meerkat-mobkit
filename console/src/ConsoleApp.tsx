@@ -2630,7 +2630,18 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         : method === "mobkit/respawn"
           ? CONSOLE_COMMAND_NAMES.respawnIdentity
           : CONSOLE_COMMAND_NAMES.resetIdentity;
-    await executeHeadlessCommand(command, identityWorkbenchTarget(identity, "chat"), { identity });
+    try {
+      await executeHeadlessCommand(command, identityWorkbenchTarget(identity, "chat"), {
+        identity,
+      });
+      setActionError("");
+    } catch (lifecycleError) {
+      // Capability/grant gates and RPC failures surface in the action-error
+      // banner instead of escaping as an unhandled rejection (the callers all
+      // `void` this promise).
+      setActionError(errorMessage(lifecycleError));
+      return;
+    }
     const nextAgents = await loadExperience();
     if (method !== "mobkit/retire") return;
     if (

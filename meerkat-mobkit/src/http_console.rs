@@ -3638,6 +3638,47 @@ async fn respawn_console_member(
     }
 }
 
+/// Live-member fallback shared by `mobkit/respawn` and `mobkit/reset` when no
+/// identity-first record backs the target: respawn the runtime member (fresh
+/// session, same configuration) and report the projected member status.
+async fn respawn_live_console_member_response(
+    handle: &MobHandle,
+    console_events: Option<&ConsoleEventStore>,
+    alias: &ConsoleRuntimeIdentityAlias,
+    lifecycle_kind: &str,
+    action: &str,
+    response_id: Value,
+) -> Value {
+    let mid = crate::member_comms_id::mob_member_id(alias.runtime_member_id.as_str());
+    match Box::pin(respawn_console_member(handle, &mid)).await {
+        Ok(topology_restore_warning) => {
+            if let Some(store) = console_events {
+                store
+                    .record_lifecycle(
+                        &alias.identity,
+                        lifecycle_kind,
+                        json!({ "topology_restore_warning": topology_restore_warning.clone() }),
+                    )
+                    .await;
+            }
+            let mut body = match lookup_member_with_session(handle, &mid).await {
+                Some((entry, session_id)) => console_identity_status_json_for_identity(
+                    &alias.identity,
+                    &entry,
+                    session_id,
+                    None,
+                ),
+                None => json!({ "identity": alias.identity }),
+            };
+            if let Some(warning) = topology_restore_warning {
+                body["topology_restore_warning"] = warning;
+            }
+            response_value(response_id, Some(body), None)
+        }
+        Err(err) => internal_error(response_id, format!("{action} failed: {err}")),
+    }
+}
+
 async fn retire_console_member(
     handle: &MobHandle,
     runtime_member_id: &AgentIdentity,
@@ -4036,11 +4077,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             if identity_runtime.is_some() {
                 methods.extend_from_slice(&["mobkit/status_identity", "mobkit/inspect_identity"]);
                 if can_mutate {
-                    methods.extend_from_slice(&[
-                        "mobkit/respawn",
-                        "mobkit/reset",
-                        "mobkit/delete_identity",
-                    ]);
+                    methods.push("mobkit/delete_identity");
                 }
             } else if console_aggregator.is_some() {
                 methods.extend_from_slice(&["mobkit/status_identity", "mobkit/inspect_identity"]);
@@ -4059,6 +4096,14 @@ async fn handle_console_runtime_rpc_with_visibility(
             if can_mutate {
                 methods.extend_from_slice(&[
                     "mobkit/retire",
+                    // Respawn/reset dispatch on every console runtime: with an
+                    // identity-first runtime they refresh the durable record,
+                    // and without one they fall back to a live-member respawn.
+                    // Advertising them only under the identity runtime left
+                    // the console buttons dead on plain runtimes even though
+                    // the dispatcher accepted the calls.
+                    "mobkit/respawn",
+                    "mobkit/reset",
                     "mobkit/reset_all",
                     "mobkit/console/send",
                     "mobkit/blob/upload",
@@ -5042,34 +5087,15 @@ async fn handle_console_runtime_rpc_with_visibility(
             {
                 return response_value(response_id, None, Some(err));
             }
-            let mid = crate::member_comms_id::mob_member_id(alias.runtime_member_id.as_str());
-            match Box::pin(respawn_console_member(&handle, &mid)).await {
-                Ok(topology_restore_warning) => {
-                    if let Some(store) = &console_events {
-                        store
-                            .record_lifecycle(
-                                &alias.identity,
-                                "identity_respawned",
-                                json!({ "topology_restore_warning": topology_restore_warning.clone() }),
-                            )
-                            .await;
-                    }
-                    let mut body = match lookup_member_with_session(&handle, &mid).await {
-                        Some((entry, session_id)) => console_identity_status_json_for_identity(
-                            &alias.identity,
-                            &entry,
-                            session_id,
-                            None,
-                        ),
-                        None => json!({ "identity": alias.identity }),
-                    };
-                    if let Some(warning) = topology_restore_warning {
-                        body["topology_restore_warning"] = warning;
-                    }
-                    response_value(response_id, Some(body), None)
-                }
-                Err(err) => internal_error(response_id, format!("respawn failed: {err}")),
-            }
+            Box::pin(respawn_live_console_member_response(
+                &handle,
+                console_events.as_ref(),
+                &alias,
+                "identity_respawned",
+                "respawn",
+                response_id,
+            ))
+            .await
         }
         "mobkit/reset" => {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
@@ -5077,7 +5103,39 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             let handle = runtime.handle();
             let Some(identity_runtime) = &identity_runtime else {
-                return invalid_params(response_id, "identity-first runtime required for reset");
+                // No identity-first runtime: degrade to the same live-member
+                // respawn fallback the identity path applies to live-only
+                // members (fresh session, same configuration). This keeps the
+                // console Reset button working on plain runtimes, matching
+                // the advertised `mobkit/reset` capability.
+                let live_alias =
+                    match lookup_member_alias_with_session(&handle, visibility_policy, identity)
+                        .await
+                    {
+                        Ok(alias) => alias,
+                        Err(err) => return response_value(response_id, None, Some(err)),
+                    };
+                let Some(alias) = live_alias else {
+                    return invalid_params(response_id, format!("identity not found: {identity}"));
+                };
+                if !runtime_alias_visible_to_console(&handle, visibility_policy, &alias) {
+                    return identity_hidden_by_policy_response(response_id, identity);
+                }
+                if let Err(err) =
+                    reject_ambiguous_projected_live_identity(&handle, visibility_policy, &alias)
+                        .await
+                {
+                    return response_value(response_id, None, Some(err));
+                }
+                return Box::pin(respawn_live_console_member_response(
+                    &handle,
+                    console_events.as_ref(),
+                    &alias,
+                    "identity_reset",
+                    "reset",
+                    response_id,
+                ))
+                .await;
             };
             let (parsed_identity, _requested_exact_identity, live_alias) =
                 match resolve_console_identity_control_target(
@@ -5125,39 +5183,15 @@ async fn handle_console_runtime_rpc_with_visibility(
                         if !runtime_alias_visible_to_console(&handle, visibility_policy, alias) {
                             return identity_hidden_by_policy_response(response_id, identity);
                         }
-                        let mid =
-                            crate::member_comms_id::mob_member_id(alias.runtime_member_id.as_str());
-                        let response = match Box::pin(respawn_console_member(&handle, &mid)).await {
-                            Ok(topology_restore_warning) => {
-                                if let Some(store) = &console_events {
-                                    store
-                                        .record_lifecycle(
-                                            &alias.identity,
-                                            "identity_reset",
-                                            json!({ "topology_restore_warning": topology_restore_warning.clone() }),
-                                        )
-                                        .await;
-                                }
-                                let mut body = match lookup_member_with_session(&handle, &mid).await
-                                {
-                                    Some((entry, session_id)) => {
-                                        console_identity_status_json_for_identity(
-                                            &alias.identity,
-                                            &entry,
-                                            session_id,
-                                            None,
-                                        )
-                                    }
-                                    None => json!({ "identity": alias.identity }),
-                                };
-                                if let Some(warning) = topology_restore_warning {
-                                    body["topology_restore_warning"] = warning;
-                                }
-                                response_value(response_id, Some(body), None)
-                            }
-                            Err(err) => internal_error(response_id, format!("reset failed: {err}")),
-                        };
-                        return response;
+                        return Box::pin(respawn_live_console_member_response(
+                            &handle,
+                            console_events.as_ref(),
+                            alias,
+                            "identity_reset",
+                            "reset",
+                            response_id,
+                        ))
+                        .await;
                     }
                     return invalid_params(response_id, format!("identity not found: {identity}"));
                 }
@@ -8307,6 +8341,9 @@ comms = true
             json!("rt:review:singleton:0")
         );
 
+        // Without an identity-first runtime, reset degrades to the live
+        // member respawn fallback instead of erroring; the console Reset
+        // button stays functional on plain runtimes.
         let reset_without_identity_runtime = Box::pin(handle_console_runtime_rpc(
             &runtime,
             None,
@@ -8321,12 +8358,40 @@ comms = true
             true,
         ))
         .await;
-        assert_ne!(reset_without_identity_runtime["error"], Value::Null);
+        assert_eq!(
+            reset_without_identity_runtime["error"],
+            Value::Null,
+            "{reset_without_identity_runtime:#?}"
+        );
+        assert_eq!(
+            reset_without_identity_runtime["result"]["identity"],
+            json!("review:singleton")
+        );
+        assert_eq!(
+            reset_without_identity_runtime["result"]["agent_runtime_id"],
+            json!("rt:review:singleton:0")
+        );
+
+        let reset_unknown_identity = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            Some(ConsoleEventStore::new()),
+            None,
+            None,
+            None,
+            None,
+            rpc_request_with_params("mobkit/reset", json!({ "identity": "missing:member" })),
+            true,
+        ))
+        .await;
+        assert_ne!(reset_unknown_identity["error"], Value::Null);
         assert!(
-            reset_without_identity_runtime["error"]["message"]
+            reset_unknown_identity["error"]["message"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("identity-first runtime required")
+                .contains("identity not found")
         );
 
         let _ = runtime.handle().stop().await;
@@ -8364,6 +8429,7 @@ comms = true
                 "mobkit/inspect_identity",
                 "mobkit/retire",
                 "mobkit/respawn",
+                "mobkit/reset",
             ] {
                 let response = Box::pin(handle_console_runtime_rpc(
                     &runtime,
@@ -9547,6 +9613,83 @@ comms = true
             json!(-32601),
             "console runtime RPC must not handle flow-editor authoring methods: {mobpack_response:#?}"
         );
+
+        let _ = runtime.handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn console_runtime_capabilities_advertise_respawn_and_reset_without_identity_runtime()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-plain-lifecycle-capabilities").await?;
+
+        // Mutating caller, no identity runtime: respawn/reset dispatch via the
+        // live-member fallback, so they must be advertised (the console gates
+        // its Respawn/Reset buttons on this list).
+        let response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            rpc_request("mobkit/capabilities"),
+            true,
+        ))
+        .await;
+        assert_eq!(response["error"], Value::Null, "{response:#?}");
+        let methods = response["result"]["methods"]
+            .as_array()
+            .ok_or("capabilities methods should be an array")?;
+        for method in ["mobkit/retire", "mobkit/respawn", "mobkit/reset"] {
+            assert!(
+                methods.iter().any(|candidate| candidate == method),
+                "plain runtime capabilities should advertise {method}: {methods:#?}"
+            );
+        }
+        assert!(
+            !methods
+                .iter()
+                .any(|candidate| candidate == "mobkit/delete_identity"),
+            "delete_identity requires an identity runtime: {methods:#?}"
+        );
+
+        // Unauthenticated callers keep the read-only projection: no lifecycle
+        // mutations advertised.
+        let read_only_response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            rpc_request("mobkit/capabilities"),
+            false,
+        ))
+        .await;
+        assert_eq!(
+            read_only_response["error"],
+            Value::Null,
+            "{read_only_response:#?}"
+        );
+        let read_only_methods = read_only_response["result"]["methods"]
+            .as_array()
+            .ok_or("capabilities methods should be an array")?;
+        for method in ["mobkit/retire", "mobkit/respawn", "mobkit/reset"] {
+            assert!(
+                !read_only_methods
+                    .iter()
+                    .any(|candidate| candidate == method),
+                "unauthenticated capabilities must omit {method}: {read_only_methods:#?}"
+            );
+        }
 
         let _ = runtime.handle().stop().await;
         Ok(())

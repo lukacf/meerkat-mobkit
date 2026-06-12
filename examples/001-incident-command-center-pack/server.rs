@@ -23,8 +23,35 @@ use incident_command_center::{
     build_runtime_bundle, incident_image_model, incident_model, scenario_path,
 };
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
+    // Meerkat 0.7's generated machine-authority apply path allocates very
+    // large stack frames in debug builds (see .cargo/config.toml). The
+    // workspace-level `[env] RUST_MIN_STACK` only covers `cargo run`/test
+    // flows, not direct execution of the prebuilt binary, so the example
+    // sizes its own threads explicitly: the root future runs on a dedicated
+    // 32 MiB thread and tokio workers get 32 MiB stacks (mirrors
+    // mobkit_gateway/rpc_gateway's explicit worker sizing).
+    const STACK_SIZE: usize = 32 * 1024 * 1024;
+    std::thread::Builder::new()
+        .name("icc-runtime".into())
+        .stack_size(STACK_SIZE)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(STACK_SIZE)
+                .build()
+                .expect("build tokio runtime");
+            if let Err(error) = runtime.block_on(run()) {
+                eprintln!("incident command center failed: {error}");
+                std::process::exit(1);
+            }
+        })
+        .expect("spawn runtime thread")
+        .join()
+        .expect("runtime thread panicked");
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             std::env::var("RUST_LOG")
