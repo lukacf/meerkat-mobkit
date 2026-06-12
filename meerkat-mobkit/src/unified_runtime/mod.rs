@@ -95,9 +95,12 @@ pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpe
     };
     let mut spawn = SpawnMemberSpec::new(
         meerkat_mob::ProfileName::from(spec.profile.as_str()),
-        // Wire member ids are public aliases; encode to the comms-safe
-        // roster id (meerkat 0.7 MemberCommsName).
-        crate::member_comms_id::mob_member_id(spec.meerkat_id.as_str()),
+        // The spec stays in the public alias space: the hook-aware
+        // `UnifiedRuntime::spawn`/`spawn_many` own the encode to the
+        // comms-safe roster id (meerkat 0.7 MemberCommsName), and the encode
+        // is deliberately not idempotent (`mk--` is a reserved marker), so
+        // encoding here too would double-encode `:`-bearing identities.
+        meerkat_mob::ids::AgentIdentity::from(spec.meerkat_id.as_str()),
     );
     if let Some(context) = spec.context.clone() {
         spawn = spawn.with_context(context);

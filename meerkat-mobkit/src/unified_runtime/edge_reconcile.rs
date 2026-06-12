@@ -31,6 +31,19 @@ impl UnifiedRuntime {
         self.mob_runtime
             .set_baseline_member_specs(desired_specs.clone())
             .await;
+        // Spec member ids arrive in the public alias space (identity-first
+        // identities like `domain:billing` contain `:`); encode them into
+        // comms-safe roster ids at the mobkit→meerkat-mob boundary (meerkat
+        // 0.7 `MemberCommsName` is fail-closed). The projections below —
+        // reconcile report, console identity registration, routing — decode
+        // back to the alias space.
+        let desired_specs: Vec<SpawnMemberSpec> = desired_specs
+            .into_iter()
+            .map(|mut spec| {
+                spec.identity = crate::member_comms_id::mob_member_id(spec.identity.as_str());
+                spec
+            })
+            .collect();
         // 1. Member reconcile (meerkat 0.6 native path)
         let mob_id = self.mob_handle().mob_id().to_string();
         let meerkat_report = self
@@ -39,17 +52,22 @@ impl UnifiedRuntime {
             .await
             .map_err(|err| UnifiedRuntimeReconcileError::Mob(err.into()))?;
         let mob = meerkat_reconcile_report_to_wire(&mob_id, meerkat_report);
-        // 2. Refresh active members
+        // 2. Refresh active members. Roster ids are comms-safe encodings;
+        // console events arrive keyed by runtime ids derived from the roster
+        // id, so register roster id → public alias.
         let active_snapshots = self.mob_handle().list_members_including_retiring().await;
         for member in &active_snapshots {
-            let id = member.agent_identity.to_string();
+            let roster_id = member.agent_identity.to_string();
+            let alias = crate::member_comms_id::runtime_alias_str(&roster_id).into_owned();
             self.console_events
-                .register_runtime_identity(id.clone(), id)
+                .register_runtime_identity(roster_id, alias)
                 .await;
         }
         let active_member_ids = active_snapshots
             .iter()
-            .map(|m| m.agent_identity.to_string())
+            .map(|m| {
+                crate::member_comms_id::runtime_alias_str(m.agent_identity.as_str()).into_owned()
+            })
             .collect::<Vec<_>>();
         // 3 + 4. Edge discovery + dynamic edge reconcile
         let edges = self.reconcile_edges_from_members(active_snapshots).await;
@@ -101,17 +119,23 @@ impl UnifiedRuntime {
             None => return UnifiedRuntimeReconcileEdgesReport::default(),
         };
 
+        // Everything in this function speaks the public alias space: roster
+        // ids are comms-safe encodings (meerkat 0.7 `MemberCommsName`), so
+        // decode snapshots on entry and encode only at the wire/unwire calls.
+        let alias_of =
+            |id: &str| -> String { crate::member_comms_id::runtime_alias_str(id).into_owned() };
+
         let active_ids: BTreeSet<String> = active_members
             .iter()
-            .map(|m| m.agent_identity.to_string())
+            .map(|m| alias_of(m.agent_identity.as_str()))
             .collect();
 
         // Build current wiring map from snapshots
         let mut current_edges: BTreeSet<(String, String)> = BTreeSet::new();
         for member in &active_members {
             for peer in &member.wired_to {
-                let mut a = member.agent_identity.to_string();
-                let mut b = peer.to_string();
+                let mut a = alias_of(member.agent_identity.as_str());
+                let mut b = alias_of(peer.as_str());
                 if a > b {
                     std::mem::swap(&mut a, &mut b);
                 }
@@ -124,9 +148,13 @@ impl UnifiedRuntime {
         let member_views: Vec<EdgeMemberView> = active_members
             .into_iter()
             .map(|m| EdgeMemberView {
-                agent_identity: m.agent_identity.to_string(),
+                agent_identity: alias_of(m.agent_identity.as_str()),
                 role: m.role.to_string(),
-                wired_to: m.wired_to.iter().map(ToString::to_string).collect(),
+                wired_to: m
+                    .wired_to
+                    .iter()
+                    .map(|peer| alias_of(peer.as_str()))
+                    .collect(),
                 labels: m.labels,
             })
             .collect();
@@ -217,21 +245,32 @@ impl UnifiedRuntime {
                 .iter()
                 .map(|(a, b, _)| {
                     (
-                        AgentIdentity::from(a.as_str()),
-                        AgentIdentity::from(b.as_str()),
+                        crate::member_comms_id::mob_member_id(a.as_str()),
+                        crate::member_comms_id::mob_member_id(b.as_str()),
                     )
                 })
                 .collect::<Vec<_>>();
+            // The batch report carries roster ids; decode back to aliases and
+            // re-canonicalize (alias-space ordering can differ from roster-id
+            // ordering) so keys line up with `to_wire`.
+            let alias_edge_key = |a: &AgentIdentity, b: &AgentIdentity| -> (String, String) {
+                let mut a = crate::member_comms_id::runtime_alias_str(a.as_str()).into_owned();
+                let mut b = crate::member_comms_id::runtime_alias_str(b.as_str()).into_owned();
+                if a > b {
+                    std::mem::swap(&mut a, &mut b);
+                }
+                (a, b)
+            };
             match handle.wire_members_batch(batch_edges).await {
                 Ok(batch_report) => {
                     let mut seen = BTreeSet::new();
                     for edge in batch_report.wired {
-                        let key = (edge.a.to_string(), edge.b.to_string());
+                        let key = alias_edge_key(&edge.a, &edge.b);
                         seen.insert(key.clone());
                         wire_successes.push((key.0, key.1, true));
                     }
                     for edge in batch_report.already_wired {
-                        let key = (edge.a.to_string(), edge.b.to_string());
+                        let key = alias_edge_key(&edge.a, &edge.b);
                         seen.insert(key.clone());
                         wire_successes.push((key.0, key.1, false));
                     }
@@ -262,8 +301,8 @@ impl UnifiedRuntime {
             async move {
                 let result = handle
                     .unwire(
-                        AgentIdentity::from(a.as_str()),
-                        AgentIdentity::from(b.as_str()),
+                        crate::member_comms_id::mob_member_id(a.as_str()),
+                        crate::member_comms_id::mob_member_id(b.as_str()),
                     )
                     .await
                     .map_err(|err| format!("{err}"));

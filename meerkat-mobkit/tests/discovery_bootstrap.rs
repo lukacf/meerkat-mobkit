@@ -199,6 +199,24 @@ fn mk001_discovery_spec_to_spawn_spec_minimal() {
 }
 
 #[test]
+fn mk001_discovery_spec_to_spawn_spec_keeps_colon_identity_in_public_alias_space() {
+    // The encode to meerkat 0.7's comms-safe roster id happens once, inside
+    // `UnifiedRuntime::spawn`/`spawn_many` (and `reconcile`). Encoding here
+    // too would double-encode (`mk--` is a reserved, non-idempotent marker).
+    let spec = AgentDiscoverySpec {
+        profile: "lead".to_string(),
+        meerkat_id: "domain:billing".to_string(),
+        labels: None,
+        context: None,
+        additional_instructions: vec![],
+        resume_session_id: None,
+    };
+
+    let spawn = discovery_spec_to_spawn_spec(&spec);
+    assert_eq!(spawn.identity.as_str(), "domain:billing");
+}
+
+#[test]
 fn mk001_agent_discovery_spec_serde_roundtrip() {
     let spec = AgentDiscoverySpec {
         profile: "worker".to_string(),
