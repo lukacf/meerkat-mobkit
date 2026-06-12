@@ -14089,9 +14089,14 @@ description = "{}"
 /// Compose the adaptive pack artifacts (meerkat 0.7.1 `[adaptive]` contract)
 /// from the document's adaptive layer step: `adaptive/policies.toml`,
 /// `adaptive/flowmaster.prompt.md`, `adaptive/layer-decision.schema.json`,
-/// and `schemas/registry.json`. Returns the string-composed `[adaptive]`
-/// manifest section (policy digest over the exact emitted policy bytes), or
-/// `None` when the document has no adaptive layer.
+/// and `schemas/registry.json`. Returns the string-composed `[requires]` +
+/// `[adaptive]` manifest sections (policy digest over the exact emitted
+/// policy bytes), or `None` when the document has no adaptive layer.
+///
+/// The `[requires]` stamp carries the `adaptive_flow` capability: 0.7.1+
+/// hosts reject adaptive packs without it (`MissingAdaptiveCapability`) and
+/// fail closed on hosts that lack the capability; pre-0.7.1 hosts ignore
+/// `[requires]` entirely (the documented legacy window).
 fn append_adaptive_archive_files(
     document: &MobpackDocument,
     files: &mut BTreeMap<String, Vec<u8>>,
@@ -14235,7 +14240,8 @@ fn append_adaptive_archive_files(
         .map_err(|err| format!("failed to encode schemas/registry.json: {err}"))?;
     files.insert("schemas/registry.json".to_string(), registry_json);
 
-    let mut section = String::from("\n[adaptive]\n");
+    let mut section = String::from("\n[requires]\ncapabilities = [\"adaptive_flow\"]\n");
+    section.push_str("\n[adaptive]\n");
     section.push_str(&format!(
         "flowmaster_profile = {}\n",
         toml_string(&flowmaster_profile)
@@ -17018,18 +17024,20 @@ fn emit_rendered_flow_step(lines: &mut Vec<String>, step: &RenderedStep) {
             toml_array(&step.blocked_tools)
         ));
     }
-    // Runtime-default output format is schema-aware: meerkat defaults steps
-    // to json output, which rejects the free-text replies schema-less steps
-    // produce, so those must export an explicit text format.
-    let effective_output_format = step
-        .output_format
-        .as_deref()
-        .unwrap_or_else(|| default_step_output_format(step.expected_schema_ref.is_some()));
-    if effective_output_format != "json" {
-        lines.push(format!(
-            "output_format = {}",
-            toml_string(effective_output_format)
-        ));
+    // Output format emission spans two host generations: pre-0.7.1 meerkat
+    // defaults omitted to json (which rejects free-text replies), 0.7.1+
+    // resolves omitted schema-aware (json with a schema, text without). An
+    // EXPLICIT user choice is always emitted verbatim so neither default can
+    // flip it; an unset format emits text for schema-less steps (correct on
+    // both generations) and stays omitted for schema-backed steps (json on
+    // both generations).
+    match step.output_format.as_deref() {
+        Some(explicit) => lines.push(format!("output_format = {}", toml_string(explicit))),
+        None => {
+            if default_step_output_format(step.expected_schema_ref.is_some()) != "json" {
+                lines.push("output_format = \"text\"".to_string());
+            }
+        }
     }
     lines.push(String::new());
 }
@@ -26333,8 +26341,9 @@ message = "Plan the work"
         assert!(mob_toml.contains(r#"collection_policy = { type = "quorum", n = 1 }"#));
         assert!(mob_toml.contains(r#"output_format = "text""#));
 
-        // Explicit json suppresses the text default and stays implicit in
-        // the rendered TOML (json is the meerkat runtime default).
+        // An explicit json choice is emitted verbatim: meerkat 0.7.1 resolves
+        // an OMITTED format schema-aware (text for schema-less steps), so
+        // staying implicit would silently flip the user's explicit json.
         let steps = document
             .flow
             .get_mut("steps")
@@ -26353,7 +26362,8 @@ message = "Plan the work"
         let validation = validate_document(&document);
         assert!(validation.ok, "{:?}", validation.diagnostics);
         let mob_toml = render_editor_document_mob_toml(&document).expect("rendered mob.toml");
-        assert!(!mob_toml.contains("output_format ="));
+        assert!(mob_toml.contains(r#"output_format = "json""#));
+        assert!(!mob_toml.contains(r#"output_format = "text""#));
     }
 
     #[test]
@@ -28283,6 +28293,17 @@ model = "gpt-5.5"
         let expected_digest = format!("sha256:{}", source_file_sha256(policies.as_bytes()));
         let manifest = file_text("manifest.toml");
         assert!(manifest.contains("[adaptive]"), "{manifest}");
+        // 0.7.1+ hosts reject adaptive packs whose [requires] is not stamped
+        // with the adaptive_flow capability (MissingAdaptiveCapability).
+        assert!(manifest.contains("[requires]"), "{manifest}");
+        assert!(
+            manifest.contains("capabilities = [\"adaptive_flow\"]"),
+            "{manifest}"
+        );
+        assert!(
+            manifest.find("[requires]") < manifest.find("[adaptive]"),
+            "requires stamp must precede the adaptive section: {manifest}"
+        );
         assert!(
             manifest.contains("flowmaster_profile = \"planner\""),
             "{manifest}"
