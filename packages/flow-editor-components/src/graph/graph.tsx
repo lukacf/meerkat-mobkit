@@ -202,6 +202,9 @@ export function GraphEditor({ state, selection, selectInstance, selectEdge, clea
 
   const onHostWheel = (e) => {
     if (!hostRef.current) return;
+    // Overlays with their own scrolling (source previews, the add menu)
+    // consume the wheel — preventDefault here would pan the canvas instead.
+    if (e.target instanceof Element && e.target.closest("[data-own-scroll]")) return;
     // Pinch-zoom on touchpads sends ctrlKey=true. Cmd/Ctrl+wheel zooms too.
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();

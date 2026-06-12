@@ -123,7 +123,7 @@ export function SourceDrawer({ open, onClose, state, sourceView = null }) {
   if (!open) return null;
   const editorState = window.MobKitFlowController.sourceEditorState(state, { sourceView, sourcePath });
   return (
-    <div className="source-drawer">
+    <div className="source-drawer" data-own-scroll="">
       <div className="source-drawer__head">
         <div>
           <div className="inspector__eyebrow">{editorState.drawerEyebrow}</div>
@@ -162,7 +162,7 @@ export function InlineSourceEditor({ open, onClose, state, busy = false, surface
   if (!open) return null;
   const editorState = window.MobKitFlowController.sourceEditorState(state, { busy, compact: true, sourceView, sourcePath });
   return (
-    <div className={"bld-toml bld-toml--" + surface} onMouseDown={e => e.stopPropagation()}>
+    <div className={"bld-toml bld-toml--" + surface} data-own-scroll="" onMouseDown={e => e.stopPropagation()}>
       <div className="bld-toml__head">
         <div>
           <div>{editorState.inlineTitle}</div>

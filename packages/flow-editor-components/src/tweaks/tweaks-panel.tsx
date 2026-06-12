@@ -46,6 +46,8 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { EchoInput } from "../shared/echo-text";
+
 const __TWEAKS_STYLE = `
   .twk-panel{position:fixed;right:16px;bottom:16px;z-index:2147483646;width:280px;
     max-height:calc(100vh - 32px);display:flex;flex-direction:column;
@@ -458,8 +460,8 @@ export function TweakSelect({ label, value, options, onChange }) {
 export function TweakText({ label, value, placeholder, onChange }) {
   return (
     <TweakRow label={label}>
-      <input className="twk-field" type="text" value={value} placeholder={placeholder}
-             onChange={(e) => onChange(e.target.value)} />
+      <EchoInput className="twk-field" type="text" value={value} placeholder={placeholder}
+                 onChangeText={onChange} />
     </TweakRow>
   );
 }

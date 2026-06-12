@@ -8,6 +8,8 @@
 // AddNodeMenu lets the user place existing real members. Control-flow rows are
 // projected from the Basic Editor's deployable flow model.
 
+import { EchoInput } from "../shared/echo-text";
+
 export function Inspector({ studio, selection, selectMember, selectInstance, clearSelection, editGraphNode = null, editGraphEdge = null, deleteGraphNode = null, deleteGraphEdge = null, template, templateSeed, templateView, launchView = null, graphView = null, conditionView = null, flow, contract }) {
   const selectionState = window.MobKitFlowController.graphSelectionState({
     selection,
@@ -119,7 +121,7 @@ function GateInspector({ studio, flow, inst, clearSelection, editGraphNode = nul
       <div className="inspector__body">
         <div className="section">
           <div className="section__title">{gateState.labelTitle}</div>
-          <input className="field__input" value={inst.label} onChange={e => change("set_label", { label: e.target.value })} />
+          <EchoInput key={inst.id} className="field__input" value={inst.label} onChangeText={label => change("set_label", { label })} />
         </div>
         <div className="section">
           <div className="section__title">{gateState.kindTitle}</div>
@@ -428,7 +430,7 @@ function GraphCondValue({ field, value, onChange, conditionView = null }) {
       </select>
     );
   }
-  return <input className="field__input" placeholder={control.placeholder} value={control.value} onChange={e => onChange(e.target.value)} />;
+  return <EchoInput className="field__input" placeholder={control.placeholder} value={control.value} onChangeText={onChange} />;
 }
 
 // ── Edge ─────────────────────────────────────────────────────────
@@ -470,7 +472,7 @@ function EdgeInspector({ studio, flow, edge, clearSelection, editGraphEdge = nul
         </div>
         <div className="section">
           <div className="section__title">{edgeState.labelTitle}</div>
-          <input className="field__input" value={edge.label || ""} onChange={e => change("set_label", { label: e.target.value })} />
+          <EchoInput key={edge.id} className="field__input" value={edge.label || ""} onChangeText={label => change("set_label", { label })} />
         </div>
         {edgeState.isCondition && (
           <div className="section">
@@ -533,7 +535,7 @@ export function AddNodeMenu({ at, members, contract, graphView = null, onPick, o
   const menuState = window.MobKitFlowController.graphAddNodeMenuState({ members, contract, query: q, graphView });
 
   return (
-    <div className="add-menu" style={{ left: at.x, top: at.y }} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>
+    <div className="add-menu" data-own-scroll="" style={{ left: at.x, top: at.y }} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>
       <div className="add-menu__search">
         <span className="add-menu__search-icon">{menuState.searchIcon}</span>
         <input className="add-menu__search-input" autoFocus placeholder={menuState.searchPlaceholder} value={q} onChange={e => setQ(e.target.value)}

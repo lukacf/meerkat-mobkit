@@ -18,6 +18,7 @@
 // top-to-bottom along its depends_on chain.
 
 import { InlineSourceEditor } from "../overlays/overlays";
+import { EchoInput, EchoTextArea } from "../shared/echo-text";
 
 function CondValue({ field, value, onChange, conditionView = null }) {
   const control = window.MobKitFlowController.conditionValueControl(field, value, conditionView);
@@ -35,7 +36,7 @@ function CondValue({ field, value, onChange, conditionView = null }) {
       </select>
     );
   }
-  return <input className="field__input bld-cond__val" placeholder={control.placeholder} value={control.value} onChange={e => onChange(e.target.value)} />;
+  return <EchoInput className="field__input bld-cond__val" placeholder={control.placeholder} value={control.value} onChangeText={onChange} />;
 }
 
 function InputEnumValueChip({ field, value, index, onChange }: any) {
@@ -237,6 +238,9 @@ export function BuilderView({ studio, mode = "build", flow: flowProp, setFlow: s
 
   // pan / zoom
   const onWheel = (e) => {
+    // Overlays with their own scrolling (e.g. the mob.toml drawer) consume
+    // the wheel — preventDefault here would pan the canvas behind them.
+    if (e.target instanceof Element && e.target.closest("[data-own-scroll]")) return;
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
       const fz = Math.exp(-e.deltaY * 0.0015);
@@ -546,7 +550,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, editStep,
     return (
       <div className="bld-panel__inner">
         <PanelHead icon={inputState.panelIcon} iconTint="member" title={inputState.panelTitle} sub={inputState.panelSub} onClose={onDelete} deleteMode />
-        <Field label={inputState.taskLabel}><textarea className="field__textarea" rows={3} placeholder={inputState.taskPlaceholder} value={step.task || ""} onChange={e => editStep(step.id, "set_task", { value: e.target.value })} /></Field>
+        <Field label={inputState.taskLabel}><EchoTextArea key={step.id} className="field__textarea" rows={3} placeholder={inputState.taskPlaceholder} value={step.task || ""} onChangeText={value => editStep(step.id, "set_task", { value })} /></Field>
         <div className="section">
           <div className="row row--between" style={{ marginBottom: 6 }}>
             <div className="section__title">{inputState.paramsTitle}</div>
@@ -770,7 +774,7 @@ function StepInspector({ studio, members, flow, setFlow, step, update, editStep,
           <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => editStep(step.id, "set_launch_budget_limit", { limit: e.target.value })} />
         </Field>
       )}
-      <Field label={memberStepState.instructionLabel}><textarea className="field__textarea" rows={4} placeholder={memberStepState.instructionPlaceholder} value={step.instruction || ""} onChange={e => editStep(step.id, "set_instruction", { value: e.target.value })} /></Field>
+      <Field label={memberStepState.instructionLabel}><EchoTextArea key={step.id} className="field__textarea" rows={4} placeholder={memberStepState.instructionPlaceholder} value={step.instruction || ""} onChangeText={value => editStep(step.id, "set_instruction", { value })} /></Field>
       <Field label={memberStepState.dispatchLabel}>
         <select className="field__select" value={memberStepState.dispatchValue} onChange={e => editStep(step.id, "set_dispatch_mode", { dispatch: e.target.value })}>
           {memberStepState.dispatchOptions.map(option => (

@@ -15,6 +15,8 @@
 //   { kind: "schema", id }  → SchemaEditor (visual, field-by-field)
 //   null                    → empty hint
 
+import { EchoInput, EchoTextArea } from "../shared/echo-text";
+
 export function AgentsView({ studio, agentSel, setAgentSel, contract, deploySettings, flow, setFlow, mobSettings, setMobSettings, toolCatalog = [], modelCatalog = [], agentDefinitions = [], applyAgentIntent = null, agentView = null, agentDetailView = null, agentAccessView = null, schemaView = null }) {
   return (
     <div className="agents-view">
@@ -312,10 +314,11 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
         <div className="row row--between">
           <div>
             <div className="inspector__eyebrow">{editorState.eyebrow}</div>
-            <input
+            <EchoInput
+              key={member.id}
               className="agent-editor__title-input"
               value={member.name}
-              onChange={e => change(window.MobKitFlowController.memberNamePatch(e.target.value))}
+              onChangeText={name => change(window.MobKitFlowController.memberNamePatch(name))}
             />
             <div className="inspector__id">{editorState.idLine}</div>
             {memberEditError && <div className="hint__line" style={{ color: "var(--danger)" }}>{memberEditError}</div>}
@@ -373,11 +376,12 @@ function AgentEditor({ studio, member, setAgentSel, contract, deploySettings, fl
                   <span>{editorState.systemPromptTitle}</span>
                   <button className="ghost-btn" onClick={() => change(window.MobKitFlowController.memberSystemPromptPatch(window.MobKitFlowController.memberPromptSkeleton(member)))} title={editorState.applySkeletonTitle}>{editorState.applySkeletonLabel}</button>
                 </div>
-                <textarea
+                <EchoTextArea
+                  key={member.id}
                   className="field__textarea"
                   rows={8}
                   value={member.systemPrompt || ""}
-                  onChange={e => change(window.MobKitFlowController.memberSystemPromptPatch(e.target.value))}
+                  onChangeText={text => change(window.MobKitFlowController.memberSystemPromptPatch(text))}
                   placeholder={editorState.systemPromptPlaceholder}
                 />
               </div>

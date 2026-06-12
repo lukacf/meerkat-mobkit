@@ -5,6 +5,7 @@
 // resolve React from the shell-provided window global (react-globals.js).
 export * from "./agents/agents";
 export * from "./builder/builder";
+export * from "./shared/echo-text";
 export * from "./graph/graph";
 export * from "./inspector/inspector";
 export * from "./overlays/overlays";
