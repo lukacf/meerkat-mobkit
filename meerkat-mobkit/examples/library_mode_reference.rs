@@ -33,7 +33,7 @@ const MINIMAL_MOB_TOML: &str = r#"
 id = "reference-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]

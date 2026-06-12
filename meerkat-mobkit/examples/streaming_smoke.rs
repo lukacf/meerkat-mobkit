@@ -29,7 +29,7 @@ use meerkat_mob::{MobBuilder, MobDefinition, MobStorage, ProfileName, SpawnMembe
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ =
         std::env::var("OPENAI_API_KEY").map_err(|_| "Set OPENAI_API_KEY to run streaming_smoke")?;
-    let model = std::env::var("RKAT_SMOKE_MODEL").unwrap_or_else(|_| "gpt-5.2".to_string());
+    let model = std::env::var("RKAT_SMOKE_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string());
 
     println!("STREAM_SMOKE: model={model}");
 
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 id = "test-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]

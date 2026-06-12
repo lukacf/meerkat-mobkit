@@ -258,7 +258,7 @@ id = "{runtime_id}"
 orchestrator = "alpha"
 
 [profiles.alpha]
-model = "gpt-5.2"
+model = "gpt-5.5"
 skills = ["alpha-role"]
 peer_description = "Runtime guide -- expands this runtime into a small mob and coordinates peers"
 external_addressable = true
@@ -270,7 +270,7 @@ mob = true
 mob_tasks = true
 
 [profiles.worker]
-model = "gpt-5.2"
+model = "gpt-5.5"
 skills = ["worker-role"]
 peer_description = "General-purpose peer meerkat"
 external_addressable = true

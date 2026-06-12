@@ -1540,7 +1540,7 @@ async fn run_persistent_inner() {
 id = "persistent-gateway"
 
 [profiles.default]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 "#,
     );
