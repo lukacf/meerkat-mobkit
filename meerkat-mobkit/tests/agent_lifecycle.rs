@@ -71,8 +71,9 @@ impl LlmClient for DelayedTestClient {
         })
     }
 
-    fn provider(&self) -> &'static str {
-        "phase5-delayed-test"
+    // meerkat 0.7: LlmClient::provider returns the typed Provider.
+    fn provider(&self) -> meerkat::Provider {
+        meerkat::Provider::OpenAI
     }
 
     fn health_check<'life0, 'async_trait>(
@@ -133,14 +134,14 @@ fn build_phase5_mob_spec(
 id = "phase5-lifecycle-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]
 comms = true
 
 [profiles.worker]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.worker.tools]
@@ -268,32 +269,34 @@ async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and
     let state_file = temp_dir.path().join("forced-crash-attempts.txt");
     let crash_script = forced_crash_then_ready_script("forced-crash", &state_file, 2);
 
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_phase5_mob_spec(
-            &temp_dir,
-            Arc::new(DelayedTestClient::new(Duration::from_millis(350))),
-        ))
-        .module_config(MobKitConfig {
-            modules: vec![shell_module(
-                "forced-crash",
-                &crash_script,
-                RestartPolicy::OnFailure,
-            )],
-            discovery: DiscoverySpec {
-                namespace: "phase5-e2e-003".to_string(),
-                modules: vec![],
-            },
-            pre_spawn: vec![],
-        })
-        .timeout(Duration::from_secs(1))
-        .runtime_options(RuntimeOptions {
-            on_failure_retry_budget: 1,
-            supervisor_restart_backoff_ms: 80,
-            ..RuntimeOptions::default()
-        })
-        .build()
-        .await
-        .expect("build unified runtime");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_phase5_mob_spec(
+                &temp_dir,
+                Arc::new(DelayedTestClient::new(Duration::from_millis(350))),
+            ))
+            .module_config(MobKitConfig {
+                modules: vec![shell_module(
+                    "forced-crash",
+                    &crash_script,
+                    RestartPolicy::OnFailure,
+                )],
+                discovery: DiscoverySpec {
+                    namespace: "phase5-e2e-003".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            })
+            .timeout(Duration::from_secs(1))
+            .runtime_options(RuntimeOptions {
+                on_failure_retry_budget: 1,
+                supervisor_restart_backoff_ms: 80,
+                ..RuntimeOptions::default()
+            })
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
 
     runtime
         .reconcile(vec![spawn_spec("worker", "worker-1")])

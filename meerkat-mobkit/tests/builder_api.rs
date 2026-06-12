@@ -21,7 +21,13 @@ use base64::Engine as _;
 use meerkat_client::TestClient;
 use meerkat_core::service::{CreateSessionRequest, SessionError};
 use meerkat_mob::{
-    MobDefinition, MobState, MobStorage, ProfileName, SpawnMemberSpec, ids::MeerkatId,
+    MobDefinition,
+    MobState,
+    MobStorage,
+    ProfileName,
+    SpawnMemberSpec,
+    // meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
+    ids::AgentIdentity as MeerkatId,
 };
 use meerkat_mobkit::{
     DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, SessionHook, UnifiedRuntime,
@@ -32,7 +38,7 @@ const MINIMAL_MOB_TOML: &str = r#"
 id = "builder-test-mob"
 
 [profiles.worker]
-model = "test-model"
+model = "gpt-5.5"
 "#;
 
 // ---------------------------------------------------------------------------
@@ -48,12 +54,14 @@ fn test_definition() -> MobDefinition {
 #[tokio::test]
 #[ignore]
 async fn test_builder_ephemeral() {
-    let runtime = UnifiedRuntime::builder()
-        .definition(test_definition())
-        .default_llm_client(Arc::new(TestClient::default()))
-        .build()
-        .await
-        .expect("ephemeral build");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(test_definition())
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("ephemeral build");
 
     assert_eq!(
         runtime.mob_handle().status().await.unwrap(),
@@ -71,13 +79,15 @@ async fn test_builder_persistent_default() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let state_path = tmp.path().join("state");
 
-    let runtime = UnifiedRuntime::builder()
-        .definition(test_definition())
-        .persistent_state(&state_path)
-        .default_llm_client(Arc::new(TestClient::default()))
-        .build()
-        .await
-        .expect("persistent build");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(test_definition())
+            .persistent_state(&state_path)
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("persistent build");
 
     assert_eq!(
         runtime.mob_handle().status().await.unwrap(),
@@ -107,12 +117,14 @@ async fn test_builder_toml_definition() {
     let toml_path = tmp.path().join("mob.toml");
     std::fs::write(&toml_path, MINIMAL_MOB_TOML).expect("write toml");
 
-    let runtime = UnifiedRuntime::builder()
-        .definition_path(&toml_path)
-        .default_llm_client(Arc::new(TestClient::default()))
-        .build()
-        .await
-        .expect("toml definition build");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition_path(&toml_path)
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("toml definition build");
 
     assert_eq!(
         runtime.mob_handle().status().await.unwrap(),
@@ -129,13 +141,15 @@ async fn test_builder_toml_definition() {
 async fn test_builder_capability_flags() {
     // This test verifies that the builder accepts capability flag methods
     // and that the runtime bootstraps successfully with modified flags.
-    let runtime = UnifiedRuntime::builder()
-        .definition(test_definition())
-        .default_llm_client(Arc::new(TestClient::default()))
-        .shell(false)
-        .build()
-        .await
-        .expect("build with shell disabled");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(test_definition())
+            .default_llm_client(Arc::new(TestClient::default()))
+            .shell(false)
+            .build(),
+    )
+    .await
+    .expect("build with shell disabled");
 
     assert_eq!(
         runtime.mob_handle().status().await.unwrap(),
@@ -160,13 +174,15 @@ async fn test_builder_session_hook_before_create() {
         }
     }
 
-    let runtime = UnifiedRuntime::builder()
-        .definition(test_definition())
-        .default_llm_client(Arc::new(TestClient::default()))
-        .session_hook(Arc::new(LabelInjector))
-        .build()
-        .await
-        .expect("build with session hook");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(test_definition())
+            .default_llm_client(Arc::new(TestClient::default()))
+            .session_hook(Arc::new(LabelInjector))
+            .build(),
+    )
+    .await
+    .expect("build with session hook");
 
     assert_eq!(
         runtime.mob_handle().status().await.unwrap(),
@@ -199,20 +215,22 @@ async fn test_builder_mob_spec_escape_hatch() {
             default_llm_client: Some(Arc::new(TestClient::default())),
         });
 
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(spec)
-        .module_config(MobKitConfig {
-            modules: Vec::new(),
-            discovery: DiscoverySpec {
-                namespace: String::new(),
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(spec)
+            .module_config(MobKitConfig {
                 modules: Vec::new(),
-            },
-            pre_spawn: Vec::new(),
-        })
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .await
-        .expect("escape hatch build");
+                discovery: DiscoverySpec {
+                    namespace: String::new(),
+                    modules: Vec::new(),
+                },
+                pre_spawn: Vec::new(),
+            })
+            .timeout(std::time::Duration::from_secs(30))
+            .build(),
+    )
+    .await
+    .expect("escape hatch build");
 
     assert_eq!(
         runtime.mob_handle().status().await.unwrap(),
@@ -229,12 +247,14 @@ async fn test_builder_mob_spec_escape_hatch() {
 async fn test_builder_defaults() {
     // When using the new .definition() path, module_config and timeout
     // must be defaulted (no longer required fields).
-    let runtime = UnifiedRuntime::builder()
-        .definition(test_definition())
-        .default_llm_client(Arc::new(TestClient::default()))
-        .build()
-        .await
-        .expect("build with defaults");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(test_definition())
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("build with defaults");
 
     assert_eq!(
         runtime.mob_handle().status().await.unwrap(),
@@ -260,14 +280,16 @@ async fn test_builder_persistent_custom_store() {
         meerkat_store::SqliteSessionStore::open(&custom_db_path).expect("open custom store"),
     );
 
-    let runtime = UnifiedRuntime::builder()
-        .definition(test_definition())
-        .persistent_state(&state_path)
-        .session_store(custom_store)
-        .default_llm_client(Arc::new(TestClient::default()))
-        .build()
-        .await
-        .expect("persistent build with custom store");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(test_definition())
+            .persistent_state(&state_path)
+            .session_store(custom_store)
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("persistent build with custom store");
 
     assert_eq!(
         runtime.mob_handle().status().await.unwrap(),
@@ -297,30 +319,32 @@ async fn test_builder_ephemeral_custom_store_persists_sessions() {
 id = "builder-test-mob"
 
 [profiles.worker]
-model = "test-model"
+model = "gpt-5.5"
 
 [profiles.worker.tools]
 comms = true
 "#,
     )
     .expect("parse test mob definition");
-    let runtime = UnifiedRuntime::builder()
-        .definition(definition)
-        .session_store(custom_store.clone())
-        .default_llm_client(Arc::new(TestClient::default()))
-        .build()
-        .await
-        .expect("ephemeral build with custom store");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(definition)
+            .session_store(custom_store.clone())
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("ephemeral build with custom store");
 
-    let mid = MeerkatId::from("worker:one");
-    runtime
-        .mob_handle()
-        .spawn_spec(SpawnMemberSpec::new(
-            ProfileName::from("worker"),
-            mid.clone(),
-        ))
-        .await
-        .expect("spawn worker");
+    // meerkat 0.7: MemberCommsName is fail-closed; raw mob member ids must be
+    // identifier-safe (no ":").
+    let mid = MeerkatId::from("worker-one");
+    Box::pin(runtime.mob_handle().spawn_spec(SpawnMemberSpec::new(
+        ProfileName::from("worker"),
+        mid.clone(),
+    )))
+    .await
+    .expect("spawn worker");
     let session_id = runtime
         .mob_handle()
         .resolve_bridge_session_id(&mid)
@@ -343,13 +367,15 @@ comms = true
 async fn test_builder_custom_blob_store_serves_binary_blobs() {
     let blob_store: Arc<dyn meerkat_core::BlobStore> =
         Arc::new(meerkat_store::MemoryBlobStore::new());
-    let runtime = UnifiedRuntime::builder()
-        .definition(test_definition())
-        .blob_store(blob_store.clone())
-        .default_llm_client(Arc::new(TestClient::default()))
-        .build()
-        .await
-        .expect("ephemeral build with custom blob store");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(test_definition())
+            .blob_store(blob_store.clone())
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("ephemeral build with custom blob store");
 
     let binary_store = runtime
         .binary_blob_store()

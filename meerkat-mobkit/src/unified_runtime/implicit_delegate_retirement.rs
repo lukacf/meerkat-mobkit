@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use meerkat_core::{AgentExecutionSnapshot, TurnPhase};
-use meerkat_mob::{AgentIdentity, MemberState};
+use meerkat_mob::{AgentIdentity, MobMemberStatus};
 use meerkat_mob_mcp::MobMcpState;
 
 use crate::mob_handle_runtime::{
@@ -50,9 +50,9 @@ async fn run_implicit_delegate_retirement(
     loop {
         tokio::time::sleep(sweep_interval).await;
         let mut seen = BTreeSet::new();
-        for (mob_id, handle) in state.mob_handles_snapshot().await {
+        for (mob_id, handle) in Box::pin(state.mob_handles_snapshot()).await {
             let is_primary_mob = mob_id.as_str() == primary_mob_id;
-            let is_implicit_mob = state.is_implicit_mob(&mob_id).await;
+            let is_implicit_mob = Box::pin(state.is_implicit_mob(&mob_id)).await;
             if !is_primary_mob && !is_implicit_mob {
                 continue;
             }
@@ -60,7 +60,7 @@ async fn run_implicit_delegate_retirement(
                 let identity = member.agent_identity.to_string();
                 let key = (mob_id.to_string(), identity.clone());
                 seen.insert(key.clone());
-                if member.state == MemberState::Retiring {
+                if member.status == MobMemberStatus::Retiring {
                     idle_since.remove(&key);
                     continue;
                 }
@@ -183,7 +183,12 @@ fn delegate_member_idle_retire_after(
 }
 
 pub(crate) fn turn_phase_is_idle(phase: TurnPhase) -> bool {
-    matches!(phase, TurnPhase::Ready) || phase.is_terminal()
+    // Meerkat 0.7 removed `TurnPhase::is_terminal`; idle means ready or any
+    // terminal phase (completed/failed/cancelled, matching the old predicate).
+    matches!(
+        phase,
+        TurnPhase::Ready | TurnPhase::Completed | TurnPhase::Failed | TurnPhase::Cancelled
+    )
 }
 
 #[cfg(test)]

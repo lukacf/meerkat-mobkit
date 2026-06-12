@@ -62,7 +62,7 @@ fn build_mob_spec(temp_dir: &tempfile::TempDir) -> MobBootstrapSpec {
 id = "mk001-discovery-mob"
 
 [profiles.worker]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.worker.tools]
@@ -285,14 +285,16 @@ async fn mk002_builder_with_discovery_spawns_discovered_agents() {
         ],
     };
 
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_mob_spec(&temp_dir))
-        .module_config(empty_module_config())
-        .timeout(Duration::from_secs(2))
-        .discovery(discovery)
-        .build()
-        .await
-        .expect("build with discovery");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .discovery(discovery)
+            .build(),
+    )
+    .await
+    .expect("build with discovery");
 
     // Reconcile to get current roster and verify the discovered agents are present.
     let desired: Vec<SpawnMemberSpec> = vec![
@@ -341,15 +343,17 @@ async fn mk002_builder_pre_spawn_hook_runs_before_discovery() {
         }],
     };
 
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_mob_spec(&temp_dir))
-        .module_config(empty_module_config())
-        .timeout(Duration::from_secs(2))
-        .pre_spawn_hook(hook)
-        .discovery(discovery)
-        .build()
-        .await
-        .expect("build with hook");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .pre_spawn_hook(hook)
+            .discovery(discovery)
+            .build(),
+    )
+    .await
+    .expect("build with hook");
 
     assert!(
         hook_ran.load(Ordering::SeqCst),

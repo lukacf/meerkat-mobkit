@@ -3616,8 +3616,7 @@ pub async fn wire_cross_mob_by_identity(
 ) -> Result<(), IdentityRuntimeError> {
     let local_rt = local_irt.runtime_id_for(local_identity).await?;
     let remote_rt = remote_irt.runtime_id_for(remote_identity).await?;
-    local_unified
-        .wire_cross_mob(local_rt.as_str(), remote_rt.as_str(), remote_mob_id)
+    Box::pin(local_unified.wire_cross_mob(local_rt.as_str(), remote_rt.as_str(), remote_mob_id))
         .await
         .map_err(|e| IdentityRuntimeError::Internal(format!("wire_cross_mob: {e}")))
 }

@@ -25,7 +25,8 @@ use axum::http::{Request, StatusCode, header};
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_core::SessionId;
-use meerkat_mob::ids::MeerkatId;
+// meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
+use meerkat_mob::ids::AgentIdentity as MobMemberId;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec,
@@ -158,7 +159,7 @@ comms = true
 fn console_member_spec(member_id: &str) -> SpawnMemberSpec {
     SpawnMemberSpec::from_wire(
         "lead".to_string(),
-        MeerkatId::from(member_id).to_string(),
+        MobMemberId::from(member_id).to_string(),
         Some(format!("You are {member_id}. Keep responses concise.").into()),
         None,
         None,
@@ -453,7 +454,7 @@ async fn multipart_blob_upload_round_trips_through_reference_router() {
 id = "multipart-console-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]
@@ -461,21 +462,23 @@ comms = true
 "#,
     )
     .expect("parse multipart mob definition");
-    let runtime = UnifiedRuntime::builder()
-        .definition(definition)
-        .module_config(MobKitConfig {
-            modules: vec![],
-            discovery: DiscoverySpec {
-                namespace: "multipart-console".to_string(),
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(definition)
+            .module_config(MobKitConfig {
                 modules: vec![],
-            },
-            pre_spawn: vec![],
-        })
-        .default_llm_client(Arc::new(TestClient::default()))
-        .timeout(Duration::from_secs(2))
-        .build()
-        .await
-        .expect("build multipart runtime");
+                discovery: DiscoverySpec {
+                    namespace: "multipart-console".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            })
+            .default_llm_client(Arc::new(TestClient::default()))
+            .timeout(Duration::from_secs(2))
+            .build(),
+    )
+    .await
+    .expect("build multipart runtime");
 
     let app = runtime.build_reference_app_router(decision_state(false));
     let boundary = "mobkit-test-boundary";
@@ -920,17 +923,17 @@ async fn phase_h1_multi_instance_profile_sidebar_enumerates_individual_agents() 
 
     let identity_luka = SpawnMemberSpec::new(
         meerkat_mob::ProfileName::from("lead"),
-        MeerkatId::from("identity:luka"),
+        MobMemberId::from("identity:luka"),
     )
     .with_labels(identity_luka_labels);
     let identity_parent = SpawnMemberSpec::new(
         meerkat_mob::ProfileName::from("lead"),
-        MeerkatId::from("identity:parent"),
+        MobMemberId::from("identity:parent"),
     )
     .with_labels(identity_parent_labels);
     let gate = SpawnMemberSpec::new(
         meerkat_mob::ProfileName::from("lead"),
-        MeerkatId::from("gate:main"),
+        MobMemberId::from("gate:main"),
     )
     .with_labels(gate_labels);
 

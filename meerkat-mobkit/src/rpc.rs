@@ -88,9 +88,9 @@ pub(crate) fn mobpack_authoring_capabilities() -> Value {
         "domain": "mobpack_authoring",
         "runtime_mutation": false,
         "host_mutation_methods": {
-            "mobkit/mobpacks/deploy": "when execute=true, writes a mobpack archive and runs rkat mob deploy on the host"
+            "mobkit/mobpacks/deploy": "when execute=true, writes a mobpack archive and runs rkat mob run on the host"
         },
-        "deploy_command": "rkat mob deploy",
+        "deploy_command": "rkat mob run",
         "methods": MOBPACK_AUTHORING_METHODS,
         "operations": crate::mobpack::mobpack_authoring_operations(),
     })
@@ -1514,7 +1514,7 @@ async fn handle_unified_rpc_json_inner(
                     None,
                     None,
                 );
-                match runtime.spawn(spec).await {
+                match Box::pin(runtime.spawn(spec)).await {
                     Ok(_member_ref) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
@@ -2148,13 +2148,23 @@ async fn handle_unified_rpc_json_inner(
             mob_methods::handle_blob_get(runtime, response_id, &request.params).await
         }
         "mobkit/send_message" => {
-            mob_methods::handle_send_message(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_send_message(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/find_members" => {
             mob_methods::handle_find_members(runtime, response_id, &request.params).await
         }
         "mobkit/ensure_member" => {
-            mob_methods::handle_ensure_member(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_ensure_member(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/list_members" => mob_methods::handle_list_members(runtime, response_id).await,
         "mobkit/get_member" => {
@@ -2164,7 +2174,12 @@ async fn handle_unified_rpc_json_inner(
             mob_methods::handle_retire_member(runtime, response_id, &request.params).await
         }
         "mobkit/respawn_member" => {
-            mob_methods::handle_respawn_member(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_respawn_member(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/reconcile_edges" => mob_methods::handle_reconcile_edges(runtime, response_id).await,
         "mobkit/rediscover" => mob_methods::handle_rediscover(runtime, response_id).await,
@@ -2175,10 +2190,20 @@ async fn handle_unified_rpc_json_inner(
             mob_methods::handle_mob_events_subscribe(runtime, response_id, request.params).await
         }
         "mobkit/cross_mob/wire" => {
-            mob_methods::handle_cross_mob_wire(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_cross_mob_wire(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/cross_mob/unwire" => {
-            mob_methods::handle_cross_mob_unwire(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_cross_mob_unwire(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/cross_mob/send" => {
             mob_methods::handle_cross_mob_send(runtime, response_id, &request.params).await
@@ -2203,13 +2228,28 @@ async fn handle_unified_rpc_json_inner(
             mob_methods::handle_force_cancel_member(runtime, response_id, &request.params).await
         }
         "mobkit/spawn_helper" => {
-            mob_methods::handle_spawn_helper(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_spawn_helper(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/fork_helper" => {
-            mob_methods::handle_fork_helper(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_fork_helper(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/attach_existing_session" => {
-            mob_methods::handle_attach_existing_session(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_attach_existing_session(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/cancel_flow" => {
             mob_methods::handle_cancel_flow(runtime, response_id, &request.params).await
@@ -2222,7 +2262,12 @@ async fn handle_unified_rpc_json_inner(
             mob_methods::handle_list_runs(runtime, response_id, &request.params).await
         }
         "mobkit/run_flow" => {
-            mob_methods::handle_run_flow(runtime, response_id, &request.params).await
+            Box::pin(mob_methods::handle_run_flow(
+                runtime,
+                response_id,
+                &request.params,
+            ))
+            .await
         }
         "mobkit/collect_completed" => {
             mob_methods::handle_collect_completed(runtime, response_id).await
@@ -2683,10 +2728,10 @@ async fn handle_unified_rpc_json_inner(
             };
             match identity_rt.respawn(&identity).await {
                 Ok(mut record) => {
-                    let live_respawn_warning = match respawn_rpc_runtime_member_id(
+                    let live_respawn_warning = match Box::pin(respawn_rpc_runtime_member_id(
                         runtime,
                         record.agent_runtime_id.as_str(),
-                    )
+                    ))
                     .await
                     {
                         Ok(live_result) => {
@@ -2783,7 +2828,7 @@ async fn handle_unified_rpc_json_inner(
                 }
                 Err(e @ crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
                     if let Some(live) = target.live.as_ref() {
-                        match respawn_rpc_live_identity(runtime, live).await {
+                        match Box::pin(respawn_rpc_live_identity(runtime, live)).await {
                             Ok(result) => {
                                 runtime
                                     .record_console_lifecycle(
@@ -2990,33 +3035,34 @@ async fn handle_unified_rpc_json_inner(
                 }
                 Err(e @ crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
                     if let Some(live) = target.live.as_ref() {
-                        let response = match respawn_rpc_live_identity(runtime, live).await {
-                            Ok(result) => {
-                                runtime
-                                    .record_console_lifecycle(
-                                        live.identity.as_str(),
-                                        "identity_reset",
-                                        serde_json::json!({}),
-                                    )
-                                    .await;
-                                JsonRpcResponse {
+                        let response =
+                            match Box::pin(respawn_rpc_live_identity(runtime, live)).await {
+                                Ok(result) => {
+                                    runtime
+                                        .record_console_lifecycle(
+                                            live.identity.as_str(),
+                                            "identity_reset",
+                                            serde_json::json!({}),
+                                        )
+                                        .await;
+                                    JsonRpcResponse {
+                                        jsonrpc: JSONRPC_VERSION.to_string(),
+                                        id: response_id,
+                                        result: Some(result),
+                                        error: None,
+                                    }
+                                }
+                                Err(err) => JsonRpcResponse {
                                     jsonrpc: JSONRPC_VERSION.to_string(),
                                     id: response_id,
-                                    result: Some(result),
-                                    error: None,
-                                }
-                            }
-                            Err(err) => JsonRpcResponse {
-                                jsonrpc: JSONRPC_VERSION.to_string(),
-                                id: response_id,
-                                result: None,
-                                error: Some(JsonRpcError {
-                                    code: -32000,
-                                    message: format!("reset failed: {err}"),
-                                    data: None,
-                                }),
-                            },
-                        };
+                                    result: None,
+                                    error: Some(JsonRpcError {
+                                        code: -32000,
+                                        message: format!("reset failed: {err}"),
+                                        data: None,
+                                    }),
+                                },
+                            };
                         return if is_notification {
                             String::new()
                         } else {
@@ -3084,7 +3130,7 @@ async fn handle_unified_rpc_json_inner(
                 }
                 Err(e @ crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
                     if let Some(live) = target.live.as_ref() {
-                        match respawn_rpc_live_identity(runtime, live).await {
+                        match Box::pin(respawn_rpc_live_identity(runtime, live)).await {
                             Ok(result) => {
                                 runtime
                                     .record_console_lifecycle(
@@ -3527,7 +3573,11 @@ fn rpc_member_durable_identity(member: &meerkat_mob::runtime::MobMemberListEntry
         .get("agent_identity")
         .filter(|value| !value.trim().is_empty())
         .cloned()
-        .unwrap_or_else(|| member.agent_identity.to_string())
+        // Fallback surfaces the public alias, not the comms-safe roster id
+        // (meerkat 0.7 MemberCommsName).
+        .unwrap_or_else(|| {
+            crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()).into_owned()
+        })
 }
 
 async fn resolve_rpc_live_identity_alias(
@@ -3552,7 +3602,7 @@ async fn resolve_rpc_live_runtime_member_alias(
     runtime: &UnifiedRuntime,
     runtime_member_id: &str,
 ) -> Result<Option<RpcLiveIdentityAlias>, String> {
-    let requested_member_id = meerkat_mob::ids::MeerkatId::from(runtime_member_id);
+    let requested_member_id = crate::member_comms_id::mob_member_id(runtime_member_id);
     let handle = runtime.mob_handle();
     let Some(member) = handle
         .list_members_including_retiring()
@@ -3574,7 +3624,10 @@ async fn resolve_rpc_live_runtime_member_alias(
         .map(|session_id| session_id.to_string());
     Ok(Some(RpcLiveIdentityAlias {
         identity,
-        runtime_member_id: member.agent_identity.to_string(),
+        runtime_member_id: crate::member_comms_id::runtime_alias_str(
+            member.agent_identity.as_str(),
+        )
+        .into_owned(),
         member,
         session_id,
     }))
@@ -3584,7 +3637,7 @@ async fn rpc_runtime_member_alias_exists_hidden(
     runtime: &UnifiedRuntime,
     runtime_member_id: &str,
 ) -> bool {
-    let requested_member_id = meerkat_mob::ids::MeerkatId::from(runtime_member_id);
+    let requested_member_id = crate::member_comms_id::mob_member_id(runtime_member_id);
     runtime
         .mob_handle()
         .list_members_including_retiring()
@@ -3598,7 +3651,7 @@ async fn rpc_live_identity_alias_exists_hidden(
     runtime: &UnifiedRuntime,
     requested_identity: &str,
 ) -> bool {
-    let requested_member_id = meerkat_mob::ids::MeerkatId::from(requested_identity);
+    let requested_member_id = crate::member_comms_id::mob_member_id(requested_identity);
     runtime
         .mob_handle()
         .list_members_including_retiring()
@@ -3618,7 +3671,7 @@ async fn resolve_rpc_live_identity_alias_candidates(
     runtime: &UnifiedRuntime,
     requested_identity: &str,
 ) -> Result<Vec<RpcLiveIdentityAlias>, String> {
-    let requested_member_id = meerkat_mob::ids::MeerkatId::from(requested_identity);
+    let requested_member_id = crate::member_comms_id::mob_member_id(requested_identity);
     let handle = runtime.mob_handle();
     let members = handle.list_members_including_retiring().await;
     let exact_matches = members
@@ -3654,7 +3707,10 @@ async fn resolve_rpc_live_identity_alias_candidates(
             .map(|session_id| session_id.to_string());
         aliases.push(RpcLiveIdentityAlias {
             identity,
-            runtime_member_id: member.agent_identity.to_string(),
+            runtime_member_id: crate::member_comms_id::runtime_alias_str(
+                member.agent_identity.as_str(),
+            )
+            .into_owned(),
             member,
             session_id,
         });
@@ -3964,7 +4020,7 @@ fn rpc_member_is_addressable(member: &meerkat_mob::runtime::MobMemberListEntry) 
 
 fn rpc_live_identity_status_json(alias: &RpcLiveIdentityAlias) -> Value {
     serde_json::json!({
-        "state": format!("{:?}", alias.member.state),
+        "state": crate::mob_handle_runtime::member_status_state_string(alias.member.status),
         "identity": alias.identity.as_str(),
         "agent_runtime_id": alias.runtime_member_id,
         "session_id": alias.session_id,
@@ -3986,14 +4042,14 @@ async fn rpc_live_identity_inspect_json(
 ) -> Value {
     let snapshot = runtime
         .mob_handle()
-        .member_status(&meerkat_mob::ids::MeerkatId::from(
+        .member_status(&crate::member_comms_id::mob_member_id(
             alias.runtime_member_id.as_str(),
         ))
         .await
         .ok();
     serde_json::json!({
         "identity": alias.identity.as_str(),
-        "state": format!("{:?}", alias.member.state),
+        "state": crate::mob_handle_runtime::member_status_state_string(alias.member.status),
         "profile": alias.member.role.to_string(),
         "addressability": if rpc_member_is_addressable(&alias.member) { "addressable" } else { "internal_only" },
         "display_name": alias.member.labels.get("display_name"),
@@ -4028,7 +4084,7 @@ async fn retire_rpc_runtime_member_id(
 ) -> Result<(), String> {
     match runtime
         .mob_handle()
-        .retire(meerkat_mob::ids::MeerkatId::from(runtime_member_id))
+        .retire(crate::member_comms_id::mob_member_id(runtime_member_id))
         .await
     {
         Ok(()) => Ok(()),
@@ -4038,7 +4094,9 @@ async fn retire_rpc_runtime_member_id(
 }
 
 fn rpc_member_id_matches_durable_identity(member_id: &str, durable_identity: &str) -> bool {
-    member_id == durable_identity
+    // Roster ids are comms-safe encodings of public aliases (meerkat 0.7
+    // MemberCommsName); compare in the public alias space.
+    crate::member_comms_id::runtime_alias_str(member_id) == durable_identity
 }
 
 async fn retire_stale_rpc_members_for_identity(
@@ -4063,10 +4121,17 @@ async fn retire_stale_rpc_members_for_identity(
                 .get("agent_identity")
                 .is_some_and(|identity| identity == durable_identity))
                 && keep_runtime_member_id
-                    .map(|keep| member.agent_identity.as_str() != keep)
+                    .map(|keep| {
+                        // `keep` is a public alias; compare decoded.
+                        crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str())
+                            != keep
+                    })
                     .unwrap_or(true)
         })
-        .map(|member| member.agent_identity.to_string())
+        // `retire_rpc_runtime_member_id` re-encodes; hand it the alias.
+        .map(|member| {
+            crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()).into_owned()
+        })
         .collect::<Vec<_>>();
     for member_id in stale_members {
         retire_rpc_runtime_member_id(runtime, &member_id).await?;
@@ -4078,8 +4143,11 @@ async fn respawn_rpc_live_identity(
     runtime: &UnifiedRuntime,
     alias: &RpcLiveIdentityAlias,
 ) -> Result<Value, String> {
-    let mut result =
-        respawn_rpc_runtime_member_id(runtime, alias.runtime_member_id.as_str()).await?;
+    let mut result = Box::pin(respawn_rpc_runtime_member_id(
+        runtime,
+        alias.runtime_member_id.as_str(),
+    ))
+    .await?;
     result["identity"] = serde_json::json!(alias.identity.as_str());
     Ok(result)
 }
@@ -4089,8 +4157,10 @@ async fn respawn_rpc_runtime_member_id(
     runtime_member_id: &str,
 ) -> Result<Value, String> {
     let handle = runtime.mob_handle();
-    let member_id = meerkat_mob::ids::MeerkatId::from(runtime_member_id);
-    let entry_before_respawn = handle.get_member(&member_id).await;
+    let member_id = crate::member_comms_id::mob_member_id(runtime_member_id);
+    // Best-effort repair material: a faulted lookup degrades to None (the
+    // respawn itself surfaces real faults).
+    let entry_before_respawn = handle.get_member(&member_id).await.ok().flatten();
     let mut topology_restore_warning = None;
     match handle.respawn(member_id.clone(), None).await {
         Ok(_receipt) => {}
@@ -4104,7 +4174,13 @@ async fn respawn_rpc_runtime_member_id(
                 );
                 topology_restore_warning = Some(topology_restore_warning_json(&failed_peer_ids));
             } else if mob_methods::lifecycle_archive_cleanup_completed(&err.to_string()) {
-                if handle.get_member(&member_id).await.is_none()
+                // A faulted lookup must not read as "absent" (that would mint
+                // a spurious replacement member); surface it instead.
+                if handle
+                    .get_member(&member_id)
+                    .await
+                    .map_err(|lookup_err| lookup_err.to_string())?
+                    .is_none()
                     && let Some(entry) = entry_before_respawn
                 {
                     let mut spec =
@@ -4339,19 +4415,21 @@ comms = true
     async fn unified_capabilities_separate_mobpack_authoring_from_runtime_controls()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
-        let runtime = UnifiedRuntime::builder()
-            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
-            .module_config(MobKitConfig {
-                modules: Vec::new(),
-                discovery: DiscoverySpec {
-                    namespace: "rpc-authoring-capabilities-test".to_string(),
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
                     modules: Vec::new(),
-                },
-                pre_spawn: Vec::new(),
-            })
-            .timeout(Duration::from_secs(1))
-            .build()
-            .await?;
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-authoring-capabilities-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
 
         let response: Value = serde_json::from_str(
             &handle_unified_rpc_json(
@@ -4392,9 +4470,7 @@ comms = true
         );
         assert_eq!(
             response["result"]["authoring_capabilities"]["host_mutation_methods"]["mobkit/mobpacks/deploy"],
-            json!(
-                "when execute=true, writes a mobpack archive and runs rkat mob deploy on the host"
-            )
+            json!("when execute=true, writes a mobpack archive and runs rkat mob run on the host")
         );
         assert_eq!(
             response["result"]["authoring_capabilities"]["methods"]
@@ -4407,7 +4483,7 @@ comms = true
         );
         assert_eq!(
             response["result"]["authoring_capabilities"]["deploy_command"],
-            json!("rkat mob deploy")
+            json!("rkat mob run")
         );
 
         Ok(())
@@ -4417,19 +4493,21 @@ comms = true
     async fn unified_rpc_dispatches_mobpack_authoring_methods()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
-        let runtime = UnifiedRuntime::builder()
-            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
-            .module_config(MobKitConfig {
-                modules: Vec::new(),
-                discovery: DiscoverySpec {
-                    namespace: "rpc-authoring-dispatch-test".to_string(),
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
                     modules: Vec::new(),
-                },
-                pre_spawn: Vec::new(),
-            })
-            .timeout(Duration::from_secs(1))
-            .build()
-            .await?;
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-authoring-dispatch-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
 
         let response: Value = serde_json::from_str(
             &handle_unified_rpc_json(
@@ -4514,7 +4592,7 @@ comms = true
         );
         assert_eq!(
             catalogs["result"]["authoring_provider"]["deploy_target"]["command"],
-            json!("rkat mob deploy")
+            json!("rkat mob run")
         );
         assert!(
             catalogs["result"]["authoring_provider"]["runtime_methods"]
@@ -4736,9 +4814,7 @@ comms = true
         );
         assert_eq!(
             capabilities["result"]["authoring_capabilities"]["host_mutation_methods"]["mobkit/mobpacks/deploy"],
-            json!(
-                "when execute=true, writes a mobpack archive and runs rkat mob deploy on the host"
-            )
+            json!("when execute=true, writes a mobpack archive and runs rkat mob run on the host")
         );
 
         let schema: Value = serde_json::from_str(&super::handle_mobkit_rpc_json(
@@ -4853,19 +4929,21 @@ comms = true
     async fn runtime_id_live_only_resolution_rejects_duplicate_projected_identity()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
-        let runtime = UnifiedRuntime::builder()
-            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
-            .module_config(MobKitConfig {
-                modules: Vec::new(),
-                discovery: DiscoverySpec {
-                    namespace: "rpc-identity-alias-test".to_string(),
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
                     modules: Vec::new(),
-                },
-                pre_spawn: Vec::new(),
-            })
-            .timeout(Duration::from_secs(1))
-            .build()
-            .await?;
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-identity-alias-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
         for runtime_id in ["rt:review:singleton:0", "rt:review:singleton:1"] {
             let mut labels = BTreeMap::new();
             labels.insert("agent_identity".to_string(), "review:singleton".to_string());
@@ -4908,19 +4986,21 @@ comms = true
     async fn durable_resolution_prefers_registered_live_binding_over_stale_duplicates()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
-        let runtime = UnifiedRuntime::builder()
-            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
-            .module_config(MobKitConfig {
-                modules: Vec::new(),
-                discovery: DiscoverySpec {
-                    namespace: "rpc-identity-alias-test".to_string(),
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
                     modules: Vec::new(),
-                },
-                pre_spawn: Vec::new(),
-            })
-            .timeout(Duration::from_secs(1))
-            .build()
-            .await?;
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-identity-alias-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
         for runtime_id in ["rt:review:singleton:0", "rt:review:singleton:1"] {
             let mut labels = BTreeMap::new();
             labels.insert("agent_identity".to_string(), "review:singleton".to_string());
@@ -5004,19 +5084,21 @@ comms = true
     async fn durable_resolution_rejects_hidden_registered_live_binding()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
-        let runtime = UnifiedRuntime::builder()
-            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
-            .module_config(MobKitConfig {
-                modules: Vec::new(),
-                discovery: DiscoverySpec {
-                    namespace: "rpc-hidden-bound-test".to_string(),
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
                     modules: Vec::new(),
-                },
-                pre_spawn: Vec::new(),
-            })
-            .timeout(Duration::from_secs(1))
-            .build()
-            .await?;
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-hidden-bound-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
         runtime
             .spawn(
                 SpawnMemberSpec::from_wire(
@@ -5088,19 +5170,21 @@ comms = true
     async fn live_only_hidden_alias_reports_policy_error()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
-        let runtime = UnifiedRuntime::builder()
-            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
-            .module_config(MobKitConfig {
-                modules: Vec::new(),
-                discovery: DiscoverySpec {
-                    namespace: "rpc-hidden-live-only-test".to_string(),
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
                     modules: Vec::new(),
-                },
-                pre_spawn: Vec::new(),
-            })
-            .timeout(Duration::from_secs(1))
-            .build()
-            .await?;
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-hidden-live-only-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
         runtime
             .spawn(
                 SpawnMemberSpec::from_wire(
@@ -5175,19 +5259,21 @@ comms = true
     async fn live_only_resolution_rejects_runtime_member_bound_to_other_durable_identity()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
-        let runtime = UnifiedRuntime::builder()
-            .mob_spec(rpc_test_mob_spec(&temp_dir)?)
-            .module_config(MobKitConfig {
-                modules: Vec::new(),
-                discovery: DiscoverySpec {
-                    namespace: "rpc-identity-alias-test".to_string(),
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
                     modules: Vec::new(),
-                },
-                pre_spawn: Vec::new(),
-            })
-            .timeout(Duration::from_secs(1))
-            .build()
-            .await?;
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-identity-alias-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
         let mut labels = BTreeMap::new();
         labels.insert("agent_identity".to_string(), "other:singleton".to_string());
         runtime

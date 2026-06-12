@@ -91,6 +91,8 @@ async function assertAuthoringCapabilities() {
     "mobkit/mobpacks/save",
     "mobkit/mobpacks/delete",
     "mobkit/mobpacks/apply_operation",
+    "mobkit/mobpacks/undo",
+    "mobkit/mobpacks/redo",
     "mobkit/mobpacks/graph_projection",
     "mobkit/mobpacks/graph_to_flow",
     "mobkit/mobpacks/deploy_command",
@@ -102,7 +104,7 @@ async function assertAuthoringCapabilities() {
   if (authoring.runtime_mutation !== false) {
     throw new Error(`flow editor authoring capabilities must not mutate runtime: ${JSON.stringify(authoring)}`);
   }
-  if (authoring.host_mutation_methods?.["mobkit/mobpacks/deploy"] !== "when execute=true, writes a mobpack archive and runs rkat mob deploy on the host") {
+  if (authoring.host_mutation_methods?.["mobkit/mobpacks/deploy"] !== "when execute=true, writes a mobpack archive and runs rkat mob run on the host") {
     throw new Error(`flow editor capabilities must disclose deploy host mutation: ${JSON.stringify(authoring)}`);
   }
   if (authoring.host_mutation_allowed !== authoring.deploy_execute_allowed) {
@@ -117,8 +119,8 @@ async function assertAuthoringCapabilities() {
   if (capabilities.authenticated !== false || capabilities.auth?.mode !== expectedAuthMode) {
     throw new Error(`standalone flow editor must not claim authenticated runtime access: ${JSON.stringify(capabilities)}`);
   }
-  if (authoring.deploy_command !== "rkat mob deploy") {
-    throw new Error(`flow editor deploy command must be rkat mob deploy: ${JSON.stringify(authoring)}`);
+  if (authoring.deploy_command !== "rkat mob run") {
+    throw new Error(`flow editor deploy command must be rkat mob run: ${JSON.stringify(authoring)}`);
   }
   const operations = array(authoring.operations, "authoring.operations");
   for (const operationType of [
@@ -240,7 +242,7 @@ function assertDeployPlanTrace(result, label) {
     }
   }
   const firstBody = String(trace[0]?.body || "");
-  if (!firstBody.includes("source: mobkit/mob.toml") || !/command: .*rkat mob deploy/.test(firstBody)) {
+  if (!firstBody.includes("source: mobkit/mob.toml") || !/command: .*rkat mob run/.test(firstBody)) {
     throw new Error(`${label} deploy plan_trace did not describe the MobKit deploy source/command: ${JSON.stringify(trace[0])}`);
   }
   if (!trace.some((row) => String(row?.body || "").includes("skills:") && String(row?.body || "").includes("tools:"))) {
@@ -363,7 +365,7 @@ async function validateGraphBranchShape(dir) {
   }
   const packPath = path.join(dir, exported.filename || "graph-branch-shape.mobpack");
   fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
-  const validate = run("rkat", ["mob", "validate", packPath]);
+  const validate = run("rkat", ["mob", "validate", "--trust-policy", "permissive", packPath]);
   const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
   const branch = imported.document?.flow?.steps?.find((step) => step.type === "branch");
   if (!branch) throw new Error("imported graph branch shape dropped branch step");
@@ -485,7 +487,7 @@ async function validateGraphParallelShape(dir) {
   }
   const packPath = path.join(dir, exported.filename || "graph-parallel-shape.mobpack");
   fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
-  const validate = run("rkat", ["mob", "validate", packPath]);
+  const validate = run("rkat", ["mob", "validate", "--trust-policy", "permissive", packPath]);
   const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
   const parallel = imported.document?.flow?.steps?.find((step) => step.type === "parallel");
   if (!parallel) throw new Error("imported graph parallel shape dropped parallel step");
@@ -627,7 +629,7 @@ async function validateGraphLoopShape(dir) {
   }
   const packPath = path.join(dir, exported.filename || "graph-loop-shape.mobpack");
   fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
-  const validate = run("rkat", ["mob", "validate", packPath]);
+  const validate = run("rkat", ["mob", "validate", "--trust-policy", "permissive", packPath]);
   const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
   const repeat = imported.document?.flow?.steps?.find((step) => step.type === "repeat");
   if (!repeat) throw new Error("imported graph loop shape dropped repeat step");
@@ -658,7 +660,11 @@ function buildEditedAgentDefinitionDocument() {
     runtimeMode: "turn_driven",
     backend: "session",
     maxInlinePeerNotifications: 4,
-    providerParams: { thinking_budget: 4096, top_k: 20 },
+    // meerkat 0.7 provider params are typed (ProviderParamsOverride,
+    // deny_unknown_fields): thinking_budget -> thinking_budget_tokens;
+    // top_k is not a per-turn knob. Integer knobs only — f32 fields like
+    // top_p do not round-trip exactly through the TOML projection check.
+    providerParams: { thinking_budget_tokens: 4096, max_output_tokens: 2048 },
   }];
   const schemas = [{
     id: "QualityVerdict",
@@ -764,7 +770,7 @@ async function validateEditedAgentDefinition(dir) {
   }
   const packPath = path.join(dir, exported.filename || "edited-agent-definition.mobpack");
   fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
-  const validate = run("rkat", ["mob", "validate", packPath]);
+  const validate = run("rkat", ["mob", "validate", "--trust-policy", "permissive", packPath]);
   const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
   const member = imported.document?.members?.find((candidate) => candidate.id === "m_quality_agent");
   if (!member) throw new Error("imported edited agent definition dropped quality agent member");
@@ -907,7 +913,7 @@ async function validateFilesystemSkillPacking(dir) {
     throw new Error(`filesystem skill archive content changed: ${JSON.stringify(archivedSkill)}`);
   }
 
-  const validate = run("rkat", ["mob", "validate", packPath]);
+  const validate = run("rkat", ["mob", "validate", "--trust-policy", "permissive", packPath]);
   fs.unlinkSync(skillPath);
   const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
   const importedValidation = await rpc("mobkit/mobpacks/validate", { document: imported.document });
@@ -1026,7 +1032,7 @@ async function buildUnifiedProjectionDocument(catalogs) {
     runtimeMode: "turn_driven",
     backend: "session",
     maxInlinePeerNotifications: 2,
-    providerParams: { thinking_budget: 2048 },
+    providerParams: { thinking_budget_tokens: 2048 },
   };
   const reviewer = {
     ...reviewerSource,
@@ -1193,7 +1199,7 @@ async function validateUnifiedEditorProjection(dir, catalogs) {
   }
   const packPath = path.join(dir, exported.filename || "unified-editor-projection.mobpack");
   fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
-  const validate = run("rkat", ["mob", "validate", packPath]);
+  const validate = run("rkat", ["mob", "validate", "--trust-policy", "permissive", packPath]);
   const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
   const importedValidation = await rpc("mobkit/mobpacks/validate", { document: imported.document });
   if (!importedValidation.ok) {
@@ -1206,7 +1212,7 @@ async function validateUnifiedEditorProjection(dir, catalogs) {
   const coder = imported.document?.members?.find((member) => member.id === "m_unified_coder");
   const reviewer = imported.document?.members?.find((member) => member.id === "m_unified_reviewer");
   if (!coder || !reviewer) throw new Error("imported unified editor projection lost edited members");
-  if (!coder.tools?.includes("shell") || !coder.skills?.includes("mob.editor.unified") || coder.providerParams?.thinking_budget !== 2048) {
+  if (!coder.tools?.includes("shell") || !coder.skills?.includes("mob.editor.unified") || coder.providerParams?.thinking_budget_tokens !== 2048) {
     throw new Error(`imported unified coder lost agent-editor fields: ${JSON.stringify(coder)}`);
   }
   if (reviewer.schema !== "UnifiedVerdict" || !reviewer.skills?.includes("mob.review")) {
@@ -1343,7 +1349,7 @@ async function validateBlankMobpackTemplate(dir, catalogs) {
   }
   const packPath = path.join(dir, exported.filename || "blank-live-proof.mobpack");
   fs.writeFileSync(packPath, Buffer.from(exported.content_base64, "base64"));
-  const rkatValidate = run("rkat", ["mob", "validate", packPath]);
+  const rkatValidate = run("rkat", ["mob", "validate", "--trust-policy", "permissive", packPath]);
   const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
   const member = imported.document?.members?.find((candidate) => candidate.id === "m_worker");
   if (!member || member.profileBinding !== "inline" || member.runtimeMode !== "turn_driven") {
@@ -1410,13 +1416,11 @@ async function validateCustomDeploySettings(dir) {
   if (!preview.validation?.ok || preview.filename !== "custom-deploy-settings.mobpack") {
     throw new Error(`deploy command preview was not document-backed: ${JSON.stringify(preview)}`);
   }
+  // `rkat mob run` executes pack policy directly: model/token/duration/tool
+  // caps and surface are not CLI overrides; the prompt and realm scope are.
   const expectedPairs = [
-    ["--model", "gpt-5.5"],
-    ["--max-total-tokens", "128"],
-    ["--max-duration", "45s"],
-    ["--max-tool-calls", "3"],
+    ["--prompt", "Custom deploy proof prompt."],
     ["--trust-policy", "strict"],
-    ["--surface", "cli"],
     ["--realm", "editor-proof-realm"],
     ["--instance", "editor-proof-instance"],
     ["--realm-backend", "sqlite"],
@@ -1433,10 +1437,15 @@ async function validateCustomDeploySettings(dir) {
   if (argv.includes("--isolated")) {
     throw new Error(`custom deploy argv should not include --isolated when realm is set: ${JSON.stringify(argv)}`);
   }
-  if (argv.at(-1) !== "Custom deploy proof prompt.") {
-    throw new Error(`custom deploy argv dropped prompt: ${JSON.stringify(argv)}`);
+  if (argv[1] !== "mob" || argv[2] !== "run" || argv[3] !== packPath) {
+    throw new Error(`custom deploy argv must invoke rkat mob run on the planned pack: ${JSON.stringify(argv)}`);
   }
-  if (!array(result.display_rows, "deploy.display_rows").some((row) => row.kind === "warn" && row.head === "Deploy plan ready" && row.sub.includes("rkat mob deploy"))) {
+  for (const legacyFlag of ["--model", "--max-total-tokens", "--max-duration", "--max-tool-calls", "--surface"]) {
+    if (argv.includes(legacyFlag)) {
+      throw new Error(`custom deploy argv leaked legacy rkat mob deploy override ${legacyFlag}: ${JSON.stringify(argv)}`);
+    }
+  }
+  if (!array(result.display_rows, "deploy.display_rows").some((row) => row.kind === "warn" && row.head === "Deploy plan ready" && row.sub.includes("rkat mob run"))) {
     throw new Error(`MobKit deploy response did not provide API-backed display rows: ${JSON.stringify(result.display_rows)}`);
   }
   const planTrace = assertDeployPlanTrace(result, "customDeploySettings");
@@ -1446,7 +1455,9 @@ async function validateCustomDeploySettings(dir) {
     throw new Error(`MobKit deploy response did not report the planned pack sha256: ${JSON.stringify({ pack_sha256: result.pack_sha256, pack_path: result.pack_path })}`);
   }
   fs.writeFileSync(result.pack_path, packBytes);
-  const validate = run("rkat", ["mob", "validate", result.pack_path]);
+  // editor-authored packs are unsigned; rkat 0.7 `mob validate` defaults to
+  // strict trust, so validate the integrity check under permissive policy.
+  const validate = run("rkat", ["mob", "validate", "--trust-policy", "permissive", result.pack_path]);
   return {
     validate,
     command: result.command,
@@ -1469,13 +1480,14 @@ async function validateDocumentBackedDeployPreview(document) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "") || "mobpack"}.mobpack`;
-  if (argv.at(-2) !== expectedPackName) {
+  // rkat mob run argv shape: [rkat, mob, run, <pack>, --prompt, <prompt>, ...]
+  if (argv[3] !== expectedPackName) {
     throw new Error(`document-backed deploy preview did not derive pack filename ${expectedPackName}: ${JSON.stringify(preview)}`);
   }
   if (preview.command.includes("<pack.mobpack>") || preview.command.includes("<prompt>")) {
     throw new Error(`document-backed deploy preview leaked placeholder copy: ${JSON.stringify(preview)}`);
   }
-  if (preview.deploy_command !== "rkat mob deploy") {
+  if (preview.deploy_command !== "rkat mob run") {
     throw new Error(`document-backed deploy preview used the wrong deploy command: ${JSON.stringify(preview)}`);
   }
   if (!preview.validation?.ok || preview.filename !== expectedPackName) {
@@ -1483,7 +1495,7 @@ async function validateDocumentBackedDeployPreview(document) {
   }
   return {
     command: preview.command,
-    argvTail: argv.slice(-2),
+    argvTail: argv.slice(3, 6),
     source: preview.source,
   };
 }
@@ -1513,10 +1525,10 @@ async function validateHostDeployRpc(document, dir) {
     throw new Error(`host deploy RPC did not execute successfully: ${JSON.stringify(result)}`);
   }
   const output = [result.stdout || "", result.stderr || ""].join("\n");
-  if (!/^deployed\tmob=/m.test(output)) {
-    throw new Error(`host deploy RPC output did not include rkat deploy success: ${output}`);
+  if (!/^run\tmob=.*\tstatus=completed/m.test(output)) {
+    throw new Error(`host deploy RPC output did not include the rkat mob run completion envelope: ${output}`);
   }
-  if (!array(result.display_rows, "hostDeployRpc.display_rows").some((row) => row.kind === "ok" && row.head === "rkat mob deploy executed")) {
+  if (!array(result.display_rows, "hostDeployRpc.display_rows").some((row) => row.kind === "ok" && row.head === "rkat mob run executed")) {
     throw new Error(`host deploy RPC did not report executed display row: ${JSON.stringify(result.display_rows)}`);
   }
   return {
@@ -2329,7 +2341,7 @@ async function validateFlowStepOperations(catalogs) {
   fs.writeFileSync(path.join(dir, "mob.toml"), exported.mob_toml || "");
 
   const inspect = run("rkat", ["mob", "inspect", packPath]);
-  const validate = run("rkat", ["mob", "validate", packPath]);
+  const validate = run("rkat", ["mob", "validate", "--trust-policy", "permissive", packPath]);
   const imported = await rpc("mobkit/mobpacks/import", { content_base64: exported.content_base64 });
   const roundTrip = assertRoundTrip(imported, sample.document);
   const importedValidation = await rpc("mobkit/mobpacks/validate", { document: imported.document });
@@ -2375,25 +2387,18 @@ async function validateFlowStepOperations(catalogs) {
     }
     result.deploy = run("rkat", [
       "mob",
-      "deploy",
+      "run",
       "--isolated",
       "--realm-backend",
       "jsonl",
-      "--max-duration",
-      "30s",
-      "--max-tool-calls",
-      "0",
-      "--max-total-tokens",
-      "64",
       "--trust-policy",
       "permissive",
-      "--surface",
-      "cli",
       packPath,
+      "--prompt",
       "Reply with exactly OK.",
     ]);
-    if (!/^deployed\tmob=/.test(result.deploy) || !result.deploy.includes("warning\tunsigned pack accepted in permissive mode")) {
-      throw new Error(`rkat mob deploy output did not match deploy success contract:\n${result.deploy}`);
+    if (!/^run\tmob=.*\tstatus=completed$/m.test(result.deploy) || !/^result\t/m.test(result.deploy) || !result.deploy.includes("warning\tunsigned pack accepted in permissive mode")) {
+      throw new Error(`rkat mob run output did not match run envelope contract:\n${result.deploy}`);
     }
   }
 

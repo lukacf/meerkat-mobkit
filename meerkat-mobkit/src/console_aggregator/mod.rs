@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::future::join_all;
 use meerkat_core::types::HandlingMode;
 use meerkat_core::{ContentInput, Message};
-use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::ids::AgentIdentity;
 use meerkat_mob::runtime::MobMemberListEntry;
 use meerkat_mob::{MobError, MobHandle};
 use serde_json::{Value, json};
@@ -114,7 +114,7 @@ impl ConsoleIdentityReadModel {
         inner: Arc<AggregatorInner>,
     ) -> ConsoleLogResult<Vec<ConsoleIdentityRecord>> {
         if !self.primed.load(Ordering::Acquire) {
-            self.prime_now(inner).await?;
+            Box::pin(self.prime_now(inner)).await?;
         }
         Ok(self.inner.read().await.clone())
     }
@@ -131,7 +131,7 @@ impl ConsoleIdentityReadModel {
         let Ok(guard) = self.refresh_lock.clone().try_lock_owned() else {
             return None;
         };
-        let result = collect_identity_records(&inner, mode).await;
+        let result = Box::pin(collect_identity_records(&inner, mode)).await;
         drop(guard);
         match result {
             Ok(identities) => {
@@ -150,8 +150,11 @@ impl ConsoleIdentityReadModel {
         if self.primed.load(Ordering::Acquire) {
             return Ok(());
         }
-        let identities =
-            collect_identity_records(&inner, IdentityCollectionMode::CachedOnly).await?;
+        let identities = Box::pin(collect_identity_records(
+            &inner,
+            IdentityCollectionMode::CachedOnly,
+        ))
+        .await?;
         *self.inner.write().await = identities;
         self.primed.store(true, Ordering::Release);
         Ok(())
@@ -167,7 +170,11 @@ impl ConsoleIdentityReadModel {
         let read_model = self.clone();
         runtime_handle.spawn(async move {
             let _guard = guard;
-            match collect_identity_records(&inner, IdentityCollectionMode::IncludeLiveMembers).await
+            match Box::pin(collect_identity_records(
+                &inner,
+                IdentityCollectionMode::IncludeLiveMembers,
+            ))
+            .await
             {
                 Ok(identities) => {
                     *read_model.inner.write().await = identities;
@@ -210,9 +217,12 @@ fn console_member_for_resolved_member(
     record: &ConsoleIdentityRecord,
 ) -> ConsoleMember {
     ConsoleMember {
-        agent_identity: resolved.member.agent_identity.to_string(),
+        agent_identity: crate::member_comms_id::runtime_alias_str(
+            resolved.member.agent_identity.as_str(),
+        )
+        .into_owned(),
         role: resolved.member.role.to_string(),
-        state: format!("{:?}", resolved.member.state),
+        state: crate::mob_handle_runtime::member_status_state_string(resolved.member.status),
         model_capabilities: Default::default(),
         runtime_mode: Some(resolved.member.runtime_mode.to_string()),
         session_id: record.session_id.clone(),
@@ -220,7 +230,7 @@ fn console_member_for_resolved_member(
             .member
             .wired_to
             .iter()
-            .map(ToString::to_string)
+            .map(|peer| crate::member_comms_id::runtime_alias_str(peer.as_str()).into_owned())
             .collect(),
         labels: record.labels.clone(),
     }
@@ -233,7 +243,10 @@ async fn resolved_member_visible(
     if !raw_resolved_member_visible(resolved, record) {
         return false;
     }
-    !live_record_shadowed_by_hidden_durable_binding(resolved, record).await
+    !Box::pin(live_record_shadowed_by_hidden_durable_binding(
+        resolved, record,
+    ))
+    .await
 }
 
 fn raw_resolved_member_visible(
@@ -440,14 +453,11 @@ impl MobKitConsoleAggregator {
     }
 
     pub async fn list_identities(&self) -> ConsoleLogResult<Vec<ConsoleIdentityRecord>> {
-        if let Some(identities) = self
-            .inner
-            .identity_read_model
-            .refresh_now_if_idle(
-                self.inner.clone(),
-                IdentityCollectionMode::IncludeLiveMembers,
-            )
-            .await
+        if let Some(identities) = Box::pin(self.inner.identity_read_model.refresh_now_if_idle(
+            self.inner.clone(),
+            IdentityCollectionMode::IncludeLiveMembers,
+        ))
+        .await
         {
             let identities = identities?;
             spawn_identity_backfills_for_records(self.inner.clone(), &identities);
@@ -456,11 +466,8 @@ impl MobKitConsoleAggregator {
         self.inner
             .identity_read_model
             .refresh_soon(self.inner.clone());
-        let identities = self
-            .inner
-            .identity_read_model
-            .snapshot(self.inner.clone())
-            .await?;
+        let identities =
+            Box::pin(self.inner.identity_read_model.snapshot(self.inner.clone())).await?;
         spawn_identity_backfills_for_records(self.inner.clone(), &identities);
         Ok(identities)
     }
@@ -499,7 +506,7 @@ impl MobKitConsoleAggregator {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        let live_records = self.live_records_for_identity(identity).await;
+        let live_records = Box::pin(self.live_records_for_identity(identity)).await;
         let mut durable_matches = Vec::new();
         if !requested_identity_has_runtime_member_alias(identity, &entries) {
             for entry in &entries {
@@ -523,7 +530,7 @@ impl MobKitConsoleAggregator {
                         .get(&record.identity)
                         .cloned()
                         .unwrap_or_default();
-                    if console_identity_record_visible(entry, &record).await {
+                    if Box::pin(console_identity_record_visible(entry, &record)).await {
                         durable_matches.push((
                             entry.clone(),
                             identity_runtime.clone(),
@@ -548,11 +555,18 @@ impl MobKitConsoleAggregator {
         if let Some((entry, identity_runtime, parsed_identity, mut record)) =
             durable_matches.into_iter().next()
         {
-            let durable_live_records = self
-                .live_records_for_durable_record(&entry, identity, &record, &live_records)
-                .await;
-            let visible_durable_live_records =
-                visible_live_records_for_entry(&entry, &durable_live_records).await;
+            let durable_live_records = Box::pin(self.live_records_for_durable_record(
+                &entry,
+                identity,
+                &record,
+                &live_records,
+            ))
+            .await;
+            let visible_durable_live_records = Box::pin(visible_live_records_for_entry(
+                &entry,
+                &durable_live_records,
+            ))
+            .await;
             if let Some(ambiguous_error) =
                 ambiguous_live_alias_error(identity, &visible_durable_live_records)
             {
@@ -620,7 +634,7 @@ impl MobKitConsoleAggregator {
                 .get(&record.identity)
                 .cloned()
                 .unwrap_or_default();
-            if console_identity_record_visible(entry, &record).await {
+            if Box::pin(console_identity_record_visible(entry, &record)).await {
                 runtime_id_matches.push((entry.clone(), identity_runtime, status.identity, record));
             }
         }
@@ -638,11 +652,18 @@ impl MobKitConsoleAggregator {
         if let Some((entry, identity_runtime, parsed_identity, mut record)) =
             runtime_id_matches.into_iter().next()
         {
-            let durable_live_records = self
-                .live_records_for_durable_record(&entry, identity, &record, &live_records)
-                .await;
-            let visible_durable_live_records =
-                visible_live_records_for_entry(&entry, &durable_live_records).await;
+            let durable_live_records = Box::pin(self.live_records_for_durable_record(
+                &entry,
+                identity,
+                &record,
+                &live_records,
+            ))
+            .await;
+            let visible_durable_live_records = Box::pin(visible_live_records_for_entry(
+                &entry,
+                &durable_live_records,
+            ))
+            .await;
             if let Some(ambiguous_error) =
                 ambiguous_live_alias_error(&record.identity, &visible_durable_live_records)
             {
@@ -683,7 +704,7 @@ impl MobKitConsoleAggregator {
             }));
         }
 
-        let live_matches = self.resolve_visible_members(identity).await;
+        let live_matches = Box::pin(self.resolve_visible_members(identity)).await;
         if live_matches.len() > 1 {
             let candidates = live_matches
                 .iter()
@@ -710,16 +731,18 @@ impl MobKitConsoleAggregator {
                 && let Ok(status) = identity_runtime.status(&parsed_identity).await
             {
                 let mut durable_record = identity_record_for_status(&resolved.entry, &status);
-                let durable_live_records = self
-                    .live_records_for_durable_record(
-                        &resolved.entry,
-                        identity,
-                        &durable_record,
-                        &live_records,
-                    )
-                    .await;
-                let visible_durable_live_records =
-                    visible_live_records_for_entry(&resolved.entry, &durable_live_records).await;
+                let durable_live_records = Box::pin(self.live_records_for_durable_record(
+                    &resolved.entry,
+                    identity,
+                    &durable_record,
+                    &live_records,
+                ))
+                .await;
+                let visible_durable_live_records = Box::pin(visible_live_records_for_entry(
+                    &resolved.entry,
+                    &durable_live_records,
+                ))
+                .await;
                 if let Some(ambiguous_error) =
                     ambiguous_live_alias_error(&record.identity, &visible_durable_live_records)
                 {
@@ -751,7 +774,7 @@ impl MobKitConsoleAggregator {
                     return Ok(None);
                 }
             }
-            if !resolved_member_visible(&resolved, &record).await {
+            if !Box::pin(resolved_member_visible(&resolved, &record)).await {
                 return Ok(None);
             }
             if let Some(session_id) = record.session_id.clone() {
@@ -769,7 +792,7 @@ impl MobKitConsoleAggregator {
                 .member
                 .wired_to
                 .iter()
-                .map(ToString::to_string)
+                .map(|peer| crate::member_comms_id::runtime_alias_str(peer.as_str()).into_owned())
                 .collect();
             return Ok(Some(ConsoleIdentityInspection {
                 identity: record,
@@ -787,7 +810,7 @@ impl MobKitConsoleAggregator {
             .read()
             .map_err(|_| runtime_registry_lock_error())?
             .clone();
-        let live_records = self.live_records_for_identity(identity).await;
+        let live_records = Box::pin(self.live_records_for_identity(identity)).await;
         let entries_vec = entries.values().cloned().collect::<Vec<_>>();
         let mut durable_matches = Vec::new();
         if !requested_identity_has_runtime_member_alias(identity, &entries_vec) {
@@ -806,7 +829,7 @@ impl MobKitConsoleAggregator {
                         continue;
                     };
                     let record = identity_record_for_status(entry, &status);
-                    if !console_identity_record_visible(entry, &record).await {
+                    if !Box::pin(console_identity_record_visible(entry, &record)).await {
                         continue;
                     }
                     durable_matches.push((
@@ -832,11 +855,18 @@ impl MobKitConsoleAggregator {
         if let Some((entry, identity_runtime, parsed_identity, mut record)) =
             durable_matches.into_iter().next()
         {
-            let durable_live_records = self
-                .live_records_for_durable_record(&entry, identity, &record, &live_records)
-                .await;
-            let visible_durable_live_records =
-                visible_live_records_for_entry(&entry, &durable_live_records).await;
+            let durable_live_records = Box::pin(self.live_records_for_durable_record(
+                &entry,
+                identity,
+                &record,
+                &live_records,
+            ))
+            .await;
+            let visible_durable_live_records = Box::pin(visible_live_records_for_entry(
+                &entry,
+                &durable_live_records,
+            ))
+            .await;
             if let Some(ambiguous_error) =
                 ambiguous_live_alias_error(identity, &visible_durable_live_records)
             {
@@ -872,9 +902,11 @@ impl MobKitConsoleAggregator {
                 durable_identities.push(parsed_identity.as_str().to_string());
                 durable_identities.sort();
                 durable_identities.dedup();
-                if let Err(err) =
-                    retire_stale_console_members_for_runtime_entry(&entry, &durable_identities)
-                        .await
+                if let Err(err) = Box::pin(retire_stale_console_members_for_runtime_entry(
+                    &entry,
+                    &durable_identities,
+                ))
+                .await
                 {
                     tracing::warn!(
                         identity,
@@ -885,7 +917,7 @@ impl MobKitConsoleAggregator {
             }
             return Ok(true);
         }
-        let matches = self.resolve_visible_members(identity).await;
+        let matches = Box::pin(self.resolve_visible_members(identity)).await;
         if matches.len() > 1 {
             let candidates = matches
                 .iter()
@@ -902,7 +934,7 @@ impl MobKitConsoleAggregator {
             let Some(record) = identity_record_for_resolved_member(&resolved).await else {
                 continue;
             };
-            if !resolved_member_visible(&resolved, &record).await {
+            if !Box::pin(resolved_member_visible(&resolved, &record)).await {
                 continue;
             }
             if let Some(stale_error) =
@@ -916,16 +948,18 @@ impl MobKitConsoleAggregator {
                 && let Ok(status) = identity_runtime.status(&parsed_identity).await
             {
                 let mut durable_record = identity_record_for_status(&resolved.entry, &status);
-                let durable_live_records = self
-                    .live_records_for_durable_record(
-                        &resolved.entry,
-                        identity,
-                        &durable_record,
-                        &live_records,
-                    )
-                    .await;
-                let visible_durable_live_records =
-                    visible_live_records_for_entry(&resolved.entry, &durable_live_records).await;
+                let durable_live_records = Box::pin(self.live_records_for_durable_record(
+                    &resolved.entry,
+                    identity,
+                    &durable_record,
+                    &live_records,
+                ))
+                .await;
+                let visible_durable_live_records = Box::pin(visible_live_records_for_entry(
+                    &resolved.entry,
+                    &durable_live_records,
+                ))
+                .await;
                 if let Some(ambiguous_error) =
                     ambiguous_live_alias_error(&record.identity, &visible_durable_live_records)
                 {
@@ -959,7 +993,9 @@ impl MobKitConsoleAggregator {
             }
             resolved
                 .handle
-                .retire(MeerkatId::from(resolved.runtime_identity.as_str()))
+                .retire(crate::member_comms_id::mob_member_id(
+                    resolved.runtime_identity.as_str(),
+                ))
                 .await
                 .map_err(|err| -> ConsoleLogError {
                     format!("retire failed for {identity}: {err}").into()
@@ -1084,13 +1120,13 @@ impl MobKitConsoleAggregator {
             for frame in page.frames {
                 let allow_historical_identity =
                     query.identity.as_deref() == Some(frame.identity.as_str());
-                if frame_is_visible_cached(
+                if Box::pin(frame_is_visible_cached(
                     &self.inner,
                     &frame,
                     allow_historical_identity,
                     &mut identity_visibility_cache,
                     &identity_records,
-                )
+                ))
                 .await
                 .unwrap_or(false)
                 {
@@ -1229,9 +1265,14 @@ impl MobKitConsoleAggregator {
             ConsoleTimelineEvent::ConsoleFrame { frame }
             | ConsoleTimelineEvent::FrameUpdated { frame } => {
                 let identity_records = self.inner.identity_read_model.current().await;
-                frame_is_visible(&self.inner, frame, false, &identity_records)
-                    .await
-                    .unwrap_or(false)
+                Box::pin(frame_is_visible(
+                    &self.inner,
+                    frame,
+                    false,
+                    &identity_records,
+                ))
+                .await
+                .unwrap_or(false)
             }
             ConsoleTimelineEvent::SnapshotStarted { .. }
             | ConsoleTimelineEvent::SnapshotComplete { .. }
@@ -1246,12 +1287,12 @@ impl MobKitConsoleAggregator {
     ) -> bool {
         let allow_historical_identity = identity == Some(frame.identity.as_str());
         let identity_records = self.inner.identity_read_model.current().await;
-        frame_is_visible(
+        Box::pin(frame_is_visible(
             &self.inner,
             frame,
             allow_historical_identity,
             &identity_records,
-        )
+        ))
         .await
         .unwrap_or(false)
     }
@@ -1267,13 +1308,13 @@ impl MobKitConsoleAggregator {
         let Some(record) = identity_record_for_resolved_member(&resolved).await else {
             return Err(ConsoleSendError::UnknownIdentity(request.identity));
         };
-        if !resolved_member_visible(&resolved, &record).await {
+        if !Box::pin(resolved_member_visible(&resolved, &record)).await {
             return Err(ConsoleSendError::UnknownIdentity(request.identity));
         }
         if !member_is_addressable(&resolved.member) {
             return Err(ConsoleSendError::NotAddressable(request.identity));
         }
-        if resolved.member.state == meerkat_mob::MemberState::Retiring {
+        if resolved.member.status == meerkat_mob::MobMemberStatus::Retiring {
             return Err(ConsoleSendError::Retired(request.identity));
         }
 
@@ -1342,7 +1383,7 @@ impl MobKitConsoleAggregator {
             .map_err(ConsoleSendError::State)?;
         let session_id = resolved
             .handle
-            .resolve_bridge_session_id_observation(&MeerkatId::from(
+            .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
                 resolved.runtime_identity.as_str(),
             ))
             .await
@@ -1547,7 +1588,7 @@ impl MobKitConsoleAggregator {
                 };
                 if let Ok(status) = identity_runtime.status(&parsed_identity).await {
                     let record = identity_record_for_status(entry, &status);
-                    if !console_identity_record_visible(entry, &record).await {
+                    if !Box::pin(console_identity_record_visible(entry, &record)).await {
                         hidden_durable_match = true;
                         continue;
                     }
@@ -1573,12 +1614,19 @@ impl MobKitConsoleAggregator {
         if let Some((entry, identity_runtime, parsed_identity, mut record)) =
             durable_matches.into_iter().next()
         {
-            let live_records = self.live_records_for_identity(identity).await;
-            let durable_live_records = self
-                .live_records_for_durable_record(&entry, identity, &record, &live_records)
-                .await;
-            let visible_durable_live_records =
-                visible_live_records_for_entry(&entry, &durable_live_records).await;
+            let live_records = Box::pin(self.live_records_for_identity(identity)).await;
+            let durable_live_records = Box::pin(self.live_records_for_durable_record(
+                &entry,
+                identity,
+                &record,
+                &live_records,
+            ))
+            .await;
+            let visible_durable_live_records = Box::pin(visible_live_records_for_entry(
+                &entry,
+                &durable_live_records,
+            ))
+            .await;
             if let Some(ambiguous_error) =
                 ambiguous_live_alias_error(identity, &visible_durable_live_records)
             {
@@ -1682,13 +1730,13 @@ impl MobKitConsoleAggregator {
         let Some(record) = identity_record_for_resolved_member(&resolved).await else {
             return Err(ConsoleSendError::UnknownIdentity(identity.to_string()));
         };
-        if !resolved_member_visible(&resolved, &record).await {
+        if !Box::pin(resolved_member_visible(&resolved, &record)).await {
             return Err(ConsoleSendError::UnknownIdentity(identity.to_string()));
         }
         if !member_is_addressable(&resolved.member) {
             return Err(ConsoleSendError::NotAddressable(identity.to_string()));
         }
-        if resolved.member.state == meerkat_mob::MemberState::Retiring {
+        if resolved.member.status == meerkat_mob::MobMemberStatus::Retiring {
             return Err(ConsoleSendError::Retired(identity.to_string()));
         }
         Ok(resolved.entry.runtime.binary_blob_store())
@@ -1711,7 +1759,7 @@ impl MobKitConsoleAggregator {
         &self,
         identity: &str,
     ) -> Result<Option<ResolvedConsoleMember>, ConsoleSendError> {
-        let matches = self.resolve_visible_members(identity).await;
+        let matches = Box::pin(self.resolve_visible_members(identity)).await;
         if matches.len() > 1 {
             let candidates = matches
                 .iter()
@@ -1756,7 +1804,7 @@ impl MobKitConsoleAggregator {
         }) {
             return Ok(None);
         }
-        let live_records = self.live_records_for_identity(identity).await;
+        let live_records = Box::pin(self.live_records_for_identity(identity)).await;
         let mut durable_matches = Vec::new();
         for entry in entries.values() {
             let Some(identity_runtime) = entry.identity_runtime.clone() else {
@@ -1772,7 +1820,7 @@ impl MobKitConsoleAggregator {
                     continue;
                 };
                 let record = identity_record_for_status(entry, &status);
-                if !console_identity_record_visible(entry, &record).await {
+                if !Box::pin(console_identity_record_visible(entry, &record)).await {
                     continue;
                 }
                 durable_matches.push((
@@ -1799,11 +1847,18 @@ impl MobKitConsoleAggregator {
         else {
             return Ok(None);
         };
-        let durable_live_records = self
-            .live_records_for_durable_record(&entry, identity, &durable_record, &live_records)
-            .await;
-        let visible_durable_live_records =
-            visible_live_records_for_entry(&entry, &durable_live_records).await;
+        let durable_live_records = Box::pin(self.live_records_for_durable_record(
+            &entry,
+            identity,
+            &durable_record,
+            &live_records,
+        ))
+        .await;
+        let visible_durable_live_records = Box::pin(visible_live_records_for_entry(
+            &entry,
+            &durable_live_records,
+        ))
+        .await;
         if let Some(ambiguous_error) =
             ambiguous_live_alias_error(&durable_record.identity, &visible_durable_live_records)
         {
@@ -1846,9 +1901,9 @@ impl MobKitConsoleAggregator {
             }
             let mids = raw_identities
                 .iter()
-                .map(|raw_identity| MeerkatId::from(raw_identity.as_str()))
+                .map(|raw_identity| crate::member_comms_id::mob_member_id(raw_identity.as_str()))
                 .collect::<Vec<_>>();
-            for resolved in member_sources_for_entry(entry).await {
+            for resolved in Box::pin(member_sources_for_entry(entry)).await {
                 let session_id = resolved
                     .handle
                     .resolve_bridge_session_id_observation(&resolved.member.agent_identity)
@@ -1880,11 +1935,11 @@ impl MobKitConsoleAggregator {
 
     async fn resolve_visible_members(&self, identity: &str) -> Vec<ResolvedConsoleMember> {
         let mut visible = Vec::new();
-        for resolved in self.resolve_members(identity).await {
+        for resolved in Box::pin(self.resolve_members(identity)).await {
             let Some(record) = identity_record_for_resolved_member(&resolved).await else {
                 continue;
             };
-            if resolved_member_visible(&resolved, &record).await {
+            if Box::pin(resolved_member_visible(&resolved, &record)).await {
                 visible.push(resolved);
             }
         }
@@ -1893,11 +1948,11 @@ impl MobKitConsoleAggregator {
 
     async fn live_records_for_identity(&self, identity: &str) -> Vec<ConsoleIdentityRecord> {
         let mut records = Vec::new();
-        for resolved in self.resolve_members(identity).await {
+        for resolved in Box::pin(self.resolve_members(identity)).await {
             let Some(record) = identity_record_for_resolved_member(&resolved).await else {
                 continue;
             };
-            if resolved_member_visible(&resolved, &record).await {
+            if Box::pin(resolved_member_visible(&resolved, &record)).await {
                 records.push(record);
             }
         }
@@ -1914,10 +1969,13 @@ impl MobKitConsoleAggregator {
         let mut records = if durable.identity == requested_identity {
             requested_live_records.to_vec()
         } else {
-            self.live_records_for_identity(&durable.identity).await
+            Box::pin(self.live_records_for_identity(&durable.identity)).await
         };
-        for runtime_record in
-            live_records_for_runtime_member(entry, &durable.runtime_member_id).await
+        for runtime_record in Box::pin(live_records_for_runtime_member(
+            entry,
+            &durable.runtime_member_id,
+        ))
+        .await
         {
             if records.iter().any(|record| {
                 record.runtime_key == runtime_record.runtime_key
@@ -1942,7 +2000,7 @@ async fn console_identity_record_visible(
     }
     let mut bound_live_member_seen = false;
     let mut wrong_live_projection_seen = false;
-    for resolved in member_sources_for_entry(entry).await {
+    for resolved in Box::pin(member_sources_for_entry(entry)).await {
         if resolved.runtime_identity != record.runtime_member_id {
             continue;
         }
@@ -1983,7 +2041,7 @@ async fn live_record_shadowed_by_hidden_durable_binding(
     if bound_runtime_id.as_str() == resolved.runtime_identity {
         return false;
     }
-    for candidate in member_sources_for_entry(&resolved.entry).await {
+    for candidate in Box::pin(member_sources_for_entry(&resolved.entry)).await {
         if candidate.runtime_identity != bound_runtime_id.as_str() {
             continue;
         }
@@ -2005,7 +2063,7 @@ async fn frame_matches_hidden_member(entry: &RuntimeEntry, frame: &ConsoleFrame)
     let frame_session_id = frame.session_id.as_deref();
     let mut saw_hidden = false;
     let mut saw_visible = false;
-    for resolved in member_sources_for_entry(entry).await {
+    for resolved in Box::pin(member_sources_for_entry(entry)).await {
         let Some(record) = identity_record_for_resolved_member(&resolved).await else {
             continue;
         };
@@ -2019,7 +2077,7 @@ async fn frame_matches_hidden_member(entry: &RuntimeEntry, frame: &ConsoleFrame)
         if session_matches && !raw_resolved_member_visible(&resolved, &record) {
             return true;
         }
-        if resolved_member_visible(&resolved, &record).await {
+        if Box::pin(resolved_member_visible(&resolved, &record)).await {
             saw_visible = true;
         } else {
             saw_hidden = true;
@@ -2033,7 +2091,7 @@ async fn live_records_for_runtime_member(
     runtime_member_id: &str,
 ) -> Vec<ConsoleIdentityRecord> {
     let mut records = Vec::new();
-    for resolved in member_sources_for_entry(entry).await {
+    for resolved in Box::pin(member_sources_for_entry(entry)).await {
         if resolved.runtime_identity != runtime_member_id {
             continue;
         }
@@ -2052,7 +2110,7 @@ async fn visible_live_records_for_entry(
     let mut visible = Vec::new();
     for record in records {
         if record.runtime_key != entry.runtime_key
-            || console_identity_record_visible(entry, record).await
+            || Box::pin(console_identity_record_visible(entry, record)).await
         {
             visible.push(record.clone());
         }
@@ -2254,7 +2312,9 @@ fn ambiguous_live_alias_error(
 }
 
 fn member_id_matches_durable_identity(member_id: &str, durable_identity: &str) -> bool {
-    member_id == durable_identity
+    // Roster ids are comms-safe encodings of public aliases (meerkat 0.7
+    // MemberCommsName); compare in the public alias space.
+    crate::member_comms_id::runtime_alias_str(member_id) == durable_identity
 }
 
 async fn retire_stale_console_members_for_identity(
@@ -2274,7 +2334,11 @@ async fn retire_stale_console_members_for_identity(
                     .iter()
                     .any(|durable_identity| identity == durable_identity)
             })) && keep_runtime_member_id
-                .map(|keep| member.agent_identity.as_str() != keep)
+                .map(|keep| {
+                    // `keep` is a public alias; compare decoded.
+                    crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str())
+                        != keep
+                })
                 .unwrap_or(true)
         })
         .map(|member| member.agent_identity)
@@ -2297,7 +2361,7 @@ async fn retire_stale_console_members_for_runtime_entry(
     let primary_mob_id = primary_handle.mob_id().to_string();
     let mut handles = vec![(primary_mob_id.clone(), primary_handle)];
     if let Some(state) = entry.runtime.agent_mob_mcp_state() {
-        for (mob_id, handle) in state.mob_handles_snapshot().await {
+        for (mob_id, handle) in Box::pin(state.mob_handles_snapshot()).await {
             if mob_id.as_str() != primary_mob_id {
                 handles.push((mob_id.to_string(), handle));
             }
@@ -2444,7 +2508,7 @@ async fn collect_identity_records(
                     .get(&record.identity)
                     .cloned()
                     .unwrap_or_default();
-                if console_identity_record_visible(entry, &record).await {
+                if Box::pin(console_identity_record_visible(entry, &record)).await {
                     identities.push(record);
                 }
             }
@@ -2453,10 +2517,10 @@ async fn collect_identity_records(
             }
         }
         let members = if entry.identity_runtime.is_some() {
-            match tokio::time::timeout(
+            match Box::pin(tokio::time::timeout(
                 IDENTITY_FIRST_LIVE_MEMBER_REFRESH_WAIT,
                 member_sources_for_entry(entry),
-            )
+            ))
             .await
             {
                 Ok(members) => members,
@@ -2469,11 +2533,11 @@ async fn collect_identity_records(
                 }
             }
         } else {
-            member_sources_for_entry(entry).await
+            Box::pin(member_sources_for_entry(entry)).await
         };
         for resolved in members {
             if let Some(record) = identity_record_for_resolved_member(&resolved).await
-                && resolved_member_visible(&resolved, &record).await
+                && Box::pin(resolved_member_visible(&resolved, &record)).await
             {
                 identities.push(record);
             }
@@ -2540,7 +2604,12 @@ async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMe
         resolved.push(ResolvedConsoleMember {
             entry: entry.clone(),
             handle: primary_handle.clone(),
-            runtime_identity: member.agent_identity.to_string(),
+            // Roster ids are comms-safe encodings (meerkat 0.7); the
+            // aggregator's runtime identity is the public alias.
+            runtime_identity: crate::member_comms_id::runtime_alias_str(
+                member.agent_identity.as_str(),
+            )
+            .into_owned(),
             source_mob_id: primary_mob_id.clone(),
             member,
         });
@@ -2552,7 +2621,7 @@ async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMe
     if !entry.visibility_policy.include_implicit_delegate_members() {
         return resolved;
     }
-    for (mob_id, handle) in state.mob_handles_snapshot().await {
+    for (mob_id, handle) in Box::pin(state.mob_handles_snapshot()).await {
         if mob_id.as_str() == primary_mob_id {
             continue;
         }
@@ -2560,7 +2629,12 @@ async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMe
             resolved.push(ResolvedConsoleMember {
                 entry: entry.clone(),
                 handle: handle.clone(),
-                runtime_identity: member.agent_identity.to_string(),
+                // Roster ids are comms-safe encodings (meerkat 0.7); the
+                // aggregator's runtime identity is the public alias.
+                runtime_identity: crate::member_comms_id::runtime_alias_str(
+                    member.agent_identity.as_str(),
+                )
+                .into_owned(),
                 source_mob_id: mob_id.to_string(),
                 member,
             });
@@ -2574,7 +2648,7 @@ async fn dispatch_message_to_resolved_member(
     content: ContentInput,
     handling_mode: meerkat_core::types::HandlingMode,
 ) -> Result<String, String> {
-    let mid = MeerkatId::from(resolved.runtime_identity.as_str());
+    let mid = crate::member_comms_id::mob_member_id(resolved.runtime_identity.as_str());
     match send_message_on_mob_with_mode(
         &resolved.handle,
         &resolved.runtime_identity,
@@ -2794,13 +2868,13 @@ async fn backfill_session_history(
     else {
         return Ok(());
     };
-    let members = member_sources_for_entry(&entry).await;
+    let members = Box::pin(member_sources_for_entry(&entry)).await;
     let mut targets = Vec::new();
     for resolved in members {
         let Some(record) = identity_record_for_resolved_member(&resolved).await else {
             continue;
         };
-        if !resolved_member_visible(&resolved, &record).await {
+        if !Box::pin(resolved_member_visible(&resolved, &record)).await {
             continue;
         }
         let Some(session_id) = record.session_id.clone() else {
@@ -3020,7 +3094,12 @@ fn spawn_session_history_backfill(inner: Arc<AggregatorInner>, runtime_key: Stri
                 return;
             }
         }
-        let result = backfill_session_history(inner.clone(), runtime_key.clone(), false).await;
+        let result = Box::pin(backfill_session_history(
+            inner.clone(),
+            runtime_key.clone(),
+            false,
+        ))
+        .await;
         let mut active = inner.active_session_backfills.lock().await;
         active.remove(&runtime_key);
         drop(active);
@@ -3116,7 +3195,7 @@ fn spawn_session_history_backfill_for_identity(
         return;
     }
     tokio::spawn(async move {
-        for target in session_backfill_targets_for_identity(&inner, &identity).await {
+        for target in Box::pin(session_backfill_targets_for_identity(&inner, &identity)).await {
             spawn_session_history_backfill_target(inner.clone(), target, force_refresh);
         }
     });
@@ -3130,7 +3209,7 @@ fn spawn_opportunistic_session_history_backfill_for_identity(
         return;
     }
     tokio::spawn(async move {
-        for target in session_backfill_targets_for_identity(&inner, &identity).await {
+        for target in Box::pin(session_backfill_targets_for_identity(&inner, &identity)).await {
             let active_key = format!(
                 "{}:session-history:{}",
                 target.entry.runtime_key, target.session_id
@@ -3175,9 +3254,9 @@ async fn session_backfill_targets_for_identity(
         }
         let mids = raw_identities
             .iter()
-            .map(|raw_identity| MeerkatId::from(raw_identity.as_str()))
+            .map(|raw_identity| crate::member_comms_id::mob_member_id(raw_identity.as_str()))
             .collect::<Vec<_>>();
-        for resolved in member_sources_for_entry(entry)
+        for resolved in Box::pin(member_sources_for_entry(entry))
             .await
             .into_iter()
             .filter(|candidate| {
@@ -3187,7 +3266,7 @@ async fn session_backfill_targets_for_identity(
             let Some(record) = identity_record_for_resolved_member(&resolved).await else {
                 continue;
             };
-            if !resolved_member_visible(&resolved, &record).await {
+            if !Box::pin(resolved_member_visible(&resolved, &record)).await {
                 continue;
             }
             let Some(session_id) = record.session_id.clone() else {
@@ -3206,7 +3285,7 @@ async fn session_backfill_targets_for_identity(
 fn resolved_member_matches_raw_identities(
     resolved: &ResolvedConsoleMember,
     raw_identities: &[String],
-    mids: &[MeerkatId],
+    mids: &[AgentIdentity],
 ) -> bool {
     mids.contains(&resolved.member.agent_identity)
         || resolved
@@ -3628,17 +3707,8 @@ fn frames_from_session_history_message_with_namespace(
                 }),
             )
         }
-        Message::Assistant(assistant) => (
-            "interaction_complete",
-            assistant.created_at.timestamp_millis().max(0) as u64,
-            json!({
-                "result": assistant.content,
-                "text": assistant.content,
-                "message": message,
-                "source_event_type": "session_history",
-                "type": "session_history",
-            }),
-        ),
+        // Meerkat 0.7 removed the legacy flat-text `Message::Assistant`
+        // variant; all assistant history is block-shaped now.
         Message::BlockAssistant(assistant) => {
             let text = assistant.text_blocks().collect::<Vec<_>>().join("");
             (
@@ -4071,13 +4141,13 @@ async fn frame_is_visible(
     identity_records: &[ConsoleIdentityRecord],
 ) -> ConsoleLogResult<bool> {
     let mut identity_visibility_cache = HashMap::new();
-    frame_is_visible_cached(
+    Box::pin(frame_is_visible_cached(
         inner,
         frame,
         allow_historical_identity,
         &mut identity_visibility_cache,
         identity_records,
-    )
+    ))
     .await
 }
 
@@ -4115,7 +4185,7 @@ async fn frame_is_visible_cached(
                             || record.runtime_member_id == runtime_member_id)
                 }) {
                     Some(record) => {
-                        if console_identity_record_visible(&entry, record).await {
+                        if Box::pin(console_identity_record_visible(&entry, record)).await {
                             CachedIdentityVisibility::Visible
                         } else {
                             CachedIdentityVisibility::Hidden
@@ -4128,13 +4198,13 @@ async fn frame_is_visible_cached(
             };
         match identity_visibility {
             CachedIdentityVisibility::Visible => {
-                if frame_matches_hidden_member(&entry, frame).await {
+                if Box::pin(frame_matches_hidden_member(&entry, frame)).await {
                     return Ok(false);
                 }
             }
             CachedIdentityVisibility::Hidden => return Ok(false),
             CachedIdentityVisibility::Missing => {
-                if frame_matches_hidden_member(&entry, frame).await {
+                if Box::pin(frame_matches_hidden_member(&entry, frame)).await {
                     return Ok(false);
                 }
                 return Ok(
@@ -4151,7 +4221,10 @@ async fn identity_record_for_member(
     handle: &MobHandle,
     member: &MobMemberListEntry,
 ) -> Option<ConsoleIdentityRecord> {
-    let runtime_member_id = member.agent_identity.to_string();
+    // Roster ids are comms-safe encodings (meerkat 0.7 MemberCommsName);
+    // identity records carry the public alias.
+    let runtime_member_id =
+        crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()).into_owned();
     let durable_identity = member
         .labels
         .get("agent_identity")
@@ -4159,12 +4232,17 @@ async fn identity_record_for_member(
         .map_or(runtime_member_id.as_str(), String::as_str);
     let identity = apply_namespace(durable_identity, &entry.identity_namespace);
     let addressable = member_is_addressable(member);
-    let visibility = if member.state == meerkat_mob::MemberState::Retiring {
-        ConsoleVisibility::RetiredReadable
-    } else if addressable {
-        ConsoleVisibility::Addressable
-    } else {
-        ConsoleVisibility::Hidden
+    let visibility = match member.status {
+        meerkat_mob::MobMemberStatus::Retiring | meerkat_mob::MobMemberStatus::Completed => {
+            ConsoleVisibility::RetiredReadable
+        }
+        // Broken/unknown members have no live runtime binding; mirror the
+        // identity-first projection, which marks them unreachable.
+        meerkat_mob::MobMemberStatus::Broken | meerkat_mob::MobMemberStatus::Unknown => {
+            ConsoleVisibility::Unreachable
+        }
+        _ if addressable => ConsoleVisibility::Addressable,
+        _ => ConsoleVisibility::Hidden,
     };
     let session_id = handle
         .resolve_bridge_session_id_observation(&member.agent_identity)
@@ -4201,7 +4279,11 @@ async fn identity_record_for_member(
             "hidden_by_policy"
         }
         .to_string(),
-        topology_peers: member.wired_to.iter().map(ToString::to_string).collect(),
+        topology_peers: member
+            .wired_to
+            .iter()
+            .map(|peer| crate::member_comms_id::runtime_alias_str(peer.as_str()).into_owned())
+            .collect(),
         labels,
     })
 }
@@ -4553,8 +4635,8 @@ mod tests {
             Box::pin(delayed_text.chain(done))
         }
 
-        fn provider(&self) -> &'static str {
-            "slow-test"
+        fn provider(&self) -> meerkat_core::Provider {
+            meerkat_core::Provider::Other
         }
 
         async fn health_check(&self) -> Result<(), LlmError> {
@@ -5271,7 +5353,7 @@ comms = true
             .await?;
         let hidden_session_id = runtime
             .mob_handle()
-            .resolve_bridge_session_id_observation(&meerkat_mob::ids::MeerkatId::from(
+            .resolve_bridge_session_id_observation(&meerkat_mob::ids::AgentIdentity::from(
                 "rt:review:singleton:0",
             ))
             .await
@@ -5682,7 +5764,9 @@ comms = true
             .expect("member spawns");
         let live_session_id = runtime
             .mob_handle()
-            .resolve_bridge_session_id_observation(&MeerkatId::from("rt:review:singleton:0"))
+            .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
+                "rt:review:singleton:0",
+            ))
             .await
             .expect("live member has bridge session");
 
@@ -8590,16 +8674,21 @@ comms = true
             }),
         )
         .expect("user history frame");
+        // meerkat 0.7 removed the legacy flat-text `Message::Assistant`
+        // variant: session stores serialize assistant turns only as
+        // `block_assistant` (MessageWire), so the history projection sees the
+        // block shape.
         let assistant = frame_from_session_history_message(
             "runtime-a",
             "agent-a",
             "session-a",
             1,
             json!({
-                "role": "assistant",
-                "content": "hi there",
+                "role": "block_assistant",
+                "blocks": [
+                    { "block_type": "text", "data": { "text": "hi there" } }
+                ],
                 "stop_reason": "end_turn",
-                "usage": { "input_tokens": 1, "output_tokens": 1, "total_tokens": 2 },
                 "timestamp_ms": 11
             }),
         )

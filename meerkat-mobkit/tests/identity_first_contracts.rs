@@ -911,7 +911,10 @@ async fn identity_first_contracts_session_hook_customizer_adapter_model_mutation
             req: &mut meerkat_core::service::CreateSessionRequest,
         ) -> Result<(), meerkat_core::service::SessionError> {
             req.model = "claude-opus-4-6".to_string();
-            req.system_prompt = Some("overridden prompt".to_string());
+            // meerkat 0.7: CreateSessionRequest.system_prompt is the typed
+            // tri-state SystemPromptOverride.
+            req.system_prompt =
+                meerkat_core::config::SystemPromptOverride::Set("overridden prompt".to_string());
             Ok(())
         }
     }

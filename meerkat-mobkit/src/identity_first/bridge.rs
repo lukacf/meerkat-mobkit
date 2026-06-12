@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use meerkat_core::types::HandlingMode;
-use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::ids::AgentIdentity as MobAgentIdentity;
 use meerkat_mob::launch::MemberLaunchMode;
 use meerkat_mob::{
     MobHandle, MobSessionService, SpawnMemberSpec, SpawnSystemPromptOverride, WorkOrigin, WorkRef,
@@ -129,13 +129,14 @@ impl ResumeSessionOutcome {
 
 async fn submit_internal_bridge_work(
     handle: &MobHandle,
-    member_id: &MeerkatId,
+    member_id: &MobAgentIdentity,
     content: &meerkat_core::ContentInput,
     handling_mode: HandlingMode,
 ) -> Result<(), BridgeError> {
     let entry = handle
         .get_member(member_id)
         .await
+        .map_err(|err| BridgeError::Mob(err.to_string()))?
         .ok_or_else(|| BridgeError::Mob(format!("member not found: {member_id}")))?;
     handle
         .submit_work_with_mode(
@@ -298,7 +299,7 @@ pub struct MemberInspection {
 
 /// Concrete `SessionBridge` backed by a `MobHandle`.
 ///
-/// `AgentRuntimeId` is usually used as the `MeerkatId` at the mob layer. Real
+/// `AgentRuntimeId` is usually used as the `MobAgentIdentity` at the mob layer. Real
 /// external bindings are the exception: Meerkat's external peer names require
 /// identifier-safe `<mob>/<profile>/<member>` segments, so the bridge maps the
 /// runtime ID to the durable identity for those members.
@@ -389,7 +390,11 @@ impl MobSessionBridge {
         }
     }
 
-    async fn remember_runtime_member(&self, runtime_id: &AgentRuntimeId, member_id: &MeerkatId) {
+    async fn remember_runtime_member(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        member_id: &MobAgentIdentity,
+    ) {
         self.runtime_members.write().await.insert(
             runtime_id.as_str().to_string(),
             member_id.as_str().to_string(),
@@ -418,12 +423,14 @@ impl MobSessionBridge {
             .remove(runtime_id.as_str());
     }
 
-    async fn member_id_for_runtime_id(&self, runtime_id: &AgentRuntimeId) -> MeerkatId {
+    async fn member_id_for_runtime_id(&self, runtime_id: &AgentRuntimeId) -> MobAgentIdentity {
         let members = self.runtime_members.read().await;
         members
             .get(runtime_id.as_str())
-            .map(|member| MeerkatId::from(member.as_str()))
-            .unwrap_or_else(|| MeerkatId::from(runtime_id.as_str()))
+            .map(|member| MobAgentIdentity::from(member.as_str()))
+            // The recompute fallback must mint the same comms-safe roster id
+            // as the spawn path (meerkat 0.7 MemberCommsName rejects `:`).
+            .unwrap_or_else(|| crate::member_comms_id::mob_member_id(runtime_id.as_str()))
     }
 
     async fn runtime_session_id(
@@ -437,10 +444,20 @@ impl MobSessionBridge {
             .cloned()
     }
 
+    /// Resolve the inline definition profile backing `spec.profile`, used as
+    /// the base when a draft model override must be projected into the typed
+    /// `override_profile` spawn owner. Realm-ref bindings resolve to `None`.
+    fn base_profile_for_spec(&self, spec: &DurableAgentSpec) -> Option<meerkat_mob::Profile> {
+        self.handle
+            .definition()
+            .resolve_inline_profile(&spec.profile)
+            .cloned()
+    }
+
     async fn resolve_runtime_session_id(
         &self,
         runtime_id: &AgentRuntimeId,
-        member_id: &MeerkatId,
+        member_id: &MobAgentIdentity,
         missing_message: &'static str,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         if let Some(session_id) = self.handle.resolve_bridge_session_id(member_id).await {
@@ -448,8 +465,15 @@ impl MobSessionBridge {
             return Ok(session_id);
         }
 
+        // `get_member` faults (machine command/transport errors) must not be
+        // laundered into "member absent"; surface them to the caller.
         if member_id.as_str() != runtime_id.as_str()
-            && self.handle.get_member(member_id).await.is_some()
+            && self
+                .handle
+                .get_member(member_id)
+                .await
+                .map_err(|err| BridgeError::Mob(err.to_string()))?
+                .is_some()
             && let Some(session_id) = self.runtime_session_id(runtime_id).await
         {
             return Ok(session_id);
@@ -461,7 +485,7 @@ impl MobSessionBridge {
     async fn repair_member_for_delivery(
         &self,
         runtime_id: &AgentRuntimeId,
-        member_id: &MeerkatId,
+        member_id: &MobAgentIdentity,
         member_entry_before_delivery: Option<(meerkat_mob::ProfileName, BTreeMap<String, String>)>,
     ) -> Result<(), BridgeError> {
         match self.handle.respawn(member_id.clone(), None).await {
@@ -479,7 +503,15 @@ impl MobSessionBridge {
                     Ok(())
                 }
                 MemberRepairRespawnFailure::RecoverableCleanup => {
-                    if self.handle.get_member(member_id).await.is_none()
+                    // A `get_member` fault must not be read as "member absent"
+                    // (that would trigger a spurious re-spawn); fail the
+                    // delivery repair instead.
+                    if self
+                        .handle
+                        .get_member(member_id)
+                        .await
+                        .map_err(|err| BridgeError::Mob(err.to_string()))?
+                        .is_none()
                         && let Some((role, labels)) = member_entry_before_delivery
                     {
                         let mut spec = SpawnMemberSpec::new(role, member_id.clone());
@@ -507,19 +539,34 @@ fn spec_uses_external_binding(spec: &DurableAgentSpec) -> bool {
         )
 }
 
-fn member_id_for_spawn_spec(runtime_id: &AgentRuntimeId, spec: &DurableAgentSpec) -> MeerkatId {
+fn member_id_for_spawn_spec(
+    runtime_id: &AgentRuntimeId,
+    spec: &DurableAgentSpec,
+) -> MobAgentIdentity {
+    // meerkat 0.7's `MemberCommsName` is fail-closed: roster member ids must
+    // be identifier-safe (no `:`). MobKit's public alias space — durable
+    // identities like `review:singleton` and runtime ids like
+    // `rt:review:singleton:0` — is unchanged; the roster id is the comms-safe
+    // encoding (identity for already-safe names).
     if spec_uses_external_binding(spec) {
-        MeerkatId::from(spec.identity.as_str())
+        crate::member_comms_id::mob_member_id(spec.identity.as_str())
     } else {
-        MeerkatId::from(runtime_id.as_str())
+        crate::member_comms_id::mob_member_id(runtime_id.as_str())
     }
 }
 
 /// Build a `SpawnMemberSpec` from identity-first types, wiring draft fields.
+///
+/// `base_profile` is the resolved definition profile for `spec.profile`; it is
+/// only needed when the draft carries a model override (meerkat 0.7 removed
+/// `SpawnMemberSpec::model_override` in favor of the typed `override_profile`
+/// owner, so a model override is expressed as the role profile with the model
+/// swapped).
 pub(crate) fn build_spawn_spec(
     runtime_id: &AgentRuntimeId,
     spec: &DurableAgentSpec,
     draft: &AgentBuildDraft,
+    base_profile: Option<&meerkat_mob::Profile>,
 ) -> SpawnMemberSpec {
     let mid = member_id_for_spawn_spec(runtime_id, spec);
     let mut spawn_spec = SpawnMemberSpec::new(spec.profile.clone(), mid);
@@ -549,7 +596,30 @@ pub(crate) fn build_spawn_spec(
         spawn_spec = spawn_spec.with_additional_instructions(draft.additional_instructions.clone());
     }
     if let Some(model) = draft.model.as_ref() {
-        spawn_spec.model_override = Some(model.clone());
+        match base_profile {
+            Some(base) => {
+                let mut profile = base.clone();
+                profile.model = model.clone();
+                // The base profile's pinned provider (and self-hosted server
+                // binding) belongs to its original model id; clear it so the
+                // catalog re-infers the provider for the overridden model.
+                profile.provider = None;
+                profile.self_hosted_server_id = None;
+                spawn_spec.override_profile = Some(profile);
+            }
+            None => {
+                // No resolvable inline base profile (realm-ref binding or
+                // unknown role). Leave `override_profile` unset so the spawn
+                // resolves through the definition's canonical path; the model
+                // override cannot be applied without a base profile.
+                tracing::warn!(
+                    identity = %spec.identity,
+                    profile = %spec.profile,
+                    model = %model,
+                    "model override skipped: role profile is not an inline definition profile"
+                );
+            }
+        }
     }
     if let Some(system_prompt) = draft.system_prompt.as_ref() {
         spawn_spec.system_prompt_override =
@@ -579,7 +649,7 @@ fn runtime_binding_from_wire(
                 peer_id: resolved.peer_id.to_string(),
                 address,
                 bootstrap_token,
-                pubkey: Some(resolved.pubkey),
+                pubkey: resolved.pubkey,
             })
         }
     }
@@ -596,10 +666,14 @@ impl SessionBridge for MobSessionBridge {
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let mid = member_id_for_spawn_spec(runtime_id, spec);
-        let spawn_spec = build_spawn_spec(runtime_id, spec, draft);
+        let spawn_spec = build_spawn_spec(
+            runtime_id,
+            spec,
+            draft,
+            self.base_profile_for_spec(spec).as_ref(),
+        );
 
-        self.handle
-            .spawn_spec(spawn_spec)
+        Box::pin(self.handle.spawn_spec(spawn_spec))
             .await
             .map_err(|e| BridgeError::Mob(e.to_string()))?;
         self.remember_runtime_member(runtime_id, &mid).await;
@@ -619,13 +693,17 @@ impl SessionBridge for MobSessionBridge {
         _snapshot: &SessionSnapshot,
     ) -> Result<ResumeSessionOutcome, BridgeError> {
         if spec_uses_external_binding(spec) {
-            let mut spawn_spec = build_spawn_spec(runtime_id, spec, draft);
+            let mut spawn_spec = build_spawn_spec(
+                runtime_id,
+                spec,
+                draft,
+                self.base_profile_for_spec(spec).as_ref(),
+            );
             spawn_spec.launch_mode = MemberLaunchMode::Resume {
                 bridge_session_id: session_id.clone(),
             };
             let mid = member_id_for_spawn_spec(runtime_id, spec);
-            self.handle
-                .spawn_spec(spawn_spec)
+            Box::pin(self.handle.spawn_spec(spawn_spec))
                 .await
                 .map_err(|e| BridgeError::Mob(e.to_string()))?;
             self.remember_runtime_member(runtime_id, &mid).await;
@@ -637,14 +715,19 @@ impl SessionBridge for MobSessionBridge {
 
         // Try MemberLaunchMode::Resume first — this loads the existing session
         // from the session store (conversation history intact).
-        let mut spawn_spec = build_spawn_spec(runtime_id, spec, draft);
+        let mut spawn_spec = build_spawn_spec(
+            runtime_id,
+            spec,
+            draft,
+            self.base_profile_for_spec(spec).as_ref(),
+        );
         spawn_spec.launch_mode = MemberLaunchMode::Resume {
             bridge_session_id: session_id.clone(),
         };
 
         let mid = member_id_for_spawn_spec(runtime_id, spec);
 
-        match self.handle.spawn_spec(spawn_spec).await {
+        match Box::pin(self.handle.spawn_spec(spawn_spec)).await {
             Ok(_) => {
                 self.remember_runtime_member(runtime_id, &mid).await;
                 self.remember_runtime_session(runtime_id, session_id).await;
@@ -663,9 +746,13 @@ impl SessionBridge for MobSessionBridge {
                     reason = "runtime_identity_incompatible",
                     "resume_session incompatible with current runtime binding, falling back to fresh spawn"
                 );
-                let fresh_spec = build_spawn_spec(runtime_id, spec, draft);
-                self.handle
-                    .spawn_spec(fresh_spec)
+                let fresh_spec = build_spawn_spec(
+                    runtime_id,
+                    spec,
+                    draft,
+                    self.base_profile_for_spec(spec).as_ref(),
+                );
+                Box::pin(self.handle.spawn_spec(fresh_spec))
                     .await
                     .map_err(|e2| BridgeError::Mob(e2.to_string()))?;
 
@@ -693,15 +780,24 @@ impl SessionBridge for MobSessionBridge {
         content: &meerkat_core::ContentInput,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let mid = self.member_id_for_runtime_id(runtime_id).await;
+        // Best-effort repair material: a faulted lookup degrades to "no
+        // pre-delivery entry" (the delivery itself will surface the fault).
         let member_entry_before_delivery = self
             .handle
             .get_member(&mid)
             .await
+            .ok()
+            .flatten()
             .map(|entry| (entry.role, entry.labels));
         if content_input_has_images(content) {
-            let member_entry = self.handle.get_member(&mid).await.ok_or_else(|| {
-                BridgeError::Mob("member not found while checking image capability".to_string())
-            })?;
+            let member_entry = self
+                .handle
+                .get_member(&mid)
+                .await
+                .map_err(|err| BridgeError::Mob(err.to_string()))?
+                .ok_or_else(|| {
+                    BridgeError::Mob("member not found while checking image capability".to_string())
+                })?;
             let caps = model_capabilities_for_member(
                 &self.handle,
                 self.session_service.as_ref(),
@@ -728,8 +824,12 @@ impl SessionBridge for MobSessionBridge {
                     error = %err,
                     "identity bridge delivery found stale runtime state; repairing member before retry"
                 );
-                self.repair_member_for_delivery(runtime_id, &mid, member_entry_before_delivery)
-                    .await?;
+                Box::pin(self.repair_member_for_delivery(
+                    runtime_id,
+                    &mid,
+                    member_entry_before_delivery,
+                ))
+                .await?;
                 submit_internal_bridge_work(&self.handle, &mid, content, HandlingMode::Queue)
                     .await?;
             }
@@ -753,15 +853,24 @@ impl SessionBridge for MobSessionBridge {
         handling_mode: HandlingMode,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let mid = self.member_id_for_runtime_id(runtime_id).await;
+        // Best-effort repair material: a faulted lookup degrades to "no
+        // pre-delivery entry" (the delivery itself will surface the fault).
         let member_entry_before_delivery = self
             .handle
             .get_member(&mid)
             .await
+            .ok()
+            .flatten()
             .map(|entry| (entry.role, entry.labels));
         if content_input_has_images(content) {
-            let member_entry = self.handle.get_member(&mid).await.ok_or_else(|| {
-                BridgeError::Mob("member not found while checking image capability".to_string())
-            })?;
+            let member_entry = self
+                .handle
+                .get_member(&mid)
+                .await
+                .map_err(|err| BridgeError::Mob(err.to_string()))?
+                .ok_or_else(|| {
+                    BridgeError::Mob("member not found while checking image capability".to_string())
+                })?;
             let caps = model_capabilities_for_member(
                 &self.handle,
                 self.session_service.as_ref(),
@@ -783,8 +892,12 @@ impl SessionBridge for MobSessionBridge {
                     error = %err,
                     "identity bridge delivery found stale runtime state; repairing member before retry"
                 );
-                self.repair_member_for_delivery(runtime_id, &mid, member_entry_before_delivery)
-                    .await?;
+                Box::pin(self.repair_member_for_delivery(
+                    runtime_id,
+                    &mid,
+                    member_entry_before_delivery,
+                ))
+                .await?;
                 submit_internal_bridge_work(&self.handle, &mid, content, handling_mode).await?;
             }
             Err(err) => return Err(BridgeError::Mob(err.to_string())),
@@ -901,8 +1014,16 @@ impl SessionBridge for MobSessionBridge {
         Ok(edges
             .into_iter()
             .filter_map(|(a, b)| {
-                let a = member_runtimes.get(&a).cloned().unwrap_or(a);
-                let b = member_runtimes.get(&b).cloned().unwrap_or(b);
+                // Fallback for members not in the in-memory map: the roster id
+                // is the comms-safe encoding of the runtime alias; decode it.
+                let a = member_runtimes
+                    .get(&a)
+                    .cloned()
+                    .unwrap_or_else(|| crate::member_comms_id::runtime_alias_str(&a).into_owned());
+                let b = member_runtimes
+                    .get(&b)
+                    .cloned()
+                    .unwrap_or_else(|| crate::member_comms_id::runtime_alias_str(&b).into_owned());
                 Some((
                     AgentRuntimeId::parse(&a).ok()?,
                     AgentRuntimeId::parse(&b).ok()?,
@@ -947,11 +1068,15 @@ impl SessionBridge for MobSessionBridge {
         Ok(MemberInspection {
             output_preview: snap.output_preview.clone(),
             is_final: snap.is_final,
-            peer_reachable_count: snap
-                .peer_connectivity
-                .as_ref()
-                .map(|pc| pc.reachable_peer_count)
-                .unwrap_or(0),
+            // Meerkat 0.7 carries peer connectivity as a tri-state; only a
+            // resolved snapshot contributes a reachable count (not-applicable
+            // and probe-timeout project as 0, matching the legacy `None` arm).
+            peer_reachable_count: match snap.peer_connectivity.as_ref() {
+                Some(meerkat_contracts::WirePeerConnectivity::Known { snapshot }) => {
+                    snapshot.reachable_peer_count
+                }
+                _ => 0,
+            },
         })
     }
 
@@ -1057,9 +1182,18 @@ mod tests {
             local_external_tools: LocalExternalToolOverlay::new(Arc::new(EmptyDispatcher)),
         };
 
-        let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft);
+        let base_profile: meerkat_mob::Profile =
+            serde_json::from_value(serde_json::json!({"model": "base-model"}))
+                .expect("minimal profile");
+        let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, Some(&base_profile));
 
-        assert_eq!(spawn.model_override.as_deref(), Some("gpt-test"));
+        assert_eq!(
+            spawn
+                .override_profile
+                .as_ref()
+                .map(|profile| profile.model.as_str()),
+            Some("gpt-test")
+        );
         assert_eq!(
             spawn.system_prompt_override,
             Some(SpawnSystemPromptOverride::Replace(
@@ -1116,25 +1250,26 @@ mod tests {
             local_external_tools: Default::default(),
         };
 
-        let spawn = build_spawn_spec(&runtime_id, &spec, &draft);
+        let spawn = build_spawn_spec(&runtime_id, &spec, &draft, None);
 
-        assert_eq!(spawn.identity.as_str(), "agent:alpha");
+        // meerkat 0.7: MemberCommsName is fail-closed (no `:` in member-id
+        // components), so the roster id is the comms-safe encoding of the
+        // public identity `agent:alpha` (see crate::member_comms_id).
+        assert_eq!(
+            spawn.identity.as_str(),
+            crate::member_comms_id::mob_member_id_str("agent:alpha").as_ref()
+        );
         assert_eq!(spawn.backend, Some(meerkat_mob::MobBackendKind::External));
         assert!(
             matches!(
                 spawn.binding,
-                Some(meerkat_mob::RuntimeBinding::External {
-                    pubkey: Some(_),
-                    ..
-                })
+                Some(meerkat_mob::RuntimeBinding::External { .. })
             ),
             "expected external runtime binding, got {:?}",
             spawn.binding
         );
         if let Some(meerkat_mob::RuntimeBinding::External {
-            address,
-            pubkey: Some(pubkey),
-            ..
+            address, pubkey, ..
         }) = spawn.binding
         {
             assert_eq!(address.as_str(), "tcp://127.0.0.1:4777");
@@ -1177,7 +1312,9 @@ mod tests {
         );
         let err = MobRespawnError::TopologyRestoreFailed {
             receipt,
-            failed_peer_ids: vec![meerkat_mob::AgentIdentity::from("initiative:broken")],
+            failed_peer_ids: vec![meerkat_mob::RespawnTopologyPeerId::from(
+                "initiative:broken",
+            )],
         };
 
         assert_eq!(

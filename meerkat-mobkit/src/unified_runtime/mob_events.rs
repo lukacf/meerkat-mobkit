@@ -423,6 +423,7 @@ async fn scan_backward(
 fn event_kind_label(kind: &MobEventKind) -> &'static str {
     match kind {
         MobEventKind::MobCreated { .. } => "mob_created",
+        MobEventKind::MobOwnerBridgeSessionBound { .. } => "mob_owner_bridge_session_bound",
         MobEventKind::MobCompleted => "mob_completed",
         MobEventKind::MobDestroying => "mob_destroying",
         MobEventKind::MobDestroyStorageFinalizing => "mob_destroy_storage_finalizing",
@@ -520,7 +521,10 @@ pub(crate) fn extract_structural_fields(
         | MobEventKind::ExternalPeerUnwired { local, .. } => {
             (None, None, Some(local.as_str().to_string()))
         }
+        // MobOwnerBridgeSessionBound is mob-scoped (owner bridge binding):
+        // it carries no run/step/member structural fields.
         MobEventKind::MobCreated { .. }
+        | MobEventKind::MobOwnerBridgeSessionBound { .. }
         | MobEventKind::MobCompleted
         | MobEventKind::MobDestroying
         | MobEventKind::MobDestroyStorageFinalizing

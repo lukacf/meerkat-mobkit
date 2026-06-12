@@ -54,8 +54,9 @@ impl meerkat_client::LlmClient for IncidentPackTestClient {
         ]))
     }
 
-    fn provider(&self) -> &'static str {
-        "incident-pack-test"
+    // meerkat 0.7: LlmClient::provider returns the typed Provider.
+    fn provider(&self) -> meerkat::Provider {
+        meerkat::Provider::OpenAI
     }
 
     fn health_check<'life0, 'async_trait>(
@@ -80,26 +81,33 @@ async fn json_response(app: axum::Router, request: Request<Body>) -> Value {
 
 #[test]
 fn incident_local_tools_are_witnessed_for_delegate_inheritance() {
+    // meerkat 0.7 made meerkat_mob::snapshot private; the same provenance
+    // contract is asserted through the public meerkat_core::tool_scope
+    // witness derivation the snapshot used internally.
     let tools = IncidentToolDispatcher.tools();
-    let snapshot = meerkat_mob::snapshot::ParentToolScopeSnapshot::from_tools(&tools);
-    let witnessed = snapshot.to_witnessed_tool_filter();
+    let defs: Vec<meerkat_core::types::ToolDef> =
+        tools.iter().map(|tool| (**tool).clone()).collect();
+    let filter = meerkat_core::tool_scope::ToolFilter::Allow(
+        defs.iter().map(|def| def.name.to_string()).collect(),
+    );
+    let witnesses = meerkat_core::tool_scope::filter_witnesses_for_tool_defs(&defs, &filter);
 
     assert!(
-        witnessed.witnesses.contains_key("inspect_service"),
+        witnesses.contains_key("inspect_service"),
         "inspect_service must carry provenance so delegate can inherit it"
     );
     assert!(
-        witnessed.witnesses.contains_key("analyze_customer_impact"),
+        witnesses.contains_key("analyze_customer_impact"),
         "analyze_customer_impact must carry provenance so delegate can inherit it"
     );
 }
 
 #[tokio::test]
 async fn incident_pack_exposes_seeded_stock_console_state() {
-    let bundle = build_runtime_bundle_with_default_client(
+    let bundle = Box::pin(build_runtime_bundle_with_default_client(
         &scenario_path().expect("incident scenario path"),
         Arc::new(IncidentPackTestClient),
-    )
+    ))
     .await
     .expect("incident runtime bundle");
     let app = bundle

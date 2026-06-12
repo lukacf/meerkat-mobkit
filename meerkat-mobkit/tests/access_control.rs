@@ -11,7 +11,8 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
-use meerkat_mob::ids::MeerkatId;
+// meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
+use meerkat_mob::ids::AgentIdentity as MeerkatId;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::runtime::ConsoleMember;
 use meerkat_mobkit::{
@@ -570,6 +571,15 @@ async fn http_router_enforces_access_end_to_end() {
     let members = rpc(&app, "mobkit/list_members", json!({})).await;
     let member_rows = members["result"].as_array().expect("members array");
     assert_eq!(member_rows.len(), 1, "members: {member_rows:#?}");
+    // Wire-contract pin: the published SDKs index `state` on member rows
+    // (Python MemberSnapshot.from_dict does `data["state"]`), so the meerkat
+    // 0.7 `status` projection must keep emitting the `state` key in the
+    // console state vocabulary.
+    assert_eq!(
+        member_rows[0]["state"],
+        json!("active"),
+        "member rows must carry the `state` wire key: {member_rows:#?}"
+    );
 
     // Sending to a hidden agent is denied with the typed access error.
     let denied = rpc(

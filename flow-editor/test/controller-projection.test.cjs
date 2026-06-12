@@ -512,10 +512,10 @@ const TEST_FLOW_REGISTRY_VIEW = {
 };
 const TEST_SCHEMA = {
   deploy_settings: {
-    command: "rkat mob deploy",
+    command: "rkat mob run",
     surfaces: ["cli"],
     defaults: {
-      command: "rkat mob deploy",
+      command: "rkat mob run",
       surface: "cli",
       trust_policy: "permissive",
       model: "",
@@ -640,7 +640,7 @@ assert.deepEqual(controller.topRailState({
   mobFileLabel: "mob.toml",
   contractState: "api ready",
   deployPrefixLabel: "deploy:",
-  deployCommand: "rkat mob deploy",
+  deployCommand: "rkat mob run",
   deploySurface: "cli",
   flowsCrumbLabel: "mobs",
   crumbSeparator: "/",
@@ -674,7 +674,7 @@ assert.deepEqual(controller.topRailState({
   ["settings-tab", "settings", true],
 ]);
 assert.equal(controller.topRailState({
-  contract: { error: "schema unavailable", deploy_settings: { command: "rkat mob deploy", surfaces: ["cli"] } },
+  contract: { error: "schema unavailable", deploy_settings: { command: "rkat mob run", surfaces: ["cli"] } },
   deploySettings: { surface: "" },
   stage: "published",
   view: "editor",
@@ -1232,7 +1232,7 @@ const schemaOnlyCatalogLeakState = controller.mobKitCatalogsFromSchema({
   media_type: "application/vnd.mobkit.mobpack+json",
   validation_source: "mobkit/mobpacks/schema",
   deploy_settings: {
-    defaults: { command: "rkat mob deploy", surface: "cli" },
+    defaults: { command: "rkat mob run", surface: "cli" },
   },
   mob_definition: {
     mob_settings: { defaults: { backendDefault: "session", advanced: { topology: null } } },
@@ -1268,7 +1268,7 @@ const separateCatalogPayloadState = controller.mobKitCatalogsFromSchema({
   media_type: "application/vnd.mobkit.mobpack+json",
   validation_source: "mobkit/mobpacks/schema",
   deploy_settings: {
-    defaults: { command: "rkat mob deploy", surface: "cli" },
+    defaults: { command: "rkat mob run", surface: "cli" },
   },
   mob_definition: {
     mob_settings: { defaults: { backendDefault: "session", advanced: { topology: null } } },
@@ -1334,7 +1334,7 @@ const hydratedContractAndCatalogFixture = {
   validation_source: "mobkit/mobpacks/schema",
   deploy_settings: {
     defaults: {
-      command: "rkat mob deploy",
+      command: "rkat mob run",
       surface: "cli",
       trust_policy: "permissive",
       isolated: true,
@@ -1560,7 +1560,7 @@ const hydratedContractAndCatalogFixture = {
         { key: "suffix", text: "." },
       ],
       input_tips: [
-        "Run with: rkat mob deploy <pack> \"<task>\" — or run_flow(input).",
+        "Run with: rkat mob run <pack> --prompt \"<task>\" — or run_flow(input).",
         "Typed fields become the input schema the run is validated against.",
         "Event sources & schedules live outside the mobpack (e.g. fugue).",
       ],
@@ -1961,7 +1961,7 @@ const hydratedContractAndCatalogFixture = {
 const hydratedCatalogs = controller.mobKitCatalogsFromSchema(hydratedContractAndCatalogFixture, catalogBoot, hydratedContractAndCatalogFixture);
 assert.equal(hydratedCatalogs.contractMeta.loaded, true);
 assert.equal(hydratedCatalogs.contractMeta.schemaVersion, "mobpack/v1");
-assert.equal(hydratedCatalogs.deployDefaults.command, "rkat mob deploy");
+assert.equal(hydratedCatalogs.deployDefaults.command, "rkat mob run");
 assert.equal(hydratedCatalogs.mobDefinition.runtime_modes[0], "turn_driven");
 assert.deepEqual(hydratedCatalogs.models.map((model) => model.id), ["openai/gpt-5.5"]);
 assert.deepEqual(hydratedCatalogs.toolCatalog.map((tool) => tool.id), ["builtins"]);
@@ -2184,7 +2184,7 @@ assert.deepEqual(hydratedCatalogs.basicView, {
     { key: "suffix", kind: "text", text: "." },
   ],
   inputTips: [
-    "Run with: rkat mob deploy <pack> \"<task>\" — or run_flow(input).",
+    "Run with: rkat mob run <pack> --prompt \"<task>\" — or run_flow(input).",
     "Typed fields become the input schema the run is validated against.",
     "Event sources & schedules live outside the mobpack (e.g. fugue).",
   ],
@@ -3734,7 +3734,7 @@ const reconciledAuthoringDocumentProjection = controller.authoringDocumentFromSt
   deploySettings: { ...testDeploySettings(), model: "bad-model" },
   mobSettings: { backendDefault: "session" },
   contract: {
-    deploy_settings: { command: "rkat mob deploy" },
+    deploy_settings: { command: "rkat mob run" },
     mob_definition: {
       runtime_modes: ["turn_driven"],
       profile_binding: ["inline"],
@@ -4430,7 +4430,7 @@ const aggregateContractReconcile = controller.reconcileAuthoringWithContract({
   contractLoaded: true,
   contract: {
     deploy_settings: {
-      command: "rkat mob deploy",
+      command: "rkat mob run",
       surfaces: ["cli"],
       trust_policies: ["permissive"],
       realm_backends: ["sqlite"],
@@ -4485,7 +4485,7 @@ const aggregateContractReconcile = controller.reconcileAuthoringWithContract({
   edges: [],
 });
 assert.deepEqual(aggregateContractReconcile.deploySettings, {
-  command: "rkat mob deploy",
+  command: "rkat mob run",
   surface: "",
   trustPolicy: "",
   model: "",
@@ -4522,7 +4522,7 @@ const stableAggregateContractReconcile = controller.reconcileAuthoringWithContra
   contractLoaded: true,
   contract: {
     deploy_settings: {
-      command: "rkat mob deploy",
+      command: "rkat mob run",
       surfaces: ["cli"],
       trust_policies: ["permissive"],
       realm_backends: ["sqlite"],
@@ -4647,13 +4647,13 @@ const reconciledDeploySettings = controller.reconcileDeploySettingsWithContract(
   prompt: "Run it.",
 }, {
   deploy_settings: {
-    command: "rkat mob deploy",
+    command: "rkat mob run",
     surfaces: ["cli", "rpc"],
     trust_policies: ["permissive", "strict"],
     realm_backends: ["jsonl", "sqlite"],
   },
 }, [{ id: "openai/gpt-5" }]);
-assert.equal(reconciledDeploySettings.command, "rkat mob deploy");
+assert.equal(reconciledDeploySettings.command, "rkat mob run");
 assert.equal(reconciledDeploySettings.surface, "");
 assert.equal(reconciledDeploySettings.trustPolicy, "");
 assert.equal(reconciledDeploySettings.realmBackend, "");
@@ -4686,7 +4686,7 @@ const reconciledContractMembers = controller.reconcileMembersWithContract([
       cli: {
         allowed: ["turn_driven"],
         blocked: {
-          autonomous_host: "RPC surface only; rkat mob deploy requires turn_driven profiles.",
+          autonomous_host: "RPC surface only; rkat mob run requires turn_driven profiles.",
         },
       },
     },
@@ -4941,7 +4941,7 @@ const agentContract = {
       cli: {
         allowed: ["turn_driven"],
         blocked: {
-          autonomous_host: "RPC surface only; rkat mob deploy requires turn_driven profiles.",
+          autonomous_host: "RPC surface only; rkat mob run requires turn_driven profiles.",
         },
       },
       rpc: {
@@ -4975,7 +4975,7 @@ assert.deepEqual(
   controller.runtimeModeOptions(agentContract, { surface: "cli" }, "").map((option) => [option.value, option.disabled, option.reason]),
   [
     ["turn_driven", false, ""],
-    ["autonomous_host", true, "RPC surface only; rkat mob deploy requires turn_driven profiles."],
+    ["autonomous_host", true, "RPC surface only; rkat mob run requires turn_driven profiles."],
   ],
 );
 const tweaksState = controller.tweaksControlState({
@@ -6692,7 +6692,7 @@ assert.deepEqual(controller.deployResultToRows({
     kind: "warn",
     glyph: "△",
     head: "server deploy row",
-    sub: "rkat mob deploy",
+    sub: "rkat mob run",
     meta: "/tmp/example.mobpack",
   }],
   validation: { ok: false, diagnostics: [] },
@@ -6700,7 +6700,7 @@ assert.deepEqual(controller.deployResultToRows({
   kind: "warn",
   glyph: "△",
   head: "server deploy row",
-  sub: "rkat mob deploy",
+  sub: "rkat mob run",
   meta: "/tmp/example.mobpack",
 }]);
 assert.deepEqual(controller.deployResultToRows({
@@ -6714,7 +6714,7 @@ assert.deepEqual(controller.deployResultToRows({
 }]);
 
 assert.deepEqual(controller.deployResultToRows({
-  command: "rkat mob deploy /tmp/example.mobpack prompt",
+  command: "rkat mob run /tmp/example.mobpack --prompt prompt",
   validation: { ok: true, diagnostics: [] },
 }), []);
 
@@ -6816,7 +6816,7 @@ for (const [label, result] of [
   ["missing executed", { success: true, status_code: 0 }],
   ["missing status", { executed: true, success: true }],
   ["nonzero status", { executed: true, success: true, status_code: 1 }],
-  ["plan-shaped response", { command: "rkat mob deploy /tmp/deploy.mobpack prompt" }],
+  ["plan-shaped response", { command: "rkat mob run /tmp/deploy.mobpack --prompt prompt" }],
 ]) {
   const incompleteRunOutcome = controller.deployOutcome({ mob_id: "deploy_me" }, {
     ...result,
@@ -6828,7 +6828,7 @@ for (const [label, result] of [
 }
 
 assert.deepEqual(controller.deployPlanTraceState({ mob_id: "deploy_me" }, {
-  command: "rkat mob deploy /tmp/deploy.mobpack prompt",
+  command: "rkat mob run /tmp/deploy.mobpack --prompt prompt",
   pack_path: "/tmp/deploy.mobpack",
   plan_trace: [
     { node: "step_1", head: "MOBPACK · deploy_me", body: "ready" },
@@ -6841,7 +6841,7 @@ assert.deepEqual(controller.deployPlanTraceState({ mob_id: "deploy_me" }, {
   ],
   eyebrow: "DEPLOY PLAN",
   title: "deploy_me",
-  subtitle: "rkat mob deploy /tmp/deploy.mobpack prompt",
+  subtitle: "rkat mob run /tmp/deploy.mobpack --prompt prompt",
   packLabel: "/tmp/deploy.mobpack",
   firstLabel: "first",
   closeLabel: "×",
@@ -9939,7 +9939,7 @@ assert.deepEqual(inputControlState.emptyParamsParts, [
   { key: "suffix", kind: "text", text: "." },
 ]);
 assert.deepEqual(inputControlState.tips, [
-  "Run with: rkat mob deploy <pack> \"<task>\" — or run_flow(input).",
+  "Run with: rkat mob run <pack> --prompt \"<task>\" — or run_flow(input).",
   "Typed fields become the input schema the run is validated against.",
   "Event sources & schedules live outside the mobpack (e.g. fugue).",
 ]);
@@ -11132,7 +11132,7 @@ assert.deepEqual(hydratedStored.graphProjection.instances, storedGraphDocument.i
 assert.deepEqual(hydratedStored.graphProjection.edges, storedGraphDocument.edges);
 assert.deepEqual(hydratedStored.graphProjection.frames, storedGraphDocument.frames);
 assert.deepEqual(hydratedStored.skillRealms.map(realm => realm.id), ["imported", "contract"]);
-assert.equal(hydratedStored.deploySettings.command, "rkat mob deploy");
+assert.equal(hydratedStored.deploySettings.command, "rkat mob run");
 assert.equal(hydratedStored.mobSettings.backendDefault, "session");
 assert.equal(hydratedStored.registryRow.name, "Stored Graph Import");
 assert.equal(hydratedStored.registryRow.source, "file:///tmp/stored.mobpack");
@@ -11182,7 +11182,7 @@ assert.equal(operationProjection.members.at(-1).id, "m_added");
 assert.equal(operationProjection.schemas[0].id, "AddedVerdict");
 assert.equal(operationProjection.skillRealms[0].skills[0].id, "mob.editor.review");
 assert.deepEqual(operationProjection.instances, storedGraphDocument.instances);
-assert.equal(operationProjection.deploySettings.command, "rkat mob deploy");
+assert.equal(operationProjection.deploySettings.command, "rkat mob run");
 assert.equal(operationProjection.mobSettings.backendDefault, "session");
 
 const importedHydrationId = controller.hydrateMobpackDocumentState({
@@ -11269,7 +11269,7 @@ assert.equal(patchedDeploy.maxTotalTokens, 128);
 assert.equal(patchedDeploy.prompt, "Run the mob.");
 const settingsContract = {
   deploy_settings: {
-    command: "rkat mob deploy",
+    command: "rkat mob run",
     surfaces: ["cli"],
     trust_policies: ["permissive"],
     realm_backends: ["jsonl"],
@@ -11279,7 +11279,7 @@ const settingsContract = {
   },
 };
 const catalogedDeploy = controller.deploySettingsPatch({
-  command: "rkat mob deploy",
+  command: "rkat mob run",
   surface: "cli",
   trustPolicy: "permissive",
   realmBackend: "jsonl",
@@ -11295,7 +11295,7 @@ const catalogedDeploy = controller.deploySettingsPatch({
   contract: settingsContract,
   modelCatalog: [{ id: "openai/gpt-5.5" }],
 });
-assert.equal(catalogedDeploy.command, "rkat mob deploy");
+assert.equal(catalogedDeploy.command, "rkat mob run");
 assert.equal(catalogedDeploy.surface, "cli");
 assert.equal(catalogedDeploy.trustPolicy, "permissive");
 assert.equal(catalogedDeploy.realmBackend, "jsonl");

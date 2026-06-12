@@ -44,7 +44,7 @@ async fn build_unified_runtime_with_flow() -> Fixture {
 id = "flow-test-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]

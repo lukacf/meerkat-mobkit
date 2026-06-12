@@ -43,7 +43,7 @@ const MINIMAL_MOB_TOML_A: &str = r#"
 id = "mob-a"
 
 [profiles.worker]
-model = "test-model"
+model = "gpt-5.5"
 "#;
 
 const MINIMAL_MOB_TOML_B: &str = r#"
@@ -51,7 +51,7 @@ const MINIMAL_MOB_TOML_B: &str = r#"
 id = "mob-b"
 
 [profiles.worker]
-model = "test-model"
+model = "gpt-5.5"
 "#;
 
 fn definition_a() -> MobDefinition {
@@ -119,20 +119,24 @@ async fn unified_runtime_with_tcp_contact_reports_remote_contacts() {
     ))
     .expect("dir for mob-b");
 
-    let rt_a = UnifiedRuntimeBuilder::default()
-        .definition(definition_a())
-        .default_llm_client(Arc::new(TestClient::default()))
-        .contact_directory(dir_a.clone())
-        .build()
-        .await
-        .expect("build mob-a");
-    let rt_b = UnifiedRuntimeBuilder::default()
-        .definition(definition_b())
-        .default_llm_client(Arc::new(TestClient::default()))
-        .contact_directory(dir_b.clone())
-        .build()
-        .await
-        .expect("build mob-b");
+    let rt_a = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(definition_a())
+            .default_llm_client(Arc::new(TestClient::default()))
+            .contact_directory(dir_a.clone())
+            .build(),
+    )
+    .await
+    .expect("build mob-a");
+    let rt_b = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(definition_b())
+            .default_llm_client(Arc::new(TestClient::default()))
+            .contact_directory(dir_b.clone())
+            .build(),
+    )
+    .await
+    .expect("build mob-b");
 
     assert!(rt_a.has_contact_directory());
     assert!(rt_a.has_remote_contacts());
@@ -160,13 +164,15 @@ async fn wire_cross_mob_over_tcp_surfaces_remote_seam() {
         "#,
     ))
     .expect("dir");
-    let rt_a = UnifiedRuntimeBuilder::default()
-        .definition(definition_a())
-        .default_llm_client(Arc::new(TestClient::default()))
-        .contact_directory(dir_a)
-        .build()
-        .await
-        .expect("build mob-a");
+    let rt_a = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(definition_a())
+            .default_llm_client(Arc::new(TestClient::default()))
+            .contact_directory(dir_a)
+            .build(),
+    )
+    .await
+    .expect("build mob-a");
 
     // wire_cross_mob now resolves the local member's roster info first,
     // so an empty mob fails with `MemberNotFound("alice", "mob-a")` before
@@ -175,8 +181,7 @@ async fn wire_cross_mob_over_tcp_surfaces_remote_seam() {
     // burn a TCP connection for a misconfigured caller. The full
     // round-trip integration test (with a real listener bound on the
     // peer) lives in `cross_mob_control_round_trip.rs`.
-    let err = rt_a
-        .wire_cross_mob("alice", "bob", "mob-b")
+    let err = Box::pin(rt_a.wire_cross_mob("alice", "bob", "mob-b"))
         .await
         .expect_err("empty mob has no 'alice' member");
     assert!(
@@ -199,16 +204,17 @@ async fn unknown_mob_rejected_before_dispatch() {
         "#,
     )
     .expect("dir");
-    let rt = UnifiedRuntimeBuilder::default()
-        .definition(definition_a())
-        .default_llm_client(Arc::new(TestClient::default()))
-        .contact_directory(dir)
-        .build()
-        .await
-        .expect("build");
+    let rt = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(definition_a())
+            .default_llm_client(Arc::new(TestClient::default()))
+            .contact_directory(dir)
+            .build(),
+    )
+    .await
+    .expect("build");
 
-    let err = rt
-        .wire_cross_mob("alice", "bob", "no-such-mob")
+    let err = Box::pin(rt.wire_cross_mob("alice", "bob", "no-such-mob"))
         .await
         .expect_err("unknown mob");
     assert!(matches!(err, CrossMobError::UnknownMob(ref id) if id == "no-such-mob"));

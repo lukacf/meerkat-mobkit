@@ -266,7 +266,10 @@ pub fn meerkat_reconcile_report_to_wire(
                         meerkat_contracts::WireMobReconcileStage::Retire
                     }
                 },
-                error: failure.error.to_string(),
+                error: meerkat_contracts::WireMobError {
+                    code: meerkat_mob::mob_error_wire_code(&failure.error),
+                    message: failure.error.to_string(),
+                },
             })
             .collect(),
     }

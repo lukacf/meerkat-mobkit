@@ -134,7 +134,13 @@ const ADAPTIVE_LAYER_DECISION_SCHEMA_JSON: &str =
     include_str!("adaptive_layer_decision.schema.json");
 const EDITOR_INPUT_STEP_ID_PREFIX: &str = "input";
 const EDITOR_INPUT_STEP_DEFAULT_TASK: &str = "Run the mobpack flow.";
-const DEFAULT_DEPLOY_EXEC_TIMEOUT_MS: u64 = 120_000;
+/// Default watchdog for the blocking `rkat mob run` child process. Under
+/// meerkat 0.7 `mob run` accepts no duration budget and blocks until the
+/// flow run is terminal, so this local kill (deploy.max_duration when set,
+/// this default otherwise) is the ONLY bound — and it is a hard process
+/// kill that loses the in-memory run. Keep it generous: multi-step LLM
+/// flows routinely run minutes.
+const DEFAULT_DEPLOY_EXEC_TIMEOUT_MS: u64 = 600_000;
 const DEPLOY_EXEC_TIMEOUT_GRACE_MS: u64 = 250;
 const MOBPACK_DRAFT_STORE_ENV: &str = "MOBKIT_FLOW_EDITOR_DRAFT_STORE";
 const MOBPACK_DRAFT_STORE_FILENAME: &str = "meerkat-mobkit-flow-editor-drafts.json";
@@ -838,7 +844,7 @@ fn tool_runtime_availability(field: &str, runtime: Option<&MobpackRuntimeCatalog
         return json!({
             "available": true,
             "state": "deferred",
-            "reason": "standalone authoring validates the ToolConfig flag; concrete host availability is evaluated by rkat mob deploy",
+            "reason": "standalone authoring validates the ToolConfig flag; concrete host availability is evaluated by rkat mob run",
             "required_methods": [],
         });
     };
@@ -1120,7 +1126,7 @@ fn parse_skill_frontmatter(content: &str) -> BTreeMap<String, String> {
 fn catalog_deployability(deployable: bool, reason: &str) -> Value {
     json!({
         "deployable": deployable,
-        "command": "rkat mob deploy",
+        "command": "rkat mob run",
         "reason": reason,
     })
 }
@@ -1144,7 +1150,7 @@ fn with_catalog_snapshot(mut value: Value, source: &str, runtime_backed: bool) -
                 "id": snapshot_id,
                 "source": source,
                 "runtime_backed": runtime_backed,
-                "deploy_command": "rkat mob deploy",
+                "deploy_command": "rkat mob run",
             }),
         );
     }
@@ -1182,7 +1188,7 @@ fn runtime_authoring_provider(source: &str, state: &MobpackRuntimeCatalogState) 
         "loaded_modules": loaded_modules,
         "runtime_methods": runtime_methods,
         "deploy_target": {
-            "command": "rkat mob deploy",
+            "command": "rkat mob run",
             "surface": ["cli", "rpc"],
             "available": true,
             "realm_backend": ["jsonl", "sqlite"],
@@ -1795,7 +1801,7 @@ fn deploy_settings_schema_for_provider(provider: &Value) -> Value {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("rkat mob deploy");
+        .unwrap_or("rkat mob run");
     let surfaces = deploy_target_string_array(provider, "surface", &["cli", "rpc"]);
     let realm_backends =
         deploy_target_string_array(provider, "realm_backend", &["jsonl", "sqlite"]);
@@ -1804,11 +1810,18 @@ fn deploy_settings_schema_for_provider(provider: &Value) -> Value {
         "command": command,
         "defaults": {
             "surface": surfaces.first().cloned().unwrap_or_else(|| "cli".to_string()),
-            "trust_policy": "permissive",
+            "trust_policy": DEFAULT_DEPLOY_TRUST_POLICY,
+            // `rkat mob run` (meerkat 0.7) carries no model/token/tool-call
+            // override flags — those are pack-policy concerns — so the
+            // defaults stay unset; validate_deploy_settings warns when a
+            // document sets them. `max_duration` is the local watchdog for
+            // the blocking `rkat mob run` process (deploy_execution_timeout),
+            // not an rkat-enforced budget: it must comfortably exceed real
+            // multi-step LLM flow runtimes.
             "model": "",
-            "max_duration": "30s",
+            "max_duration": "10m",
             "max_tool_calls": 0,
-            "max_total_tokens": 64,
+            "max_total_tokens": 0,
             "isolated": true,
             "realm": "",
             "instance": "",
@@ -1854,8 +1867,8 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
     let deploy_command = base_deploy_settings
         .get("command")
         .and_then(Value::as_str)
-        .unwrap_or("rkat mob deploy");
-    let deploy_cli = format!("{deploy_command} <pack.mobpack> <prompt>");
+        .unwrap_or("rkat mob run");
+    let deploy_cli = format!("{deploy_command} <pack.mobpack> --prompt <prompt>");
     let deploy_cli_value = Value::String(deploy_cli);
     let deploy_settings = json!({
         "command": deploy_command,
@@ -2389,8 +2402,8 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         "model_label": "Model",
         "model_default_label": "default",
         "model_vendor_fallback": "provider",
-        "duration_label": "Duration",
-        "duration_placeholder": "30s",
+        "duration_label": "Run timeout",
+        "duration_placeholder": "10m",
         "tool_calls_label": "Tool calls",
         "tool_calls_min": 0,
         "tool_calls_max": 999,
@@ -2566,7 +2579,7 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         { "key": "suffix", "text": "." }
     ]);
     editor_basic_view["input_tips"] = json!([
-        "Run with: rkat mob deploy <pack> \"<task>\" — or run_flow(input).",
+        "Run with: rkat mob run <pack> --prompt \"<task>\" — or run_flow(input).",
         "Typed fields become the input schema the run is validated against.",
         "Event sources & schedules live outside the mobpack (e.g. fugue)."
     ]);
@@ -2943,7 +2956,7 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         "files": ["manifest.toml", "definition.json", "mobkit/editor.json", "mobkit/mob.toml", "schemas/*.json", "skills/*.md"],
         "runtime_mutation": false,
         "host_mutation_methods": {
-            "mobkit/mobpacks/deploy": "when execute=true, writes a mobpack archive and runs rkat mob deploy on the host"
+            "mobkit/mobpacks/deploy": "when execute=true, writes a mobpack archive and runs rkat mob run on the host"
         },
         "required_fields": ["document"],
         "commands": {
@@ -5017,7 +5030,7 @@ fn apply_reconcile_contract_refs_operation(
     if !document.deploy.is_object() {
         document.deploy = json!({});
     }
-    document.deploy["command"] = json!("rkat mob deploy");
+    document.deploy["command"] = json!("rkat mob run");
     Ok(operation_selection_or_clear(operation))
 }
 
@@ -5589,9 +5602,9 @@ fn normalize_deploy_settings_field_value(
     match key {
         "command" => {
             let command = required_trimmed_string(value, "update_deploy_settings command")?;
-            if command != "rkat mob deploy" {
+            if command != "rkat mob run" {
                 return Err(format!(
-                    "deploy.command must be 'rkat mob deploy', got '{command}'"
+                    "deploy.command must be 'rkat mob run', got '{command}'"
                 ));
             }
             Ok(Value::String(command))
@@ -13011,12 +13024,20 @@ fn validate_document_with_rkat(
     std::fs::write(&pack_path, bytes)
         .map_err(|err| format!("failed to write validation mobpack: {err}"))?;
 
-    let argv = vec![
+    let mut argv = vec![
         rkat_bin,
         "mob".to_string(),
         "validate".to_string(),
         pack_path.to_string_lossy().to_string(),
     ];
+    // rkat 0.7 defaults `mob validate` to strict trust, which rejects every
+    // unsigned editor-authored pack. Thread the document's effective deploy
+    // trust policy (the same setting `rkat mob run` executes with) so
+    // VALIDATE verifies the pack under the policy it will actually run under.
+    argv.extend([
+        "--trust-policy".to_string(),
+        effective_deploy_trust_policy(&document.deploy),
+    ]);
     let command = shell_command(&argv);
     let output = run_rkat_validate_command(&argv, rkat_validate_timeout(params));
     let combined_output = [output.stdout.as_deref(), output.stderr.as_deref()]
@@ -13085,6 +13106,7 @@ pub fn deploy_command_preview(params: &Value) -> Result<MobpackDeployCommandResu
                 err
             }
         })?;
+    let input_bindings = deploy_input_bindings(&document, params);
     let deploy = document.deploy;
     let prompt = params
         .get("prompt")
@@ -13107,12 +13129,18 @@ pub fn deploy_command_preview(params: &Value) -> Result<MobpackDeployCommandResu
         .map(ToString::to_string)
         .unwrap_or_else(|| rendered.filename.clone());
     let rkat_bin = deploy_rkat_bin(params);
-    let argv = deploy_argv(&rkat_bin, &deploy, Path::new(&pack_path), prompt);
+    let argv = deploy_argv(
+        &rkat_bin,
+        &deploy,
+        Path::new(&pack_path),
+        prompt,
+        &input_bindings,
+    );
     let command = shell_command(&argv);
     Ok(MobpackDeployCommandResult {
         command,
         argv,
-        deploy_command: "rkat mob deploy".to_string(),
+        deploy_command: "rkat mob run".to_string(),
         filename: rendered.filename,
         validation: rendered.validation,
         source: "meerkat_mobkit::mobpack::deploy_argv".to_string(),
@@ -13209,6 +13237,7 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
     let pack_path = deploy_pack_path(params, &export.filename)?;
 
     let document = document_from_params(params)?;
+    let input_bindings = deploy_input_bindings(&document, params);
     let deploy = document.deploy;
     let prompt = params
         .get("prompt")
@@ -13224,7 +13253,7 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
         })
         .unwrap_or("Reply with exactly OK.");
     let rkat_bin = deploy_rkat_bin(params);
-    let argv = deploy_argv(&rkat_bin, &deploy, &pack_path, prompt);
+    let argv = deploy_argv(&rkat_bin, &deploy, &pack_path, prompt, &input_bindings);
     let command = shell_command(&argv);
     let definition = MobDefinition::from_toml(&export.mob_toml)
         .map_err(|err| format!("failed to parse exported mob.toml for deploy plan: {err}"))?;
@@ -13248,7 +13277,16 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
     } else {
         (None, None, None)
     };
-    let success = execute && status_code == Some(0);
+    let run_envelope = if execute {
+        stdout.as_deref().and_then(parse_mob_run_stdout_envelope)
+    } else {
+        None
+    };
+    let success = execute
+        && status_code == Some(0)
+        && run_envelope
+            .as_ref()
+            .is_none_or(|envelope| envelope.status == "completed");
     let display_rows = deploy_display_rows(
         &export.validation,
         execute,
@@ -13256,6 +13294,7 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
         status_code,
         stdout.as_deref(),
         stderr.as_deref(),
+        run_envelope.as_ref(),
         &pack_path,
         &command,
     );
@@ -13285,6 +13324,7 @@ fn deploy_display_rows(
     status_code: Option<i32>,
     stdout: Option<&str>,
     stderr: Option<&str>,
+    run_envelope: Option<&MobRunStdoutEnvelope>,
     pack_path: &Path,
     command: &str,
 ) -> Vec<MobpackDisplayRow> {
@@ -13304,9 +13344,9 @@ fn deploy_display_rows(
         .to_string(),
         head: if executed {
             if success {
-                "rkat mob deploy executed"
+                "rkat mob run executed"
             } else {
-                "rkat mob deploy failed"
+                "rkat mob run failed"
             }
         } else {
             "Deploy plan ready"
@@ -13315,6 +13355,20 @@ fn deploy_display_rows(
         sub: command.to_string(),
         meta: pack_path.to_string_lossy().to_string(),
     });
+    if let Some(envelope) = run_envelope {
+        let completed = envelope.status == "completed";
+        rows.push(MobpackDisplayRow {
+            kind: if completed { "ok" } else { "crit" }.to_string(),
+            glyph: if completed { "✓" } else { "!" }.to_string(),
+            head: format!("Flow run {}", envelope.status),
+            sub: envelope
+                .result
+                .as_ref()
+                .map(mob_run_result_text)
+                .unwrap_or_else(|| "flow run produced no result output".to_string()),
+            meta: envelope.run_meta.clone(),
+        });
+    }
     if executed {
         let output = [stdout.unwrap_or_default(), stderr.unwrap_or_default()]
             .into_iter()
@@ -13329,7 +13383,7 @@ fn deploy_display_rows(
                 glyph: if status_code == 0 { "✓" } else { "!" }.to_string(),
                 head: format!("rkat exit {status_code}"),
                 sub: output,
-                meta: "rkat mob deploy".to_string(),
+                meta: "rkat mob run".to_string(),
             });
         } else if !output.is_empty() {
             rows.push(MobpackDisplayRow {
@@ -13337,7 +13391,7 @@ fn deploy_display_rows(
                 glyph: "△".to_string(),
                 head: "rkat output".to_string(),
                 sub: output,
-                meta: "rkat mob deploy".to_string(),
+                meta: "rkat mob run".to_string(),
             });
         }
     }
@@ -13420,30 +13474,102 @@ fn env_rkat_bin() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn deploy_argv(rkat_bin: &str, deploy: &Value, pack_path: &Path, prompt: &str) -> Vec<String> {
-    let mut argv = vec![
-        rkat_bin.to_string(),
-        "mob".to_string(),
-        "deploy".to_string(),
-    ];
-    if let Some(model) = deploy_string(deploy, "model") {
-        argv.extend(["--model".to_string(), model]);
+/// Typed input bindings for the `rkat mob run` argv.
+///
+/// When the editor document declares typed input params, the rendered pack
+/// carries `schemas/main-input.json` with `additionalProperties: false` and
+/// `required` entries, and `rkat mob run` validates the bound params against
+/// it BEFORE anything runs. `--prompt` is sugar for `--param prompt=<text>`,
+/// so blindly injecting it fails that validation for every pack whose schema
+/// does not declare a `prompt` field.
+struct DeployInputBindings {
+    /// Field names `schemas/main-input.json` will declare; `None` when the
+    /// document has no typed input params (no schema is emitted, so rkat's
+    /// input validation is a no-op and any binding is accepted).
+    schema_fields: Option<BTreeSet<String>>,
+    /// Caller-supplied input params (RPC `input_params`), forwarded as
+    /// repeated `--param key=<json>` bindings.
+    params: serde_json::Map<String, Value>,
+}
+
+impl DeployInputBindings {
+    /// Whether the pack's input schema accepts a `prompt` key.
+    fn accepts_prompt(&self) -> bool {
+        self.schema_fields
+            .as_ref()
+            .is_none_or(|fields| fields.contains("prompt"))
     }
-    if let Some(tokens) = deploy_number(deploy, "max_total_tokens") {
-        argv.extend(["--max-total-tokens".to_string(), tokens]);
+}
+
+/// Project the document's input-step params and the deploy RPC's
+/// `input_params` object into the argv input bindings. Mirrors
+/// `editor_input_schema_files`: the schema exists exactly when the input
+/// step declares a non-empty `inputParams` list.
+fn deploy_input_bindings(document: &MobpackDocument, params: &Value) -> DeployInputBindings {
+    let schema_fields = document
+        .flow
+        .get("steps")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|step| step.get("type").and_then(Value::as_str) == Some("input"))
+        .and_then(|step| step.get("inputParams").and_then(Value::as_array))
+        .filter(|params| !params.is_empty())
+        .map(|params| {
+            params
+                .iter()
+                .filter_map(|param| param.get("name").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(ToString::to_string)
+                .collect::<BTreeSet<_>>()
+        });
+    let supplied = params
+        .get("input_params")
+        .or_else(|| params.get("inputParams"))
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    DeployInputBindings {
+        schema_fields,
+        params: supplied,
     }
-    if let Some(duration) = deploy_string(deploy, "max_duration") {
-        argv.extend(["--max-duration".to_string(), duration]);
+}
+
+// Builds the `rkat mob run` invocation that executes the pack's flow:
+// it validates input params against the pack schema, provisions flow
+// targets, blocks until the run is terminal, and prints the result
+// envelope on stdout.
+//
+// Input binding: caller-supplied params forward as `--param key=<json>`
+// (JSON-encoding the value preserves its type through rkat's
+// parse-as-JSON-first `--param` handling); the deploy prompt maps to
+// `--prompt` only when the pack's input schema accepts a `prompt` key —
+// see `DeployInputBindings`. Realm scope settings map to rkat's global
+// realm flags. Model/token/tool caps and surface are pack-policy concerns
+// under `mob run` and are not passed as CLI overrides
+// (`validate_deploy_settings` warns when a document sets them);
+// max_duration bounds the local process via deploy_execution_timeout.
+fn deploy_argv(
+    rkat_bin: &str,
+    deploy: &Value,
+    pack_path: &Path,
+    prompt: &str,
+    input_bindings: &DeployInputBindings,
+) -> Vec<String> {
+    let mut argv = vec![rkat_bin.to_string(), "mob".to_string(), "run".to_string()];
+    argv.push(pack_path.to_string_lossy().to_string());
+    for (key, value) in &input_bindings.params {
+        let encoded = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+        argv.extend(["--param".to_string(), format!("{key}={encoded}")]);
     }
-    if let Some(tool_calls) = deploy_number(deploy, "max_tool_calls") {
-        argv.extend(["--max-tool-calls".to_string(), tool_calls]);
+    if input_bindings.accepts_prompt() && !input_bindings.params.contains_key("prompt") {
+        argv.extend(["--prompt".to_string(), prompt.to_string()]);
     }
-    if let Some(trust) = deploy_string(deploy, "trust_policy") {
-        argv.extend(["--trust-policy".to_string(), trust]);
-    }
-    if let Some(surface) = deploy_string(deploy, "surface") {
-        argv.extend(["--surface".to_string(), surface]);
-    }
+    argv.extend([
+        "--trust-policy".to_string(),
+        effective_deploy_trust_policy(deploy),
+    ]);
     if let Some(realm) = deploy_string(deploy, "realm") {
         argv.extend(["--realm".to_string(), realm]);
     } else if deploy
@@ -13468,8 +13594,6 @@ fn deploy_argv(rkat_bin: &str, deploy: &Value, pack_path: &Path, prompt: &str) -
     if let Some(user_config_root) = deploy_string(deploy, "user_config_root") {
         argv.extend(["--user-config-root".to_string(), user_config_root]);
     }
-    argv.push(pack_path.to_string_lossy().to_string());
-    argv.push(prompt.to_string());
     argv
 }
 
@@ -13477,6 +13601,51 @@ struct DeployProcessOutput {
     status_code: Option<i32>,
     stdout: Option<String>,
     stderr: Option<String>,
+}
+
+/// Parsed projection of the line-oriented result envelope `rkat mob run`
+/// prints after blocking until the flow run is terminal:
+///
+/// ```text
+/// run\tmob=<id>\tflow=<id>\trun_id=<id>\tstatus=<status>
+/// result\t<compact json>
+/// ```
+///
+/// optionally followed by `warning\t…` trust lines. The parsed result is
+/// what the Flow Editor surfaces as the run output display row.
+struct MobRunStdoutEnvelope {
+    status: String,
+    run_meta: String,
+    result: Option<Value>,
+}
+
+fn parse_mob_run_stdout_envelope(stdout: &str) -> Option<MobRunStdoutEnvelope> {
+    let mut status = None;
+    let mut run_meta = None;
+    let mut result = None;
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("run\t") {
+            run_meta = Some(rest.replace('\t', " "));
+            status = rest
+                .split('\t')
+                .find_map(|field| field.strip_prefix("status="))
+                .map(ToString::to_string);
+        } else if let Some(rest) = line.strip_prefix("result\t") {
+            result = serde_json::from_str::<Value>(rest).ok();
+        }
+    }
+    Some(MobRunStdoutEnvelope {
+        status: status?,
+        run_meta: run_meta?,
+        result,
+    })
+}
+
+fn mob_run_result_text(result: &Value) -> String {
+    match result {
+        Value::String(text) => text.clone(),
+        other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
+    }
 }
 
 fn run_rkat_validate_command(argv: &[String], timeout: std::time::Duration) -> DeployProcessOutput {
@@ -13562,7 +13731,7 @@ fn run_deploy_command(argv: &[String], timeout: std::time::Duration) -> DeployPr
         return DeployProcessOutput {
             status_code: None,
             stdout: None,
-            stderr: Some("failed to run rkat mob deploy: empty argv".to_string()),
+            stderr: Some("failed to run rkat mob run: empty argv".to_string()),
         };
     }
     let mut child = match std::process::Command::new(&argv[0])
@@ -13576,7 +13745,7 @@ fn run_deploy_command(argv: &[String], timeout: std::time::Duration) -> DeployPr
             return DeployProcessOutput {
                 status_code: None,
                 stdout: None,
-                stderr: Some(format!("failed to run rkat mob deploy: {err}")),
+                stderr: Some(format!("failed to run rkat mob run: {err}")),
             };
         }
     };
@@ -13593,7 +13762,7 @@ fn run_deploy_command(argv: &[String], timeout: std::time::Duration) -> DeployPr
                     Err(err) => DeployProcessOutput {
                         status_code: None,
                         stdout: None,
-                        stderr: Some(format!("failed to collect rkat mob deploy output: {err}")),
+                        stderr: Some(format!("failed to collect rkat mob run output: {err}")),
                     },
                 };
             }
@@ -13606,7 +13775,7 @@ fn run_deploy_command(argv: &[String], timeout: std::time::Duration) -> DeployPr
                             stderr.push('\n');
                         }
                         stderr.push_str(&format!(
-                            "rkat mob deploy timed out after {}ms",
+                            "rkat mob run timed out after {}ms",
                             timeout.as_millis()
                         ));
                         DeployProcessOutput {
@@ -13619,7 +13788,7 @@ fn run_deploy_command(argv: &[String], timeout: std::time::Duration) -> DeployPr
                         status_code: None,
                         stdout: None,
                         stderr: Some(format!(
-                            "rkat mob deploy timed out after {}ms; failed to collect output: {err}",
+                            "rkat mob run timed out after {}ms; failed to collect output: {err}",
                             timeout.as_millis()
                         )),
                     },
@@ -13631,7 +13800,7 @@ fn run_deploy_command(argv: &[String], timeout: std::time::Duration) -> DeployPr
                 return DeployProcessOutput {
                     status_code: None,
                     stdout: None,
-                    stderr: Some(format!("failed to wait for rkat mob deploy: {err}")),
+                    stderr: Some(format!("failed to wait for rkat mob run: {err}")),
                 };
             }
         }
@@ -13707,16 +13876,16 @@ fn deploy_string(deploy: &Value, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn deploy_number(deploy: &Value, key: &str) -> Option<String> {
-    deploy
-        .get(key)
-        .and_then(|value| {
-            value
-                .as_i64()
-                .map(|number| number.to_string())
-                .or_else(|| value.as_u64().map(|number| number.to_string()))
-        })
-        .filter(|value| value != "0")
+/// Trust policy `rkat mob run` / `rkat mob validate` execute under when the
+/// document does not pin `deploy.trust_policy`. This is the deploy-settings
+/// schema default the editor surfaces, so the executed command always matches
+/// what SETTINGS shows. rkat 0.7 itself defaults to strict trust, which
+/// rejects every unsigned editor-authored pack — the policy must therefore be
+/// passed explicitly on every invocation.
+const DEFAULT_DEPLOY_TRUST_POLICY: &str = "permissive";
+
+fn effective_deploy_trust_policy(deploy: &Value) -> String {
+    deploy_string(deploy, "trust_policy").unwrap_or_else(|| DEFAULT_DEPLOY_TRUST_POLICY.to_string())
 }
 
 fn shell_command(argv: &[String]) -> String {
@@ -13774,29 +13943,12 @@ fn deploy_plan_trace_from_definition(
                     .filter(|description| !description.trim().is_empty())
                     .map(|description| format!("description: {description}")),
                 Some(format!("steps: {}", flow.steps.len())),
-                Some(format!(
-                    "root: {}",
-                    if flow.root.is_some() {
-                        "FrameSpec"
-                    } else {
-                        "flat depends_on"
-                    }
-                )),
+                // Meerkat 0.7: the root frame is always present (flat-authored
+                // steps are compiled into it at the decode boundary).
+                Some("root: FrameSpec".to_string()),
             ]),
         ));
-        if let Some(root) = &flow.root {
-            push_frame_plan_trace(&mut rows, flow, root, "root");
-        } else {
-            for step_id in topological_step_order(flow) {
-                if let Some(step) = flow.steps.get(&step_id) {
-                    rows.push(step_plan_trace_row(
-                        Value::String(step_id.to_string()),
-                        step_id.as_ref(),
-                        step,
-                    ));
-                }
-            }
-        }
+        push_frame_plan_trace(&mut rows, flow, &flow.root, "root");
     }
 
     rows.push(plan_trace_row(
@@ -13951,7 +14103,7 @@ fn step_plan_trace_row(node: Value, step_id: &str, step: &FlowStepSpec) -> Value
                 .map(|timeout| format!("timeout_ms: {timeout}")),
             step.expected_schema_ref
                 .as_ref()
-                .map(|schema| format!("expected_schema_ref: {schema}")),
+                .map(|schema| format!("expected_schema_ref: {}", schema.as_raw())),
             step.allowed_tools
                 .as_ref()
                 .filter(|tools| !tools.is_empty())
@@ -13960,10 +14112,15 @@ fn step_plan_trace_row(node: Value, step_id: &str, step: &FlowStepSpec) -> Value
                 .as_ref()
                 .filter(|tools| !tools.is_empty())
                 .map(|tools| format!("blocked_tools: {}", tools.join(", "))),
-            Some(format!(
-                "output_format: {}",
-                step_output_format_string(&step.output_format)
-            )),
+            // Omitted output_format stays visible as the authored state; the
+            // effective schema-aware resolution is shown alongside it.
+            Some(match step.output_format {
+                Some(format) => format!("output_format: {}", step_output_format_string(format)),
+                None => format!(
+                    "output_format: omitted (effective: {})",
+                    step_output_format_string(step.effective_output_format())
+                ),
+            }),
         ]),
     )
 }
@@ -14593,7 +14750,24 @@ fn document_from_value(value: &Value) -> Result<MobpackDocument, String> {
     {
         document.mob_toml = Some(text.to_string());
     }
+    upgrade_legacy_deploy_command(&mut document);
     Ok(document)
+}
+
+/// Drafts and packs authored before the 0.7.1 migration persisted
+/// `deploy.command = "rkat mob deploy"`. The deploy surface now executes
+/// `rkat mob run`, so hydration upgrades the legacy pin in place instead
+/// of failing validation on old documents.
+fn upgrade_legacy_deploy_command(document: &mut MobpackDocument) {
+    if document
+        .deploy
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        == Some("rkat mob deploy")
+    {
+        document.deploy["command"] = json!("rkat mob run");
+    }
 }
 
 fn archive_editor_projection_should_reproject(
@@ -14730,7 +14904,7 @@ fn project_definition_to_editor_document_for_flow(
                     .as_ref()
                     .and_then(|schema| {
                         let schema_id = format!("{}Output", pascal_identifier(&profile_key));
-                        output_schema_to_editor_schema(&schema_id, schema)
+                        output_schema_to_editor_schema(&schema_id, schema.as_value())
                     })
                     .map(|schema| {
                         let id = schema
@@ -14850,17 +15024,13 @@ fn projected_deploy_for_runtime_modes(definition: &MobDefinition, deploy: Value)
     let mut object = deploy.as_object().cloned().unwrap_or_default();
     object
         .entry("command".to_string())
-        .or_insert_with(|| json!("rkat mob deploy"));
+        .or_insert_with(|| json!("rkat mob run"));
     object.insert("surface".to_string(), json!("rpc"));
     Value::Object(object)
 }
 
 fn project_flow(flow_id: &str, flow: &FlowSpec) -> (Value, Vec<Value>, Vec<Value>, Vec<Value>) {
-    let visual_steps = flow
-        .root
-        .as_ref()
-        .map(|root| visual_steps_from_frame(root, flow))
-        .unwrap_or_else(|| visual_steps_from_flat_flow(flow));
+    let visual_steps = visual_steps_from_frame(&flow.root, flow);
     let task = flow
         .description
         .clone()
@@ -15299,9 +15469,7 @@ fn input_params_from_flow(flow: &FlowSpec) -> Vec<Value> {
             collect_condition_param_refs(condition, &mut names);
         }
     }
-    if let Some(root) = &flow.root {
-        collect_frame_param_refs(root, &mut names);
-    }
+    collect_frame_param_refs(&flow.root, &mut names);
     names
         .into_iter()
         .enumerate()
@@ -15378,48 +15546,6 @@ fn input_param_summary(params: &[Value]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn visual_steps_from_flat_flow(flow: &FlowSpec) -> Vec<Value> {
-    let order = topological_step_order(flow);
-    let mut consumed = BTreeSet::new();
-    let mut out = Vec::new();
-    for step_id in order {
-        if consumed.contains(&step_id) {
-            continue;
-        }
-        let Some(step) = flow.steps.get(&step_id) else {
-            continue;
-        };
-        if let Some(branch_id) = &step.branch {
-            let branch_steps = flow
-                .steps
-                .iter()
-                .filter(|(_, candidate)| candidate.branch.as_ref() == Some(branch_id))
-                .collect::<Vec<_>>();
-            if branch_steps.len() > 1 {
-                for (candidate_id, _) in &branch_steps {
-                    consumed.insert((*candidate_id).clone());
-                }
-                out.push(json!({
-                    "id": format!("branch_{}", sanitize_identifier(branch_id.as_ref())),
-                    "type": "branch",
-                    "dependsMode": dependency_mode_string(&step.depends_on_mode),
-                    "branches": branch_steps.iter().map(|(candidate_id, candidate)| json!({
-                        "id": format!("br_{}", sanitize_identifier(candidate_id.as_ref())),
-                        "label": candidate_id.to_string(),
-                        "condition": candidate.condition.as_ref().map(condition_to_label).unwrap_or_default(),
-                        "cond": candidate.condition.as_ref().map(condition_to_editor_cond_json),
-                        "steps": [visual_step_from_step(candidate_id.as_ref(), candidate)],
-                    })).collect::<Vec<_>>(),
-                    "fallback": [],
-                }));
-                continue;
-            }
-        }
-        out.push(visual_step_from_step(step_id.as_ref(), step));
-    }
-    out
 }
 
 fn visual_steps_from_frame(frame: &FrameSpec, flow: &FlowSpec) -> Vec<Value> {
@@ -15592,22 +15718,30 @@ fn visual_step_from_step(id: &str, step: &FlowStepSpec) -> Value {
         "timeoutMs": step.timeout_ms,
         "allowedTools": step.allowed_tools,
         "blockedTools": step.blocked_tools,
-        "outputFormat": imported_step_output_format_value(&step.output_format),
+        "outputFormat": imported_step_output_format_value(step.output_format),
         "expectedSchemaRef": step.expected_schema_ref,
     })
 }
 
-fn step_output_format_string(format: &StepOutputFormat) -> &'static str {
+fn step_output_format_string(format: StepOutputFormat) -> &'static str {
     match format {
         StepOutputFormat::Json => "json",
         StepOutputFormat::Text => "text",
     }
 }
 
-fn imported_step_output_format_value(format: &StepOutputFormat) -> Value {
+/// Editor projection of the authored output format.
+///
+/// Meerkat 0.7 keeps "omitted" representable (`Option<StepOutputFormat>`),
+/// matching the editor's own tri-state: `null` means "unset, resolve
+/// schema-aware" (see `default_step_output_format`), while explicit
+/// `json`/`text` round-trip as authored. Pre-0.7 an explicit `json` was
+/// indistinguishable from omitted and collapsed to `null`; it now survives.
+fn imported_step_output_format_value(format: Option<StepOutputFormat>) -> Value {
     match format {
-        StepOutputFormat::Json => Value::Null,
-        StepOutputFormat::Text => json!("text"),
+        None => Value::Null,
+        Some(StepOutputFormat::Json) => json!("json"),
+        Some(StepOutputFormat::Text) => json!("text"),
     }
 }
 
@@ -15706,55 +15840,6 @@ fn normalize_budget_split_policy_value(policy: &Value) -> Option<Value> {
         return Some(json!({ "type": kind }));
     }
     Some(json!({ "type": kind }))
-}
-
-fn topological_step_order(flow: &FlowSpec) -> Vec<meerkat_mob::StepId> {
-    let mut indegree: BTreeMap<meerkat_mob::StepId, usize> = flow
-        .steps
-        .keys()
-        .cloned()
-        .map(|key| (key, 0usize))
-        .collect();
-    let mut outgoing: BTreeMap<meerkat_mob::StepId, Vec<meerkat_mob::StepId>> = BTreeMap::new();
-    for (step_id, step) in &flow.steps {
-        for dep in &step.depends_on {
-            if indegree.contains_key(dep) {
-                *indegree.entry(step_id.clone()).or_default() += 1;
-                outgoing
-                    .entry(dep.clone())
-                    .or_default()
-                    .push(step_id.clone());
-            }
-        }
-    }
-    let mut queue = flow
-        .steps
-        .keys()
-        .filter(|step_id| indegree.get(*step_id).copied().unwrap_or_default() == 0)
-        .cloned()
-        .collect::<VecDeque<_>>();
-    let mut out = Vec::new();
-    let mut seen = BTreeSet::new();
-    while let Some(step_id) = queue.pop_front() {
-        if !seen.insert(step_id.clone()) {
-            continue;
-        }
-        out.push(step_id.clone());
-        for child in outgoing.get(&step_id).cloned().unwrap_or_default() {
-            if let Some(count) = indegree.get_mut(&child) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    queue.push_back(child);
-                }
-            }
-        }
-    }
-    for step_id in flow.steps.keys() {
-        if !seen.contains(step_id) {
-            out.push(step_id.clone());
-        }
-    }
-    out
 }
 
 fn last_step_id_in_frame(frame: &FrameSpec) -> Option<String> {
@@ -17474,6 +17559,8 @@ fn toml_value(value: &Value) -> String {
         Value::Object(map) => format!(
             "{{ {} }}",
             map.iter()
+                // TOML has no null: an absent optional field is omitted.
+                .filter(|(_, value)| !value.is_null())
                 .map(|(key, value)| format!("{} = {}", toml_key(key), toml_value(value)))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -17488,7 +17575,10 @@ fn emit_json_toml(lines: &mut Vec<String>, table: &str, value: &Value) {
     };
     lines.push(format!("[{table}]"));
     for (key, val) in map {
-        if val.is_object() {
+        // TOML has no null: absent optional fields (e.g. meerkat 0.7's
+        // `SupervisorSpec.escalation_turn_timeout_ms: Option<u64>`, which
+        // serializes as JSON null) are omitted, not rendered as `""`.
+        if val.is_object() || val.is_null() {
             continue;
         }
         lines.push(format!("{} = {}", toml_key(key), toml_value(val)));
@@ -17606,7 +17696,7 @@ fn validate_document(document: &MobpackDocument) -> MobpackValidationResult {
                 mob_id: Some(definition.id.to_string()),
                 flow_ids,
                 validation_source: MOBPACK_VALIDATION_SOURCE.to_string(),
-                deploy_command: "rkat mob deploy <pack.mobpack> <prompt>".to_string(),
+                deploy_command: "rkat mob run <pack.mobpack> --prompt <prompt>".to_string(),
             }
         }
         Err(err) => {
@@ -17629,7 +17719,7 @@ fn invalid_validation_result(diagnostics: Vec<MobpackDiagnostic>) -> MobpackVali
         mob_id: None,
         flow_ids: Vec::new(),
         validation_source: MOBPACK_VALIDATION_SOURCE.to_string(),
-        deploy_command: "rkat mob deploy <pack.mobpack> <prompt>".to_string(),
+        deploy_command: "rkat mob run <pack.mobpack> --prompt <prompt>".to_string(),
     }
 }
 
@@ -19121,12 +19211,12 @@ fn validate_deploy_settings(deploy: &Value) -> Vec<MobpackDiagnostic> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        && command != "rkat mob deploy"
+        && command != "rkat mob run"
     {
         diagnostics.push(MobpackDiagnostic {
             severity: "error".to_string(),
             code: "invalid_deploy_command".to_string(),
-            message: format!("deploy command must be 'rkat mob deploy', got '{command}'"),
+            message: format!("deploy command must be 'rkat mob run', got '{command}'"),
             path: Some("deploy.command".to_string()),
         });
     }
@@ -19172,6 +19262,44 @@ fn validate_deploy_settings(deploy: &Value) -> Vec<MobpackDiagnostic> {
     }
     validate_deploy_non_negative_number(object, "max_total_tokens", &mut diagnostics);
     validate_deploy_non_negative_number(object, "max_tool_calls", &mut diagnostics);
+    // `rkat mob run` (meerkat 0.7) carries no model/token/tool-call/surface
+    // override flags — runtime budgets and model are pack-policy concerns.
+    // Surface an explicit warning instead of silently dropping overrides
+    // that `rkat mob deploy` used to forward.
+    if object
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|model| !model.is_empty())
+    {
+        diagnostics.push(deploy_override_not_forwarded_warning(
+            "model",
+            "the pack's model policy applies",
+        ));
+    }
+    for key in ["max_total_tokens", "max_tool_calls"] {
+        if object
+            .get(key)
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value > 0)
+        {
+            diagnostics.push(deploy_override_not_forwarded_warning(
+                key,
+                "runtime budgets come from the pack's deploy policy",
+            ));
+        }
+    }
+    if object
+        .get("surface")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|surface| !surface.is_empty() && surface != "cli")
+    {
+        diagnostics.push(deploy_override_not_forwarded_warning(
+            "surface",
+            "execution always uses the CLI surface",
+        ));
+    }
     for key in [
         "model",
         "max_duration",
@@ -19265,7 +19393,7 @@ fn deploy_runtime_mode_compatibility() -> Value {
         "cli": {
             "allowed": ["turn_driven"],
             "blocked": {
-                "autonomous_host": "RPC surface only; rkat mob deploy requires turn_driven profiles."
+                "autonomous_host": "RPC surface only; rkat mob run requires turn_driven profiles."
             }
         },
         "rpc": {
@@ -20841,6 +20969,20 @@ fn validate_deploy_non_negative_number(
     }
 }
 
+/// Warning for deploy settings that `rkat mob deploy` used to forward as CLI
+/// overrides but `rkat mob run` (meerkat 0.7) has no flags for. Keeping the
+/// setting in the document is harmless, but it does not affect the run.
+fn deploy_override_not_forwarded_warning(key: &str, effect: &str) -> MobpackDiagnostic {
+    MobpackDiagnostic {
+        severity: "warning".to_string(),
+        code: "deploy_override_not_forwarded".to_string(),
+        message: format!(
+            "deploy.{key} is not forwarded by 'rkat mob run'; {effect}. Remove the override or encode it in the pack's deploy policy."
+        ),
+        path: Some(format!("deploy.{key}")),
+    }
+}
+
 fn editor_member_ids(document: &MobpackDocument) -> BTreeSet<String> {
     document
         .members
@@ -22288,7 +22430,10 @@ fn validate_editor_projection_matches_definition(
             .filter(|value| !value.is_null());
         match (editor_provider_params, profile.provider_params.as_ref()) {
             (Some(editor), Some(profile_params)) => {
-                if editor != profile_params {
+                // Meerkat 0.7 types provider params; compare against the
+                // serialized JSON object shape the editor carries.
+                let profile_value = serde_json::to_value(profile_params).unwrap_or(Value::Null);
+                if *editor != profile_value {
                     diagnostics.push(MobpackDiagnostic {
                         severity: "error".to_string(),
                         code: "editor_profile_provider_params_mismatch".to_string(),
@@ -22382,7 +22527,7 @@ fn validate_editor_projection_matches_definition(
                 };
                 let compiled_schema = editor_schema_to_json_schema(editor_schema);
                 if normalize_json_schema_for_compare(&compiled_schema)
-                    != normalize_json_schema_for_compare(profile_schema)
+                    != normalize_json_schema_for_compare(profile_schema.as_value())
                 {
                     diagnostics.push(MobpackDiagnostic {
                         severity: "error".to_string(),
@@ -22454,19 +22599,18 @@ fn validate_editor_flow_step_metadata_matches_definition(
     definition: &MobDefinition,
 ) -> Vec<MobpackDiagnostic> {
     let profile_by_member = editor_profile_by_member_id(document);
-    // The definition under comparison comes from authoring_mob_toml: either
-    // the editor re-render (schema-aware text/json default) or a pinned
-    // snapshot that predates editor projection (meerkat json default).
-    let schema_by_member = if needs_editor_projection(document) {
-        None
-    } else {
-        Some(editor_member_has_schema_by_id(document))
-    };
+    // meerkat 0.7 parses an omitted step `output_format` as `None` and
+    // resolves it schema-aware (`FlowStepSpec::effective_output_format`:
+    // json iff `expected_schema_ref`, text otherwise) — for editor re-renders
+    // and pinned snapshot mob.toml sources alike, so both sides of the
+    // comparison use the same schema-aware rule. (The pre-0.7 snapshot arm
+    // assumed "omitted parses as Json", which no longer exists.)
+    let schema_by_member = editor_member_has_schema_by_id(document);
     let mut expected = BTreeMap::<FlowStepMetadataKey, usize>::new();
     collect_editor_flow_step_metadata(
         document.flow.get("steps").and_then(Value::as_array),
         &profile_by_member,
-        schema_by_member.as_ref(),
+        &schema_by_member,
         &mut expected,
     );
     if expected.is_empty() {
@@ -22494,7 +22638,7 @@ fn validate_editor_flow_step_metadata_matches_definition(
 fn collect_editor_flow_step_metadata(
     steps: Option<&Vec<Value>>,
     profile_by_member: &BTreeMap<String, String>,
-    schema_by_member: Option<&BTreeMap<String, bool>>,
+    schema_by_member: &BTreeMap<String, bool>,
     out: &mut BTreeMap<FlowStepMetadataKey, usize>,
 ) {
     let Some(steps) = steps else {
@@ -22511,24 +22655,20 @@ fn collect_editor_flow_step_metadata(
             && let Some(profile) = profile_by_member.get(member_id)
             && let Some(message) = editor_step_instruction(step)
         {
-            // Editor-rendered TOML resolves unset formats schema-aware (an
-            // explicit step schema ref or the member's assigned schema keeps
-            // the json runtime default; schema-less steps export text).
-            // Snapshot-backed documents (schema_by_member: None) keep the
-            // meerkat json default the snapshot was written against.
-            let output_format = match schema_by_member {
-                Some(schema_by_member) => {
-                    let has_schema = step
-                        .get("expectedSchemaRef")
-                        .or_else(|| step.get("expected_schema_ref"))
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .is_some_and(|value| !value.is_empty())
-                        || schema_by_member.get(member_id).copied().unwrap_or(false);
-                    editor_output_format(step, has_schema)
-                }
-                None => explicit_editor_output_format(step).unwrap_or_else(|| "json".to_string()),
-            };
+            // Unset formats resolve schema-aware, mirroring meerkat 0.7's
+            // `FlowStepSpec::effective_output_format()` (json iff the parsed
+            // step carries `expected_schema_ref`, text otherwise). The
+            // renderer derives `expected_schema_ref` from the step's explicit
+            // ref or the member's assigned schema, so the same two sources
+            // feed `has_schema` here.
+            let has_schema = step
+                .get("expectedSchemaRef")
+                .or_else(|| step.get("expected_schema_ref"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+                || schema_by_member.get(member_id).copied().unwrap_or(false);
+            let output_format = editor_output_format(step, has_schema);
             let key = FlowStepMetadataKey {
                 profile: profile.clone(),
                 message,
@@ -22598,7 +22738,8 @@ fn definition_flow_step_metadata(
                 timeout_ms: step.timeout_ms,
                 allowed_tools: step.allowed_tools.clone().unwrap_or_default(),
                 blocked_tools: step.blocked_tools.clone().unwrap_or_default(),
-                output_format: step_output_format_string(&step.output_format).to_string(),
+                output_format: step_output_format_string(step.effective_output_format())
+                    .to_string(),
                 dispatch_mode: dispatch_mode_string(&step.dispatch_mode).to_string(),
                 collection_policy: definition_collection_policy_key(&step.collection_policy),
             };
@@ -22834,14 +22975,14 @@ fn expected_schema_files_from_definition(
         for (step_id, step) in &flow.steps {
             let Some(schema_ref) = step
                 .expected_schema_ref
-                .as_deref()
-                .map(str::trim)
+                .as_ref()
+                .map(|schema_ref| schema_ref.as_raw().trim().to_string())
                 .filter(|value| !value.is_empty())
             else {
                 continue;
             };
             let path = format!("flows.{flow_id}.steps.{step_id}.expected_schema_ref");
-            let archive_path = match schema_ref_archive_path(schema_ref) {
+            let archive_path = match schema_ref_archive_path(&schema_ref) {
                 Ok(Some(path)) => path,
                 Ok(None) => continue,
                 Err(message) => {
@@ -22946,7 +23087,10 @@ fn profile_output_schema_for_step<'a>(
     step: &FlowStepSpec,
 ) -> Option<&'a Value> {
     match definition.profiles.get(&step.role) {
-        Some(ProfileBinding::Inline(profile)) => profile.output_schema.as_ref(),
+        Some(ProfileBinding::Inline(profile)) => profile
+            .output_schema
+            .as_ref()
+            .map(meerkat_core::MeerkatSchema::as_value),
         Some(ProfileBinding::RealmRef { .. }) | None => None,
     }
 }
@@ -23691,6 +23835,9 @@ depends_on = ["plan"]
     }
 
     fn importable_mob_toml() -> String {
+        // meerkat 0.7 validates profile models fail-fast (catalogued,
+        // [models.<id>]-defined, or provider-annotated); fixtures use the
+        // catalogued gpt-5.5.
         r#"
 [mob]
 id = "importable-real-mob"
@@ -23738,13 +23885,15 @@ include_patterns = ["text_complete"]
 exclude_patterns = ["debug_*"]
 
 [profiles.planner]
-model = "gpt-5.2"
+model = "gpt-5.5"
 skills = ["mob.workpad"]
 peer_description = "Plan the work"
 backend = "session"
 runtime_mode = "autonomous_host"
 max_inline_peer_notifications = 20
-provider_params = { thinking_budget = 8192, top_k = 20 }
+# meerkat 0.7: provider_params is the typed ProviderParamsOverride
+# (deny_unknown_fields); legacy keys like thinking_budget/top_k are invalid.
+provider_params = { thinking_budget_tokens = 8192, top_p = 0.5 }
 
 [profiles.planner.tools]
 builtins = true
@@ -23752,7 +23901,7 @@ comms = true
 mob = true
 
 [profiles.reviewer]
-model = "gpt-5.2"
+model = "gpt-5.5"
 skills = ["mob.review"]
 peer_description = "Review the work"
 runtime_mode = "turn_driven"
@@ -23842,7 +23991,7 @@ depends_on_mode = "all"
         assert_eq!(result.validation_source, MOBPACK_VALIDATION_SOURCE);
         assert_eq!(
             result.deploy_command,
-            "rkat mob deploy <pack.mobpack> <prompt>"
+            "rkat mob run <pack.mobpack> --prompt <prompt>"
         );
         if from_env.is_none() {
             assert!(result.ok, "{:?}", result.diagnostics);
@@ -23882,7 +24031,7 @@ depends_on_mode = "all"
             }),
             launch_modes: json!([]),
             deploy: json!({
-                "command": "rkat mob deploy",
+                "command": "rkat mob run",
                 "surface": "cli",
                 "trust_policy": "permissive",
                 "realm_backend": "jsonl",
@@ -25882,7 +26031,7 @@ message = "stale"
     fn validates_rkat_deploy_settings() {
         let mut document = valid_document();
         document.deploy = json!({
-            "command": "rkat mob deploy",
+            "command": "rkat mob run",
             "surface": "cli",
             "trust_policy": "permissive",
             "realm_backend": "jsonl",
@@ -25895,6 +26044,35 @@ message = "stale"
         let result = validate_document(&document);
 
         assert!(result.ok, "{:?}", result.diagnostics);
+        // `rkat mob run` has no model/token/tool-call override flags;
+        // overrides that `rkat mob deploy` used to forward must warn instead
+        // of silently dropping.
+        let not_forwarded: Vec<&str> = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "deploy_override_not_forwarded")
+            .filter_map(|diagnostic| diagnostic.path.as_deref())
+            .collect();
+        assert!(
+            not_forwarded.contains(&"deploy.model"),
+            "{:?}",
+            result.diagnostics
+        );
+        assert!(
+            not_forwarded.contains(&"deploy.max_total_tokens"),
+            "{:?}",
+            result.diagnostics
+        );
+        assert!(
+            !not_forwarded.contains(&"deploy.max_tool_calls"),
+            "zero/unset caps must not warn: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            !not_forwarded.contains(&"deploy.surface"),
+            "cli surface must not warn: {:?}",
+            result.diagnostics
+        );
     }
 
     #[test]
@@ -25976,7 +26154,7 @@ message = "stale"
     fn rejects_invalid_deploy_numbers_and_blank_prompt() {
         let mut document = valid_document();
         document.deploy = json!({
-            "command": "rkat mob deploy",
+            "command": "rkat mob run",
             "max_total_tokens": -1,
             "max_tool_calls": 1.5,
             "isolated": "yes",
@@ -26076,7 +26254,11 @@ message = "stale"
         document.mob_toml = document.mob_toml.map(|text| {
             text.replace(
                 "model = \"gpt-5.5\"",
-                "model = \"definitely-not-a-real-model\"",
+                // meerkat 0.7 validates profile models fail-fast: an
+                // uncatalogued model must be provider-annotated or it is a
+                // definition-level error. The editor-catalog miss stays a
+                // mobkit warning, which is what this test pins.
+                "model = \"definitely-not-a-real-model\"\nprovider = \"openai\"",
             )
         });
         let result = validate_document(&document);
@@ -27665,10 +27847,10 @@ model = "gpt-5.5"
             .decode(exported.content_base64.as_bytes())
             .expect("decode exported pack");
         assert_eq!(result.pack_sha256, source_file_sha256(&packed_bytes));
-        assert_eq!(&result.argv[0..3], ["rkat", "mob", "deploy"]);
+        assert_eq!(&result.argv[0..3], ["rkat", "mob", "run"]);
         assert_eq!(preview.argv, result.argv);
         assert_eq!(preview.command, result.command);
-        assert_eq!(preview.deploy_command, "rkat mob deploy");
+        assert_eq!(preview.deploy_command, "rkat mob run");
         assert_eq!(preview.source, "meerkat_mobkit::mobpack::deploy_argv");
         assert_eq!(preview.filename, "review-pack.mobpack");
         assert!(
@@ -27676,7 +27858,7 @@ model = "gpt-5.5"
             "{:?}",
             preview.validation.diagnostics
         );
-        assert!(result.command.contains("rkat mob deploy"));
+        assert!(result.command.contains("rkat mob run"));
         assert!(result.command.contains("Reply with exactly OK."));
         assert!(result.display_rows.iter().any(|row| {
             row.kind == "ok"
@@ -27686,9 +27868,126 @@ model = "gpt-5.5"
         assert!(result.display_rows.iter().any(|row| {
             row.kind == "warn"
                 && row.head == "Deploy plan ready"
-                && row.sub.contains("rkat mob deploy")
+                && row.sub.contains("rkat mob run")
                 && row.meta == result.pack_path
         }));
+    }
+
+    fn document_with_input_params(params: Value) -> MobpackDocument {
+        let mut document = valid_document();
+        document.flow = json!({
+            "steps": [{
+                "id": "input-1",
+                "type": "input",
+                "task": "Run the mobpack flow.",
+                "fields": "",
+                "inputParams": params
+            }]
+        });
+        document
+    }
+
+    #[test]
+    fn deploy_argv_omits_prompt_when_typed_input_schema_lacks_prompt_field() {
+        // Typed input params materialize `schemas/main-input.json` with
+        // `additionalProperties: false`; `--prompt` is rkat sugar for
+        // `--param prompt=…`, so injecting it would fail rkat's input
+        // validation before anything runs.
+        let document = document_with_input_params(json!([
+            { "id": "ticket", "name": "ticket", "type": "string", "required": true }
+        ]));
+        let bindings = deploy_input_bindings(
+            &document,
+            &json!({ "input_params": { "ticket": "ABC-123", "count": 2 } }),
+        );
+        let argv = deploy_argv(
+            "rkat",
+            &document.deploy,
+            Path::new("typed.mobpack"),
+            "Reply with exactly OK.",
+            &bindings,
+        );
+        assert!(
+            !argv.iter().any(|arg| arg == "--prompt"),
+            "must not inject --prompt against a schema without a prompt field: {argv:?}"
+        );
+        // Values are JSON-encoded so rkat's parse-as-JSON-first `--param`
+        // handling round-trips the type exactly.
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair[0] == "--param" && pair[1] == "ticket=\"ABC-123\""),
+            "{argv:?}"
+        );
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair[0] == "--param" && pair[1] == "count=2"),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn deploy_argv_sends_prompt_when_schema_accepts_prompt_key() {
+        let document = document_with_input_params(json!([
+            { "id": "prompt", "name": "prompt", "type": "string", "required": true }
+        ]));
+        let bindings = deploy_input_bindings(&document, &json!({}));
+        let argv = deploy_argv(
+            "rkat",
+            &document.deploy,
+            Path::new("prompted.mobpack"),
+            "Summarize the run.",
+            &bindings,
+        );
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair[0] == "--prompt" && pair[1] == "Summarize the run."),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn deploy_argv_keeps_prompt_for_packs_without_typed_input_params() {
+        let document = valid_document();
+        let bindings = deploy_input_bindings(&document, &json!({}));
+        let argv = deploy_argv(
+            "rkat",
+            &document.deploy,
+            Path::new("plain.mobpack"),
+            "Reply with exactly OK.",
+            &bindings,
+        );
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair[0] == "--prompt" && pair[1] == "Reply with exactly OK."),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn deploy_argv_prefers_supplied_prompt_param_over_prompt_flag() {
+        let document = document_with_input_params(json!([
+            { "id": "prompt", "name": "prompt", "type": "string", "required": true }
+        ]));
+        let bindings = deploy_input_bindings(
+            &document,
+            &json!({ "input_params": { "prompt": "explicit binding" } }),
+        );
+        let argv = deploy_argv(
+            "rkat",
+            &document.deploy,
+            Path::new("prompted.mobpack"),
+            "fallback prompt",
+            &bindings,
+        );
+        assert!(
+            !argv.iter().any(|arg| arg == "--prompt"),
+            "explicit prompt binding must not be duplicated by --prompt: {argv:?}"
+        );
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair[0] == "--param" && pair[1] == "prompt=\"explicit binding\""),
+            "{argv:?}"
+        );
     }
 
     #[test]
@@ -27733,6 +28032,57 @@ model = "gpt-5.5"
                 |path| path.ends_with(".mobpack") && std::path::Path::new(path).exists()
             ),
             "{args:?}"
+        );
+        // valid_document() carries no deploy settings, so validation runs
+        // under the schema-default trust policy (rkat 0.7 defaults to strict,
+        // which would reject every unsigned editor-authored pack).
+        assert_eq!(
+            &args[3..],
+            ["--trust-policy", DEFAULT_DEPLOY_TRUST_POLICY],
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn validate_mobpack_threads_document_trust_policy_into_rkat_validate() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rkat_path = dir.path().join("rkat");
+        let args_path = dir.path().join("rkat-args.txt");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho 'valid\\tfake-sha'\n",
+            args_path.to_string_lossy()
+        );
+        std::fs::write(&rkat_path, script).expect("write fake rkat");
+        let mut perms = std::fs::metadata(&rkat_path)
+            .expect("fake rkat metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&rkat_path, perms).expect("chmod fake rkat");
+
+        let mut document = valid_document();
+        document.deploy = json!({
+            "command": "rkat mob run",
+            "trust_policy": "strict"
+        });
+        let result = validate_mobpack(&json!({
+            "document": document,
+            "rkat_validate": true,
+            "rkat_bin": rkat_path,
+            "validation_output_dir": dir.path()
+        }))
+        .expect("rkat validate");
+
+        assert!(result.ok, "{:?}", result.diagnostics);
+        let args = std::fs::read_to_string(args_path).expect("read fake rkat args");
+        let args = args.lines().collect::<Vec<_>>();
+        assert_eq!(&args[0..2], ["mob", "validate"]);
+        assert_eq!(
+            &args[3..],
+            ["--trust-policy", "strict"],
+            "rkat mob validate must run under the document's pinned deploy trust policy"
         );
     }
 
@@ -28817,7 +29167,7 @@ model = "gpt-5.5"
         }))
         .expect("deploy command preview");
 
-        assert_eq!(&preview.argv[0..3], ["rkat", "mob", "deploy"]);
+        assert_eq!(&preview.argv[0..3], ["rkat", "mob", "run"]);
         assert!(
             preview.argv.iter().any(|arg| arg == "review-pack.mobpack"),
             "{:?}",
@@ -28841,7 +29191,7 @@ model = "gpt-5.5"
         );
         assert!(
             deploy_command_preview(&json!({
-                "deploy": { "command": "rkat mob deploy" },
+                "deploy": { "command": "rkat mob run" },
                 "pack_path": "<pack.mobpack>"
             }))
             .expect_err("deploy command preview requires document")
@@ -30673,7 +31023,7 @@ depends_on_mode = "all"
                 .len(),
             operations.len()
         );
-        assert_eq!(capabilities["deploy_command"], json!("rkat mob deploy"));
+        assert_eq!(capabilities["deploy_command"], json!("rkat mob run"));
     }
 
     fn graph_apply_operation_document() -> Value {
@@ -32215,7 +32565,11 @@ depends_on_mode = "all"
         };
         let result = deploy_mobpack(&params).expect("deploy");
         assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
-        assert_eq!(&result.argv[1..3], ["mob", "deploy"]);
+        // meerkat 0.7: the editor deploy surface invokes the typed callable
+        // entrypoint `rkat mob run <pack> --prompt <task>` (run envelope on
+        // stdout) instead of the legacy `rkat mob deploy <pack> <task>`;
+        // deploy_argv and the sibling argv tests were migrated with it.
+        assert_eq!(&result.argv[1..3], ["mob", "run"]);
         assert!(result.plan_trace.iter().any(|row| {
             row["head"]
                 .as_str()
@@ -32248,14 +32602,14 @@ depends_on_mode = "all"
 
     #[cfg(unix)]
     #[test]
-    fn executes_rkat_mob_deploy_when_requested() {
+    fn executes_rkat_mob_run_when_requested() {
         let dir = tempfile::tempdir().expect("tempdir");
         let fake_rkat = dir.path().join("rkat");
         let args_file = dir.path().join("rkat.args");
         std::fs::write(
             &fake_rkat,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\necho fake-rkat-ok\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\necho fake-rkat-ok\nprintf 'run\\tmob=review-pack\\tflow=review\\trun_id=run-1\\tstatus=completed\\n'\nprintf 'result\\t{{\"reply\":\"MIGRATION OK\"}}\\n'\n",
                 args_file.to_string_lossy()
             ),
         )
@@ -32286,21 +32640,72 @@ depends_on_mode = "all"
                 .contains("fake-rkat-ok")
         );
         assert_eq!(result.argv[1], "mob");
-        assert_eq!(result.argv[2], "deploy");
+        assert_eq!(result.argv[2], "run");
+        assert!(result.success);
         assert!(std::path::Path::new(&result.pack_path).exists());
         let packed_bytes = std::fs::read(&result.pack_path).expect("read deploy pack");
         assert_eq!(result.pack_sha256, source_file_sha256(&packed_bytes));
 
         let argv = std::fs::read_to_string(args_file).expect("recorded fake rkat args");
         assert!(argv.lines().any(|line| line == "mob"));
-        assert!(argv.lines().any(|line| line == "deploy"));
+        assert!(argv.lines().any(|line| line == "run"));
         assert!(argv.lines().any(|line| line == result.pack_path));
+        assert!(argv.lines().any(|line| line == "--prompt"));
         assert!(argv.lines().any(|line| line == "Reply with exactly OK."));
+        assert!(result.display_rows.iter().any(|row| {
+            row.kind == "ok"
+                && row.head == "Flow run completed"
+                && row.sub == "{\n  \"reply\": \"MIGRATION OK\"\n}"
+                && row.meta.contains("run_id=run-1")
+        }));
     }
 
     #[cfg(unix)]
     #[test]
-    fn times_out_hung_rkat_mob_deploy_execution() {
+    fn reports_failed_flow_run_envelope_as_deploy_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fake_rkat = dir.path().join("rkat");
+        std::fs::write(
+            &fake_rkat,
+            "#!/bin/sh\nprintf 'run\\tmob=review-pack\\tflow=review\\trun_id=run-2\\tstatus=failed\\n'\nprintf 'result\\tnull\\n'\n",
+        )
+        .expect("write fake rkat");
+        let mut permissions = std::fs::metadata(&fake_rkat)
+            .expect("fake rkat metadata")
+            .permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_rkat, permissions).expect("chmod fake rkat");
+
+        let result = deploy_mobpack(&json!({
+            "document": valid_document(),
+            "output_dir": dir.path(),
+            "prompt": "Reply with exactly OK.",
+            "rkat_bin": fake_rkat,
+            "execute": true
+        }))
+        .expect("deploy execute");
+
+        assert!(result.executed);
+        assert_eq!(result.status_code, Some(0));
+        assert!(
+            !result.success,
+            "terminal failed flow runs must not report deploy success"
+        );
+        assert!(result.display_rows.iter().any(|row| {
+            row.kind == "crit" && row.head == "Flow run failed" && row.meta.contains("run_id=run-2")
+        }));
+        assert!(
+            result
+                .display_rows
+                .iter()
+                .any(|row| { row.kind == "crit" && row.head == "rkat mob run failed" })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn times_out_hung_rkat_mob_run_execution() {
         let dir = tempfile::tempdir().expect("tempdir");
         let fake_rkat = dir.path().join("rkat");
         std::fs::write(&fake_rkat, "#!/bin/sh\nexec sleep 2\n").expect("write fake rkat");
@@ -32313,7 +32718,7 @@ depends_on_mode = "all"
 
         let mut document = valid_document();
         document.deploy = json!({
-            "command": "rkat mob deploy",
+            "command": "rkat mob run",
             "surface": "cli",
             "max_duration": "1ms",
             "prompt": "Reply with exactly OK."
@@ -32336,13 +32741,13 @@ depends_on_mode = "all"
                 .stderr
                 .as_deref()
                 .unwrap_or_default()
-                .contains("rkat mob deploy timed out"),
+                .contains("rkat mob run timed out"),
             "{result:?}"
         );
         assert!(result.display_rows.iter().any(|row| {
             row.kind == "crit"
-                && row.head == "rkat mob deploy failed"
-                && row.sub.contains("rkat mob deploy")
+                && row.head == "rkat mob run failed"
+                && row.sub.contains("rkat mob run")
         }));
         assert!(result.display_rows.iter().any(|row| {
             row.kind == "warn" && row.head == "rkat output" && row.sub.contains("timed out")
@@ -32362,7 +32767,7 @@ depends_on_mode = "all"
 
     #[cfg(unix)]
     #[test]
-    fn reports_failed_rkat_mob_deploy_execution() {
+    fn reports_failed_rkat_mob_run_execution() {
         let dir = tempfile::tempdir().expect("tempdir");
         let fake_rkat = dir.path().join("rkat");
         std::fs::write(&fake_rkat, "#!/bin/sh\necho deploy-failed >&2\nexit 7\n")
@@ -32397,7 +32802,7 @@ depends_on_mode = "all"
     }
 
     #[test]
-    fn reports_missing_rkat_mob_deploy_as_deploy_result() {
+    fn reports_missing_rkat_mob_run_as_deploy_result() {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing_rkat = dir.path().join("missing-rkat");
 
@@ -32420,7 +32825,7 @@ depends_on_mode = "all"
                 .stderr
                 .as_deref()
                 .unwrap_or_default()
-                .contains("failed to run rkat mob deploy")
+                .contains("failed to run rkat mob run")
         );
         assert!(result.plan_trace.iter().any(|row| {
             row["head"]
@@ -32430,13 +32835,13 @@ depends_on_mode = "all"
         }));
         assert!(result.display_rows.iter().any(|row| {
             row.kind == "crit"
-                && row.head == "rkat mob deploy failed"
-                && row.sub.contains("rkat mob deploy")
+                && row.head == "rkat mob run failed"
+                && row.sub.contains("rkat mob run")
         }));
         assert!(result.display_rows.iter().any(|row| {
             row.kind == "warn"
                 && row.head == "rkat output"
-                && row.sub.contains("failed to run rkat mob deploy")
+                && row.sub.contains("failed to run rkat mob run")
         }));
     }
 
@@ -32740,8 +33145,8 @@ depends_on_mode = "all"
         let schema = mobpack_schema_response();
         let deploy = &schema["deploy_settings"];
 
-        assert_eq!(deploy["command"], "rkat mob deploy");
-        assert_eq!(deploy["defaults"]["command"], "rkat mob deploy");
+        assert_eq!(deploy["command"], "rkat mob run");
+        assert_eq!(deploy["defaults"]["command"], "rkat mob run");
         assert_eq!(deploy["defaults"]["surface"], "cli");
         assert_eq!(deploy["defaults"]["trust_policy"], "permissive");
         assert_eq!(deploy["defaults"]["realm_backend"], "jsonl");
@@ -32786,8 +33191,8 @@ depends_on_mode = "all"
             deploy["authoring_provider"]["runtime_binding"],
             json!("bound")
         );
-        assert_eq!(deploy["command"], json!("rkat mob deploy"));
-        assert_eq!(deploy["defaults"]["command"], json!("rkat mob deploy"));
+        assert_eq!(deploy["command"], json!("rkat mob run"));
+        assert_eq!(deploy["defaults"]["command"], json!("rkat mob run"));
         assert_eq!(deploy["surfaces"], json!(["cli", "rpc"]));
         assert_eq!(deploy["defaults"]["surface"], json!("cli"));
         assert_eq!(deploy["realm_backends"], json!(["jsonl", "sqlite"]));
@@ -32827,7 +33232,10 @@ depends_on_mode = "all"
             ("graph_to_flow", "mobkit/mobpacks/graph_to_flow"),
             ("deploy_command", "mobkit/mobpacks/deploy_command"),
             ("deploy_rpc", "mobkit/mobpacks/deploy"),
-            ("deploy_cli", "rkat mob deploy <pack.mobpack> <prompt>"),
+            (
+                "deploy_cli",
+                "rkat mob run <pack.mobpack> --prompt <prompt>",
+            ),
         ]);
 
         assert_eq!(
@@ -32914,7 +33322,7 @@ depends_on_mode = "all"
             .filter(|tool| tool["kind"] == "runtime")
             .map(|tool| {
                 assert_eq!(tool["source"], "meerkat_mob::ToolConfig");
-                assert_eq!(tool["deployability"]["command"], "rkat mob deploy");
+                assert_eq!(tool["deployability"]["command"], "rkat mob run");
                 assert_eq!(tool["deployability"]["deployable"], json!(true));
                 assert_eq!(tool["provenance"]["catalog"], "mobkit/tools/catalog");
                 let id = tool["id"].as_str().expect("tool id");
@@ -32974,7 +33382,7 @@ depends_on_mode = "all"
                 .expect("models")
                 .iter()
                 .all(|model| {
-                    model["deployability"]["command"] == "rkat mob deploy"
+                    model["deployability"]["command"] == "rkat mob run"
                         && model["provenance"]["catalog"] == "mobkit/mobpacks/catalogs"
                 })
         );
@@ -33021,7 +33429,7 @@ depends_on_mode = "all"
         );
         assert_eq!(
             mob_definition["deploy_runtime_mode_compatibility"]["cli"]["blocked"]["autonomous_host"],
-            json!("RPC surface only; rkat mob deploy requires turn_driven profiles.")
+            json!("RPC surface only; rkat mob run requires turn_driven profiles.")
         );
         assert_eq!(
             mob_definition["deploy_runtime_mode_compatibility"]["rpc"]["allowed"],
@@ -33585,7 +33993,7 @@ depends_on_mode = "all"
         );
         assert_eq!(
             mob_definition["editor_settings_view"]["duration_placeholder"],
-            json!("30s")
+            json!("10m")
         );
         assert_eq!(
             mob_definition["editor_settings_view"]["tool_calls_max"],
@@ -33745,7 +34153,7 @@ depends_on_mode = "all"
         );
         assert_eq!(
             mob_definition["editor_basic_view"]["input_tips"][0],
-            json!("Run with: rkat mob deploy <pack> \"<task>\" — or run_flow(input).")
+            json!("Run with: rkat mob run <pack> --prompt \"<task>\" — or run_flow(input).")
         );
         assert_eq!(
             mob_definition["editor_basic_view"]["branch_condition_empty_hint"],
@@ -34081,7 +34489,7 @@ depends_on_mode = "all"
                         })
                     })
                 && definition["schemaDefinition"]["id"] == "ReviewerOutput"
-                && definition["deployability"]["command"] == "rkat mob deploy"
+                && definition["deployability"]["command"] == "rkat mob run"
                 && definition["provenance"]["source"] == "mobkit/authoring-agent-definitions"
         }));
         assert!(authoring_agent_definitions.iter().any(|definition| {
@@ -34095,7 +34503,7 @@ depends_on_mode = "all"
                 && definition["tools"]
                     .as_array()
                     .is_some_and(|tools| tools.contains(&json!("builtins")))
-                && definition["deployability"]["command"] == "rkat mob deploy"
+                && definition["deployability"]["command"] == "rkat mob run"
                 && definition["provenance"]["source"] == "mobkit/authoring-agent-definitions"
         }));
         for definition in &sample_agent_definitions {
@@ -34254,7 +34662,8 @@ url = "https://example.invalid/mcp"
             member["id"] == "m_planner"
                 && member["backend"] == "session"
                 && member["maxInlinePeerNotifications"] == 20
-                && member["providerParams"] == json!({ "thinking_budget": 8192, "top_k": 20 })
+                && member["providerParams"]
+                    == json!({ "thinking_budget_tokens": 8192, "top_p": 0.5 })
         }));
         let plan_step = document.flow["steps"]
             .as_array()
@@ -34308,7 +34717,7 @@ url = "https://example.invalid/mcp"
 id = "multi-flow-import"
 
 [profiles.planner]
-model = "gpt-5.2"
+model = "gpt-5.5"
 
 [flows.main]
 description = "Main flow"
@@ -34336,7 +34745,7 @@ message = "Audit"
 id = "default-output-import"
 
 [profiles.planner]
-model = "gpt-5.2"
+model = "gpt-5.5"
 
 [flows.main]
 description = "Do not materialize parser defaults"
@@ -34362,7 +34771,7 @@ message = "Plan without output format"
 id = "missing-flow-description"
 
 [profiles.planner]
-model = "gpt-5.2"
+model = "gpt-5.5"
 
 [flows.main.steps.plan]
 role = "planner"
@@ -34411,10 +34820,10 @@ message = "Plan without a flow description"
 id = "parallel-import"
 
 [profiles.coder]
-model = "gpt-5.2"
+model = "gpt-5.5"
 
 [profiles.reviewer]
-model = "gpt-5.2"
+model = "gpt-5.5"
 
 [flows.main]
 description = "Parallel import"
@@ -34512,10 +34921,10 @@ depends_on_mode = "all"
 id = "branch-import"
 
 [profiles.router]
-model = "gpt-5.2"
+model = "gpt-5.5"
 
 [profiles.worker]
-model = "gpt-5.2"
+model = "gpt-5.5"
 
 [flows.main]
 description = "Branch import"

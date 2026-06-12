@@ -375,7 +375,7 @@ pack = await handle.mobpack_export(document)
 archive = base64.b64decode(pack.content_base64)  # pack.filename, pack.media_type
 ```
 
-`mobpack_deploy(document, execute=True)` writes the archive and runs `rkat mob deploy` on the host — gated by the surface's advertised `authoring_capabilities` and, on ABAC-enforced runtimes, the caller's `mobpack.deploy` grant. See the [Flow Editor guide](/guides/flow-editor).
+`mobpack_deploy(document, execute=True)` writes the archive and runs `rkat mob run` on the host — gated by the surface's advertised `authoring_capabilities` and, on ABAC-enforced runtimes, the caller's `mobpack.deploy` grant. See the [Flow Editor guide](/guides/flow-editor).
 
 ## Public surface exports
 

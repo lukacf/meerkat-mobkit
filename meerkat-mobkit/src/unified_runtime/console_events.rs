@@ -586,12 +586,23 @@ fn parse_generate_image_tool_result(
     if payload.get("name").and_then(Value::as_str) != Some("generate_image") {
         return None;
     }
-    let result_value = payload.get("result")?;
-    if let Some(result_text) = result_value.as_str() {
-        serde_json::from_str(result_text).ok()
-    } else {
-        serde_json::from_value(result_value.clone()).ok()
+    if let Some(result_value) = payload.get("result") {
+        return if let Some(result_text) = result_value.as_str() {
+            serde_json::from_str(result_text).ok()
+        } else {
+            serde_json::from_value(result_value.clone()).ok()
+        };
     }
+    // meerkat 0.7 removed the flat `result` key from ToolExecutionCompleted;
+    // mobkit's ingest edges re-derive it, but fall back to the typed
+    // `content` blocks so raw 0.7-shaped payloads still project image frames.
+    let text = payload
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter_map(text_from_content_block)
+        .collect::<String>();
+    serde_json::from_str(&text).ok()
 }
 
 pub(crate) fn is_empty_web_search_annotations_event(

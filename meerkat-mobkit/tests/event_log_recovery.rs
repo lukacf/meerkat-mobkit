@@ -90,17 +90,19 @@ async fn batch_size_zero_does_not_panic() {
     };
 
     // The bug pre-fix: this call panics inside `start_event_log`.
-    let runtime = meerkat_mobkit::UnifiedRuntimeBuilder::default()
-        .definition(
-            meerkat_mob::MobDefinition::from_toml(
-                "[mob]\nid = \"event-log-zero-batch\"\n\n\
-                 [profiles.lead]\nmodel = \"gpt-5.2\"\nexternal_addressable = false",
+    let runtime = Box::pin(
+        meerkat_mobkit::UnifiedRuntimeBuilder::default()
+            .definition(
+                meerkat_mob::MobDefinition::from_toml(
+                    "[mob]\nid = \"event-log-zero-batch\"\n\n\
+                 [profiles.lead]\nmodel = \"gpt-5.5\"\nexternal_addressable = false",
+                )
+                .expect("definition"),
             )
-            .expect("definition"),
-        )
-        .event_log(config)
-        .build()
-        .await;
+            .event_log(config)
+            .build(),
+    )
+    .await;
     assert!(
         runtime.is_ok(),
         "EventLogConfig {{ batch_size: 0 }} must not panic the runtime; got {:?}",

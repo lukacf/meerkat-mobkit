@@ -10,7 +10,6 @@ use std::time::Duration;
 use futures::stream::{BoxStream, SelectAll, StreamExt};
 use meerkat_core::comms::EventStream;
 use meerkat_core::event::{AgentEvent, agent_event_type};
-use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::{
     AgentIdentity, AgentRuntimeId, AttributedEvent, FenceToken, MobError, MobHandle, ProfileName,
     SpawnMemberSpec,
@@ -96,7 +95,9 @@ pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpe
     };
     let mut spawn = SpawnMemberSpec::new(
         meerkat_mob::ProfileName::from(spec.profile.as_str()),
-        MeerkatId::from(spec.meerkat_id.as_str()),
+        // Wire member ids are public aliases; encode to the comms-safe
+        // roster id (meerkat 0.7 MemberCommsName).
+        crate::member_comms_id::mob_member_id(spec.meerkat_id.as_str()),
     );
     if let Some(context) = spec.context.clone() {
         spawn = spawn.with_context(context);
@@ -264,14 +265,14 @@ impl UnifiedRuntime {
         module_config: MobKitConfig,
         timeout: Duration,
     ) -> Result<Self, UnifiedRuntimeBootstrapError> {
-        Self::bootstrap_with_options(
+        Box::pin(Self::bootstrap_with_options(
             mob_spec,
             module_config,
             Vec::new(),
             timeout,
             RuntimeOptions::default(),
             Arc::new(InMemoryMetadataStore::new()),
-        )
+        ))
         .await
     }
 
@@ -695,7 +696,13 @@ async fn run_resilient_mob_agent_event_forwarder(
     #[cfg(not(target_arch = "wasm32"))]
     reconcile_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut streams).await;
+    Box::pin(reconcile_agent_event_streams(
+        &handle,
+        &agent_mob_mcp_state,
+        &mut tracked,
+        &mut streams,
+    ))
+    .await;
 
     loop {
         tokio::select! {
@@ -729,7 +736,7 @@ async fn run_resilient_mob_agent_event_forwarder(
                 }
             }
             _ = reconcile_interval.tick() => {
-                reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut streams).await;
+                Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut streams)).await;
             }
         }
     }
@@ -744,22 +751,29 @@ async fn reconcile_agent_event_streams(
     let mut handles = vec![handle.clone()];
     if let Some(state) = agent_mob_mcp_state {
         let primary_mob_id = handle.mob_id().to_string();
-        handles.extend(state.mob_handles_snapshot().await.into_iter().filter_map(
-            |(mob_id, child_handle)| {
-                if mob_id.as_str() == primary_mob_id {
-                    None
-                } else {
-                    Some(child_handle)
-                }
-            },
-        ));
+        handles.extend(
+            Box::pin(state.mob_handles_snapshot())
+                .await
+                .into_iter()
+                .filter_map(|(mob_id, child_handle)| {
+                    if mob_id.as_str() == primary_mob_id {
+                        None
+                    } else {
+                        Some(child_handle)
+                    }
+                }),
+        );
     }
 
     let mut current: HashSet<TrackedAgentEventStream> = HashSet::new();
     for handle in &handles {
         let mob_id = handle.mob_id().to_string();
         for entry in handle.list_members_including_retiring().await {
-            let (runtime_id, fence_token) = entry.binding_atoms();
+            // Members without current machine-supplied binding atoms have no
+            // live runtime stream to track; their stale streams age out.
+            let Some((runtime_id, fence_token)) = entry.binding_atoms() else {
+                continue;
+            };
             current.insert((
                 mob_id.clone(),
                 entry.agent_identity.clone(),
@@ -775,7 +789,10 @@ async fn reconcile_agent_event_streams(
         let mob_id = handle.mob_id().to_string();
         for entry in handle.list_members_including_retiring().await {
             let identity = entry.agent_identity.clone();
-            let (runtime_id, fence_token) = entry.binding_atoms();
+            // No binding atoms means no live runtime to subscribe to.
+            let Some((runtime_id, fence_token)) = entry.binding_atoms() else {
+                continue;
+            };
             let tracked_key = (
                 mob_id.clone(),
                 identity.clone(),
@@ -939,7 +956,13 @@ fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<Uni
         event: UnifiedEvent::Agent {
             agent_id: attributed.source.to_string(),
             event_type: agent_event_type(&attributed.envelope.payload).to_string(),
-            payload: serde_json::to_value(&attributed.envelope.payload).ok(),
+            // Project through the console wire shape (not the raw 0.7 event)
+            // so downstream surfaces — console timeline frames, the
+            // `mobkit/events/subscribe` replay buffer, and the event-log
+            // query — keep the `result`/`tool_call_id` keys the SDKs parse.
+            payload: Some(crate::mob_handle_runtime::console_agent_event_payload(
+                &attributed.envelope.payload,
+            )),
         },
     }
 }

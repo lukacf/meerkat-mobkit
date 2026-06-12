@@ -28,7 +28,7 @@ pub const ACTION_RUNTIME_ADMIN: &str = "runtime.admin";
 /// Author mobpacks in the Flow Editor: drafts, authoring operations,
 /// validation, source rendering, export/import, and authoring catalogs.
 pub const ACTION_MOBPACK_AUTHOR: &str = "mobpack.author";
-/// Execute a mobpack deploy on the host (`rkat mob deploy`).
+/// Execute a mobpack deploy on the host (`rkat mob run`).
 pub const ACTION_MOBPACK_DEPLOY: &str = "mobpack.deploy";
 /// Read and mutate the access-control configuration itself.
 pub const ACTION_ACCESS_ADMIN: &str = "access.admin";

@@ -43,7 +43,7 @@ async fn build_runtime_two_flows() -> Fixture {
 id = "list-runs-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]

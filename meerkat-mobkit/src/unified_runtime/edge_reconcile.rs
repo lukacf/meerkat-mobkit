@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use futures::stream::{self, StreamExt};
 use meerkat_mob::SpawnMemberSpec;
-use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::ids::AgentIdentity;
 use meerkat_mob::runtime::MobMemberListEntry;
 use meerkat_mob::runtime::reconcile::ReconcileOptions;
 
@@ -215,7 +215,12 @@ impl UnifiedRuntime {
         if !to_wire.is_empty() {
             let batch_edges = to_wire
                 .iter()
-                .map(|(a, b, _)| (MeerkatId::from(a.as_str()), MeerkatId::from(b.as_str())))
+                .map(|(a, b, _)| {
+                    (
+                        AgentIdentity::from(a.as_str()),
+                        AgentIdentity::from(b.as_str()),
+                    )
+                })
                 .collect::<Vec<_>>();
             match handle.wire_members_batch(batch_edges).await {
                 Ok(batch_report) => {
@@ -256,7 +261,10 @@ impl UnifiedRuntime {
             let handle = handle.clone();
             async move {
                 let result = handle
-                    .unwire(MeerkatId::from(a.as_str()), MeerkatId::from(b.as_str()))
+                    .unwire(
+                        AgentIdentity::from(a.as_str()),
+                        AgentIdentity::from(b.as_str()),
+                    )
                     .await
                     .map_err(|err| format!("{err}"));
                 (a, b, result)

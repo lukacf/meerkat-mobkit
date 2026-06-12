@@ -29,15 +29,16 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn phase0_contract_007_tool_events_stream_with_tool_call_id() {
-    // Upstream LUC-* removed `has_images` from
-    // `AgentEvent::ToolExecutionCompleted`; the canonical typed
-    // tool-result content lives in `content: Vec<ContentBlock>`
-    // (default empty when there's only a text projection in `result`).
+    // meerkat 0.7 removed the flat `result` text from
+    // `AgentEvent::ToolExecutionCompleted`; typed `content` blocks are the
+    // sole owner. MobKit's SSE edge derives the wire `result` field from the
+    // text blocks (see console_agent_event_payload), keeping the SDK contract.
     let agent_event = AgentEvent::ToolExecutionCompleted {
         id: "tool-1".to_string(),
         name: "search".to_string(),
-        result: "done".to_string(),
-        content: Vec::new(),
+        content: vec![meerkat_core::types::ContentBlock::Text {
+            text: "done".to_string(),
+        }],
         is_error: false,
         duration_ms: 12,
     };

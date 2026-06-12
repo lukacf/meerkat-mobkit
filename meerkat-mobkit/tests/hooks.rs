@@ -52,7 +52,7 @@ fn build_mob_spec(temp_dir: &tempfile::TempDir) -> MobBootstrapSpec {
 id = "hooks-test-mob"
 
 [profiles.worker]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.worker.tools]
@@ -98,14 +98,16 @@ async fn post_spawn_hook_receives_spawned_member_id() {
         })
     });
 
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_mob_spec(&temp_dir))
-        .module_config(empty_module_config())
-        .timeout(Duration::from_secs(2))
-        .post_spawn_hook(hook)
-        .build()
-        .await
-        .expect("build unified runtime");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .post_spawn_hook(hook)
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
 
     assert_eq!(
         runtime.mob_handle().status().await.unwrap(),
@@ -142,14 +144,16 @@ async fn post_reconcile_hook_receives_reconcile_report() {
         })
     });
 
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_mob_spec(&temp_dir))
-        .module_config(empty_module_config())
-        .timeout(Duration::from_secs(2))
-        .post_reconcile_hook(hook)
-        .build()
-        .await
-        .expect("build unified runtime");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .post_reconcile_hook(hook)
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
 
     let desired = vec![
         spawn_spec("worker", "reconcile-a"),
@@ -187,13 +191,15 @@ async fn post_reconcile_hook_receives_reconcile_report() {
 #[ignore]
 async fn mob_handle_returns_working_handle() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_mob_spec(&temp_dir))
-        .module_config(empty_module_config())
-        .timeout(Duration::from_secs(2))
-        .build()
-        .await
-        .expect("build unified runtime");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
 
     let handle: MobHandle = runtime.mob_handle();
 
@@ -201,8 +207,7 @@ async fn mob_handle_returns_working_handle() {
     assert_eq!(handle.status().await.unwrap(), MobState::Running);
 
     // Spawn via the handle directly
-    handle
-        .spawn_spec(spawn_spec("worker", "handle-worker-1"))
+    Box::pin(handle.spawn_spec(spawn_spec("worker", "handle-worker-1")))
         .await
         .expect("spawn via mob_handle");
 
@@ -218,13 +223,15 @@ async fn mob_handle_returns_working_handle() {
 #[ignore]
 async fn no_hook_still_works() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_mob_spec(&temp_dir))
-        .module_config(empty_module_config())
-        .timeout(Duration::from_secs(2))
-        .build()
-        .await
-        .expect("build unified runtime");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
 
     // spawn without hooks set should work fine
     runtime
@@ -264,14 +271,16 @@ async fn error_hook_fires_on_spawn_failure() {
         })
     });
 
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_mob_spec(&temp_dir))
-        .module_config(empty_module_config())
-        .timeout(Duration::from_secs(2))
-        .on_error(hook)
-        .build()
-        .await
-        .expect("build unified runtime");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .on_error(hook)
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
 
     // Spawn with a non-existent profile to trigger a failure
     let result = runtime
@@ -310,13 +319,15 @@ async fn error_hook_fires_on_spawn_failure() {
 #[ignore]
 async fn list_members_returns_roster() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_mob_spec(&temp_dir))
-        .module_config(empty_module_config())
-        .timeout(Duration::from_secs(2))
-        .build()
-        .await
-        .expect("build unified runtime");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
 
     runtime
         .spawn(spawn_spec("worker", "roster-a"))
@@ -344,7 +355,9 @@ async fn list_members_returns_roster() {
 
     for m in &members {
         assert_eq!(m.role.as_str(), "worker");
-        assert_eq!(m.state, meerkat_mob::MemberState::Active);
+        // meerkat 0.7: roster lifecycle is the machine-projected `status`
+        // (MobMemberStatus), not the removed roster-owned MemberState.
+        assert_eq!(m.status, meerkat_mob::MobMemberStatus::Active);
     }
 
     runtime.shutdown().await;
@@ -354,13 +367,15 @@ async fn list_members_returns_roster() {
 #[ignore]
 async fn get_member_returns_snapshot_or_none() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_mob_spec(&temp_dir))
-        .module_config(empty_module_config())
-        .timeout(Duration::from_secs(2))
-        .build()
-        .await
-        .expect("build unified runtime");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
 
     runtime
         .spawn(spawn_spec("worker", "get-member-1"))
@@ -376,7 +391,8 @@ async fn get_member_returns_snapshot_or_none() {
     let snapshot = found.unwrap();
     assert_eq!(snapshot.agent_identity.as_str(), "get-member-1");
     assert_eq!(snapshot.role.as_str(), "worker");
-    assert_eq!(snapshot.state, meerkat_mob::MemberState::Active);
+    // meerkat 0.7: machine-projected status replaces MemberState.
+    assert_eq!(snapshot.status, meerkat_mob::MobMemberStatus::Active);
 
     let not_found = entries
         .iter()
@@ -390,13 +406,15 @@ async fn get_member_returns_snapshot_or_none() {
 #[ignore]
 async fn retire_member_transitions_state() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_mob_spec(&temp_dir))
-        .module_config(empty_module_config())
-        .timeout(Duration::from_secs(2))
-        .build()
-        .await
-        .expect("build unified runtime");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
 
     runtime
         .spawn(spawn_spec("worker", "retire-me"))
@@ -405,7 +423,7 @@ async fn retire_member_transitions_state() {
 
     runtime
         .mob_handle()
-        .retire(meerkat_mob::ids::MeerkatId::from("retire-me"))
+        .retire(meerkat_mob::ids::AgentIdentity::from("retire-me"))
         .await
         .expect("retire should succeed");
 
@@ -416,10 +434,11 @@ async fn retire_member_transitions_state() {
         .iter()
         .find(|m| m.agent_identity.as_str() == "retire-me");
     match retired {
+        // meerkat 0.7: machine-projected status replaces MemberState.
         Some(m) => assert_eq!(
-            m.state,
-            meerkat_mob::MemberState::Retiring,
-            "if still visible, state should be retiring"
+            m.status,
+            meerkat_mob::MobMemberStatus::Retiring,
+            "if still visible, status should be retiring"
         ),
         None => {} // idle member was immediately disposed — acceptable
     }
@@ -431,13 +450,15 @@ async fn retire_member_transitions_state() {
 #[ignore]
 async fn respawn_member_replaces_member() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::builder()
-        .mob_spec(build_mob_spec(&temp_dir))
-        .module_config(empty_module_config())
-        .timeout(Duration::from_secs(2))
-        .build()
-        .await
-        .expect("build unified runtime");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
 
     runtime
         .spawn(spawn_spec("worker", "respawn-me"))
@@ -446,7 +467,7 @@ async fn respawn_member_replaces_member() {
 
     runtime
         .mob_handle()
-        .respawn(meerkat_mob::ids::MeerkatId::from("respawn-me"), None)
+        .respawn(meerkat_mob::ids::AgentIdentity::from("respawn-me"), None)
         .await
         .expect("respawn should succeed");
 

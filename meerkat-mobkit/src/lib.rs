@@ -18,6 +18,7 @@ pub mod http_auth;
 pub mod http_console;
 pub mod http_flow_editor;
 pub mod http_sse;
+pub(crate) mod member_comms_id;
 pub mod mob_handle_runtime;
 pub mod mobpack;
 pub mod mocks;

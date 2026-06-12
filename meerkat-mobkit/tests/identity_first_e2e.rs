@@ -1020,7 +1020,7 @@ async fn identity_first_e2e_11_builder_mutual_exclusivity() {
     let builder = UnifiedRuntimeBuilder::default()
         .persistent_state("/tmp/e2e-test-state")
         .continuity_store(Arc::new(StubContinuity));
-    match builder.build().await {
+    match Box::pin(builder.build()).await {
         Err(e) => {
             let msg = e.to_string();
             assert!(
@@ -1035,7 +1035,7 @@ async fn identity_first_e2e_11_builder_mutual_exclusivity() {
     let builder2 = UnifiedRuntimeBuilder::default()
         .persistent_state("/tmp/e2e-test-state")
         .lease_provider(Arc::new(StubLease));
-    match builder2.build().await {
+    match Box::pin(builder2.build()).await {
         Err(e) => {
             assert!(e.to_string().contains("mutually exclusive"));
         }

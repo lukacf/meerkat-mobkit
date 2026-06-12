@@ -8,7 +8,7 @@
 //     branch (condition + collection over downstream), parallel fan-out/
 //     fan-in (dispatch_mode + collection_policy).
 //   - "Input" is the mob's ingress: the task the run is started with
-//     (`rkat mob deploy <pack> "task…"` / `run_flow(input)`), plus any typed
+//     (`rkat mob run <pack> --prompt "task…"` / `run_flow(input)`), plus any typed
 //     input fields. It is NOT an event source — schedulers/event sources live
 //     outside the mobpack.
 //

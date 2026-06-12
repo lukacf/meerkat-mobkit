@@ -3,7 +3,6 @@
 use base64::Engine;
 use meerkat_contracts::WireRuntimeBinding;
 use meerkat_core::ContentInput;
-use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::launch::{ForkContext, MemberLaunchMode};
 use meerkat_mob::runtime::reconcile::MemberFilter;
 use meerkat_mob::{HelperOptions, MobBackendKind, MobRuntimeMode, ProfileName, SpawnMemberSpec};
@@ -33,7 +32,7 @@ fn runtime_binding_from_wire(
                 peer_id: resolved.peer_id.to_string(),
                 address,
                 bootstrap_token,
-                pubkey: Some(resolved.pubkey),
+                pubkey: resolved.pubkey,
             })
         }
     }
@@ -390,10 +389,24 @@ pub(super) async fn handle_find_members(
             let filter = MemberFilter {
                 labels: std::collections::BTreeMap::from([(key.to_string(), value.to_string())]),
                 role: None,
-                state: None,
+                status: None,
             };
             let handle = runtime.mob_handle();
-            let entries = handle.list_members_matching(filter).await;
+            let entries = match handle.list_members_matching(filter).await {
+                Ok(entries) => entries,
+                Err(err) => {
+                    return JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("member lookup failed: {err}"),
+                            data: None,
+                        }),
+                    };
+                }
+            };
             let mut members = Vec::with_capacity(entries.len());
             for entry in &entries {
                 members.push(member_entry_to_json(entry));
@@ -575,8 +588,10 @@ pub(super) async fn handle_ensure_member(
                 }
             };
 
-            let mut spec =
-                SpawnMemberSpec::new(ProfileName::from(role), MeerkatId::from(agent_identity));
+            let mut spec = SpawnMemberSpec::new(
+                ProfileName::from(role),
+                crate::member_comms_id::mob_member_id(agent_identity),
+            );
             if let Some(runtime_mode) = runtime_mode {
                 spec = spec.with_runtime_mode(runtime_mode);
             }
@@ -667,7 +682,7 @@ pub(super) async fn handle_get_member(
     match member_id {
         Some(mid) if !mid.is_empty() => {
             let handle = runtime.mob_handle();
-            let identity = MeerkatId::from(mid);
+            let identity = crate::member_comms_id::mob_member_id(mid);
             let entries = handle.list_members_including_retiring().await;
             match entries.into_iter().find(|e| e.agent_identity == identity) {
                 Some(entry) => JsonRpcResponse {
@@ -710,7 +725,10 @@ pub(super) async fn handle_retire_member(
     match member_id {
         Some(mid) if !mid.is_empty() => {
             let handle = runtime.mob_handle();
-            match handle.retire(MeerkatId::from(mid)).await {
+            match handle
+                .retire(crate::member_comms_id::mob_member_id(mid))
+                .await
+            {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -759,8 +777,10 @@ pub(super) async fn handle_respawn_member(
     match member_id {
         Some(mid) if !mid.is_empty() => {
             let handle = runtime.mob_handle();
-            let identity = MeerkatId::from(mid);
-            let entry_before_respawn = handle.get_member(&identity).await;
+            let identity = crate::member_comms_id::mob_member_id(mid);
+            // Best-effort repair material: a faulted lookup degrades to None
+            // (the respawn itself surfaces real faults).
+            let entry_before_respawn = handle.get_member(&identity).await.ok().flatten();
             let mut topology_restore_warning = None;
             match handle.respawn(identity.clone(), None).await {
                 Ok(_receipt) => JsonRpcResponse {
@@ -780,7 +800,24 @@ pub(super) async fn handle_respawn_member(
                         topology_restore_warning =
                             Some(topology_restore_warning_json(&failed_peer_ids));
                     } else if lifecycle_archive_cleanup_completed(&err.to_string()) {
-                        if handle.get_member(&identity).await.is_none()
+                        // A faulted lookup must not read as "absent" (that
+                        // would mint a spurious replacement member).
+                        let member_after_cleanup = match handle.get_member(&identity).await {
+                            Ok(member) => member,
+                            Err(lookup_err) => {
+                                return JsonRpcResponse {
+                                    jsonrpc: JSONRPC_VERSION.to_string(),
+                                    id: response_id,
+                                    result: None,
+                                    error: Some(JsonRpcError {
+                                        code: -32000,
+                                        message: format!("respawn_member failed: {lookup_err}"),
+                                        data: None,
+                                    }),
+                                };
+                            }
+                        };
+                        if member_after_cleanup.is_none()
                             && let Some(entry) = entry_before_respawn
                         {
                             let mut spec =
@@ -1068,7 +1105,7 @@ pub(super) async fn handle_cross_mob_wire(
         (Some(local), Some(remote), Some(mob))
             if !local.is_empty() && !remote.is_empty() && !mob.is_empty() =>
         {
-            match runtime.wire_cross_mob(local, remote, mob).await {
+            match Box::pin(runtime.wire_cross_mob(local, remote, mob)).await {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -1120,7 +1157,7 @@ pub(super) async fn handle_cross_mob_unwire(
         (Some(local), Some(remote), Some(mob))
             if !local.is_empty() && !remote.is_empty() && !mob.is_empty() =>
         {
-            match runtime.unwire_cross_mob(local, remote, mob).await {
+            match Box::pin(runtime.unwire_cross_mob(local, remote, mob)).await {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -1302,7 +1339,7 @@ pub(super) async fn handle_member_status(
         Some(mid) if !mid.is_empty() => {
             match runtime
                 .mob_handle()
-                .member_status(&MeerkatId::from(mid))
+                .member_status(&crate::member_comms_id::mob_member_id(mid))
                 .await
             {
                 Ok(snapshot) => JsonRpcResponse {
@@ -1346,7 +1383,7 @@ pub(super) async fn handle_force_cancel_member(
         Some(mid) if !mid.is_empty() => {
             match runtime
                 .mob_handle()
-                .force_cancel_member(MeerkatId::from(mid))
+                .force_cancel_member(crate::member_comms_id::mob_member_id(mid))
                 .await
             {
                 Ok(()) => JsonRpcResponse {
@@ -1406,9 +1443,12 @@ pub(super) async fn handle_spawn_helper(
                 }
             };
             let handle = runtime.mob_handle();
-            match handle
-                .spawn_helper(MeerkatId::from(mid), task_str, options)
-                .await
+            match Box::pin(handle.spawn_helper(
+                crate::member_comms_id::mob_member_id(mid),
+                task_str,
+                options,
+            ))
+            .await
             {
                 Ok(result) => {
                     // Note: meerkat 0.6's `spawn_helper` retires the helper
@@ -1500,15 +1540,14 @@ pub(super) async fn handle_fork_helper(
                 }
             };
             let handle = runtime.mob_handle();
-            match handle
-                .fork_helper(
-                    &MeerkatId::from(source),
-                    MeerkatId::from(mid),
-                    task_str,
-                    fork_context,
-                    options,
-                )
-                .await
+            match Box::pin(handle.fork_helper(
+                &crate::member_comms_id::mob_member_id(source),
+                crate::member_comms_id::mob_member_id(mid),
+                task_str,
+                fork_context,
+                options,
+            ))
+            .await
             {
                 Ok(result) => {
                     // See `handle_spawn_helper`: meerkat 0.6 retires the
@@ -1579,11 +1618,11 @@ pub(super) async fn handle_attach_existing_session(
                     };
                 }
             };
-            let identity = MeerkatId::from(mid);
+            let identity = crate::member_comms_id::mob_member_id(mid);
             let spec = SpawnMemberSpec::new(ProfileName::from(role), identity.clone())
                 .with_launch_mode(MemberLaunchMode::Resume { bridge_session_id });
             let handle = runtime.mob_handle();
-            match handle.spawn_spec(spec).await {
+            match Box::pin(handle.spawn_spec(spec)).await {
                 Ok(_) => match handle.member_status(&identity).await {
                     Ok(snapshot) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
@@ -1706,7 +1745,7 @@ pub(super) async fn handle_run_flow(
                     }),
                 };
             }
-            match runtime.mob_handle().run_flow(flow_id, flow_params).await {
+            match Box::pin(runtime.mob_handle().run_flow(flow_id, flow_params)).await {
                 Ok(run_id) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,

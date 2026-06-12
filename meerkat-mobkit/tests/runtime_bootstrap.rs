@@ -62,14 +62,14 @@ async fn build_runtime_fixture() -> RuntimeFixture {
 id = "phase-a-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]
 comms = true
 
 [profiles.worker]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.worker.tools]
@@ -106,8 +106,7 @@ async fn phase_a_runtime_001_bootstrap_discovery_reconcile_spawn_resume_real_mob
     assert_eq!(handle.status().await.unwrap(), MobState::Running);
     assert!(handle.list_members_including_retiring().await.is_empty());
 
-    handle
-        .spawn_spec(spawn_spec("lead", "lead-1"))
+    Box::pin(handle.spawn_spec(spawn_spec("lead", "lead-1")))
         .await
         .expect("spawn lead");
 
@@ -115,9 +114,11 @@ async fn phase_a_runtime_001_bootstrap_discovery_reconcile_spawn_resume_real_mob
     assert_eq!(discovered_after_spawn.len(), 1);
     assert_eq!(discovered_after_spawn[0].agent_identity.as_str(), "lead-1");
     assert_eq!(discovered_after_spawn[0].role.as_str(), "lead");
+    // meerkat 0.7: roster lifecycle is the machine-projected `status`
+    // (MobMemberStatus), not the removed roster-owned MemberState.
     assert_eq!(
-        discovered_after_spawn[0].state,
-        meerkat_mob::MemberState::Active
+        discovered_after_spawn[0].status,
+        meerkat_mob::MobMemberStatus::Active
     );
 
     let reconcile = handle
@@ -167,12 +168,10 @@ async fn phase_a_runtime_002_reconcile_retires_stale_members_by_default() {
 
     let fixture = build_runtime_fixture().await;
     let handle = fixture.runtime.handle();
-    handle
-        .spawn_spec(spawn_spec("lead", "lead-1"))
+    Box::pin(handle.spawn_spec(spawn_spec("lead", "lead-1")))
         .await
         .expect("spawn lead");
-    handle
-        .spawn_spec(spawn_spec("worker", "worker-1"))
+    Box::pin(handle.spawn_spec(spawn_spec("worker", "worker-1")))
         .await
         .expect("spawn worker");
 

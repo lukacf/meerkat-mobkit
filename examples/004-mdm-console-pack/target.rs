@@ -11,7 +11,7 @@ use meerkat_core::lifecycle::core_executor::{
     CoreExecutorInterruptHandle,
 };
 use meerkat_core::lifecycle::run_primitive::{
-    ConversationContextAppend, CoreRenderable, RunApplyBoundary, RunPrimitive,
+    ConversationContextAppend, RunApplyBoundary, RunPrimitive,
 };
 use meerkat_core::service::{
     CreateSessionRequest, InitialTurnPolicy, SessionBuildOptions, SessionError, SessionService,
@@ -173,12 +173,12 @@ impl CoreExecutor for TargetCoreExecutor {
             prompt,
             system_prompt: None,
             event_tx: None,
+            // meerkat 0.7: render_metadata/skill_references live on the
+            // RuntimeTurnMetadata carrier, not as flat semantics arguments.
             runtime: StartTurnRuntimeSemantics::new(
-                metadata.and_then(|meta| meta.render_metadata.clone()),
                 metadata
                     .and_then(|meta| meta.handling_mode)
                     .unwrap_or(HandlingMode::Queue),
-                metadata.and_then(|meta| meta.skill_references.clone()),
                 metadata.and_then(|meta| meta.flow_tool_overlay.clone()),
                 pre_turn_context_appends,
                 metadata.cloned(),
@@ -206,10 +206,11 @@ impl CoreExecutor for TargetCoreExecutor {
 
     async fn stop_runtime_executor(&mut self, _reason: String) -> Result<(), CoreExecutorError> {
         let discard_result = self.service.discard_live_session(&self.session_id).await;
-        if let Err(error) = self
-            .mob_state
-            .destroy_bridge_session_mobs(&self.session_id.to_string())
-            .await
+        if let Err(error) = Box::pin(
+            self.mob_state
+                .destroy_bridge_session_mobs(&self.session_id.to_string()),
+        )
+        .await
         {
             eprintln!(
                 "[mdm-target] warning: cleanup mobs for session {}: {error}",
@@ -223,21 +224,6 @@ impl CoreExecutor for TargetCoreExecutor {
     }
 }
 
-fn render_runtime_context_append_text(content: &CoreRenderable) -> String {
-    match content {
-        CoreRenderable::Text { text } => text.clone(),
-        CoreRenderable::Blocks { blocks } => meerkat_core::types::text_content(blocks),
-        CoreRenderable::Json { value } => {
-            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
-        }
-        CoreRenderable::Reference { uri, label } => match label {
-            Some(label) if !label.trim().is_empty() => format!("[Reference] {label} ({uri})"),
-            _ => format!("[Reference] {uri}"),
-        },
-        _ => String::new(),
-    }
-}
-
 fn pending_system_context_appends(
     appends: &[ConversationContextAppend],
 ) -> Vec<PendingSystemContextAppend> {
@@ -245,9 +231,13 @@ fn pending_system_context_appends(
     appends
         .iter()
         .map(|append| PendingSystemContextAppend {
-            text: render_runtime_context_append_text(&append.content),
+            // meerkat 0.7: the append carries typed renderable content; the
+            // one lowering to prompt text happens at the render seam.
+            content: append.content.clone(),
             source: Some(append.key.clone()),
             idempotency_key: Some(append.key.clone()),
+            source_kind: meerkat_core::session::SystemContextSource::default(),
+            peer_response_terminal: None,
             accepted_at,
         })
         .collect()
@@ -448,11 +438,12 @@ async fn setup_session(
         .create_session(CreateSessionRequest {
             model: args.model.clone(),
             prompt: ContentInput::Text(String::new()),
-            render_metadata: None,
-            system_prompt: Some(system_prompt),
+            // meerkat 0.7: render_metadata/skill_references moved to
+            // SessionBuildOptions.initial_turn_metadata; system_prompt is the
+            // typed tri-state SystemPromptOverride.
+            system_prompt: meerkat_core::config::SystemPromptOverride::Set(system_prompt),
             max_tokens: None,
             event_tx: None,
-            skill_references: None,
             initial_turn: InitialTurnPolicy::Defer,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::Discard,
             build: Some(build_opts),
@@ -466,10 +457,14 @@ async fn setup_session(
         surface.mob_state.clone(),
         session_id.clone(),
     ));
+    // meerkat 0.7: ensure_session_with_executor returns a Result.
     surface
         .runtime_adapter
         .ensure_session_with_executor(session_id.clone(), executor)
-        .await;
+        .await
+        .map_err(|error| anyhow::anyhow!("ensure session executor: {error}"))?;
+    // meerkat 0.7: update_peer_ingress_context returns a Result; surface
+    // failures instead of formatting the Result.
     let peer_ingress_spawned = surface
         .runtime_adapter
         .update_peer_ingress_context(
@@ -477,7 +472,8 @@ async fn setup_session(
             true,
             Some(comms_runtime as Arc<dyn meerkat_core::agent::CommsRuntime>),
         )
-        .await;
+        .await
+        .map_err(|error| anyhow::anyhow!("enable peer ingress: {error}"))?;
     eprintln!("[mdm-target] peer ingress enabled for {session_id}; spawned={peer_ingress_spawned}");
     Ok(session_id)
 }

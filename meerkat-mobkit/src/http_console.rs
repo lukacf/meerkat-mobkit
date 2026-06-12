@@ -15,7 +15,7 @@ use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerDescriptor;
 use meerkat_core::event::agent_event_type;
 use meerkat_mob::MobState;
-use meerkat_mob::ids::{MeerkatId, MobId};
+use meerkat_mob::ids::{AgentIdentity, MobId};
 use meerkat_mob::launch::MemberLaunchMode;
 use meerkat_mob::runtime::reconcile::MemberFilter;
 use meerkat_mob::{
@@ -49,7 +49,9 @@ use crate::console_aggregator::{
 };
 use crate::contact_directory::ContactDirectory;
 use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
-use crate::mob_handle_runtime::{MEMBER_STATE_ACTIVE, MEMBER_STATE_RETIRING, MobRuntime};
+use crate::mob_handle_runtime::{
+    MEMBER_STATE_ACTIVE, MEMBER_STATE_RETIRING, MobRuntime, member_status_state_string,
+};
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::MobkitRuntimeHandle;
 use crate::runtime::{
@@ -136,7 +138,7 @@ impl ConsoleSnapshotReadModel {
     /// list before the read model has been populated.
     async fn snapshot(&self, runtime: &MobRuntime) -> ConsoleSnapshotReadModelState {
         if !self.primed.load(std::sync::atomic::Ordering::Acquire) {
-            self.prime_now(runtime).await;
+            Box::pin(self.prime_now(runtime)).await;
         }
         self.inner.read().await.clone()
     }
@@ -168,7 +170,7 @@ impl ConsoleSnapshotReadModel {
         if self.primed.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
-        let refreshed = collect_console_snapshot_read_model(runtime).await;
+        let refreshed = Box::pin(collect_console_snapshot_read_model(runtime)).await;
         *self.inner.write().await = refreshed;
         self.primed
             .store(true, std::sync::atomic::Ordering::Release);
@@ -194,7 +196,7 @@ impl ConsoleSnapshotReadModel {
         let primed = Arc::clone(&self.primed);
         runtime_handle.spawn(async move {
             let _guard = guard;
-            let refreshed = collect_console_snapshot_read_model(&runtime).await;
+            let refreshed = Box::pin(collect_console_snapshot_read_model(&runtime)).await;
             *inner.write().await = refreshed;
             primed.store(true, std::sync::atomic::Ordering::Release);
             // _guard drops; cold-cache waiters parked on
@@ -461,20 +463,23 @@ pub async fn console_json_handler(
         Some(runtime) => {
             state.snapshot_read_model.refresh_soon(runtime.clone());
             Some(
-                build_live_snapshot(
+                Box::pin(build_live_snapshot(
                     runtime,
                     &config_module_ids,
                     state.console_events.as_ref(),
                     state.visibility_policy.as_ref(),
                     &state.snapshot_read_model,
-                )
+                ))
                 .await,
             )
         }
         None => match &state.console_aggregator {
-            Some(aggregator) => build_aggregator_live_snapshot(aggregator, &config_module_ids)
-                .await
-                .ok(),
+            Some(aggregator) => Box::pin(build_aggregator_live_snapshot(
+                aggregator,
+                &config_module_ids,
+            ))
+            .await
+            .ok(),
             None => None,
         },
     }
@@ -616,7 +621,7 @@ async fn console_identities_handler(
         );
     };
     let aggregator = aggregator.clone();
-    match aggregator.list_identities().await {
+    match Box::pin(aggregator.list_identities()).await {
         Ok(mut identities) => {
             retain_visible_identity_records(&mut identities, auth_context.access_view.as_ref());
             (
@@ -805,8 +810,11 @@ async fn console_send_identity_first(
     let (identity, status) = match identity_runtime.status(&parsed_identity).await {
         Ok(status) => (parsed_identity, status),
         Err(original_err) => {
-            let Some(canonical_identity) =
-                resolve_console_send_identity_alias(aggregator, &requested_identity).await
+            let Some(canonical_identity) = Box::pin(resolve_console_send_identity_alias(
+                aggregator,
+                &requested_identity,
+            ))
+            .await
             else {
                 return Err(identity_runtime_error_to_console_send_error(
                     requested_identity.as_str(),
@@ -979,7 +987,9 @@ async fn start_identity_first_console_live_projection(
     let runtime_member_id = runtime_member_id.to_string();
     let mut stream = match runtime
         .handle()
-        .subscribe_agent_events(&MeerkatId::from(runtime_member_id.as_str()))
+        .subscribe_agent_events(&crate::member_comms_id::mob_member_id(
+            runtime_member_id.as_str(),
+        ))
         .await
     {
         Ok(stream) => stream,
@@ -1004,7 +1014,13 @@ async fn start_identity_first_console_live_projection(
                 event: UnifiedEvent::Agent {
                     agent_id: runtime_member_id.clone(),
                     event_type: event_type.clone(),
-                    payload: serde_json::to_value(&envelope.payload).ok(),
+                    // Console wire shape, not the raw 0.7 event: keeps the
+                    // derived `result` text (and `tool_call_id` mirror) that
+                    // the embedded console's adapters and image-frame
+                    // projection consume.
+                    payload: Some(crate::mob_handle_runtime::console_agent_event_payload(
+                        &envelope.payload,
+                    )),
                 },
             };
             console_events.project_unified_event(&unified).await;
@@ -1029,7 +1045,7 @@ async fn resolve_console_send_identity_alias(
     aggregator: &MobKitConsoleAggregator,
     requested_identity: &str,
 ) -> Option<String> {
-    let identities = aggregator.list_identities().await.ok()?;
+    let identities = Box::pin(aggregator.list_identities()).await.ok()?;
     identities
         .into_iter()
         .find(|record| {
@@ -1148,7 +1164,7 @@ async fn console_timeline_stream_handler(
         loop {
             match rx.recv().await {
                 Ok(event) if timeline_event_matches(&event, identity.as_deref(), conversation_id.as_deref()) => {
-                    if !aggregator.timeline_event_visible(&event).await {
+                    if !Box::pin(aggregator.timeline_event_visible(&event)).await {
                         continue;
                     }
                     if let Some(view) = access_view.as_ref()
@@ -2588,7 +2604,7 @@ fn runtime_binding_from_wire(
                 peer_id: resolved.peer_id.to_string(),
                 address,
                 bootstrap_token,
-                pubkey: Some(resolved.pubkey),
+                pubkey: resolved.pubkey,
             })
         }
     }
@@ -2742,12 +2758,12 @@ fn console_identity_status_json_for_identity(
 ) -> Value {
     json!({
         "identity": identity,
-        "state": member.state,
+        "state": member_status_state_string(member.status),
         "role": member.role.to_string(),
         "addressability": member_addressability(member),
         "display_name": member.labels.get("display_name"),
         "labels": member.labels,
-        "agent_runtime_id": member.agent_identity.to_string(),
+        "agent_runtime_id": crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()),
         "session_id": session_id,
         "generation": Value::Null,
         "checkpoint_version": Value::Null,
@@ -2767,7 +2783,7 @@ fn console_identity_inspect_json_for_identity(
     let peers: Vec<String> = member.wired_to.iter().map(ToString::to_string).collect();
     json!({
         "identity": identity,
-        "state": member.state,
+        "state": member_status_state_string(member.status),
         "role": member.role.to_string(),
         "addressability": member_addressability(member),
         "display_name": member.labels.get("display_name"),
@@ -2779,7 +2795,7 @@ fn console_identity_inspect_json_for_identity(
             "generation": Value::Null,
             "checkpoint_version": Value::Null,
             "session_id": session_id,
-            "agent_runtime_id": member.agent_identity.to_string(),
+            "agent_runtime_id": crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()),
         },
         "topology_peers": peers,
         "output_preview": Value::Null,
@@ -2792,7 +2808,7 @@ fn console_identity_inspect_json_for_identity(
 /// Returns `None` if no member with the given identity exists.
 async fn lookup_member_with_session(
     handle: &MobHandle,
-    identity: &MeerkatId,
+    identity: &AgentIdentity,
 ) -> Option<(meerkat_mob::runtime::MobMemberListEntry, Option<String>)> {
     let entries = handle.list_members_including_retiring().await;
     let entry = entries
@@ -2819,7 +2835,10 @@ fn durable_identity_for_member(member: &meerkat_mob::runtime::MobMemberListEntry
         .get("agent_identity")
         .filter(|value| !value.trim().is_empty())
         .cloned()
-        .unwrap_or_else(|| member.agent_identity.to_string())
+        // Fallback surfaces the public alias, not the comms-safe roster id.
+        .unwrap_or_else(|| {
+            crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()).into_owned()
+        })
 }
 
 async fn lookup_member_alias_with_session(
@@ -2868,7 +2887,9 @@ async fn lookup_member_alias_candidates_with_session(
     handle: &MobHandle,
     requested_identity: &str,
 ) -> Vec<ConsoleRuntimeIdentityAlias> {
-    let requested_member_id = MeerkatId::from(requested_identity);
+    // Requested identities arrive in the public alias space; roster ids are
+    // their comms-safe encodings (meerkat 0.7 MemberCommsName).
+    let requested_member_id = crate::member_comms_id::mob_member_id(requested_identity);
     let entries = handle.list_members_including_retiring().await;
     let exact_matches = entries
         .iter()
@@ -2891,7 +2912,8 @@ async fn lookup_member_alias_candidates_with_session(
     matches.retain(|entry| seen_member_ids.insert(entry.agent_identity.to_string()));
     let mut aliases = Vec::with_capacity(matches.len());
     for member in matches {
-        let runtime_member_id = member.agent_identity.to_string();
+        let runtime_member_id =
+            crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()).into_owned();
         let identity = durable_identity_for_member(&member);
         let session_id = handle
             .resolve_bridge_session_id_observation(&member.agent_identity)
@@ -2952,12 +2974,13 @@ async fn lookup_member_runtime_alias_with_session(
     handle: &MobHandle,
     runtime_member_id: &str,
 ) -> Option<ConsoleRuntimeIdentityAlias> {
-    let requested_member_id = MeerkatId::from(runtime_member_id);
+    let requested_member_id = crate::member_comms_id::mob_member_id(runtime_member_id);
     let entries = handle.list_members_including_retiring().await;
     let member = entries
         .into_iter()
         .find(|entry| entry.agent_identity == requested_member_id)?;
-    let runtime_member_id = member.agent_identity.to_string();
+    let runtime_member_id =
+        crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()).into_owned();
     let identity = durable_identity_for_member(&member);
     let session_id = handle
         .resolve_bridge_session_id_observation(&member.agent_identity)
@@ -3379,10 +3402,7 @@ fn console_member_from_runtime_alias(
     ConsoleMember {
         agent_identity: alias.runtime_member_id.clone(),
         role: alias.member.role.to_string(),
-        state: match alias.member.state {
-            meerkat_mob::MemberState::Active => MEMBER_STATE_ACTIVE.to_string(),
-            meerkat_mob::MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
-        },
+        state: member_status_state_string(alias.member.status),
         model_capabilities: model_capabilities_for_member_entry(handle.definition(), &alias.member),
         runtime_mode: Some(alias.member.runtime_mode.to_string()),
         session_id: alias.session_id.clone(),
@@ -3390,7 +3410,7 @@ fn console_member_from_runtime_alias(
             .member
             .wired_to
             .iter()
-            .map(ToString::to_string)
+            .map(|peer| crate::member_comms_id::runtime_alias_str(peer.as_str()).into_owned())
             .collect(),
         labels: alias.member.labels.clone(),
     }
@@ -3405,11 +3425,18 @@ fn console_identity_record_from_runtime_alias(
         .get("addressable")
         .map(|value| !value.eq_ignore_ascii_case("false"))
         .unwrap_or(true)
-        && alias.member.state == meerkat_mob::MemberState::Active;
-    let visibility = match alias.member.state {
-        meerkat_mob::MemberState::Retiring => ConsoleVisibility::RetiredReadable,
-        meerkat_mob::MemberState::Active if addressable => ConsoleVisibility::Addressable,
-        meerkat_mob::MemberState::Active => ConsoleVisibility::Hidden,
+        && alias.member.status == meerkat_mob::MobMemberStatus::Active;
+    let visibility = match alias.member.status {
+        meerkat_mob::MobMemberStatus::Retiring | meerkat_mob::MobMemberStatus::Completed => {
+            ConsoleVisibility::RetiredReadable
+        }
+        // Broken/unknown members have no live runtime binding; mirror the
+        // identity-first projection, which marks them unreachable.
+        meerkat_mob::MobMemberStatus::Broken | meerkat_mob::MobMemberStatus::Unknown => {
+            ConsoleVisibility::Unreachable
+        }
+        _ if addressable => ConsoleVisibility::Addressable,
+        _ => ConsoleVisibility::Hidden,
     };
     ConsoleIdentityRecord {
         identity: alias.identity.clone(),
@@ -3424,11 +3451,13 @@ fn console_identity_record_from_runtime_alias(
         session_id: alias.session_id.clone(),
         visibility,
         addressable,
-        health: match alias.member.state {
-            meerkat_mob::MemberState::Active => "ready",
-            meerkat_mob::MemberState::Retiring => "retired",
-        }
-        .to_string(),
+        health: match alias.member.status {
+            meerkat_mob::MobMemberStatus::Active => "ready".to_string(),
+            meerkat_mob::MobMemberStatus::Retiring => "retired".to_string(),
+            // New machine statuses surface verbatim (broken/completed/unknown),
+            // matching the identity-first health vocabulary.
+            other => format!("{other:?}").to_ascii_lowercase(),
+        },
         topology_peers: alias
             .member
             .wired_to
@@ -3563,9 +3592,11 @@ fn lifecycle_archive_cleanup_completed(error: &str) -> bool {
 
 async fn respawn_console_member(
     handle: &MobHandle,
-    runtime_member_id: &MeerkatId,
+    runtime_member_id: &AgentIdentity,
 ) -> Result<Option<Value>, String> {
-    let entry_before_respawn = handle.get_member(runtime_member_id).await;
+    // Best-effort repair material: a faulted lookup degrades to None (the
+    // respawn itself surfaces real faults).
+    let entry_before_respawn = handle.get_member(runtime_member_id).await.ok().flatten();
     match handle.respawn(runtime_member_id.clone(), None).await {
         Ok(_receipt) => Ok(None),
         Err(err) => {
@@ -3580,7 +3611,13 @@ async fn respawn_console_member(
             }
 
             if lifecycle_archive_cleanup_completed(&err.to_string()) {
-                if handle.get_member(runtime_member_id).await.is_none()
+                // A faulted lookup must not read as "absent" (that would mint
+                // a spurious replacement member); surface it instead.
+                if handle
+                    .get_member(runtime_member_id)
+                    .await
+                    .map_err(|lookup_err| lookup_err.to_string())?
+                    .is_none()
                     && let Some(entry) = entry_before_respawn
                 {
                     let mut spec =
@@ -3603,7 +3640,7 @@ async fn respawn_console_member(
 
 async fn retire_console_member(
     handle: &MobHandle,
-    runtime_member_id: &MeerkatId,
+    runtime_member_id: &AgentIdentity,
 ) -> Result<(), String> {
     match handle.retire(runtime_member_id.clone()).await {
         Ok(()) => Ok(()),
@@ -3632,7 +3669,7 @@ async fn retire_stale_console_members_for_identity(
                     .map(|keep| alias.runtime_member_id != keep)
                     .unwrap_or(true)
         })
-        .map(|alias| MeerkatId::from(alias.runtime_member_id.as_str()))
+        .map(|alias| crate::member_comms_id::mob_member_id(alias.runtime_member_id.as_str()))
         .collect::<Vec<_>>();
     for member_id in stale_members {
         retire_console_member(handle, &member_id).await?;
@@ -3725,7 +3762,7 @@ async fn handle_console_aggregator_rpc(
             let Some(aggregator) = &console_aggregator else {
                 return console_aggregator_unavailable(response_id);
             };
-            match aggregator.list_identities().await {
+            match Box::pin(aggregator.list_identities()).await {
                 Ok(mut identities) => {
                     retain_visible_identity_records(&mut identities, access_view);
                     response_value(response_id, Some(json!({ "identities": identities })), None)
@@ -4135,7 +4172,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }),
                 );
             };
-            match aggregator.list_identities().await {
+            match Box::pin(aggregator.list_identities()).await {
                 Ok(mut identities) => {
                     retain_visible_identity_records(&mut identities, access_view);
                     response_value(response_id, Some(json!({ "identities": identities })), None)
@@ -4318,7 +4355,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 return invalid_params(response_id, "member_id required");
             };
             let handle = runtime.handle();
-            let identity = MeerkatId::from(member_id);
+            let identity = crate::member_comms_id::mob_member_id(member_id);
             let entries = handle.list_members_including_retiring().await;
             match entries.into_iter().find(|e| e.agent_identity == identity) {
                 Some(entry) => response_value(
@@ -4344,9 +4381,14 @@ async fn handle_console_runtime_rpc_with_visibility(
                     label_value.to_string(),
                 )]),
                 role: None,
-                state: None,
+                status: None,
             };
-            let entries = handle.list_members_matching(filter).await;
+            let entries = match handle.list_members_matching(filter).await {
+                Ok(entries) => entries,
+                Err(err) => {
+                    return invalid_params(response_id, format!("member lookup failed: {err}"));
+                }
+            };
             let mut matches = Vec::with_capacity(entries.len());
             for entry in &entries {
                 matches.push(member_entry_to_console_json(runtime, entry).await);
@@ -4722,7 +4764,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                             {
                                 return identity_hidden_by_policy_response(response_id, identity);
                             }
-                            let mid = MeerkatId::from(alias.runtime_member_id.as_str());
+                            let mid = crate::member_comms_id::mob_member_id(
+                                alias.runtime_member_id.as_str(),
+                            );
                             return match retire_console_member(&handle, &mid).await {
                                 Ok(()) => {
                                     if let Some(store) = &console_events {
@@ -4806,7 +4850,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             {
                 return response_value(response_id, None, Some(err));
             }
-            let mid = MeerkatId::from(alias.runtime_member_id.as_str());
+            let mid = crate::member_comms_id::mob_member_id(alias.runtime_member_id.as_str());
             match retire_console_member(&handle, &mid).await {
                 Ok(()) => {
                     if let Some(store) = &console_events {
@@ -4871,17 +4915,21 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 match identity_runtime.respawn(&parsed_identity).await {
                     Ok(mut record) => {
-                        let live_respawn_warning = match respawn_console_member(
+                        let live_respawn_warning = match Box::pin(respawn_console_member(
                             &handle,
-                            &MeerkatId::from(record.agent_runtime_id.as_str()),
-                        )
+                            &crate::member_comms_id::mob_member_id(
+                                record.agent_runtime_id.as_str(),
+                            ),
+                        ))
                         .await
                         {
                             Ok(topology_restore_warning) => {
                                 let live_session_id = handle
-                                    .resolve_bridge_session_id_observation(&MeerkatId::from(
-                                        record.agent_runtime_id.as_str(),
-                                    ))
+                                    .resolve_bridge_session_id_observation(
+                                        &crate::member_comms_id::mob_member_id(
+                                            record.agent_runtime_id.as_str(),
+                                        ),
+                                    )
                                     .await;
                                 if let Some(live_session_id) = live_session_id {
                                     match identity_runtime
@@ -4994,8 +5042,8 @@ async fn handle_console_runtime_rpc_with_visibility(
             {
                 return response_value(response_id, None, Some(err));
             }
-            let mid = MeerkatId::from(alias.runtime_member_id.as_str());
-            match respawn_console_member(&handle, &mid).await {
+            let mid = crate::member_comms_id::mob_member_id(alias.runtime_member_id.as_str());
+            match Box::pin(respawn_console_member(&handle, &mid)).await {
                 Ok(topology_restore_warning) => {
                     if let Some(store) = &console_events {
                         store
@@ -5077,8 +5125,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                         if !runtime_alias_visible_to_console(&handle, visibility_policy, alias) {
                             return identity_hidden_by_policy_response(response_id, identity);
                         }
-                        let mid = MeerkatId::from(alias.runtime_member_id.as_str());
-                        let response = match respawn_console_member(&handle, &mid).await {
+                        let mid =
+                            crate::member_comms_id::mob_member_id(alias.runtime_member_id.as_str());
+                        let response = match Box::pin(respawn_console_member(&handle, &mid)).await {
                             Ok(topology_restore_warning) => {
                                 if let Some(store) = &console_events {
                                     store
@@ -5528,8 +5577,10 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(value) => value,
                 Err(message) => return invalid_params(response_id, message),
             };
-            let mut spec =
-                SpawnMemberSpec::new(ProfileName::from(role), MeerkatId::from(agent_identity));
+            let mut spec = SpawnMemberSpec::new(
+                ProfileName::from(role),
+                crate::member_comms_id::mob_member_id(agent_identity),
+            );
             if let Some(runtime_mode) = runtime_mode {
                 spec = spec.with_runtime_mode(runtime_mode);
             }
@@ -5587,7 +5638,11 @@ async fn handle_console_runtime_rpc_with_visibility(
                     Err(err) => internal_error(response_id, format!("retire_member failed: {err}")),
                 };
             }
-            match runtime.handle().retire(MeerkatId::from(member_id)).await {
+            match runtime
+                .handle()
+                .retire(crate::member_comms_id::mob_member_id(member_id))
+                .await
+            {
                 Ok(()) => response_value(
                     response_id,
                     Some(serde_json::json!({ "accepted": true })),
@@ -5602,7 +5657,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             match runtime
                 .handle()
-                .respawn(MeerkatId::from(member_id), None)
+                .respawn(crate::member_comms_id::mob_member_id(member_id), None)
                 .await
             {
                 Ok(_receipt) => response_value(
@@ -5726,7 +5781,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             match runtime
                 .handle()
-                .member_status(&MeerkatId::from(member_id))
+                .member_status(&crate::member_comms_id::mob_member_id(member_id))
                 .await
             {
                 Ok(snapshot) => response_value(
@@ -5743,7 +5798,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             match runtime
                 .handle()
-                .force_cancel_member(MeerkatId::from(member_id))
+                .force_cancel_member(crate::member_comms_id::mob_member_id(member_id))
                 .await
             {
                 Ok(()) => response_value(
@@ -5917,7 +5972,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     format!("identity-first flow materialization failed: {err}"),
                 );
             }
-            match runtime.handle().run_flow(flow_id, flow_params).await {
+            match Box::pin(runtime.handle().run_flow(flow_id, flow_params)).await {
                 Ok(run_id) => response_value(
                     response_id,
                     Some(serde_json::json!({ "run_id": run_id.to_string() })),
@@ -5939,9 +5994,12 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Err(msg) => return invalid_params(response_id, msg),
             };
             let handle = runtime.handle();
-            match handle
-                .spawn_helper(MeerkatId::from(agent_identity), task, options)
-                .await
+            match Box::pin(handle.spawn_helper(
+                crate::member_comms_id::mob_member_id(agent_identity),
+                task,
+                options,
+            ))
+            .await
             {
                 Ok(result) => {
                     // Meerkat 0.6 retires the helper before `spawn_helper`
@@ -5994,15 +6052,14 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Err(msg) => return invalid_params(response_id, msg),
             };
             let handle = runtime.handle();
-            match handle
-                .fork_helper(
-                    &MeerkatId::from(source),
-                    MeerkatId::from(agent_identity),
-                    task,
-                    fork_context,
-                    options,
-                )
-                .await
+            match Box::pin(handle.fork_helper(
+                &crate::member_comms_id::mob_member_id(source),
+                crate::member_comms_id::mob_member_id(agent_identity),
+                task,
+                fork_context,
+                options,
+            ))
+            .await
             {
                 Ok(result) => {
                     // See `spawn_helper`: meerkat 0.6 retires the forked
@@ -6036,11 +6093,11 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(s) => s,
                 Err(_) => return invalid_params(response_id, "invalid session_id format"),
             };
-            let mid = MeerkatId::from(agent_identity);
+            let mid = crate::member_comms_id::mob_member_id(agent_identity);
             let spec = SpawnMemberSpec::new(ProfileName::from(role), mid.clone())
                 .with_launch_mode(MemberLaunchMode::Resume { bridge_session_id });
             let handle = runtime.handle();
-            match handle.spawn_spec(spec).await {
+            match Box::pin(handle.spawn_spec(spec)).await {
                 Ok(_) => match handle.member_status(&mid).await {
                     Ok(snapshot) => response_value(
                         response_id,
@@ -6086,9 +6143,18 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Some(mid) if !mid.is_empty() => {
                     let handle = runtime.handle();
                     let mob_id = handle.mob_id().to_string();
-                    let meerkat_id = MeerkatId::from(mid);
+                    let meerkat_id = crate::member_comms_id::mob_member_id(mid);
                     match handle.get_member(&meerkat_id).await {
-                        Some(entry) => match entry.peer_id() {
+                        Err(err) => response_value(
+                            response_id,
+                            None,
+                            Some(JsonRpcError {
+                                code: -32000,
+                                message: format!("member lookup failed: {err}"),
+                                data: None,
+                            }),
+                        ),
+                        Ok(Some(entry)) => match entry.peer_id() {
                             Some(peer_id) => {
                                 let comms_name = format!("{}/{}/{}", mob_id, entry.role, mid);
                                 let address = format!("inproc://{comms_name}");
@@ -6114,7 +6180,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                                 }),
                             ),
                         },
-                        None => response_value(
+                        Ok(None) => response_value(
                             response_id,
                             None,
                             Some(JsonRpcError {
@@ -6315,12 +6381,18 @@ async fn handle_console_wire_local(
     let result = if wire {
         runtime
             .handle()
-            .wire(MeerkatId::from(local_id), PeerTarget::External(spec))
+            .wire(
+                crate::member_comms_id::mob_member_id(local_id),
+                PeerTarget::External(spec),
+            )
             .await
     } else {
         runtime
             .handle()
-            .unwire(MeerkatId::from(local_id), PeerTarget::External(spec))
+            .unwire(
+                crate::member_comms_id::mob_member_id(local_id),
+                PeerTarget::External(spec),
+            )
             .await
     };
 
@@ -6346,7 +6418,7 @@ async fn build_live_snapshot(
     visibility_policy: &dyn ConsoleVisibilityPolicy,
     read_model: &ConsoleSnapshotReadModel,
 ) -> ConsoleLiveSnapshot {
-    let read_model_state = read_model.snapshot(runtime).await;
+    let read_model_state = Box::pin(read_model.snapshot(runtime)).await;
     let running = read_model_state.running.unwrap_or(true);
     // Hot path: clone the pre-projected members from the cached read
     // model. NO `handle.*` async calls happen here — the background
@@ -6472,16 +6544,22 @@ async fn collect_console_snapshot_read_model(
     let mut delegate_groups: Vec<Vec<ConsoleMember>> = Vec::new();
     loop {
         let mut progressed = false;
-        for (mob_id, delegate_handle) in mcp_state.mob_handles_snapshot().await {
+        for (mob_id, delegate_handle) in Box::pin(mcp_state.mob_handles_snapshot()).await {
             if processed.contains(mob_id.as_str()) {
                 continue;
             }
-            let Some(owner_session_id) = delegate_handle.definition().owner_bridge_session_index()
+            // Meerkat 0.7: the owner bridge binding is machine-owned state,
+            // no longer a definition-level index.
+            let Some(owner_authority) = delegate_handle.owner_bridge_session_lifecycle_authority()
             else {
                 processed.insert(mob_id.to_string());
                 continue;
             };
-            let Some(host_identity) = state.session_owner_by_id.get(owner_session_id).cloned()
+            let owner_session_id = owner_authority.bridge_session_id.to_string();
+            let Some(host_identity) = state
+                .session_owner_by_id
+                .get(owner_session_id.as_str())
+                .cloned()
             else {
                 continue;
             };
@@ -6511,7 +6589,10 @@ async fn collect_console_session_index_for_handle(
     state: &mut ConsoleSnapshotReadModelState,
 ) {
     for entry in handle.list_members_observation_snapshot().await {
-        let identity = entry.agent_identity.to_string();
+        // Session read-model keys live in the public alias space (decoded
+        // from the comms-safe roster id, meerkat 0.7).
+        let identity =
+            crate::member_comms_id::runtime_alias_str(entry.agent_identity.as_str()).into_owned();
         let Some(session_id) = handle
             .resolve_bridge_session_id_observation(&entry.agent_identity)
             .await
@@ -6557,21 +6638,27 @@ async fn reset_all_live_console_agents(
     visibility_policy: &dyn ConsoleVisibilityPolicy,
 ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
     let read_model = ConsoleSnapshotReadModel::default();
-    *read_model.inner.write().await = collect_console_snapshot_read_model(runtime).await;
+    *read_model.inner.write().await = Box::pin(collect_console_snapshot_read_model(runtime)).await;
     // Mark the freshly-built model primed so `build_live_snapshot` doesn't
     // try to re-prime; this is a one-shot read for the reset path.
     read_model
         .primed
         .store(true, std::sync::atomic::Ordering::Release);
-    let snapshot =
-        build_live_snapshot(runtime, &[], console_events, visibility_policy, &read_model).await;
-    let raw_snapshot = build_live_snapshot(
+    let snapshot = Box::pin(build_live_snapshot(
+        runtime,
+        &[],
+        console_events,
+        visibility_policy,
+        &read_model,
+    ))
+    .await;
+    let raw_snapshot = Box::pin(build_live_snapshot(
         runtime,
         &[],
         console_events,
         &crate::console_aggregator::AllowAllConsoleVisibilityPolicy,
         &read_model,
-    )
+    ))
     .await;
     let identity_runtime_statuses = if let Some(identity_runtime) = identity_runtime {
         identity_runtime.statuses().await
@@ -6831,9 +6918,13 @@ async fn reset_all_live_console_agents(
 
     if let Some(state) = runtime.agent_mob_mcp_state() {
         for (mob_id, identity) in delegate_members {
-            match state.handle_for(&MobId::from(mob_id.as_str())).await {
+            match Box::pin(state.handle_for(&MobId::from(mob_id.as_str()))).await {
                 Ok(handle) => {
-                    match retire_console_member(&handle, &MeerkatId::from(identity.as_str())).await
+                    match retire_console_member(
+                        &handle,
+                        &crate::member_comms_id::mob_member_id(identity.as_str()),
+                    )
+                    .await
                     {
                         Ok(()) => {
                             let detail = json!({
@@ -7099,7 +7190,12 @@ async fn reset_all_live_console_agents(
                 }));
                 continue;
             }
-            match respawn_console_member(&handle, &MeerkatId::from(runtime_member_id)).await {
+            match Box::pin(respawn_console_member(
+                &handle,
+                &crate::member_comms_id::mob_member_id(runtime_member_id),
+            ))
+            .await
+            {
                 Ok(topology_restore_warning) => {
                     if let Some(store) = console_events {
                         store
@@ -7275,7 +7371,12 @@ async fn reset_all_live_console_agents(
                 }));
                 continue;
             }
-            match retire_console_member(&handle, &MeerkatId::from(runtime_member_id)).await {
+            match retire_console_member(
+                &handle,
+                &crate::member_comms_id::mob_member_id(runtime_member_id),
+            )
+            .await
+            {
                 Ok(()) => {
                     if let Some(store) = console_events {
                         store
@@ -7501,7 +7602,10 @@ async fn prime_access_cache_from_handle_with_registry(
     let mut registry_only: BTreeMap<&String, &BTreeMap<String, String>> =
         registered.iter().collect();
     for entry in handle.list_all_members().await {
-        let member_identity = entry.agent_identity.to_string();
+        // Roster ids are comms-safe encodings (meerkat 0.7); the console/ABAC
+        // attribute space uses the public alias.
+        let member_identity =
+            crate::member_comms_id::runtime_alias_str(entry.agent_identity.as_str()).into_owned();
         // Console identity may be overridden by a label, mirroring
         // `console_member_console_identity`.
         let console_identity = entry
@@ -7542,11 +7646,17 @@ async fn project_console_members_from_handle(
     read_model: &ConsoleSnapshotReadModelState,
     registered_labels: &BTreeMap<String, BTreeMap<String, String>>,
 ) -> (Vec<ConsoleMember>, BTreeMap<String, String>) {
-    let entries = handle.list_all_members().await;
+    // Meerkat 0.7: lifecycle status is machine-projected onto
+    // `MobMemberListEntry`; the structural `list_all_members` roster no longer
+    // carries it, so the console projection reads the operational list.
+    let entries = handle.list_members_including_retiring().await;
     let mut members = Vec::with_capacity(entries.len());
     let mut session_owner_by_id = BTreeMap::new();
     for entry in &entries {
-        let identity = entry.agent_identity.to_string();
+        // Roster ids are comms-safe encodings (meerkat 0.7 MemberCommsName);
+        // console members surface the public alias.
+        let identity =
+            crate::member_comms_id::runtime_alias_str(entry.agent_identity.as_str()).into_owned();
         let session_id = read_model.session_id_by_identity.get(&identity).cloned();
         if let Some(session_id) = session_id.as_ref() {
             session_owner_by_id.insert(session_id.clone(), identity.clone());
@@ -7581,7 +7691,11 @@ async fn project_console_members_from_handle(
                 .entry("source_mob_id".to_string())
                 .or_insert_with(|| source_mob_id.to_string());
         }
-        let mut wired_to: Vec<String> = entry.wired_to.iter().map(ToString::to_string).collect();
+        let mut wired_to: Vec<String> = entry
+            .wired_to
+            .iter()
+            .map(|peer| crate::member_comms_id::runtime_alias_str(peer.as_str()).into_owned())
+            .collect();
         if let Some(host_identity) = host_identity
             && !wired_to.iter().any(|peer| peer == host_identity)
         {
@@ -7590,10 +7704,7 @@ async fn project_console_members_from_handle(
         members.push(ConsoleMember {
             agent_identity: identity,
             role: entry.role.to_string(),
-            state: match entry.state {
-                meerkat_mob::MemberState::Active => MEMBER_STATE_ACTIVE.to_string(),
-                meerkat_mob::MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
-            },
+            state: member_status_state_string(entry.status),
             model_capabilities,
             runtime_mode: Some(entry.runtime_mode.to_string()),
             session_id,
@@ -7608,7 +7719,7 @@ async fn build_aggregator_live_snapshot(
     aggregator: &MobKitConsoleAggregator,
     config_module_ids: &[String],
 ) -> Result<ConsoleLiveSnapshot, Box<dyn std::error::Error + Send + Sync>> {
-    let identities = aggregator.list_identities().await?;
+    let identities = Box::pin(aggregator.list_identities()).await?;
     let mut members = Vec::with_capacity(identities.len());
     for identity in &identities {
         let mut labels = identity.labels.clone();
@@ -8091,7 +8202,9 @@ comms = true
             .spawn_spec(
                 SpawnMemberSpec::from_wire(
                     "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
+                    // meerkat 0.7: roster ids are comms-safe encodings of the
+                    // public alias (MemberCommsName rejects ":").
+                    crate::member_comms_id::mob_member_id_str("rt:review:singleton:0").into_owned(),
                     Some("You are Review Agent.".into()),
                     None,
                     None,
@@ -8233,7 +8346,9 @@ comms = true
                 .spawn_spec(
                     SpawnMemberSpec::from_wire(
                         "worker".to_string(),
-                        runtime_id.to_string(),
+                        // meerkat 0.7: roster ids are comms-safe encodings of
+                        // the public alias (MemberCommsName rejects ":").
+                        crate::member_comms_id::mob_member_id_str(runtime_id).into_owned(),
                         Some("You are a duplicate Review Agent.".into()),
                         None,
                         None,
@@ -8332,7 +8447,9 @@ comms = true
                 .spawn_spec(
                     SpawnMemberSpec::from_wire(
                         "worker".to_string(),
-                        runtime_id.to_string(),
+                        // meerkat 0.7: roster ids are comms-safe encodings of
+                        // the public alias (MemberCommsName rejects ":").
+                        crate::member_comms_id::mob_member_id_str(runtime_id).into_owned(),
                         Some("You are a Review Agent candidate.".into()),
                         None,
                         None,
@@ -8356,7 +8473,7 @@ comms = true
         let identity = AgentIdentity::parse("review:singleton")?;
         let registered_session_id = runtime
             .handle()
-            .resolve_bridge_session_id_observation(&meerkat_mob::ids::MeerkatId::from(
+            .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
                 "rt:review:singleton:0",
             ))
             .await
@@ -8465,7 +8582,9 @@ comms = true
             .spawn_spec(
                 SpawnMemberSpec::from_wire(
                     "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
+                    // meerkat 0.7: roster ids are comms-safe encodings of the
+                    // public alias (MemberCommsName rejects ":").
+                    crate::member_comms_id::mob_member_id_str("rt:review:singleton:0").into_owned(),
                     Some("You are a wrong-projected Review Agent.".into()),
                     None,
                     None,
@@ -8549,8 +8668,12 @@ comms = true
         assert!(
             runtime
                 .handle()
-                .get_member(&meerkat_mob::ids::MeerkatId::from("rt:review:singleton:0"))
+                .get_member(&crate::member_comms_id::mob_member_id(
+                    "rt:review:singleton:0"
+                ))
                 .await
+                .ok()
+                .flatten()
                 .is_some(),
             "wrong-projected durable runtime member must not be retired through projected alias"
         );
@@ -8697,7 +8820,9 @@ comms = true
             .handle()
             .spawn_spec(SpawnMemberSpec::from_wire(
                 "worker".to_string(),
-                "rt:review:singleton:0".to_string(),
+                // meerkat 0.7: roster ids are comms-safe encodings of the
+                // public alias (MemberCommsName rejects ":").
+                crate::member_comms_id::mob_member_id_str("rt:review:singleton:0").into_owned(),
                 Some("You are the live Review Agent.".into()),
                 None,
                 None,
@@ -8799,7 +8924,9 @@ comms = true
             .spawn_spec(
                 SpawnMemberSpec::from_wire(
                     "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
+                    // meerkat 0.7: roster ids are comms-safe encodings of the
+                    // public alias (MemberCommsName rejects ":").
+                    crate::member_comms_id::mob_member_id_str("rt:review:singleton:0").into_owned(),
                     Some("You are the live Review Agent.".into()),
                     None,
                     None,
@@ -8859,8 +8986,12 @@ comms = true
         assert!(
             runtime
                 .handle()
-                .get_member(&meerkat_mob::ids::MeerkatId::from("rt:review:singleton:0"))
+                .get_member(&crate::member_comms_id::mob_member_id(
+                    "rt:review:singleton:0"
+                ))
                 .await
+                .ok()
+                .flatten()
                 .is_some(),
             "hidden live-only controls must not mutate the live member"
         );
@@ -8882,7 +9013,9 @@ comms = true
             .spawn_spec(
                 SpawnMemberSpec::from_wire(
                     "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
+                    // meerkat 0.7: roster ids are comms-safe encodings of the
+                    // public alias (MemberCommsName rejects ":").
+                    crate::member_comms_id::mob_member_id_str("rt:review:singleton:0").into_owned(),
                     Some("You are the live Review Agent.".into()),
                     None,
                     None,
@@ -8939,7 +9072,9 @@ comms = true
             .spawn_spec(
                 SpawnMemberSpec::from_wire(
                     "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
+                    // meerkat 0.7: roster ids are comms-safe encodings of the
+                    // public alias (MemberCommsName rejects ":").
+                    crate::member_comms_id::mob_member_id_str("rt:review:singleton:0").into_owned(),
                     Some("You are a mislabeled Review Agent.".into()),
                     None,
                     None,
@@ -9044,8 +9179,12 @@ comms = true
         assert!(
             runtime
                 .handle()
-                .get_member(&meerkat_mob::ids::MeerkatId::from("rt:review:singleton:0",))
+                .get_member(&crate::member_comms_id::mob_member_id(
+                    "rt:review:singleton:0"
+                ))
                 .await
+                .ok()
+                .flatten()
                 .is_some(),
             "wrong-projected durable runtime member must remain present after reset_all rejection"
         );
@@ -9065,7 +9204,9 @@ comms = true
             .spawn_spec(
                 SpawnMemberSpec::from_wire(
                     "worker".to_string(),
-                    "hidden:singleton".to_string(),
+                    // meerkat 0.7: roster ids are comms-safe encodings of the
+                    // public alias (MemberCommsName rejects ":").
+                    crate::member_comms_id::mob_member_id_str("hidden:singleton").into_owned(),
                     Some("You are hidden from console lifecycle controls.".into()),
                     None,
                     None,
@@ -9104,8 +9245,10 @@ comms = true
         assert!(
             runtime
                 .handle()
-                .get_member(&meerkat_mob::ids::MeerkatId::from("hidden:singleton"))
+                .get_member(&crate::member_comms_id::mob_member_id("hidden:singleton"))
                 .await
+                .ok()
+                .flatten()
                 .is_some(),
             "reset_all must not retire hidden live members"
         );
@@ -9123,7 +9266,9 @@ comms = true
             .handle()
             .spawn_spec(SpawnMemberSpec::from_wire(
                 "worker".to_string(),
-                "rt:review:singleton:0".to_string(),
+                // meerkat 0.7: roster ids are comms-safe encodings of the
+                // public alias (MemberCommsName rejects ":").
+                crate::member_comms_id::mob_member_id_str("rt:review:singleton:0").into_owned(),
                 Some("You are the hidden Review Agent.".into()),
                 None,
                 None,
@@ -9215,7 +9360,9 @@ comms = true
                 .spawn_spec(
                     SpawnMemberSpec::from_wire(
                         "worker".to_string(),
-                        runtime_id.to_string(),
+                        // meerkat 0.7: roster ids are comms-safe encodings of
+                        // the public alias (MemberCommsName rejects ":").
+                        crate::member_comms_id::mob_member_id_str(runtime_id).into_owned(),
                         Some("You are a Review Agent candidate.".into()),
                         None,
                         None,
@@ -9245,7 +9392,7 @@ comms = true
             agent_runtime_id: AgentRuntimeId::parse("rt:review:singleton:0")?,
             session_id: runtime
                 .handle()
-                .resolve_bridge_session_id_observation(&meerkat_mob::ids::MeerkatId::from(
+                .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
                     "rt:review:singleton:0",
                 ))
                 .await
@@ -9314,8 +9461,12 @@ comms = true
         assert!(
             runtime
                 .handle()
-                .get_member(&meerkat_mob::ids::MeerkatId::from("rt:review:singleton:1"))
+                .get_member(&crate::member_comms_id::mob_member_id(
+                    "rt:review:singleton:1"
+                ))
                 .await
+                .ok()
+                .flatten()
                 .is_some(),
             "post-mutation stale cleanup must not retire member-hidden projected duplicates"
         );
@@ -9452,7 +9603,9 @@ comms = true
             .spawn_spec(
                 SpawnMemberSpec::from_wire(
                     "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
+                    // meerkat 0.7: roster ids are comms-safe encodings of the
+                    // public alias (MemberCommsName rejects ":").
+                    crate::member_comms_id::mob_member_id_str("rt:review:singleton:0").into_owned(),
                     Some("You are the stale Review Agent.".into()),
                     None,
                     None,
@@ -9793,7 +9946,9 @@ comms = true
             .handle()
             .spawn_spec(SpawnMemberSpec::from_wire(
                 "worker".to_string(),
-                "agent:member-only".to_string(),
+                // meerkat 0.7: roster ids are comms-safe encodings of the
+                // public alias (MemberCommsName rejects ":").
+                crate::member_comms_id::mob_member_id_str("agent:member-only").into_owned(),
                 Some("You are a member-only spawned worker.".into()),
                 None,
                 None,
@@ -10277,8 +10432,10 @@ comms = true
         assert!(
             runtime
                 .handle()
-                .get_member(&meerkat_mob::ids::MeerkatId::from("agent-reset"))
+                .get_member(&meerkat_mob::ids::AgentIdentity::from("agent-reset"))
                 .await
+                .ok()
+                .flatten()
                 .is_some(),
             "aggregator reset_all must not retire live members while reporting unsupported"
         );
@@ -10477,7 +10634,9 @@ comms = true
             .handle()
             .spawn_spec(SpawnMemberSpec::from_wire(
                 "worker".to_string(),
-                "worker:one".to_string(),
+                // meerkat 0.7: roster ids are comms-safe encodings of the
+                // public alias (MemberCommsName rejects ":").
+                crate::member_comms_id::mob_member_id_str("worker:one").into_owned(),
                 Some("You are worker one.".into()),
                 None,
                 None,

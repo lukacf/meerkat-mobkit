@@ -32,9 +32,9 @@ For authoring without a runtime, run the dedicated binary:
 | Option | Purpose |
 |--------|---------|
 | `--listen HOST:PORT` | Bind address (default `127.0.0.1:4191`; also `MOBKIT_FLOW_EDITOR_LISTEN_ADDR`) |
-| `--allow-host-deploy` | Opt in to executing `rkat mob deploy` on the host (also `MOBKIT_FLOW_EDITOR_ALLOW_HOST_DEPLOY=1`) |
+| `--allow-host-deploy` | Opt in to executing `rkat mob run` on the host (also `MOBKIT_FLOW_EDITOR_ALLOW_HOST_DEPLOY=1`) |
 
-Without `--allow-host-deploy`, the standalone server refuses `mobkit/mobpacks/deploy` with `execute: true` and points you at deploy planning or running `rkat mob deploy` manually.
+Without `--allow-host-deploy`, the standalone server refuses `mobkit/mobpacks/deploy` with `execute: true` and points you at deploy planning or running `rkat mob run` manually.
 
 ### Library routers
 
@@ -83,7 +83,7 @@ The mobpack-authoring methods:
 | `mobkit/mobpacks/source` | Rendered source files (`mobkit/mob.toml`, …) without archive payload |
 | `mobkit/mobpacks/export` | `.mobpack` archive as base64 download |
 | `mobkit/mobpacks/import` | Import `.mobpack` / JSON / TOML |
-| `mobkit/mobpacks/deploy_command` | Preview the exact `rkat mob deploy` command |
+| `mobkit/mobpacks/deploy_command` | Preview the exact `rkat mob run` command |
 | `mobkit/mobpacks/deploy` | Deploy plan, or host execution when `execute: true` |
 
 ### SDK access
@@ -115,7 +115,7 @@ Drafts autosave through `mobkit/mobpacks/save` into a host JSON store with optim
 
 `mobkit/mobpacks/validate` always runs MobKit structural validation (`meerkat_mob::validate_definition` + `SpecValidator`). When the request sets `rkat_validate: true` and structural validation passes, the document is exported as an archive and checked with `rkat mob validate`. If `rkat` is not on `PATH`, validation degrades to a warning row ("rkat mob validate skipped") instead of failing — embedding hosts do not always ship `rkat`.
 
-Deploys are plans by default. `mobkit/mobpacks/deploy` without `execute` returns the `rkat mob deploy …` argv plus a `plan_trace` the editor replays step by step; `mobkit/mobpacks/deploy_command` previews the exact shell command. Only with `execute: true` — and only when the surface allows it — does the server write the archive and run `rkat mob deploy` on the host:
+Deploys are plans by default. `mobkit/mobpacks/deploy` without `execute` returns the `rkat mob run …` argv plus a `plan_trace` the editor replays step by step; `mobkit/mobpacks/deploy_command` previews the exact shell command. Only with `execute: true` — and only when the surface allows it — does the server write the archive and run `rkat mob run` on the host. The run validates the input params, provisions the flow's members, blocks until the run is terminal, and prints the result envelope on stdout; the server parses that envelope and surfaces the flow's run output (status, run id, and the result payload) as deploy display rows, so the editor shows what the flow actually produced. The deploy `prompt` setting becomes the `--prompt` run input:
 
 - **Standalone binary** — requires `--allow-host-deploy` (or the env flag); otherwise the call fails with a pointer to manual deploy.
 - **Runtime-mounted editor** — requires the caller's `mobpack.deploy` grant when access control is enforced; open otherwise.
@@ -166,7 +166,7 @@ The dev server serves `flow-editor/dist` and re-reads files on every request —
 ```bash
 make test-flow-editor              # dist freshness, typecheck, source/boundary contracts, facade key parity, projection suite, visual + browser contracts
 make test-flow-editor-rkat         # live export/import checks against rkat mob inspect/validate
-make test-flow-editor-rkat-deploy  # live checks including rkat mob deploy
+make test-flow-editor-rkat-deploy  # live checks including rkat mob run
 ```
 
 `npm run typecheck` covers both packages and the shell; `test/package-boundaries.test.cjs` keeps `@flow-editor-core` window/React/DOM-free and `@flow-editor-components` network-free; `test/controller-export-keys.test.cjs` pins the facade's 384-key manifest.

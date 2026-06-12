@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         incident_image_model()
     );
 
-    let bundle = build_runtime_bundle(&scenario_path()?).await?;
+    let bundle = Box::pin(build_runtime_bundle(&scenario_path()?)).await?;
     let listen_addr = std::env::var("INCIDENT_COMMAND_CENTER_LISTEN_ADDR")
         .unwrap_or_else(|_| bundle.scenario.listen_addr.clone());
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;

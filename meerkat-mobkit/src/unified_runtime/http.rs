@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::routing::get;
-use meerkat_mob::ids::MeerkatId;
 
 use crate::console_aggregator::{
     ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
@@ -105,7 +104,9 @@ impl UnifiedRuntime {
                     Box::pin(async move {
                         runtime
                             .handle()
-                            .subscribe_agent_events(&MeerkatId::from(agent_id))
+                            .subscribe_agent_events(&crate::member_comms_id::mob_member_id(
+                                &agent_id,
+                            ))
                             .await
                             .map_err(Into::into)
                     })

@@ -30,10 +30,16 @@ impl UnifiedRuntime {
 
     /// Spawn a member, firing `post_spawn_hook` on success and the shared error
     /// hook on failure. For raw spawning without hooks, use `mob_handle().spawn_spec(...)`.
-    pub async fn spawn(&self, spec: SpawnMemberSpec) -> Result<SpawnResult, MobRuntimeError> {
+    ///
+    /// The spec's member id is a public alias; it is encoded into the
+    /// comms-safe roster id here (meerkat 0.7 `MemberCommsName` rejects `:`,
+    /// which MobKit's identity-first aliases like `rt:review:singleton:0`
+    /// contain). Hooks and error events keep speaking the alias.
+    pub async fn spawn(&self, mut spec: SpawnMemberSpec) -> Result<SpawnResult, MobRuntimeError> {
         let member_id = spec.identity.to_string();
         let profile = spec.role_name.to_string();
-        match self.mob_handle().spawn_spec(spec).await {
+        spec.identity = crate::member_comms_id::mob_member_id(member_id.as_str());
+        match Box::pin(self.mob_handle().spawn_spec(spec)).await {
             Ok(result) => {
                 if let Some(hook) = &self.post_spawn_hook {
                     hook(vec![member_id]).await;
@@ -54,13 +60,17 @@ impl UnifiedRuntime {
     /// Spawn many members, firing `post_spawn_hook` once on success with all ids.
     pub async fn spawn_many(
         &self,
-        specs: Vec<SpawnMemberSpec>,
+        mut specs: Vec<SpawnMemberSpec>,
     ) -> Result<Vec<SpawnResult>, MobRuntimeError> {
         let member_ids: Vec<String> = specs.iter().map(|s| s.identity.to_string()).collect();
+        // As in `spawn`: wire aliases become comms-safe roster ids.
+        for spec in &mut specs {
+            spec.identity = crate::member_comms_id::mob_member_id(spec.identity.as_str());
+        }
         let handle = self.mob_handle();
         let refs = try_join_in_batches(specs, MAX_CONCURRENT_SPAWN_MANY, |spec| {
             let handle = handle.clone();
-            async move { handle.spawn_spec(spec).await }
+            async move { Box::pin(handle.spawn_spec(spec)).await }
         })
         .await
         .map_err(MobRuntimeError::from)?;

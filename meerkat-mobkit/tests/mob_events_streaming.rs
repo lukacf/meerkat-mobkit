@@ -47,7 +47,7 @@ async fn build_fixture() -> Fixture {
 id = "streaming-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]

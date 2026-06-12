@@ -166,16 +166,16 @@ pub async fn flow_editor_frontend_app_css_handler() -> impl IntoResponse {
 }
 
 pub async fn flow_editor_rpc_handler(Json(request): Json<Value>) -> impl IntoResponse {
-    flow_editor_rpc_handler_with_policy(request, false)
+    flow_editor_rpc_handler_with_policy(request, false).await
 }
 
 pub async fn flow_editor_rpc_handler_allowing_host_deploy(
     Json(request): Json<Value>,
 ) -> impl IntoResponse {
-    flow_editor_rpc_handler_with_policy(request, true)
+    flow_editor_rpc_handler_with_policy(request, true).await
 }
 
-fn flow_editor_rpc_handler_with_policy(
+async fn flow_editor_rpc_handler_with_policy(
     request: Value,
     allow_host_deploy: bool,
 ) -> impl IntoResponse {
@@ -192,7 +192,8 @@ fn flow_editor_rpc_handler_with_policy(
             );
         }
     };
-    let response = handle_flow_editor_rpc_with_auth(
+    let response_id = parsed_request.id.clone().unwrap_or(Value::Null);
+    let response = dispatch_flow_editor_rpc_blocking(
         parsed_request,
         FlowEditorAuthReport {
             authenticated: false,
@@ -210,8 +211,40 @@ fn flow_editor_rpc_handler_with_policy(
             deploy_execute_allowed: allow_host_deploy,
         },
         None,
-    );
+        response_id,
+    )
+    .await;
     (StatusCode::OK, Json::<Value>(response))
+}
+
+/// Run the synchronous flow-editor RPC dispatcher on the blocking pool.
+///
+/// `mobkit/mobpacks/deploy` with `execute: true` (and `validate` via
+/// `rkat mob validate`) blocks on a child process for up to the deploy
+/// execution timeout; parking that wait on a tokio worker thread would
+/// starve the async runtime, so every HTTP entry point routes through
+/// `spawn_blocking` here.
+async fn dispatch_flow_editor_rpc_blocking(
+    request: JsonRpcRequest,
+    auth: FlowEditorAuthReport,
+    runtime_catalog: Option<MobpackRuntimeCatalogState>,
+    response_id: Value,
+) -> Value {
+    match tokio::task::spawn_blocking(move || {
+        handle_flow_editor_rpc_with_auth(request, auth, runtime_catalog.as_ref())
+    })
+    .await
+    {
+        Ok(response) => response,
+        Err(err) => serde_json::json!({
+            "jsonrpc": JSONRPC_VERSION,
+            "id": response_id,
+            "error": {
+                "code": -32603,
+                "message": format!("flow editor rpc task failed: {err}"),
+            }
+        }),
+    }
 }
 
 #[derive(Clone)]
@@ -287,7 +320,8 @@ async fn protected_flow_editor_rpc_handler(
         .as_ref()
         .filter(|view| view.enforced())
         .is_none_or(|view| view.may_perform_anywhere(ACTION_MOBPACK_DEPLOY));
-    let response = handle_flow_editor_rpc_with_auth(
+    let response_id = parsed_request.id.clone().unwrap_or(Value::Null);
+    let response = dispatch_flow_editor_rpc_blocking(
         parsed_request,
         FlowEditorAuthReport {
             authenticated: true,
@@ -296,8 +330,10 @@ async fn protected_flow_editor_rpc_handler(
             host_mutation_allowed: deploy_grant,
             deploy_execute_allowed: deploy_grant,
         },
-        state.runtime_catalog.as_ref(),
-    );
+        state.runtime_catalog.clone(),
+        response_id,
+    )
+    .await;
     (StatusCode::OK, Json::<Value>(response))
 }
 
@@ -433,11 +469,11 @@ fn handle_flow_editor_rpc_with_auth(
                 None,
                 Some(JsonRpcError {
                     code: -32602,
-                    message: "standalone Flow Editor RPC cannot execute host deploys; use deploy planning or run rkat mob deploy manually".to_string(),
+                    message: "standalone Flow Editor RPC cannot execute host deploys; use deploy planning or run rkat mob run manually".to_string(),
                     data: Some(serde_json::json!({
                         "method": "mobkit/mobpacks/deploy",
                         "execute": true,
-                        "deploy_command": "rkat mob deploy"
+                        "deploy_command": "rkat mob run"
                     })),
                 }),
             )
@@ -713,7 +749,7 @@ mod tests {
         );
         assert_eq!(
             response["result"]["authoring_capabilities"]["deploy_command"],
-            json!("rkat mob deploy")
+            json!("rkat mob run")
         );
         assert_eq!(
             response["result"]["authoring_capabilities"]["methods"]
@@ -766,7 +802,7 @@ mod tests {
         );
         assert_eq!(
             response["error"]["data"]["deploy_command"],
-            json!("rkat mob deploy")
+            json!("rkat mob run")
         );
     }
 
@@ -915,7 +951,8 @@ mod tests {
         );
         let argv = std::fs::read_to_string(args_file).expect("recorded fake rkat args");
         assert!(argv.lines().any(|line| line == "mob"));
-        assert!(argv.lines().any(|line| line == "deploy"));
+        assert!(argv.lines().any(|line| line == "run"));
+        assert!(argv.lines().any(|line| line == "--prompt"));
         assert!(argv.lines().any(|line| line == "Reply with exactly OK."));
     }
 
@@ -947,7 +984,7 @@ mod tests {
         assert!(response["error"].is_null(), "{response:#?}");
         assert_eq!(
             &response["result"]["argv"].as_array().expect("argv")[0..3],
-            [json!("rkat"), json!("mob"), json!("deploy")]
+            [json!("rkat"), json!("mob"), json!("run")]
         );
         assert!(
             response["result"]["plan_trace"]
@@ -988,7 +1025,7 @@ mod tests {
         assert!(response["error"].is_null(), "{response:#?}");
         assert_eq!(
             &response["result"]["argv"].as_array().expect("argv")[0..3],
-            [json!("rkat"), json!("mob"), json!("deploy")]
+            [json!("rkat"), json!("mob"), json!("run")]
         );
         assert_eq!(
             response["result"]["source"],
@@ -1009,7 +1046,7 @@ mod tests {
             id: Some(json!(3)),
             method: "mobkit/mobpacks/deploy_command".to_string(),
             params: json!({
-                "deploy": { "command": "rkat mob deploy" },
+                "deploy": { "command": "rkat mob run" },
                 "pack_path": "<pack.mobpack>"
             }),
         });
