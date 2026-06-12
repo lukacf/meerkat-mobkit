@@ -121,6 +121,7 @@ import {
   schemaFieldAddErrorState,
 } from "./editors/agent-editor";
 import {
+  adaptiveStepState,
   basicBranchAddPatch,
   basicBranchConditionControlState,
   basicBranchConditionPatch,
@@ -688,6 +689,7 @@ export function createMobKitFlowController({ includeTestExports } = {}) {
     basicStepCardState,
     basicRepeatControlState,
     basicMemberStepControlState,
+    adaptiveStepState,
     basicRepeatUntilExpression,
     contractDefaultValue,
     outputFormatOptions,

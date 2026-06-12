@@ -2,6 +2,7 @@
   "exports": [
     "RPC_METHODS",
     "SCHEMA_VERSION",
+    "adaptiveStepState",
     "addInlineSkillToRealms",
     "advancedMobSettingsDraftPatch",
     "advancedMobSettingsEditorState",

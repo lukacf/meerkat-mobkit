@@ -185,10 +185,62 @@ export function renameSchemaDefinition({ schemas, members, flow } = {}, oldId, n
   return {
     schemas: nextSchemas,
     members: nextMembers,
-    flow: reconcileFlowMemberSchemas(flow, nextMembers),
+    flow: rewriteAdaptiveResultSchemaInFlow(
+      reconcileFlowMemberSchemas(flow, nextMembers),
+      previousId,
+      nextId,
+    ),
     renamed: true,
     selection: { kind: "schema", id: nextId },
   };
+}
+
+// Mirrors MobKit's rewrite_adaptive_result_schema_references: a schema id
+// rename remaps an adaptive layer's matching resultSchema alongside the
+// member schema refs (the server also remaps the graph instance's embedded
+// adaptive payload, which the authoritative apply_operation result carries).
+export function rewriteAdaptiveResultSchemaInFlow(flow, oldId, newId) {
+  if (!flow || typeof flow !== "object") return flow;
+  const steps = rewriteAdaptiveResultSchemaInSteps(flow.steps || [], oldId, newId);
+  return steps === flow.steps ? flow : { ...flow, steps };
+}
+
+export function rewriteAdaptiveResultSchemaInSteps(steps, oldId, newId) {
+  let changed = false;
+  const next = (steps || []).map((step) => {
+    const reconciled = rewriteAdaptiveResultSchemaInStep(step, oldId, newId);
+    if (reconciled !== step) changed = true;
+    return reconciled;
+  });
+  return changed ? next : steps;
+}
+
+export function rewriteAdaptiveResultSchemaInStep(step, oldId, newId) {
+  if (!step || typeof step !== "object") return step;
+  if (step.type === "adaptive") {
+    return String(step.resultSchema || "").trim() === oldId
+      ? { ...step, resultSchema: newId }
+      : step;
+  }
+  if (step.type === "repeat") {
+    const nested = rewriteAdaptiveResultSchemaInSteps(step.steps || [], oldId, newId);
+    return nested === step.steps ? step : { ...step, steps: nested };
+  }
+  if (step.type === "branch" || step.type === "parallel") {
+    let changed = false;
+    const branches = (step.branches || []).map((branch) => {
+      const branchSteps = rewriteAdaptiveResultSchemaInSteps(branch?.steps || [], oldId, newId);
+      if (branchSteps === branch.steps) return branch;
+      changed = true;
+      return { ...branch, steps: branchSteps };
+    });
+    const fallback = Array.isArray(step.fallback)
+      ? rewriteAdaptiveResultSchemaInSteps(step.fallback, oldId, newId)
+      : step.fallback;
+    if (fallback !== step.fallback) changed = true;
+    return changed ? { ...step, branches, fallback } : step;
+  }
+  return step;
 }
 
 export function reconcileFlowMemberSteps(flow, members) {
@@ -217,11 +269,15 @@ export function pruneMissingMemberStep(step, memberIds) {
   // Mirrors MobKit's prune_step_array_for_members: member steps without a
   // live member are dropped, but containers (repeat/branch/parallel) stay
   // even when emptied — an empty lane is a legitimate draft state, and the
-  // server keeps it.
+  // server keeps it. Adaptive steps also stay: only their stale member refs
+  // reconcile (flowmasterId clears, stale profile templates drop).
   if (!step || typeof step !== "object") return step;
   if (step.type === "member") {
     const role = String(step.role || "").trim();
     return role && memberIds.has(role) ? step : null;
+  }
+  if (step.type === "adaptive") {
+    return pruneAdaptiveStepMemberRefs(step, memberIds);
   }
   if (step.type === "repeat") {
     const steps = pruneMissingMemberSteps(step.steps || [], memberIds);
@@ -242,6 +298,26 @@ export function pruneMissingMemberStep(step, memberIds) {
     return changed ? { ...step, branches, fallback } : step;
   }
   return step;
+}
+
+// Mirrors MobKit's prune_adaptive_step_member_refs: a stale flowmasterId
+// clears to "", stale profileTemplateIds entries drop, and the step itself
+// never drops. Applied to the flow step and to a graph instance's embedded
+// adaptive payload alike so graph_derives_flow equivalence keeps holding.
+export function pruneAdaptiveStepMemberRefs(step, memberIds) {
+  if (!step || typeof step !== "object") return step;
+  const flowmaster = String(step.flowmasterId || "").trim();
+  const flowmasterStale = !!flowmaster && !memberIds.has(flowmaster);
+  const templates = Array.isArray(step.profileTemplateIds) ? step.profileTemplateIds : [];
+  const keptTemplates = templates.filter(
+    (template) => typeof template === "string" && memberIds.has(template.trim()),
+  );
+  if (!flowmasterStale && keptTemplates.length === templates.length) return step;
+  return {
+    ...step,
+    flowmasterId: flowmasterStale ? "" : step.flowmasterId,
+    profileTemplateIds: keptTemplates,
+  };
 }
 
 export function reconcileFlowControlRoles(flow, members) {
@@ -278,7 +354,22 @@ export function reconcileGraphMemberInstances({ instances, edges }, members) {
     }
     const id = String(instance?.id || "").trim();
     if (id) keptIds.add(id);
-    nextInstances.push(instance);
+    let nextInstance = instance;
+    if (
+      String(instance?.kind || "") === "adaptive"
+      && !instance?.isGate
+      && !instance?.isTerminal
+      && instance?.adaptive && typeof instance.adaptive === "object"
+    ) {
+      // Mirror the flow-side adaptive ref pruning on the embedded payload so
+      // the graph still derives the flow byte-identically (server parity).
+      const prunedPayload = pruneAdaptiveStepMemberRefs(instance.adaptive, memberIds);
+      if (prunedPayload !== instance.adaptive) {
+        instancesChanged = true;
+        nextInstance = { ...instance, adaptive: prunedPayload };
+      }
+    }
+    nextInstances.push(nextInstance);
   }
   let edgesChanged = false;
   const nextEdges = sourceEdges.filter((edge) => {

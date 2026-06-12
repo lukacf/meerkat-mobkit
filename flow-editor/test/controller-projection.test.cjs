@@ -1645,6 +1645,82 @@ const hydratedContractAndCatalogFixture = {
       picker_flow_label: "Flow",
       picker_empty_members_hint: "No members yet — define some in the Agents tab.",
       picker_new_badge_label: "NEW",
+      adaptive_defaults: {
+        type: "adaptive",
+        flowmasterId: "",
+        prompt: "",
+        objectiveClass: "",
+        resultSchema: "",
+        profileTemplateIds: [],
+        targetSurfaces: ["cli", "rpc"],
+        allowInlineProfiles: false,
+        limits: {
+          maxDepth: 4,
+          maxTotalDecisions: 12,
+          maxRepairAttempts: 2,
+          maxLayerFailures: 2,
+          maxAttemptsPerLayer: 2,
+          maxMembersPerLayer: 20,
+          maxTotalSpawnedMembers: 60,
+          maxActiveMembers: 20,
+          maxRetainedLayerMobs: 4,
+          maxWallClockMs: 1800000,
+          maxAggregateTokens: 2000000,
+          maxAggregateToolCalls: 500,
+        },
+      },
+      adaptive_limit_rows: [
+        { key: "maxDepth", toml_key: "max_depth", label: "Max depth", primary: true },
+        { key: "maxTotalDecisions", toml_key: "max_total_decisions", label: "Max total decisions", primary: false },
+        { key: "maxRepairAttempts", toml_key: "max_repair_attempts", label: "Max repair attempts", primary: false },
+        { key: "maxLayerFailures", toml_key: "max_layer_failures", label: "Max layer failures", primary: false },
+        { key: "maxAttemptsPerLayer", toml_key: "max_attempts_per_layer", label: "Max attempts / layer", primary: false },
+        { key: "maxMembersPerLayer", toml_key: "max_members_per_layer", label: "Max members / layer", primary: true },
+        { key: "maxTotalSpawnedMembers", toml_key: "max_total_spawned_members", label: "Max total members", primary: true },
+        { key: "maxActiveMembers", toml_key: "max_active_members", label: "Max active members", primary: false },
+        { key: "maxRetainedLayerMobs", toml_key: "max_retained_layer_mobs", label: "Max retained layer mobs", primary: false },
+        { key: "maxWallClockMs", toml_key: "max_wall_clock_ms", label: "Max wall clock (ms)", primary: false },
+        { key: "maxAggregateTokens", toml_key: "max_aggregate_tokens", label: "Max aggregate tokens", primary: false },
+        { key: "maxAggregateToolCalls", toml_key: "max_aggregate_tool_calls", label: "Max aggregate tool calls", primary: false },
+      ],
+      adaptive_target_surfaces: ["cli", "rpc"],
+      adaptive_panel_title: "Adaptive layer",
+      adaptive_panel_sub: "A FlowMaster designs the next mob layer at runtime from prior results — dynamic width & depth. Each plan is validated, then run as a normal mob flow.",
+      adaptive_flowmaster_label: "FlowMaster (planning agent)",
+      adaptive_flowmaster_placeholder_label: "— select member —",
+      adaptive_prompt_label: "Planning prompt",
+      adaptive_prompt_placeholder: "How should the FlowMaster decide each layer?",
+      adaptive_objective_label: "Objective class",
+      adaptive_objective_placeholder: "code-review",
+      adaptive_result_schema_label: "LayerResult schema",
+      adaptive_result_schema_placeholder_label: "— LayerResult (untyped) —",
+      adaptive_profiles_title: "Profile templates the layer may spawn",
+      adaptive_profiles_hint: "No members are baked in — the FlowMaster picks counts & roles per layer from these shapes.",
+      adaptive_profiles_agents_hint: "Edit member shapes in the Agents tab.",
+      adaptive_profiles_empty_hint: "No members yet — define some in the Agents tab.",
+      adaptive_surfaces_label: "Target surfaces",
+      adaptive_inline_profiles_label: "Allow inline profiles",
+      adaptive_limits_title: "Limits",
+      adaptive_limits_advanced_label: "Advanced limits",
+      adaptive_tips: [
+        "Dynamic width: the layer is generated with the right number of members.",
+        "Dynamic depth: the loop repeats until the FlowMaster returns Finish or limits hit.",
+        "Every layer runs through MobMachine and emits a validated LayerResult.",
+      ],
+      adaptive_step_card_title: "Adaptive layer",
+      adaptive_block_head_prefix: "ADAPTIVE LAYER · synthesized at runtime · max depth ",
+      adaptive_block_flowmaster_kicker: "FLOWMASTER · plan",
+      adaptive_block_flowmaster_title_fallback: "—",
+      adaptive_block_flowmaster_desc: "Designs the next LayerPlan from prior results",
+      adaptive_block_plan_connector: "LayerPlan ✓",
+      adaptive_block_layer_kicker_prefix: "LAYERMOB · ≤ ",
+      adaptive_block_layer_kicker_suffix: " members",
+      adaptive_block_chip_suffix: "×N",
+      adaptive_block_empty_profiles_label: "no profiles yet",
+      adaptive_block_collect_connector_prefix: "collector → ",
+      adaptive_block_collect_fallback: "LayerResult",
+      adaptive_block_loop_back_prefix: "↑ loop until Finish · or depth ",
+      adaptive_block_loop_back_suffix: " / budget",
       flow_primitive_rows: [
         {
           id: "repeat",
@@ -1668,12 +1744,19 @@ const hydratedContractAndCatalogFixture = {
           sub: "fan_out to several members, then fan_in with a collection policy",
         },
         {
+          id: "adaptive",
+          glyph: "❖",
+          tint: "member",
+          label: "Adaptive layer",
+          sub: "A FlowMaster designs & runs the next mob layer at runtime — dynamic width & depth",
+          is_new: true,
+        },
+        {
           id: "subagent",
           glyph: "⬡",
           tint: "link",
           label: "Sub-mob",
           sub: "delegate to a nested mob, tested and packed on its own",
-          is_new: true,
           disabled: true,
           disabled_reason: "Current MobKit mob.toml flow semantics do not yet define deployable sub-mob nodes",
         },
@@ -1762,6 +1845,8 @@ const hydratedContractAndCatalogFixture = {
       terminal_id_line_template: "{id} · cell ({col},{row})",
       terminal_authoring_locked_title: "Visual terminal node",
       terminal_authoring_locked_hint: "Visual terminal nodes do not compile into deployable MobKit mob.toml. Delete this node or replace it with a real member, branch, join, or loop flow shape.",
+      adaptive_authoring_locked_title: "Adaptive layer node",
+      adaptive_authoring_locked_hint: "Adaptive layers are authored in Basic mode — FlowMaster, prompt, profile templates, and limits are edited there. Deleting this node deletes the adaptive step from the flow.",
       edge_eyebrow_template: "EDGE · {kind}",
       edge_title_template: "{from} → {to}",
       edge_id_line_template: "{id}",
@@ -2184,6 +2269,82 @@ assert.deepEqual(hydratedCatalogs.basicView, {
   pickerFlowLabel: "Flow",
   pickerEmptyMembersHint: "No members yet — define some in the Agents tab.",
   pickerNewBadgeLabel: "NEW",
+  adaptiveDefaults: {
+    type: "adaptive",
+    flowmasterId: "",
+    prompt: "",
+    objectiveClass: "",
+    resultSchema: "",
+    profileTemplateIds: [],
+    targetSurfaces: ["cli", "rpc"],
+    allowInlineProfiles: false,
+    limits: {
+      maxDepth: 4,
+      maxTotalDecisions: 12,
+      maxRepairAttempts: 2,
+      maxLayerFailures: 2,
+      maxAttemptsPerLayer: 2,
+      maxMembersPerLayer: 20,
+      maxTotalSpawnedMembers: 60,
+      maxActiveMembers: 20,
+      maxRetainedLayerMobs: 4,
+      maxWallClockMs: 1800000,
+      maxAggregateTokens: 2000000,
+      maxAggregateToolCalls: 500,
+    },
+  },
+  adaptiveLimitRows: [
+    { key: "maxDepth", tomlKey: "max_depth", label: "Max depth", primary: true },
+    { key: "maxTotalDecisions", tomlKey: "max_total_decisions", label: "Max total decisions", primary: false },
+    { key: "maxRepairAttempts", tomlKey: "max_repair_attempts", label: "Max repair attempts", primary: false },
+    { key: "maxLayerFailures", tomlKey: "max_layer_failures", label: "Max layer failures", primary: false },
+    { key: "maxAttemptsPerLayer", tomlKey: "max_attempts_per_layer", label: "Max attempts / layer", primary: false },
+    { key: "maxMembersPerLayer", tomlKey: "max_members_per_layer", label: "Max members / layer", primary: true },
+    { key: "maxTotalSpawnedMembers", tomlKey: "max_total_spawned_members", label: "Max total members", primary: true },
+    { key: "maxActiveMembers", tomlKey: "max_active_members", label: "Max active members", primary: false },
+    { key: "maxRetainedLayerMobs", tomlKey: "max_retained_layer_mobs", label: "Max retained layer mobs", primary: false },
+    { key: "maxWallClockMs", tomlKey: "max_wall_clock_ms", label: "Max wall clock (ms)", primary: false },
+    { key: "maxAggregateTokens", tomlKey: "max_aggregate_tokens", label: "Max aggregate tokens", primary: false },
+    { key: "maxAggregateToolCalls", tomlKey: "max_aggregate_tool_calls", label: "Max aggregate tool calls", primary: false },
+  ],
+  adaptiveTargetSurfaces: ["cli", "rpc"],
+  adaptivePanelTitle: "Adaptive layer",
+  adaptivePanelSub: "A FlowMaster designs the next mob layer at runtime from prior results — dynamic width & depth. Each plan is validated, then run as a normal mob flow.",
+  adaptiveFlowmasterLabel: "FlowMaster (planning agent)",
+  adaptiveFlowmasterPlaceholderLabel: "— select member —",
+  adaptivePromptLabel: "Planning prompt",
+  adaptivePromptPlaceholder: "How should the FlowMaster decide each layer?",
+  adaptiveObjectiveLabel: "Objective class",
+  adaptiveObjectivePlaceholder: "code-review",
+  adaptiveResultSchemaLabel: "LayerResult schema",
+  adaptiveResultSchemaPlaceholderLabel: "— LayerResult (untyped) —",
+  adaptiveProfilesTitle: "Profile templates the layer may spawn",
+  adaptiveProfilesHint: "No members are baked in — the FlowMaster picks counts & roles per layer from these shapes.",
+  adaptiveProfilesAgentsHint: "Edit member shapes in the Agents tab.",
+  adaptiveProfilesEmptyHint: "No members yet — define some in the Agents tab.",
+  adaptiveSurfacesLabel: "Target surfaces",
+  adaptiveInlineProfilesLabel: "Allow inline profiles",
+  adaptiveLimitsTitle: "Limits",
+  adaptiveLimitsAdvancedLabel: "Advanced limits",
+  adaptiveTips: [
+    "Dynamic width: the layer is generated with the right number of members.",
+    "Dynamic depth: the loop repeats until the FlowMaster returns Finish or limits hit.",
+    "Every layer runs through MobMachine and emits a validated LayerResult.",
+  ],
+  adaptiveStepCardTitle: "Adaptive layer",
+  adaptiveBlockHeadPrefix: "ADAPTIVE LAYER · synthesized at runtime · max depth ",
+  adaptiveBlockFlowmasterKicker: "FLOWMASTER · plan",
+  adaptiveBlockFlowmasterTitleFallback: "—",
+  adaptiveBlockFlowmasterDesc: "Designs the next LayerPlan from prior results",
+  adaptiveBlockPlanConnector: "LayerPlan ✓",
+  adaptiveBlockLayerKickerPrefix: "LAYERMOB · ≤ ",
+  adaptiveBlockLayerKickerSuffix: " members",
+  adaptiveBlockChipSuffix: "×N",
+  adaptiveBlockEmptyProfilesLabel: "no profiles yet",
+  adaptiveBlockCollectConnectorPrefix: "collector → ",
+  adaptiveBlockCollectFallback: "LayerResult",
+  adaptiveBlockLoopBackPrefix: "↑ loop until Finish · or depth ",
+  adaptiveBlockLoopBackSuffix: " / budget",
   flowPrimitiveRows: [
     {
       id: "repeat",
@@ -2216,12 +2377,22 @@ assert.deepEqual(hydratedCatalogs.basicView, {
       disabledReason: "",
     },
     {
+      id: "adaptive",
+      glyph: "❖",
+      tint: "member",
+      label: "Adaptive layer",
+      sub: "A FlowMaster designs & runs the next mob layer at runtime — dynamic width & depth",
+      isNew: true,
+      disabled: false,
+      disabledReason: "",
+    },
+    {
       id: "subagent",
       glyph: "⬡",
       tint: "link",
       label: "Sub-mob",
       sub: "delegate to a nested mob, tested and packed on its own",
-      isNew: true,
+      isNew: false,
       disabled: true,
       disabledReason: "Current MobKit mob.toml flow semantics do not yet define deployable sub-mob nodes",
     },
@@ -2375,6 +2546,42 @@ assert.deepEqual(controller.basicEditorViewState(null), {
   pickerFlowLabel: "",
   pickerEmptyMembersHint: "",
   pickerNewBadgeLabel: "",
+  adaptiveDefaults: null,
+  adaptiveLimitRows: [],
+  adaptiveTargetSurfaces: [],
+  adaptivePanelTitle: "",
+  adaptivePanelSub: "",
+  adaptiveFlowmasterLabel: "",
+  adaptiveFlowmasterPlaceholderLabel: "",
+  adaptivePromptLabel: "",
+  adaptivePromptPlaceholder: "",
+  adaptiveObjectiveLabel: "",
+  adaptiveObjectivePlaceholder: "",
+  adaptiveResultSchemaLabel: "",
+  adaptiveResultSchemaPlaceholderLabel: "",
+  adaptiveProfilesTitle: "",
+  adaptiveProfilesHint: "",
+  adaptiveProfilesAgentsHint: "",
+  adaptiveProfilesEmptyHint: "",
+  adaptiveSurfacesLabel: "",
+  adaptiveInlineProfilesLabel: "",
+  adaptiveLimitsTitle: "",
+  adaptiveLimitsAdvancedLabel: "",
+  adaptiveTips: [],
+  adaptiveStepCardTitle: "",
+  adaptiveBlockHeadPrefix: "",
+  adaptiveBlockFlowmasterKicker: "",
+  adaptiveBlockFlowmasterTitleFallback: "",
+  adaptiveBlockFlowmasterDesc: "",
+  adaptiveBlockPlanConnector: "",
+  adaptiveBlockLayerKickerPrefix: "",
+  adaptiveBlockLayerKickerSuffix: "",
+  adaptiveBlockChipSuffix: "",
+  adaptiveBlockEmptyProfilesLabel: "",
+  adaptiveBlockCollectConnectorPrefix: "",
+  adaptiveBlockCollectFallback: "",
+  adaptiveBlockLoopBackPrefix: "",
+  adaptiveBlockLoopBackSuffix: "",
   flowPrimitiveRows: [],
 });
 assert.deepEqual(hydratedCatalogs.launchView, TEST_LAUNCH_VIEW);
@@ -2452,6 +2659,8 @@ assert.deepEqual(hydratedCatalogs.graphView, {
   terminalIdLineTemplate: "{id} · cell ({col},{row})",
   terminalAuthoringLockedTitle: "Visual terminal node",
   terminalAuthoringLockedHint: "Visual terminal nodes do not compile into deployable MobKit mob.toml. Delete this node or replace it with a real member, branch, join, or loop flow shape.",
+  adaptiveAuthoringLockedTitle: "Adaptive layer node",
+  adaptiveAuthoringLockedHint: "Adaptive layers are authored in Basic mode — FlowMaster, prompt, profile templates, and limits are edited there. Deleting this node deletes the adaptive step from the flow.",
   edgeEyebrowTemplate: "EDGE · {kind}",
   edgeTitleTemplate: "{from} → {to}",
   edgeIdLineTemplate: "{id}",
@@ -2549,6 +2758,8 @@ assert.deepEqual(controller.graphCanvasViewState(null), {
   terminalIdLineTemplate: "",
   terminalAuthoringLockedTitle: "",
   terminalAuthoringLockedHint: "",
+  adaptiveAuthoringLockedTitle: "",
+  adaptiveAuthoringLockedHint: "",
   edgeEyebrowTemplate: "",
   edgeTitleTemplate: "",
   edgeIdLineTemplate: "",
@@ -3796,6 +4007,12 @@ const schemaRename = controller.renameSchemaDefinition({
       role: "m_reviewer",
       schema: "ReviewArtifact",
       expectedSchemaRef: "schemas/ReviewArtifact.json",
+    }, {
+      id: "s_adaptive",
+      type: "adaptive",
+      flowmasterId: "m_planner",
+      resultSchema: "ReviewArtifact",
+      profileTemplateIds: ["m_reviewer"],
     }],
   },
 }, "ReviewArtifact", "RenamedVerdict");
@@ -3805,6 +4022,11 @@ assert.equal(schemaRename.members[0].schema, "RenamedVerdict");
 assert.equal(schemaRename.members[1].schema, "PlanArtifact");
 assert.equal(schemaRename.flow.steps[0].schema, "RenamedVerdict");
 assert.equal(schemaRename.flow.steps[0].expectedSchemaRef, "schemas/RenamedVerdict.json");
+assert.equal(
+  schemaRename.flow.steps[1].resultSchema,
+  "RenamedVerdict",
+  "adaptive resultSchema must follow the schema rename (mirrors MobKit rewrite_adaptive_result_schema_references)",
+);
 assert.deepEqual(schemaRename.selection, { kind: "schema", id: "RenamedVerdict" });
 
 const duplicateSchemaRename = controller.renameSchemaDefinition({
@@ -10277,6 +10499,224 @@ assert.equal(missingRepeatControlState.hasBodyMembers, false);
 assert.equal(missingRepeatControlState.fieldPlaceholder, "(no schema)");
 assert.equal(missingRepeatControlState.selectedIterationInput.disabled, true);
 assert.match(missingRepeatControlState.selectedIterationInput.reason, /repeat_iteration_inputs/);
+// ── adaptive layer panel + block state (server contract text only) ──
+const adaptiveStudio = {
+  members: [
+    { id: "m_planner", name: "Planner", role: "lead", model: "openai/gpt-5" },
+    { id: "m_worker", name: "Worker", role: "builder", model: "anthropic/claude-sonnet" },
+  ],
+  schemas: [{ id: "ReviewArtifact", fields: [{ id: "f_verdict", name: "verdict", type: "enum" }] }],
+};
+const adaptiveState = controller.adaptiveStepState(adaptiveStudio, {
+  id: "s_adaptive",
+  type: "adaptive",
+  flowmasterId: "m_planner",
+  prompt: "  plan each layer  \nfrom prior results ",
+  objectiveClass: " code-review ",
+  resultSchema: "ReviewArtifact",
+  profileTemplateIds: ["m_worker"],
+  targetSurfaces: ["cli", "rpc"],
+  allowInlineProfiles: true,
+  limits: { maxDepth: 6 },
+}, repeatControlContract, hydratedCatalogs.basicView);
+assert.equal(adaptiveState.panelIcon, "❖");
+assert.equal(adaptiveState.panelTitle, "Adaptive layer");
+assert.equal(adaptiveState.panelSub, "A FlowMaster designs the next mob layer at runtime from prior results — dynamic width & depth. Each plan is validated, then run as a normal mob flow.");
+assert.equal(adaptiveState.flowmasterLabel, "FlowMaster (planning agent)");
+assert.equal(adaptiveState.flowmasterPlaceholderLabel, "— select member —");
+assert.equal(adaptiveState.flowmasterId, "m_planner");
+assert.deepEqual(adaptiveState.flowmasterOptions.map((option) => [option.value, option.label]), [
+  ["m_planner", "Planner · openai/gpt-5"],
+  ["m_worker", "Worker · anthropic/claude-sonnet"],
+]);
+assert.equal(adaptiveState.selectedFlowmaster.id, "m_planner");
+assert.equal(adaptiveState.promptLabel, "Planning prompt");
+assert.equal(adaptiveState.promptPlaceholder, "How should the FlowMaster decide each layer?");
+// Free text passes through VERBATIM — leading/trailing/inner whitespace kept.
+assert.equal(adaptiveState.promptValue, "  plan each layer  \nfrom prior results ");
+assert.equal(adaptiveState.objectiveLabel, "Objective class");
+assert.equal(adaptiveState.objectivePlaceholder, "code-review");
+assert.equal(adaptiveState.objectiveValue, " code-review ");
+assert.equal(adaptiveState.resultSchemaLabel, "LayerResult schema");
+assert.equal(adaptiveState.resultSchemaPlaceholderLabel, "— LayerResult (untyped) —");
+assert.equal(adaptiveState.resultSchemaValue, "ReviewArtifact");
+assert.deepEqual(adaptiveState.schemaOptions.map((option) => [option.value, option.label]), [
+  ["ReviewArtifact", "ReviewArtifact"],
+]);
+assert.equal(adaptiveState.selectedSchema.id, "ReviewArtifact");
+assert.equal(adaptiveState.profilesTitle, "Profile templates the layer may spawn");
+assert.equal(adaptiveState.profilesHint, "No members are baked in — the FlowMaster picks counts & roles per layer from these shapes.");
+assert.equal(adaptiveState.profilesAgentsHint, "Edit member shapes in the Agents tab.");
+assert.equal(adaptiveState.profilesEmptyHint, "No members yet — define some in the Agents tab.");
+assert.equal(adaptiveState.hasMembers, true);
+assert.deepEqual(adaptiveState.templateRows.map((row) => [row.id, row.label, row.role, row.model, row.on]), [
+  ["m_planner", "Planner", "lead", "openai/gpt-5", false],
+  ["m_worker", "Worker", "builder", "anthropic/claude-sonnet", true],
+]);
+assert.equal(adaptiveState.surfacesLabel, "Target surfaces");
+assert.deepEqual(adaptiveState.surfaceToggles, [
+  { id: "cli", label: "cli", on: true },
+  { id: "rpc", label: "rpc", on: true },
+]);
+assert.equal(adaptiveState.inlineProfilesLabel, "Allow inline profiles");
+assert.equal(adaptiveState.allowInlineProfiles, true);
+assert.equal(adaptiveState.limitsTitle, "Limits");
+assert.equal(adaptiveState.limitsAdvancedLabel, "Advanced limits");
+// Limits merge: the step patch overlays the server contract defaults.
+assert.deepEqual(adaptiveState.primaryLimitRows.map((row) => [row.key, row.label, row.value]), [
+  ["maxDepth", "Max depth", 6],
+  ["maxMembersPerLayer", "Max members / layer", 20],
+  ["maxTotalSpawnedMembers", "Max total members", 60],
+]);
+assert.deepEqual(adaptiveState.advancedLimitRows.map((row) => [row.key, row.value]), [
+  ["maxTotalDecisions", 12],
+  ["maxRepairAttempts", 2],
+  ["maxLayerFailures", 2],
+  ["maxAttemptsPerLayer", 2],
+  ["maxActiveMembers", 20],
+  ["maxRetainedLayerMobs", 4],
+  ["maxWallClockMs", 1800000],
+  ["maxAggregateTokens", 2000000],
+  ["maxAggregateToolCalls", 500],
+]);
+assert.equal(adaptiveState.limitRows.length, 12);
+assert.deepEqual(adaptiveState.tips, [
+  "Dynamic width: the layer is generated with the right number of members.",
+  "Dynamic depth: the loop repeats until the FlowMaster returns Finish or limits hit.",
+  "Every layer runs through MobMachine and emits a validated LayerResult.",
+]);
+assert.equal(adaptiveState.stepCardTitle, "Adaptive layer");
+assert.deepEqual(adaptiveState.block, {
+  headText: "ADAPTIVE LAYER · synthesized at runtime · max depth 6",
+  flowmasterKicker: "FLOWMASTER · plan",
+  flowmasterTitle: "Planner",
+  flowmasterDesc: "Designs the next LayerPlan from prior results",
+  planConnector: "LayerPlan ✓",
+  layerKicker: "LAYERMOB · ≤ 20 members",
+  chips: [{ id: "m_worker", label: "Worker", suffix: "×N" }],
+  emptyProfilesLabel: "no profiles yet",
+  collectConnector: "collector → ReviewArtifact",
+  loopBackText: "↑ loop until Finish · or depth 6 / budget",
+});
+// Empty draft: defaults fall back to the server contract, fallback copy renders.
+const emptyAdaptiveState = controller.adaptiveStepState({ members: [], schemas: [] }, {
+  id: "s_adaptive_blank",
+  type: "adaptive",
+  flowmasterId: "",
+  prompt: "",
+  objectiveClass: "",
+  resultSchema: "",
+  profileTemplateIds: [],
+  targetSurfaces: [],
+  allowInlineProfiles: false,
+  limits: {},
+}, repeatControlContract, hydratedCatalogs.basicView);
+assert.equal(emptyAdaptiveState.hasMembers, false);
+assert.equal(emptyAdaptiveState.selectedFlowmaster, null);
+assert.deepEqual(emptyAdaptiveState.surfaceToggles, [
+  { id: "cli", label: "cli", on: false },
+  { id: "rpc", label: "rpc", on: false },
+]);
+assert.deepEqual(emptyAdaptiveState.primaryLimitRows.map((row) => [row.key, row.value]), [
+  ["maxDepth", 4],
+  ["maxMembersPerLayer", 20],
+  ["maxTotalSpawnedMembers", 60],
+]);
+assert.equal(emptyAdaptiveState.block.headText, "ADAPTIVE LAYER · synthesized at runtime · max depth 4");
+assert.equal(emptyAdaptiveState.block.flowmasterTitle, "—");
+assert.deepEqual(emptyAdaptiveState.block.chips, []);
+assert.equal(emptyAdaptiveState.block.collectConnector, "collector → LayerResult");
+assert.equal(emptyAdaptiveState.block.loopBackText, "↑ loop until Finish · or depth 4 / budget");
+// Card-row state for adaptive steps comes from the contract card title.
+assert.deepEqual(controller.basicStepCardState({
+  step: { type: "adaptive", flowmasterId: "m_planner", objectiveClass: "code-review" },
+  members: adaptiveStudio.members,
+  contract: repeatControlContract,
+  basicView: hydratedCatalogs.basicView,
+}), {
+  icon: "❖",
+  iconTint: "member",
+  title: "Adaptive layer",
+  desc: "code-review",
+  configured: true,
+  isFlowCard: true,
+});
+assert.equal(controller.basicStepCardState({
+  step: { type: "adaptive", flowmasterId: "", objectiveClass: "" },
+  members: adaptiveStudio.members,
+  contract: repeatControlContract,
+  basicView: hydratedCatalogs.basicView,
+}).configured, false);
+// Member deletion reconciles adaptive refs but never drops the step
+// (mirrors MobKit's prune_adaptive_step_member_refs).
+const prunedAdaptiveFlow = controller.reconcileFlowMemberSteps({
+  name: "adaptive-prune-proof",
+  steps: [
+    { id: "keep_member", type: "member", role: "m_reviewer" },
+    {
+      id: "s_adaptive",
+      type: "adaptive",
+      flowmasterId: "m_deleted",
+      prompt: " keep me verbatim ",
+      objectiveClass: "code-review",
+      resultSchema: "",
+      profileTemplateIds: ["m_reviewer", "m_deleted"],
+      targetSurfaces: ["cli"],
+      allowInlineProfiles: false,
+      limits: {},
+    },
+  ],
+}, [members[0]]);
+assert.deepEqual(prunedAdaptiveFlow.steps.map((step) => step.id), ["keep_member", "s_adaptive"]);
+assert.equal(prunedAdaptiveFlow.steps[1].flowmasterId, "");
+assert.deepEqual(prunedAdaptiveFlow.steps[1].profileTemplateIds, ["m_reviewer"]);
+assert.equal(prunedAdaptiveFlow.steps[1].prompt, " keep me verbatim ");
+// The graph instance's embedded adaptive payload reconciles identically so
+// graph_derives_flow equivalence keeps holding.
+const adaptiveGraphSync = controller.reconcileGraphMemberInstances({
+  instances: [
+    {
+      id: "s_adaptive",
+      kind: "adaptive",
+      label: "adaptive layer",
+      memberId: null,
+      adaptive: {
+        id: "s_adaptive",
+        type: "adaptive",
+        flowmasterId: "m_deleted",
+        prompt: " keep me verbatim ",
+        objectiveClass: "code-review",
+        resultSchema: "",
+        profileTemplateIds: ["m_reviewer", "m_deleted"],
+        targetSurfaces: ["cli"],
+        allowInlineProfiles: false,
+        limits: {},
+      },
+    },
+    { id: "review_inst", memberId: "m_reviewer" },
+    { id: "deleted_inst", memberId: "m_deleted" },
+  ],
+  edges: [
+    { id: "keep_adaptive_review", from: "s_adaptive", to: "review_inst", kind: "next" },
+    { id: "drop_deleted", from: "review_inst", to: "deleted_inst", kind: "next" },
+  ],
+}, [members[0]]);
+assert.deepEqual(adaptiveGraphSync.instances.map((instance) => instance.id), ["s_adaptive", "review_inst"]);
+assert.equal(adaptiveGraphSync.instances[0].adaptive.flowmasterId, "");
+assert.deepEqual(adaptiveGraphSync.instances[0].adaptive.profileTemplateIds, ["m_reviewer"]);
+assert.equal(adaptiveGraphSync.instances[0].adaptive.prompt, " keep me verbatim ");
+assert.deepEqual(adaptiveGraphSync.edges.map((edge) => edge.id), ["keep_adaptive_review"]);
+// Adaptive graph instances surface the server-authoritative locked copy.
+const adaptiveInstanceState = controller.graphInstanceControlState({
+  inst: { id: "s_adaptive", kind: "adaptive", label: "adaptive layer", memberId: null, col: 1, row: 0 },
+  instances: [],
+  members: adaptiveStudio.members,
+  schemas: adaptiveStudio.schemas,
+  graphView: hydratedCatalogs.graphView,
+});
+assert.equal(adaptiveInstanceState.adaptiveLockedTitle, "Adaptive layer node");
+assert.equal(adaptiveInstanceState.adaptiveLockedHint, "Adaptive layers are authored in Basic mode — FlowMaster, prompt, profile templates, and limits are edited there. Deleting this node deletes the adaptive step from the flow.");
+assert.equal(adaptiveInstanceState.deleteLabel, "DELETE");
 {
   const patch = controller.basicBranchAddPatch(
     { type: "branch", branches: [{ id: "br1", label: "Path 1", condition: "", steps: [] }] },

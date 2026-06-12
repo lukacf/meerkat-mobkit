@@ -342,12 +342,53 @@ function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract,
               <RepeatBody studio={studio} mode={mode} step={step} sel={sel} setSel={setSel} openPicker={openPicker} contract={contract} basicView={basicView} />
               <InsertBtn mode={mode} mid={i < steps.length - 1} title={viewState.addStepTitle} onClick={() => openPicker({ ...laneRef, index: i + 1 })} />
             </>
+          ) : step.type === "adaptive" ? (
+            <>
+              <AdaptiveBody studio={studio} step={step} selected={sel === step.id} onSelect={() => setSel(step.id)} contract={contract} basicView={basicView} />
+              <InsertBtn mode={mode} mid={i < steps.length - 1} title={viewState.addStepTitle} onClick={() => openPicker({ ...laneRef, index: i + 1 })} />
+            </>
           ) : (
             <InsertBtn mode={mode} mid={i < steps.length - 1} title={viewState.addStepTitle} onClick={() => openPicker({ ...laneRef, index: i + 1 })} />
           )}
         </React.Fragment>
       ))}
       {steps.length === 0 && <InsertBtn mode={mode} title={viewState.addStepTitle} onClick={() => openPicker({ ...laneRef, index: 0 })} />}
+    </div>
+  );
+}
+
+// Adaptive layer — expanded inline block on the canvas. Everything rendered
+// here (head line, node titles/kickers, connector texts, chips, loop-back
+// copy) is projected by the controller plane from the server view contract;
+// the block composes no copy locally.
+function AdaptiveBody({ studio, step, selected, onSelect, contract, basicView = null }) {
+  const adaptiveState = window.MobKitFlowController.adaptiveStepState(studio, step, contract, basicView);
+  const block = adaptiveState.block || {};
+  const chips = Array.isArray(block.chips) ? block.chips : [];
+  return (
+    <div className="bld-adaptive" onMouseDown={(e) => { e.stopPropagation(); onSelect(); }}>
+      <div className="bld-fork__bar" />
+      <div className={"bld-aframe" + (selected ? " is-selected" : "")}>
+        <div className="bld-aframe__rail"><span>{adaptiveState.panelIcon}</span></div>
+        <div className="bld-aframe__body">
+          <div className="bld-aframe__head">{block.headText}</div>
+          <div className="bld-anode bld-anode--fm">
+            <div className="bld-anode__kicker">{block.flowmasterKicker}</div>
+            <div className="bld-anode__title">{block.flowmasterTitle}</div>
+            <div className="bld-anode__desc">{block.flowmasterDesc}</div>
+          </div>
+          <div className="bld-aconn">{block.planConnector}</div>
+          <div className="bld-anode bld-anode--layer">
+            <div className="bld-anode__kicker">{block.layerKicker}</div>
+            <div className="bld-afan">
+              {chips.length === 0 && <span className="bld-afan__empty">{block.emptyProfilesLabel}</span>}
+              {chips.map(chip => <span key={chip.id} className="bld-afan__chip">{chip.label}<em>{chip.suffix}</em></span>)}
+            </div>
+          </div>
+          <div className="bld-aconn">{block.collectConnector}</div>
+          <div className="bld-aframe__back">{block.loopBackText}</div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -414,6 +455,7 @@ function RepeatBody({ studio, mode, step, sel, setSel, openPicker, contract, bas
 }
 
 function StepCard({ studio, step, index, selected, onSelect, contract, basicView = null }) {
+  if (step.type === "adaptive") return null; // rendered as an expanded block by AdaptiveBody
   const cardState = window.MobKitFlowController.basicStepCardState({ step, members: studio?.members || [], contract, basicView });
 
   return (
@@ -711,6 +753,10 @@ function StepInspector({ studio, members, flow, setFlow, step, update, editStep,
     );
   }
 
+  if (step.type === "adaptive") {
+    return <AdaptivePanel studio={studio} step={step} update={update} onDelete={onDelete} contract={contract} basicView={basicView} />;
+  }
+
   // member step
   const memberStepState = window.MobKitFlowController.basicMemberStepControlState({
     step,
@@ -881,6 +927,110 @@ function ToolScopeEditor({ label, emptyLabel, member, selected, onChange, mode =
         ))}
       </select>
     </Field>
+  );
+}
+
+// Adaptive layer panel — configures the single adaptive step. All labels,
+// placeholders, option rows, template toggle rows, surface toggles, limit
+// rows, and tips are projected by adaptiveStepState from the server view
+// contract; the panel composes no copy and no defaults locally. Free-text
+// fields (prompt, objectiveClass) go through EchoTextArea keyed by step.id so
+// per-keystroke server echoes never move the caret, and their values are
+// committed verbatim (never trimmed). Profile templates are toggles over
+// EXISTING members — member CRUD lives in the AGENTS tab (the hint below the
+// toggle list points there).
+function AdaptivePanel({ studio, step, update, onDelete, contract, basicView = null }) {
+  const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
+  const adaptiveState = window.MobKitFlowController.adaptiveStepState(studio, step, contract, basicView);
+  const [advancedLimitsOpen, setAdvancedLimitsOpen] = React.useState(false);
+  React.useEffect(() => setAdvancedLimitsOpen(false), [step.id]);
+  const flowmasterOptions = Array.isArray(adaptiveState.flowmasterOptions) ? adaptiveState.flowmasterOptions : [];
+  const schemaOptions = Array.isArray(adaptiveState.schemaOptions) ? adaptiveState.schemaOptions : [];
+  const templateRows = Array.isArray(adaptiveState.templateRows) ? adaptiveState.templateRows : [];
+  const surfaceToggles = Array.isArray(adaptiveState.surfaceToggles) ? adaptiveState.surfaceToggles : [];
+  const primaryLimitRows = Array.isArray(adaptiveState.primaryLimitRows) ? adaptiveState.primaryLimitRows : [];
+  const advancedLimitRows = Array.isArray(adaptiveState.advancedLimitRows) ? adaptiveState.advancedLimitRows : [];
+  const toggleTemplate = (row) => {
+    const next = templateRows.filter(r => (r.id === row.id ? !row.on : r.on)).map(r => r.id);
+    update(step.id, { profileTemplateIds: next });
+  };
+  const toggleSurface = (toggle) => {
+    const next = surfaceToggles.filter(t => (t.id === toggle.id ? !toggle.on : t.on)).map(t => t.id);
+    update(step.id, { targetSurfaces: next });
+  };
+  const commitLimit = (row, raw) => {
+    // The limits patch arm takes positive integers and merges partially over
+    // current values server-side; transient non-numeric drafts stay local to
+    // the EchoInput and are never committed.
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value <= 0) return;
+    update(step.id, { limits: { [row.key]: value } });
+  };
+  const renderLimitRow = (row) => (
+    <label key={row.key} className="ap-num">
+      <span className="ap-num__label">{row.label}</span>
+      <EchoInput key={step.id + ":" + row.key} className="field__input" type="number" min="1" step="1" value={row.value ?? ""} onChangeText={value => commitLimit(row, value)} />
+    </label>
+  );
+  return (
+    <div className="bld-panel__inner">
+      <PanelHead icon={adaptiveState.panelIcon} iconTint="member" title={adaptiveState.panelTitle} sub={adaptiveState.panelSub} onClose={onDelete} deleteMode />
+      <Field label={adaptiveState.flowmasterLabel}>
+        <select className="field__select" value={adaptiveState.flowmasterId || ""} onChange={e => update(step.id, { flowmasterId: e.target.value })}>
+          <option value="">{adaptiveState.flowmasterPlaceholderLabel}</option>
+          {flowmasterOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </Field>
+      <Field label={adaptiveState.promptLabel}>
+        <EchoTextArea key={step.id} className="field__textarea" rows={4} placeholder={adaptiveState.promptPlaceholder} value={adaptiveState.promptValue || ""} onChangeText={value => update(step.id, { prompt: value })} />
+      </Field>
+      <Field label={adaptiveState.objectiveLabel}>
+        <EchoTextArea key={step.id} className="field__textarea" rows={2} placeholder={adaptiveState.objectivePlaceholder} value={adaptiveState.objectiveValue || ""} onChangeText={value => update(step.id, { objectiveClass: value })} />
+      </Field>
+      <Field label={adaptiveState.resultSchemaLabel}>
+        <select className="field__select" value={adaptiveState.resultSchemaValue || ""} onChange={e => update(step.id, { resultSchema: e.target.value })}>
+          <option value="">{adaptiveState.resultSchemaPlaceholderLabel}</option>
+          {schemaOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </Field>
+      <div className="bld-section-label">{adaptiveState.profilesTitle}</div>
+      <div className="bld-hint">{adaptiveState.profilesHint}</div>
+      <div className="ap-profiles">
+        {templateRows.map(row => (
+          <button key={row.id} className={"ap-profile" + (row.on ? " is-on" : "")} onClick={() => toggleTemplate(row)}>
+            <span className="ap-profile__name">{row.label}</span>
+            <span className="ap-profile__chiprow">
+              {row.role && <span className="ap-tool">{row.role}</span>}
+              {row.model && <span className="ap-tool">{row.model}</span>}
+            </span>
+          </button>
+        ))}
+        {templateRows.length === 0 && <div className="bld-hint">{adaptiveState.profilesEmptyHint}</div>}
+      </div>
+      <div className="bld-hint">{adaptiveState.profilesAgentsHint}</div>
+      <Field label={adaptiveState.surfacesLabel}>
+        <div className="ap-profile__toolrow">
+          {surfaceToggles.map(toggle => (
+            <button key={toggle.id} className={"ap-tool" + (toggle.on ? " is-on" : "")} onClick={() => toggleSurface(toggle)}>{toggle.label}</button>
+          ))}
+        </div>
+      </Field>
+      <label className="ap-inline">
+        <input type="checkbox" checked={!!adaptiveState.allowInlineProfiles} onChange={e => update(step.id, { allowInlineProfiles: e.target.checked })} />
+        <span>{adaptiveState.inlineProfilesLabel}</span>
+      </label>
+      <div className="bld-section-label">{adaptiveState.limitsTitle}</div>
+      <div className="ap-grid">
+        {primaryLimitRows.map(renderLimitRow)}
+      </div>
+      <button className={"ap-advanced" + (advancedLimitsOpen ? " is-open" : "")} onClick={() => setAdvancedLimitsOpen(open => !open)}>{adaptiveState.limitsAdvancedLabel}</button>
+      {advancedLimitsOpen && (
+        <div className="ap-grid">
+          {advancedLimitRows.map(renderLimitRow)}
+        </div>
+      )}
+      <PanelTips title={viewState.tipsTitle} items={Array.isArray(adaptiveState.tips) ? adaptiveState.tips : []} />
+    </div>
   );
 }
 

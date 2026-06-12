@@ -223,6 +223,104 @@ async function main() {
       return Array.from(document.querySelectorAll(".skill-row__name")).some((row) => row.textContent.trim() === "mob.browser.interaction");
     }, null, { timeout: 10_000 });
 
+    // ── Adaptive layer authoring (Basic mode) ──
+    // Insert from the step picker, then verify the expanded block, the
+    // verbatim per-keystroke prompt echo (spaces + mid-string caret), and a
+    // limits edit — every assertion reads server-projected state.
+    await page.locator("button.viewtab", { hasText: "FLOW" }).click();
+    await page.locator("button.modetoggle__opt", { hasText: "Basic" }).click();
+    await page.locator(".bld-stage").waitFor({ state: "visible", timeout: 10_000 });
+    await page.locator(".bld-insert__btn").last().click();
+    const adaptivePickerRow = page.locator(".bld-panel .bld-opt", { hasText: "Adaptive layer" });
+    await adaptivePickerRow.waitFor({ state: "visible", timeout: 10_000 });
+    await adaptivePickerRow.click();
+
+    const adaptiveBlock = page.locator(".bld-adaptive");
+    await adaptiveBlock.waitFor({ state: "visible", timeout: 10_000 });
+    // A freshly inserted adaptive layer is a draft (validation gates stage),
+    // so the insert does not auto-select; clicking the block opens its panel.
+    await adaptiveBlock.locator(".bld-aframe__head").click();
+    await page.locator(".bld-panel__title", { hasText: "Adaptive layer" }).waitFor({ state: "visible", timeout: 10_000 });
+    // textContent, not innerText: CSS text-transform must not affect the
+    // server-contract text assertions.
+    const adaptiveHeadText = (await adaptiveBlock.locator(".bld-aframe__head").textContent()).trim();
+    if (!adaptiveHeadText.startsWith("ADAPTIVE LAYER · synthesized at runtime · max depth ")) {
+      throw new Error(`Adaptive block head did not render server contract text: ${adaptiveHeadText}`);
+    }
+    const flowmasterTitleBefore = (await adaptiveBlock.locator(".bld-anode--fm .bld-anode__title").textContent()).trim();
+    if (flowmasterTitleBefore !== "—") {
+      throw new Error(`Adaptive block expected the flowmaster fallback title, got: ${flowmasterTitleBefore}`);
+    }
+    await adaptiveBlock.locator(".bld-afan__empty").waitFor({ state: "visible", timeout: 10_000 });
+
+    // Selecting a FlowMaster round-trips MobKit and retitles the block node.
+    const adaptivePanel = page.locator(".bld-panel");
+    const flowmasterSelect = adaptivePanel.locator("select.field__select").first();
+    const flowmasterPick = await flowmasterSelect.locator("option").evaluateAll((options) => {
+      const option = options.find((candidate) => candidate.value);
+      return option ? { value: option.value, name: option.textContent.split(" · ")[0].trim() } : null;
+    });
+    if (!flowmasterPick) throw new Error("Adaptive panel did not expose any flowmaster member options");
+    await flowmasterSelect.selectOption(flowmasterPick.value);
+    await page.waitForFunction((name) => {
+      const title = document.querySelector(".bld-adaptive .bld-anode--fm .bld-anode__title");
+      return title && title.textContent.trim() === name;
+    }, flowmasterPick.name, { timeout: 10_000 });
+
+    // Toggling a profile template on grows a chip in the layer fan.
+    const profileToggle = adaptivePanel.locator(".ap-profile").first();
+    const profileName = (await profileToggle.locator(".ap-profile__name").textContent()).trim();
+    await profileToggle.click();
+    await page.waitForFunction((name) => {
+      const chips = Array.from(document.querySelectorAll(".bld-adaptive .bld-afan__chip"));
+      return chips.some((chip) => chip.textContent.includes(name));
+    }, profileName, { timeout: 10_000 });
+
+    // Prompt typing: every keystroke round-trips apply_operation; spaces are
+    // preserved verbatim and a mid-string edit must land at the caret (the
+    // EchoTextArea draft keeps the caret from snapping to the end).
+    const promptArea = adaptivePanel.locator(".field__textarea").first();
+    await promptArea.click();
+    await page.keyboard.type("plan wide layers", { delay: 20 });
+    for (let i = 0; i < " wide layers".length; i += 1) {
+      await page.keyboard.press("ArrowLeft");
+    }
+    await page.keyboard.type(" and deep", { delay: 20 });
+    await page.waitForTimeout(1_000); // let per-keystroke echoes settle
+    const promptState = await promptArea.evaluate((el) => ({
+      value: el.value,
+      selectionStart: el.selectionStart,
+      selectionEnd: el.selectionEnd,
+    }));
+    if (promptState.value !== "plan and deep wide layers") {
+      throw new Error(`Adaptive prompt lost mid-string typing or spaces: ${JSON.stringify(promptState.value)}`);
+    }
+    if (promptState.selectionStart !== "plan and deep".length || promptState.selectionEnd !== "plan and deep".length) {
+      throw new Error(`Adaptive prompt caret jumped during echo: ${JSON.stringify(promptState)}`);
+    }
+    // Trailing spaces survive too — the server never trims adaptive free text.
+    // (Caret-to-end via the DOM: the End key does not move the caret on macOS.)
+    await promptArea.evaluate((el) => {
+      el.selectionStart = el.value.length;
+      el.selectionEnd = el.value.length;
+    });
+    await page.keyboard.type("  ", { delay: 20 });
+    await page.waitForTimeout(1_000);
+    await promptArea.evaluate((el) => el.blur());
+    await page.waitForTimeout(500); // unfocused draft resyncs from the document
+    const promptAfterBlur = await promptArea.inputValue();
+    if (promptAfterBlur !== "plan and deep wide layers  ") {
+      throw new Error(`Adaptive prompt did not round-trip verbatim through MobKit: ${JSON.stringify(promptAfterBlur)}`);
+    }
+
+    // A limits edit round-trips and re-renders the block head (max depth).
+    const maxDepthInput = adaptivePanel.locator(".ap-grid .ap-num input").first();
+    await maxDepthInput.fill("6");
+    await page.waitForFunction(() => {
+      const head = document.querySelector(".bld-adaptive .bld-aframe__head");
+      return head && head.textContent.includes("max depth 6");
+    }, null, { timeout: 10_000 });
+
     if (consoleMessages.length) {
       throw new Error(`browser console errors:\n${consoleMessages.join("\n")}`);
     }

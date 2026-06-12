@@ -938,6 +938,46 @@ export function basicViewFromSchema(schema) {
     pickerFlowLabel: String(view.picker_flow_label || "").trim(),
     pickerEmptyMembersHint: String(view.picker_empty_members_hint || "").trim(),
     pickerNewBadgeLabel: String(view.picker_new_badge_label || "").trim(),
+    adaptiveDefaults: basicAdaptiveDefaultsFromSchema(view.adaptive_defaults),
+    adaptiveLimitRows: basicAdaptiveLimitRowsFromSchema(view.adaptive_limit_rows),
+    adaptiveTargetSurfaces: Array.isArray(view.adaptive_target_surfaces)
+      ? view.adaptive_target_surfaces.map((surface) => String(surface || "").trim()).filter(Boolean)
+      : [],
+    adaptivePanelTitle: String(view.adaptive_panel_title || "").trim(),
+    adaptivePanelSub: String(view.adaptive_panel_sub || "").trim(),
+    adaptiveFlowmasterLabel: String(view.adaptive_flowmaster_label || "").trim(),
+    adaptiveFlowmasterPlaceholderLabel: String(view.adaptive_flowmaster_placeholder_label || "").trim(),
+    adaptivePromptLabel: String(view.adaptive_prompt_label || "").trim(),
+    adaptivePromptPlaceholder: String(view.adaptive_prompt_placeholder || "").trim(),
+    adaptiveObjectiveLabel: String(view.adaptive_objective_label || "").trim(),
+    adaptiveObjectivePlaceholder: String(view.adaptive_objective_placeholder || "").trim(),
+    adaptiveResultSchemaLabel: String(view.adaptive_result_schema_label || "").trim(),
+    adaptiveResultSchemaPlaceholderLabel: String(view.adaptive_result_schema_placeholder_label || "").trim(),
+    adaptiveProfilesTitle: String(view.adaptive_profiles_title || "").trim(),
+    adaptiveProfilesHint: String(view.adaptive_profiles_hint || "").trim(),
+    adaptiveProfilesAgentsHint: String(view.adaptive_profiles_agents_hint || "").trim(),
+    adaptiveProfilesEmptyHint: String(view.adaptive_profiles_empty_hint || "").trim(),
+    adaptiveSurfacesLabel: String(view.adaptive_surfaces_label || "").trim(),
+    adaptiveInlineProfilesLabel: String(view.adaptive_inline_profiles_label || "").trim(),
+    adaptiveLimitsTitle: String(view.adaptive_limits_title || "").trim(),
+    adaptiveLimitsAdvancedLabel: String(view.adaptive_limits_advanced_label || "").trim(),
+    adaptiveTips: Array.isArray(view.adaptive_tips)
+      ? view.adaptive_tips.map((tip) => String(tip || "").trim()).filter(Boolean)
+      : [],
+    adaptiveStepCardTitle: String(view.adaptive_step_card_title || "").trim(),
+    adaptiveBlockHeadPrefix: String(view.adaptive_block_head_prefix || ""),
+    adaptiveBlockFlowmasterKicker: String(view.adaptive_block_flowmaster_kicker || "").trim(),
+    adaptiveBlockFlowmasterTitleFallback: String(view.adaptive_block_flowmaster_title_fallback || "").trim(),
+    adaptiveBlockFlowmasterDesc: String(view.adaptive_block_flowmaster_desc || "").trim(),
+    adaptiveBlockPlanConnector: String(view.adaptive_block_plan_connector || "").trim(),
+    adaptiveBlockLayerKickerPrefix: String(view.adaptive_block_layer_kicker_prefix || ""),
+    adaptiveBlockLayerKickerSuffix: String(view.adaptive_block_layer_kicker_suffix || ""),
+    adaptiveBlockChipSuffix: String(view.adaptive_block_chip_suffix || "").trim(),
+    adaptiveBlockEmptyProfilesLabel: String(view.adaptive_block_empty_profiles_label || "").trim(),
+    adaptiveBlockCollectConnectorPrefix: String(view.adaptive_block_collect_connector_prefix || ""),
+    adaptiveBlockCollectFallback: String(view.adaptive_block_collect_fallback || "").trim(),
+    adaptiveBlockLoopBackPrefix: String(view.adaptive_block_loop_back_prefix || ""),
+    adaptiveBlockLoopBackSuffix: String(view.adaptive_block_loop_back_suffix || ""),
     flowPrimitiveRows: basicFlowPrimitiveRowsFromSchema(view.flow_primitive_rows),
   };
   return Object.entries(out).every(([key, value]) => {
@@ -989,6 +1029,51 @@ export function basicFlowPrimitiveRowsFromSchema(rows) {
         disabled: Boolean(row.disabled),
         disabledReason,
       };
+    })
+    .filter(Boolean);
+}
+
+// Server-authoritative default payload for adaptive flow steps
+// (editor_basic_view.adaptive_defaults). The client never hardcodes adaptive
+// defaults — inserts and normalization hydrate from this object. prompt and
+// objectiveClass are free text and carry through verbatim (never trimmed).
+export function basicAdaptiveDefaultsFromSchema(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (String(value.type || "") !== "adaptive") return null;
+  const limits = value.limits && typeof value.limits === "object" && !Array.isArray(value.limits)
+    ? value.limits
+    : null;
+  if (!limits || !Object.keys(limits).length) return null;
+  return {
+    type: "adaptive",
+    flowmasterId: String(value.flowmasterId ?? ""),
+    prompt: typeof value.prompt === "string" ? value.prompt : "",
+    objectiveClass: typeof value.objectiveClass === "string" ? value.objectiveClass : "",
+    resultSchema: String(value.resultSchema ?? ""),
+    profileTemplateIds: Array.isArray(value.profileTemplateIds)
+      ? value.profileTemplateIds.map((id) => String(id || "").trim()).filter(Boolean)
+      : [],
+    targetSurfaces: Array.isArray(value.targetSurfaces)
+      ? value.targetSurfaces.map((surface) => String(surface || "").trim()).filter(Boolean)
+      : [],
+    allowInlineProfiles: value.allowInlineProfiles === true,
+    limits: { ...limits },
+  };
+}
+
+// Ordered limit rows (editor_basic_view.adaptive_limit_rows): the 12
+// AdaptiveLimitRecord entries in field order, each {key, toml_key, label,
+// primary} — primary flags the three design-prominent limits.
+export function basicAdaptiveLimitRowsFromSchema(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const key = String(row.key || "").trim();
+      const tomlKey = String(row.toml_key || "").trim();
+      const label = String(row.label || "").trim();
+      if (!key || !tomlKey || !label) return null;
+      return { key, tomlKey, label, primary: Boolean(row.primary) };
     })
     .filter(Boolean);
 }
@@ -1172,6 +1257,8 @@ export function graphViewFromSchema(schema) {
     terminalIdLineTemplate: String(view.terminal_id_line_template || "").trim(),
     terminalAuthoringLockedTitle: String(view.terminal_authoring_locked_title || "").trim(),
     terminalAuthoringLockedHint: String(view.terminal_authoring_locked_hint || "").trim(),
+    adaptiveAuthoringLockedTitle: String(view.adaptive_authoring_locked_title || "").trim(),
+    adaptiveAuthoringLockedHint: String(view.adaptive_authoring_locked_hint || "").trim(),
     edgeEyebrowTemplate: String(view.edge_eyebrow_template || "").trim(),
     edgeTitleTemplate: String(view.edge_title_template || "").trim(),
     edgeIdLineTemplate: String(view.edge_id_line_template || "").trim(),
@@ -1238,6 +1325,7 @@ export function graphViewFromSchema(schema) {
     && out.gateQuorumIncomingTemplate && out.gateMemberOptionTemplate
     && out.terminalEyebrowTemplate && out.terminalIdLineTemplate
     && out.terminalAuthoringLockedTitle && out.terminalAuthoringLockedHint
+    && out.adaptiveAuthoringLockedTitle && out.adaptiveAuthoringLockedHint
     && out.edgeEyebrowTemplate
     && out.edgeTitleTemplate && out.edgeIdLineTemplate && out.edgeFieldPlaceholder
     && out.edgeFieldNoSchemaPlaceholder

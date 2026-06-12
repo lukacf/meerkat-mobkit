@@ -43,7 +43,7 @@ import {
 import { conditionValueLiteral, parseEditorConditionText } from "../flow/reconcile";
 import { childLanes, collectFlowMemberSteps } from "../flow/step-tree";
 import { normalizeSchemaLikeFieldPatch, uniqueInputParamName } from "../schema/field-edit";
-import { normalizeStringList } from "../shared/normalize";
+import { normalizePositiveInteger, normalizeStringList } from "../shared/normalize";
 
 export function basicEditorViewState(basicView) {
   const view = basicView && typeof basicView === "object" ? basicView : null;
@@ -186,6 +186,44 @@ export function basicEditorViewState(basicView) {
     pickerFlowLabel: String(view?.pickerFlowLabel || ""),
     pickerEmptyMembersHint: String(view?.pickerEmptyMembersHint || ""),
     pickerNewBadgeLabel: String(view?.pickerNewBadgeLabel || ""),
+    adaptiveDefaults: view?.adaptiveDefaults && typeof view.adaptiveDefaults === "object"
+      ? view.adaptiveDefaults
+      : null,
+    adaptiveLimitRows: Array.isArray(view?.adaptiveLimitRows) ? view.adaptiveLimitRows : [],
+    adaptiveTargetSurfaces: Array.isArray(view?.adaptiveTargetSurfaces) ? view.adaptiveTargetSurfaces : [],
+    adaptivePanelTitle: String(view?.adaptivePanelTitle || ""),
+    adaptivePanelSub: String(view?.adaptivePanelSub || ""),
+    adaptiveFlowmasterLabel: String(view?.adaptiveFlowmasterLabel || ""),
+    adaptiveFlowmasterPlaceholderLabel: String(view?.adaptiveFlowmasterPlaceholderLabel || ""),
+    adaptivePromptLabel: String(view?.adaptivePromptLabel || ""),
+    adaptivePromptPlaceholder: String(view?.adaptivePromptPlaceholder || ""),
+    adaptiveObjectiveLabel: String(view?.adaptiveObjectiveLabel || ""),
+    adaptiveObjectivePlaceholder: String(view?.adaptiveObjectivePlaceholder || ""),
+    adaptiveResultSchemaLabel: String(view?.adaptiveResultSchemaLabel || ""),
+    adaptiveResultSchemaPlaceholderLabel: String(view?.adaptiveResultSchemaPlaceholderLabel || ""),
+    adaptiveProfilesTitle: String(view?.adaptiveProfilesTitle || ""),
+    adaptiveProfilesHint: String(view?.adaptiveProfilesHint || ""),
+    adaptiveProfilesAgentsHint: String(view?.adaptiveProfilesAgentsHint || ""),
+    adaptiveProfilesEmptyHint: String(view?.adaptiveProfilesEmptyHint || ""),
+    adaptiveSurfacesLabel: String(view?.adaptiveSurfacesLabel || ""),
+    adaptiveInlineProfilesLabel: String(view?.adaptiveInlineProfilesLabel || ""),
+    adaptiveLimitsTitle: String(view?.adaptiveLimitsTitle || ""),
+    adaptiveLimitsAdvancedLabel: String(view?.adaptiveLimitsAdvancedLabel || ""),
+    adaptiveTips: Array.isArray(view?.adaptiveTips) ? view.adaptiveTips : [],
+    adaptiveStepCardTitle: String(view?.adaptiveStepCardTitle || ""),
+    adaptiveBlockHeadPrefix: String(view?.adaptiveBlockHeadPrefix || ""),
+    adaptiveBlockFlowmasterKicker: String(view?.adaptiveBlockFlowmasterKicker || ""),
+    adaptiveBlockFlowmasterTitleFallback: String(view?.adaptiveBlockFlowmasterTitleFallback || ""),
+    adaptiveBlockFlowmasterDesc: String(view?.adaptiveBlockFlowmasterDesc || ""),
+    adaptiveBlockPlanConnector: String(view?.adaptiveBlockPlanConnector || ""),
+    adaptiveBlockLayerKickerPrefix: String(view?.adaptiveBlockLayerKickerPrefix || ""),
+    adaptiveBlockLayerKickerSuffix: String(view?.adaptiveBlockLayerKickerSuffix || ""),
+    adaptiveBlockChipSuffix: String(view?.adaptiveBlockChipSuffix || ""),
+    adaptiveBlockEmptyProfilesLabel: String(view?.adaptiveBlockEmptyProfilesLabel || ""),
+    adaptiveBlockCollectConnectorPrefix: String(view?.adaptiveBlockCollectConnectorPrefix || ""),
+    adaptiveBlockCollectFallback: String(view?.adaptiveBlockCollectFallback || ""),
+    adaptiveBlockLoopBackPrefix: String(view?.adaptiveBlockLoopBackPrefix || ""),
+    adaptiveBlockLoopBackSuffix: String(view?.adaptiveBlockLoopBackSuffix || ""),
     flowPrimitiveRows: Array.isArray(view?.flowPrimitiveRows) ? view.flowPrimitiveRows : [],
   };
 }
@@ -607,6 +645,16 @@ export function basicStepCardState({ step, members = [], contract, basicView = n
       isFlowCard: true,
     };
   }
+  if (step?.type === "adaptive") {
+    return {
+      icon: "❖",
+      iconTint: "member",
+      title: view.adaptiveStepCardTitle,
+      desc: typeof step?.objectiveClass === "string" ? step.objectiveClass : "",
+      configured: !!String(step?.flowmasterId || "").trim(),
+      isFlowCard: true,
+    };
+  }
   return {
     icon: "◆",
     iconTint: "accent",
@@ -772,6 +820,119 @@ export function basicMemberStepControlState({ step, flow, members = [], contract
         };
       })()
       : null,
+  };
+}
+
+// Control state for the adaptive-layer step: everything the Basic panel and
+// the AdaptiveBody block render. Every label/placeholder/prefix comes from
+// the server view contract (editor_basic_view adaptive_* keys); prompt and
+// objectiveClass values pass through verbatim — never trimmed — so the
+// EchoTextArea per-keystroke echo round-trips byte-identical text.
+export function adaptiveStepState(studio, step, contract, basicView = null) {
+  const view = basicEditorViewState(basicView);
+  const members = Array.isArray(studio?.members) ? studio.members : [];
+  const schemas = Array.isArray(studio?.schemas) ? studio.schemas : [];
+  const defaults = view.adaptiveDefaults && typeof view.adaptiveDefaults === "object"
+    ? view.adaptiveDefaults
+    : null;
+  const defaultLimits = defaults?.limits && typeof defaults.limits === "object" ? defaults.limits : {};
+  const stepLimits = step?.limits && typeof step.limits === "object" && !Array.isArray(step.limits)
+    ? step.limits
+    : {};
+  const limitValue = (key) => normalizePositiveInteger(stepLimits[key]) ?? normalizePositiveInteger(defaultLimits[key]);
+  const limitRows = view.adaptiveLimitRows.map((row) => ({
+    key: row.key,
+    tomlKey: row.tomlKey,
+    label: row.label,
+    primary: Boolean(row.primary),
+    value: limitValue(row.key),
+  }));
+  const flowmasterId = String(step?.flowmasterId || "");
+  const selectedFlowmaster = members.find((member) => member?.id === flowmasterId) || null;
+  const profileTemplateIds = Array.isArray(step?.profileTemplateIds)
+    ? step.profileTemplateIds.map((id) => String(id || "")).filter(Boolean)
+    : [];
+  const templateMembers = profileTemplateIds
+    .map((id) => members.find((member) => member?.id === id) || null)
+    .filter(Boolean);
+  const targetSurfaces = Array.isArray(step?.targetSurfaces)
+    ? step.targetSurfaces.map((surface) => String(surface || "")).filter(Boolean)
+    : [];
+  const resultSchemaValue = String(step?.resultSchema || "");
+  const maxDepth = limitValue("maxDepth");
+  const maxMembersPerLayer = limitValue("maxMembersPerLayer");
+  return {
+    panelIcon: "❖",
+    panelTitle: view.adaptivePanelTitle,
+    panelSub: view.adaptivePanelSub,
+    flowmasterLabel: view.adaptiveFlowmasterLabel,
+    flowmasterPlaceholderLabel: view.adaptiveFlowmasterPlaceholderLabel,
+    flowmasterId,
+    flowmasterOptions: members.map((member) => ({
+      value: member.id,
+      label: `${member.name || member.role || member.id} · ${member.model || member.role || member.id}`,
+      member,
+    })),
+    selectedFlowmaster,
+    promptLabel: view.adaptivePromptLabel,
+    promptPlaceholder: view.adaptivePromptPlaceholder,
+    promptValue: typeof step?.prompt === "string" ? step.prompt : "",
+    objectiveLabel: view.adaptiveObjectiveLabel,
+    objectivePlaceholder: view.adaptiveObjectivePlaceholder,
+    objectiveValue: typeof step?.objectiveClass === "string" ? step.objectiveClass : "",
+    resultSchemaLabel: view.adaptiveResultSchemaLabel,
+    resultSchemaPlaceholderLabel: view.adaptiveResultSchemaPlaceholderLabel,
+    resultSchemaValue,
+    schemaOptions: schemas.map((schema) => ({ value: schema.id, label: schema.id, schema })),
+    selectedSchema: schemas.find((schema) => schema?.id === resultSchemaValue) || null,
+    profilesTitle: view.adaptiveProfilesTitle,
+    profilesHint: view.adaptiveProfilesHint,
+    profilesAgentsHint: view.adaptiveProfilesAgentsHint,
+    profilesEmptyHint: view.adaptiveProfilesEmptyHint,
+    profileTemplateIds,
+    hasMembers: members.length > 0,
+    templateRows: members.map((member) => ({
+      id: member.id,
+      label: member.name || member.role || member.id,
+      role: member.role || "",
+      model: member.model || "",
+      on: profileTemplateIds.includes(member.id),
+      member,
+    })),
+    surfacesLabel: view.adaptiveSurfacesLabel,
+    targetSurfaces,
+    surfaceToggles: view.adaptiveTargetSurfaces.map((surface) => ({
+      id: surface,
+      label: surface,
+      on: targetSurfaces.includes(surface),
+    })),
+    inlineProfilesLabel: view.adaptiveInlineProfilesLabel,
+    allowInlineProfiles: step?.allowInlineProfiles === true,
+    limitsTitle: view.adaptiveLimitsTitle,
+    limitsAdvancedLabel: view.adaptiveLimitsAdvancedLabel,
+    limitRows,
+    primaryLimitRows: limitRows.filter((row) => row.primary),
+    advancedLimitRows: limitRows.filter((row) => !row.primary),
+    tips: view.adaptiveTips,
+    stepCardTitle: view.adaptiveStepCardTitle,
+    block: {
+      headText: `${view.adaptiveBlockHeadPrefix}${maxDepth ?? ""}`,
+      flowmasterKicker: view.adaptiveBlockFlowmasterKicker,
+      flowmasterTitle: selectedFlowmaster
+        ? (selectedFlowmaster.name || selectedFlowmaster.role || selectedFlowmaster.id)
+        : view.adaptiveBlockFlowmasterTitleFallback,
+      flowmasterDesc: view.adaptiveBlockFlowmasterDesc,
+      planConnector: view.adaptiveBlockPlanConnector,
+      layerKicker: `${view.adaptiveBlockLayerKickerPrefix}${maxMembersPerLayer ?? ""}${view.adaptiveBlockLayerKickerSuffix}`,
+      chips: templateMembers.map((member) => ({
+        id: member.id,
+        label: member.name || member.role || member.id,
+        suffix: view.adaptiveBlockChipSuffix,
+      })),
+      emptyProfilesLabel: view.adaptiveBlockEmptyProfilesLabel,
+      collectConnector: `${view.adaptiveBlockCollectConnectorPrefix}${resultSchemaValue || view.adaptiveBlockCollectFallback}`,
+      loopBackText: `${view.adaptiveBlockLoopBackPrefix}${maxDepth ?? ""}${view.adaptiveBlockLoopBackSuffix}`,
+    },
   };
 }
 

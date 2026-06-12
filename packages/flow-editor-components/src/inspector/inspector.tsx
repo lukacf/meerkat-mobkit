@@ -244,6 +244,36 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, e
     return <GateInspector studio={studio} flow={flow} inst={inst} clearSelection={clearSelection} editGraphNode={editGraphNode} editGraphEdge={editGraphEdge} deleteGraphNode={deleteGraphNode} contract={contract} graphView={graphView} conditionView={conditionView} />;
   }
 
+  // Adaptive layer instance — read-only card. The adaptive step is authored
+  // in Basic mode only (v1: no graph-side edit ops); the title is the
+  // server-projected instance label, and the locked-authoring copy comes from
+  // the controller plane (adaptiveLockedTitle/adaptiveLockedHint on
+  // graphInstanceControlState, mirroring the terminal authoringLocked
+  // pattern). Delete stays live and mirrors the member-node delete path
+  // (removing the node removes the adaptive step).
+  if (inst.kind === "adaptive" || inst.adaptive) {
+    return (
+      <>
+        <div className="inspector__head">
+          <div className="row row--between">
+            <div>
+              <div className="inspector__eyebrow">{instanceState.eyebrow}</div>
+              <div className="inspector__title">{inst.label || ""}</div>
+              <div className="inspector__id">{instanceState.idLine}</div>
+            </div>
+            <button className="btn btn--ghost btn--sm" onClick={() => clearSelectionAfterOperation(deleteGraphNode?.(inst.id), clearSelection)}>{instanceState.deleteLabel}</button>
+          </div>
+        </div>
+        <div className="inspector__body">
+          <div className="section section--locked">
+            <div className="section__title">{instanceState.adaptiveLockedTitle}</div>
+            <div className="hint__line">{instanceState.adaptiveLockedHint}</div>
+          </div>
+        </div>
+      </>
+    );
+  }
+
   if (inst.isTerminal) {
     const terminalState = window.MobKitFlowController.graphTerminalControlState(inst, contract, graphView);
     return (

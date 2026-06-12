@@ -34,7 +34,100 @@ const GRAPH_TERMINAL_KINDS: &[&str] = &["success", "failed", "human"];
 const GRAPH_FRAME_KINDS: &[&str] = &["Branch", "Parallel", "RepeatUntil"];
 const GRAPH_EDGE_KINDS: &[&str] = &["next", "cond", "fanout"];
 const REPEAT_ITERATION_INPUTS: &[&str] = &["carry"];
-const EDITOR_FLOW_STEP_TYPES: &[&str] = &["input", "member", "repeat", "branch", "parallel"];
+const EDITOR_FLOW_STEP_TYPES: &[&str] = &[
+    "input", "member", "repeat", "branch", "parallel", "adaptive",
+];
+/// Adaptive limit contract: (editor camelCase key, policies.toml key, default,
+/// editor label, design-prominent primary flag). Order matches
+/// `meerkat_mob::adaptive::AdaptiveLimitRecord` (meerkat 0.7.1) field order.
+const EDITOR_ADAPTIVE_LIMITS: &[(&str, &str, u64, &str, bool)] = &[
+    ("maxDepth", "max_depth", 4, "Max depth", true),
+    (
+        "maxTotalDecisions",
+        "max_total_decisions",
+        12,
+        "Max total decisions",
+        false,
+    ),
+    (
+        "maxRepairAttempts",
+        "max_repair_attempts",
+        2,
+        "Max repair attempts",
+        false,
+    ),
+    (
+        "maxLayerFailures",
+        "max_layer_failures",
+        2,
+        "Max layer failures",
+        false,
+    ),
+    (
+        "maxAttemptsPerLayer",
+        "max_attempts_per_layer",
+        2,
+        "Max attempts / layer",
+        false,
+    ),
+    (
+        "maxMembersPerLayer",
+        "max_members_per_layer",
+        20,
+        "Max members / layer",
+        true,
+    ),
+    (
+        "maxTotalSpawnedMembers",
+        "max_total_spawned_members",
+        60,
+        "Max total members",
+        true,
+    ),
+    (
+        "maxActiveMembers",
+        "max_active_members",
+        20,
+        "Max active members",
+        false,
+    ),
+    (
+        "maxRetainedLayerMobs",
+        "max_retained_layer_mobs",
+        4,
+        "Max retained layer mobs",
+        false,
+    ),
+    (
+        "maxWallClockMs",
+        "max_wall_clock_ms",
+        1_800_000,
+        "Max wall clock (ms)",
+        false,
+    ),
+    (
+        "maxAggregateTokens",
+        "max_aggregate_tokens",
+        2_000_000,
+        "Max aggregate tokens",
+        false,
+    ),
+    (
+        "maxAggregateToolCalls",
+        "max_aggregate_tool_calls",
+        500,
+        "Max aggregate tool calls",
+        false,
+    ),
+];
+const EDITOR_ADAPTIVE_TARGET_SURFACES: &[&str] = &["cli", "rpc"];
+/// Bundled `adaptive/layer-decision.schema.json` payload. meerkat main does
+/// not yet publish a generated LayerDecision schema artifact (its own
+/// adaptive pack smoke fixtures bundle `{"type":"object"}`), so we pin the
+/// same permissive document. Follow-up: embed the schema emitted by the
+/// meerkat-contracts schema pipeline for `meerkat_mob::adaptive::LayerDecision`
+/// once meerkat exports it under artifacts/schemas.
+const ADAPTIVE_LAYER_DECISION_SCHEMA_JSON: &str = "{\"type\":\"object\"}\n";
 const EDITOR_INPUT_STEP_ID_PREFIX: &str = "input";
 const EDITOR_INPUT_STEP_DEFAULT_TASK: &str = "Run the mobpack flow.";
 const DEFAULT_DEPLOY_EXEC_TIMEOUT_MS: u64 = 120_000;
@@ -91,6 +184,141 @@ fn editor_input_step_draft_contract() -> Value {
             "inputParams": []
         }
     })
+}
+
+fn editor_adaptive_limit_defaults() -> Value {
+    let mut limits = serde_json::Map::new();
+    for (camel_key, _, default, _, _) in EDITOR_ADAPTIVE_LIMITS {
+        limits.insert((*camel_key).to_string(), Value::from(*default));
+    }
+    Value::Object(limits)
+}
+
+fn editor_adaptive_step_defaults() -> Value {
+    json!({
+        "type": "adaptive",
+        "flowmasterId": "",
+        "prompt": "",
+        "objectiveClass": "",
+        "resultSchema": "",
+        "profileTemplateIds": [],
+        "targetSurfaces": EDITOR_ADAPTIVE_TARGET_SURFACES,
+        "allowInlineProfiles": false,
+        "limits": editor_adaptive_limit_defaults(),
+    })
+}
+
+fn editor_adaptive_limit_rows() -> Value {
+    Value::Array(
+        EDITOR_ADAPTIVE_LIMITS
+            .iter()
+            .map(|(camel_key, toml_key, _, label, primary)| {
+                json!({
+                    "key": camel_key,
+                    "toml_key": toml_key,
+                    "label": label,
+                    "primary": primary,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn collect_adaptive_flow_steps(steps: &[Value], path: &str, out: &mut Vec<(String, Value)>) {
+    for (index, step) in steps.iter().enumerate() {
+        let step_path = format!("{path}[{index}]");
+        if step.get("type").and_then(Value::as_str) == Some("adaptive") {
+            out.push((step_path.clone(), step.clone()));
+        }
+        if let Some(nested) = step.get("steps").and_then(Value::as_array) {
+            collect_adaptive_flow_steps(nested, &format!("{step_path}.steps"), out);
+        }
+        if let Some(branches) = step.get("branches").and_then(Value::as_array) {
+            for (branch_index, branch) in branches.iter().enumerate() {
+                if let Some(branch_steps) = branch.get("steps").and_then(Value::as_array) {
+                    collect_adaptive_flow_steps(
+                        branch_steps,
+                        &format!("{step_path}.branches[{branch_index}].steps"),
+                        out,
+                    );
+                }
+            }
+        }
+        if let Some(fallback) = step.get("fallback").and_then(Value::as_array) {
+            collect_adaptive_flow_steps(fallback, &format!("{step_path}.fallback"), out);
+        }
+    }
+}
+
+fn adaptive_flow_steps(flow: &Value) -> Vec<(String, Value)> {
+    let mut out = Vec::new();
+    if let Some(steps) = flow.get("steps").and_then(Value::as_array) {
+        collect_adaptive_flow_steps(steps, "flow.steps", &mut out);
+    }
+    out
+}
+
+/// Registry names must satisfy meerkat's adaptive `SchemaName` identifier
+/// rules (`[a-z0-9-]`, no leading/trailing `-`): kebab-case the editor
+/// schema id, inserting `-` at camelCase boundaries.
+fn adaptive_schema_registry_name(schema_id: &str) -> String {
+    let mut out = String::new();
+    let mut previous_lower_or_digit = false;
+    for ch in schema_id.chars() {
+        if ch.is_ascii_uppercase() {
+            if previous_lower_or_digit {
+                out.push('-');
+            }
+            out.push(ch.to_ascii_lowercase());
+            previous_lower_or_digit = false;
+        } else if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            out.push(ch);
+            previous_lower_or_digit = true;
+        } else {
+            out.push('-');
+            previous_lower_or_digit = false;
+        }
+    }
+    let collapsed = out
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if collapsed.is_empty() {
+        "schema".to_string()
+    } else {
+        collapsed
+    }
+}
+
+/// Keep an adaptive step's member references consistent after member
+/// deletion: stale flowmaster refs clear, stale profile templates drop.
+/// Applied to both the flow step and the graph instance's embedded payload
+/// so `graph_derives_flow` equivalence keeps holding.
+fn prune_adaptive_step_member_refs(step: &mut Value, member_ids: &BTreeSet<String>) {
+    let Some(object) = step.as_object_mut() else {
+        return;
+    };
+    if let Some(flowmaster) = object
+        .get("flowmasterId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && !member_ids.contains(flowmaster)
+    {
+        object.insert("flowmasterId".to_string(), Value::String(String::new()));
+    }
+    if let Some(templates) = object
+        .get_mut("profileTemplateIds")
+        .and_then(Value::as_array_mut)
+    {
+        templates.retain(|template| {
+            template
+                .as_str()
+                .map(str::trim)
+                .is_some_and(|template| member_ids.contains(template))
+        });
+    }
 }
 
 fn serialized_string_values<T: Serialize>(values: Vec<T>) -> Vec<String> {
@@ -1807,6 +2035,10 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
     editor_graph_view["terminal_authoring_locked_hint"] = json!(
         "Visual terminal nodes do not compile into deployable MobKit mob.toml. Delete this node or replace it with a real member, branch, join, or loop flow shape."
     );
+    editor_graph_view["adaptive_authoring_locked_title"] = json!("Adaptive layer node");
+    editor_graph_view["adaptive_authoring_locked_hint"] = json!(
+        "Adaptive layers are authored in Basic mode — FlowMaster, prompt, profile templates, and limits are edited there. Deleting this node deletes the adaptive step from the flow."
+    );
     editor_graph_view["edge_eyebrow_template"] = json!("EDGE · {kind}");
     editor_graph_view["edge_title_template"] = json!("{from} → {to}");
     editor_graph_view["edge_id_line_template"] = json!("{id}");
@@ -2404,6 +2636,56 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         json!("unsupported: re-use input task");
     editor_basic_view["repeat_iteration_feeds_unsupported_prefix"] = json!("unsupported: feeds ");
     editor_basic_view["repeat_iteration_unsupported_prefix"] = json!("unsupported: ");
+    editor_basic_view["adaptive_defaults"] = editor_adaptive_step_defaults();
+    editor_basic_view["adaptive_limit_rows"] = editor_adaptive_limit_rows();
+    editor_basic_view["adaptive_target_surfaces"] = json!(EDITOR_ADAPTIVE_TARGET_SURFACES);
+    editor_basic_view["adaptive_panel_title"] = json!("Adaptive layer");
+    editor_basic_view["adaptive_panel_sub"] = json!(
+        "A FlowMaster designs the next mob layer at runtime from prior results — dynamic width & depth. Each plan is validated, then run as a normal mob flow."
+    );
+    editor_basic_view["adaptive_flowmaster_label"] = json!("FlowMaster (planning agent)");
+    editor_basic_view["adaptive_flowmaster_placeholder_label"] = json!("— select member —");
+    editor_basic_view["adaptive_prompt_label"] = json!("Planning prompt");
+    editor_basic_view["adaptive_prompt_placeholder"] =
+        json!("How should the FlowMaster decide each layer?");
+    editor_basic_view["adaptive_objective_label"] = json!("Objective class");
+    editor_basic_view["adaptive_objective_placeholder"] = json!("code-review");
+    editor_basic_view["adaptive_result_schema_label"] = json!("LayerResult schema");
+    editor_basic_view["adaptive_result_schema_placeholder_label"] =
+        json!("— LayerResult (untyped) —");
+    editor_basic_view["adaptive_profiles_title"] = json!("Profile templates the layer may spawn");
+    editor_basic_view["adaptive_profiles_hint"] = json!(
+        "No members are baked in — the FlowMaster picks counts & roles per layer from these shapes."
+    );
+    editor_basic_view["adaptive_profiles_agents_hint"] =
+        json!("Edit member shapes in the Agents tab.");
+    editor_basic_view["adaptive_profiles_empty_hint"] =
+        json!("No members yet — define some in the Agents tab.");
+    editor_basic_view["adaptive_surfaces_label"] = json!("Target surfaces");
+    editor_basic_view["adaptive_inline_profiles_label"] = json!("Allow inline profiles");
+    editor_basic_view["adaptive_limits_title"] = json!("Limits");
+    editor_basic_view["adaptive_limits_advanced_label"] = json!("Advanced limits");
+    editor_basic_view["adaptive_tips"] = json!([
+        "Dynamic width: the layer is generated with the right number of members.",
+        "Dynamic depth: the loop repeats until the FlowMaster returns Finish or limits hit.",
+        "Every layer runs through MobMachine and emits a validated LayerResult."
+    ]);
+    editor_basic_view["adaptive_step_card_title"] = json!("Adaptive layer");
+    editor_basic_view["adaptive_block_head_prefix"] =
+        json!("ADAPTIVE LAYER · synthesized at runtime · max depth ");
+    editor_basic_view["adaptive_block_flowmaster_kicker"] = json!("FLOWMASTER · plan");
+    editor_basic_view["adaptive_block_flowmaster_title_fallback"] = json!("—");
+    editor_basic_view["adaptive_block_flowmaster_desc"] =
+        json!("Designs the next LayerPlan from prior results");
+    editor_basic_view["adaptive_block_plan_connector"] = json!("LayerPlan ✓");
+    editor_basic_view["adaptive_block_layer_kicker_prefix"] = json!("LAYERMOB · ≤ ");
+    editor_basic_view["adaptive_block_layer_kicker_suffix"] = json!(" members");
+    editor_basic_view["adaptive_block_chip_suffix"] = json!("×N");
+    editor_basic_view["adaptive_block_empty_profiles_label"] = json!("no profiles yet");
+    editor_basic_view["adaptive_block_collect_connector_prefix"] = json!("collector → ");
+    editor_basic_view["adaptive_block_collect_fallback"] = json!("LayerResult");
+    editor_basic_view["adaptive_block_loop_back_prefix"] = json!("↑ loop until Finish · or depth ");
+    editor_basic_view["adaptive_block_loop_back_suffix"] = json!(" / budget");
     editor_basic_view["add_step_title"] = json!("Add step");
     editor_basic_view["input_step_card_title"] = json!("Input");
     editor_basic_view["input_step_card_desc_fallback"] = json!("the task this mob is run with");
@@ -2454,12 +2736,19 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
             "sub": "fan_out to several members, then fan_in with a collection policy"
         },
         {
+            "id": "adaptive",
+            "glyph": "❖",
+            "tint": "member",
+            "label": "Adaptive layer",
+            "sub": "A FlowMaster designs & runs the next mob layer at runtime — dynamic width & depth",
+            "is_new": true
+        },
+        {
             "id": "subagent",
             "glyph": "⬡",
             "tint": "link",
             "label": "Sub-mob",
             "sub": "delegate to a nested mob, tested and packed on its own",
-            "is_new": true,
             "disabled": true,
             "disabled_reason": "Current MobKit mob.toml flow semantics do not yet define deployable sub-mob nodes"
         },
@@ -5020,6 +5309,7 @@ fn apply_rename_schema_operation(
     schemas[index]["id"] = Value::String(new_id.clone());
     document.schemas = Value::Array(schemas);
     rewrite_member_schema_references(&mut document.members, &schema_id, &new_id);
+    rewrite_adaptive_result_schema_references(document, &schema_id, &new_id);
     Ok(json!({ "kind": "schema", "id": new_id }))
 }
 
@@ -5046,6 +5336,7 @@ fn apply_delete_schema_operation(
     }
     document.schemas = Value::Array(schemas);
     rewrite_member_schema_references(&mut document.members, &schema_id, "");
+    rewrite_adaptive_result_schema_references(document, &schema_id, "");
     for field_name in removed_fields {
         rewrite_schema_field_references(document, &schema_id, &field_name, "");
     }
@@ -6088,6 +6379,85 @@ fn rewrite_member_schema_references(members: &mut Value, old_schema: &str, new_s
     }
 }
 
+/// Keep adaptive layers' result-schema references consistent after a schema
+/// rename or delete: a matching `resultSchema` remaps to the new id (clears
+/// on delete), the schema analogue of `rewrite_member_schema_references`.
+/// Applied to both the flow steps and the graph instances' embedded
+/// `adaptive` payloads so `graph_derives_flow` equivalence keeps holding.
+fn rewrite_adaptive_result_schema_references(
+    document: &mut MobpackDocument,
+    old_schema: &str,
+    new_schema: &str,
+) {
+    if let Some(steps) = document.flow.get_mut("steps").and_then(Value::as_array_mut) {
+        rewrite_adaptive_result_schema_in_steps(steps, old_schema, new_schema);
+    }
+    if let Some(instances) = document.instances.as_array_mut() {
+        for instance in instances {
+            if graph_to_flow_is_adaptive_node(instance)
+                && let Some(payload) = instance.get_mut("adaptive")
+            {
+                rewrite_adaptive_result_schema_in_step(payload, old_schema, new_schema);
+            }
+        }
+    }
+}
+
+fn rewrite_adaptive_result_schema_in_steps(
+    steps: &mut [Value],
+    old_schema: &str,
+    new_schema: &str,
+) {
+    for step in steps {
+        match step.get("type").and_then(Value::as_str) {
+            Some("adaptive") => {
+                rewrite_adaptive_result_schema_in_step(step, old_schema, new_schema);
+            }
+            Some("repeat") => {
+                if let Some(nested) = step.get_mut("steps").and_then(Value::as_array_mut) {
+                    rewrite_adaptive_result_schema_in_steps(nested, old_schema, new_schema);
+                }
+            }
+            Some("branch" | "parallel") => {
+                if let Some(branches) = step.get_mut("branches").and_then(Value::as_array_mut) {
+                    for branch in branches {
+                        if let Some(branch_steps) =
+                            branch.get_mut("steps").and_then(Value::as_array_mut)
+                        {
+                            rewrite_adaptive_result_schema_in_steps(
+                                branch_steps,
+                                old_schema,
+                                new_schema,
+                            );
+                        }
+                    }
+                }
+                if let Some(fallback) = step.get_mut("fallback").and_then(Value::as_array_mut) {
+                    rewrite_adaptive_result_schema_in_steps(fallback, old_schema, new_schema);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_adaptive_result_schema_in_step(step: &mut Value, old_schema: &str, new_schema: &str) {
+    let Some(object) = step.as_object_mut() else {
+        return;
+    };
+    if object
+        .get("resultSchema")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        == Some(old_schema)
+    {
+        object.insert(
+            "resultSchema".to_string(),
+            Value::String(new_schema.to_string()),
+        );
+    }
+}
+
 fn member_schema_index(members: &Value) -> BTreeMap<String, String> {
     members
         .as_array()
@@ -6860,6 +7230,14 @@ fn flow_step_from_pick(
             "iterationInput": "",
             "steps": []
         })),
+        "adaptive" => {
+            if !adaptive_flow_steps(&document.flow).is_empty() {
+                return Err("adaptive layer already present".to_string());
+            }
+            let mut step = editor_adaptive_step_defaults();
+            step["id"] = json!(id);
+            Ok(step)
+        }
         other if EDITOR_FLOW_STEP_TYPES.contains(&other) => {
             Err(format!("unsupported insert_flow_step pick.kind: {other}"))
         }
@@ -6928,6 +7306,17 @@ fn validate_flow_step(
                 "member flow step must reference an existing member: {role}"
             ));
         }
+    }
+    if step.get("type").and_then(Value::as_str) == Some("adaptive")
+        && adaptive_flow_steps(flow).iter().any(|(_, existing)| {
+            existing
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(|existing_id| existing_id != id)
+        })
+    {
+        return Err("adaptive layer already present".to_string());
     }
     Ok(id)
 }
@@ -7237,6 +7626,161 @@ fn normalize_flow_step_update_patch(
                     .as_str()
                     .ok_or_else(|| format!("update_flow_step {key} must be a string"))?;
                 normalized.insert(key.clone(), Value::String(text.to_string()));
+            }
+            // Free text on the per-keystroke echo path: never trimmed.
+            "prompt" | "objectiveClass" => {
+                if step_type != "adaptive" {
+                    return Err(format!(
+                        "update_flow_step {key} patch requires adaptive step"
+                    ));
+                }
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| format!("update_flow_step {key} must be a string"))?;
+                normalized.insert(key.clone(), Value::String(text.to_string()));
+            }
+            "flowmasterId" => {
+                if step_type != "adaptive" {
+                    return Err(format!(
+                        "update_flow_step {key} patch requires adaptive step"
+                    ));
+                }
+                let member_id = value
+                    .as_str()
+                    .ok_or_else(|| format!("update_flow_step {key} must be a string"))?
+                    .trim()
+                    .to_string();
+                if !member_id.is_empty() && !graph_member_ids(members).contains(&member_id) {
+                    return Err(format!(
+                        "update_flow_step {key} must reference an existing member: {member_id}"
+                    ));
+                }
+                normalized.insert(key.clone(), Value::String(member_id));
+            }
+            "resultSchema" => {
+                if step_type != "adaptive" {
+                    return Err(format!(
+                        "update_flow_step {key} patch requires adaptive step"
+                    ));
+                }
+                let schema_id = value
+                    .as_str()
+                    .ok_or_else(|| format!("update_flow_step {key} must be a string"))?
+                    .trim()
+                    .to_string();
+                normalized.insert(key.clone(), Value::String(schema_id));
+            }
+            "profileTemplateIds" => {
+                if step_type != "adaptive" {
+                    return Err(format!(
+                        "update_flow_step {key} patch requires adaptive step"
+                    ));
+                }
+                let items = value
+                    .as_array()
+                    .ok_or_else(|| format!("update_flow_step {key} must be a string array"))?;
+                let member_ids = graph_member_ids(members);
+                let mut seen = BTreeSet::new();
+                let mut out = Vec::new();
+                for item in items {
+                    let member_id = item
+                        .as_str()
+                        .ok_or_else(|| format!("update_flow_step {key} entries must be strings"))?
+                        .trim();
+                    if member_id.is_empty() || !seen.insert(member_id.to_string()) {
+                        continue;
+                    }
+                    if !member_ids.contains(member_id) {
+                        return Err(format!(
+                            "update_flow_step {key} must reference existing members: {member_id}"
+                        ));
+                    }
+                    out.push(Value::String(member_id.to_string()));
+                }
+                normalized.insert(key.clone(), Value::Array(out));
+            }
+            "targetSurfaces" => {
+                if step_type != "adaptive" {
+                    return Err(format!(
+                        "update_flow_step {key} patch requires adaptive step"
+                    ));
+                }
+                let items = value
+                    .as_array()
+                    .ok_or_else(|| format!("update_flow_step {key} must be a string array"))?;
+                let mut surfaces = BTreeSet::new();
+                for item in items {
+                    let surface = item
+                        .as_str()
+                        .ok_or_else(|| format!("update_flow_step {key} entries must be strings"))?
+                        .trim();
+                    if surface.is_empty() {
+                        continue;
+                    }
+                    if !EDITOR_ADAPTIVE_TARGET_SURFACES.contains(&surface) {
+                        return Err(format!("unsupported adaptive target surface: {surface}"));
+                    }
+                    surfaces.insert(surface.to_string());
+                }
+                normalized.insert(
+                    key.clone(),
+                    Value::Array(surfaces.into_iter().map(Value::String).collect()),
+                );
+            }
+            "allowInlineProfiles" => {
+                if step_type != "adaptive" {
+                    return Err(format!(
+                        "update_flow_step {key} patch requires adaptive step"
+                    ));
+                }
+                let allow = value
+                    .as_bool()
+                    .ok_or_else(|| format!("update_flow_step {key} must be a boolean"))?;
+                normalized.insert(key.clone(), Value::Bool(allow));
+            }
+            "limits" => {
+                if step_type != "adaptive" {
+                    return Err(format!(
+                        "update_flow_step {key} patch requires adaptive step"
+                    ));
+                }
+                let patch_limits = value
+                    .as_object()
+                    .ok_or_else(|| format!("update_flow_step {key} must be an object"))?;
+                for limit_key in patch_limits.keys() {
+                    if !EDITOR_ADAPTIVE_LIMITS
+                        .iter()
+                        .any(|(camel_key, _, _, _, _)| camel_key == limit_key)
+                    {
+                        return Err(format!("unknown adaptive limit: {limit_key}"));
+                    }
+                }
+                let current_limits = current_step
+                    .get("limits")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut limits = serde_json::Map::new();
+                for (camel_key, _, default, _, _) in EDITOR_ADAPTIVE_LIMITS {
+                    let candidate = patch_limits
+                        .get(*camel_key)
+                        .or_else(|| current_limits.get(*camel_key));
+                    let parsed = match candidate {
+                        Some(candidate) => parse_positive_integer_value(
+                            candidate,
+                            &format!("limits.{camel_key}"),
+                            "update_flow_step",
+                        )?
+                        .ok_or_else(|| {
+                            format!(
+                                "update_flow_step limits.{camel_key} must be a positive integer"
+                            )
+                        })?,
+                        None => *default,
+                    };
+                    limits.insert((*camel_key).to_string(), Value::from(parsed));
+                }
+                normalized.insert(key.clone(), Value::Object(limits));
             }
             "quorum" | "timeoutMs" | "maxIterations" => {
                 normalized.insert(key.clone(), positive_integer_or_null(value, key)?);
@@ -11143,6 +11687,9 @@ fn prune_step_array_for_members(
                 let allowed_tools = member_tool_set(members, role);
                 prune_tool_scope_fields(step, &allowed_tools);
             }
+            Some("adaptive") => {
+                prune_adaptive_step_member_refs(step, member_ids);
+            }
             Some("repeat") => {
                 if let Some(nested) = step.get_mut("steps").and_then(Value::as_array_mut) {
                     prune_step_array_for_members(nested, members, member_ids);
@@ -11183,6 +11730,14 @@ fn prune_graph_instances_for_members(
             .unwrap_or(true)
     });
     for instance in instances {
+        if graph_to_flow_is_adaptive_node(instance) {
+            // Mirror the flow-side pruning on the embedded payload so the
+            // graph still derives the flow byte-identically.
+            if let Some(payload) = instance.get_mut("adaptive") {
+                prune_adaptive_step_member_refs(payload, member_ids);
+            }
+            continue;
+        }
         let Some(member_id) = instance.get("memberId").and_then(Value::as_str) else {
             continue;
         };
@@ -11503,7 +12058,7 @@ fn graph_to_flow_from_document(document: &MobpackDocument) -> Value {
     let prior_by_id = graph_to_flow_prior_steps_by_id(&prior_steps);
     let mut member_nodes: Vec<Value> = instances
         .iter()
-        .filter(|instance| graph_to_flow_is_member_node(instance))
+        .filter(|instance| graph_to_flow_is_flow_node(instance))
         .cloned()
         .collect();
     member_nodes.sort_by(graph_to_flow_compare_nodes);
@@ -11631,7 +12186,7 @@ fn graph_to_flow_segments_to_steps(
 ) -> Vec<GraphToFlowSegment> {
     let mut member_nodes: Vec<Value> = instances
         .iter()
-        .filter(|instance| graph_to_flow_is_member_node(instance))
+        .filter(|instance| graph_to_flow_is_flow_node(instance))
         .cloned()
         .collect();
     member_nodes.sort_by(graph_to_flow_compare_nodes);
@@ -11661,7 +12216,7 @@ fn graph_to_flow_segments_to_steps(
                 .filter_map(|edge| {
                     let node =
                         graph_to_flow_node_by_id(instances, &graph_to_flow_string(&edge, "to"))?;
-                    graph_to_flow_is_member_node(&node).then_some((edge, node))
+                    graph_to_flow_is_flow_node(&node).then_some((edge, node))
                 })
                 .collect();
         if branch_starts.len() < 2 {
@@ -11695,7 +12250,7 @@ fn graph_to_flow_segments_to_steps(
                 "isFallback": is_fallback,
                 "condition": if gate_kind == "branch" { graph_to_flow_condition_text_from_edge(edge, "") } else { String::new() },
                 "cond": if gate_kind == "branch" { graph_to_flow_edge_condition_to_editor_cond(edge).unwrap_or(Value::Null) } else { Value::Null },
-                "steps": lane_nodes.iter().map(|lane_node| graph_to_flow_member_step_from_instance(lane_node, members, prior_by_id)).collect::<Vec<_>>(),
+                "steps": lane_nodes.iter().map(|lane_node| graph_to_flow_step_from_instance(lane_node, members, prior_by_id)).collect::<Vec<_>>(),
             }));
         }
         let id = graph_to_flow_primitive_id_from_gate(
@@ -11840,7 +12395,7 @@ fn graph_to_flow_step_for_group(
     prior_by_id: &BTreeMap<String, Value>,
 ) -> Value {
     if nodes.len() == 1 {
-        return graph_to_flow_member_step_from_instance(&nodes[0], members, prior_by_id);
+        return graph_to_flow_step_from_instance(&nodes[0], members, prior_by_id);
     }
     let has_conditional_fan_in = nodes.iter().any(|node| {
         graph_to_flow_incoming_edges(edges, &graph_to_flow_string(node, "id"))
@@ -11875,7 +12430,7 @@ fn graph_to_flow_step_for_group(
                     "label": graph_to_flow_lane_label(node, members, index),
                     "condition": edge.as_ref().map(|edge| graph_to_flow_condition_text_from_edge(edge, "")).unwrap_or_default(),
                     "cond": edge.as_ref().and_then(graph_to_flow_edge_condition_to_editor_cond).unwrap_or(Value::Null),
-                    "steps": [graph_to_flow_member_step_from_instance(node, members, prior_by_id)],
+                    "steps": [graph_to_flow_step_from_instance(node, members, prior_by_id)],
                 })
             }).collect::<Vec<_>>(),
             "fallback": [],
@@ -11897,7 +12452,7 @@ fn graph_to_flow_step_for_group(
                 json!({
                     "id": format!("br_{}", graph_to_flow_string(node, "id")),
                     "label": graph_to_flow_lane_label(node, members, index),
-                    "steps": [graph_to_flow_member_step_from_instance(node, members, prior_by_id)],
+                    "steps": [graph_to_flow_step_from_instance(node, members, prior_by_id)],
                 })
             }).collect::<Vec<_>>(),
         })
@@ -12005,6 +12560,51 @@ fn graph_to_flow_is_member_node(instance: &Value) -> bool {
     !graph_to_flow_string(instance, "memberId").is_empty()
         && !graph_to_flow_bool(instance, "isTerminal")
         && !graph_to_flow_bool(instance, "isGate")
+}
+
+fn graph_to_flow_is_adaptive_node(instance: &Value) -> bool {
+    graph_to_flow_string(instance, "kind") == "adaptive"
+        && !graph_to_flow_bool(instance, "isTerminal")
+        && !graph_to_flow_bool(instance, "isGate")
+}
+
+/// Member turns and adaptive layers both occupy inline positions in the
+/// derived flow chain.
+fn graph_to_flow_is_flow_node(instance: &Value) -> bool {
+    graph_to_flow_is_member_node(instance) || graph_to_flow_is_adaptive_node(instance)
+}
+
+fn graph_to_flow_step_from_instance(
+    instance: &Value,
+    members: &[Value],
+    prior_by_id: &BTreeMap<String, Value>,
+) -> Value {
+    if graph_to_flow_is_adaptive_node(instance) {
+        return graph_to_flow_adaptive_step_from_instance(instance, prior_by_id);
+    }
+    graph_to_flow_member_step_from_instance(instance, members, prior_by_id)
+}
+
+fn graph_to_flow_adaptive_step_from_instance(
+    instance: &Value,
+    prior_by_id: &BTreeMap<String, Value>,
+) -> Value {
+    if let Some(payload) = instance
+        .get("adaptive")
+        .filter(|payload| payload.is_object())
+    {
+        return payload.clone();
+    }
+    let id = graph_to_flow_string(instance, "id");
+    if let Some(prior) = prior_by_id
+        .get(&id)
+        .filter(|prior| prior.get("type").and_then(Value::as_str) == Some("adaptive"))
+    {
+        return prior.clone();
+    }
+    let mut step = editor_adaptive_step_defaults();
+    step["id"] = json!(id);
+    step
 }
 
 fn graph_to_flow_is_back_edge(edge: &Value, instance_by_id: &BTreeMap<String, Value>) -> bool {
@@ -12168,7 +12768,7 @@ fn graph_to_flow_collect_lane_to_join(
         if join_id == Some(node_id.as_str()) || !seen.insert(node_id.clone()) {
             break;
         }
-        if graph_to_flow_is_member_node(&node) {
+        if graph_to_flow_is_flow_node(&node) {
             out.push(node.clone());
         }
         let mut next_nodes: Vec<Value> = graph_to_flow_outgoing_edges(edges, &node_id)
@@ -13432,22 +14032,6 @@ fn deployable_mobpack_archive_files(
                 .collect::<Vec<_>>()
                 .join("; ")
         })?;
-    let manifest = format!(
-        r#"surfaces = ["cli", "rpc"]
-
-[mobpack]
-name = "{}"
-version = "{}"
-description = "{}"
-"#,
-        escape_toml_string(slug),
-        MOBPACK_SCHEMA_VERSION,
-        escape_toml_string(if document.name.trim().is_empty() {
-            "MobKit Flow Editor mobpack"
-        } else {
-            document.name.trim()
-        })
-    );
     let definition_json = serde_json::to_vec_pretty(&definition)
         .map_err(|err| format!("failed to encode definition.json: {err}"))?;
     let editor_json = serde_json::to_vec_pretty(&json!({
@@ -13458,7 +14042,6 @@ description = "{}"
     .map_err(|err| format!("failed to encode mobkit/editor.json: {err}"))?;
 
     let mut files = BTreeMap::<String, Vec<u8>>::new();
-    files.insert("manifest.toml".to_string(), manifest.into_bytes());
     files.insert("definition.json".to_string(), definition_json);
     files.insert("mobkit/editor.json".to_string(), editor_json);
     files.insert("mobkit/mob.toml".to_string(), mob_toml.as_bytes().to_vec());
@@ -13475,7 +14058,214 @@ description = "{}"
             .map_err(|err| format!("failed to encode {path}: {err}"))?;
         files.insert(path, schema_json);
     }
+    let adaptive_manifest_section = append_adaptive_archive_files(document, &mut files)?;
+    let mut manifest = format!(
+        r#"surfaces = ["cli", "rpc"]
+
+[mobpack]
+name = "{}"
+version = "{}"
+description = "{}"
+"#,
+        escape_toml_string(slug),
+        MOBPACK_SCHEMA_VERSION,
+        escape_toml_string(if document.name.trim().is_empty() {
+            "MobKit Flow Editor mobpack"
+        } else {
+            document.name.trim()
+        })
+    );
+    if let Some(section) = adaptive_manifest_section {
+        manifest.push_str(&section);
+    }
+    files.insert("manifest.toml".to_string(), manifest.into_bytes());
     Ok(files)
+}
+
+/// Compose the adaptive pack artifacts (meerkat 0.7.1 `[adaptive]` contract)
+/// from the document's adaptive layer step: `adaptive/policies.toml`,
+/// `adaptive/flowmaster.prompt.md`, `adaptive/layer-decision.schema.json`,
+/// and `schemas/registry.json`. Returns the string-composed `[adaptive]`
+/// manifest section (policy digest over the exact emitted policy bytes), or
+/// `None` when the document has no adaptive layer.
+fn append_adaptive_archive_files(
+    document: &MobpackDocument,
+    files: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<Option<String>, String> {
+    let Some((_, step)) = adaptive_flow_steps(&document.flow).into_iter().next() else {
+        return Ok(None);
+    };
+    let members = document.members.as_array().cloned().unwrap_or_default();
+    let member_by_id = |member_id: &str| {
+        members.iter().find(|member| {
+            member
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == member_id)
+        })
+    };
+    let flowmaster_id = step
+        .get("flowmasterId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let flowmaster = member_by_id(flowmaster_id)
+        .ok_or_else(|| "adaptive layer FlowMaster must reference an existing member".to_string())?;
+    let flowmaster_profile = editor_profile_name(flowmaster);
+
+    let mut model_classes = BTreeSet::new();
+    let mut tool_classes = BTreeSet::new();
+    let mut skill_classes = BTreeSet::new();
+    for template_id in string_vec(step.get("profileTemplateIds")) {
+        let Some(member) = member_by_id(template_id.trim()) else {
+            continue;
+        };
+        if let Some(model) = member
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            model_classes.insert(model.to_string());
+        }
+        tool_classes.extend(string_vec(member.get("tools")));
+        skill_classes.extend(string_vec(member.get("skills")));
+    }
+    let to_sorted_vec = |set: &BTreeSet<String>| set.iter().cloned().collect::<Vec<_>>();
+    let allow_inline_profiles = step
+        .get("allowInlineProfiles")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let limits = step
+        .get("limits")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    // Top-level allow-list keys must precede the [limits] table in TOML.
+    let mut policy_lines = vec![
+        format!(
+            "allowed_model_classes = {}",
+            toml_array(&to_sorted_vec(&model_classes))
+        ),
+        format!(
+            "allowed_tool_classes = {}",
+            toml_array(&to_sorted_vec(&tool_classes))
+        ),
+        format!(
+            "allowed_skill_classes = {}",
+            toml_array(&to_sorted_vec(&skill_classes))
+        ),
+        "allowed_auth_bindings = []".to_string(),
+        format!("allow_inline_profiles = {allow_inline_profiles}"),
+        String::new(),
+        "[limits]".to_string(),
+    ];
+    for (camel_key, toml_key, default, _, _) in EDITOR_ADAPTIVE_LIMITS {
+        let value = limits
+            .get(*camel_key)
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .unwrap_or(*default);
+        policy_lines.push(format!("{toml_key} = {value}"));
+    }
+    let policy = format!("{}\n", policy_lines.join("\n"));
+    let policy_digest = format!("sha256:{}", source_file_sha256(policy.as_bytes()));
+    files.insert("adaptive/policies.toml".to_string(), policy.into_bytes());
+
+    // The planning prompt exports verbatim — never trimmed. An empty prompt
+    // is a deployability draft gate, not an export-time mutation.
+    let prompt = step
+        .get("prompt")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    files.insert(
+        "adaptive/flowmaster.prompt.md".to_string(),
+        prompt.as_bytes().to_vec(),
+    );
+    files.insert(
+        "adaptive/layer-decision.schema.json".to_string(),
+        ADAPTIVE_LAYER_DECISION_SCHEMA_JSON.as_bytes().to_vec(),
+    );
+
+    let mut registry = serde_json::Map::new();
+    let mut required_schemas = Vec::new();
+    let result_schema = step
+        .get("resultSchema")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if !result_schema.is_empty() {
+        let schema = editor_schema_map(&document.schemas)
+            .get(result_schema)
+            .cloned()
+            .ok_or_else(|| {
+                format!("adaptive layer result schema '{result_schema}' is not a document schema")
+            })?;
+        let rendered = editor_schema_to_json_schema(&schema);
+        let default_path = format!("schemas/{result_schema}.json");
+        let path = if files.contains_key(&default_path) {
+            default_path
+        } else {
+            files
+                .iter()
+                .find(|(path, bytes)| {
+                    path.starts_with("schemas/")
+                        && path.ends_with(".json")
+                        && serde_json::from_slice::<Value>(bytes)
+                            .is_ok_and(|existing| existing == rendered)
+                })
+                .map(|(path, _)| path.clone())
+                .unwrap_or(default_path)
+        };
+        if !files.contains_key(&path) {
+            let schema_json = serde_json::to_vec_pretty(&rendered)
+                .map_err(|err| format!("failed to encode {path}: {err}"))?;
+            files.insert(path.clone(), schema_json);
+        }
+        let name = adaptive_schema_registry_name(result_schema);
+        registry.insert(name.clone(), Value::String(path));
+        required_schemas.push(name);
+    }
+    let registry_json = serde_json::to_vec_pretty(&Value::Object(registry))
+        .map_err(|err| format!("failed to encode schemas/registry.json: {err}"))?;
+    files.insert("schemas/registry.json".to_string(), registry_json);
+
+    let mut section = String::from("\n[adaptive]\n");
+    section.push_str(&format!(
+        "flowmaster_profile = {}\n",
+        toml_string(&flowmaster_profile)
+    ));
+    section.push_str(&format!(
+        "objective_class = {}\n",
+        toml_string(
+            step.get("objectiveClass")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        )
+    ));
+    section.push_str(&format!(
+        "policy_digest = {}\n",
+        toml_string(&policy_digest)
+    ));
+    if !required_schemas.is_empty() {
+        section.push_str(&format!(
+            "required_schemas = {}\n",
+            toml_array(&required_schemas)
+        ));
+    }
+    let target_surfaces = string_vec(step.get("targetSurfaces"))
+        .into_iter()
+        .map(|surface| surface.trim().to_string())
+        .filter(|surface| !surface.is_empty())
+        .collect::<BTreeSet<_>>();
+    if !target_surfaces.is_empty() {
+        section.push_str(&format!(
+            "target_surfaces = {}\n",
+            toml_array(&to_sorted_vec(&target_surfaces))
+        ));
+    }
+    Ok(Some(section))
 }
 
 fn encode_deployable_mobpack_archive(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, String> {
@@ -14244,6 +15034,24 @@ fn emit_visual_graph_step(
         }
         Some("branch" | "parallel") => {
             emit_visual_graph_fork_step(step, id, col, row, instances, edges, frames, next_edge)
+        }
+        Some("adaptive") => {
+            // A single inline node carrying the full step payload; the flow
+            // derives back byte-identically from `instance.adaptive`.
+            instances.push(json!({
+                "id": id,
+                "kind": "adaptive",
+                "label": "adaptive layer",
+                "memberId": Value::Null,
+                "adaptive": step.clone(),
+                "col": col,
+                "row": row,
+            }));
+            VisualGraphProjection {
+                entries: vec![id.to_string()],
+                exits: vec![id.to_string()],
+                next_col: col + 1,
+            }
         }
         _ => VisualGraphProjection {
             next_col: col,
@@ -15475,6 +16283,9 @@ fn compile_editor_visual_step(
         "repeat" => compile_editor_repeat_step(step, depends_on_nodes, state),
         "parallel" => compile_editor_parallel_step(step, depends_on_nodes, state),
         "branch" => compile_editor_branch_step(step, depends_on_nodes, state),
+        // Adaptive layers are manifest+files artifacts, not mob.toml flow
+        // nodes: they compile to nothing and downstream steps chain through.
+        "adaptive" => (Vec::new(), depends_on_nodes),
         _ => (Vec::new(), depends_on_nodes),
     }
 }
@@ -16707,6 +17518,7 @@ fn validate_document(document: &MobpackDocument) -> MobpackValidationResult {
     diagnostics.extend(validate_editor_flow_step_identities(&document.flow));
     diagnostics.extend(validate_editor_flow_step_types(&document.flow));
     diagnostics.extend(validate_editor_flow_step_metadata(&document.flow));
+    diagnostics.extend(validate_editor_adaptive_steps(document));
     diagnostics.extend(validate_editor_flow_member_roles(document));
     diagnostics.extend(validate_editor_flow_control_members(document));
     diagnostics.extend(validate_editor_flow_conditions(&document.flow));
@@ -17230,6 +18042,167 @@ fn validate_editor_flow_step_metadata(flow: &Value) -> Vec<MobpackDiagnostic> {
         "flow.steps",
         &mut diagnostics,
     );
+    diagnostics
+}
+
+/// Adaptive-layer diagnostics. The "empty" gaps (prompt, objectiveClass,
+/// profileTemplateIds) are draft gates: like a member step without an
+/// instruction they keep the document at stage "draft" until filled in.
+fn validate_editor_adaptive_steps(document: &MobpackDocument) -> Vec<MobpackDiagnostic> {
+    let steps = adaptive_flow_steps(&document.flow);
+    if steps.is_empty() {
+        return Vec::new();
+    }
+    let mut diagnostics = Vec::new();
+    let member_ids = editor_member_ids(document);
+    let schema_ids = editor_schema_map(&document.schemas);
+    for (index, (path, step)) in steps.iter().enumerate() {
+        if index > 0 {
+            diagnostics.push(MobpackDiagnostic {
+                severity: "error".to_string(),
+                code: "duplicate_adaptive_layer".to_string(),
+                message: "a mobpack document supports at most one adaptive layer".to_string(),
+                path: Some(path.clone()),
+            });
+        }
+        let flowmaster = step
+            .get("flowmasterId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if flowmaster.is_empty() || !member_ids.contains(flowmaster) {
+            diagnostics.push(MobpackDiagnostic {
+                severity: "error".to_string(),
+                code: "unknown_adaptive_flowmaster".to_string(),
+                message: if flowmaster.is_empty() {
+                    "adaptive layer must select a FlowMaster member".to_string()
+                } else {
+                    format!(
+                        "adaptive layer FlowMaster references member '{flowmaster}', but document.members has no matching id"
+                    )
+                },
+                path: Some(format!("{path}.flowmasterId")),
+            });
+        }
+        let templates = step
+            .get("profileTemplateIds")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut known_templates = 0usize;
+        for (template_index, template) in templates.iter().enumerate() {
+            let template_id = template.as_str().map(str::trim).unwrap_or_default();
+            if template_id.is_empty() || !member_ids.contains(template_id) {
+                diagnostics.push(MobpackDiagnostic {
+                    severity: "error".to_string(),
+                    code: "unknown_adaptive_profile_template".to_string(),
+                    message: format!(
+                        "adaptive profile template '{template_id}' is not a document.members id"
+                    ),
+                    path: Some(format!("{path}.profileTemplateIds[{template_index}]")),
+                });
+            } else {
+                known_templates += 1;
+            }
+        }
+        if known_templates == 0 {
+            diagnostics.push(MobpackDiagnostic {
+                severity: "error".to_string(),
+                code: "adaptive_profiles_empty".to_string(),
+                message: "adaptive layer needs at least one profile template the layer may spawn"
+                    .to_string(),
+                path: Some(format!("{path}.profileTemplateIds")),
+            });
+        }
+        if step
+            .get("prompt")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+        {
+            diagnostics.push(MobpackDiagnostic {
+                severity: "error".to_string(),
+                code: "adaptive_prompt_empty".to_string(),
+                message: "adaptive layer needs a non-empty FlowMaster planning prompt".to_string(),
+                path: Some(format!("{path}.prompt")),
+            });
+        }
+        if step
+            .get("objectiveClass")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+        {
+            diagnostics.push(MobpackDiagnostic {
+                severity: "error".to_string(),
+                code: "adaptive_objective_class_empty".to_string(),
+                message: "adaptive layer needs a non-empty objective class".to_string(),
+                path: Some(format!("{path}.objectiveClass")),
+            });
+        }
+        let result_schema = step
+            .get("resultSchema")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !result_schema.is_empty() && !schema_ids.contains_key(result_schema) {
+            diagnostics.push(MobpackDiagnostic {
+                severity: "error".to_string(),
+                code: "unknown_adaptive_result_schema".to_string(),
+                message: format!(
+                    "adaptive layer result schema '{result_schema}' is not a document schema"
+                ),
+                path: Some(format!("{path}.resultSchema")),
+            });
+        }
+        let limits = step
+            .get("limits")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for (camel_key, _, _, _, _) in EDITOR_ADAPTIVE_LIMITS {
+            if limits
+                .get(*camel_key)
+                .and_then(Value::as_u64)
+                .is_none_or(|number| number == 0)
+            {
+                diagnostics.push(MobpackDiagnostic {
+                    severity: "error".to_string(),
+                    code: "invalid_adaptive_limit".to_string(),
+                    message: format!("adaptive limit '{camel_key}' must be a positive integer"),
+                    path: Some(format!("{path}.limits.{camel_key}")),
+                });
+            }
+        }
+        for limit_key in limits.keys() {
+            if !EDITOR_ADAPTIVE_LIMITS
+                .iter()
+                .any(|(camel_key, _, _, _, _)| camel_key == limit_key)
+            {
+                diagnostics.push(MobpackDiagnostic {
+                    severity: "error".to_string(),
+                    code: "invalid_adaptive_limit".to_string(),
+                    message: format!("unknown adaptive limit '{limit_key}'"),
+                    path: Some(format!("{path}.limits.{limit_key}")),
+                });
+            }
+        }
+        if let Some(surfaces) = step.get("targetSurfaces").and_then(Value::as_array) {
+            for (surface_index, surface) in surfaces.iter().enumerate() {
+                let surface = surface.as_str().map(str::trim).unwrap_or_default();
+                if !EDITOR_ADAPTIVE_TARGET_SURFACES.contains(&surface) {
+                    diagnostics.push(MobpackDiagnostic {
+                        severity: "error".to_string(),
+                        code: "invalid_adaptive_target_surface".to_string(),
+                        message: format!(
+                            "adaptive target surface '{surface}' is not a MobKit pack surface"
+                        ),
+                        path: Some(format!("{path}.targetSurfaces[{surface_index}]")),
+                    });
+                }
+            }
+        }
+    }
     diagnostics
 }
 
@@ -18708,6 +19681,12 @@ fn validate_graph_projection(document: &MobpackDocument) -> Vec<MobpackDiagnosti
             });
             continue;
         }
+        if graph_to_flow_is_adaptive_node(instance) {
+            // Adaptive layer instances carry the flow step payload inline and
+            // have no member binding; the flow-side adaptive diagnostics and
+            // the graph_derives_flow equivalence vouch for them.
+            continue;
+        }
         let Some(member_id) = instance
             .get("memberId")
             .and_then(Value::as_str)
@@ -19341,6 +20320,12 @@ fn editor_graph_endpoints_for_step(step: &Value) -> EditorGraphEndpointSet {
         Some("repeat") => {
             editor_graph_endpoints_for_steps(step.get("steps").and_then(Value::as_array))
         }
+        // Adaptive layers project as a single inline node, wired like a
+        // member turn.
+        Some("adaptive") => EditorGraphEndpointSet {
+            entries: vec![id.to_string()],
+            exits: vec![id.to_string()],
+        },
         _ => EditorGraphEndpointSet::default(),
     }
 }
@@ -22162,8 +23147,30 @@ fn extract_manifest_name(text: &str) -> Option<String> {
     None
 }
 
+/// Escape a value for a TOML basic (double-quoted, single-line) string.
+/// Beyond backslash and quote, every control character must escape too:
+/// TOML basic strings reject raw newlines/controls, and free-text feeds
+/// such as an adaptive layer's multi-line `objectiveClass` (or a document
+/// name) flow through here verbatim — an unescaped `\n` would emit a
+/// manifest.toml that meerkat's pack parser rejects outright.
 fn escape_toml_string(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\u{0008}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{000C}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            ch if (ch as u32) < 0x20 || ch == '\u{007F}' => {
+                out.push_str(&format!("\\u{:04X}", ch as u32));
+            }
+            ch => out.push(ch),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -27015,6 +28022,701 @@ model = "gpt-5.5"
         );
     }
 
+    fn adaptive_step_from_document(document: &Value, step_id: &str) -> Value {
+        document["flow"]["steps"]
+            .as_array()
+            .expect("flow steps array")
+            .iter()
+            .find(|step| step["id"].as_str() == Some(step_id))
+            .cloned()
+            .expect("adaptive flow step")
+    }
+
+    /// Deployable adaptive fixture: planner FlowMaster, reviewer profile
+    /// template, FindingSet result schema; the prompt keeps a trailing space
+    /// on purpose (verbatim export contract).
+    fn document_with_adaptive_layer() -> MobpackDocument {
+        let mut document = document_with_expected_schema_ref();
+        document.mob_toml = None;
+        let mut schemas = document.schemas.as_array().cloned().unwrap_or_default();
+        schemas.push(json!({
+            "id": "FindingSet",
+            "description": "Collected layer findings",
+            "fields": [{
+                "id": "f1",
+                "name": "findings",
+                "type": "string[]",
+                "required": true,
+                "description": "Verified findings.",
+                "enumValues": []
+            }]
+        }));
+        document.schemas = Value::Array(schemas);
+        let steps = document.flow["steps"]
+            .as_array_mut()
+            .expect("flow steps array");
+        steps.insert(
+            2,
+            json!({
+                "id": "s_adaptive",
+                "type": "adaptive",
+                "flowmasterId": "m_planner",
+                "prompt": "Design each layer from prior results. ",
+                "objectiveClass": "code-review",
+                "resultSchema": "FindingSet",
+                "profileTemplateIds": ["m_reviewer"],
+                "targetSurfaces": ["rpc", "cli"],
+                "allowInlineProfiles": false,
+                "limits": editor_adaptive_limit_defaults(),
+            }),
+        );
+        // Keep the graph projection in lockstep with the flow, like the
+        // editor shell does after every Basic-mode edit.
+        let steps = document.flow["steps"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let (instances, edges, frames) = graph_projection_from_visual_steps(&steps);
+        document.instances = Value::Array(instances);
+        document.edges = Value::Array(edges);
+        document.frames = Value::Array(frames);
+        document
+    }
+
+    #[test]
+    fn adaptive_step_insert_edit_validate_round_trip() {
+        let template = blank_mobpack_template();
+        let mut document = template["document"].clone();
+        document["mob_toml"] = Value::Null;
+        let launch_modes_before = document["launch_modes"].clone();
+
+        let inserted = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "insert_flow_step",
+                "pick": { "kind": "adaptive" },
+                "lane_ref": { "lane": "main", "index": 2 }
+            }
+        }))
+        .expect("insert adaptive step");
+        let step_id = inserted["selection"]["id"]
+            .as_str()
+            .expect("adaptive selection id")
+            .to_string();
+        let step = adaptive_step_from_document(&inserted["document"], &step_id);
+        let mut expected = editor_adaptive_step_defaults();
+        expected["id"] = json!(step_id);
+        assert_eq!(
+            step, expected,
+            "freshly inserted adaptive step must equal the server contract defaults"
+        );
+
+        // A fresh adaptive layer is a draft gate, exactly like a member step
+        // without an instruction.
+        let validation = validate_mobpack(&json!({ "document": inserted["document"] }))
+            .expect("validate draft adaptive document");
+        assert!(!validation.ok);
+        for code in [
+            "unknown_adaptive_flowmaster",
+            "adaptive_profiles_empty",
+            "adaptive_prompt_empty",
+            "adaptive_objective_class_empty",
+        ] {
+            assert!(
+                validation
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == code),
+                "missing draft diagnostic {code}: {:?}",
+                validation.diagnostics
+            );
+        }
+
+        let updated = apply_mobpack_authoring_operation(&json!({
+            "document": inserted["document"],
+            "operation": {
+                "type": "update_flow_step",
+                "step_id": step_id,
+                "patch": {
+                    "flowmasterId": "m_worker",
+                    "prompt": "Plan each layer from prior results.",
+                    "objectiveClass": "smoke",
+                    "profileTemplateIds": ["m_worker"],
+                    "targetSurfaces": ["rpc"],
+                    "allowInlineProfiles": true,
+                    "limits": { "maxDepth": 6 }
+                }
+            }
+        }))
+        .expect("configure adaptive step");
+        let step = adaptive_step_from_document(&updated["document"], &step_id);
+        assert_eq!(step["flowmasterId"], json!("m_worker"));
+        assert_eq!(step["profileTemplateIds"], json!(["m_worker"]));
+        assert_eq!(step["targetSurfaces"], json!(["rpc"]));
+        assert_eq!(step["allowInlineProfiles"], json!(true));
+        assert_eq!(
+            step["limits"]["maxDepth"],
+            json!(6),
+            "patched limit must round-trip"
+        );
+        assert_eq!(
+            step["limits"]["maxAggregateToolCalls"],
+            json!(500),
+            "unpatched limits must keep contract defaults"
+        );
+        let validation = validate_mobpack(&json!({ "document": updated["document"] }))
+            .expect("validate configured adaptive document");
+        assert!(validation.ok, "{:?}", validation.diagnostics);
+
+        // Adaptive steps never mint launch_modes entries.
+        let launch_modes_after = updated["document"]["launch_modes"].clone();
+        assert_eq!(
+            launch_modes_before, launch_modes_after,
+            "adaptive insert/edit must leave launch_modes untouched"
+        );
+        assert!(
+            launch_modes_after
+                .as_array()
+                .expect("launch modes array")
+                .iter()
+                .all(|entry| entry["step_id"].as_str() != Some(step_id.as_str())),
+            "{launch_modes_after:#?}"
+        );
+
+        // Invalid patches are rejected server-side.
+        for (label, patch) in [
+            ("zero limit", json!({ "limits": { "maxDepth": 0 } })),
+            ("unknown limit", json!({ "limits": { "maxTurbo": 3 } })),
+            (
+                "unknown profile template",
+                json!({ "profileTemplateIds": ["m_ghost"] }),
+            ),
+            ("unknown surface", json!({ "targetSurfaces": ["carrier"] })),
+            (
+                "non-bool inline profiles",
+                json!({ "allowInlineProfiles": "yes" }),
+            ),
+            ("unknown flowmaster", json!({ "flowmasterId": "m_ghost" })),
+        ] {
+            assert!(
+                apply_mobpack_authoring_operation(&json!({
+                    "document": updated["document"],
+                    "operation": {
+                        "type": "update_flow_step",
+                        "step_id": step_id,
+                        "patch": patch
+                    }
+                }))
+                .is_err(),
+                "{label} patch must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn adaptive_free_text_edits_preserve_user_whitespace() {
+        let template = blank_mobpack_template();
+        let mut document = template["document"].clone();
+        document["mob_toml"] = Value::Null;
+        let inserted = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "insert_flow_step",
+                "pick": { "kind": "adaptive" },
+                "lane_ref": { "lane": "main", "index": 2 }
+            }
+        }))
+        .expect("insert adaptive step");
+        let step_id = inserted["selection"]["id"]
+            .as_str()
+            .expect("adaptive selection id")
+            .to_string();
+
+        // Per-keystroke echo path: trailing, leading, and mid-string spaces
+        // must round-trip byte-identically or typing spaces becomes
+        // impossible in the live inputs.
+        let prompt = "  Design  each layer ";
+        let objective_class = "provider auth  audit ";
+        let updated = apply_mobpack_authoring_operation(&json!({
+            "document": inserted["document"],
+            "operation": {
+                "type": "update_flow_step",
+                "step_id": step_id,
+                "patch": { "prompt": prompt, "objectiveClass": objective_class }
+            }
+        }))
+        .expect("set adaptive free text");
+        let step = adaptive_step_from_document(&updated["document"], &step_id);
+        assert_eq!(
+            step["prompt"].as_str(),
+            Some(prompt),
+            "prompt must round-trip byte-identically"
+        );
+        assert_eq!(
+            step["objectiveClass"].as_str(),
+            Some(objective_class),
+            "objectiveClass must round-trip byte-identically"
+        );
+    }
+
+    #[test]
+    fn exports_adaptive_manifest_and_pack_files_with_policy_digest() {
+        let document = document_with_adaptive_layer();
+        let validation = validate_document(&document);
+        assert!(validation.ok, "{:?}", validation.diagnostics);
+        let result = export_mobpack(&json!({ "document": document })).expect("export");
+        assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+
+        let file_text = |path: &str| -> String {
+            result
+                .source_files
+                .iter()
+                .find(|file| file.path == path)
+                .and_then(|file| file.text.clone())
+                .unwrap_or_else(|| panic!("missing archive file {path}"))
+        };
+        let policies = file_text("adaptive/policies.toml");
+        let expected_digest = format!("sha256:{}", source_file_sha256(policies.as_bytes()));
+        let manifest = file_text("manifest.toml");
+        assert!(manifest.contains("[adaptive]"), "{manifest}");
+        assert!(
+            manifest.contains("flowmaster_profile = \"planner\""),
+            "{manifest}"
+        );
+        assert!(
+            manifest.contains("objective_class = \"code-review\""),
+            "{manifest}"
+        );
+        assert!(
+            manifest.contains(&format!("policy_digest = \"{expected_digest}\"")),
+            "manifest digest must match the exact emitted policy bytes: {manifest}"
+        );
+        assert!(
+            manifest.contains("required_schemas = [\"finding-set\"]"),
+            "{manifest}"
+        );
+        assert!(
+            manifest.contains("target_surfaces = [\"cli\", \"rpc\"]"),
+            "target surfaces must export sorted: {manifest}"
+        );
+
+        // The policy is complete, valid TOML for meerkat's AdaptivePolicy
+        // (deny_unknown_fields): allow-lists first, then the 12-key limits.
+        let policy: toml::Value = toml::from_str(&policies).expect("policies.toml parses");
+        assert_eq!(
+            policy["allowed_model_classes"],
+            toml::Value::Array(vec![toml::Value::String("gpt-5.5".to_string())])
+        );
+        assert_eq!(
+            policy["allowed_tool_classes"],
+            toml::Value::Array(vec![
+                toml::Value::String("builtins".to_string()),
+                toml::Value::String("shell".to_string())
+            ]),
+            "tool classes must be the sorted union of profile template tools"
+        );
+        assert_eq!(policy["allowed_auth_bindings"], toml::Value::Array(vec![]));
+        assert_eq!(policy["allow_inline_profiles"], toml::Value::Boolean(false));
+        let limits = policy["limits"].as_table().expect("limits table");
+        assert_eq!(limits.len(), 12, "{limits:?}");
+        assert_eq!(limits["max_depth"], toml::Value::Integer(4));
+        assert_eq!(limits["max_wall_clock_ms"], toml::Value::Integer(1_800_000));
+        assert_eq!(
+            limits["max_aggregate_tool_calls"],
+            toml::Value::Integer(500)
+        );
+
+        // Prompt exports verbatim — the trailing space survives.
+        assert_eq!(
+            file_text("adaptive/flowmaster.prompt.md"),
+            "Design each layer from prior results. "
+        );
+        let layer_decision: Value =
+            serde_json::from_str(&file_text("adaptive/layer-decision.schema.json"))
+                .expect("layer decision schema json");
+        assert_eq!(layer_decision, json!({ "type": "object" }));
+
+        // Registry maps the kebab-cased schema name to the exported file.
+        let registry: Value =
+            serde_json::from_str(&file_text("schemas/registry.json")).expect("registry json");
+        assert_eq!(
+            registry,
+            json!({ "finding-set": "schemas/FindingSet.json" })
+        );
+        let finding_set: Value =
+            serde_json::from_str(&file_text("schemas/FindingSet.json")).expect("finding set json");
+        assert_eq!(finding_set["type"], json!("object"));
+        assert_eq!(finding_set["required"], json!(["findings"]));
+
+        // The archive itself carries all four adaptive files.
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&result.content_base64)
+            .expect("archive bytes");
+        let mut archive = tar::Archive::new(GzDecoder::new(bytes.as_slice()));
+        let mut paths = BTreeSet::new();
+        for entry in archive.entries().expect("archive entries") {
+            let entry = entry.expect("archive entry");
+            paths.insert(
+                entry
+                    .path()
+                    .expect("entry path")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+        for path in [
+            "adaptive/policies.toml",
+            "adaptive/flowmaster.prompt.md",
+            "adaptive/layer-decision.schema.json",
+            "schemas/registry.json",
+            "schemas/FindingSet.json",
+        ] {
+            assert!(paths.contains(path), "{paths:?}");
+        }
+    }
+
+    #[test]
+    fn adaptive_registry_reuses_already_exported_schema_path() {
+        let mut document = document_with_adaptive_layer();
+        // Point the adaptive result at the schema the reviewer step already
+        // exports under its custom expected_schema_ref path.
+        let steps = document.flow["steps"]
+            .as_array_mut()
+            .expect("flow steps array");
+        steps[2]["resultSchema"] = json!("ReviewArtifact");
+        let result = export_mobpack(&json!({ "document": document })).expect("export");
+        let registry_text = result
+            .source_files
+            .iter()
+            .find(|file| file.path == "schemas/registry.json")
+            .and_then(|file| file.text.clone())
+            .expect("registry json file");
+        let registry: Value = serde_json::from_str(&registry_text).expect("registry json");
+        assert_eq!(
+            registry,
+            json!({ "review-artifact": "schemas/reviewer.json" }),
+            "registry must reuse the exact schema path the export already produces"
+        );
+        assert!(
+            result
+                .source_files
+                .iter()
+                .all(|file| file.path != "schemas/ReviewArtifact.json"),
+            "no duplicate schema file when the content is already exported"
+        );
+    }
+
+    #[test]
+    fn multiline_free_text_exports_parseable_manifest_toml() {
+        // objectiveClass is free text behind a multi-line textarea and the
+        // never-trim contract; a raw newline (or tab/quote/backslash) must
+        // escape into the string-composed manifest instead of corrupting it.
+        let mut document = document_with_adaptive_layer();
+        document.name = "Review Pack\nsecond line".to_string();
+        let objective_class = "code-review\nsecond line\twith \"quotes\" and \\ backslash\r";
+        let updated = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "update_flow_step",
+                "step_id": "s_adaptive",
+                "patch": { "objectiveClass": objective_class }
+            }
+        }))
+        .expect("set multi-line objective class");
+        assert_eq!(
+            updated["ok"],
+            json!(true),
+            "multi-line objectiveClass stays deployable: {:?}",
+            updated["validation"]
+        );
+
+        let result = export_mobpack(&json!({ "document": updated["document"] })).expect("export");
+        assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+        let manifest_text = result
+            .source_files
+            .iter()
+            .find(|file| file.path == "manifest.toml")
+            .and_then(|file| file.text.clone())
+            .expect("manifest.toml file");
+        let manifest: toml::Value =
+            toml::from_str(&manifest_text).expect("exported manifest.toml must stay valid TOML");
+        assert_eq!(
+            manifest["adaptive"]["objective_class"],
+            toml::Value::String(objective_class.to_string()),
+            "objective_class must round-trip byte-identically through the TOML escape"
+        );
+        assert_eq!(
+            manifest["mobpack"]["description"],
+            toml::Value::String("Review Pack\nsecond line".to_string()),
+            "document name feeds description through the same escape"
+        );
+    }
+
+    #[test]
+    fn rename_schema_remaps_adaptive_result_schema_in_flow_and_graph() {
+        let renamed = apply_mobpack_authoring_operation(&json!({
+            "document": document_with_adaptive_layer(),
+            "operation": {
+                "type": "rename_schema",
+                "schema_id": "FindingSet",
+                "new_id": "VerifiedFindings"
+            }
+        }))
+        .expect("rename adaptive result schema");
+        assert_eq!(
+            renamed["ok"],
+            json!(true),
+            "rename must not strand the adaptive layer: {:?}",
+            renamed["validation"]
+        );
+        let step = adaptive_step_from_document(&renamed["document"], "s_adaptive");
+        assert_eq!(
+            step["resultSchema"],
+            json!("VerifiedFindings"),
+            "flow step resultSchema must follow the schema rename"
+        );
+        let instance = renamed["document"]["instances"]
+            .as_array()
+            .expect("instances")
+            .iter()
+            .find(|instance| instance["id"] == json!("s_adaptive"))
+            .cloned()
+            .expect("adaptive graph instance");
+        assert_eq!(
+            instance["adaptive"], step,
+            "graph payload must stay byte-identical to the flow step"
+        );
+
+        // The export path keeps working against the renamed schema.
+        let result = export_mobpack(&json!({ "document": renamed["document"] })).expect("export");
+        let registry_text = result
+            .source_files
+            .iter()
+            .find(|file| file.path == "schemas/registry.json")
+            .and_then(|file| file.text.clone())
+            .expect("registry json file");
+        let registry: Value = serde_json::from_str(&registry_text).expect("registry json");
+        assert_eq!(
+            registry,
+            json!({ "verified-findings": "schemas/VerifiedFindings.json" })
+        );
+    }
+
+    #[test]
+    fn delete_schema_clears_adaptive_result_schema_in_flow_and_graph() {
+        let deleted = apply_mobpack_authoring_operation(&json!({
+            "document": document_with_adaptive_layer(),
+            "operation": { "type": "delete_schema", "schema_id": "FindingSet" }
+        }))
+        .expect("delete adaptive result schema");
+        assert_eq!(
+            deleted["ok"],
+            json!(true),
+            "delete must clear the adaptive resultSchema, not strand it: {:?}",
+            deleted["validation"]
+        );
+        let step = adaptive_step_from_document(&deleted["document"], "s_adaptive");
+        assert_eq!(
+            step["resultSchema"],
+            json!(""),
+            "flow step resultSchema must clear when its schema is deleted"
+        );
+        let instance = deleted["document"]["instances"]
+            .as_array()
+            .expect("instances")
+            .iter()
+            .find(|instance| instance["id"] == json!("s_adaptive"))
+            .cloned()
+            .expect("adaptive graph instance");
+        assert_eq!(
+            instance["adaptive"], step,
+            "graph payload must stay byte-identical to the flow step"
+        );
+    }
+
+    #[test]
+    fn adaptive_step_compiles_to_no_mob_toml_nodes_and_chains_depends_on() {
+        let document = document_with_adaptive_layer();
+        let result = export_mobpack(&json!({ "document": document })).expect("export");
+        assert!(
+            !result.mob_toml.to_ascii_lowercase().contains("adaptive"),
+            "mob.toml must carry no adaptive keys or nodes: {}",
+            result.mob_toml
+        );
+        // input → plan → adaptive → review: the reviewer step chains straight
+        // through the adaptive layer to the planner step.
+        assert!(
+            result
+                .mob_toml
+                .contains("[flows.main.steps.\"01_planner\"]"),
+            "{}",
+            result.mob_toml
+        );
+        assert!(
+            result
+                .mob_toml
+                .contains("[flows.main.steps.\"02_reviewer\"]"),
+            "{}",
+            result.mob_toml
+        );
+        assert!(
+            result
+                .mob_toml
+                .contains("depends_on = [\"node_01_planner\"]"),
+            "downstream step must depend on the step before the adaptive layer: {}",
+            result.mob_toml
+        );
+    }
+
+    #[test]
+    fn adaptive_step_keeps_launch_modes_member_only() {
+        let document = document_with_adaptive_layer();
+        let launch_modes_before = document.launch_modes.clone();
+        // Any flow-step operation runs the launch-mode reconciler; adaptive
+        // steps must not mint, drop, or rewrite entries.
+        let updated = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "update_flow_step",
+                "step_id": "s_adaptive",
+                "patch": { "prompt": "Plan the next layer." }
+            }
+        }))
+        .expect("update adaptive step");
+        assert_eq!(updated["document"]["launch_modes"], launch_modes_before);
+        assert!(
+            updated["document"]["launch_modes"]
+                .as_array()
+                .expect("launch modes array")
+                .iter()
+                .all(|entry| entry["step_id"].as_str() != Some("s_adaptive")),
+            "{:#?}",
+            updated["document"]["launch_modes"]
+        );
+    }
+
+    #[test]
+    fn adaptive_graph_round_trip_preserves_flow() {
+        let mut document = document_with_adaptive_layer();
+        let adaptive_step = document.flow["steps"][2].clone();
+        assert_eq!(adaptive_step["type"], json!("adaptive"));
+        // Canonical graph-derived member shape so the whole flow (not just
+        // the adaptive payload) round-trips flow → graph → flow.
+        document.flow = json!({
+            "name": "review",
+            "steps": [
+                { "id": "input_1", "type": "input", "task": "Review", "fields": "", "inputParams": [] },
+                { "id": "plan", "type": "member", "role": "m_planner", "instruction": "Plan",
+                  "launchMode": { "kind": "Fresh" }, "quorum": null, "timeoutMs": null,
+                  "allowedTools": [], "blockedTools": [] },
+                adaptive_step,
+                { "id": "review", "type": "member", "role": "m_reviewer", "instruction": "Review",
+                  "launchMode": { "kind": "Fresh" }, "quorum": null, "timeoutMs": null,
+                  "allowedTools": [], "blockedTools": [] }
+            ]
+        });
+        let projection =
+            graph_projection_mobpack(&json!({ "document": &document })).expect("graph projection");
+        let adaptive_instance = projection["instances"]
+            .as_array()
+            .expect("instances array")
+            .iter()
+            .find(|instance| instance["id"].as_str() == Some("s_adaptive"))
+            .cloned()
+            .expect("adaptive graph instance");
+        assert_eq!(adaptive_instance["kind"], json!("adaptive"));
+        assert_eq!(adaptive_instance["label"], json!("adaptive layer"));
+        assert_eq!(adaptive_instance["memberId"], Value::Null);
+        assert_eq!(
+            adaptive_instance["adaptive"], document.flow["steps"][2],
+            "graph instance must carry the full adaptive step payload"
+        );
+        assert_eq!(
+            projection["frames"],
+            json!([]),
+            "adaptive layers project no frames"
+        );
+        // Inline wiring: plan → adaptive → review.
+        let edges = projection["edges"].as_array().expect("edges array");
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge["from"].as_str() == Some("plan")
+                    && edge["to"].as_str() == Some("s_adaptive")),
+            "{edges:#?}"
+        );
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge["from"].as_str() == Some("s_adaptive")
+                    && edge["to"].as_str() == Some("review")),
+            "{edges:#?}"
+        );
+
+        let mut merged = json!({ "document": document });
+        merged["document"]["instances"] = projection["instances"].clone();
+        merged["document"]["edges"] = projection["edges"].clone();
+        merged["document"]["frames"] = projection["frames"].clone();
+        let derived = graph_to_flow_mobpack(&merged).expect("graph to flow");
+        assert_eq!(
+            derived["flow"], merged["document"]["flow"],
+            "flow → graph → flow must be identical (graph_derives_flow)"
+        );
+        // The merged projection document validates clean: graph equivalence
+        // plus a fully configured adaptive layer.
+        let validation =
+            validate_mobpack(&merged).expect("validate adaptive graph projection document");
+        assert!(validation.ok, "{:?}", validation.diagnostics);
+    }
+
+    #[test]
+    fn rejects_second_adaptive_layer_insert() {
+        let document = document_with_adaptive_layer();
+        let picked = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "insert_flow_step",
+                "pick": { "kind": "adaptive" },
+                "lane_ref": { "lane": "main", "index": 1 }
+            }
+        }));
+        assert!(
+            picked
+                .expect_err("second adaptive pick must be rejected")
+                .contains("adaptive layer already present")
+        );
+        let raw = apply_mobpack_authoring_operation(&json!({
+            "document": document_with_adaptive_layer(),
+            "operation": {
+                "type": "insert_flow_step",
+                "step": { "id": "s_other", "type": "adaptive" },
+                "lane_ref": { "lane": "main", "index": 1 }
+            }
+        }));
+        assert!(
+            raw.expect_err("raw second adaptive step must be rejected")
+                .contains("adaptive layer already present")
+        );
+        // Documents that smuggle a duplicate in anyway stay draft.
+        let mut duplicated = document_with_adaptive_layer();
+        let steps = duplicated.flow["steps"]
+            .as_array_mut()
+            .expect("flow steps array");
+        let mut second = steps[2].clone();
+        second["id"] = json!("s_adaptive_2");
+        steps.push(second);
+        let validation = validate_document(&duplicated);
+        assert!(!validation.ok);
+        assert!(
+            validation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "duplicate_adaptive_layer"),
+            "{:?}",
+            validation.diagnostics
+        );
+    }
+
     #[test]
     #[cfg(unix)]
     fn validate_mobpack_reports_rkat_validate_failures() {
@@ -31425,7 +33127,9 @@ depends_on_mode = "all"
         );
         assert_eq!(
             mob_definition["editor_flow_step_types"],
-            json!(["input", "member", "repeat", "branch", "parallel"])
+            json!([
+                "input", "member", "repeat", "branch", "parallel", "adaptive"
+            ])
         );
         assert_eq!(mob_definition["repeat_iteration_inputs"], json!(["carry"]));
         assert_eq!(
@@ -32022,18 +33726,57 @@ depends_on_mode = "all"
         );
         assert_eq!(
             mob_definition["editor_basic_view"]["flow_primitive_rows"][3]["id"],
-            json!("subagent")
+            json!("adaptive")
         );
         assert_eq!(
-            mob_definition["editor_basic_view"]["flow_primitive_rows"][3]["disabled"],
+            mob_definition["editor_basic_view"]["flow_primitive_rows"][3]["is_new"],
             json!(true)
         );
         assert_eq!(
+            mob_definition["editor_basic_view"]["flow_primitive_rows"][3]["disabled"],
+            Value::Null
+        );
+        assert_eq!(
             mob_definition["editor_basic_view"]["flow_primitive_rows"][4]["id"],
-            json!("wait")
+            json!("subagent")
         );
         assert_eq!(
             mob_definition["editor_basic_view"]["flow_primitive_rows"][4]["disabled"],
+            json!(true)
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["flow_primitive_rows"][4]["is_new"],
+            Value::Null
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["flow_primitive_rows"][5]["id"],
+            json!("wait")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["flow_primitive_rows"][5]["disabled"],
+            json!(true)
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["adaptive_defaults"]["type"],
+            json!("adaptive")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["adaptive_defaults"]["limits"]["maxDepth"],
+            json!(4)
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["adaptive_limit_rows"]
+                .as_array()
+                .expect("adaptive limit rows")
+                .len(),
+            12
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["adaptive_limit_rows"][0]["key"],
+            json!("maxDepth")
+        );
+        assert_eq!(
+            mob_definition["editor_basic_view"]["adaptive_limit_rows"][0]["primary"],
             json!(true)
         );
         assert_eq!(
@@ -32096,6 +33839,16 @@ depends_on_mode = "all"
             mob_definition["editor_graph_view"]["terminal_authoring_locked_hint"],
             json!(
                 "Visual terminal nodes do not compile into deployable MobKit mob.toml. Delete this node or replace it with a real member, branch, join, or loop flow shape."
+            )
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["adaptive_authoring_locked_title"],
+            json!("Adaptive layer node")
+        );
+        assert_eq!(
+            mob_definition["editor_graph_view"]["adaptive_authoring_locked_hint"],
+            json!(
+                "Adaptive layers are authored in Basic mode — FlowMaster, prompt, profile templates, and limits are edited there. Deleting this node deletes the adaptive step from the flow."
             )
         );
         assert_eq!(

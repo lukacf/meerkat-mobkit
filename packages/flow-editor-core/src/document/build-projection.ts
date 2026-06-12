@@ -234,6 +234,25 @@ export function sanitizeFlowStepForDocument(step) {
       delete next.iterationInput;
     }
   }
+  if (next.type === "adaptive") {
+    // Shape-normalize only: prompt and objectiveClass are free text the
+    // server echoes verbatim, so they carry through byte-identical — never
+    // trimmed — and the remaining fields keep the server's canonical shape.
+    next.flowmasterId = String(next.flowmasterId ?? "");
+    next.prompt = typeof next.prompt === "string" ? next.prompt : "";
+    next.objectiveClass = typeof next.objectiveClass === "string" ? next.objectiveClass : "";
+    next.resultSchema = String(next.resultSchema ?? "");
+    next.profileTemplateIds = Array.isArray(next.profileTemplateIds)
+      ? next.profileTemplateIds.map((id) => String(id || "")).filter(Boolean)
+      : [];
+    next.targetSurfaces = Array.isArray(next.targetSurfaces)
+      ? next.targetSurfaces.map((surface) => String(surface || "")).filter(Boolean)
+      : [];
+    next.allowInlineProfiles = next.allowInlineProfiles === true;
+    next.limits = next.limits && typeof next.limits === "object" && !Array.isArray(next.limits)
+      ? next.limits
+      : {};
+  }
   if (Array.isArray(next.steps)) next.steps = sanitizeFlowStepsForDocument(next.steps);
   if (Array.isArray(next.branches)) {
     next.branches = next.branches.map((branch) => ({

@@ -944,6 +944,42 @@
       pickerFlowLabel: String(view.picker_flow_label || "").trim(),
       pickerEmptyMembersHint: String(view.picker_empty_members_hint || "").trim(),
       pickerNewBadgeLabel: String(view.picker_new_badge_label || "").trim(),
+      adaptiveDefaults: basicAdaptiveDefaultsFromSchema(view.adaptive_defaults),
+      adaptiveLimitRows: basicAdaptiveLimitRowsFromSchema(view.adaptive_limit_rows),
+      adaptiveTargetSurfaces: Array.isArray(view.adaptive_target_surfaces) ? view.adaptive_target_surfaces.map((surface) => String(surface || "").trim()).filter(Boolean) : [],
+      adaptivePanelTitle: String(view.adaptive_panel_title || "").trim(),
+      adaptivePanelSub: String(view.adaptive_panel_sub || "").trim(),
+      adaptiveFlowmasterLabel: String(view.adaptive_flowmaster_label || "").trim(),
+      adaptiveFlowmasterPlaceholderLabel: String(view.adaptive_flowmaster_placeholder_label || "").trim(),
+      adaptivePromptLabel: String(view.adaptive_prompt_label || "").trim(),
+      adaptivePromptPlaceholder: String(view.adaptive_prompt_placeholder || "").trim(),
+      adaptiveObjectiveLabel: String(view.adaptive_objective_label || "").trim(),
+      adaptiveObjectivePlaceholder: String(view.adaptive_objective_placeholder || "").trim(),
+      adaptiveResultSchemaLabel: String(view.adaptive_result_schema_label || "").trim(),
+      adaptiveResultSchemaPlaceholderLabel: String(view.adaptive_result_schema_placeholder_label || "").trim(),
+      adaptiveProfilesTitle: String(view.adaptive_profiles_title || "").trim(),
+      adaptiveProfilesHint: String(view.adaptive_profiles_hint || "").trim(),
+      adaptiveProfilesAgentsHint: String(view.adaptive_profiles_agents_hint || "").trim(),
+      adaptiveProfilesEmptyHint: String(view.adaptive_profiles_empty_hint || "").trim(),
+      adaptiveSurfacesLabel: String(view.adaptive_surfaces_label || "").trim(),
+      adaptiveInlineProfilesLabel: String(view.adaptive_inline_profiles_label || "").trim(),
+      adaptiveLimitsTitle: String(view.adaptive_limits_title || "").trim(),
+      adaptiveLimitsAdvancedLabel: String(view.adaptive_limits_advanced_label || "").trim(),
+      adaptiveTips: Array.isArray(view.adaptive_tips) ? view.adaptive_tips.map((tip) => String(tip || "").trim()).filter(Boolean) : [],
+      adaptiveStepCardTitle: String(view.adaptive_step_card_title || "").trim(),
+      adaptiveBlockHeadPrefix: String(view.adaptive_block_head_prefix || ""),
+      adaptiveBlockFlowmasterKicker: String(view.adaptive_block_flowmaster_kicker || "").trim(),
+      adaptiveBlockFlowmasterTitleFallback: String(view.adaptive_block_flowmaster_title_fallback || "").trim(),
+      adaptiveBlockFlowmasterDesc: String(view.adaptive_block_flowmaster_desc || "").trim(),
+      adaptiveBlockPlanConnector: String(view.adaptive_block_plan_connector || "").trim(),
+      adaptiveBlockLayerKickerPrefix: String(view.adaptive_block_layer_kicker_prefix || ""),
+      adaptiveBlockLayerKickerSuffix: String(view.adaptive_block_layer_kicker_suffix || ""),
+      adaptiveBlockChipSuffix: String(view.adaptive_block_chip_suffix || "").trim(),
+      adaptiveBlockEmptyProfilesLabel: String(view.adaptive_block_empty_profiles_label || "").trim(),
+      adaptiveBlockCollectConnectorPrefix: String(view.adaptive_block_collect_connector_prefix || ""),
+      adaptiveBlockCollectFallback: String(view.adaptive_block_collect_fallback || "").trim(),
+      adaptiveBlockLoopBackPrefix: String(view.adaptive_block_loop_back_prefix || ""),
+      adaptiveBlockLoopBackSuffix: String(view.adaptive_block_loop_back_suffix || ""),
       flowPrimitiveRows: basicFlowPrimitiveRowsFromSchema(view.flow_primitive_rows)
     };
     return Object.entries(out).every(([key, value]) => {
@@ -988,6 +1024,34 @@
         disabled: Boolean(row.disabled),
         disabledReason
       };
+    }).filter(Boolean);
+  }
+  function basicAdaptiveDefaultsFromSchema(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (String(value.type || "") !== "adaptive") return null;
+    const limits = value.limits && typeof value.limits === "object" && !Array.isArray(value.limits) ? value.limits : null;
+    if (!limits || !Object.keys(limits).length) return null;
+    return {
+      type: "adaptive",
+      flowmasterId: String(value.flowmasterId ?? ""),
+      prompt: typeof value.prompt === "string" ? value.prompt : "",
+      objectiveClass: typeof value.objectiveClass === "string" ? value.objectiveClass : "",
+      resultSchema: String(value.resultSchema ?? ""),
+      profileTemplateIds: Array.isArray(value.profileTemplateIds) ? value.profileTemplateIds.map((id) => String(id || "").trim()).filter(Boolean) : [],
+      targetSurfaces: Array.isArray(value.targetSurfaces) ? value.targetSurfaces.map((surface) => String(surface || "").trim()).filter(Boolean) : [],
+      allowInlineProfiles: value.allowInlineProfiles === true,
+      limits: { ...limits }
+    };
+  }
+  function basicAdaptiveLimitRowsFromSchema(rows) {
+    if (!Array.isArray(rows)) return [];
+    return rows.map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const key = String(row.key || "").trim();
+      const tomlKey = String(row.toml_key || "").trim();
+      const label = String(row.label || "").trim();
+      if (!key || !tomlKey || !label) return null;
+      return { key, tomlKey, label, primary: Boolean(row.primary) };
     }).filter(Boolean);
   }
   function viewStringMapFromSchema(value) {
@@ -1153,6 +1217,8 @@
       terminalIdLineTemplate: String(view.terminal_id_line_template || "").trim(),
       terminalAuthoringLockedTitle: String(view.terminal_authoring_locked_title || "").trim(),
       terminalAuthoringLockedHint: String(view.terminal_authoring_locked_hint || "").trim(),
+      adaptiveAuthoringLockedTitle: String(view.adaptive_authoring_locked_title || "").trim(),
+      adaptiveAuthoringLockedHint: String(view.adaptive_authoring_locked_hint || "").trim(),
       edgeEyebrowTemplate: String(view.edge_eyebrow_template || "").trim(),
       edgeTitleTemplate: String(view.edge_title_template || "").trim(),
       edgeIdLineTemplate: String(view.edge_id_line_template || "").trim(),
@@ -1199,7 +1265,7 @@
       edgeRowMissingValue: String(view.edge_row_missing_value || "").trim(),
       edgeTerminalMemberValue: String(view.edge_terminal_member_value || "").trim()
     };
-    return out.zoomOutTitle && out.fitTitle && out.zoomInTitle && out.portDragTitle && out.addNodeSearchIcon && out.addNodeSearchPlaceholder && out.addNodeCloseLabel && out.addNodeCloseTitle && out.addNodeAgentsLabel && out.addNodeControlsLabel && out.addNodeTerminalsLabel && out.addNodeEmptyPrefix && out.addNodeEmptySuffix && out.addNodeJumpLabel && out.authoringOperationUnavailableError && out.authoringOperationFallbackError && out.gatePaletteRows.length && out.terminalPaletteRows.length && Object.keys(out.gateKindLabels).length && Object.keys(out.terminalKindLabels).length && Object.keys(out.frameKindLabels).length && Object.keys(out.edgeKindLabels).length && out.inspectorDeleteLabel && out.inspectorLabelTitle && out.inspectorKindTitle && out.inspectorRuntimeDefaultLabel && out.instanceEyebrow && out.instanceIdLineTemplate && out.instanceMemberRoleTemplate && out.instanceEditMemberLabel && out.instanceModelLabel && out.instanceSchemaLabel && out.instanceToolsLabel && out.instanceMemberHint && out.instancePositionTitle && out.instancePositionStageLabel && out.instancePositionSlotLabel && out.instanceOutputTitleTemplate && out.instanceOutputRequiredLabel && out.instanceOutputHint && out.instanceOutputOpenMemberLabel && out.gateEyebrowTemplate && out.gateIdLineTemplate && out.gateQuorumIncomingTemplate && out.gateMemberOptionTemplate && out.terminalEyebrowTemplate && out.terminalIdLineTemplate && out.terminalAuthoringLockedTitle && out.terminalAuthoringLockedHint && out.edgeEyebrowTemplate && out.edgeTitleTemplate && out.edgeIdLineTemplate && out.edgeFieldPlaceholder && out.edgeFieldNoSchemaPlaceholder && out.gateCollectionTitle && out.gateJoinMemberLabel && out.gateJoinMemberPlaceholder && out.gateJoinMemberHint && out.gateDispatchTitle && out.gateDispatchHint && out.gateConditionsTitle && out.gateEmptyBranchHint && out.gateWiringTitle && out.gateIncomingLabel && out.gateOutgoingLabel && out.branchConditionModeConditionLabel && out.branchConditionModeFallbackLabel && out.branchConditionTargetPrefix && out.graphConditionTargetMissingLabel && out.graphConditionOwnerOptionTemplate && out.graphConditionFieldOptionTemplate && out.graphInputParamSourceLabel && out.sourceFileLabel && out.sourceFileAriaLabel && out.sourceFileGlyph && out.sourceFileRoleLabel && out.sourceFileNodeId && out.sourceFileNodeKind && Number.isFinite(out.sourceFileNodeColOffset) && Number.isFinite(out.sourceFileNodeRowOffset) && out.sourceFileActivationHash && out.sourceFileActivationSelector && out.branchConditionFieldPlaceholder && out.branchConditionNoOptionsHint && out.edgeConditionTitle && out.edgeNoConditionOptionsHint && out.edgeOwnerPlaceholder && out.edgeFromTitle && out.edgeToTitle && out.edgeRowInstanceLabel && out.edgeRowMemberLabel && out.edgeRowSchemaLabel && out.edgeRowMissingValue && out.edgeTerminalMemberValue ? out : null;
+    return out.zoomOutTitle && out.fitTitle && out.zoomInTitle && out.portDragTitle && out.addNodeSearchIcon && out.addNodeSearchPlaceholder && out.addNodeCloseLabel && out.addNodeCloseTitle && out.addNodeAgentsLabel && out.addNodeControlsLabel && out.addNodeTerminalsLabel && out.addNodeEmptyPrefix && out.addNodeEmptySuffix && out.addNodeJumpLabel && out.authoringOperationUnavailableError && out.authoringOperationFallbackError && out.gatePaletteRows.length && out.terminalPaletteRows.length && Object.keys(out.gateKindLabels).length && Object.keys(out.terminalKindLabels).length && Object.keys(out.frameKindLabels).length && Object.keys(out.edgeKindLabels).length && out.inspectorDeleteLabel && out.inspectorLabelTitle && out.inspectorKindTitle && out.inspectorRuntimeDefaultLabel && out.instanceEyebrow && out.instanceIdLineTemplate && out.instanceMemberRoleTemplate && out.instanceEditMemberLabel && out.instanceModelLabel && out.instanceSchemaLabel && out.instanceToolsLabel && out.instanceMemberHint && out.instancePositionTitle && out.instancePositionStageLabel && out.instancePositionSlotLabel && out.instanceOutputTitleTemplate && out.instanceOutputRequiredLabel && out.instanceOutputHint && out.instanceOutputOpenMemberLabel && out.gateEyebrowTemplate && out.gateIdLineTemplate && out.gateQuorumIncomingTemplate && out.gateMemberOptionTemplate && out.terminalEyebrowTemplate && out.terminalIdLineTemplate && out.terminalAuthoringLockedTitle && out.terminalAuthoringLockedHint && out.adaptiveAuthoringLockedTitle && out.adaptiveAuthoringLockedHint && out.edgeEyebrowTemplate && out.edgeTitleTemplate && out.edgeIdLineTemplate && out.edgeFieldPlaceholder && out.edgeFieldNoSchemaPlaceholder && out.gateCollectionTitle && out.gateJoinMemberLabel && out.gateJoinMemberPlaceholder && out.gateJoinMemberHint && out.gateDispatchTitle && out.gateDispatchHint && out.gateConditionsTitle && out.gateEmptyBranchHint && out.gateWiringTitle && out.gateIncomingLabel && out.gateOutgoingLabel && out.branchConditionModeConditionLabel && out.branchConditionModeFallbackLabel && out.branchConditionTargetPrefix && out.graphConditionTargetMissingLabel && out.graphConditionOwnerOptionTemplate && out.graphConditionFieldOptionTemplate && out.graphInputParamSourceLabel && out.sourceFileLabel && out.sourceFileAriaLabel && out.sourceFileGlyph && out.sourceFileRoleLabel && out.sourceFileNodeId && out.sourceFileNodeKind && Number.isFinite(out.sourceFileNodeColOffset) && Number.isFinite(out.sourceFileNodeRowOffset) && out.sourceFileActivationHash && out.sourceFileActivationSelector && out.branchConditionFieldPlaceholder && out.branchConditionNoOptionsHint && out.edgeConditionTitle && out.edgeNoConditionOptionsHint && out.edgeOwnerPlaceholder && out.edgeFromTitle && out.edgeToTitle && out.edgeRowInstanceLabel && out.edgeRowMemberLabel && out.edgeRowSchemaLabel && out.edgeRowMissingValue && out.edgeTerminalMemberValue ? out : null;
   }
   function graphGatePaletteRowsFromSchema(rows) {
     if (!Array.isArray(rows)) return [];
@@ -1769,10 +1835,51 @@
     return {
       schemas: nextSchemas,
       members: nextMembers,
-      flow: reconcileFlowMemberSchemas(flow, nextMembers),
+      flow: rewriteAdaptiveResultSchemaInFlow(
+        reconcileFlowMemberSchemas(flow, nextMembers),
+        previousId,
+        nextId
+      ),
       renamed: true,
       selection: { kind: "schema", id: nextId }
     };
+  }
+  function rewriteAdaptiveResultSchemaInFlow(flow, oldId, newId) {
+    if (!flow || typeof flow !== "object") return flow;
+    const steps = rewriteAdaptiveResultSchemaInSteps(flow.steps || [], oldId, newId);
+    return steps === flow.steps ? flow : { ...flow, steps };
+  }
+  function rewriteAdaptiveResultSchemaInSteps(steps, oldId, newId) {
+    let changed = false;
+    const next = (steps || []).map((step) => {
+      const reconciled = rewriteAdaptiveResultSchemaInStep(step, oldId, newId);
+      if (reconciled !== step) changed = true;
+      return reconciled;
+    });
+    return changed ? next : steps;
+  }
+  function rewriteAdaptiveResultSchemaInStep(step, oldId, newId) {
+    if (!step || typeof step !== "object") return step;
+    if (step.type === "adaptive") {
+      return String(step.resultSchema || "").trim() === oldId ? { ...step, resultSchema: newId } : step;
+    }
+    if (step.type === "repeat") {
+      const nested = rewriteAdaptiveResultSchemaInSteps(step.steps || [], oldId, newId);
+      return nested === step.steps ? step : { ...step, steps: nested };
+    }
+    if (step.type === "branch" || step.type === "parallel") {
+      let changed = false;
+      const branches = (step.branches || []).map((branch) => {
+        const branchSteps = rewriteAdaptiveResultSchemaInSteps(branch?.steps || [], oldId, newId);
+        if (branchSteps === branch.steps) return branch;
+        changed = true;
+        return { ...branch, steps: branchSteps };
+      });
+      const fallback = Array.isArray(step.fallback) ? rewriteAdaptiveResultSchemaInSteps(step.fallback, oldId, newId) : step.fallback;
+      if (fallback !== step.fallback) changed = true;
+      return changed ? { ...step, branches, fallback } : step;
+    }
+    return step;
   }
   function reconcileFlowMemberSteps(flow, members) {
     if (!flow || typeof flow !== "object") return flow;
@@ -1800,6 +1907,9 @@
       const role = String(step.role || "").trim();
       return role && memberIds.has(role) ? step : null;
     }
+    if (step.type === "adaptive") {
+      return pruneAdaptiveStepMemberRefs(step, memberIds);
+    }
     if (step.type === "repeat") {
       const steps = pruneMissingMemberSteps(step.steps || [], memberIds);
       return steps === step.steps ? step : { ...step, steps };
@@ -1817,6 +1927,21 @@
       return changed ? { ...step, branches, fallback } : step;
     }
     return step;
+  }
+  function pruneAdaptiveStepMemberRefs(step, memberIds) {
+    if (!step || typeof step !== "object") return step;
+    const flowmaster = String(step.flowmasterId || "").trim();
+    const flowmasterStale = !!flowmaster && !memberIds.has(flowmaster);
+    const templates = Array.isArray(step.profileTemplateIds) ? step.profileTemplateIds : [];
+    const keptTemplates = templates.filter(
+      (template) => typeof template === "string" && memberIds.has(template.trim())
+    );
+    if (!flowmasterStale && keptTemplates.length === templates.length) return step;
+    return {
+      ...step,
+      flowmasterId: flowmasterStale ? "" : step.flowmasterId,
+      profileTemplateIds: keptTemplates
+    };
   }
   function reconcileFlowControlRoles(flow, members) {
     if (!flow || typeof flow !== "object") return flow;
@@ -1850,7 +1975,15 @@
       }
       const id = String(instance?.id || "").trim();
       if (id) keptIds.add(id);
-      nextInstances.push(instance);
+      let nextInstance = instance;
+      if (String(instance?.kind || "") === "adaptive" && !instance?.isGate && !instance?.isTerminal && instance?.adaptive && typeof instance.adaptive === "object") {
+        const prunedPayload = pruneAdaptiveStepMemberRefs(instance.adaptive, memberIds);
+        if (prunedPayload !== instance.adaptive) {
+          instancesChanged = true;
+          nextInstance = { ...instance, adaptive: prunedPayload };
+        }
+      }
+      nextInstances.push(nextInstance);
     }
     let edgesChanged = false;
     const nextEdges = sourceEdges.filter((edge) => {
@@ -3760,6 +3893,42 @@
       pickerFlowLabel: String(view?.pickerFlowLabel || ""),
       pickerEmptyMembersHint: String(view?.pickerEmptyMembersHint || ""),
       pickerNewBadgeLabel: String(view?.pickerNewBadgeLabel || ""),
+      adaptiveDefaults: view?.adaptiveDefaults && typeof view.adaptiveDefaults === "object" ? view.adaptiveDefaults : null,
+      adaptiveLimitRows: Array.isArray(view?.adaptiveLimitRows) ? view.adaptiveLimitRows : [],
+      adaptiveTargetSurfaces: Array.isArray(view?.adaptiveTargetSurfaces) ? view.adaptiveTargetSurfaces : [],
+      adaptivePanelTitle: String(view?.adaptivePanelTitle || ""),
+      adaptivePanelSub: String(view?.adaptivePanelSub || ""),
+      adaptiveFlowmasterLabel: String(view?.adaptiveFlowmasterLabel || ""),
+      adaptiveFlowmasterPlaceholderLabel: String(view?.adaptiveFlowmasterPlaceholderLabel || ""),
+      adaptivePromptLabel: String(view?.adaptivePromptLabel || ""),
+      adaptivePromptPlaceholder: String(view?.adaptivePromptPlaceholder || ""),
+      adaptiveObjectiveLabel: String(view?.adaptiveObjectiveLabel || ""),
+      adaptiveObjectivePlaceholder: String(view?.adaptiveObjectivePlaceholder || ""),
+      adaptiveResultSchemaLabel: String(view?.adaptiveResultSchemaLabel || ""),
+      adaptiveResultSchemaPlaceholderLabel: String(view?.adaptiveResultSchemaPlaceholderLabel || ""),
+      adaptiveProfilesTitle: String(view?.adaptiveProfilesTitle || ""),
+      adaptiveProfilesHint: String(view?.adaptiveProfilesHint || ""),
+      adaptiveProfilesAgentsHint: String(view?.adaptiveProfilesAgentsHint || ""),
+      adaptiveProfilesEmptyHint: String(view?.adaptiveProfilesEmptyHint || ""),
+      adaptiveSurfacesLabel: String(view?.adaptiveSurfacesLabel || ""),
+      adaptiveInlineProfilesLabel: String(view?.adaptiveInlineProfilesLabel || ""),
+      adaptiveLimitsTitle: String(view?.adaptiveLimitsTitle || ""),
+      adaptiveLimitsAdvancedLabel: String(view?.adaptiveLimitsAdvancedLabel || ""),
+      adaptiveTips: Array.isArray(view?.adaptiveTips) ? view.adaptiveTips : [],
+      adaptiveStepCardTitle: String(view?.adaptiveStepCardTitle || ""),
+      adaptiveBlockHeadPrefix: String(view?.adaptiveBlockHeadPrefix || ""),
+      adaptiveBlockFlowmasterKicker: String(view?.adaptiveBlockFlowmasterKicker || ""),
+      adaptiveBlockFlowmasterTitleFallback: String(view?.adaptiveBlockFlowmasterTitleFallback || ""),
+      adaptiveBlockFlowmasterDesc: String(view?.adaptiveBlockFlowmasterDesc || ""),
+      adaptiveBlockPlanConnector: String(view?.adaptiveBlockPlanConnector || ""),
+      adaptiveBlockLayerKickerPrefix: String(view?.adaptiveBlockLayerKickerPrefix || ""),
+      adaptiveBlockLayerKickerSuffix: String(view?.adaptiveBlockLayerKickerSuffix || ""),
+      adaptiveBlockChipSuffix: String(view?.adaptiveBlockChipSuffix || ""),
+      adaptiveBlockEmptyProfilesLabel: String(view?.adaptiveBlockEmptyProfilesLabel || ""),
+      adaptiveBlockCollectConnectorPrefix: String(view?.adaptiveBlockCollectConnectorPrefix || ""),
+      adaptiveBlockCollectFallback: String(view?.adaptiveBlockCollectFallback || ""),
+      adaptiveBlockLoopBackPrefix: String(view?.adaptiveBlockLoopBackPrefix || ""),
+      adaptiveBlockLoopBackSuffix: String(view?.adaptiveBlockLoopBackSuffix || ""),
       flowPrimitiveRows: Array.isArray(view?.flowPrimitiveRows) ? view.flowPrimitiveRows : []
     };
   }
@@ -4135,6 +4304,16 @@
         isFlowCard: true
       };
     }
+    if (step?.type === "adaptive") {
+      return {
+        icon: "\u2756",
+        iconTint: "member",
+        title: view.adaptiveStepCardTitle,
+        desc: typeof step?.objectiveClass === "string" ? step.objectiveClass : "",
+        configured: !!String(step?.flowmasterId || "").trim(),
+        isFlowCard: true
+      };
+    }
     return {
       icon: "\u25C6",
       iconTint: "accent",
@@ -4290,6 +4469,101 @@
           ]
         };
       })() : null
+    };
+  }
+  function adaptiveStepState(studio, step, contract, basicView = null) {
+    const view = basicEditorViewState(basicView);
+    const members = Array.isArray(studio?.members) ? studio.members : [];
+    const schemas = Array.isArray(studio?.schemas) ? studio.schemas : [];
+    const defaults = view.adaptiveDefaults && typeof view.adaptiveDefaults === "object" ? view.adaptiveDefaults : null;
+    const defaultLimits = defaults?.limits && typeof defaults.limits === "object" ? defaults.limits : {};
+    const stepLimits = step?.limits && typeof step.limits === "object" && !Array.isArray(step.limits) ? step.limits : {};
+    const limitValue = (key) => normalizePositiveInteger(stepLimits[key]) ?? normalizePositiveInteger(defaultLimits[key]);
+    const limitRows = view.adaptiveLimitRows.map((row) => ({
+      key: row.key,
+      tomlKey: row.tomlKey,
+      label: row.label,
+      primary: Boolean(row.primary),
+      value: limitValue(row.key)
+    }));
+    const flowmasterId = String(step?.flowmasterId || "");
+    const selectedFlowmaster = members.find((member) => member?.id === flowmasterId) || null;
+    const profileTemplateIds = Array.isArray(step?.profileTemplateIds) ? step.profileTemplateIds.map((id) => String(id || "")).filter(Boolean) : [];
+    const templateMembers = profileTemplateIds.map((id) => members.find((member) => member?.id === id) || null).filter(Boolean);
+    const targetSurfaces = Array.isArray(step?.targetSurfaces) ? step.targetSurfaces.map((surface) => String(surface || "")).filter(Boolean) : [];
+    const resultSchemaValue = String(step?.resultSchema || "");
+    const maxDepth = limitValue("maxDepth");
+    const maxMembersPerLayer = limitValue("maxMembersPerLayer");
+    return {
+      panelIcon: "\u2756",
+      panelTitle: view.adaptivePanelTitle,
+      panelSub: view.adaptivePanelSub,
+      flowmasterLabel: view.adaptiveFlowmasterLabel,
+      flowmasterPlaceholderLabel: view.adaptiveFlowmasterPlaceholderLabel,
+      flowmasterId,
+      flowmasterOptions: members.map((member) => ({
+        value: member.id,
+        label: `${member.name || member.role || member.id} \xB7 ${member.model || member.role || member.id}`,
+        member
+      })),
+      selectedFlowmaster,
+      promptLabel: view.adaptivePromptLabel,
+      promptPlaceholder: view.adaptivePromptPlaceholder,
+      promptValue: typeof step?.prompt === "string" ? step.prompt : "",
+      objectiveLabel: view.adaptiveObjectiveLabel,
+      objectivePlaceholder: view.adaptiveObjectivePlaceholder,
+      objectiveValue: typeof step?.objectiveClass === "string" ? step.objectiveClass : "",
+      resultSchemaLabel: view.adaptiveResultSchemaLabel,
+      resultSchemaPlaceholderLabel: view.adaptiveResultSchemaPlaceholderLabel,
+      resultSchemaValue,
+      schemaOptions: schemas.map((schema) => ({ value: schema.id, label: schema.id, schema })),
+      selectedSchema: schemas.find((schema) => schema?.id === resultSchemaValue) || null,
+      profilesTitle: view.adaptiveProfilesTitle,
+      profilesHint: view.adaptiveProfilesHint,
+      profilesAgentsHint: view.adaptiveProfilesAgentsHint,
+      profilesEmptyHint: view.adaptiveProfilesEmptyHint,
+      profileTemplateIds,
+      hasMembers: members.length > 0,
+      templateRows: members.map((member) => ({
+        id: member.id,
+        label: member.name || member.role || member.id,
+        role: member.role || "",
+        model: member.model || "",
+        on: profileTemplateIds.includes(member.id),
+        member
+      })),
+      surfacesLabel: view.adaptiveSurfacesLabel,
+      targetSurfaces,
+      surfaceToggles: view.adaptiveTargetSurfaces.map((surface) => ({
+        id: surface,
+        label: surface,
+        on: targetSurfaces.includes(surface)
+      })),
+      inlineProfilesLabel: view.adaptiveInlineProfilesLabel,
+      allowInlineProfiles: step?.allowInlineProfiles === true,
+      limitsTitle: view.adaptiveLimitsTitle,
+      limitsAdvancedLabel: view.adaptiveLimitsAdvancedLabel,
+      limitRows,
+      primaryLimitRows: limitRows.filter((row) => row.primary),
+      advancedLimitRows: limitRows.filter((row) => !row.primary),
+      tips: view.adaptiveTips,
+      stepCardTitle: view.adaptiveStepCardTitle,
+      block: {
+        headText: `${view.adaptiveBlockHeadPrefix}${maxDepth ?? ""}`,
+        flowmasterKicker: view.adaptiveBlockFlowmasterKicker,
+        flowmasterTitle: selectedFlowmaster ? selectedFlowmaster.name || selectedFlowmaster.role || selectedFlowmaster.id : view.adaptiveBlockFlowmasterTitleFallback,
+        flowmasterDesc: view.adaptiveBlockFlowmasterDesc,
+        planConnector: view.adaptiveBlockPlanConnector,
+        layerKicker: `${view.adaptiveBlockLayerKickerPrefix}${maxMembersPerLayer ?? ""}${view.adaptiveBlockLayerKickerSuffix}`,
+        chips: templateMembers.map((member) => ({
+          id: member.id,
+          label: member.name || member.role || member.id,
+          suffix: view.adaptiveBlockChipSuffix
+        })),
+        emptyProfilesLabel: view.adaptiveBlockEmptyProfilesLabel,
+        collectConnector: `${view.adaptiveBlockCollectConnectorPrefix}${resultSchemaValue || view.adaptiveBlockCollectFallback}`,
+        loopBackText: `${view.adaptiveBlockLoopBackPrefix}${maxDepth ?? ""}${view.adaptiveBlockLoopBackSuffix}`
+      }
     };
   }
   function basicRepeatUntilExpression(step, members = [], options = {}) {
@@ -4833,6 +5107,16 @@
       } else {
         delete next.iterationInput;
       }
+    }
+    if (next.type === "adaptive") {
+      next.flowmasterId = String(next.flowmasterId ?? "");
+      next.prompt = typeof next.prompt === "string" ? next.prompt : "";
+      next.objectiveClass = typeof next.objectiveClass === "string" ? next.objectiveClass : "";
+      next.resultSchema = String(next.resultSchema ?? "");
+      next.profileTemplateIds = Array.isArray(next.profileTemplateIds) ? next.profileTemplateIds.map((id) => String(id || "")).filter(Boolean) : [];
+      next.targetSurfaces = Array.isArray(next.targetSurfaces) ? next.targetSurfaces.map((surface) => String(surface || "")).filter(Boolean) : [];
+      next.allowInlineProfiles = next.allowInlineProfiles === true;
+      next.limits = next.limits && typeof next.limits === "object" && !Array.isArray(next.limits) ? next.limits : {};
     }
     if (Array.isArray(next.steps)) next.steps = sanitizeFlowStepsForDocument(next.steps);
     if (Array.isArray(next.branches)) {
@@ -5690,6 +5974,8 @@ ${kind}` : "";
       terminalIdLineTemplate: String(view?.terminalIdLineTemplate || ""),
       terminalAuthoringLockedTitle: String(view?.terminalAuthoringLockedTitle || ""),
       terminalAuthoringLockedHint: String(view?.terminalAuthoringLockedHint || ""),
+      adaptiveAuthoringLockedTitle: String(view?.adaptiveAuthoringLockedTitle || ""),
+      adaptiveAuthoringLockedHint: String(view?.adaptiveAuthoringLockedHint || ""),
       edgeEyebrowTemplate: String(view?.edgeEyebrowTemplate || ""),
       edgeTitleTemplate: String(view?.edgeTitleTemplate || ""),
       edgeIdLineTemplate: String(view?.edgeIdLineTemplate || ""),
@@ -6011,6 +6297,8 @@ ${kind}` : "";
       outputFieldRows,
       outputHint: view.instanceOutputHint,
       outputOpenMemberLabel: view.instanceOutputOpenMemberLabel,
+      adaptiveLockedTitle: view.adaptiveAuthoringLockedTitle,
+      adaptiveLockedHint: view.adaptiveAuthoringLockedHint,
       forkSourceOptions,
       firstForkSourceId: forkSourceOptions[0]?.value || ""
     };
@@ -10677,6 +10965,7 @@ ${JSON.stringify(document2)}`;
       basicStepCardState,
       basicRepeatControlState,
       basicMemberStepControlState,
+      adaptiveStepState,
       basicRepeatUntilExpression,
       contractDefaultValue,
       outputFormatOptions,
@@ -11908,7 +12197,16 @@ ${JSON.stringify(document2)}`;
   }
   function Lane({ studio, mode, steps, laneRef, sel, setSel, openPicker, contract, basicView = null }) {
     const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
-    return /* @__PURE__ */ React.createElement("div", { className: "bld-lane" }, steps.map((step, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: step.id }, /* @__PURE__ */ React.createElement(StepCard, { studio, step, index: i, selected: sel === step.id, onSelect: () => setSel(step.id), contract, basicView }), step.type === "branch" || step.type === "parallel" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Fork, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : step.type === "repeat" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(RepeatBody, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) }))), steps.length === 0 && /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: 0 }) }));
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-lane" }, steps.map((step, i) => /* @__PURE__ */ React.createElement(React.Fragment, { key: step.id }, /* @__PURE__ */ React.createElement(StepCard, { studio, step, index: i, selected: sel === step.id, onSelect: () => setSel(step.id), contract, basicView }), step.type === "branch" || step.type === "parallel" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Fork, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : step.type === "repeat" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(RepeatBody, { studio, mode, step, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : step.type === "adaptive" ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(AdaptiveBody, { studio, step, selected: sel === step.id, onSelect: () => setSel(step.id), contract, basicView }), /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) })) : /* @__PURE__ */ React.createElement(InsertBtn, { mode, mid: i < steps.length - 1, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: i + 1 }) }))), steps.length === 0 && /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ ...laneRef, index: 0 }) }));
+  }
+  function AdaptiveBody({ studio, step, selected, onSelect, contract, basicView = null }) {
+    const adaptiveState = window.MobKitFlowController.adaptiveStepState(studio, step, contract, basicView);
+    const block = adaptiveState.block || {};
+    const chips = Array.isArray(block.chips) ? block.chips : [];
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-adaptive", onMouseDown: (e) => {
+      e.stopPropagation();
+      onSelect();
+    } }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-aframe" + (selected ? " is-selected" : "") }, /* @__PURE__ */ React.createElement("div", { className: "bld-aframe__rail" }, /* @__PURE__ */ React.createElement("span", null, adaptiveState.panelIcon)), /* @__PURE__ */ React.createElement("div", { className: "bld-aframe__body" }, /* @__PURE__ */ React.createElement("div", { className: "bld-aframe__head" }, block.headText), /* @__PURE__ */ React.createElement("div", { className: "bld-anode bld-anode--fm" }, /* @__PURE__ */ React.createElement("div", { className: "bld-anode__kicker" }, block.flowmasterKicker), /* @__PURE__ */ React.createElement("div", { className: "bld-anode__title" }, block.flowmasterTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-anode__desc" }, block.flowmasterDesc)), /* @__PURE__ */ React.createElement("div", { className: "bld-aconn" }, block.planConnector), /* @__PURE__ */ React.createElement("div", { className: "bld-anode bld-anode--layer" }, /* @__PURE__ */ React.createElement("div", { className: "bld-anode__kicker" }, block.layerKicker), /* @__PURE__ */ React.createElement("div", { className: "bld-afan" }, chips.length === 0 && /* @__PURE__ */ React.createElement("span", { className: "bld-afan__empty" }, block.emptyProfilesLabel), chips.map((chip) => /* @__PURE__ */ React.createElement("span", { key: chip.id, className: "bld-afan__chip" }, chip.label, /* @__PURE__ */ React.createElement("em", null, chip.suffix))))), /* @__PURE__ */ React.createElement("div", { className: "bld-aconn" }, block.collectConnector), /* @__PURE__ */ React.createElement("div", { className: "bld-aframe__back" }, block.loopBackText))));
   }
   function Fork({ studio, mode, step, sel, setSel, openPicker, contract, basicView = null }) {
     const forkState = window.MobKitFlowController.basicForkCanvasState({ step, contract, basicView });
@@ -11925,6 +12223,7 @@ ${JSON.stringify(document2)}`;
     return /* @__PURE__ */ React.createElement("div", { className: "bld-repeat" }, /* @__PURE__ */ React.createElement("div", { className: "bld-fork__bar" }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__rail" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__rail-glyph" }, "\u21BB")), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__frame" }, /* @__PURE__ */ React.createElement("div", { className: "bld-loop__head" }, /* @__PURE__ */ React.createElement("span", { className: "bld-loop__badge" }, viewState.loopBadge), /* @__PURE__ */ React.createElement("span", { className: "bld-loop__meta" }, repeatState.whileLabel, " ", /* @__PURE__ */ React.createElement("strong", null, repeatState.notLabel), " (", repeatState.conditionLabel, ") \xB7 ", repeatState.maxIterationsLabel)), step.steps.length === 0 ? /* @__PURE__ */ React.createElement(InsertBtn, { mode, title: viewState.addStepTitle, onClick: () => openPicker({ lane: "branch", parentId: step.id, branchId: "body", index: 0 }) }) : /* @__PURE__ */ React.createElement(Lane, { studio, mode, steps: step.steps, laneRef: { lane: "branch", parentId: step.id, branchId: "body" }, sel, setSel, openPicker, contract, basicView }), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__back" }, repeatState.loopBackLabel))), /* @__PURE__ */ React.createElement("div", { className: "bld-loop__exit" }, repeatState.exitLabel));
   }
   function StepCard({ studio, step, index, selected, onSelect, contract, basicView = null }) {
+    if (step.type === "adaptive") return null;
     const cardState = window.MobKitFlowController.basicStepCardState({ step, members: studio?.members || [], contract, basicView });
     return /* @__PURE__ */ React.createElement(
       "div",
@@ -12055,6 +12354,9 @@ ${JSON.stringify(document2)}`;
       const setCond = (patch) => editStep(step.id, "set_repeat_condition", window.MobKitFlowController.flowStepRepeatConditionPatch(step, patch));
       return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: repeatState.panelIcon, iconTint: "member", title: repeatState.panelTitle, sub: repeatState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: repeatState.loopIdLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input field__input--mono", value: step.loopId || "", placeholder: repeatState.loopIdPlaceholder, onChange: (e) => editStep(step.id, "set_loop_id", { value: e.target.value }) })), /* @__PURE__ */ React.createElement("div", { className: "bld-section-label", style: { marginTop: 16 } }, repeatState.conditionTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, repeatState.conditionIntro), !repeatState.hasBodyMembers ? /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { marginTop: 10, color: "var(--warn)" } }, repeatState.emptyBodyHint) : /* @__PURE__ */ React.createElement("div", { className: "bld-cond" }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.cond.stepId || "", onChange: (e) => setCond(window.MobKitFlowController.basicConditionSourcePatch(repeatState.bodyMembers, e.target.value)) }, /* @__PURE__ */ React.createElement("option", { value: "" }, repeatState.memberPlaceholderLabel), repeatState.bodyMemberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.cond.field || "", onChange: (e) => setCond(window.MobKitFlowController.basicConditionFieldPatch(e.target.value, repeatState.fieldOptions)), disabled: !repeatState.condSchema }, /* @__PURE__ */ React.createElement("option", { value: "" }, repeatState.fieldPlaceholder), repeatState.fieldOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.field.id || option.value, value: option.value }, option.label))), /* @__PURE__ */ React.createElement("select", { className: "field__select bld-cond__op", value: repeatState.operatorValue, onChange: (e) => setCond(window.MobKitFlowController.basicConditionOperatorPatch(e.target.value, contract)) }, repeatState.operatorOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), /* @__PURE__ */ React.createElement(CondValue, { field: repeatState.condField, value: repeatState.cond.val, conditionView, onChange: (v) => setCond(window.MobKitFlowController.basicConditionValuePatch(v)) })), /* @__PURE__ */ React.createElement("div", { className: "bld-cond__preview" }, repeatState.previewLabel, " ", /* @__PURE__ */ React.createElement("code", null, repeatState.repeatUntilExpression || repeatState.previewFallback)), /* @__PURE__ */ React.createElement(Field, { label: repeatState.iterationInputLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: repeatState.iterationInputValue, onChange: (e) => editStep(step.id, "set_iteration_input", { value: e.target.value }) }, repeatState.iterationInputOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), repeatState.selectedIterationInput?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, repeatState.selectedIterationInput.reason), /* @__PURE__ */ React.createElement(Field, { label: repeatState.maxIterationsLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", placeholder: repeatState.maxIterationsPlaceholder, value: step.maxIterations ?? "", onChange: (e) => editStep(step.id, "set_max_iterations", { value: e.target.value }) })), /* @__PURE__ */ React.createElement(PanelTips, { title: viewState.tipsTitle, items: repeatState.tips }));
     }
+    if (step.type === "adaptive") {
+      return /* @__PURE__ */ React.createElement(AdaptivePanel, { studio, step, update, onDelete, contract, basicView });
+    }
     const memberStepState = window.MobKitFlowController.basicMemberStepControlState({
       step,
       flow,
@@ -12110,6 +12412,33 @@ ${JSON.stringify(document2)}`;
       add(e.target.value);
       e.target.value = "";
     } }, /* @__PURE__ */ React.createElement("option", { value: scope.addSelectValue }, scope.addSelectPlaceholder), scope.addableRows.map((row) => /* @__PURE__ */ React.createElement("option", { key: row.id, value: row.value }, row.optionLabel))));
+  }
+  function AdaptivePanel({ studio, step, update, onDelete, contract, basicView = null }) {
+    const viewState = window.MobKitFlowController.basicEditorViewState(basicView);
+    const adaptiveState = window.MobKitFlowController.adaptiveStepState(studio, step, contract, basicView);
+    const [advancedLimitsOpen, setAdvancedLimitsOpen] = React.useState(false);
+    React.useEffect(() => setAdvancedLimitsOpen(false), [step.id]);
+    const flowmasterOptions = Array.isArray(adaptiveState.flowmasterOptions) ? adaptiveState.flowmasterOptions : [];
+    const schemaOptions = Array.isArray(adaptiveState.schemaOptions) ? adaptiveState.schemaOptions : [];
+    const templateRows = Array.isArray(adaptiveState.templateRows) ? adaptiveState.templateRows : [];
+    const surfaceToggles = Array.isArray(adaptiveState.surfaceToggles) ? adaptiveState.surfaceToggles : [];
+    const primaryLimitRows = Array.isArray(adaptiveState.primaryLimitRows) ? adaptiveState.primaryLimitRows : [];
+    const advancedLimitRows = Array.isArray(adaptiveState.advancedLimitRows) ? adaptiveState.advancedLimitRows : [];
+    const toggleTemplate = (row) => {
+      const next = templateRows.filter((r) => r.id === row.id ? !row.on : r.on).map((r) => r.id);
+      update(step.id, { profileTemplateIds: next });
+    };
+    const toggleSurface = (toggle) => {
+      const next = surfaceToggles.filter((t) => t.id === toggle.id ? !toggle.on : t.on).map((t) => t.id);
+      update(step.id, { targetSurfaces: next });
+    };
+    const commitLimit = (row, raw) => {
+      const value = Number(raw);
+      if (!Number.isInteger(value) || value <= 0) return;
+      update(step.id, { limits: { [row.key]: value } });
+    };
+    const renderLimitRow = (row) => /* @__PURE__ */ React.createElement("label", { key: row.key, className: "ap-num" }, /* @__PURE__ */ React.createElement("span", { className: "ap-num__label" }, row.label), /* @__PURE__ */ React.createElement(EchoInput, { key: step.id + ":" + row.key, className: "field__input", type: "number", min: "1", step: "1", value: row.value ?? "", onChangeText: (value) => commitLimit(row, value) }));
+    return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: adaptiveState.panelIcon, iconTint: "member", title: adaptiveState.panelTitle, sub: adaptiveState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: adaptiveState.flowmasterLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: adaptiveState.flowmasterId || "", onChange: (e) => update(step.id, { flowmasterId: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, adaptiveState.flowmasterPlaceholderLabel), flowmasterOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement(Field, { label: adaptiveState.promptLabel }, /* @__PURE__ */ React.createElement(EchoTextArea, { key: step.id, className: "field__textarea", rows: 4, placeholder: adaptiveState.promptPlaceholder, value: adaptiveState.promptValue || "", onChangeText: (value) => update(step.id, { prompt: value }) })), /* @__PURE__ */ React.createElement(Field, { label: adaptiveState.objectiveLabel }, /* @__PURE__ */ React.createElement(EchoTextArea, { key: step.id, className: "field__textarea", rows: 2, placeholder: adaptiveState.objectivePlaceholder, value: adaptiveState.objectiveValue || "", onChangeText: (value) => update(step.id, { objectiveClass: value }) })), /* @__PURE__ */ React.createElement(Field, { label: adaptiveState.resultSchemaLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: adaptiveState.resultSchemaValue || "", onChange: (e) => update(step.id, { resultSchema: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, adaptiveState.resultSchemaPlaceholderLabel), schemaOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement("div", { className: "bld-section-label" }, adaptiveState.profilesTitle), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, adaptiveState.profilesHint), /* @__PURE__ */ React.createElement("div", { className: "ap-profiles" }, templateRows.map((row) => /* @__PURE__ */ React.createElement("button", { key: row.id, className: "ap-profile" + (row.on ? " is-on" : ""), onClick: () => toggleTemplate(row) }, /* @__PURE__ */ React.createElement("span", { className: "ap-profile__name" }, row.label), /* @__PURE__ */ React.createElement("span", { className: "ap-profile__chiprow" }, row.role && /* @__PURE__ */ React.createElement("span", { className: "ap-tool" }, row.role), row.model && /* @__PURE__ */ React.createElement("span", { className: "ap-tool" }, row.model)))), templateRows.length === 0 && /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, adaptiveState.profilesEmptyHint)), /* @__PURE__ */ React.createElement("div", { className: "bld-hint" }, adaptiveState.profilesAgentsHint), /* @__PURE__ */ React.createElement(Field, { label: adaptiveState.surfacesLabel }, /* @__PURE__ */ React.createElement("div", { className: "ap-profile__toolrow" }, surfaceToggles.map((toggle) => /* @__PURE__ */ React.createElement("button", { key: toggle.id, className: "ap-tool" + (toggle.on ? " is-on" : ""), onClick: () => toggleSurface(toggle) }, toggle.label)))), /* @__PURE__ */ React.createElement("label", { className: "ap-inline" }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: !!adaptiveState.allowInlineProfiles, onChange: (e) => update(step.id, { allowInlineProfiles: e.target.checked }) }), /* @__PURE__ */ React.createElement("span", null, adaptiveState.inlineProfilesLabel)), /* @__PURE__ */ React.createElement("div", { className: "bld-section-label" }, adaptiveState.limitsTitle), /* @__PURE__ */ React.createElement("div", { className: "ap-grid" }, primaryLimitRows.map(renderLimitRow)), /* @__PURE__ */ React.createElement("button", { className: "ap-advanced" + (advancedLimitsOpen ? " is-open" : ""), onClick: () => setAdvancedLimitsOpen((open) => !open) }, adaptiveState.limitsAdvancedLabel), advancedLimitsOpen && /* @__PURE__ */ React.createElement("div", { className: "ap-grid" }, advancedLimitRows.map(renderLimitRow)), /* @__PURE__ */ React.createElement(PanelTips, { title: viewState.tipsTitle, items: Array.isArray(adaptiveState.tips) ? adaptiveState.tips : [] }));
   }
   function PanelHead({ icon, iconTint, title, sub, onClose, deleteMode }) {
     return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__head" }, /* @__PURE__ */ React.createElement("div", { className: "bld-panel__head-main" }, icon && /* @__PURE__ */ React.createElement("span", { className: "bld-panel__icon tint--" + (iconTint || "muted") }, icon), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "bld-panel__title" }, title), sub && /* @__PURE__ */ React.createElement("div", { className: "bld-panel__sub" }, sub))), /* @__PURE__ */ React.createElement("button", { className: "bld-panel__close", onClick: onClose, title: deleteMode ? "Delete step" : "Close" }, deleteMode ? "\u{1F5D1}" : "\u2715"));
@@ -12714,6 +13043,9 @@ ${JSON.stringify(document2)}`;
     const member = instanceState.member;
     if (inst.isGate) {
       return /* @__PURE__ */ React.createElement(GateInspector, { studio, flow, inst, clearSelection, editGraphNode, editGraphEdge, deleteGraphNode, contract, graphView, conditionView });
+    }
+    if (inst.kind === "adaptive" || inst.adaptive) {
+      return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "inspector__head" }, /* @__PURE__ */ React.createElement("div", { className: "row row--between" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "inspector__eyebrow" }, instanceState.eyebrow), /* @__PURE__ */ React.createElement("div", { className: "inspector__title" }, inst.label || ""), /* @__PURE__ */ React.createElement("div", { className: "inspector__id" }, instanceState.idLine)), /* @__PURE__ */ React.createElement("button", { className: "btn btn--ghost btn--sm", onClick: () => clearSelectionAfterOperation(deleteGraphNode?.(inst.id), clearSelection) }, instanceState.deleteLabel))), /* @__PURE__ */ React.createElement("div", { className: "inspector__body" }, /* @__PURE__ */ React.createElement("div", { className: "section section--locked" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, instanceState.adaptiveLockedTitle), /* @__PURE__ */ React.createElement("div", { className: "hint__line" }, instanceState.adaptiveLockedHint))));
     }
     if (inst.isTerminal) {
       const terminalState = window.MobKitFlowController.graphTerminalControlState(inst, contract, graphView);
