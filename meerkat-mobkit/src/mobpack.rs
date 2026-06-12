@@ -121,13 +121,17 @@ const EDITOR_ADAPTIVE_LIMITS: &[(&str, &str, u64, &str, bool)] = &[
     ),
 ];
 const EDITOR_ADAPTIVE_TARGET_SURFACES: &[&str] = &["cli", "rpc"];
-/// Bundled `adaptive/layer-decision.schema.json` payload. meerkat main does
-/// not yet publish a generated LayerDecision schema artifact (its own
-/// adaptive pack smoke fixtures bundle `{"type":"object"}`), so we pin the
-/// same permissive document. Follow-up: embed the schema emitted by the
-/// meerkat-contracts schema pipeline for `meerkat_mob::adaptive::LayerDecision`
-/// once meerkat exports it under artifacts/schemas.
-const ADAPTIVE_LAYER_DECISION_SCHEMA_JSON: &str = "{\"type\":\"object\"}\n";
+/// Bundled `adaptive/layer-decision.schema.json` payload: the canonical
+/// LayerDecision contract, generated via schemars from
+/// `meerkat_mob::adaptive::LayerDecision` (meerkat main, `schema` feature) —
+/// the run_layer/finish tagged union with the full LayerPlan shape. meerkat
+/// does not publish this artifact itself yet; regenerate when the adaptive
+/// types change (`schemars::schema_for!(meerkat_mob::adaptive::LayerDecision)`).
+/// The LayerProfile inline variant is permissive (`true`) because meerkat does
+/// not derive a schema for full Profile objects; inline profiles stay gated by
+/// the pack policy's `allow_inline_profiles`.
+const ADAPTIVE_LAYER_DECISION_SCHEMA_JSON: &str =
+    include_str!("adaptive_layer_decision.schema.json");
 const EDITOR_INPUT_STEP_ID_PREFIX: &str = "input";
 const EDITOR_INPUT_STEP_DEFAULT_TASK: &str = "Run the mobpack flow.";
 const DEFAULT_DEPLOY_EXEC_TIMEOUT_MS: u64 = 120_000;
@@ -28331,10 +28335,36 @@ model = "gpt-5.5"
             file_text("adaptive/flowmaster.prompt.md"),
             "Design each layer from prior results. "
         );
+        // The bundled layer-decision schema is the canonical LayerDecision
+        // contract (run_layer/finish tagged union + full LayerPlan defs).
         let layer_decision: Value =
             serde_json::from_str(&file_text("adaptive/layer-decision.schema.json"))
                 .expect("layer decision schema json");
-        assert_eq!(layer_decision, json!({ "type": "object" }));
+        assert_eq!(layer_decision["title"], json!("LayerDecision"));
+        let variants = layer_decision["oneOf"]
+            .as_array()
+            .or_else(|| layer_decision["anyOf"].as_array())
+            .expect("layer decision union variants");
+        let decision_consts: Vec<&str> = variants
+            .iter()
+            .filter_map(|variant| variant["properties"]["decision"]["const"].as_str())
+            .collect();
+        assert_eq!(
+            decision_consts,
+            ["run_layer", "finish"],
+            "{layer_decision:#?}"
+        );
+        for def in [
+            "LayerPlan",
+            "LayerShape",
+            "CollectorContract",
+            "FinishResult",
+        ] {
+            assert!(
+                layer_decision["$defs"][def].is_object(),
+                "layer decision schema must carry the {def} definition"
+            );
+        }
 
         // Registry maps the kebab-cased schema name to the exported file.
         let registry: Value =

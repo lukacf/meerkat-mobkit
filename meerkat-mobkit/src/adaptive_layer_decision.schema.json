@@ -1,0 +1,386 @@
+{
+  "$defs": {
+    "AdaptiveValue": {
+      "anyOf": [
+        {
+          "properties": {
+            "ref": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ref"
+          ],
+          "type": "object"
+        },
+        true
+      ]
+    },
+    "BudgetLimits": {
+      "description": "Resource limits for an agent run",
+      "properties": {
+        "max_duration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum duration"
+        },
+        "max_tokens": {
+          "description": "Maximum tokens to consume",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_tool_calls": {
+          "description": "Maximum tool calls",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "CollectorContract": {
+      "properties": {
+        "output_schema": {
+          "$ref": "#/$defs/SchemaRef"
+        },
+        "profile": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile",
+        "output_schema"
+      ],
+      "type": "object"
+    },
+    "Duration": {
+      "properties": {
+        "nanos": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "secs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "secs",
+        "nanos"
+      ],
+      "type": "object"
+    },
+    "FinishResult": {
+      "properties": {
+        "result": true
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "LayerCollection": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "all",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "any",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "n": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "quorum",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "n"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "LayerPlan": {
+      "properties": {
+        "activation_params": {
+          "additionalProperties": {
+            "$ref": "#/$defs/AdaptiveValue"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "collector": {
+          "$ref": "#/$defs/CollectorContract"
+        },
+        "id": {
+          "type": "string"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "profiles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LayerProfile"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "shape": {
+          "$ref": "#/$defs/LayerShape"
+        },
+        "spawn": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/LayerSpawnSpec"
+          },
+          "type": "array"
+        },
+        "spawn_groups": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/LayerSpawnGroup"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "objective",
+        "shape",
+        "collector"
+      ],
+      "type": "object"
+    },
+    "LayerProfile": {
+      "anyOf": [
+        {
+          "properties": {
+            "template": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "template"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "inline": true
+          },
+          "required": [
+            "inline"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "LayerShape": {
+      "oneOf": [
+        {
+          "properties": {
+            "collection": {
+              "$ref": "#/$defs/LayerCollection"
+            },
+            "kind": {
+              "const": "fan_out_collect",
+              "type": "string"
+            },
+            "worker_role": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "worker_role",
+            "collection"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "solo",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "LayerSpawnGroup": {
+      "properties": {
+        "initial_message_template": {
+          "type": "string"
+        },
+        "items_ref": {
+          "type": "string"
+        },
+        "key_path": {
+          "type": "string"
+        },
+        "max_items": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "prefix",
+        "profile",
+        "items_ref",
+        "key_path",
+        "initial_message_template",
+        "max_items"
+      ],
+      "type": "object"
+    },
+    "LayerSpawnSpec": {
+      "properties": {
+        "budget_limits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BudgetLimits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "identity": {
+          "type": "string"
+        },
+        "initial_message": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "profile",
+        "initial_message"
+      ],
+      "type": "object"
+    },
+    "SchemaRef": {
+      "anyOf": [
+        {
+          "properties": {
+            "inline": true
+          },
+          "required": [
+            "inline"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "registry": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "registry"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "properties": {
+        "decision": {
+          "const": "run_layer",
+          "type": "string"
+        },
+        "plan": {
+          "$ref": "#/$defs/LayerPlan"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision",
+        "reason",
+        "plan"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "decision": {
+          "const": "finish",
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/FinishResult"
+        }
+      },
+      "required": [
+        "decision",
+        "reason",
+        "result"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "LayerDecision"
+}
