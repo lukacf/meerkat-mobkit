@@ -478,6 +478,52 @@ fn phase12_risk_tiers_and_timeout_fallback_are_wired_with_audit() {
     );
 }
 
+/// Regression: a caller-supplied R3 approval timeout must be clamped so the
+/// deadline can't saturate past `u64::MAX` and become a never-expiring pending
+/// approval. With a huge `approval_timeout_ms` the pending entry's
+/// `deadline_at_ms` must stay finite (≈ now + 7d), keeping the
+/// timeout-to-safe-draft fallback reachable.
+#[test]
+fn r3_approval_timeout_is_clamped_so_deadline_never_saturates() {
+    let mut runtime = runtime_for_gating();
+    let _evaluated = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        &json!({
+            "jsonrpc":"2.0",
+            "id":"clamp-r3",
+            "method":"mobkit/gating/evaluate",
+            "params":{
+                "action":"delete_prod_data",
+                "actor_id":"agent-clamp",
+                "risk_tier":"r3",
+                "approval_timeout_ms": u64::MAX
+            }
+        })
+        .to_string(),
+        Duration::from_secs(1),
+    ));
+    let pending = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        r#"{"jsonrpc":"2.0","id":"clamp-pending","method":"mobkit/gating/pending","params":{}}"#,
+        Duration::from_secs(1),
+    ));
+    runtime.shutdown();
+
+    let entry = pending["result"]["pending"]
+        .as_array()
+        .and_then(|entries| entries.first())
+        .expect("one pending approval");
+    let created = entry["created_at_ms"].as_u64().expect("created_at_ms");
+    let deadline = entry["deadline_at_ms"].as_u64().expect("deadline_at_ms");
+    assert!(
+        deadline < u64::MAX,
+        "deadline must not saturate: {deadline}"
+    );
+    // Clamped to the 7-day ceiling, not the u64::MAX request.
+    let seven_days_ms = 7 * 24 * 60 * 60 * 1_000;
+    assert_eq!(deadline, created.saturating_add(seven_days_ms));
+}
+
 #[test]
 #[ignore]
 fn phase12_r3_notification_records_error_when_delivery_status_not_sent() {

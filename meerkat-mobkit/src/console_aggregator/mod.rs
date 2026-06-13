@@ -2983,10 +2983,13 @@ async fn backfill_one_session_history(
         {
             Ok(page) => page,
             Err(err) => {
-                append_backfill_gap(
+                record_session_history_backfill_failure(
                     &inner,
+                    &watermark_runtime_key,
                     &entry.runtime_key,
                     &record.identity,
+                    &session_id,
+                    offset,
                     err.to_string(),
                 )
                 .await?;
@@ -2996,10 +2999,13 @@ async fn backfill_one_session_history(
         let page_value = match serde_json::to_value(page) {
             Ok(value) => value,
             Err(err) => {
-                append_backfill_gap(
+                record_session_history_backfill_failure(
                     &inner,
+                    &watermark_runtime_key,
                     &entry.runtime_key,
                     &record.identity,
+                    &session_id,
+                    offset,
                     err.to_string(),
                 )
                 .await?;
@@ -3011,10 +3017,13 @@ async fn backfill_one_session_history(
             .and_then(Value::as_u64)
             .unwrap_or(offset as u64) as usize;
         let Some(messages) = page_value.get("messages").and_then(Value::as_array) else {
-            append_backfill_gap(
+            record_session_history_backfill_failure(
                 &inner,
+                &watermark_runtime_key,
                 &entry.runtime_key,
                 &record.identity,
+                &session_id,
+                offset,
                 "session history page missing messages".to_string(),
             )
             .await?;
@@ -3368,25 +3377,50 @@ async fn append_source_gap(
     Ok(())
 }
 
+/// Record a session-history backfill failure: stamp a watermark at the current
+/// offset so the freshness gate throttles retries to once per
+/// `SESSION_HISTORY_REFRESH_TTL_MS` (without it the 5s discovery loop re-reads
+/// a persistently-failing session forever), and append a single gap frame.
+async fn record_session_history_backfill_failure(
+    inner: &AggregatorInner,
+    watermark_runtime_key: &str,
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    offset: usize,
+    reason: String,
+) -> ConsoleLogResult<()> {
+    record_session_history_watermark(inner, watermark_runtime_key, session_id, offset).await?;
+    append_backfill_gap(inner, runtime_key, identity, session_id, reason).await
+}
+
+/// Stable dedupe key for a session-history backfill gap frame: a persistently
+/// failing session collapses to a single gap frame across retries.
+fn backfill_gap_dedupe_key(runtime_key: &str, identity: &str, session_id: &str) -> String {
+    format!("session-backfill-gap:{runtime_key}:{identity}:{session_id}")
+}
+
 async fn append_backfill_gap(
     inner: &AggregatorInner,
     runtime_key: &str,
     identity: &str,
+    session_id: &str,
     reason: String,
 ) -> ConsoleLogResult<()> {
     append_and_emit(
         inner,
         NewConsoleFrame {
             id: None,
-            dedupe_key: format!(
-                "session-backfill-gap:{runtime_key}:{identity}:{}",
-                current_time_ms()
-            ),
+            // Stable per (runtime, identity, session): repeated failures for
+            // the same session collapse to one gap frame instead of minting a
+            // fresh one (timestamped) on every retry — which grew the timeline
+            // store unbounded.
+            dedupe_key: backfill_gap_dedupe_key(runtime_key, identity, session_id),
             timestamp_ms: current_time_ms(),
             runtime_key: runtime_key.to_string(),
             identity: identity.to_string(),
             conversation_id: Some(identity.to_string()),
-            session_id: None,
+            session_id: Some(session_id.to_string()),
             kind: "replay_unavailable".to_string(),
             status: ConsoleFrameStatus::DeliveryFailed,
             payload: json!({
@@ -4528,6 +4562,23 @@ fn runtime_registry_lock_error() -> ConsoleLogError {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::large_futures, clippy::panic)]
 mod tests {
+    /// Regression: a session that keeps failing backfill must collapse to ONE
+    /// gap frame. The dedupe key is stable per (runtime, identity, session) —
+    /// independent of wall-clock — so repeated failures don't mint a fresh
+    /// timestamped frame each retry and grow the timeline store unbounded.
+    #[test]
+    fn backfill_gap_dedupe_key_is_stable_per_session() {
+        use super::backfill_gap_dedupe_key;
+        let a = backfill_gap_dedupe_key("default", "worker:1", "sess-9");
+        let b = backfill_gap_dedupe_key("default", "worker:1", "sess-9");
+        assert_eq!(a, b, "same target must reuse one gap frame");
+        assert_ne!(a, backfill_gap_dedupe_key("default", "worker:1", "sess-10"));
+        assert_ne!(a, backfill_gap_dedupe_key("default", "worker:2", "sess-9"));
+        // The key carries no wall-clock component (the pre-fix bug appended
+        // current_time_ms, so every retry was a unique frame).
+        assert_eq!(a, "session-backfill-gap:default:worker:1:sess-9");
+    }
+
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;

@@ -1,6 +1,6 @@
 //! Unified runtime — combines mob lifecycle, module management, and operational subsystems.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -11,8 +11,8 @@ use futures::stream::{BoxStream, SelectAll, StreamExt};
 use meerkat_core::comms::EventStream;
 use meerkat_core::event::{AgentEvent, agent_event_type};
 use meerkat_mob::{
-    AgentIdentity, AgentRuntimeId, AttributedEvent, FenceToken, MobError, MobHandle, ProfileName,
-    SpawnMemberSpec,
+    AgentIdentity, AgentRuntimeId, AttributedEvent, FenceToken, MobError, MobHandle,
+    MobMemberStatus, ProfileName, SpawnMemberSpec,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
@@ -687,6 +687,37 @@ enum ForwardedAgentEvent {
 type TrackedAgentEventStream = (String, AgentIdentity, AgentRuntimeId, FenceToken);
 type TaggedAgentEventStream = BoxStream<'static, ForwardedAgentEvent>;
 
+/// Per-member subscribe-failure backoff for the console agent-event
+/// forwarder. The forwarder reconciles every 250ms; without backoff a
+/// member that keeps failing `subscribe_agent_events` is retried 4×/s
+/// indefinitely and floods the log (observed: ~49k "failed to subscribe"
+/// warnings over 3.4h on a single wedged-retiring alias). We retry with
+/// exponential backoff and warn only on the first failure.
+struct SubscribeBackoff {
+    next_attempt: tokio::time::Instant,
+    consecutive_failures: u32,
+}
+
+/// First retry waits one reconcile tick; subsequent retries double up to a
+/// cap so a persistently-unsubscribable member costs at most ~1 attempt per
+/// `SUBSCRIBE_BACKOFF_MAX` instead of one per tick.
+const SUBSCRIBE_BACKOFF_BASE: Duration = Duration::from_millis(250);
+const SUBSCRIBE_BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+fn subscribe_backoff_delay(consecutive_failures: u32) -> Duration {
+    SUBSCRIBE_BACKOFF_BASE
+        .saturating_mul(1u32 << consecutive_failures.min(7))
+        .min(SUBSCRIBE_BACKOFF_MAX)
+}
+
+/// Whether the console forwarder should hold a live agent-event subscription
+/// for a member in this lifecycle state. Only `Active` members have a live
+/// runtime delta stream; subscribing a `Retiring`/`Broken`/`Completed` member
+/// (which can still carry stale binding atoms) fails every reconcile tick.
+fn forwarder_should_subscribe(status: MobMemberStatus) -> bool {
+    matches!(status, MobMemberStatus::Active)
+}
+
 async fn run_resilient_mob_agent_event_forwarder(
     handle: MobHandle,
     agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
@@ -695,6 +726,7 @@ async fn run_resilient_mob_agent_event_forwarder(
 ) {
     let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
     let mut tracked = HashSet::new();
+    let mut subscribe_failures: HashMap<TrackedAgentEventStream, SubscribeBackoff> = HashMap::new();
     let mut reconcile_interval = tokio::time::interval(Duration::from_millis(250));
     #[cfg(not(target_arch = "wasm32"))]
     reconcile_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -703,6 +735,7 @@ async fn run_resilient_mob_agent_event_forwarder(
         &handle,
         &agent_mob_mcp_state,
         &mut tracked,
+        &mut subscribe_failures,
         &mut streams,
     ))
     .await;
@@ -739,7 +772,7 @@ async fn run_resilient_mob_agent_event_forwarder(
                 }
             }
             _ = reconcile_interval.tick() => {
-                Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut streams)).await;
+                Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams)).await;
             }
         }
     }
@@ -749,6 +782,7 @@ async fn reconcile_agent_event_streams(
     handle: &MobHandle,
     agent_mob_mcp_state: &Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     tracked: &mut HashSet<TrackedAgentEventStream>,
+    subscribe_failures: &mut HashMap<TrackedAgentEventStream, SubscribeBackoff>,
     streams: &mut SelectAll<TaggedAgentEventStream>,
 ) {
     let mut handles = vec![handle.clone()];
@@ -787,6 +821,9 @@ async fn reconcile_agent_event_streams(
     }
 
     tracked.retain(|tracked_key| current.contains(tracked_key));
+    // Drop backoff bookkeeping for members that have left the roster so the
+    // map can't grow without bound across the runtime's lifetime.
+    subscribe_failures.retain(|key, _| current.contains(key));
 
     for handle in handles {
         let mob_id = handle.mob_id().to_string();
@@ -806,11 +843,34 @@ async fn reconcile_agent_event_streams(
                 continue;
             }
 
+            // Only Active members have a live runtime delta stream to attach
+            // to. A Retiring/Broken/Completed member can still carry stale
+            // binding atoms (so `binding_atoms()` is Some) while its session
+            // injector is already gone, which makes `subscribe_agent_events`
+            // fail every reconcile tick — the source of the 4×/s forwarder
+            // hot-loop. Such members are skipped here; their final events
+            // arrive via the structural ledger / session-history backfill and
+            // their streams age out through `tracked.retain`.
+            if !forwarder_should_subscribe(entry.status) {
+                subscribe_failures.remove(&tracked_key);
+                continue;
+            }
+
+            // Back off an Active member that keeps failing to subscribe (a
+            // genuinely stuck injector), so even that case can't spin the log.
+            let now = tokio::time::Instant::now();
+            if let Some(backoff) = subscribe_failures.get(&tracked_key)
+                && now < backoff.next_attempt
+            {
+                continue;
+            }
+
             let role = entry.role.clone();
 
             match subscribe_agent_events_for_console_forwarder(&handle, &identity).await {
                 Ok(stream) => {
                     let close_key = tracked_key.clone();
+                    subscribe_failures.remove(&tracked_key);
                     tracked.insert(tracked_key);
                     let mapped = stream
                         .map(move |envelope| {
@@ -828,15 +888,36 @@ async fn reconcile_agent_event_streams(
                     streams.push(mapped);
                 }
                 Err(error) => {
-                    // This can be a short-lived spawn/resume race while Meerkat
-                    // finishes installing the session event injector. Leave the
-                    // identity untracked so the next reconcile tick tries again.
-                    tracing::warn!(
-                        mob_id = %mob_id,
-                        identity = %identity,
-                        error = %error,
-                        "mobkit agent event forwarder: failed to subscribe; will retry"
-                    );
+                    // Usually a short-lived spawn/resume race while Meerkat
+                    // finishes installing the session event injector. Retry
+                    // with exponential backoff and warn only on the first
+                    // failure so a persistent failure can't flood the log.
+                    let backoff =
+                        subscribe_failures
+                            .entry(tracked_key)
+                            .or_insert(SubscribeBackoff {
+                                next_attempt: now,
+                                consecutive_failures: 0,
+                            });
+                    if backoff.consecutive_failures == 0 {
+                        tracing::warn!(
+                            mob_id = %mob_id,
+                            identity = %identity,
+                            error = %error,
+                            "mobkit agent event forwarder: failed to subscribe; will retry with backoff"
+                        );
+                    } else {
+                        tracing::debug!(
+                            mob_id = %mob_id,
+                            identity = %identity,
+                            error = %error,
+                            consecutive_failures = backoff.consecutive_failures,
+                            "mobkit agent event forwarder: subscribe still failing; backing off"
+                        );
+                    }
+                    backoff.next_attempt =
+                        now + subscribe_backoff_delay(backoff.consecutive_failures);
+                    backoff.consecutive_failures = backoff.consecutive_failures.saturating_add(1);
                 }
             }
         }
@@ -1025,5 +1106,33 @@ mod tests {
             panic!("expected agent event");
         };
         assert_eq!(agent_id, "worker-one:0");
+    }
+
+    /// Regression: the console forwarder must only hold a live subscription
+    /// for Active members. A Retiring member can keep stale binding atoms
+    /// while its session injector is gone, so subscribing it fails every
+    /// 250ms reconcile tick — the 4×/s "failed to subscribe" hot-loop
+    /// (observed ~49k warnings over 3.4h on one wedged-retiring alias).
+    #[test]
+    fn forwarder_only_subscribes_active_members() {
+        assert!(forwarder_should_subscribe(MobMemberStatus::Active));
+        assert!(!forwarder_should_subscribe(MobMemberStatus::Retiring));
+        assert!(!forwarder_should_subscribe(MobMemberStatus::Broken));
+        assert!(!forwarder_should_subscribe(MobMemberStatus::Completed));
+        assert!(!forwarder_should_subscribe(MobMemberStatus::Unknown));
+    }
+
+    /// The backoff for a persistently-failing Active subscribe must grow from
+    /// one reconcile tick and cap, so even a genuinely stuck member retries at
+    /// most ~once per cap instead of 4×/s.
+    #[test]
+    fn subscribe_backoff_grows_and_caps() {
+        assert_eq!(subscribe_backoff_delay(0), SUBSCRIBE_BACKOFF_BASE);
+        assert_eq!(subscribe_backoff_delay(1), SUBSCRIBE_BACKOFF_BASE * 2);
+        assert_eq!(subscribe_backoff_delay(3), SUBSCRIBE_BACKOFF_BASE * 8);
+        assert_eq!(subscribe_backoff_delay(7), SUBSCRIBE_BACKOFF_MAX);
+        // Saturates at the cap for arbitrarily many failures (no shift overflow).
+        assert_eq!(subscribe_backoff_delay(50), SUBSCRIBE_BACKOFF_MAX);
+        assert!(subscribe_backoff_delay(2) > subscribe_backoff_delay(1));
     }
 }

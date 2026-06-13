@@ -1388,6 +1388,12 @@ const DELIVERY_RATE_WINDOW_MS: u64 = 60_000;
 const DELIVERY_RATE_WINDOWS_RETAINED: u64 = 2;
 const DELIVERY_CLOCK_STEP_MS: u64 = 1_000;
 const GATING_APPROVAL_TIMEOUT_DEFAULT_MS: u64 = 60_000;
+/// Upper bound on a caller-supplied R3 approval timeout. Without it a huge
+/// `approval_timeout_ms` makes `created_at_ms.saturating_add(timeout_ms)`
+/// saturate to `u64::MAX`, so `now_ms >= deadline_at_ms` is never true and the
+/// pending approval can never time out to a safe draft. 7 days is far beyond
+/// any real human-approval window.
+const GATING_APPROVAL_TIMEOUT_MAX_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 const GATING_AUDIT_MAX_RETAINED: usize = 512;
 const GATING_PENDING_MAX_RETAINED: usize = 512;
 const MEMORY_ASSERTIONS_MAX_RETAINED: usize = 4_096;
