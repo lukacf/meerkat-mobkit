@@ -7510,7 +7510,7 @@ comms = true
         // parallel CI load can't false-trip it (matches the sibling timeline
         // query test). The real assertions are on the returned frames below.
         let page = tokio::time::timeout(
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             aggregator.query_timeline(ConsoleTimelineQuery {
                 identity: Some("test/agent-a".to_string()),
                 limit: 20,
@@ -8020,7 +8020,7 @@ comms = true
         // starvation under full parallel CI load (the old 2s ceiling flaked the
         // suite); a real regression takes minutes, not seconds, on 1000 frames.
         let page = tokio::time::timeout(
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             aggregator.query_timeline(ConsoleTimelineQuery {
                 identity: Some("test/agent-0".to_string()),
                 limit: 1_000,
