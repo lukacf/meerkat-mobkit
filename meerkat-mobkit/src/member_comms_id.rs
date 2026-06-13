@@ -26,6 +26,13 @@
 //!   on ids that were never encoded. The `mk--` prefix is a reserved
 //!   namespace: user-chosen member names must not start with it (encode
 //!   re-encodes such names so the round-trip still holds).
+//!
+//! This is a **public stability surface**: consumers that talk to raw
+//! `MobHandle` APIs (which speak the encoded roster-id space on meerkat 0.7+)
+//! must encode aliases on the way in and decode roster ids on the way out
+//! using exactly this codec — there is no separate "correct" encoding. Use
+//! [`mob_member_id`]/[`mob_member_id_str`] at the mobkit→meerkat-mob boundary
+//! and [`runtime_alias_str`]/[`runtime_event_alias`] at projection boundaries.
 
 use std::borrow::Cow;
 
@@ -94,7 +101,7 @@ fn unescape_body(s: &str) -> Option<String> {
 
 /// Map a public member alias (identity-first runtime id, durable identity, or
 /// plain member name) to the comms-safe mob roster member id string.
-pub(crate) fn mob_member_id_str(alias: &str) -> Cow<'_, str> {
+pub fn mob_member_id_str(alias: &str) -> Cow<'_, str> {
     if is_valid_comms_component(alias) && !alias.starts_with(MARKER) {
         Cow::Borrowed(alias)
     } else {
@@ -103,13 +110,13 @@ pub(crate) fn mob_member_id_str(alias: &str) -> Cow<'_, str> {
 }
 
 /// Map a public member alias to a typed mob roster member id.
-pub(crate) fn mob_member_id(alias: &str) -> meerkat_mob::ids::AgentIdentity {
+pub fn mob_member_id(alias: &str) -> meerkat_mob::ids::AgentIdentity {
     meerkat_mob::ids::AgentIdentity::from(mob_member_id_str(alias).as_ref())
 }
 
 /// Map a mob roster member id back to the public member alias. Identity on
 /// ids that were never encoded.
-pub(crate) fn runtime_alias_str(member_id: &str) -> Cow<'_, str> {
+pub fn runtime_alias_str(member_id: &str) -> Cow<'_, str> {
     match member_id.strip_prefix(MARKER) {
         Some(body) => match unescape_body(body) {
             Some(alias) => Cow::Owned(alias),
@@ -128,7 +135,7 @@ pub(crate) fn runtime_alias_str(member_id: &str) -> Cow<'_, str> {
 /// so it must be decoded before any console/SDK projection — console replay
 /// resolution, the `mobkit/events/subscribe` buffer, `/mob/events` SSE, and
 /// per-agent ABAC view checks all speak the alias space.
-pub(crate) fn runtime_event_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId) -> String {
+pub fn runtime_event_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId) -> String {
     format!(
         "{}:{}",
         runtime_alias_str(runtime_id.identity.as_str()),
