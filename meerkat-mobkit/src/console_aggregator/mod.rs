@@ -7506,8 +7506,11 @@ comms = true
             .await
             .expect("record fresh empty watermark");
 
+        // Hang/stall backstop only — generous so CPU starvation under full
+        // parallel CI load can't false-trip it (matches the sibling timeline
+        // query test). The real assertions are on the returned frames below.
         let page = tokio::time::timeout(
-            Duration::from_secs(2),
+            Duration::from_mins(1),
             aggregator.query_timeline(ConsoleTimelineQuery {
                 identity: Some("test/agent-a".to_string()),
                 limit: 20,
@@ -8010,8 +8013,14 @@ comms = true
                 .expect("append frame");
         }
 
+        // The per-frame roster-rediscovery regression is asserted exactly by
+        // `source_watermark_calls() == 0` below (and would also blow this query
+        // up to O(frames) async roster resolutions). The timeout is only a
+        // hang/O(n^2)-blowup backstop — generous so it never false-trips on CPU
+        // starvation under full parallel CI load (the old 2s ceiling flaked the
+        // suite); a real regression takes minutes, not seconds, on 1000 frames.
         let page = tokio::time::timeout(
-            Duration::from_secs(2),
+            Duration::from_mins(1),
             aggregator.query_timeline(ConsoleTimelineQuery {
                 identity: Some("test/agent-0".to_string()),
                 limit: 1_000,
@@ -8019,7 +8028,7 @@ comms = true
             }),
         )
         .await
-        .expect("identity timeline query should not rediscover the roster per frame")
+        .expect("identity timeline query should not hang or rediscover the roster per frame")
         .expect("timeline query succeeds");
 
         assert_eq!(page.frames.len(), 1_000);
@@ -8130,7 +8139,11 @@ comms = true
                 .await;
         }
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Generous deadline: the loop breaks the instant all live frames land,
+        // so a large ceiling is free in the normal case and only prevents a
+        // false drop-detection when the live pump is CPU-starved under full
+        // parallel CI load (the old 5s deadline flaked the suite).
+        let deadline = Instant::now() + Duration::from_secs(30);
         let mut observed = 0;
         while Instant::now() < deadline {
             observed = count_console_event_frames(&aggregator, "stress/agent-0").await;
