@@ -313,9 +313,13 @@ impl MobkitRuntimeHandle {
                 let pending_sequence = self.next_gating_sequence();
                 let pending_id = format!("gate-pending-{pending_sequence:06}");
                 let created_at_ms = current_time_ms();
+                // Clamp so a caller can't set a deadline that saturates past
+                // `u64::MAX` and never expires (the timeout-fallback guarantee
+                // must always be reachable).
                 let timeout_ms = request
                     .approval_timeout_ms
-                    .unwrap_or(GATING_APPROVAL_TIMEOUT_DEFAULT_MS);
+                    .unwrap_or(GATING_APPROVAL_TIMEOUT_DEFAULT_MS)
+                    .min(GATING_APPROVAL_TIMEOUT_MAX_MS);
                 let mut approval_route_id = None;
                 let mut approval_delivery_id = None;
                 let mut approval_notification_error = None;

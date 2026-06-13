@@ -224,6 +224,21 @@ pub enum IdentityEvent {
 const IDENTITY_EVENT_CHANNEL_CAPACITY: usize = 64;
 const DEFAULT_LEASE_RENEWAL_MAX_POLL_INTERVAL: Duration = Duration::from_mins(1);
 const DEFAULT_LEASE_RENEWAL_MIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// Base delay for the lease-renewal failure backoff. The renewal tick's
+/// normal cadence is TTL-derived (down to a 10ms floor), so a lease provider
+/// that errors persistently would otherwise retry — and warn — at that floor
+/// rate. On failure we back off from this base, doubling toward the max poll
+/// interval, so a backend outage can't spin the renewal task.
+const LEASE_RENEWAL_FAILURE_BACKOFF_BASE: Duration = Duration::from_secs(1);
+
+fn lease_renewal_failure_backoff(
+    consecutive_failures: u32,
+    max_poll_interval: Duration,
+) -> Duration {
+    LEASE_RENEWAL_FAILURE_BACKOFF_BASE
+        .saturating_mul(1u32 << consecutive_failures.min(6))
+        .min(max_poll_interval)
+}
 
 // ---------------------------------------------------------------------------
 // IdentityRuntime
@@ -421,17 +436,43 @@ impl IdentityRuntime {
     ) -> JoinHandle<()> {
         let max_poll_interval = max_poll_interval.max(DEFAULT_LEASE_RENEWAL_MIN_POLL_INTERVAL);
         tokio::spawn(async move {
+            let mut consecutive_failures: u32 = 0;
             loop {
-                let sleep = self.lease_renewal_sleep_interval(max_poll_interval).await;
+                let base = self.lease_renewal_sleep_interval(max_poll_interval).await;
+                // While the provider is failing, hold off at least the backoff
+                // delay so a persistent outage retries at a bounded rate
+                // instead of the TTL-derived floor (down to 10ms).
+                let sleep = if consecutive_failures > 0 {
+                    base.max(lease_renewal_failure_backoff(
+                        consecutive_failures,
+                        max_poll_interval,
+                    ))
+                } else {
+                    base
+                };
                 tokio::select! {
                     () = tokio::time::sleep(sleep) => {}
                     () = self.lease_renewal_notify.notified() => {}
                 }
-                if let Err(err) = self.renew_due_leases_once().await {
-                    tracing::warn!(
-                        error = %err,
-                        "identity-first proactive lease renewal tick failed"
-                    );
+                match self.renew_due_leases_once().await {
+                    Ok(_) => consecutive_failures = 0,
+                    Err(err) => {
+                        // Warn once, then debounce to debug so a backend outage
+                        // can't flood the log at the renewal cadence.
+                        if consecutive_failures == 0 {
+                            tracing::warn!(
+                                error = %err,
+                                "identity-first proactive lease renewal tick failed; backing off"
+                            );
+                        } else {
+                            tracing::debug!(
+                                error = %err,
+                                consecutive_failures,
+                                "identity-first lease renewal still failing; backing off"
+                            );
+                        }
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                    }
                 }
             }
         })
@@ -3619,4 +3660,29 @@ pub async fn wire_cross_mob_by_identity(
     Box::pin(local_unified.wire_cross_mob(local_rt.as_str(), remote_rt.as_str(), remote_mob_id))
         .await
         .map_err(|e| IdentityRuntimeError::Internal(format!("wire_cross_mob: {e}")))
+}
+
+#[cfg(test)]
+mod lease_renewal_backoff_tests {
+    use super::*;
+
+    /// Regression: a lease provider that errors persistently must not spin the
+    /// renewal task at the TTL-derived floor (down to 10ms). The failure
+    /// backoff grows from a 1s base and caps at the max poll interval.
+    #[test]
+    fn lease_renewal_failure_backoff_grows_and_caps() {
+        let max = Duration::from_secs(60);
+        assert_eq!(
+            lease_renewal_failure_backoff(0, max),
+            LEASE_RENEWAL_FAILURE_BACKOFF_BASE
+        );
+        assert_eq!(
+            lease_renewal_failure_backoff(1, max),
+            LEASE_RENEWAL_FAILURE_BACKOFF_BASE * 2
+        );
+        assert_eq!(lease_renewal_failure_backoff(6, max), max);
+        // Saturates at the cap for arbitrarily many failures (no shift overflow).
+        assert_eq!(lease_renewal_failure_backoff(99, max), max);
+        assert!(lease_renewal_failure_backoff(2, max) > lease_renewal_failure_backoff(1, max));
+    }
 }
