@@ -3671,7 +3671,7 @@ mod lease_renewal_backoff_tests {
     /// backoff grows from a 1s base and caps at the max poll interval.
     #[test]
     fn lease_renewal_failure_backoff_grows_and_caps() {
-        let max = Duration::from_secs(60);
+        let max = Duration::from_mins(1);
         assert_eq!(
             lease_renewal_failure_backoff(0, max),
             LEASE_RENEWAL_FAILURE_BACKOFF_BASE
