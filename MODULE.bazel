@@ -57,6 +57,12 @@ crate.annotation(
 crate.annotation(
     crate = "meerkat-core",
     gen_build_script = "off",
+    # Internal features the disabled build.rs would otherwise turn on; they emit
+    # the generated authority + agent-factory bridges other meerkat crates consume.
+    crate_features = [
+        "__meerkat-generated-authority-bridge",
+        "__meerkat-facade-agent-factory-build",
+    ],
     rustc_env = {
         "MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge",
         "MEERKAT_AGENT_FACTORY_POLICY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_agent_factory_build",
@@ -65,6 +71,8 @@ crate.annotation(
 crate.annotation(
     crate = "meerkat-runtime",
     gen_build_script = "off",
+    # `live` gates the peer-comms generated-authority items meerkat's own build forces.
+    crate_features = ["live"],
     rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
 )
 crate.annotation(
