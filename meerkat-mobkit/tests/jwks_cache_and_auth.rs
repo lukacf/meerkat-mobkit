@@ -27,7 +27,7 @@ use axum::{Extension, Router};
 use serde_json::json;
 use tower::ServiceExt;
 
-use meerkat_mobkit::{JwksCache, JwksCacheConfig, ValidatedJwt, with_auth_layer};
+use meerkat_mobkit::{JwksCache, JwksCacheConfig, JwksCacheError, ValidatedJwt, with_auth_layer};
 
 // ---------------------------------------------------------------------------
 // Inline mock HTTP server that supports pre-allocated ports
@@ -169,14 +169,21 @@ fn discovery_jwks_responses(base_url: &str, secret: &[u8], kid: &str) -> Vec<(u1
     ]
 }
 
+/// Audience the test tokens are minted for. The exported `JwksCache` now fails
+/// closed when no audience is configured, so the test helpers must set one.
+const TEST_AUDIENCE: &str = "mobkit-test-audience";
+
 fn make_cache(base_url: &str) -> JwksCache {
     let config = JwksCacheConfig {
         discovery_url: format!("{base_url}/.well-known/openid-configuration"),
         refresh_interval: Duration::from_hours(1),
         http_timeout: Duration::from_secs(5),
         issuer: None,
-        audience: None,
+        audience: Some(TEST_AUDIENCE.to_string()),
         leeway_seconds: 60,
+        // These tests use HS256 as a convenient symmetric signer; opt in
+        // explicitly (the cache rejects HS256 by default).
+        allow_hs256: true,
     };
     JwksCache::new(config)
 }
@@ -187,8 +194,9 @@ fn make_cache_with_issuer(base_url: &str, issuer: &str) -> JwksCache {
         refresh_interval: Duration::from_hours(1),
         http_timeout: Duration::from_secs(5),
         issuer: Some(issuer.to_string()),
-        audience: None,
+        audience: Some(TEST_AUDIENCE.to_string()),
         leeway_seconds: 60,
+        allow_hs256: true,
     };
     JwksCache::new(config)
 }
@@ -203,6 +211,7 @@ async fn jwks_cache_refresh_and_validate_token() {
     let claims = json!({
         "sub": "user-1",
         "iss": "https://test-issuer.example.com",
+        "aud": TEST_AUDIENCE,
         "exp": now_epoch() + 3600,
     });
     let token = build_hs256_token(&secret, Some("key-1"), &claims);
@@ -227,6 +236,7 @@ async fn jwks_cache_kid_miss_triggers_refresh() {
     let secret = hs256_secret();
     let claims = json!({
         "sub": "user-2",
+        "aud": TEST_AUDIENCE,
         "exp": now_epoch() + 3600,
     });
     let token = build_hs256_token(&secret, Some("key-2"), &claims);
@@ -310,6 +320,70 @@ async fn jwks_cache_expired_token_rejected() {
     assert!(result.is_err(), "expired token should be rejected");
 }
 
+#[tokio::test]
+async fn jwks_cache_rejects_hs256_by_default() {
+    // Security: the exported JwksCache must reject HS256 by default to avoid
+    // algorithm confusion if the IdP's JWKS publishes an oct/alg-less key.
+    let secret = hs256_secret();
+    let claims = json!({
+        "sub": "user-1",
+        "aud": TEST_AUDIENCE,
+        "exp": now_epoch() + 3600,
+    });
+    let token = build_hs256_token(&secret, Some("key-1"), &claims);
+    let mock =
+        OidcMockServer::start(|base_url| discovery_jwks_responses(base_url, &secret, "key-1"));
+
+    // Default config (no allow_hs256): rejected.
+    let config = JwksCacheConfig {
+        discovery_url: format!("{}/.well-known/openid-configuration", mock.base_url()),
+        refresh_interval: Duration::from_hours(1),
+        http_timeout: Duration::from_secs(5),
+        issuer: None,
+        audience: Some(TEST_AUDIENCE.to_string()),
+        leeway_seconds: 60,
+        allow_hs256: false,
+    };
+    let cache = JwksCache::new(config);
+    let result = cache.validate_token(&token).await;
+    assert!(
+        matches!(result, Err(JwksCacheError::Hs256NotAllowed)),
+        "HS256 must be rejected by default, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn jwks_cache_fails_closed_without_audience() {
+    // Security: with no configured audience the cache must fail closed to
+    // prevent cross-RP token reuse, rather than accepting any unexpired token.
+    let secret = hs256_secret();
+    let claims = json!({
+        "sub": "user-1",
+        "aud": "some-other-rp",
+        "exp": now_epoch() + 3600,
+    });
+    let token = build_hs256_token(&secret, Some("key-1"), &claims);
+    let mock =
+        OidcMockServer::start(|base_url| discovery_jwks_responses(base_url, &secret, "key-1"));
+
+    let config = JwksCacheConfig {
+        discovery_url: format!("{}/.well-known/openid-configuration", mock.base_url()),
+        refresh_interval: Duration::from_hours(1),
+        http_timeout: Duration::from_secs(5),
+        issuer: None,
+        audience: None,
+        leeway_seconds: 60,
+        // HS256 allowed so the failure is attributable to the missing audience.
+        allow_hs256: true,
+    };
+    let cache = JwksCache::new(config);
+    let result = cache.validate_token(&token).await;
+    assert!(
+        matches!(result, Err(JwksCacheError::AudienceRequired)),
+        "missing audience must fail closed, got {result:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Auth middleware tests
 // ---------------------------------------------------------------------------
@@ -389,6 +463,7 @@ async fn auth_middleware_passes_valid_token_and_injects_identity() {
     let claims = json!({
         "sub": "user-42",
         "email": "user42@example.com",
+        "aud": TEST_AUDIENCE,
         "exp": now_epoch() + 3600,
     });
     let token = build_hs256_token(&secret, Some("key-1"), &claims);

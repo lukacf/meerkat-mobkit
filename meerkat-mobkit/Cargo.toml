@@ -89,3 +89,8 @@ tower = { version = "0.5", features = ["util"] }
 jsonwebtoken = "9"
 async-trait = "0.1"
 meerkat-comms = "0.7"
+# `schema` feature (test-only) exposes `meerkat_mob::adaptive::layer_decision_schema()`
+# so a parity guard can assert the bundled adaptive layer-decision schema stays
+# Value-equal to meerkat's canonical one. Dev-dependency: not enabled in release
+# builds, so the production binary keeps the lean (no-schemars) meerkat-mob.
+meerkat-mob = { version = "0.7", features = ["schema"] }

@@ -109,5 +109,9 @@ pub(super) fn format_schedule_validation_error(err: ScheduleValidationError) -> 
             schedule_id,
             timezone,
         } => format!("invalid timezone '{timezone}' for schedule_id '{schedule_id}'"),
+        ScheduleValidationError::LookbackBudgetExceeded { schedule_id } => format!(
+            "cron lookback budget exceeded while resolving schedule_id '{schedule_id}'; \
+             reduce the number of sparse cron schedules per request"
+        ),
     }
 }

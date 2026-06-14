@@ -407,8 +407,16 @@ impl ContinuityStore for LocalContinuityStore {
             .lock()
             .map_err(|e| ContinuityStoreError::Io(format!("lock: {e}")))?;
 
+        // Wrap the fence check and BOTH deletes in a single transaction so a
+        // crash or I/O error between the two DELETEs cannot leave snapshots
+        // gone but the continuity record present (a half-deleted store). Mirrors
+        // the multi-statement consistency discipline of save_session_snapshot.
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| ContinuityStoreError::Io(format!("begin tx: {e}")))?;
+
         // Check fencing token against existing record
-        let mut stmt = conn
+        let mut stmt = tx
             .prepare_cached("SELECT fencing_token FROM continuity_records WHERE identity = ?1")
             .map_err(|e| ContinuityStoreError::Io(format!("prepare: {e}")))?;
         let existing_token = stmt
@@ -432,19 +440,132 @@ impl ContinuityStore for LocalContinuityStore {
         }
 
         // Delete associated session snapshots
-        conn.execute(
+        tx.execute(
             "DELETE FROM session_snapshots WHERE identity = ?1",
             rusqlite::params![identity.as_str()],
         )
         .map_err(|e| ContinuityStoreError::Io(format!("delete snapshots: {e}")))?;
 
         // Delete the continuity record
-        conn.execute(
+        tx.execute(
             "DELETE FROM continuity_records WHERE identity = ?1",
             rusqlite::params![identity.as_str()],
         )
         .map_err(|e| ContinuityStoreError::Io(format!("delete record: {e}")))?;
 
+        tx.commit()
+            .map_err(|e| ContinuityStoreError::Io(format!("commit tx: {e}")))?;
+
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn record(
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> ContinuityRecord {
+        ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt-001").unwrap(),
+            session_id: session_id.clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_continuity_record_removes_record_and_snapshots_atomically() {
+        // Regression: the record + its session snapshots must be deleted as one
+        // transaction so a crash between the two DELETEs cannot leave a
+        // half-deleted store. Functionally: after a successful delete BOTH the
+        // continuity record and the snapshot must be gone.
+        let store = LocalContinuityStore::in_memory().expect("in-memory store");
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let session_id = meerkat_core::types::SessionId::new();
+
+        store
+            .upsert_continuity_record(&record(&identity, &session_id), FencingToken::new(1))
+            .await
+            .unwrap();
+        store
+            .save_session_snapshot(
+                &identity,
+                &session_id,
+                ContinuityGeneration::new(0),
+                CheckpointVersion::new(1),
+                FencingToken::new(1),
+                &SessionSnapshot {
+                    data: vec![1, 2, 3],
+                },
+            )
+            .await
+            .unwrap();
+
+        // Both present before delete.
+        assert!(
+            store
+                .load_session_snapshot(&session_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        store
+            .delete_continuity_record(&identity, FencingToken::new(2))
+            .await
+            .unwrap();
+
+        // Record gone: resolve returns Uninitialized.
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await
+            .unwrap();
+        assert!(matches!(
+            resolved.get(&identity),
+            Some(ContinuityResolveState::Uninitialized)
+        ));
+        // Snapshot gone too (same transaction).
+        assert!(
+            store
+                .load_session_snapshot(&session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_continuity_record_rejects_stale_fencing_token() {
+        let store = LocalContinuityStore::in_memory().expect("in-memory store");
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let session_id = meerkat_core::types::SessionId::new();
+        store
+            .upsert_continuity_record(&record(&identity, &session_id), FencingToken::new(5))
+            .await
+            .unwrap();
+
+        let err = store
+            .delete_continuity_record(&identity, FencingToken::new(2))
+            .await
+            .expect_err("stale fencing token must be rejected");
+        assert!(matches!(
+            err,
+            ContinuityStoreError::StaleFencingToken { .. }
+        ));
+
+        // The record must survive a rejected delete.
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await
+            .unwrap();
+        assert!(!matches!(
+            resolved.get(&identity),
+            Some(ContinuityResolveState::Uninitialized)
+        ));
     }
 }

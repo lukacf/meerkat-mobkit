@@ -500,6 +500,14 @@ pub enum JwksCacheError {
     Validation(JwtValidationError),
     NoMatchingKey,
     NotInitialized,
+    /// The token's header requested HS256 (symmetric) but the cache is not
+    /// configured to allow it. Rejected by default to prevent HS256 algorithm
+    /// confusion if the IdP's JWKS publishes any `oct`/alg-less key.
+    Hs256NotAllowed,
+    /// No audience is configured, so the token's `aud` claim cannot be bound.
+    /// Failing closed prevents cross-RP token reuse (any unexpired token signed
+    /// by any key in the IdP's JWKS would otherwise be accepted).
+    AudienceRequired,
 }
 
 impl Display for JwksCacheError {
@@ -510,6 +518,13 @@ impl Display for JwksCacheError {
             Self::Validation(err) => write!(f, "JWT validation error: {err:?}"),
             Self::NoMatchingKey => write!(f, "no matching JWK for token"),
             Self::NotInitialized => write!(f, "JWKS cache not initialized"),
+            Self::Hs256NotAllowed => {
+                write!(f, "HS256 tokens are not accepted by this JWKS cache")
+            }
+            Self::AudienceRequired => write!(
+                f,
+                "JWKS cache requires a configured audience to validate tokens"
+            ),
         }
     }
 }
@@ -524,6 +539,11 @@ pub struct JwksCacheConfig {
     pub issuer: Option<String>,
     pub audience: Option<String>,
     pub leeway_seconds: u64,
+    /// Opt-in escape hatch for HS256 (symmetric) tokens. Defaults to `false`:
+    /// this security primitive rejects HS256 by default to avoid algorithm
+    /// confusion if the IdP's JWKS publishes an `oct`/alg-less key. Only set to
+    /// `true` for a trusted local/dev IdP you control.
+    pub allow_hs256: bool,
 }
 
 impl JwksCacheConfig {
@@ -535,7 +555,31 @@ impl JwksCacheConfig {
             issuer: None,
             audience: None,
             leeway_seconds: 60,
+            allow_hs256: false,
         }
+    }
+
+    /// Set the expected audience. Required: the cache fails closed when no
+    /// audience is configured, preventing cross-RP token reuse.
+    #[must_use]
+    pub fn with_audience(mut self, audience: impl Into<String>) -> Self {
+        self.audience = Some(audience.into());
+        self
+    }
+
+    /// Set the expected issuer.
+    #[must_use]
+    pub fn with_issuer(mut self, issuer: impl Into<String>) -> Self {
+        self.issuer = Some(issuer.into());
+        self
+    }
+
+    /// Opt in to accepting HS256 (symmetric) tokens. Only for a trusted local
+    /// IdP you control — see [`Self::allow_hs256`].
+    #[must_use]
+    pub fn allow_hs256(mut self, allow: bool) -> Self {
+        self.allow_hs256 = allow;
+        self
     }
 }
 
@@ -606,6 +650,23 @@ impl JwksCache {
         token: &str,
         header: &JwtHeaderView,
     ) -> Result<ValidatedJwt, JwksCacheError> {
+        // Fail closed BEFORE selecting a key. (1) Reject HS256 by default so a
+        // symmetric-key/alg-confusion token cannot be validated against any
+        // `oct`/alg-less JWK. (2) Require a configured audience so this token is
+        // bound to THIS relying party — without it any unexpired token signed by
+        // any key in the IdP's JWKS would be accepted (cross-RP token reuse).
+        if header.alg.eq_ignore_ascii_case("HS256") && !self.config.allow_hs256 {
+            return Err(JwksCacheError::Hs256NotAllowed);
+        }
+        if self
+            .config
+            .audience
+            .as_deref()
+            .is_none_or(|audience| audience.trim().is_empty())
+        {
+            return Err(JwksCacheError::AudienceRequired);
+        }
+
         let inner = self.inner.read().await;
         let jwks = inner.jwks.as_ref().ok_or(JwksCacheError::NotInitialized)?;
 

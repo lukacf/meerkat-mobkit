@@ -95,6 +95,21 @@ fn all_mob_event_kinds_project_with_kind_label() {
     assert_eq!(m.kind, "member_retired");
     assert_eq!(m.agent_identity.as_deref(), Some("worker-1"));
 
+    // meerkat 0.7.2 #6: crash-recovery rebind fact. The variant's
+    // constructor is `pub(crate)` in meerkat-mob, so build it through the
+    // public `tag = "type"` wire form (the same JSON the ledger persists).
+    // `bridge_session_id` is `#[serde(skip)]` on the public surface, so the
+    // wire shape carries only `agent_identity` + `agent_runtime_id`.
+    let recovered_kind: MobEventKind = serde_json::from_value(serde_json::json!({
+        "type": "member_session_binding_recovered",
+        "agent_identity": "worker-1",
+        "agent_runtime_id": { "identity": "worker-1", "generation": 0 },
+    }))
+    .expect("member_session_binding_recovered variant deserializes");
+    let m = project(recovered_kind);
+    assert_eq!(m.kind, "member_session_binding_recovered");
+    assert_eq!(m.agent_identity.as_deref(), Some("worker-1"));
+
     let m = project(MobEventKind::MemberReset {
         agent_identity: identity.clone(),
         previous_generation: Generation::new(0),

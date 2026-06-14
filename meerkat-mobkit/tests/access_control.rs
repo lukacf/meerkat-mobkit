@@ -23,6 +23,7 @@ use meerkat_mobkit::{
     build_runtime_decision_state, handle_console_rest_json_route_with_snapshot_and_access,
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 fn trusted_toml() -> String {
@@ -700,6 +701,94 @@ async fn http_router_enforces_access_end_to_end() {
     assert_eq!(
         get_status(&app, "/agents/delivery/events").await,
         StatusCode::OK
+    );
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+#[tokio::test]
+async fn multipart_send_denied_does_not_write_blob_before_access_gate() {
+    // Regression: the multipart `mobkit/console/send` path must run the
+    // `agent.send` ABAC gate on the target identity BEFORE externalizing /
+    // persisting uploaded image bytes. Otherwise a caller denied send to an
+    // identity can still write attacker-supplied bytes into that identity's
+    // blob store (a pre-auth side effect / storage-amplification vector).
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let controller = AccessController::new(anonymous_router_only_config()).expect("controller");
+    runtime.set_access_controller(controller);
+    let app = runtime.build_reference_app_router(decision_state(false));
+
+    // `delivery` is NOT granted agent.send (only `router` is).
+    let image_bytes = b"denied-multipart-png-bytes";
+    let boundary = "mobkit-access-boundary";
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "id": "denied-multipart-send",
+        "method": "mobkit/console/send",
+        "params": {
+            "identity": "delivery",
+            "origin": "test",
+            "idempotency_key": "denied-multipart-send",
+            "content": [
+                { "type": "image_upload", "upload_id": "u1", "media_type": "image/png" }
+            ]
+        }
+    });
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"payload\"\r\n");
+    body.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+    body.extend_from_slice(payload.to_string().as_bytes());
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file:u1\"; filename=\"x.png\"\r\n",
+    );
+    body.extend_from_slice(b"Content-Type: image/png\r\n\r\n");
+    body.extend_from_slice(image_bytes);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/console/rpc/multipart")
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .expect("multipart request"),
+        )
+        .await
+        .expect("multipart response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let resp_body = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("multipart body");
+    let resp_json: Value = serde_json::from_slice(&resp_body).expect("multipart json");
+    assert_eq!(
+        resp_json["error"]["code"],
+        json!(-32030),
+        "denied multipart send must be access-denied: {resp_json:#?}"
+    );
+    assert_eq!(resp_json["error"]["data"]["kind"], json!("access_denied"));
+
+    // The uploaded bytes must NOT have been written: the content-addressed
+    // blob is not retrievable (the gate fired before externalization). The
+    // blob id hashes `media_type || 0x00 || bytes` (see compute_blob_id).
+    let mut hasher = Sha256::new();
+    hasher.update(b"image/png");
+    hasher.update([0]);
+    hasher.update(image_bytes);
+    let blob_id = format!("sha256:{:x}", hasher.finalize());
+    let blob_status = get_status(&app, &format!("/blobs/{blob_id}")).await;
+    assert_eq!(
+        blob_status,
+        StatusCode::NOT_FOUND,
+        "denied upload bytes must not be persisted before the access gate"
     );
 
     let _ = runtime.mob_handle().stop().await;

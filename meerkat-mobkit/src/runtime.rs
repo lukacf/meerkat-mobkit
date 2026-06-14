@@ -1070,6 +1070,13 @@ pub enum ScheduleValidationError {
         schedule_id: String,
         timezone: String,
     },
+    /// The total cron lookback work for this request exceeded
+    /// `CRON_LOOKBACK_BUDGET_PER_REQUEST`. Surfaced (rather than silently
+    /// stalling) when a request packs enough sparse crons to blow past the
+    /// per-request iteration ceiling — a soft-DoS guard.
+    LookbackBudgetExceeded {
+        schedule_id: String,
+    },
 }
 
 impl std::fmt::Display for ScheduleValidationError {
@@ -1089,6 +1096,12 @@ impl std::fmt::Display for ScheduleValidationError {
                 timezone,
             } => {
                 write!(f, "invalid timezone for schedule {schedule_id}: {timezone}")
+            }
+            Self::LookbackBudgetExceeded { schedule_id } => {
+                write!(
+                    f,
+                    "cron lookback budget exceeded while resolving schedule {schedule_id}"
+                )
             }
         }
     }
@@ -1388,6 +1401,13 @@ const DELIVERY_RATE_WINDOW_MS: u64 = 60_000;
 const DELIVERY_RATE_WINDOWS_RETAINED: u64 = 2;
 const DELIVERY_CLOCK_STEP_MS: u64 = 1_000;
 const GATING_APPROVAL_TIMEOUT_DEFAULT_MS: u64 = 60_000;
+/// Lower bound on a caller-supplied R3 approval timeout. Without it a value of
+/// `0` (or a few ms) makes `deadline_at_ms == created_at_ms`, so the pending
+/// entry is treated as already-expired by `refresh_gating_timeouts` on the very
+/// next gating RPC and is replaced with a `timeout_fallback` SafeDraft before
+/// any approver can act — R3 approval can never complete. 1 second is the floor
+/// that keeps a `PendingApproval` outcome actually approvable.
+const GATING_APPROVAL_TIMEOUT_MIN_MS: u64 = 1_000;
 /// Upper bound on a caller-supplied R3 approval timeout. Without it a huge
 /// `approval_timeout_ms` makes `created_at_ms.saturating_add(timeout_ms)`
 /// saturate to `u64::MAX`, so `now_ms >= deadline_at_ms` is never true and the
@@ -1408,6 +1428,15 @@ const ELEPHANT_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(2);
 // Multi-year bounded lookback so sparse valid cron schedules (for example leap-day)
 // are not silently skipped when polling cadence is coarse.
 const CRON_LOOKBACK_MINUTES: u64 = 5_270_400;
+// Per-request ceiling on TOTAL cron lookback iterations across all schedules in
+// one evaluate/dispatch call. Each schedule may still walk back the full
+// `CRON_LOOKBACK_MINUTES` (≈10y) for a legitimately-sparse cron such as
+// `0 0 29 2 *` (Feb 29, ≈1.5M iterations), but a request packed with many such
+// crons cannot multiply that cost without bound. The ceiling allows several
+// worst-case sparse crons per request (well above any real schedule set) while
+// capping the adversarial `MAX_SCHEDULES_PER_REQUEST * ~1.5M` (~380M) blow-up
+// that would otherwise stall the tokio worker and starve the module mutex.
+const CRON_LOOKBACK_BUDGET_PER_REQUEST: u64 = CRON_LOOKBACK_MINUTES.saturating_mul(8);
 const CONSOLE_EXPERIENCE_ROUTE: &str = "/console/experience";
 const CONSOLE_MODULES_ROUTE: &str = "/console/modules";
 const EVENTS_SUBSCRIBE_METHOD: &str = "mobkit/events/subscribe";

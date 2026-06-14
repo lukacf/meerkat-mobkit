@@ -59,6 +59,12 @@ export class RpcError extends MobKitError {
  */
 export const MOB_EVENTS_STALE_CURSOR_CODE = -32010 as const;
 export const CAPABILITY_UNAVAILABLE_CODE = -32004 as const;
+/**
+ * Transient/recoverable identity-plane lease loss on a send/dispatch. Distinct
+ * from {@link CAPABILITY_UNAVAILABLE_CODE} (-32004) so a lease that merely needs
+ * re-acquisition is not mis-typed as a permanent capability gap.
+ */
+export const LEASE_LOST_CODE = -32005 as const;
 export const MEMORY_BACKEND_UNAVAILABLE_CODE = -32012 as const;
 export const CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE = -32013 as const;
 
@@ -115,6 +121,24 @@ export class CapabilityUnavailableError extends RpcError {
   ) {
     super(CAPABILITY_UNAVAILABLE_CODE, message, requestId, method, data);
     this.name = "CapabilityUnavailableError";
+  }
+}
+
+/**
+ * Raised when an identity's lease was lost mid send/dispatch. Transient and
+ * recoverable — the identity simply needs to re-acquire its lease. Distinct
+ * from {@link CapabilityUnavailableError} so callers do not treat a recoverable
+ * lease loss as a permanent capability gap.
+ */
+export class LeaseLostError extends RpcError {
+  constructor(
+    message: string,
+    requestId = "",
+    method = "",
+    data?: unknown,
+  ) {
+    super(LEASE_LOST_CODE, message, requestId, method, data);
+    this.name = "LeaseLostError";
   }
 }
 

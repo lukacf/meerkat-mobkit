@@ -37,9 +37,11 @@ from meerkat_mobkit.types import (
     MobpackTemplatesResult,
     MobpackToolsCatalogResult,
     MobpackValidationResult,
+    PeerConnectivitySnapshot,
     PersistedEvent,
     ReconcileEdgesReport,
     ReconcileResult,
+    RichMemberSnapshot,
     RediscoverReport,
     RoutingResolution,
     RuntimeRouteResult,
@@ -994,3 +996,85 @@ class TestMemberStateConstants:
 
     def test_member_state_retiring(self):
         assert MEMBER_STATE_RETIRING == "retiring"
+
+
+class TestCrossSdkGracefulParsing:
+    """Python from_dict must degrade gracefully (like TS) on missing keys,
+    not raise KeyError. Regression for the cross-SDK divergence."""
+
+    def test_gating_audit_entry_defaults_missing_keys(self):
+        entry = GatingAuditEntry.from_dict({})
+        assert entry.audit_id == ""
+        assert entry.timestamp_ms == 0
+        assert entry.event_type == ""
+        assert entry.action_id == ""
+        assert entry.actor_id == ""
+        assert entry.outcome == ""
+        assert entry.risk_tier is None
+
+    def test_member_snapshot_defaults_missing_keys(self):
+        snapshot = MemberSnapshot.from_dict({})
+        assert snapshot.agent_identity == ""
+        assert snapshot.role == ""
+        assert snapshot.state == ""
+        assert snapshot.wired_to == []
+        assert snapshot.labels == {}
+
+
+class TestPeerConnectivitySnapshot:
+    def test_tri_state_known_reads_counts_from_snapshot(self):
+        # 0.7.x nests the counts under `snapshot` behind a `status` discriminator.
+        # Regression: the old flat reader returned all-zeros for this shape.
+        snap = PeerConnectivitySnapshot.from_dict({
+            "status": "known",
+            "snapshot": {
+                "reachable_peer_count": 3,
+                "unknown_peer_count": 1,
+                "unreachable_peers": [{"peer": "p1", "reason": "timeout"}],
+            },
+        })
+        assert snap.status == "known"
+        assert snap.is_known
+        assert snap.reachable_peer_count == 3
+        assert snap.unknown_peer_count == 1
+        assert len(snap.unreachable_peers) == 1
+        assert snap.unreachable_peers[0].peer == "p1"
+
+    def test_tri_state_not_applicable_and_probe_timed_out(self):
+        not_applicable = PeerConnectivitySnapshot.from_dict({"status": "not_applicable"})
+        assert not_applicable.status == "not_applicable"
+        assert not not_applicable.is_known
+        assert not_applicable.reachable_peer_count == 0
+
+        timed_out = PeerConnectivitySnapshot.from_dict({"status": "probe_timed_out"})
+        assert timed_out.status == "probe_timed_out"
+        assert not timed_out.is_known
+
+    def test_legacy_flat_shape_still_parses(self):
+        # Backward compat: pre-0.7 flat shape (counts at top level, no status).
+        snap = PeerConnectivitySnapshot.from_dict({
+            "reachable_peer_count": 2,
+            "unknown_peer_count": 0,
+            "unreachable_peers": [],
+        })
+        assert snap.reachable_peer_count == 2
+        assert snap.status == "known"
+
+    def test_rich_member_snapshot_reads_nested_counts(self):
+        snapshot = RichMemberSnapshot.from_dict({
+            "status": "active",
+            "tokens_used": 5,
+            "is_final": False,
+            "peer_connectivity": {
+                "status": "known",
+                "snapshot": {
+                    "reachable_peer_count": 3,
+                    "unknown_peer_count": 1,
+                    "unreachable_peers": [{"peer": "p1", "reason": "x"}],
+                },
+            },
+        })
+        assert snapshot.peer_connectivity is not None
+        assert snapshot.peer_connectivity.reachable_peer_count == 3
+        assert snapshot.peer_connectivity.unknown_peer_count == 1
+        assert len(snapshot.peer_connectivity.unreachable_peers) == 1

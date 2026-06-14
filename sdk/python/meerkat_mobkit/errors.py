@@ -8,6 +8,10 @@ from typing import Any
 # is past the current ledger frontier.
 MOB_EVENTS_STALE_CURSOR_CODE: int = -32010
 CAPABILITY_UNAVAILABLE_CODE: int = -32004
+# Transient/recoverable identity-plane lease loss on a send/dispatch. Distinct
+# from CAPABILITY_UNAVAILABLE_CODE (-32004) so a lease that merely needs
+# re-acquisition is not mis-typed as a permanent capability gap.
+LEASE_LOST_CODE: int = -32005
 MEMORY_BACKEND_UNAVAILABLE_CODE: int = -32012
 CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE: int = -32013
 
@@ -97,6 +101,32 @@ class CapabilityUnavailableError(RpcError):
     ):
         super().__init__(
             CAPABILITY_UNAVAILABLE_CODE,
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+
+
+class LeaseLostError(RpcError):
+    """Raised when an identity's lease was lost mid send/dispatch.
+
+    This is transient and recoverable: the identity simply needs to
+    re-acquire its lease. Distinct from :class:`CapabilityUnavailableError`
+    so callers do not treat a recoverable lease loss as a permanent
+    capability gap.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
+        super().__init__(
+            LEASE_LOST_CODE,
             message,
             request_id=request_id,
             method=method,

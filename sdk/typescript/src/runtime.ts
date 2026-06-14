@@ -26,9 +26,11 @@ import {
   MOB_EVENTS_STALE_CURSOR_CODE,
   CAPABILITY_UNAVAILABLE_CODE,
   CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
+  LEASE_LOST_CODE,
   MEMORY_BACKEND_UNAVAILABLE_CODE,
   CapabilityUnavailableError,
   ConsoleTimelineReplayUnavailableError,
+  LeaseLostError,
   MemoryBackendUnavailableError,
   MobEventsStaleError,
   NotConnectedError,
@@ -512,6 +514,9 @@ export class MobKitRuntime {
       if (code === CAPABILITY_UNAVAILABLE_CODE) {
         throw new CapabilityUnavailableError(message, rid, method, err.data);
       }
+      if (code === LEASE_LOST_CODE) {
+        throw new LeaseLostError(message, rid, method, err.data);
+      }
       if (code === MEMORY_BACKEND_UNAVAILABLE_CODE) {
         throw new MemoryBackendUnavailableError(message, rid, method, err.data);
       }
@@ -854,7 +859,7 @@ export class MobHandle {
     );
   }
 
-  /** Preview the rkat mob deploy command for a mobpack document. */
+  /** Preview the `rkat mob run` deploy command for a mobpack document. */
   async mobpackDeployCommand(
     document: Record<string, unknown>,
   ): Promise<MobpackDeployCommandResult> {
@@ -1132,6 +1137,9 @@ export class MobHandle {
       const message = String(err.message ?? String(err));
       if (code === CAPABILITY_UNAVAILABLE_CODE) {
         throw new CapabilityUnavailableError(message, id, method, err.data);
+      }
+      if (code === LEASE_LOST_CODE) {
+        throw new LeaseLostError(message, id, method, err.data);
       }
       if (code === MEMORY_BACKEND_UNAVAILABLE_CODE) {
         throw new MemoryBackendUnavailableError(message, id, method, err.data);

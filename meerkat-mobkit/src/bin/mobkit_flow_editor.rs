@@ -12,6 +12,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!(
             "mobkit flow editor listening on http://{addr}/flow-editor (host deploy enabled)"
         );
+        // The host-deploy surface is UNAUTHENTICATED and runs `rkat mob run` on
+        // this host. On a loopback bind that is contained to local users, but a
+        // non-loopback bind exposes unauthenticated host code execution to the
+        // network. Warn loudly so an operator cannot do this unknowingly.
+        if !addr.ip().is_loopback() {
+            eprintln!(
+                "WARNING: host deploy is enabled on a NON-LOOPBACK address ({addr}). This \
+                 exposes an UNAUTHENTICATED surface that runs `rkat mob run` on this host to \
+                 anyone who can reach {addr} — i.e. network-reachable remote code execution. \
+                 Bind to 127.0.0.1 (the default) unless you have placed an authenticating proxy \
+                 in front of this listener."
+            );
+        }
         axum::serve(listener, flow_editor_router_with_host_deploy()).await?;
     } else {
         eprintln!("mobkit flow editor listening on http://{addr}/flow-editor");

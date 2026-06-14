@@ -2083,6 +2083,28 @@ pub async fn console_rpc_multipart_handler(
                     Json::<Value>(invalid_params(response_id, "identity required")),
                 );
             };
+            // Gate BEFORE externalizing/persisting uploads, mirroring the JSON
+            // /console/send gate-first ordering. Without this, a caller denied
+            // `agent.send` on this identity could still write attacker-supplied
+            // image bytes into the target identity's blob store (a pre-auth
+            // side effect / storage-amplification vector) — the send is denied
+            // later, but the blob write already happened. Prime the attribute
+            // cache first so role/label-scoped deny rules resolve fail-closed.
+            if let Some(runtime) = &state.runtime
+                && let Some(controller) = state.access.as_ref().filter(|c| c.enabled())
+            {
+                prime_access_cache_from_runtime(runtime, controller).await;
+            }
+            if let Some(violation) = console_rpc_access_violation(
+                auth_context.access_view.as_ref(),
+                "mobkit/console/send",
+                &parsed_request.params,
+            ) {
+                return (
+                    StatusCode::OK,
+                    Json::<Value>(response_value(response_id, None, Some(violation))),
+                );
+            }
             let binary_blob_store =
                 match Box::pin(aggregator.binary_blob_store_for_identity(identity)).await {
                     Ok(Some(store)) => store,

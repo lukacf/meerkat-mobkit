@@ -123,13 +123,19 @@ const EDITOR_ADAPTIVE_LIMITS: &[(&str, &str, u64, &str, bool)] = &[
 const EDITOR_ADAPTIVE_TARGET_SURFACES: &[&str] = &["cli", "rpc"];
 /// Bundled `adaptive/layer-decision.schema.json` payload: the canonical
 /// LayerDecision contract, generated via schemars from
-/// `meerkat_mob::adaptive::LayerDecision` (meerkat main, `schema` feature) —
-/// the run_layer/finish tagged union with the full LayerPlan shape. meerkat
-/// does not publish this artifact itself yet; regenerate when the adaptive
-/// types change (`schemars::schema_for!(meerkat_mob::adaptive::LayerDecision)`).
-/// The LayerProfile inline variant is permissive (`true`) because meerkat does
-/// not derive a schema for full Profile objects; inline profiles stay gated by
-/// the pack policy's `allow_inline_profiles`.
+/// `meerkat_mob::adaptive::LayerDecision` (meerkat `schema` feature) — the
+/// run_layer/finish tagged union with the full LayerPlan shape. This MUST stay
+/// `serde_json::Value`-equal to meerkat's `layer_decision_schema()`; a mismatch
+/// fails any adaptive-pack deploy/validate with `StaleAdaptiveSchema`.
+/// Regenerate via `schemars::schema_for!(meerkat_mob::adaptive::LayerDecision)`
+/// when the adaptive types change.
+///
+/// As of meerkat 0.7.1+ the `LayerProfile::inline` variant is a full
+/// `{"$ref": "#/$defs/Profile"}` with a complete Profile `$def` — inline
+/// profiles are validated STRUCTURALLY, not accepted as an opaque `true`. (The
+/// `SchemaRef`/`AdaptiveValue` defs still use `anyOf`-with-`true` for genuinely
+/// opaque slots.) Inline profiles remain gated by the pack policy's
+/// `allow_inline_profiles`.
 const ADAPTIVE_LAYER_DECISION_SCHEMA_JSON: &str =
     include_str!("adaptive_layer_decision.schema.json");
 const EDITOR_INPUT_STEP_ID_PREFIX: &str = "input";
@@ -9168,7 +9174,19 @@ fn rewrite_input_param_condition_text(text: &mut Value, old_name: &str, new_name
         return;
     };
     let prefix = format!("params.{old_name}");
-    if !raw.trim_start().starts_with(&prefix) {
+    let trimmed = raw.trim_start();
+    if !trimmed.starts_with(&prefix) {
+        return;
+    }
+    // Require a token boundary after the matched reference so renaming/deleting
+    // `route` does not corrupt an unrelated `params.route_v2` condition. The
+    // next character must end the identifier token (end-of-string or any
+    // non-identifier char such as a space, operator, or `)`); a continuation
+    // char like a letter, digit, or `_` means this is a DIFFERENT param that
+    // merely shares a prefix, and must be left untouched.
+    if let Some(next) = trimmed[prefix.len()..].chars().next()
+        && (next.is_ascii_alphanumeric() || next == '_')
+    {
         return;
     }
     if new_name.is_empty() {
@@ -13282,11 +13300,18 @@ pub fn deploy_mobpack(params: &Value) -> Result<MobpackDeployResult, String> {
     } else {
         None
     };
+    // An executed run is a success ONLY when it exits 0 AND its stdout parsed
+    // into a `run …status=completed` envelope. Exit 0 with an unparseable /
+    // missing envelope (output-format drift, a wrapper at RKAT_BIN, truncated or
+    // tracing-interleaved stdout) must NOT be reported as success — that is the
+    // exact "exit 0 + unparseable stdout" trap the deploy story forbids, since a
+    // failed `rkat mob run` also exits 0 and the `status=` field is the only
+    // signal distinguishing completed from failed.
     let success = execute
         && status_code == Some(0)
         && run_envelope
             .as_ref()
-            .is_none_or(|envelope| envelope.status == "completed");
+            .is_some_and(|envelope| envelope.status == "completed");
     let display_rows = deploy_display_rows(
         &export.validation,
         execute,
@@ -13367,6 +13392,19 @@ fn deploy_display_rows(
                 .map(mob_run_result_text)
                 .unwrap_or_else(|| "flow run produced no result output".to_string()),
             meta: envelope.run_meta.clone(),
+        });
+    } else if executed && status_code == Some(0) {
+        // Exit 0 but no parseable `run …status=` envelope. A failed flow also
+        // exits 0, so we cannot claim success — surface why it is not reported
+        // as completed rather than letting it masquerade as a clean deploy.
+        rows.push(MobpackDisplayRow {
+            kind: "crit".to_string(),
+            glyph: "!".to_string(),
+            head: "could not parse rkat result envelope".to_string(),
+            sub: "rkat exited 0 but its stdout had no `run …status=…` line; \
+                   the flow's outcome (completed vs failed) is unknown"
+                .to_string(),
+            meta: "rkat mob run".to_string(),
         });
     }
     if executed {
@@ -13564,7 +13602,12 @@ fn deploy_argv(
         argv.extend(["--param".to_string(), format!("{key}={encoded}")]);
     }
     if input_bindings.accepts_prompt() && !input_bindings.params.contains_key("prompt") {
-        argv.extend(["--prompt".to_string(), prompt.to_string()]);
+        // Single-token `--prompt=<text>` (NOT two tokens). `mob run`'s
+        // `--prompt` has no `allow_hyphen_values`, so a two-token value
+        // beginning with `-` (e.g. a prompt like `--summarize this`) is
+        // rejected by clap as an unexpected argument. The `=` form makes clap
+        // take everything after `=` literally, including leading hyphens.
+        argv.push(format!("--prompt={prompt}"));
     }
     argv.extend([
         "--trust-policy".to_string(),
@@ -13726,6 +13769,24 @@ fn run_rkat_validate_command(argv: &[String], timeout: std::time::Duration) -> D
     }
 }
 
+/// Drain a child pipe to a `Vec<u8>` on a dedicated thread. Spawning a reader
+/// per stream means neither pipe can fill its OS buffer (~64KB) and block the
+/// child on write while we are still polling for exit — the pipe-buffer
+/// deadlock that would otherwise turn a chatty (e.g. `RUST_LOG=debug`)
+/// multi-minute flow into a spurious timeout.
+fn spawn_pipe_drainer<R>(reader: Option<R>) -> std::thread::JoinHandle<Vec<u8>>
+where
+    R: std::io::Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut reader) = reader {
+            let _ = reader.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
+
 fn run_deploy_command(argv: &[String], timeout: std::time::Duration) -> DeployProcessOutput {
     if argv.is_empty() {
         return DeployProcessOutput {
@@ -13749,54 +13810,57 @@ fn run_deploy_command(argv: &[String], timeout: std::time::Duration) -> DeployPr
             };
         }
     };
+
+    // Drain both pipes concurrently so the child never blocks on a full pipe
+    // buffer while we poll for exit/timeout. The readers return when their pipe
+    // closes (on child exit or kill), so joining them always terminates.
+    let stdout_reader = spawn_pipe_drainer(child.stdout.take());
+    let stderr_reader = spawn_pipe_drainer(child.stderr.take());
+    let collect = |stdout_reader: std::thread::JoinHandle<Vec<u8>>,
+                   stderr_reader: std::thread::JoinHandle<Vec<u8>>|
+     -> (String, String) {
+        let stdout = stdout_reader.join().unwrap_or_default();
+        let stderr = stderr_reader.join().unwrap_or_default();
+        (
+            String::from_utf8_lossy(&stdout).to_string(),
+            String::from_utf8_lossy(&stderr).to_string(),
+        )
+    };
+
     let start = std::time::Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                return match child.wait_with_output() {
-                    Ok(output) => DeployProcessOutput {
-                        status_code: output.status.code(),
-                        stdout: Some(String::from_utf8_lossy(&output.stdout).to_string()),
-                        stderr: Some(String::from_utf8_lossy(&output.stderr).to_string()),
-                    },
-                    Err(err) => DeployProcessOutput {
-                        status_code: None,
-                        stdout: None,
-                        stderr: Some(format!("failed to collect rkat mob run output: {err}")),
-                    },
+            Ok(Some(status)) => {
+                let (stdout, stderr) = collect(stdout_reader, stderr_reader);
+                return DeployProcessOutput {
+                    status_code: status.code(),
+                    stdout: Some(stdout),
+                    stderr: Some(stderr),
                 };
             }
             Ok(None) if start.elapsed() >= timeout => {
                 let _ = child.kill();
-                return match child.wait_with_output() {
-                    Ok(output) => {
-                        let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                        if !stderr.trim().is_empty() {
-                            stderr.push('\n');
-                        }
-                        stderr.push_str(&format!(
-                            "rkat mob run timed out after {}ms",
-                            timeout.as_millis()
-                        ));
-                        DeployProcessOutput {
-                            status_code: output.status.code(),
-                            stdout: Some(String::from_utf8_lossy(&output.stdout).to_string()),
-                            stderr: Some(stderr),
-                        }
-                    }
-                    Err(err) => DeployProcessOutput {
-                        status_code: None,
-                        stdout: None,
-                        stderr: Some(format!(
-                            "rkat mob run timed out after {}ms; failed to collect output: {err}",
-                            timeout.as_millis()
-                        )),
-                    },
+                let status_code = child.wait().ok().and_then(|status| status.code());
+                let (stdout, mut stderr) = collect(stdout_reader, stderr_reader);
+                if !stderr.trim().is_empty() {
+                    stderr.push('\n');
+                }
+                stderr.push_str(&format!(
+                    "rkat mob run timed out after {}ms",
+                    timeout.as_millis()
+                ));
+                return DeployProcessOutput {
+                    status_code,
+                    stdout: Some(stdout),
+                    stderr: Some(stderr),
                 };
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
             Err(err) => {
                 let _ = child.kill();
+                let _ = child.wait();
+                // Drain readers so their threads terminate before we return.
+                let (_stdout, _stderr) = collect(stdout_reader, stderr_reader);
                 return DeployProcessOutput {
                     status_code: None,
                     stdout: None,
@@ -14250,6 +14314,25 @@ description = "{}"
 /// `[adaptive]` manifest sections (policy digest over the exact emitted
 /// policy bytes), or `None` when the document has no adaptive layer.
 ///
+/// Map an editor tool id to the adaptive-policy tool-class string that the
+/// meerkat runtime emits as layer admission EVIDENCE.
+///
+/// The runtime derives a Rust bundle's tool class as `rust_bundle:{name}`
+/// (`meerkat_mob::adaptive::collect_profile_tool_classes`), but the editor's
+/// canonical id for the same bundle is `rust:{name}`. Without this mapping the
+/// policy's `allowed_tool_classes` would contain `rust:foo` while the evidence
+/// is `rust_bundle:foo`, so `{rust_bundle:foo} ⊆ {rust:foo}` is false and EVERY
+/// adaptive layer whose profile templates use a Rust bundle is admission-
+/// rejected forever (the layer is silently skipped). `mcp:{source}` already
+/// matches the runtime's `mcp:{name}`, and bool/model/skill classes are
+/// verbatim on both sides, so only the `rust:` prefix is rewritten.
+fn adaptive_policy_tool_class(tool: &str) -> String {
+    match tool.strip_prefix("rust:") {
+        Some(bundle) => format!("rust_bundle:{bundle}"),
+        None => tool.to_string(),
+    }
+}
+
 /// The `[requires]` stamp carries the `adaptive_flow` capability: 0.7.1+
 /// hosts reject adaptive packs without it (`MissingAdaptiveCapability`) and
 /// fail closed on hosts that lack the capability; pre-0.7.1 hosts ignore
@@ -14294,7 +14377,11 @@ fn append_adaptive_archive_files(
         {
             model_classes.insert(model.to_string());
         }
-        tool_classes.extend(string_vec(member.get("tools")));
+        tool_classes.extend(
+            string_vec(member.get("tools"))
+                .into_iter()
+                .map(|tool| adaptive_policy_tool_class(&tool)),
+        );
         skill_classes.extend(string_vec(member.get("skills")));
     }
     let to_sorted_vec = |set: &BTreeSet<String>| set.iter().cloned().collect::<Vec<_>>();
@@ -19407,9 +19494,6 @@ fn validate_deploy_runtime_modes(document: &MobpackDocument) -> Vec<MobpackDiagn
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("cli");
-    if deploy_surface != "cli" {
-        return Vec::new();
-    }
     let Some(members) = document.members.as_array() else {
         return Vec::new();
     };
@@ -19422,17 +19506,34 @@ fn validate_deploy_runtime_modes(document: &MobpackDocument) -> Vec<MobpackDiagn
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("");
-        if let Some(reason) = deploy_runtime_mode_block_reason(deploy_surface, runtime_mode) {
-            let label = member
-                .get("name")
-                .or_else(|| member.get("id"))
-                .and_then(Value::as_str)
-                .unwrap_or("member");
+        let label = member
+            .get("name")
+            .or_else(|| member.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or("member");
+        if deploy_surface == "cli" {
+            if let Some(reason) = deploy_runtime_mode_block_reason(deploy_surface, runtime_mode) {
+                diagnostics.push(MobpackDiagnostic {
+                    severity: "error".to_string(),
+                    code: "deploy_surface_runtime_mode_unsupported".to_string(),
+                    message: format!(
+                        "profile '{label}' uses runtime mode '{runtime_mode}', but deploy surface '{deploy_surface}' does not support it: {reason}"
+                    ),
+                    path: Some(format!("members[{member_index}].runtimeMode")),
+                });
+            }
+        } else if runtime_mode == "autonomous_host" {
+            // The editor admits surface=rpc + autonomous_host for a future
+            // RPC-surface deploy path, but the ONLY deploy story today is
+            // `rkat mob run`, which always executes as CLI surface — it cannot
+            // wire an autonomous_host member's RPC host. Warn (not error: the
+            // authoring contract still permits the configuration) so the
+            // half-wired state is visible rather than silently mis-deployed.
             diagnostics.push(MobpackDiagnostic {
-                severity: "error".to_string(),
-                code: "deploy_surface_runtime_mode_unsupported".to_string(),
+                severity: "warning".to_string(),
+                code: "deploy_surface_runtime_mode_not_deployable".to_string(),
                 message: format!(
-                    "profile '{label}' uses runtime mode '{runtime_mode}', but deploy surface '{deploy_surface}' does not support it: {reason}"
+                    "profile '{label}' uses runtime mode 'autonomous_host' under deploy surface '{deploy_surface}', but the `rkat mob run` deploy executes as CLI surface and cannot wire an autonomous_host member; this member will not be deployed as intended until an RPC-surface deploy path exists"
                 ),
                 path: Some(format!("members[{member_index}].runtimeMode")),
             });
@@ -26200,7 +26301,19 @@ message = "stale"
 
         let result = validate_document(&document);
 
+        // The authoring contract still permits surface=rpc + autonomous_host
+        // (no error), but a warning must flag that the `rkat mob run` deploy
+        // story (CLI surface) cannot fulfill the autonomous_host wiring.
         assert!(result.ok, "{:?}", result.diagnostics);
+        assert!(
+            result.diagnostics.iter().any(|diagnostic| {
+                diagnostic.severity == "warning"
+                    && diagnostic.code == "deploy_surface_runtime_mode_not_deployable"
+                    && diagnostic.path.as_deref() == Some("members[0].runtimeMode")
+            }),
+            "rpc + autonomous_host must warn that rkat mob run cannot deploy it: {:?}",
+            result.diagnostics
+        );
     }
 
     #[test]
@@ -27961,7 +28074,7 @@ model = "gpt-5.5"
             &bindings,
         );
         assert!(
-            !argv.iter().any(|arg| arg == "--prompt"),
+            !argv.iter().any(|arg| arg.starts_with("--prompt")),
             "must not inject --prompt against a schema without a prompt field: {argv:?}"
         );
         // Values are JSON-encoded so rkat's parse-as-JSON-first `--param`
@@ -27991,9 +28104,9 @@ model = "gpt-5.5"
             "Summarize the run.",
             &bindings,
         );
+        // Single-token hyphen-safe `--prompt=<text>` form.
         assert!(
-            argv.windows(2)
-                .any(|pair| pair[0] == "--prompt" && pair[1] == "Summarize the run."),
+            argv.iter().any(|arg| arg == "--prompt=Summarize the run."),
             "{argv:?}"
         );
     }
@@ -28009,9 +28122,10 @@ model = "gpt-5.5"
             "Reply with exactly OK.",
             &bindings,
         );
+        // Single-token hyphen-safe `--prompt=<text>` form.
         assert!(
-            argv.windows(2)
-                .any(|pair| pair[0] == "--prompt" && pair[1] == "Reply with exactly OK."),
+            argv.iter()
+                .any(|arg| arg == "--prompt=Reply with exactly OK."),
             "{argv:?}"
         );
     }
@@ -28033,7 +28147,7 @@ model = "gpt-5.5"
             &bindings,
         );
         assert!(
-            !argv.iter().any(|arg| arg == "--prompt"),
+            !argv.iter().any(|arg| arg.starts_with("--prompt")),
             "explicit prompt binding must not be duplicated by --prompt: {argv:?}"
         );
         assert!(
@@ -28827,6 +28941,52 @@ model = "gpt-5.5"
         ] {
             assert!(paths.contains(path), "{paths:?}");
         }
+    }
+
+    #[test]
+    fn adaptive_policy_tool_class_maps_rust_bundle_to_runtime_evidence() {
+        // The runtime emits a Rust bundle's layer-admission evidence as
+        // `rust_bundle:{name}` while the editor id is `rust:{name}`. The policy
+        // allow-list MUST carry the runtime form or every adaptive layer using a
+        // Rust bundle is admission-rejected forever. mcp/bool/model/skill ids are
+        // verbatim on both sides and must pass through unchanged.
+        assert_eq!(adaptive_policy_tool_class("rust:foo"), "rust_bundle:foo");
+        assert_eq!(
+            adaptive_policy_tool_class("rust:my-bundle"),
+            "rust_bundle:my-bundle"
+        );
+        assert_eq!(adaptive_policy_tool_class("mcp:linear"), "mcp:linear");
+        assert_eq!(adaptive_policy_tool_class("shell"), "shell");
+        assert_eq!(adaptive_policy_tool_class("builtins"), "builtins");
+        assert_eq!(adaptive_policy_tool_class("comms"), "comms");
+        // `rust_bundle:` is already the runtime form; do not double-rewrite.
+        assert_eq!(
+            adaptive_policy_tool_class("rust_bundle:already"),
+            "rust_bundle:already"
+        );
+    }
+
+    #[test]
+    fn bundled_layer_decision_schema_matches_meerkat_canonical() {
+        // Parity guard pinned to the resolved meerkat-mob version: the bundled
+        // adaptive/layer-decision.schema.json MUST stay serde_json::Value-equal
+        // to meerkat's canonical `layer_decision_schema()`. meerkat's pack
+        // validation (`validate_layer_decision_schema`) requires Value-equality
+        // and fails any adaptive-pack deploy/validate with `StaleAdaptiveSchema`
+        // on a mismatch. This catches the next meerkat schema bump that would
+        // otherwise silently desync the bundled copy (added field, edited
+        // description, new $def) — only surfacing at real `rkat mob validate`.
+        let bundled: Value = serde_json::from_str(ADAPTIVE_LAYER_DECISION_SCHEMA_JSON)
+            .expect("bundled layer-decision schema parses");
+        let canonical = meerkat_mob::adaptive::layer_decision_schema()
+            .expect("meerkat canonical layer_decision_schema");
+        assert_eq!(
+            bundled, canonical,
+            "bundled adaptive layer-decision schema has drifted from meerkat's \
+             canonical layer_decision_schema(); regenerate \
+             meerkat-mobkit/src/adaptive_layer_decision.schema.json via \
+             schemars::schema_for!(meerkat_mob::adaptive::LayerDecision)"
+        );
     }
 
     /// Regression: an adaptive pack WITHOUT `mobkit/editor.json` (any
@@ -32670,6 +32830,100 @@ depends_on_mode = "all"
     }
 
     #[test]
+    fn rename_or_delete_input_param_does_not_corrupt_prefix_sharing_free_text_conditions() {
+        // Regression: a free-text `condition`/`until` referencing `params.route_v2`
+        // must NOT be rewritten or wiped when an UNRELATED param `route` (a strict
+        // prefix of `route_v2`) is renamed or deleted. The old prefix-substring
+        // match silently corrupted/erased the unrelated condition.
+        let mut document = valid_document();
+        document.mob_toml = None;
+        document.members = json!([{
+            "id": "worker",
+            "name": "worker",
+            "role": "worker",
+            "profileBinding": "inline",
+            "runtimeMode": "turn_driven",
+            "model": "gpt-5.5",
+            "tools": []
+        }]);
+        document.flow = json!({
+            "id": "main",
+            "steps": [
+                {
+                    "type": "input",
+                    "id": "input",
+                    "task": "Route the work.",
+                    "inputParams": [
+                        { "id": "p1", "name": "route", "type": "string", "required": true, "enumValues": [] },
+                        { "id": "p2", "name": "route_v2", "type": "string", "required": true, "enumValues": [] }
+                    ],
+                    "fields": "route: string, route_v2: string"
+                },
+                {
+                    "type": "branch",
+                    "id": "branch_route",
+                    "branches": [{
+                        // Free-text condition references the OTHER param that shares the prefix.
+                        "condition": "params.route_v2 == \"x\"",
+                        "steps": [{ "type": "member", "id": "worker_step", "role": "worker" }]
+                    }]
+                },
+                {
+                    "type": "repeat",
+                    "id": "repeat_step",
+                    // Free-text until references the prefix-sharing param too.
+                    "until": "params.route_v2 != \"done\"",
+                    "steps": [{ "type": "member", "id": "repeat_worker", "role": "worker" }]
+                }
+            ]
+        });
+        document.edges = json!([]);
+
+        // Rename `route` -> `path`. The `route_v2` references must be untouched.
+        let renamed = apply_mobpack_authoring_operation(&json!({
+            "document": document,
+            "operation": {
+                "type": "rename_input_param",
+                "step_id": "input",
+                "param_id": "p1",
+                "new_name": "path"
+            }
+        }))
+        .expect("rename input param");
+        assert_eq!(
+            renamed["document"]["flow"]["steps"][1]["branches"][0]["condition"],
+            json!("params.route_v2 == \"x\""),
+            "unrelated prefix-sharing condition must NOT be rewritten on rename"
+        );
+        assert_eq!(
+            renamed["document"]["flow"]["steps"][2]["until"],
+            json!("params.route_v2 != \"done\""),
+            "unrelated prefix-sharing until must NOT be rewritten on rename"
+        );
+
+        // Delete `route` (new_name empty). The `route_v2` references must survive.
+        let deleted = apply_mobpack_authoring_operation(&json!({
+            "document": renamed["document"],
+            "operation": {
+                "type": "delete_input_param",
+                "step_id": "input",
+                "param_id": "p1"
+            }
+        }))
+        .expect("delete input param");
+        assert_eq!(
+            deleted["document"]["flow"]["steps"][1]["branches"][0]["condition"],
+            json!("params.route_v2 == \"x\""),
+            "unrelated prefix-sharing condition must NOT be wiped on delete"
+        );
+        assert_eq!(
+            deleted["document"]["flow"]["steps"][2]["until"],
+            json!("params.route_v2 != \"done\""),
+            "unrelated prefix-sharing until must NOT be wiped on delete"
+        );
+    }
+
+    #[test]
     fn writes_deploy_result_fixture_when_requested() {
         let params = match std::env::var("MOBKIT_MOBPACK_DEPLOY_IN") {
             Ok(path) => serde_json::from_str(
@@ -32768,8 +33022,16 @@ depends_on_mode = "all"
         assert!(argv.lines().any(|line| line == "mob"));
         assert!(argv.lines().any(|line| line == "run"));
         assert!(argv.lines().any(|line| line == result.pack_path));
-        assert!(argv.lines().any(|line| line == "--prompt"));
-        assert!(argv.lines().any(|line| line == "Reply with exactly OK."));
+        // Single-token `--prompt=<text>` form (hyphen-safe). The two-token form
+        // breaks for prompts beginning with `-`.
+        assert!(
+            argv.lines()
+                .any(|line| line == "--prompt=Reply with exactly OK.")
+        );
+        assert!(
+            !argv.lines().any(|line| line == "--prompt"),
+            "must not emit the hyphen-unsafe two-token --prompt form: {argv}"
+        );
         assert!(result.display_rows.iter().any(|row| {
             row.kind == "ok"
                 && row.head == "Flow run completed"
@@ -32818,6 +33080,153 @@ depends_on_mode = "all"
                 .display_rows
                 .iter()
                 .any(|row| { row.kind == "crit" && row.head == "rkat mob run failed" })
+        );
+    }
+
+    #[test]
+    fn deploy_argv_uses_hyphen_safe_single_token_prompt() {
+        // Regression: a deploy prompt beginning with `-` must not break
+        // `rkat mob run`. The two-token `["--prompt", "-x"]` form is rejected by
+        // clap (no allow_hyphen_values); the single-token `--prompt=-x` form is
+        // taken literally. Assert the safe form, including for a hyphen prompt.
+        let bindings = DeployInputBindings {
+            schema_fields: None,
+            params: serde_json::Map::new(),
+        };
+        let deploy = json!({ "command": "rkat mob run", "surface": "cli" });
+        let pack_path = std::path::Path::new("/tmp/pack.mobpack");
+
+        for prompt in ["--summarize this", "-please do X", "normal prompt"] {
+            let argv = deploy_argv("rkat", &deploy, pack_path, prompt, &bindings);
+            assert!(
+                argv.iter()
+                    .any(|token| token == &format!("--prompt={prompt}")),
+                "prompt {prompt:?} must use the single-token form: {argv:?}"
+            );
+            assert!(
+                !argv.iter().any(|token| token == "--prompt"),
+                "must not emit the hyphen-unsafe two-token --prompt for {prompt:?}: {argv:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_zero_with_unparseable_envelope_is_not_deploy_success() {
+        // Regression: a `rkat mob run` that exits 0 but whose stdout has no
+        // parseable `run …status=…` envelope (output-format drift, a wrapper at
+        // RKAT_BIN, truncated/garbled output) must NOT be reported as success.
+        // A FAILED flow also exits 0, so without an envelope we cannot tell
+        // completed from failed and must fail closed with a diagnostic.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fake_rkat = dir.path().join("rkat");
+        std::fs::write(
+            &fake_rkat,
+            "#!/bin/sh\necho 'some unexpected output with no run envelope'\nexit 0\n",
+        )
+        .expect("write fake rkat");
+        let mut permissions = std::fs::metadata(&fake_rkat)
+            .expect("fake rkat metadata")
+            .permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_rkat, permissions).expect("chmod fake rkat");
+
+        let result = deploy_mobpack(&json!({
+            "document": valid_document(),
+            "output_dir": dir.path(),
+            "prompt": "Reply with exactly OK.",
+            "rkat_bin": fake_rkat,
+            "execute": true
+        }))
+        .expect("deploy execute");
+
+        assert!(result.executed);
+        assert_eq!(result.status_code, Some(0));
+        assert!(
+            !result.success,
+            "exit 0 with an unparseable run envelope must NOT report deploy success"
+        );
+        assert!(
+            result.display_rows.iter().any(|row| {
+                row.kind == "crit" && row.head == "could not parse rkat result envelope"
+            }),
+            "must surface a diagnostic explaining the unparseable envelope: {:?}",
+            result.display_rows
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn large_rkat_output_does_not_pipe_deadlock() {
+        // Regression: a child that writes more than the OS pipe buffer (~64KB)
+        // to stdout AND stderr before exiting must not deadlock. The old code
+        // only drained pipes AFTER exit, so the child blocked on a full pipe,
+        // never exited, and the watchdog killed it as a spurious timeout. We
+        // now drain both pipes concurrently, so a chatty run completes cleanly.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fake_rkat = dir.path().join("rkat");
+        // ~256KB to each stream, then a valid completed envelope, then exit 0.
+        std::fs::write(
+            &fake_rkat,
+            "#!/bin/sh\n\
+             i=0\n\
+             while [ $i -lt 4096 ]; do\n\
+               printf 'stdout-noise-line-%05d-padding-padding-padding\\n' $i\n\
+               printf 'stderr-noise-line-%05d-padding-padding-padding\\n' $i >&2\n\
+               i=$((i+1))\n\
+             done\n\
+             printf 'run\\tmob=review-pack\\tflow=review\\trun_id=run-big\\tstatus=completed\\n'\n\
+             printf 'result\\t{\"reply\":\"OK\"}\\n'\n\
+             exit 0\n",
+        )
+        .expect("write fake rkat");
+        let mut permissions = std::fs::metadata(&fake_rkat)
+            .expect("fake rkat metadata")
+            .permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_rkat, permissions).expect("chmod fake rkat");
+
+        let mut document = valid_document();
+        // Generous timeout: if it ever trips, the pipe deadlocked.
+        document.deploy = json!({
+            "command": "rkat mob run",
+            "surface": "cli",
+            "max_duration": "30s",
+            "prompt": "Reply with exactly OK."
+        });
+        let started = std::time::Instant::now();
+        let result = deploy_mobpack(&json!({
+            "document": document,
+            "output_dir": dir.path(),
+            "rkat_bin": fake_rkat,
+            "execute": true
+        }))
+        .expect("deploy execute");
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "large output must not pipe-deadlock into a timeout"
+        );
+        assert!(result.executed);
+        assert_eq!(result.status_code, Some(0));
+        assert!(
+            result.success,
+            "a completed flow with large output must report success: {:?}",
+            result.display_rows
+        );
+        // The envelope after ~256KB of noise was still parsed.
+        assert!(
+            result
+                .stdout
+                .as_deref()
+                .unwrap_or_default()
+                .contains("status=completed")
+        );
+        assert!(
+            result.stderr.as_deref().unwrap_or_default().len() > 64 * 1024,
+            "stderr should have been fully drained past the pipe buffer"
         );
     }
 

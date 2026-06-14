@@ -13,6 +13,9 @@ pub fn evaluate_schedules_at_tick(
     validate_schedule_tick_ms_supported(tick_ms)?;
     validate_schedules(schedules)?;
     let mut due_triggers = Vec::new();
+    // Shared across every schedule in this request so a batch of sparse crons
+    // cannot multiply the per-schedule lookback into a soft-DoS.
+    let mut lookback_budget = CRON_LOOKBACK_BUDGET_PER_REQUEST;
     for schedule in schedules.iter().filter(|s| s.enabled) {
         let canonical_schedule_id = canonical_schedule_id(&schedule.schedule_id);
         let interval = parse_schedule_interval(&schedule.interval).ok_or_else(|| {
@@ -33,7 +36,12 @@ pub fn evaluate_schedules_at_tick(
             &timezone,
             schedule.jitter_ms,
             tick_ms,
-        ) else {
+            &mut lookback_budget,
+        )
+        .map_err(|_| ScheduleValidationError::LookbackBudgetExceeded {
+            schedule_id: canonical_schedule_id.clone(),
+        })?
+        else {
             continue;
         };
         if due_tick_ms != tick_ms {
@@ -189,6 +197,9 @@ impl MobkitRuntimeHandle {
         self.prune_schedule_claims(tick_ms);
         self.prune_scheduling_last_due_ticks(tick_ms);
         let mut due_triggers = Vec::new();
+        // Shared across every schedule in this request so a batch of sparse
+        // crons cannot multiply the per-schedule lookback into a soft-DoS.
+        let mut lookback_budget = CRON_LOOKBACK_BUDGET_PER_REQUEST;
         for schedule in schedules.iter().filter(|s| s.enabled) {
             let canonical_schedule_id = canonical_schedule_id(&schedule.schedule_id);
             let interval = parse_schedule_interval(&schedule.interval).ok_or_else(|| {
@@ -209,7 +220,12 @@ impl MobkitRuntimeHandle {
                 &timezone,
                 schedule.jitter_ms,
                 tick_ms,
-            ) else {
+                &mut lookback_budget,
+            )
+            .map_err(|_| ScheduleValidationError::LookbackBudgetExceeded {
+                schedule_id: canonical_schedule_id.clone(),
+            })?
+            else {
                 continue;
             };
             let last_due_tick = self
@@ -938,20 +954,38 @@ fn validate_schedule_tick_ms_supported(tick_ms: u64) -> Result<(), ScheduleValid
     Ok(())
 }
 
+/// Marker returned when a cron lookback exhausts the shared per-request
+/// iteration budget (`CRON_LOOKBACK_BUDGET_PER_REQUEST`). Distinct from a plain
+/// "no due tick within lookback" (`Ok(None)`) so the caller can fail the whole
+/// request with `LookbackBudgetExceeded` instead of silently returning no
+/// triggers (which would mask a soft-DoS attempt).
+#[derive(Debug)]
+struct LookbackBudgetExhausted;
+
 fn latest_due_cron_tick_at_or_before(
     cron: &CronExpression,
     timezone: &ParsedTimezone,
     tick_ms: u64,
-) -> Option<u64> {
+    budget: &mut u64,
+) -> Result<Option<u64>, LookbackBudgetExhausted> {
     let mut candidate = tick_ms - (tick_ms % 60_000);
     for _ in 0..=CRON_LOOKBACK_MINUTES {
-        let fields = local_fields_at_tick(timezone, candidate)?;
-        if fields.second == 0 && fields.subsec_nanos == 0 && cron.matches(&fields) {
-            return Some(candidate);
+        if *budget == 0 {
+            return Err(LookbackBudgetExhausted);
         }
-        candidate = candidate.checked_sub(60_000)?;
+        *budget -= 1;
+        let Some(fields) = local_fields_at_tick(timezone, candidate) else {
+            return Ok(None);
+        };
+        if fields.second == 0 && fields.subsec_nanos == 0 && cron.matches(&fields) {
+            return Ok(Some(candidate));
+        }
+        let Some(next) = candidate.checked_sub(60_000) else {
+            return Ok(None);
+        };
+        candidate = next;
     }
-    None
+    Ok(None)
 }
 
 fn latest_due_tick_at_or_before(
@@ -960,17 +994,102 @@ fn latest_due_tick_at_or_before(
     timezone: &ParsedTimezone,
     jitter_ms: u64,
     tick_ms: u64,
-) -> Option<u64> {
+    budget: &mut u64,
+) -> Result<Option<u64>, LookbackBudgetExhausted> {
     let jitter_offset_ms =
         deterministic_jitter_offset_ms(schedule_id, jitter_ms, interval.jitter_base_interval_ms());
-    let tick_without_jitter = tick_ms.checked_sub(jitter_offset_ms)?;
+    let Some(tick_without_jitter) = tick_ms.checked_sub(jitter_offset_ms) else {
+        return Ok(None);
+    };
     let due_without_jitter = match interval {
         ParsedInterval::Marker { interval_ms } => {
-            latest_due_marker_tick_at_or_before(*interval_ms, timezone, tick_without_jitter)?
+            latest_due_marker_tick_at_or_before(*interval_ms, timezone, tick_without_jitter)
         }
         ParsedInterval::Cron(cron) => {
-            latest_due_cron_tick_at_or_before(cron, timezone, tick_without_jitter)?
+            latest_due_cron_tick_at_or_before(cron, timezone, tick_without_jitter, budget)?
         }
     };
-    due_without_jitter.checked_add(jitter_offset_ms)
+    Ok(due_without_jitter.and_then(|tick| tick.checked_add(jitter_offset_ms)))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod budget_tests {
+    use super::*;
+
+    /// `0 0 29 2 *` (Feb 29) only fires on leap years, so resolving it from a
+    /// non-leap tick walks back well over a million minutes. With ample budget
+    /// the leap-day match must still resolve (the multi-year lookback is
+    /// deliberate and must not regress).
+    #[test]
+    fn sparse_leap_day_cron_still_resolves_with_ample_budget() {
+        let cron = match parse_schedule_interval("0 0 29 2 *").expect("valid leap-day cron") {
+            ParsedInterval::Cron(cron) => cron,
+            ParsedInterval::Marker { .. } => panic!("expected a cron interval"),
+        };
+        let tz = parse_schedule_timezone("UTC").expect("utc");
+        // 2025-06-15 00:00 UTC — a non-leap-year mid-year tick. The most recent
+        // Feb 29 before it is 2024-02-29, ~1.5M minutes back.
+        let tick_ms = 1_750_032_000_000;
+        let mut budget = CRON_LOOKBACK_BUDGET_PER_REQUEST;
+        let due = latest_due_cron_tick_at_or_before(&cron, &tz, tick_ms, &mut budget)
+            .expect("ample budget must not be exhausted");
+        let due = due.expect("a Feb 29 must exist within the lookback window");
+        // The resolved tick is 2024-02-29 00:00 UTC.
+        let fields = local_fields_at_tick(&tz, due).expect("local fields");
+        assert_eq!((fields.month, fields.day_of_month), (2, 29));
+        assert!(
+            budget < CRON_LOOKBACK_BUDGET_PER_REQUEST,
+            "budget was consumed"
+        );
+    }
+
+    /// A tiny shared budget is exhausted by a sparse cron, surfacing the
+    /// `LookbackBudgetExhausted` marker instead of silently stalling — the
+    /// soft-DoS guard. Models the per-request ceiling shrunk to a few
+    /// iterations.
+    #[test]
+    fn exhausted_budget_returns_marker_for_sparse_cron() {
+        let cron = match parse_schedule_interval("0 0 29 2 *").expect("valid leap-day cron") {
+            ParsedInterval::Cron(cron) => cron,
+            ParsedInterval::Marker { .. } => panic!("expected a cron interval"),
+        };
+        let tz = parse_schedule_timezone("UTC").expect("utc");
+        let tick_ms = 1_750_032_000_000;
+        // Only 10 minutes of lookback allowed — far short of the ~1.5M needed.
+        let mut budget = 10u64;
+        let result = latest_due_cron_tick_at_or_before(&cron, &tz, tick_ms, &mut budget);
+        assert!(
+            result.is_err(),
+            "a tiny budget must surface LookbackBudgetExhausted, not stall or silently miss"
+        );
+        assert_eq!(budget, 0, "budget must be fully consumed before failing");
+    }
+
+    /// The budget is SHARED across schedules within a request: a second sparse
+    /// cron evaluated after the budget is spent fails closed rather than adding
+    /// another full multi-million-iteration walk.
+    #[test]
+    fn budget_is_shared_across_schedules_in_a_request() {
+        let cron = match parse_schedule_interval("0 0 29 2 *").expect("valid leap-day cron") {
+            ParsedInterval::Cron(cron) => cron,
+            ParsedInterval::Marker { .. } => panic!("expected a cron interval"),
+        };
+        let tz = parse_schedule_timezone("UTC").expect("utc");
+        let tick_ms = 1_750_032_000_000;
+        // Enough for exactly one resolution, then nothing left for the next.
+        let mut budget = CRON_LOOKBACK_BUDGET_PER_REQUEST;
+        latest_due_cron_tick_at_or_before(&cron, &tz, tick_ms, &mut budget)
+            .expect("first sparse cron resolves within budget");
+        let remaining = budget;
+        assert!(remaining < CRON_LOOKBACK_BUDGET_PER_REQUEST);
+        // Force the remaining budget to a sub-resolution amount and confirm the
+        // next sparse cron in the same request fails closed.
+        budget = 5;
+        let second = latest_due_cron_tick_at_or_before(&cron, &tz, tick_ms, &mut budget);
+        assert!(
+            second.is_err(),
+            "shared budget must fail the second sparse cron closed"
+        );
+    }
 }

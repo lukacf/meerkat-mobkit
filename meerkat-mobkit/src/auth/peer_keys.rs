@@ -106,17 +106,37 @@ impl GatewayPeerKeys {
 
     fn persist_to(&self, path: &Path) -> Result<(), GatewayPeerKeyError> {
         let bytes = self.inner.signing.to_bytes();
-        fs::write(path, bytes).map_err(|source| GatewayPeerKeyError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        // Restrict permissions on Unix. Best-effort — failure to chmod is
-        // not fatal because the secret is already on disk and an operator
-        // can chmod it themselves.
+        // On Unix, create the file with mode 0o600 ATOMICALLY (the mode is set
+        // at creation, before any bytes are written), so the 32-byte Ed25519
+        // secret seed is never momentarily world/group-readable. `fs::write`
+        // would create with `0o666 & !umask` (typically 0o644) and only chmod
+        // afterwards, leaving a window in which a co-tenant could read the
+        // signing key and impersonate this gateway across TCP/UDS.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(path)
+                .map_err(|source| GatewayPeerKeyError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            file.write_all(&bytes)
+                .map_err(|source| GatewayPeerKeyError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        }
+        #[cfg(not(unix))]
+        {
+            fs::write(path, bytes).map_err(|source| GatewayPeerKeyError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
         }
         Ok(())
     }
@@ -266,6 +286,25 @@ mod tests {
         std::fs::write(dir.path().join(KEY_FILE_NAME), b"too short").expect("write");
         let err = GatewayPeerKeys::load_or_create(dir.path()).expect_err("short file must fail");
         assert!(matches!(err, GatewayPeerKeyError::InvalidLength { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persisted_secret_key_is_created_0o600_not_world_readable() {
+        // Regression: the secret seed must be created with mode 0o600 so it is
+        // never momentarily world/group-readable (no create-then-chmod window).
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().expect("tempdir");
+        GatewayPeerKeys::load_or_create(dir.path()).expect("create");
+        let mode = std::fs::metadata(dir.path().join(KEY_FILE_NAME))
+            .expect("key metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "peer secret key file must be 0o600, got {mode:o}"
+        );
     }
 
     #[test]

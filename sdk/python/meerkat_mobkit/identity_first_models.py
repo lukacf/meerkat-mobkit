@@ -337,8 +337,10 @@ class DurabilityPolicy:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DurabilityPolicy:
+        # `.get()` with a default to match the TS parser, which defaults `kind`
+        # to the wire form `sync_write_through` rather than raising.
         return cls(
-            kind=data["kind"],
+            kind=str(data.get("kind", "sync_write_through")),
             max_loss_window_ms=data.get("max_loss_window_ms"),
         )
 
@@ -360,10 +362,12 @@ class LeaseInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LeaseInfo:
+        # `.get()` with defaults to match the TS parser's graceful degradation
+        # instead of raising KeyError on a missing key from an older gateway.
         return cls(
-            fencing_token=data["fencing_token"],
-            ttl_remaining_ms=data["ttl_remaining_ms"],
-            healthy=data["healthy"],
+            fencing_token=int(data.get("fencing_token", 0)),
+            ttl_remaining_ms=int(data.get("ttl_remaining_ms", 0)),
+            healthy=bool(data.get("healthy", False)),
         )
 
 
@@ -386,9 +390,10 @@ class ContinuityHealth:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ContinuityHealth:
+        # `.get()` with defaults to match the TS parser's graceful degradation.
         return cls(
-            store_reachable=data["store_reachable"],
-            durability_policy=DurabilityPolicy.from_dict(data["durability_policy"]),
+            store_reachable=bool(data.get("store_reachable", False)),
+            durability_policy=DurabilityPolicy.from_dict(data.get("durability_policy", {})),
             last_checkpoint_version=data.get("last_checkpoint_version"),
         )
 
@@ -439,9 +444,10 @@ class IdentityStatus:
     def from_dict(cls, data: dict[str, Any]) -> IdentityStatus:
         lease_raw = data.get("lease")
         ch_raw = data.get("continuity_health")
+        # `.get()` with defaults to match the TS parser's graceful degradation.
         return cls(
-            identity=data["identity"],
-            state=data["state"],
+            identity=str(data.get("identity", "")),
+            state=str(data.get("state", "")),
             agent_runtime_id=data.get("agent_runtime_id"),
             session_id=data.get("session_id"),
             profile=data.get("profile"),

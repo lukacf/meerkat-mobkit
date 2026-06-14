@@ -3,9 +3,12 @@ import pytest
 
 from meerkat_mobkit.identity_first_models import (
     ContentBlock,
+    ContinuityHealth,
     DispatchInput,
     DurableAgentSpec,
+    IdentityStatus,
     ImageBlock,
+    LeaseInfo,
     ManagedPeerEdge,
     TextBlock,
 )
@@ -347,3 +350,28 @@ class TestManagedPeerEdge:
         restored = ManagedPeerEdge.from_dict(original.to_dict())
         assert restored.a == original.a
         assert restored.b == original.b
+
+
+class TestCrossSdkGracefulParsing:
+    """Python from_dict must degrade gracefully (like TS) on missing keys,
+    not raise KeyError. Regression for the cross-SDK divergence."""
+
+    def test_identity_status_defaults_missing_keys(self):
+        status = IdentityStatus.from_dict({})
+        assert status.identity == ""
+        assert status.state == ""
+        assert status.addressability == "addressable"
+        assert status.lease is None
+        assert status.continuity_health is None
+
+    def test_lease_info_defaults_missing_keys(self):
+        lease = LeaseInfo.from_dict({})
+        assert lease.fencing_token == 0
+        assert lease.ttl_remaining_ms == 0
+        assert lease.healthy is False
+
+    def test_continuity_health_defaults_missing_keys(self):
+        health = ContinuityHealth.from_dict({})
+        assert health.store_reachable is False
+        assert health.durability_policy.kind == "sync_write_through"
+        assert health.last_checkpoint_version is None

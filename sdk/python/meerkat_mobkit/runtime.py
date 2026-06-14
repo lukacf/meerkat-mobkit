@@ -21,11 +21,13 @@ _log = logging.getLogger("meerkat_mobkit")
 from .agent_builder import CallbackDispatcher, SessionAgentBuilder
 from .errors import (
     CAPABILITY_UNAVAILABLE_CODE,
+    LEASE_LOST_CODE,
     MEMORY_BACKEND_UNAVAILABLE_CODE,
     MOB_EVENTS_STALE_CURSOR_CODE,
     CapabilityUnavailableError,
     CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
     ConsoleTimelineReplayUnavailableError,
+    LeaseLostError,
     MemoryBackendUnavailableError,
     MobEventsStaleError,
     NotConnectedError,
@@ -99,6 +101,13 @@ def _rpc_error_from_payload(
     data = err.get("data")
     if code == CAPABILITY_UNAVAILABLE_CODE:
         return CapabilityUnavailableError(
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+    if code == LEASE_LOST_CODE:
+        return LeaseLostError(
             message,
             request_id=request_id,
             method=method,
@@ -916,7 +925,7 @@ class MobHandle:
     async def mobpack_deploy_command(
         self, document: dict[str, Any]
     ) -> MobpackDeployCommandResult:
-        """Preview the rkat mob deploy command for a mobpack document."""
+        """Preview the ``rkat mob run`` deploy command for a mobpack document."""
         raw = await self._runtime._rpc(
             "mobkit/mobpacks/deploy_command", {"document": document}
         )

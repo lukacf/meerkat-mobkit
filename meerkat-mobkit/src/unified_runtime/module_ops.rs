@@ -117,14 +117,23 @@ impl UnifiedRuntime {
         self.module_runtime.lock().await.memory_stores()
     }
 
+    /// Index into the memory backend. When an Elephant backend is configured,
+    /// `persist_memory_state` performs a synchronous blocking TCP healthcheck
+    /// (`std::net::TcpStream::connect_timeout` + blocking socket read/write,
+    /// bounded by `ELEPHANT_HEALTHCHECK_TIMEOUT`). Run it on a dedicated thread
+    /// via `run_blocking` like the other blocking module ops, so the tokio
+    /// worker (and every operation waiting on the `module_runtime` mutex) is
+    /// not stalled for up to ~2s per call when the backend is slow/unreachable.
     pub async fn memory_index(
         &self,
         request: MemoryIndexRequest,
     ) -> Result<MemoryIndexResult, MemoryIndexError> {
-        self.module_runtime.lock().await.memory_index(request)
+        let mut rt = self.module_runtime.lock().await;
+        run_blocking(|| rt.memory_index(request))
     }
 
     pub async fn memory_query(&self, request: MemoryQueryRequest) -> MemoryQueryResult {
+        // No I/O on this path — see `memory.query` note; safe to run inline.
         self.module_runtime.lock().await.memory_query(request)
     }
 
