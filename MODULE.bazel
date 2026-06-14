@@ -43,6 +43,32 @@ register_toolchains(
 )
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+
+# The meerkat machine-authority crates have a build.rs that locates a workspace-
+# generated "authority bridge" suffix — which doesn't exist when crate_universe
+# builds them standalone, so the script aborts. meerkat's own BUILD targets fix
+# this by turning the build script off and hardcoding the suffix env; replicate
+# that here for each affected crate.
+crate.annotation(
+    crate = "meerkat-runtime",
+    gen_build_script = "off",
+    rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
+)
+crate.annotation(
+    crate = "meerkat-core",
+    gen_build_script = "off",
+    rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
+)
+crate.annotation(
+    crate = "meerkat-mob",
+    gen_build_script = "off",
+    rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
+)
+crate.annotation(
+    crate = "meerkat-live",
+    gen_build_script = "off",
+    rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
+)
 crate.from_cargo(
     name = "crates",
     cargo_lockfile = "//:Cargo.lock",
