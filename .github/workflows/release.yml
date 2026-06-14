@@ -91,35 +91,36 @@ jobs:
     name: Build gateway binary (${{ matrix.target }})
     needs: [release_validate]
     runs-on: ${{ matrix.runs-on }}
+    # CARGO_TARGET_DIR is pinned to a fixed in-workspace `target/` (instead of
+    # repo-cargo's per-worktree cache dir) so Swatinem/rust-cache can find and
+    # cache the build. The repo's .cargo/config.toml (RUST_MIN_STACK) still
+    # applies since cargo reads it from the repo root.
+    env:
+      CARGO_TARGET_DIR: target
     strategy:
       fail-fast: false
       matrix:
-        # cargo_jobs caps build parallelism so concurrent rustc memory stays
-        # under each runner's RAM. The peak crate is `meerkat-machine-schema`
-        # at ~5.8 GB even with its opt-level=0 override (see the workspace
-        # Cargo.toml profile note); on the 7 GB macOS runners it must compile
-        # alone (-j 1), while the 16 GB Linux/Windows runners tolerate -j 2.
+        # macOS uses larger paid runners (12-core / 30 GB) so the build has the
+        # cores + RAM to run at full parallelism without OOM — the standard
+        # macos-15 (3-core / 7 GB) took ~125 min for the arm64 leg. Linux/Windows
+        # stay on standard runners (a user account cannot provision larger
+        # GitHub-hosted Linux/Windows runners); opt-level 1 + caching carry them.
         include:
           - runs-on: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive_ext: tar.gz
-            cargo_jobs: 2
           - runs-on: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive_ext: tar.gz
-            cargo_jobs: 2
-          - runs-on: macos-15
+          - runs-on: macos-15-xlarge
             target: aarch64-apple-darwin
             archive_ext: tar.gz
-            cargo_jobs: 1
-          - runs-on: macos-15-intel
+          - runs-on: macos-15-large
             target: x86_64-apple-darwin
             archive_ext: tar.gz
-            cargo_jobs: 1
-          - runs-on: windows-2022
+          - runs-on: windows-latest
             target: x86_64-pc-windows-msvc
             archive_ext: zip
-            cargo_jobs: 1
 
     steps:
       - name: Checkout
@@ -131,19 +132,16 @@ jobs:
       - name: Add release target
         run: rustup target add ${{ matrix.target }}
 
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
       - name: Build gateway binary
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ matrix.target }}" == "x86_64-pc-windows-msvc" ]]; then
-            export CARGO_PROFILE_RELEASE_OPT_LEVEL=1
-            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256
-          fi
-          if [[ "${{ matrix.cargo_jobs }}" != "0" ]]; then
-            scripts/repo-cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}" -j "${{ matrix.cargo_jobs }}"
-          else
-            scripts/repo-cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}"
-          fi
+          cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}"
 
       - name: Package artifacts
         shell: bash
@@ -155,11 +153,7 @@ jobs:
           set -euo pipefail
           BINARIES=("mobkit_gateway")
           mkdir -p dist
-          target_dir="$(scripts/repo-cargo --print-env | sed -n 's/^CARGO_TARGET_DIR=//p')"
-          if [[ -z "$target_dir" ]]; then
-            echo "Unable to resolve CARGO_TARGET_DIR from scripts/repo-cargo" >&2
-            exit 1
-          fi
+          target_dir="${CARGO_TARGET_DIR:-target}"
           VERSION="${VERSION#v}"
           VERSION="${VERSION//\//-}"
 

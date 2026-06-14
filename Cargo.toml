@@ -100,6 +100,15 @@ pre-release-hook = ["bash", "-c", "$(git rev-parse --show-toplevel)/scripts/rele
 publish = false
 push = true
 
+# The release gateway binary is built fast on purpose. opt-level 1 keeps an
+# I/O-bound orchestration server plenty fast at runtime while compiling far
+# quicker — and using far less memory — than opt-level 3. Together with
+# per-target build caching and larger macOS runners, this keeps the release
+# binary build inside its time budget. Profile settings apply only within this
+# workspace; downstream consumers of the published crate use their own profiles.
+[profile.release]
+opt-level = 1
+
 # Release-build memory workaround for the machine-authority schema crate.
 #
 # `meerkat-machine-schema` expands the `machine!` DSL into single, enormous
@@ -109,11 +118,10 @@ push = true
 # OOM-kill rustc during the `--release` gateway-binary build — this is what made
 # every 0.7.x `Build gateway binary` CI leg fail (it errored even with
 # codegen-units=256, because codegen-units cannot split one function). opt-level=0
-# skips those passes and compiles the crate cheaply.
+# skips those passes and compiles the crate cheaply (~5.8 GB peak vs OOM).
 #
-# The crate is cold-path machine-authority schema/transition code, so dropping
-# its optimization has no measurable effect on the gateway's runtime hot path.
-# Profile overrides apply only within this workspace; downstream consumers of the
-# published `meerkat-mobkit` crate are unaffected.
+# This crate is cold-path machine-authority schema/transition code, so dropping
+# its optimization below the workspace default has no measurable effect on the
+# gateway's runtime hot path.
 [profile.release.package.meerkat-machine-schema]
 opt-level = 0
