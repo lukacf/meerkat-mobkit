@@ -100,40 +100,51 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS uses larger paid runners so the -j2 cap (see build step) fits
-        # comfortably in RAM and the faster cores cut wall-clock — the standard
-        # macos-15 (3-core / 7 GB) took ~125 min for the arm64 leg and can't hold
-        # the 5.8 GB schema crate plus a neighbour. Linux/Windows stay on standard
-        # 16 GB runners (a user account cannot provision larger GitHub-hosted
-        # Linux/Windows runners); opt-level 1 + caching carry them.
+        # The heavy Linux x86_64 build runs on the reused meerkat self-hosted
+        # runner (32-core / 128 GB) with sccache + full parallelism: no OOM and a
+        # warm cross-release cache. Other targets stay GitHub-hosted — macOS on
+        # larger paid runners (-j2 fits 30 GB), and the 16 GB Linux-arm / Windows
+        # runners at -j1 (a hard memory cap: meerkat-machine-schema is ~5.8 GB at
+        # opt-0 and several meerkat crates are multi-GB, so higher -j OOMs 16 GB).
         include:
-          - runs-on: ubuntu-latest
+          - runs-on: ["self-hosted", "mobkit-temp-linux"]
             target: x86_64-unknown-linux-gnu
             archive_ext: tar.gz
-          - runs-on: ubuntu-24.04-arm
+            self_hosted: true
+          - runs-on: ["ubuntu-24.04-arm"]
             target: aarch64-unknown-linux-gnu
             archive_ext: tar.gz
-          - runs-on: macos-15-xlarge
+            jobs: 1
+          - runs-on: ["macos-15-xlarge"]
             target: aarch64-apple-darwin
             archive_ext: tar.gz
-          - runs-on: macos-15-large
+            jobs: 2
+          - runs-on: ["macos-15-large"]
             target: x86_64-apple-darwin
             archive_ext: tar.gz
-          - runs-on: windows-latest
+            jobs: 2
+          - runs-on: ["windows-latest"]
             target: x86_64-pc-windows-msvc
             archive_ext: zip
+            jobs: 1
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Self-hosted runner already has the rustc-stable toolchain + sccache on
+      # PATH (it mirrors meerkat's runner env) and caches via sccache, so it skips
+      # the toolchain install / target add / Actions cache that GitHub-hosted needs.
       - name: Install Rust
+        if: ${{ !matrix.self_hosted }}
         uses: dtolnay/rust-toolchain@stable
 
       - name: Add release target
+        if: ${{ !matrix.self_hosted }}
         run: rustup target add ${{ matrix.target }}
 
       - name: Cache cargo build
+        if: ${{ !matrix.self_hosted }}
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
@@ -142,13 +153,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # -j 2 is a hard memory cap, not a perf knob: meerkat-machine-schema is
-          # ~5.8 GB (opt-level 0, irreducible) and several meerkat crates are
-          # multi-GB, so unbounded parallelism OOMs/thrashes every runner. Two
-          # concurrent heavy crates (~12 GB peak) fit the 16 GB runners. Real
-          # speed comes from caching (warm builds recompile only meerkat-mobkit),
-          # not from raising this.
-          cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}" -j 2
+          if [[ "${{ matrix.self_hosted }}" == "true" ]]; then
+            # 32-core / 128 GB self-hosted runner: full parallelism (no OOM) +
+            # sccache against the VM's persistent local cache for warm builds.
+            export RUSTC_WRAPPER=/usr/local/bin/sccache
+            export CARGO_INCREMENTAL=0
+            cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}"
+            /usr/local/bin/sccache --show-stats || true
+          else
+            # GitHub-hosted: -j is a hard memory cap — meerkat-machine-schema is
+            # ~5.8 GB at opt-0 and several meerkat crates are multi-GB, so higher
+            # -j OOMs the 16 GB runners.
+            cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}" -j ${{ matrix.jobs }}
+          fi
 
       - name: Package artifacts
         shell: bash
@@ -193,7 +210,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: mobkit-${{ matrix.target }}-${{ matrix.runs-on }}
+          name: mobkit-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
 
